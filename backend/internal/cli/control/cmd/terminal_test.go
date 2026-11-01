@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
@@ -28,7 +29,7 @@ func (d *shellsDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req
 	d.mu.Lock()
 	d.methods = append(d.methods, req.GetMethod())
 	d.mu.Unlock()
-	if req.GetMethod() != "ListAvailableShells" {
+	if req.GetMethod() != leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure {
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
 	}
@@ -82,7 +83,7 @@ func TestRunTerminalShells_InsideWorkerSpawn(t *testing.T) {
 	assert.Equal(t, "/bin/zsh", env.Data["default_shell"])
 	assert.Equal(t, []any{"/bin/zsh", "/bin/bash"}, env.Data["shells"])
 
-	assert.Equal(t, []string{"ListAvailableShells"}, disp.called(),
+	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure}, disp.called(),
 		"the command must reach the worker instead of dying on a denied hub round-trip")
 	// The preflight round-trip survives (it is the friendly
 	// "no such worker id" check for laptop users); only its failure
@@ -118,4 +119,22 @@ func TestRunTerminalShells_PreflightStillRejectsUnknownWorker(t *testing.T) {
 	assert.Equal(t, "not_found", env.Error["code"])
 	assert.Equal(t, "no such worker: worker-ghost", env.Error["message"])
 	assert.Empty(t, disp.called(), "a rejected worker id must not reach the worker")
+}
+
+// TestTerminalInfoToMap_ExitedFollowsTheStatus pins the derived `exited`
+// field. The worker no longer sends a separate flag, so the CLI derives it
+// from the status: true for an exited terminal only, and false for every
+// other status, the unset one included. `status` still prints the name.
+func TestTerminalInfoToMap_ExitedFollowsTheStatus(t *testing.T) {
+	for status, exited := range map[leapmuxv1.TerminalStatus]bool{
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:         true,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:          false,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:       false,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED: false,
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED:    false,
+	} {
+		got := terminalInfoToMap(&leapmuxv1.TerminalInfo{TerminalId: "term-1", Status: status})
+		assert.Equalf(t, exited, got["exited"], "status %s", status)
+		assert.Equalf(t, terminalStatusName(status), got["status"], "status %s", status)
+	}
 }

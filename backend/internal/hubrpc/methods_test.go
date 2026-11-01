@@ -26,7 +26,7 @@ import (
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
 		// WorkspaceService surface.
-		"GetTab", "LocateTab", "LocateTile", "ListTabs",
+		"LocateTab", "LocateTile", "ListTabs",
 		"ListWorkspaces", "GetWorkspace",
 		"CreateWorkspace", "RenameWorkspace", "DeleteWorkspace",
 		// UserCRDT surface.
@@ -49,7 +49,7 @@ func TestLookup_UnknownMethodReturnsTypedError(t *testing.T) {
 }
 
 func TestDescriptor_NewRequestAndNewResponseReturnFreshProtos(t *testing.T) {
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
 
 	req1 := desc.NewRequest()
@@ -57,12 +57,12 @@ func TestDescriptor_NewRequestAndNewResponseReturnFreshProtos(t *testing.T) {
 	// Same concrete type, distinct instances — callers can mutate
 	// without aliasing.
 	assert.NotSame(t, req1, req2)
-	_, okReq := req1.(*leapmuxv1.GetTabRequest)
-	assert.True(t, okReq, "NewRequest must return *GetTabRequest")
+	_, okReq := req1.(*leapmuxv1.LocateTabRequest)
+	assert.True(t, okReq, "NewRequest must return *LocateTabRequest")
 
 	resp := desc.NewResponse()
-	_, okResp := resp.(*leapmuxv1.GetTabResponse)
-	assert.True(t, okResp, "NewResponse must return *GetTabResponse")
+	_, okResp := resp.(*leapmuxv1.LocateTabResponse)
+	assert.True(t, okResp, "NewResponse must return *LocateTabResponse")
 }
 
 // fakeWorkspaceService implements just enough of the connect handler
@@ -71,25 +71,25 @@ func TestDescriptor_NewRequestAndNewResponseReturnFreshProtos(t *testing.T) {
 // implementation would do on a real hub.
 type fakeWorkspaceService struct {
 	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
-	getTabResp *leapmuxv1.GetTabResponse
-	getTabErr  error
-	gotAuth    string
-	gotTabID   string
+	locateTabResp *leapmuxv1.LocateTabResponse
+	locateTabErr  error
+	gotAuth       string
+	gotTabID      string
 }
 
-func (f *fakeWorkspaceService) GetTab(ctx context.Context, req *leapmuxv1.GetTabRequest) (*leapmuxv1.GetTabResponse, error) {
+func (f *fakeWorkspaceService) LocateTab(ctx context.Context, req *leapmuxv1.LocateTabRequest) (*leapmuxv1.LocateTabResponse, error) {
 	// Connect v2 carries request headers on the CallInfo attached to the
 	// handler's context, not on the request message.
 	info, _ := connect.CallInfoForServerContext(ctx)
 	f.gotAuth = info.RequestHeader().Get("Authorization")
 	f.gotTabID = req.GetTabId()
-	if f.getTabErr != nil {
-		return nil, f.getTabErr
+	if f.locateTabErr != nil {
+		return nil, f.locateTabErr
 	}
-	if f.getTabResp == nil {
-		return &leapmuxv1.GetTabResponse{}, nil
+	if f.locateTabResp == nil {
+		return &leapmuxv1.LocateTabResponse{}, nil
 	}
-	return f.getTabResp, nil
+	return f.locateTabResp, nil
 }
 
 // startFakeHub spins up an httptest server hosting the fake
@@ -107,17 +107,16 @@ func startFakeHub(t *testing.T, svc *fakeWorkspaceService) string {
 }
 
 func TestInvoke_HappyPathRoundTripsRequestAndResponse(t *testing.T) {
-	tab := &leapmuxv1.WorkspaceTab{TabId: "t-123", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
-	svc := &fakeWorkspaceService{getTabResp: &leapmuxv1.GetTabResponse{Tab: tab}}
+	tab := &leapmuxv1.WorkspaceTab{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-123"}}
+	svc := &fakeWorkspaceService{locateTabResp: &leapmuxv1.LocateTabResponse{Tab: tab}}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
-	in := desc.NewRequest().(*leapmuxv1.GetTabRequest)
+	in := desc.NewRequest().(*leapmuxv1.LocateTabRequest)
 	in.TabId = "t-123"
-	in.WorkspaceId = "ws-1"
 	in.TabType = leapmuxv1.TabType_TAB_TYPE_AGENT
-	out := desc.NewResponse().(*leapmuxv1.GetTabResponse)
+	out := desc.NewResponse().(*leapmuxv1.LocateTabResponse)
 
 	// Invoke dispatches through a caller-built client: the caller owns
 	// the transport and the interceptor chain.
@@ -128,18 +127,17 @@ func TestInvoke_HappyPathRoundTripsRequestAndResponse(t *testing.T) {
 	assert.Equal(t, "t-123", svc.gotTabID, "wire round-trip must carry tab_id through")
 	// And the response got copied back into the caller's `out` slot.
 	require.NotNil(t, out.Tab)
-	assert.Equal(t, "t-123", out.Tab.TabId)
+	assert.Equal(t, "t-123", out.Tab.Tab.TabId)
 }
 
 func TestInvoke_AppliesProvidedClientOptions(t *testing.T) {
-	svc := &fakeWorkspaceService{getTabResp: &leapmuxv1.GetTabResponse{}}
+	svc := &fakeWorkspaceService{locateTabResp: &leapmuxv1.LocateTabResponse{}}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
-	in := desc.NewRequest().(*leapmuxv1.GetTabRequest)
-	in.WorkspaceId = "ws-1"
-	out := desc.NewResponse().(*leapmuxv1.GetTabResponse)
+	in := desc.NewRequest().(*leapmuxv1.LocateTabRequest)
+	out := desc.NewResponse().(*leapmuxv1.LocateTabResponse)
 
 	// Caller-supplied interceptor must reach the wire — both the CLI
 	// (session interceptor) and the worker bridge (bearer interceptor)
@@ -165,10 +163,10 @@ func TestInvoke_AppliesProvidedClientOptions(t *testing.T) {
 }
 
 func TestInvoke_PropagatesHubErrors(t *testing.T) {
-	svc := &fakeWorkspaceService{getTabErr: connect.NewError(connect.CodeNotFound, "no such tab")}
+	svc := &fakeWorkspaceService{locateTabErr: connect.NewError(connect.CodeNotFound, "no such tab")}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
 	in := desc.NewRequest()
 	out := desc.NewResponse()
@@ -184,9 +182,9 @@ func TestInvoke_PropagatesHubErrors(t *testing.T) {
 func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 	// Construct a baseURL but never reach it — the descriptor must
 	// reject the wrong-shaped request BEFORE issuing the HTTP call.
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
-	// Use a non-GetTabRequest proto to provoke the type assertion.
+	// Use a non-LocateTabRequest proto to provoke the type assertion.
 	wrongIn := &leapmuxv1.ListTabsRequest{}
 	out := desc.NewResponse()
 
@@ -198,7 +196,7 @@ func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 }
 
 func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
-	desc, err := hubrpc.Lookup("GetTab")
+	desc, err := hubrpc.Lookup("LocateTab")
 	require.NoError(t, err)
 	in := desc.NewRequest()
 	// Wrong-shaped response slot — should fail before any network IO.
@@ -215,7 +213,6 @@ func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
 // SubmitOps doesn't end up routed at ListWorkers.
 func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
 	cases := map[string]string{
-		"GetTab":          leapmuxv1connect.WorkspaceServiceGetTabProcedure,
 		"LocateTab":       leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		"LocateTile":      leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
 		"ListTabs":        leapmuxv1connect.WorkspaceServiceListTabsProcedure,

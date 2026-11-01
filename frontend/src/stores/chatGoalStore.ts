@@ -6,7 +6,7 @@ import { createPerAgentStore, createPerAgentValueStore } from './chatPerAgentSto
 export type GoalReplacementResult = 'stale' | 'applied' | 'progress-cleared'
 
 // Keep the goal and its progress in separate per-agent values.
-// AgentGoalChanged supplies these fields after a transition:
+// AgentGoalSnapshot supplies these fields after a transition:
 // - The objective.
 // - The status.
 // - The supported actions.
@@ -43,7 +43,7 @@ export function createGoalStore() {
      * See PerAgentValueStore.setReconciled.
      *
      * updatedAt orders the three producers:
-     * - Live AgentGoalChanged events.
+     * - Live goal_changed events.
      * - WatchEvents replay after subscription.
      * - ListAgentMessages during the initial history load.
      * A strictly older history response must not restore a goal after a newer clear.

@@ -38,7 +38,7 @@ func TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace(t *testing
 	moveBatch := &leapmuxv1.OpBatch{
 		BatchId: "move",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-move", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 		}}}},
 	}
@@ -77,7 +77,7 @@ func TestCrossWorkspaceMove_RequiresWritePermissionToBothWorkspaces(t *testing.T
 	moveBatch := &leapmuxv1.OpBatch{
 		BatchId: "move",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-move", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 		}}}},
 	}
@@ -131,11 +131,11 @@ func TestCrossWorkspaceMove_TabIndexRowMovesWithTheTab(t *testing.T) {
 		BatchId: "move",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-move", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}}},
 			{OpId: "op-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "newpos"},
 			}}},
 		},

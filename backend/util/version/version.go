@@ -8,6 +8,8 @@ package version
 import (
 	"strings"
 	"time"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // Value is the build-time version string, set via ldflags or at startup.
@@ -26,6 +28,20 @@ var BuildTime string
 // tag) at build time, set via ldflags. Empty when HEAD is detached
 // outside any named ref.
 var Branch string
+
+// BuildInfoProto returns the running binary's build identity as the one
+// message every surface reports it in: the hub's system information, a
+// worker's system information, and the desktop app's startup information.
+// A fresh message on every call, so a caller may keep or change it.
+func BuildInfoProto() *leapmuxv1.BuildInfo {
+	return &leapmuxv1.BuildInfo{
+		Version:    Value,
+		CommitHash: CommitHash,
+		CommitTime: CommitTime,
+		BuildTime:  BuildTime,
+		Branch:     Branch,
+	}
+}
 
 // Format returns the canonical single-line identity string, e.g.
 //

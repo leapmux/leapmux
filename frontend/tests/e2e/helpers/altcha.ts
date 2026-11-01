@@ -54,13 +54,13 @@ export async function fetchAltchaChallenge(hubUrl: string): Promise<Challenge | 
 /**
  * Mirrors the hub-side captcha enforcement for raw Connect-API calls made
  * outside a browser (fixture seeding, loginViaAPI): fetch a challenge and
- * solve it in Node. Returns the request-body fields to attach, or an empty
- * payload when the hub has captcha disabled.
+ * solve it in Node. Returns the `CaptchaProof` to attach as the request's
+ * `captcha` field, with an empty payload when the hub has captcha disabled.
  */
-export async function solveCaptchaViaAPI(hubUrl: string): Promise<{ captchaPayload: string, honeypot: string }> {
+export async function solveCaptchaViaAPI(hubUrl: string): Promise<{ payload: string, honeypot: string }> {
   const challenge = await fetchAltchaChallenge(hubUrl)
   if (!challenge) {
-    return { captchaPayload: '', honeypot: '' }
+    return { payload: '', honeypot: '' }
   }
   const deriveKey = deriveKeys[challenge.parameters.algorithm]
   if (!deriveKey) {
@@ -78,7 +78,7 @@ export async function solveCaptchaViaAPI(hubUrl: string): Promise<{ captchaPaylo
     solution,
   })
   return {
-    captchaPayload: Buffer.from(payload, 'utf8').toString('base64'),
+    payload: Buffer.from(payload, 'utf8').toString('base64'),
     honeypot: '',
   }
 }

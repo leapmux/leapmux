@@ -74,7 +74,6 @@ export async function loadListings(
   fromRoot?: string,
 ): Promise<ChainResult> {
   const resp = await workerRpc.listDirectory(workerId, {
-    workerId,
     path: dirPath,
     maxDepth: 5,
     dirsOnly: !showFiles,

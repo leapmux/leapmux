@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -72,7 +73,7 @@ func TestEnqueueAgentInputToChildOwnerNotRunningStaysInQueue(t *testing.T) {
 
 	w := newTestWriter()
 	inputID := newTestAgentInputID()
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: inputID,
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: childID,
@@ -107,7 +108,7 @@ func TestQueuedClearForChildIsRefusedAtEnqueue(t *testing.T) {
 	svc, d, childID, _ := setupChildAgentTest(t)
 
 	w := newTestWriter()
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: childID,
@@ -122,7 +123,7 @@ func TestQueuedClearForChildIsRefusedAtEnqueue(t *testing.T) {
 
 	// A plain message still reaches the same child.
 	plain := newTestWriter()
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: childID,
@@ -153,7 +154,7 @@ func TestQueuedChildInputWaitsAsFailedWhenRegistryIsMissing(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "orphan-child",
@@ -187,8 +188,8 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId: childID,
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: agentTabIdent(childID),
 	}, w)
 	require.Empty(t, w.errors)
 
@@ -213,9 +214,9 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 }
 
 // TestListAgentMessagesChildReturnsEmptyTasks is a lightweight cross-check that
-// the BackgroundTasksLoaded contract holds end-to-end for a registry-backed
-// child. (The dedicated test in list_messages_anchor_test.go covers the
-// loaded=true assertion against the root's seeded task in full.)
+// the present-snapshot contract for background tasks holds end-to-end for a
+// registry-backed child. (The dedicated test in list_messages_anchor_test.go
+// covers the present, empty snapshot against the root's seeded task in full.)
 func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 	t.Parallel()
 
@@ -229,7 +230,7 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 
 	// The root has a registry row; the child must not inherit it.
 	w := newTestWriter()
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: childID,
 		Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
 		Limit:   10,
@@ -238,9 +239,9 @@ func TestListAgentMessagesChildReturnsEmptyTasks(t *testing.T) {
 	var resp leapmuxv1.ListAgentMessagesResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.Empty(t, resp.GetBackgroundTasks())
-	assert.True(t, resp.GetBackgroundTasksLoaded(),
-		"child LATEST page must report loaded=true (empty-but-loaded)")
+	require.NotNil(t, resp.GetBackgroundTasks(),
+		"child LATEST page must carry a present snapshot, so the client overwrites stale state")
+	assert.Empty(t, resp.GetBackgroundTasks().GetTasks(), "a child owns no registry")
 }
 
 // TestInterruptAgentOnChildRoutesViaChildInterrupter verifies InterruptAgent on a
@@ -284,7 +285,7 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		defer svc.Agents.StopAgent(rootID)
 
 		w := newTestWriter()
-		dispatch(d, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{
 			AgentId: childID,
 		}, w)
 
@@ -318,7 +319,7 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		defer svc.Agents.StopAgent(rootID)
 
 		w := newTestWriter()
-		dispatch(d, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{
 			AgentId: childID,
 		}, w)
 
@@ -343,7 +344,7 @@ func TestInterruptAgentOnChildRoutesViaChildInterrupter(t *testing.T) {
 		svc, d, childID, _ := setupChildAgentTest(t)
 
 		w := newTestWriter()
-		dispatch(d, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{
 			AgentId: childID,
 		}, w)
 
@@ -371,7 +372,7 @@ func TestEnsureAgentRunningRefusesChildAgent(t *testing.T) {
 	_, d, childID, _ := setupChildAgentTest(t)
 
 	w := newTestWriter()
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: childID,
 		Content: `{"jsonrpc":"2.0","method":"session/interrupt"}`,
 	}, w)
@@ -393,7 +394,7 @@ func TestUpdateAgentSettingsRejectsChildAgent(t *testing.T) {
 	_, d, childID, _ := setupChildAgentTest(t)
 
 	w := newTestWriter()
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: childID,
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{"model": "gpt-5"},
@@ -522,10 +523,10 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	// rootClose: CloseAgent over the whole tree id list, CleanupAgent per
 	// descendant, and MarkAgentBackgroundTasksExited(root, stopped=true).
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId: rootID,
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: agentTabIdent(rootID),
 	}, w)
-	require.Empty(t, w.errors, "CloseAgent on the root must succeed")
+	require.Empty(t, w.errors, "CloseTab on the root must succeed")
 
 	// Both the root and the descendant child are stamped closed_at.
 	rootAfter, err := svc.Queries.GetAgentByID(ctx, rootID)
@@ -555,7 +556,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	}
 }
 
-// TestCloseAgentReportsDescendantTabsToTheCaller verifies CloseAgent tells the
+// TestCloseAgentReportsDescendantTabsToTheCaller verifies CloseTab tells the
 // caller which subagent tabs went with the one it closed.
 //
 // An agent id IS its tab id, and only the worker holds the parent chain, so a
@@ -575,10 +576,10 @@ func TestCloseAgentReportsDescendantTabsToTheCaller(t *testing.T) {
 	require.NotEmpty(t, grandchildID)
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: rootID}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent(rootID)}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
 	assert.ElementsMatch(t, []string{childID, grandchildID}, resp.GetDescendantAgentIds(),
@@ -590,7 +591,7 @@ func TestCloseAgentReportsDescendantTabsToTheCaller(t *testing.T) {
 // The subtree is reported by the INSPECT too, and that is what lets a client
 // order the tombstones.
 //
-// A client that learns the ids only from CloseAgent must tombstone the parent
+// A client that learns the ids only from CloseTab must tombstone the parent
 // first, because it has nothing else to go on until the response lands. Every
 // peer then briefly promotes the orphaned children to top-level rows claiming a
 // lineage the user can no longer see -- and for a close that removes a worktree,
@@ -605,10 +606,7 @@ func TestInspectLastTabCloseReportsTheSubtreeSoAClientCanOrderIt(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newTestWriter()
-	dispatch(d, "InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   rootID,
-	}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.InspectLastTabCloseResponse
@@ -628,10 +626,7 @@ func TestInspectLastTabCloseReportsNoSubtreeForANonAgentTab(t *testing.T) {
 	_, d, _, rootID := setupChildAgentTest(t)
 
 	w := newTestWriter()
-	dispatch(d, "InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{
-		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabId:   rootID,
-	}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: rootID}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.InspectLastTabCloseResponse
@@ -652,10 +647,10 @@ func TestCloseAgentOnChildStillReportsItsOwnDescendants(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: childID}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent(childID)}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
 	assert.Equal(t, []string{grandchildID}, resp.GetDescendantAgentIds())
@@ -680,11 +675,38 @@ func TestCloseAgentReportsNoDescendantsForALeafAgent(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "leaf-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("leaf-1")}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
 	assert.Empty(t, resp.GetDescendantAgentIds())
+}
+
+// A child that accepts messages follows its owner's steering: its queue head
+// can join the owner's running turn. A child never offers Preempt, and a child
+// whose owner does not run has no turn for the head to join.
+func TestChildQueueHeadDispatchFollowsItsOwnersSteering(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	adapter := &agentInputQueueAdapter{svc: svc}
+	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch(childID),
+		"a child whose owner does not run has no turn to join")
+
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: rootID, WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(rootID) })
+	require.True(t, svc.Agents.SupportsSteering(rootID), "the mock owner must expose regular steering")
+
+	assert.Equal(t, queueHeadSteer, adapter.QueueHeadDispatch(childID))
+	child, err := svc.Queries.GetAgentByID(ctx, childID)
+	require.NoError(t, err)
+	assert.Equal(t, queueHeadSteer, svc.agentToProto(&child, agentLiveness{running: true}, nil).GetQueueHeadDispatch(),
+		"the listing states the same dispatch the status changes carry")
 }

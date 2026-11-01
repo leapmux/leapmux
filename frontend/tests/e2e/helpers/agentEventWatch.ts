@@ -5,12 +5,11 @@
  * Cancel the stream if subscription fails.
  * Preserve a refusal or stream failure for the test's next assertion.
  */
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { ServerInfo } from '../fixtures'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
-import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode, WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { getTestChannel } from './api'
 
 /** The Worker that a watch subscribes on. */
@@ -81,7 +80,7 @@ export function readAgentWatchFrame(payload: Uint8Array, agentId: string, label:
   if (response.event.case !== 'agentEvent' || response.event.value.agentId !== agentId)
     return { kind: 'ignored' }
   const event = response.event.value
-  if (event.replay && (event.replayAgentId !== agentId || event.replayId !== AGENT_WATCH_UPDATE_ID))
+  if (event.replay && (event.replay.agentId !== agentId || event.replay.replayId !== AGENT_WATCH_UPDATE_ID))
     return { kind: 'ignored' }
   return { kind: 'event', event }
 }
@@ -165,7 +164,7 @@ export async function watchAgentEvents<T>(
   const request = agentWatchRequest(agentId)
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const channelId = await channel.getOrOpenChannel(server.workerId)
-  const watch = channel.stream(channelId, 'WatchEvents', request)
+  const watch = channel.stream(channelId, WorkerWatchService.method.watchEvents, request)
   watch.onMessage(frame => collector.accept(frame.payload))
   watch.onError(error => collector.fail(error))
   watch.onEnd(() => collector.fail(new Error(`The ${options.label} ended before its assertion.`)))

@@ -206,7 +206,7 @@ function registerKeyIn(op: CrdtOp, admits: (policy: RegisterPolicy) => boolean):
     case 'setNodeRegister':
       return policyKey(NODE_POLICY, admits, body.value.field.case, `node:${body.value.nodeId}`)
     case 'setTabRegister':
-      return policyKey(TAB_POLICY, admits, body.value.field.case, `tab:${body.value.tabType}:${body.value.tabId}`)
+      return policyKey(TAB_POLICY, admits, body.value.field.case, `tab:${body.value.tab?.tabType ?? 0}:${body.value.tab?.tabId ?? ''}`)
     case 'setFloatingWindowRegister':
       return policyKey(FLOATING_WINDOW_POLICY, admits, body.value.field.case, `fw:${body.value.windowId}`)
     default:

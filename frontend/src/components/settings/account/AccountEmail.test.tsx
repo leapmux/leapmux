@@ -61,7 +61,9 @@ describe('AccountEmail', () => {
     mockUser.mockReturnValue(verified)
     mockRefreshUser.mockResolvedValue(undefined)
     mockRequestEmailChange.mockResolvedValue({ verificationRequired: false })
-    mockResendVerificationEmail.mockResolvedValue({ emailSent: true })
+    mockResendVerificationEmail.mockResolvedValue({
+      emailVerification: { verificationEmailSent: true, verificationRequired: true },
+    })
   })
 
   it('requests the change and reports what the hub did', async () => {
@@ -239,7 +241,9 @@ describe('AccountEmail verification', () => {
     setSystemInfoMock({ emailEnabled: true })
     mockUser.mockReturnValue(unverified)
     mockRefreshUser.mockResolvedValue(undefined)
-    mockResendVerificationEmail.mockResolvedValue({ emailSent: true })
+    mockResendVerificationEmail.mockResolvedValue({
+      emailVerification: { verificationEmailSent: true, verificationRequired: true },
+    })
   })
 
   it('offers a resend for an unverified address', async () => {
@@ -248,7 +252,9 @@ describe('AccountEmail verification', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Resend code' }))
 
     await vi.waitFor(() => {
-      expect(mockResendVerificationEmail).toHaveBeenCalledWith({ captchaPayload: '', honeypot: '' })
+      expect(mockResendVerificationEmail).toHaveBeenCalledWith({
+        captcha: { payload: '', honeypot: '' },
+      })
     })
     expect(await screen.findByText(/fresh code/i)).toBeInTheDocument()
   })

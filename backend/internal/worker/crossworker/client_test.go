@@ -157,7 +157,7 @@ func TestChannelFor_PoolKeyComposition(t *testing.T) {
 // pool layer.
 func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
@@ -167,7 +167,7 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "WatchEvents", nil, nil, nil)
+	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }
@@ -177,7 +177,7 @@ func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 // delegation bearer's identity and an unminted one would mint as nobody.
 func TestCallInner_RequiresUserID(t *testing.T) {
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.CallInner(context.Background(), "worker-B", userid.UserID{}, "OpenAgent", []byte("p"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.UserID{}, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("p"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
 }
@@ -307,7 +307,7 @@ func TestOpenChannel_ReachesAHubOverASocket(t *testing.T) {
 	c := New(context.Background(), testEndpointFor(t, socketURL), &PinStore{}, &stubDelegationProvider{bearer: "delegation-bearer"})
 	t.Cleanup(c.Close)
 
-	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sibling worker is not registered",
 		"the refusal must come from the hub, not from a transport that could not dial the socket")

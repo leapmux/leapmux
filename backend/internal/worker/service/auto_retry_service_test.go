@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -56,7 +57,7 @@ func TestCloseAgent_CancelsScheduledRetries(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	seedScheduledRetries(t, svc, "agent-1")
 
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 	assertRetriesCancelled(t, svc, "agent-1")
 }
@@ -81,7 +82,7 @@ func TestCloseAgent_RemovesARetryThatALateReportCreatesDuringTheClose(t *testing
 	}))
 	seedScheduledRetries(t, svc, "agent-1")
 
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 	require.True(t, injected.Load(), "the close must run CloseAgent")
 	assertRetriesCancelled(t, svc, "agent-1")
@@ -99,8 +100,8 @@ func TestCleanupWorkspace_CancelsScheduledRetries(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	seedScheduledRetries(t, svc, "agent-1")
 
-	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
-		Tabs: []*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, &leapmuxv1.CleanupWorkspaceRequest{
+		Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	}, w)
 	require.Empty(t, w.errors)
 	assertRetriesCancelled(t, svc, "agent-1")

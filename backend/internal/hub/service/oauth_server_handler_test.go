@@ -2157,12 +2157,9 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 	t.Helper()
 	workerID = id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(env.userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(env.userID),
 	}))
 	workspaceID = id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{

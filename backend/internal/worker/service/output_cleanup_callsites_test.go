@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -56,10 +57,11 @@ func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Servic
 	assert.Contains(t, cancels, expectedRequestID, "expected a controlCancel broadcast for the cleared request")
 }
 
-// TestCloseAgent_ClearsPendingControlRequests proves the CloseAgent RPC
-// stop-callback drives ClearAgentRuntimeState. A regression dropping the
-// call from agent.go's CloseAgent handler would leave stale rows that
-// the next WatchEvents replay would re-emit as unanswerable prompts.
+// TestCloseAgent_ClearsPendingControlRequests proves that the stop
+// callback of a CloseTab for an agent tab drives ClearAgentRuntimeState. A
+// regression dropping the call from closeAgentTabCommon (close_tab.go) would
+// leave stale rows that the next WatchEvents replay would re-emit as
+// unanswerable prompts.
 func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 	t.Parallel()
 
@@ -69,8 +71,8 @@ func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-close", "ws-1")
 
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId: "agent-close",
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: agentTabIdent("agent-close"),
 	}, w)
 
 	require.Empty(t, w.errors, "unexpected RPC errors: %+v", w.errors)

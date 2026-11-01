@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -94,7 +95,7 @@ func TestOpenTerminal_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) 
 	// No drainAllInFlight: no startup goroutine runs, and a leaked startup must
 	// fail the test at requireStartupsReleased. A drain would wait for it for ever.
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
 	}, w)

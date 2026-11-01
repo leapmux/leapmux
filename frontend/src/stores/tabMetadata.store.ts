@@ -1,6 +1,6 @@
 import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
-import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { TerminalDisplayStatus } from '~/components/shell/terminalStatus'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { createEffect, createMemo } from 'solid-js'
@@ -116,15 +116,14 @@ export interface AgentMeta {
   acceptsMessages?: boolean | undefined
   /** Backend-authoritative: whether the tab can interrupt this agent's turn. */
   acceptsInterrupt?: boolean | undefined
-  /** Whether the live provider accepts an explicit queue-head steer. */
-  supportsSteering?: boolean | undefined
-  supportsPreemption?: boolean | undefined
+  /** How the queue head reaches the agent while its turn runs (see AgentInfo.queue_head_dispatch). */
+  queueHeadDispatch?: QueueHeadDispatch | undefined
   /** The root agent that owns this agent's process and notification streams. */
   rootAgentId?: string | undefined
 }
 
 export interface TerminalMeta {
-  terminalStatus?: TerminalStatus | undefined
+  terminalStatus?: TerminalDisplayStatus | undefined
   shellStartDir?: string | undefined
   screen?: Uint8Array | undefined
   /**

@@ -46,12 +46,20 @@ func emailVerificationToProto(out verificationOutcome) *leapmuxv1.EmailVerificat
 // cooldown -- through the helpers below, so the report and the send cannot
 // answer one screen two ways.
 func (s *AuthService) verificationStatusFor(ctx context.Context, user *store.User) verificationOutcome {
-	if s.emailVerificationSatisfied(ctx, user) {
+	return reportedVerificationStatus(user, s.emailVerificationRequired(ctx), s.now())
+}
+
+// reportedVerificationStatus is the report verificationStatusFor gives,
+// for a caller that holds the requirement and the clock itself:
+// UserService.VerifyEmail reports the state its write produced through it,
+// so the two surfaces cannot report one account two ways.
+func reportedVerificationStatus(user *store.User, required bool, now time.Time) verificationOutcome {
+	if auth.EmailVerificationFactsFromUser(user).Satisfied(required) {
 		return verificationOutcome{}
 	}
 	return verificationOutcome{
 		Required:              true,
-		NextResendAvailableAt: s.pendingResendCooldown(user),
+		NextResendAvailableAt: resendAvailableAt(user, now),
 	}
 }
 
@@ -78,11 +86,16 @@ func (s *AuthService) emailVerificationSatisfied(ctx context.Context, user *stor
 // the reported deadline and the enforced one drift apart, and the user
 // would watch a timer reach zero on a button that still refuses.
 func (s *AuthService) pendingResendCooldown(user *store.User) *time.Time {
+	return resendAvailableAt(user, s.now())
+}
+
+// resendAvailableAt is pendingResendCooldown's rule at a given instant.
+func resendAvailableAt(user *store.User, now time.Time) *time.Time {
 	if user.PendingEmail == "" || user.PendingEmailUnblockedAt == nil {
 		return nil
 	}
 	next := *user.PendingEmailUnblockedAt
-	if !s.now().UTC().Before(next) {
+	if !now.UTC().Before(next) {
 		return nil
 	}
 	return &next

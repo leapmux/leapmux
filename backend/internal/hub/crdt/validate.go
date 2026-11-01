@@ -76,8 +76,12 @@ func ValidateBatch(
 	//    retention window and makes each reconnect pay the full projection scan
 	//    #267 exists to remove, while blaming storage for an ordinary bad op.
 	//    Rejecting here keeps the encode/decode round-trip total by construction.
+	//
+	//    Every register op must also WRITE something. One that selects no
+	//    register is a no-op that apply ignores, and it has no place in the
+	//    journal.
 	for _, op := range batch {
-		if !OpTarget(op).HasIdentity() {
+		if !OpTarget(op).HasIdentity() || selectsNoRegister(op) {
 			result.Reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN
 			result.OffendingOpID = op.GetOpId()
 			return result, nil
@@ -413,11 +417,14 @@ func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, interna
 				return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, op.GetOpId()
 			}
 		}
-	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
-		// SetWorkspaceRegister / TombstoneWorkspace are hub-only (gated above)
-		// and idempotent on apply, so they have no set-once case here.
-		setOp := body.SetWorkspaceRootNode
-		if rec, ok := pre.GetWorkspaces()[setOp.GetWorkspaceId()]; ok && rec.GetRootNodeId() != "" {
+	case *leapmuxv1.CrdtOp_CreateWorkspace:
+		// CreateWorkspace and TombstoneWorkspace are hub-only (gated above).
+		// The root a create carries is set-once: a create against a workspace
+		// that already has a root is refused rather than ignored, so a
+		// re-drained create can tell that the create already landed.
+		// TombstoneWorkspace is idempotent on apply, so it has no case here.
+		createOp := body.CreateWorkspace
+		if rec, ok := pre.GetWorkspaces()[createOp.GetWorkspaceId()]; ok && rec.GetRootNodeId() != "" {
 			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_IMMUTABLE, op.GetOpId()
 		}
 	}
@@ -425,6 +432,20 @@ func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, interna
 }
 
 // valueDomainCheck rejects NaN/±∞/out-of-range values.
+// selectsNoRegister reports whether op is a register op whose field oneof
+// selects no register.
+func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
+	switch body := op.GetBody().(type) {
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
+		return body.SetNodeRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetTabRegister:
+		return body.SetTabRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
+		return body.SetFloatingWindowRegister.GetField() == nil
+	}
+	return false
+}
+
 func valueDomainCheck(op *leapmuxv1.CrdtOp) (leapmuxv1.BatchRejectionReason, string) {
 	switch body := op.GetBody().(type) {
 	case *leapmuxv1.CrdtOp_SetNodeRegister:

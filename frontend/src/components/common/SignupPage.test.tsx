@@ -1,13 +1,14 @@
-import { MemoryRouter, Route } from '@solidjs/router'
+import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SignupPage } from './SignupPage'
 
+const mockSignUp = vi.fn()
 vi.mock('~/api/clients', () => ({
   authClient: {
-    signUp: vi.fn(),
+    signUp: (...args: unknown[]) => mockSignUp(...args),
     login: vi.fn(),
     logout: vi.fn(),
     getCurrentUser: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('~/components/common/CaptchaField', () => ({
   CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,
 }))
 
+const mockSetAuth = vi.fn()
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => null,
@@ -48,7 +50,7 @@ vi.mock('~/context/AuthContext', () => ({
     error: () => null,
     login: vi.fn(),
     logout: vi.fn(),
-    setAuth: vi.fn(),
+    setAuth: (...args: unknown[]) => mockSetAuth(...args),
     setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => false,
   }),
@@ -63,6 +65,91 @@ function renderSignupPage() {
     </MemoryRouter>
   ))
 }
+
+/** The page at /signup with real routes around it, for the routing tests. */
+function renderSignupRoutes(path: string) {
+  const history = createMemoryHistory()
+  history.set({ value: path, replace: true, scroll: false })
+  return render(() => (
+    <MemoryRouter history={history}>
+      <Route path="/signup" component={SignupPage} />
+      <Route path="/" component={() => <div data-testid="app-home" />} />
+      <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
+    </MemoryRouter>
+  ))
+}
+
+/** Fill the password form and submit it. */
+async function submitPasswordSignup() {
+  fireEvent.input(await screen.findByLabelText('Username'), {
+    target: { value: 'alice' },
+  })
+  fireEvent.input(screen.getByLabelText('New Password'), {
+    target: { value: 'strongpass1' },
+  })
+  fireEvent.input(screen.getByLabelText('Confirm Password'), {
+    target: { value: 'strongpass1' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Sign up' }))
+}
+
+describe('SignupPage routing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsSignupEnabled.mockReturnValue(true)
+    mockLoadOAuthProviders.mockResolvedValue([])
+    mockIsCaptchaEnabled.mockReturnValue(false)
+    mockGetCaptchaProvider.mockReturnValue(1)
+  })
+
+  // The redirect rides the adoption, because a sign-up that could not report
+  // its account recovers, and recovery owns the navigation then.
+  it('hands the report and the redirect to setAuth, and routes an adopted sign-up home', async () => {
+    const report = {
+      user: { id: 'u1', username: 'alice' },
+    }
+    mockSignUp.mockResolvedValue({ sessionReport: report })
+    mockSetAuth.mockResolvedValue('adopted')
+    renderSignupRoutes('/signup?redirect=%2F')
+
+    await submitPasswordSignup()
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(mockSetAuth).toHaveBeenCalledWith(report, { redirect: '/' })
+  })
+
+  it('routes an adopted sign-up that must verify to /verify-email', async () => {
+    mockSignUp.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1' },
+        emailVerification: { verificationRequired: true },
+      },
+    })
+    mockSetAuth.mockResolvedValue('adopted')
+    renderSignupRoutes('/signup')
+
+    await submitPasswordSignup()
+
+    expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+  })
+
+  // A recovering or superseded adoption is not this page's to route.
+  for (const outcome of ['recovering', 'superseded']) {
+    it(`navigates nowhere for a ${outcome} adoption`, async () => {
+      mockSignUp.mockResolvedValue({ sessionReport: {} })
+      mockSetAuth.mockResolvedValue(outcome)
+      renderSignupRoutes('/signup')
+
+      await submitPasswordSignup()
+
+      await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledWith({}, { redirect: undefined }))
+      await Promise.resolve()
+      expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('verify-email-page')).not.toBeInTheDocument()
+      expect(mockSignUp).toHaveBeenCalledOnce()
+    })
+  }
+})
 
 describe('SignupPage', () => {
   beforeEach(() => {

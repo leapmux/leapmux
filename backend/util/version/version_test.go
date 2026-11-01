@@ -61,6 +61,42 @@ func TestFormat_BranchDisplayRules(t *testing.T) {
 	}
 }
 
+func TestBuildInfoProto(t *testing.T) {
+	savedValue, savedHash, savedCommitTime, savedBuild, savedBranch := Value, CommitHash, CommitTime, BuildTime, Branch
+	defer func() {
+		Value, CommitHash, CommitTime, BuildTime, Branch = savedValue, savedHash, savedCommitTime, savedBuild, savedBranch
+	}()
+
+	t.Run("reports every build variable", func(t *testing.T) {
+		Value, CommitHash, CommitTime, BuildTime, Branch = "1.2.3", "abc1234", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "feature/x"
+
+		info := BuildInfoProto()
+		assert.Equal(t, "1.2.3", info.GetVersion())
+		assert.Equal(t, "abc1234", info.GetCommitHash())
+		assert.Equal(t, "2026-10-01T00:00:00Z", info.GetCommitTime())
+		assert.Equal(t, "2026-10-02T00:00:00Z", info.GetBuildTime())
+		assert.Equal(t, "feature/x", info.GetBranch())
+	})
+
+	t.Run("reports an empty branch for a detached HEAD", func(t *testing.T) {
+		Value, CommitHash, CommitTime, BuildTime, Branch = "dev", "", "", "", ""
+
+		info := BuildInfoProto()
+		assert.Equal(t, "dev", info.GetVersion())
+		assert.Empty(t, info.GetBranch())
+		assert.Empty(t, info.GetCommitHash())
+	})
+
+	t.Run("returns a fresh message on every call", func(t *testing.T) {
+		Value = "1.2.3"
+
+		first := BuildInfoProto()
+		first.Version = "changed by a caller"
+		assert.Equal(t, "1.2.3", BuildInfoProto().GetVersion())
+		assert.NotSame(t, first, BuildInfoProto())
+	})
+}
+
 func TestFormatLocalTimestamp(t *testing.T) {
 	t.Run("invalid input falls back to raw string", func(t *testing.T) {
 		require.Equal(t, "not-a-time", FormatLocalTimestamp("not-a-time"))

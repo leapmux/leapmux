@@ -44,13 +44,13 @@ func adminWorkerToProto(w store.WorkerWithOwner) *leapmuxv1.AdminWorker {
 }
 
 func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	}
 	if st := req.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
 		params.Status = &st
@@ -63,7 +63,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.Adm
 	for _, w := range page.Rows {
 		workers = append(workers, adminWorkerToProto(w))
 	}
-	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: workers, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: workers, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func (s *AdminWorkerService) GetWorker(ctx context.Context, req *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
@@ -115,7 +115,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 
 func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leapmuxv1.ListRegistrationKeysRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams:     pageParams(req.GetPage()),
 		IncludeExpired: req.GetIncludeExpired(),
 	})
 	if err != nil {
@@ -132,10 +132,10 @@ func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leap
 			ExpiresAt:       timestamppb.New(k.ExpiresAt),
 		})
 	}
-	return &leapmuxv1.ListRegistrationKeysResponse{Keys: keys, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListRegistrationKeysResponse{Keys: keys, Page: pageResponse(page.NextCursor)}, nil
 }
 
-func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *leapmuxv1.RevokeRegistrationKeyRequest) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
+func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest) (*leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse, error) {
 	if err := requireField(req.GetId(), "id"); err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *lea
 	if n == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "registration key not found: %s", req.GetId())
 	}
-	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
+	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
 }
 
 // maxRegistrationKeyPurgeBatches is the runaway limit on one purge, not

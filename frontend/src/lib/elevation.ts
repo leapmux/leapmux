@@ -1,7 +1,7 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { userClient } from '~/api/clients'
-import { startAuthentication } from '~/lib/webauthn'
+import { authenticateForChallenge } from '~/lib/webauthn'
 
 /**
  * Session elevation ("sudo mode") on the client side.
@@ -33,10 +33,8 @@ export async function elevateWithPassword(currentPassword: string): Promise<Time
  */
 export async function elevateWithPasskey(): Promise<Timestamp | undefined> {
   const begin = await userClient.beginPasskeyElevation({})
-  const credentialJson = await startAuthentication(begin.optionsJson)
   const resp = await userClient.finishPasskeyElevation({
-    sessionId: begin.sessionId,
-    credentialJson,
+    credential: await authenticateForChallenge(begin.challenge),
   })
   return resp.elevationExpiresAt
 }

@@ -363,6 +363,30 @@ func (m *Manager) ConnForTrustedPath(workerID string) *Conn {
 	return m.conns[workerID]
 }
 
+// OwnerConnsForTrustedPath returns the live connections of every worker that
+// owner registered, for a Hub-internal fan-out such as re-delivering the
+// owner's identity after an account change. The order is unspecified.
+//
+// It performs no authorization, which is why the name says so: owner must come
+// from the Hub's own records, never from a user request.
+func (m *Manager) OwnerConnsForTrustedPath(owner string) []*Conn {
+	if owner == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.connsByOwner[owner] == 0 {
+		return nil
+	}
+	conns := make([]*Conn, 0, m.connsByOwner[owner])
+	for _, c := range m.conns {
+		if c.Owner() == owner {
+			conns = append(conns, c)
+		}
+	}
+	return conns
+}
+
 // OnlineForTrustedPath reports whether a worker is currently connected, for a
 // caller whose worker id did not come from a user request. The online/offline
 // bit is a cross-tenant liveness oracle when probed with an arbitrary id, so a

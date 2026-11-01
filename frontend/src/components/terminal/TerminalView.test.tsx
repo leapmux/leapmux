@@ -4,9 +4,10 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
 import { webglPool } from '~/lib/webglTerminalPool'
@@ -401,6 +402,43 @@ describe('TerminalView', () => {
 
     expect(queryByTestId('terminal-startup-overlay')).toBeNull()
     expect(queryByText('Starting terminal…')).toBeNull()
+  })
+
+  // DISCONNECTED is the client's own status for a terminal whose worker
+  // channel dropped. Its buffer is what the user can read, so it gets no
+  // "Starting terminal" overlay either, even with no screen bytes restored.
+  it('does not show the startup overlay for a disconnected terminal without restored screen bytes', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const { queryByTestId } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          confirmLink={stubConfirmLink}
+          terminals={[
+            {
+              id: 'term-disconnected-empty',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              status: TERMINAL_DISCONNECTED,
+              screen: new Uint8Array(),
+            },
+          ]}
+          activeTerminalId="term-disconnected-empty"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(instance.terminal.open).toHaveBeenCalled()
+    })
+
+    expect(queryByTestId('terminal-startup-overlay')).toBeNull()
   })
 
   // Closing a single tab must dispose exactly that terminal's xterm

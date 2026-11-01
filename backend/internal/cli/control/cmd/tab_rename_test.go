@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/validate"
@@ -47,7 +48,7 @@ func (d *renameDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req
 	var reply proto.Message
 	var title string
 	switch req.GetMethod() {
-	case "RenameAgent":
+	case leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure:
 		var in leapmuxv1.RenameAgentRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
 			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
@@ -55,14 +56,14 @@ func (d *renameDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req
 		}
 		title = in.GetTitle()
 		reply = &leapmuxv1.RenameAgentResponse{Title: d.stored}
-	case "UpdateTerminalTitle":
-		var in leapmuxv1.UpdateTerminalTitleRequest
+	case leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure:
+		var in leapmuxv1.RenameTerminalRequest
 		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
 			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
 			return
 		}
 		title = in.GetTitle()
-		reply = &leapmuxv1.UpdateTerminalTitleResponse{Title: d.stored}
+		reply = &leapmuxv1.RenameTerminalResponse{Title: d.stored}
 	default:
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
@@ -97,8 +98,8 @@ func (d *renameDispatcher) sentTitles() []string {
 // half of the envelope the leaf printed.
 //
 // tab declares what the hub's LocateTab answers with, which is what
-// selects the arm: the agent arm dispatches RenameAgent and the terminal
-// arm dispatches UpdateTerminalTitle.
+// selects the branch: the agent branch dispatches RenameAgent and the
+// terminal branch dispatches RenameTerminal.
 func runTabRename(t *testing.T, tab *leapmuxv1.WorkspaceTab, stored, title string) (map[string]any, *renameDispatcher) {
 	t.Helper()
 	disp := &renameDispatcher{stored: stored}
@@ -106,8 +107,8 @@ func runTabRename(t *testing.T, tab *leapmuxv1.WorkspaceTab, stored, title strin
 
 	out := withCapturedStdout(t, func() {
 		require.NoError(t, RunTabRename(fakeCmdCtx{}, []string{
-			"--tab-id", tab.GetTabId(),
-			"--tab-type", resolve.TabTypeWireName(tab.GetTabType()),
+			"--tab-id", tab.GetTab().GetTabId(),
+			"--tab-type", resolve.TabTypeWireName(tab.GetTab().GetTabType()),
 			"--title", title,
 		}))
 	})
@@ -127,8 +128,7 @@ func runTabRename(t *testing.T, tab *leapmuxv1.WorkspaceTab, stored, title strin
 // from inside a worker-spawned agent starts in.
 func agentTab() *leapmuxv1.WorkspaceTab {
 	return &leapmuxv1.WorkspaceTab{
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:       "agent-2",
+		Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"},
 		TileId:      "root-1",
 		WorkerId:    "worker-A",
 		WorkspaceId: "ws-1",
@@ -137,8 +137,7 @@ func agentTab() *leapmuxv1.WorkspaceTab {
 
 func terminalTab() *leapmuxv1.WorkspaceTab {
 	return &leapmuxv1.WorkspaceTab{
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabId:       "term-2",
+		Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-2"},
 		TileId:      "root-1",
 		WorkerId:    "worker-A",
 		WorkspaceId: "ws-1",
@@ -166,7 +165,7 @@ func TestRunTabRename_AgentPrintsTheWorkersStoredTitle(t *testing.T) {
 	assert.Equal(t, "agent-2", data["tab_id"])
 	assert.Equal(t, "agent", data["tab_type"])
 
-	assert.Equal(t, []string{"RenameAgent"}, disp.called(),
+	assert.Equal(t, []string{leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure}, disp.called(),
 		"the agent arm dispatches RenameAgent and nothing else")
 	assert.Equal(t, []string{"release\t$100%"}, disp.sentTitles(),
 		"the CLI sends the operator's text unchanged; the worker owns the cleaning rule")
@@ -182,8 +181,8 @@ func TestRunTabRename_TerminalPrintsTheWorkersStoredTitle(t *testing.T) {
 	assert.Equal(t, "term-2", data["tab_id"])
 	assert.Equal(t, "terminal", data["tab_type"])
 
-	assert.Equal(t, []string{"UpdateTerminalTitle"}, disp.called(),
-		"the terminal arm dispatches UpdateTerminalTitle and nothing else")
+	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure}, disp.called(),
+		"the terminal branch dispatches RenameTerminal and nothing else")
 	assert.Equal(t, []string{"build\tlogs"}, disp.sentTitles())
 }
 
@@ -216,8 +215,7 @@ func TestRunTabRename_ReportsTheUnchangedTitleWhenTheRequestCleansToNothing(t *t
 func TestRunTabRename_RefusesATabTypeNeitherArmRenames(t *testing.T) {
 	disp := &renameDispatcher{stored: "unreachable"}
 	startSpawnIPC(t, &recordingHub{locateTab: &leapmuxv1.WorkspaceTab{
-		TabType:     leapmuxv1.TabType_TAB_TYPE_FILE,
-		TabId:       "file-2",
+		Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-2"},
 		TileId:      "root-1",
 		WorkerId:    "worker-A",
 		WorkspaceId: "ws-1",

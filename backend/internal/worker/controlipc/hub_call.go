@@ -63,7 +63,7 @@ func NewHubUnaryBridge(endpoint *hubtransport.Endpoint, dp crossworker.Delegatio
 }
 
 // CallHub satisfies HubBridge. method is the bare hub method name (e.g.
-// "GetTab", "AddTab", "ListWorkspaces"); the delegation bearer is minted for
+// "LocateTab", "ListTabs", "ListWorkspaces"); the delegation bearer is minted for
 // userID alone.
 func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	if b.Delegation == nil {

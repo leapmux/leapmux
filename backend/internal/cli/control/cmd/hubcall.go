@@ -100,11 +100,11 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, method string, in p
 	if err != nil {
 		return err
 	}
-	if resp.GetIsError() {
+	if rpcErr := resp.GetError(); rpcErr != nil {
 		// Keep the in-band code: classifyHubError tests connect.CodeOf, so
 		// flattening to a bare message here made `not_found` unreachable on
 		// this transport. See inBandError in innerrpc.go.
-		return inBandError(resp)
+		return inBandError(rpcErr)
 	}
 	if out != nil && len(resp.GetPayload()) > 0 {
 		if err := proto.Unmarshal(resp.GetPayload(), out); err != nil {
@@ -128,36 +128,6 @@ func hubCallDirect(ctx context.Context, c *control.Client, method string, in pro
 		c.AuthInterceptor(),
 	)
 	return desc.Invoke(ctx, client, in, out)
-}
-
-// hubUnaryEmit collapses the boilerplate every read-only / single-shot
-// hub-bound CLI verb shares: open the client, call the hub method,
-// emit the response payload — or emit a `rpc_failed` envelope on
-// transport/server error. `shape()` returns the JSON-emittable view
-// of `resp`; callers typically project a single field (e.g.
-// `resp.GetWorkspace()`) so the wire output stays focused.
-//
-// `workspaceID` is the local-IPC routing key — pass the workspace id
-// when the call has one (`GetWorkspace`, `RenameWorkspace`, …) or ""
-// when it doesn't (`ListWorkspaces`).
-//
-// Use this for commands that:
-//   - Bind a small flag set and validate it up front
-//   - Need one hub RPC and emit its result
-//   - Don't have post-RPC orchestration (worker fan-out, CRDT batches)
-//
-// Commands that do post-RPC work (e.g. `WorkspaceDelete`'s cleanup
-// fan-out) stay on `hubCallUnary` directly so the extra logic stays
-// at the call site.
-func hubUnaryEmit(hub, method string, req, resp proto.Message, shape func() any) error {
-	c, err := requireClient(hub)
-	if err != nil {
-		return err
-	}
-	if err := hubCallUnary(context.Background(), c, method, req, resp); err != nil {
-		return control.EmitErrorWith(classifyHubError(err), err)
-	}
-	return control.EmitData(shape())
 }
 
 // classifyHubError maps a connect error code to the CLI envelope's

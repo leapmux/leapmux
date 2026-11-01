@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
@@ -230,7 +231,7 @@ func TestControlResponseKeepsTheRequestWhenTheAgentCannotReceiveIt(t *testing.T)
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim",
 		Payload: []byte(`{"id":"request","method":"item/commandExecution/requestApproval","params":{"command":"pwd"}}`),
 	})
-	dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1", ClaimToken: "claim",
 		Content: []byte(`{"id":"request","result":{"decision":"accept"}}`),
 	}, writer)

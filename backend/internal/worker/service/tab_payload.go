@@ -344,7 +344,7 @@ func decodeTabPayload(blob []byte) (*leapmuxv1.TabPayload, error) {
 // TabPayloadRevoked. It is the payload-backed analog of the per-type DB close
 // performed by Queries.CloseAgent / Queries.CloseTerminal — the
 // worktree-association drop is intentionally NOT done here so the
-// RevokeTabPayload handler can drive the unified closeTabCommon flow that
+// CloseTab handler can drive the unified closeTabCommon flow that
 // handles the worktree-tab link (and optional `git worktree remove`)
 // consistently across AGENT, TERMINAL, FILE and IMAGE.
 //

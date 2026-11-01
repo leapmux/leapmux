@@ -18,6 +18,20 @@ export async function flush() {
 }
 
 /**
+ * Resolve once the microtask queue is empty, however many awaits the code
+ * under test chains. A timer callback runs only after every queued microtask,
+ * so a zero-delay timer marks that point.
+ *
+ * Use it after an action whose mocked I/O resolves at once, where `flush`
+ * would count ticks: a change in the depth of the awaited chain then breaks
+ * the test, not the code. It measures no time window. It never resolves under
+ * fake timers, and it does not wait for work that a mock schedules on a timer.
+ */
+export function settle(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/**
  * Resolve when `condition` holds. Solid runs `condition` again each time a
  * signal that it reads changes, and the wait stops reading once it resolves.
  *

@@ -27,7 +27,7 @@ type Descriptor struct {
 	// same reason.
 	NewResponse func() proto.Message
 	// Procedure is the ConnectRPC procedure URL (e.g.
-	// "/leapmux.v1.WorkspaceService/GetTab") used by Invoke to address
+	// "/leapmux.v1.WorkspaceService/LocateTab") used by Invoke to address
 	// the right hub service.
 	Procedure string
 	// Invoke runs the unary call. Both in and out MUST be the proto
@@ -42,7 +42,6 @@ type Descriptor struct {
 // Registry is the single source of truth for hub methods. Adding a
 // method only requires one entry.
 var Registry = map[string]Descriptor{
-	"GetTab":          mk(leapmuxv1connect.WorkspaceServiceGetTabProcedure, func() proto.Message { return &leapmuxv1.GetTabRequest{} }, func() proto.Message { return &leapmuxv1.GetTabResponse{} }, callTyped[leapmuxv1.GetTabRequest, leapmuxv1.GetTabResponse]),
 	"LocateTab":       mk(leapmuxv1connect.WorkspaceServiceLocateTabProcedure, func() proto.Message { return &leapmuxv1.LocateTabRequest{} }, func() proto.Message { return &leapmuxv1.LocateTabResponse{} }, callTyped[leapmuxv1.LocateTabRequest, leapmuxv1.LocateTabResponse]),
 	"LocateTile":      mk(leapmuxv1connect.WorkspaceServiceLocateTileProcedure, func() proto.Message { return &leapmuxv1.LocateTileRequest{} }, func() proto.Message { return &leapmuxv1.LocateTileResponse{} }, callTyped[leapmuxv1.LocateTileRequest, leapmuxv1.LocateTileResponse]),
 	"ListTabs":        mk(leapmuxv1connect.WorkspaceServiceListTabsProcedure, func() proto.Message { return &leapmuxv1.ListTabsRequest{} }, func() proto.Message { return &leapmuxv1.ListTabsResponse{} }, callTyped[leapmuxv1.ListTabsRequest, leapmuxv1.ListTabsResponse]),

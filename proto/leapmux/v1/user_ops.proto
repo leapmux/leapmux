@@ -2,8 +2,9 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
+import "leapmux/v1/access.proto";
+import "leapmux/v1/common.proto";
 import "leapmux/v1/user_crdt.proto";
-import "leapmux/v1/workspace.proto";
 
 // UserCRDT carries unary CRDT mutations + presence heartbeats for the
 // authenticated user. The user-scoped event subscription is delivered
@@ -12,14 +13,28 @@ import "leapmux/v1/workspace.proto";
 // streaming RPC here. Workspace lifecycle (create / rename / delete)
 // stays on WorkspaceService.
 service UserCRDT {
-  rpc SubmitOps(SubmitOpsRequest) returns (SubmitOpsResponse);
-  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
+  // SubmitOps is one procedure that mutates the WHOLE user document, so
+  // workspace:write is the honest unit -- every client-submittable op body
+  // is layout, and the workspace-level ops are hub-only. What a scope can
+  // still narrow inside it is which WORKER a tab may be bound to; see
+  // crdt.SubmitInput.
+  rpc SubmitOps(SubmitOpsRequest) returns (SubmitOpsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+  // Announcing presence writes this account's live cursor into the document
+  // every other client reads. A read-only app watches; it does not appear.
+  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
   // GetMaterialized returns a one-shot CRDT bootstrap snapshot for
   // callers that only need the initial UserMaterialized event (CLI
   // commands that submit one batch and exit). Skips the WS handshake
   // + first-event-await dance the streaming `/ws/userevents` path
   // requires per invocation.
-  rpc GetMaterialized(GetMaterializedRequest) returns (GetMaterializedResponse);
+  rpc GetMaterialized(GetMaterializedRequest) returns (GetMaterializedResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
 }
 
 // CrdtOp is the wire envelope for a single CRDT op. Each body is a
@@ -38,10 +53,13 @@ message CrdtOp {
     TombstoneTabOp              tombstone_tab                 = 13;
     SetFloatingWindowRegisterOp set_floating_window_register  = 14;
     TombstoneFloatingWindowOp   tombstone_floating_window     = 15;
-    SetWorkspaceRootNodeOp      set_workspace_root_node       = 16;
-    SetWorkspaceRegisterOp      set_workspace_register        = 17;
+    // 16-18 are numbered so that no op stored under an older numbering can
+    // decode as a different destructive op: 16 held a body with the same two
+    // fields, an old 17 body (a bare workspace id) can never form the field-2
+    // tag a revive needs for its tab id, and 18 keeps its meaning.
+    CreateWorkspaceOp           create_workspace              = 16;
+    ReviveTabOp                 revive_tab                    = 17;
     TombstoneWorkspaceOp        tombstone_workspace           = 18;
-    ReviveTabOp                 revive_tab                    = 19;
   }
 }
 
@@ -69,8 +87,7 @@ message TombstoneNodeOp { string node_id = 1; }
 // writes implicitly carry the tab to a new workspace if the new
 // tile's ancestor chain resolves to a different workspace.
 message SetTabRegisterOp {
-  TabType tab_type = 1;
-  string  tab_id   = 2;
+  TabIdent tab = 1;
   oneof field {
     string tile_id        = 10;
     string position       = 11;
@@ -80,7 +97,7 @@ message SetTabRegisterOp {
     string file_diff_base = 15;  // FILE only
   }
 }
-message TombstoneTabOp { TabType tab_type = 1; string tab_id = 2; }
+message TombstoneTabOp { TabIdent tab = 1; }
 
 // ReviveTabOp clears a tab's tombstone so a CLOSED tab can re-open. Required
 // because tab ids are never reused and tombstones are permanent: a subagent
@@ -90,47 +107,42 @@ message TombstoneTabOp { TabType tab_type = 1; string tab_id = 2; }
 // strictly newer than the tombstone; an older-than-tombstone revive is a
 // no-op (remove-wins for concurrent set-vs-tombstone stays). A revived tab
 // must be re-completed by the SAME batch (revive + SetTab* registers
-// together), enforced by validate_tab. Carries a TabRef only -- no content
-// reaches the hub.
-message ReviveTabOp { TabRef tab = 1; }
+// together), enforced by validate_tab. Carries the tab identity only -- no
+// content reaches the hub.
+message ReviveTabOp { TabIdent tab = 1; }
 
 // SetFloatingWindowRegisterOp writes exactly one register on a
 // floating window. root_node_id writes are creation-only (set-once);
 // workspace_id writes move the window between workspaces (only
 // allowed when the inner subtree has no non-root descendants).
+//
+// workspace_id is 16, after the other registers, so the oneof runs from 10
+// with no hole while fields 10-15 keep the meaning stored ops already give
+// them. A stored op that wrote workspace_id under its old number, 9, decodes
+// with no field selected, and apply ignores a register op with no field.
 message SetFloatingWindowRegisterOp {
   string window_id = 1;
   oneof field {
-    string workspace_id = 9;
     double x            = 10;
     double y            = 11;
     double width        = 12;
     double height       = 13;
     double opacity      = 14;
     string root_node_id = 15;  // creation-only
+    string workspace_id = 16;
   }
 }
 message TombstoneFloatingWindowOp { string window_id = 1; }
 
-// SetWorkspaceRootNodeOp seeds the (set-once) root_node_id slot on a
-// WorkspaceContentsRecord. Hub-only — submitted exclusively via the
-// internal lifecycle path (CreateWorkspace seeding); rejected as
-// hub_only_op when sent by a client.
-message SetWorkspaceRootNodeOp {
+// CreateWorkspaceOp creates a workspace's WorkspaceContentsRecord with its
+// set-once root. Hub-only — submitted exclusively via the internal lifecycle
+// create path (after the SetNodeRegister that creates the root node, in the
+// same seed batch); rejected as hub_only_op when sent by a client. Apply
+// creates the record when absent, sets an empty root once, and never replaces
+// a root, so re-applying is a no-op; an empty workspace_id is ignored.
+message CreateWorkspaceOp {
   string workspace_id = 1;
   string root_node_id = 2;
-}
-
-// SetWorkspaceRegisterOp seeds the WorkspaceContentsRecord map entry for a
-// freshly created workspace (root_node_id empty). Hub-only — submitted
-// exclusively via the internal lifecycle create path (the first op in the
-// create seed batch, so the record exists when the accompanying
-// SetWorkspaceRootNodeOp applies); rejected as hub_only_op when sent by a
-// client. Idempotent: re-applying on a workspace that already exists is a
-// no-op (it never overwrites an existing record, so a rooted workspace is
-// never clobbered).
-message SetWorkspaceRegisterOp {
-  string workspace_id = 1;
 }
 
 // TombstoneWorkspaceOp removes the WorkspaceContentsRecord map entry for a
@@ -264,8 +276,15 @@ message WatchUserEvent {
     ResumeDelta          delta               = 9;
     // Terminates one committed batch's catch-up sequence. See BatchEnd.
     BatchEnd             batch_end           = 10;
+    // The user's worker list changed. See WorkersChanged.
+    WorkersChanged       workers_changed     = 11;
   }
 }
+
+// The user's worker list changed: a worker registered, deregistered, came
+// online or went offline. Re-fetch the list. Not replayed by ResumeDelta, so a
+// client also re-fetches on every bootstrap.
+message WorkersChanged {}
 
 // BatchEnd closes the frame sequence a single committed batch produces, so a
 // client can tell "I have all of batch B" from "I have some of batch B".
@@ -410,15 +429,21 @@ message EntityRemoved {
   }
 }
 
-message TabIdent {
-  TabType tab_type = 1;
-  string  tab_id   = 2;
-}
+// --- Workspace lifecycle events (WatchUserEvent payloads on `/ws/userevents`) ---
 
 message WorkspaceCreated {
   string workspace_id = 1;
   string title        = 2;
   string root_node_id = 3;
+}
+
+message WorkspaceRenamed {
+  string workspace_id = 1;
+  string title = 2;
+}
+
+message WorkspaceDeleted {
+  string workspace_id = 1;
 }
 
 // UpdatePresenceRequest signals that the caller's client just had

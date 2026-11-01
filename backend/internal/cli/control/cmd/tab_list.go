@@ -9,8 +9,8 @@ import (
 )
 
 // `tab list` and `tab get` are read-only views over the rendered rows of
-// workspace_tab_owned, served by the (still-extant) WorkspaceService
-// ListTabs / GetTab RPCs.
+// workspace_tab_owned, served by the WorkspaceService ListTabs and LocateTab
+// RPCs.
 
 // RunTabList enumerates rendered tabs. Tabs are always scoped to the
 // authenticated session's own user, so no user id is resolved or
@@ -56,11 +56,12 @@ func RunTabList(rawCtx any, args []string) error {
 	})
 }
 
-// RunTabGet returns the rendered-tab row for a single tab. The
-// resolver derives workspace_id from --tab-id when only the tab id
-// is supplied; tab_type may be left unset and the wildcard
-// LocateTab will fill it (via the resolver's UNSPECIFIED-to-matched
-// backfill).
+// RunTabGet returns the rendered-tab row for a single tab, through
+// LocateTab. The resolver derives workspace_id from --tab-id when only the
+// tab id is supplied; tab_type may be left unset and the wildcard LocateTab
+// will fill it (via the resolver's UNSPECIFIED-to-matched backfill). A
+// workspace the caller names that does not hold the tab answers not_found,
+// as a lookup scoped to that workspace would.
 func RunTabGet(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
@@ -71,13 +72,17 @@ func RunTabGet(rawCtx any, args []string) error {
 		return err
 	}
 	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		req := &leapmuxv1.GetTabRequest{
-			WorkspaceId: got.WorkspaceID,
-			TabId:       got.TabID,
-			TabType:     got.TabType,
+		req := &leapmuxv1.LocateTabRequest{
+			TabId:   got.TabID,
+			TabType: got.TabType,
 		}
-		var resp leapmuxv1.GetTabResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetTab", req, &resp,
-			func() any { return workspaceTabToMap(resp.GetTab()) })
+		var resp leapmuxv1.LocateTabResponse
+		if err := hubCallUnary(ctx, c, "LocateTab", req, &resp); err != nil {
+			return control.EmitErrorWith(classifyHubError(err), err)
+		}
+		if located := resp.GetTab().GetWorkspaceId(); located != got.WorkspaceID {
+			return control.EmitError("not_found", "tab "+got.TabID+" is not in workspace "+got.WorkspaceID)
+		}
+		return control.EmitData(workspaceTabToMap(resp.GetTab()))
 	})
 }

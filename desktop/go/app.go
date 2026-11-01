@@ -16,7 +16,6 @@ import (
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/leapmux/leapmux/util/ctxutil"
 	"github.com/leapmux/leapmux/util/errwrap"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 // operationDrainTimeout bounds Shutdown's wait for admitted operations after
@@ -515,24 +514,6 @@ func (a *App) reacquireConnectionForInstall(connection *desktopConnection) (unlo
 		return nil, fmt.Errorf("connection changed during relay setup")
 	}
 	return unlock, nil
-}
-
-type BuildInfo struct {
-	Version    string `json:"version"`
-	CommitHash string `json:"commit_hash"`
-	CommitTime string `json:"commit_time"`
-	BuildTime  string `json:"build_time"`
-	Branch     string `json:"branch"`
-}
-
-func (a *App) GetBuildInfo() BuildInfo {
-	return BuildInfo{
-		Version:    version.Value,
-		CommitHash: version.CommitHash,
-		CommitTime: version.CommitTime,
-		BuildTime:  version.BuildTime,
-		Branch:     version.Branch,
-	}
 }
 
 func (a *App) CheckFullDiskAccess() bool {

@@ -25,9 +25,9 @@ func goalCacheReplay(t *testing.T, dispatcher *channel.Dispatcher) []*leapmuxv1.
 	return decodeAgentEvents(writer.testResponseWriter)
 }
 
-func goalCacheReplayedGoal(t *testing.T, events []*leapmuxv1.AgentEvent) *leapmuxv1.AgentGoalChanged {
+func goalCacheReplayedGoal(t *testing.T, events []*leapmuxv1.AgentEvent) *leapmuxv1.AgentGoalSnapshot {
 	t.Helper()
-	var goal *leapmuxv1.AgentGoalChanged
+	var goal *leapmuxv1.AgentGoalSnapshot
 	for _, event := range events {
 		if event.GetGoalChanged() != nil {
 			goal = event.GetGoalChanged()

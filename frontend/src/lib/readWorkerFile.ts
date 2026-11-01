@@ -28,7 +28,6 @@ export async function readWorkerFile(options: {
     throw new Error('The file preview limit is invalid')
   signal?.throwIfAborted()
   const response = await readFile(workerId, {
-    workerId,
     path,
     limit: BigInt(maxBytes),
     metaOnlyIfTruncated: true,
@@ -77,7 +76,6 @@ export async function readWorkerFile(options: {
     while (offset < range.end) {
       signal?.throwIfAborted()
       const page = await readFile(workerId, {
-        workerId,
         path,
         offset: BigInt(offset),
         limit: BigInt(range.end - offset),

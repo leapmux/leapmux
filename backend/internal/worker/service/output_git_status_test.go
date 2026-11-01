@@ -22,6 +22,7 @@ type agentEventCapturingWriter struct {
 	channelID string
 	mu        sync.Mutex
 	last      *leapmuxv1.AgentStatusChange
+	lastAgent string // AgentEvent.agent_id of the last status change
 	streamCnt int64
 }
 
@@ -39,6 +40,7 @@ func (m *agentEventCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage) 
 	}
 	if sc := resp.GetAgentEvent().GetStatusChange(); sc != nil {
 		m.last = sc
+		m.lastAgent = resp.GetAgentEvent().GetAgentId()
 	}
 	return nil
 }
@@ -52,6 +54,12 @@ func (m *agentEventCapturingWriter) lastStatus() *leapmuxv1.AgentStatusChange {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.last
+}
+
+func (m *agentEventCapturingWriter) lastAgentID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastAgent
 }
 
 func (m *agentEventCapturingWriter) count() int64 {
@@ -93,10 +101,9 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 // TestBroadcastGitStatus_EmitsPartialStatusChange verifies that
 // BroadcastGitStatus produces exactly one AgentStatusChange with
 // Status=UNSPECIFIED (so the frontend treats status/settings as
-// "no change") with AgentId, WorkerOnline, and GitStatus populated. This
-// is the contract that lets per-turn callers refresh git state without
-// re-shipping the full settings/catalog payload while still making the
-// worker liveness bit truthful for older clients.
+// "no change") and GitStatus populated, inside an event envelope that
+// identifies the agent. This is the contract that lets per-turn callers
+// refresh git state without re-shipping the full settings/catalog payload.
 func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 	t.Parallel()
 
@@ -108,13 +115,14 @@ func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 	sc := mock.lastStatus()
 	require.NotNil(t, sc, "captured event must be a StatusChange")
 
-	assert.Equal(t, "agent-1", sc.GetAgentId())
+	assert.Equal(t, "agent-1", mock.lastAgentID(), "the event envelope identifies the agent")
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED, sc.GetStatus(),
 		"BroadcastGitStatus must NOT set Status — UNSPECIFIED tells the frontend to leave other fields as-is")
 	// Catalog/settings fields must remain unset so the frontend doesn't
 	// overwrite its last-known catalog with empties.
 	assert.Empty(t, sc.GetAgentSessionId(), "AgentSessionId must not be repopulated on a git-status refresh")
-	assert.True(t, sc.GetWorkerOnline(), "WorkerOnline must stay truthful; a git-status refresh is emitted by a live worker")
+	assert.Equal(t, leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_UNSPECIFIED, sc.GetQueueHeadDispatch(),
+		"a partial update leaves the queue-head dispatch UNSPECIFIED, which the frontend reads as no update")
 	assert.Empty(t, sc.GetOptionGroups(), "OptionGroups must not be re-shipped on a git-status refresh")
 }
 

@@ -13,7 +13,7 @@ import './providers/claude/plugin'
 import './providers/kiro/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView, homeDir?: string }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView, homeDir?: string, workerName?: string }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -24,6 +24,31 @@ function agent(provider: AgentProvider, sessionId: string): AgentInfo {
     agentSessionId: sessionId,
   } as AgentInfo
 }
+
+describe('agent info card worker row', () => {
+  // AgentInfo carries no worker name. The panel reads it from the worker store
+  // and passes it down, as it does the home directory.
+  it('shows the worker name that the panel passes down', () => {
+    render(() => <InfoCardContent agent={agent(AgentProvider.CLAUDE_CODE, '')} workerName="build-box-1" />)
+
+    const row = screen.getByTestId('info-row-worker')
+    expect(row).toHaveTextContent('Worker')
+    expect(row).toHaveTextContent('build-box-1')
+  })
+
+  it.each([undefined, ''])('hides the row while the store holds no name for the worker: %j', (workerName) => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.CLAUDE_CODE, '')}
+        {...(workerName !== undefined
+          ? { workerName }
+          : {})}
+      />
+    ))
+
+    expect(screen.queryByTestId('info-row-worker')).toBeNull()
+  })
+})
 
 describe('formatAgentSessionIdForDisplay', () => {
   it('shortens Pi session file paths to the basename without .jsonl', () => {
@@ -94,10 +119,8 @@ describe('agent info card path rows', () => {
     })
   })
 
-  // The home directory arrives as a PROP, not on the agent. `agentTabToInfo`
-  // builds the AgentInfo from a Tab row, which carries none, so `agent.homeDir`
-  // is always the empty string in the app -- a test that seeded it there proved
-  // the abbreviation and hid the fact that no path on this card ever shortened.
+  // The home directory arrives as a PROP, because AgentInfo carries none: the
+  // panel reads it from the worker store.
   it('abbreviates the working directory but copies the absolute path', () => {
     const workingDir = `${HOME}/projects/app`
     render(() => <InfoCardContent agent={withPaths({ workingDir })} homeDir={HOME} />)

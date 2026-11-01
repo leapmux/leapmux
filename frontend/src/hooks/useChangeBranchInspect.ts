@@ -123,7 +123,6 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
 
   const fetcher = createGuardedFetch<void, InspectBranchChangeResponse>({
     fetch: (_args, signal) => workerRpc.inspectBranchChange(args.workerId, {
-      workerId: args.workerId,
       path: args.gitToplevel,
     }, { signal }),
     // Suppress the loading flag while the seed already paints the form

@@ -28,6 +28,10 @@ const DELTA = {
     value: { subscriberClientId: 'session:b' },
   },
 } as const
+const WORKERS_CHANGED = {
+  event: { case: 'workersChanged', value: {} },
+} as const
+
 function presence(workspaceId: string, activeClientId: string) {
   return {
     event: {
@@ -41,6 +45,7 @@ function emptyState(): UserEventsState {
   return {
     subscriberClientId: '',
     activeClients: new Map(),
+    workersChanged: 0,
   }
 }
 
@@ -119,6 +124,14 @@ describe('applyUserEvent', () => {
     ]))
   })
 
+  it('counts each workersChanged event', () => {
+    const state = emptyState()
+    applyUserEvent(state, create(WatchUserEventSchema, WORKERS_CHANGED))
+    applyUserEvent(state, create(WatchUserEventSchema, WORKERS_CHANGED))
+    expect(state.workersChanged).toBe(2)
+    expect(state.activeClients).toEqual(new Map())
+  })
+
   it('ignores the other events', () => {
     const state = emptyState()
     applyUserEvent(state, create(WatchUserEventSchema, {
@@ -165,14 +178,18 @@ describe('watchUserEvents', () => {
     const watch = watchUserEvents(page)
     const channel = openSocket('/ws/channel')
     channel(frame(INITIAL))
+    channel(frame(WORKERS_CHANGED))
     expect(watch.subscriberClientId()).toBe('')
+    expect(watch.workersChangedCount()).toBe(0)
     const events = openSocket(WS_USER_EVENTS_ROUTE)
     events(frame(INITIAL))
     events('a text frame')
     events(frame(presence('ws-1', 'session:a')))
+    events(frame(WORKERS_CHANGED))
     expect(watch.subscriberClientId()).toBe('session:a')
     expect(watch.activeClient('ws-1')).toBe('session:a')
     expect(watch.activeClient('ws-2')).toBe('')
+    expect(watch.workersChangedCount()).toBe(1)
   })
 
   it('starts a new state for a new document, as the app does after a reload', () => {
@@ -181,6 +198,7 @@ describe('watchUserEvents', () => {
     const events = openSocket(WS_USER_EVENTS_ROUTE)
     events(frame(INITIAL))
     events(frame(presence('ws-1', 'session:a')))
+    events(frame(WORKERS_CHANGED))
     const childFrame = {}
     requestDocument(childFrame)
     emitter.emit('framenavigated', childFrame)
@@ -189,6 +207,7 @@ describe('watchUserEvents', () => {
     emitter.emit('framenavigated', mainFrame)
     expect(watch.subscriberClientId()).toBe('')
     expect(watch.activeClient('ws-1')).toBe('')
+    expect(watch.workersChangedCount()).toBe(0)
   })
 
   // Playwright emits `framenavigated` for a history navigation of the same document too, and the app keeps its stores
@@ -214,6 +233,7 @@ describe('waitForActiveClient', () => {
     return {
       subscriberClientId: () => 'session:a',
       activeClient: () => active,
+      workersChangedCount: () => 0,
     }
   }
 
@@ -238,6 +258,7 @@ describe('waitForActiveClient', () => {
       {
         subscriberClientId: () => '',
         activeClient,
+        workersChangedCount: () => 0,
       },
     ], 'ws-1', '')).rejects.toThrow('needs a client ID')
     expect(activeClient).not.toHaveBeenCalled()
@@ -249,6 +270,7 @@ describe('waitForSubscriberClientId', () => {
     await expect(waitForSubscriberClientId({
       subscriberClientId: () => 'session:a',
       activeClient: () => '',
+      workersChangedCount: () => 0,
     })).resolves.toBe('session:a')
   })
 
@@ -257,6 +279,7 @@ describe('waitForSubscriberClientId', () => {
     await expect(waitForSubscriberClientId({
       subscriberClientId: () => '',
       activeClient: () => '',
+      workersChangedCount: () => 0,
     })).rejects.toThrow('the hub names the identity of the page')
   })
 })

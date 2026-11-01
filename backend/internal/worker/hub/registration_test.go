@@ -78,7 +78,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		result, err := registerWithClient(t.Context(), mock, "key123", fastRegisterRetry(clock))
 		done <- outcome{result: result, err: err}
 	}()
 	for range failCount {
@@ -108,7 +108,7 @@ func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "", "v", nil, nil, nil, fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "", fastRegisterRetry(clock))
 	require.Error(t, err)
 	_, running := clock.Peek()
 	assert.False(t, running, "a missing key is permanent, so it must arm no retry")
@@ -132,7 +132,7 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		_, err := registerWithClient(ctx, mock, "k", fastRegisterRetry(clock))
 		errCh <- err
 	}()
 
@@ -167,7 +167,7 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "k", "v", nil, nil, nil, fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "k", fastRegisterRetry(clock))
 	require.Error(t, err)
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
 	_, running := clock.Peek()
@@ -208,7 +208,7 @@ func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(t.Context(), mock, "k", "0.0.1", nil, nil, nil, retry)
+		_, err := registerWithClient(t.Context(), mock, "k", retry)
 		errCh <- err
 	}()
 	want := []time.Duration{
@@ -280,7 +280,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, retry)
+		result, err := registerWithClient(t.Context(), mock, "key123", retry)
 		done <- outcome{result: result, err: err}
 	}()
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
@@ -316,7 +316,7 @@ func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
 		attemptTimeout: time.Minute,
 		clock:          clock,
 	}
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, retry)
+	_, err := registerWithClient(ctx, mock, "k", retry)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	_, running := clock.Peek()

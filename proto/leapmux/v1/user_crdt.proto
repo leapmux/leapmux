@@ -2,7 +2,7 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
-import "leapmux/v1/workspace.proto";
+import "leapmux/v1/common.proto";
 
 // HLC is a hybrid logical clock value. Total order is lex by
 // (physical, logical, client_id) — physical wall-clock first so the

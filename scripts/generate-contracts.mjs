@@ -89,9 +89,6 @@ export const WIRE_GO_NAMES = {
   maxReassembledMessageSizeBytes: 'DefaultMaxReassembledMessageSize',
   maxConfigurableMessageSizeBytes: 'MaxConfigurableMessageSize',
   maxIncompleteChunked: 'DefaultMaxIncompleteChunked',
-  pingMethod: 'PingMethod',
-  protocolVersion: 'ProtocolVersion',
-  hubControlChannelId: 'HubControlChannelID',
   sessionKeyMaxAgeMs: 'SessionKeyMaxAge',
   sessionKeyMinRekeyIntervalMs: 'MinRekeyInterval',
   sessionKeyHardCeilingMs: 'SessionKeyHardCeiling',
@@ -122,9 +119,6 @@ export const WIRE_TS_NAMES = {
   maxReassembledMessageSizeBytes: 'DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE',
   maxConfigurableMessageSizeBytes: 'MAX_CONFIGURABLE_MESSAGE_SIZE',
   maxIncompleteChunked: 'MAX_INCOMPLETE_CHUNKED',
-  pingMethod: 'PING_METHOD',
-  protocolVersion: 'PROTOCOL_VERSION',
-  hubControlChannelId: 'HUB_CONTROL_CHANNEL_ID',
   sessionKeyMaxAgeMs: 'SESSION_KEY_MAX_AGE_MS',
   sessionKeyMinRekeyIntervalMs: 'MIN_REKEY_INTERVAL_MS',
   sessionKeyHardCeilingMs: 'SESSION_KEY_HARD_CEILING_MS',
@@ -157,9 +151,6 @@ function flattenWire(w, d) {
     maxReassembledMessageSizeBytes: d.maxReassembledMessageSizeBytes,
     maxConfigurableMessageSizeBytes: w.maxConfigurableMessageSizeBytes,
     maxIncompleteChunked: w.maxIncompleteChunked,
-    pingMethod: w.pingMethod,
-    protocolVersion: w.protocolVersion,
-    hubControlChannelId: w.hubControlChannelId,
     sessionKeyMaxAgeMs: w.sessionKey.maxAgeMs,
     sessionKeyMinRekeyIntervalMs: w.sessionKey.minRekeyIntervalMs,
     sessionKeyHardCeilingMs: d.sessionKeyHardCeilingMs,
@@ -842,14 +833,6 @@ const (
 ${notif}
 )
 
-// RPCMethod* identifies worker methods that share a generated wire token.
-const (
-${goConstBlock(Object.entries(v.rpcMethods).map(([key, token]) => ({
-  name: `RPCMethod${key}`,
-  value: jsonString(token),
-})))}
-)
-
 // MessageMetadataField* identifies fields calculated by the worker for display.
 const (
 ${goConstBlock(Object.entries(v.messageMetadataFields).map(([key, token]) => ({
@@ -964,11 +947,6 @@ export function emitTsWorkerVocab(v) {
 /** Notification envelope "type" tokens. */
 export const NOTIFICATION_TYPE = {
 ${notif}
-} as const
-
-/** Worker methods with generated wire tokens. */
-export const WORKER_RPC_METHOD = {
-${Object.entries(v.rpcMethods).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
 } as const
 
 /** Fields calculated by the worker for display. */
@@ -1393,7 +1371,7 @@ export function emitTsTabTypes(t, tabEnumValues) {
 // twin reads the same table). The browser writes these tokens to data-tab-type,
 // which the E2E locators address rows by, and keys the shortcut context on them.
 // Parsing stays with the Go twin, which owns the command line.
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 /** enum -> the token every surface spells it with. UNSPECIFIED is the empty string. */
 export const TAB_TYPE_WIRE_TOKEN: Readonly<Record<TabType, string>> = {
@@ -6747,19 +6725,6 @@ ${goConstBlock([
 ])}
 )
 
-// PingMethod is the inner-RPC method token both ends must agree on.
-const ${WIRE_GO_NAMES.pingMethod} = ${jsonString(flat.pingMethod)}
-
-// ProtocolVersion is the ChannelMessage envelope version every sender stamps:
-// NewChannelMessage, the senders that bypass it, and the browser's
-// channelSession all read this constant.
-const ${WIRE_GO_NAMES.protocolVersion} = ${flat.protocolVersion}
-
-// HubControlChannelID is the reserved channel ID of the frames that the Hub
-// itself sends to a frontend over the /ws/channel WebSocket. No worker channel
-// uses it.
-const ${WIRE_GO_NAMES.hubControlChannelId} = ${jsonString(flat.hubControlChannelId)}
-
 // Session-key rotation timing. RejectRetryAfter spaces rekey refusals;
 // the hard ceiling outlives the max age by hardCeilingOverrunMs. The verify
 // timeout caps the open-time Ping round trip; the idle interval spaces the
@@ -6871,12 +6836,6 @@ ${line('innerEnvelopeHeadroomBytes')}
 ${line('maxReassembledMessageSizeBytes')}
 ${line('maxConfigurableMessageSizeBytes')}
 ${line('maxIncompleteChunked')}
-${line('pingMethod')}
-${line('protocolVersion')}
-
-// The reserved channel ID of the frames that the Hub itself sends over the
-// channel WebSocket. No worker channel uses it.
-${line('hubControlChannelId')}
 
 // Session-key rotation timing, in milliseconds.
 ${line('sessionKeyMaxAgeMs')}
@@ -7485,7 +7444,7 @@ const DOMAINS = [
     name: 'tab-types',
     requiresDescriptor: true,
     emit(out, read, descriptorSet) {
-      const tabEnumValues = enumValues(descriptorSet, 'leapmux/v1/workspace.proto', 'TabType')
+      const tabEnumValues = enumValues(descriptorSet, 'leapmux/v1/common.proto', 'TabType')
       const t = read('tab-types')
       checkTabTypes(t, tabEnumValues)
       out['backend/generated/contracts/tab-types.go'] = emitGoTabTypes(t, tabEnumValues)

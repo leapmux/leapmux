@@ -1,7 +1,7 @@
 import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
-import type { AgentChatMessage, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, ListAgentMessagesResponse, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { listAgentMessages } from '~/api/workerRpc'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -143,11 +143,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
 
   /**
    * Apply a LATEST page's body + its authoritative to-do list + background-task
-   * registry -- the shared tail of loadInitialMessages and jumpToLatestMessages.
-   * Applies the messages, then the to-do snapshot when todosLoaded is true and
-   * the registry when backgroundTasksLoaded is true. protobuf-es always
-   * materializes repeated fields as [], so false says "the query failed" and
-   * prevents wiping a populated list/registry.
+   * registry + goal -- the shared tail of loadInitialMessages and
+   * jumpToLatestMessages. Applies the messages, then each snapshot the page
+   * carries. The worker omits a snapshot it could not read, so an absent one
+   * leaves the current list, registry or goal alone instead of wiping it.
    *
    * A failed REGISTRY load is also recorded, because its section is hidden when
    * it is empty: without the flag a worker that cannot answer looks exactly like
@@ -157,34 +156,21 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    */
   function applyLatestPage(
     agentId: string,
-    resp: {
-      messages: AgentChatMessage[]
-      hasMore: boolean
-      todosLoaded: boolean
-      todos: ProtoTodoItem[]
-      backgroundTasksLoaded: boolean
-      backgroundTasks: ProtoBackgroundTaskItem[]
-      goalLoaded: boolean
-      // `| undefined` mirrors the proto response: an absent goal arrives as an
-      // explicitly-undefined key, and replaceGoal takes undefined to mean "clear".
-      goal?: ProtoAgentGoal | undefined
-      goalSupportedActions: ProtoAgentGoalAction[]
-      goalUpdatedAt: string
-    },
+    resp: Pick<ListAgentMessagesResponse, 'messages' | 'hasMore' | 'todos' | 'backgroundTasks' | 'goal'>,
   ): void {
     deps.applyMessages(agentId, resp.messages, resp.hasMore)
-    if (resp.todosLoaded)
-      deps.replaceTodos(agentId, resp.todos)
-    if (resp.backgroundTasksLoaded)
-      deps.replaceBackgroundTasks(agentId, resp.backgroundTasks)
+    if (resp.todos)
+      deps.replaceTodos(agentId, resp.todos.todos)
+    if (resp.backgroundTasks)
+      deps.replaceBackgroundTasks(agentId, resp.backgroundTasks.tasks)
     else
       deps.markBackgroundTasksLoadFailed(agentId)
-    // Only on a successful read. A CHILD agent answers loaded=true with an
-    // ABSENT goal -- a subagent never owns one -- so this write is what clears a
-    // goal a tab inherited from a previous root, and skipping it on a DB error
-    // is what stops a transient failure from blanking a live card.
-    if (resp.goalLoaded)
-      deps.replaceGoal(agentId, resp.goal, resp.goalSupportedActions, resp.goalUpdatedAt)
+    // Only on a successful read. A CHILD agent answers a present snapshot with
+    // an ABSENT goal -- a subagent never owns one -- so this write is what
+    // clears a goal a tab inherited from a previous root, and skipping it on a
+    // DB error is what stops a transient failure from blanking a live card.
+    if (resp.goal)
+      deps.replaceGoal(agentId, resp.goal.goal, resp.goal.supportedActions, resp.goal.goalUpdatedAt)
   }
 
   /** Fetch the latest messages for an agent (initial page load). */
@@ -208,8 +194,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // A REJECTED cold start is the other way the registry cannot be read,
         // and `applyLatestPage` never runs for it. Without this the flag stays
         // false and the Background tasks section leaves the screen with nothing
-        // to say why -- the same failure the in-band `backgroundTasksLoaded`
-        // flag closes, arriving through the door next to it.
+        // to say why -- the same failure an absent in-band registry snapshot
+        // reports, arriving through the door next to it.
         //
         // Not for an ABORTED fetch: that tab is going away or a fresher fetch
         // superseded this one, and the superseding fetch writes the real answer.
@@ -222,7 +208,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       if (signal.aborted)
         return
       // The server ships the authoritative to-do list on the cold-start (LATEST)
-      // page; subsequent live updates arrive via AgentTodosChanged broadcasts.
+      // page; subsequent live updates arrive via todos_changed broadcasts.
       applyLatestPage(agentId, resp)
     })
   }

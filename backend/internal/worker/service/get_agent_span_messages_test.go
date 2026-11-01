@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -18,7 +18,7 @@ import (
 func getAgentSpanMessages(t *testing.T, dispatcher *channel.Dispatcher, agentID, spanID string) (*leapmuxv1.GetAgentSpanMessagesResponse, *testResponseWriter) {
 	t.Helper()
 	writer := newTestWriter()
-	dispatch(dispatcher, contracts.RPCMethodGetAgentSpanMessages, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
 	if len(writer.responses) == 0 {
 		return nil, writer
 	}
@@ -32,7 +32,7 @@ func TestMessageSupplementProjectionSpanRejectsShadowedPrivateState(t *testing.T
 	svc, dispatcher, _ := setupTestService(t)
 	agentID, spanID, _ := createShadowedPrivateProjectionRow(t, svc)
 	writer := newTestWriter()
-	dispatch(dispatcher, contracts.RPCMethodGetAgentSpanMessages, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
 	assertPrivateProjectionRefusal(t, writer)
 }
 
@@ -99,7 +99,7 @@ func TestGetAgentSpanMessagesSeparatesProviderSessions(t *testing.T) {
 	}
 	for _, sessionID := range []string{"old", "new", "", "missing"} {
 		writer := newTestWriter()
-		dispatch(dispatcher, contracts.RPCMethodGetAgentSpanMessages, &leapmuxv1.GetAgentSpanMessagesRequest{
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure, &leapmuxv1.GetAgentSpanMessagesRequest{
 			AgentId: "agent", SpanId: "same-tool", AgentSessionId: sessionID,
 		}, writer)
 		require.Empty(t, writer.errors)

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { settle } from '~/test-support/async'
 import { mockLoadSystemInfo } from '~/test-support/systemInfoMock'
 import { PasswordSetupGate } from './PasswordSetupGate'
 
@@ -43,9 +44,12 @@ describe('PasswordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSetInitialSoloPassword.mockResolvedValue({
-      user: { id: 'solo-id', username: 'solo' },
-      elevationExpiresAt: soloElevation,
+      sessionReport: {
+        user: { id: 'solo-id', username: 'solo' },
+        elevationExpiresAt: soloElevation,
+      },
     })
+    mockSetAuth.mockResolvedValue('adopted')
     // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
@@ -87,11 +91,14 @@ describe('PasswordSetupGate', () => {
 
     await vi.waitFor(() => {
       expect(mockSetInitialSoloPassword).toHaveBeenCalledWith({ password: 'correct-horse-battery-staple' })
-      // The elevation the SAME reply granted travels with the user, so the
+      // The elevation the SAME reply granted travels in its report, so the
       // client's elevation state never depends on the follow-up refresh. That
       // refresh swallows its own failure, so recovering the window from it
       // would prompt the operator for the password they just chose.
-      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'solo-id', username: 'solo' }, soloElevation)
+      expect(mockSetAuth).toHaveBeenCalledWith({
+        user: { id: 'solo-id', username: 'solo' },
+        elevationExpiresAt: soloElevation,
+      })
       // FORCED, because the gate reads exactly this snapshot: without it the
       // screen stays up over a hub that no longer needs it.
       expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
@@ -102,6 +109,47 @@ describe('PasswordSetupGate', () => {
       // password finds a screen offering to set one.
       expect(mockRefreshUser).toHaveBeenCalled()
     })
+  })
+
+  // The password is stored, but the reply could not report the account. The
+  // adoption starts sign-in recovery, which replaces this screen and owns what
+  // follows, so the gate reports no failure and runs no re-read of its own.
+  it('leaves a recovering adoption to sign-in recovery', async () => {
+    mockSetInitialSoloPassword.mockResolvedValue({
+      sessionReport: { elevationExpiresAt: soloElevation },
+    })
+    mockSetAuth.mockResolvedValue('recovering')
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledWith({ elevationExpiresAt: soloElevation }))
+    await Promise.resolve()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+  })
+
+  // A newer auth operation replaced this adoption, so what follows belongs to
+  // it. The gate re-reads nothing for an account it did not adopt, and it
+  // reports no failure for a password the hub stored.
+  it('leaves a superseded adoption to the newer operation', async () => {
+    mockSetAuth.mockResolvedValue('superseded')
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledOnce())
+    await settle()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+    expect(screen.queryByText(/The password is set/)).toBeNull()
+    // The gate can stay on screen, so the form must be usable again rather
+    // than stuck on "Setting...".
+    expect(screen.getByRole('button', { name: 'Set Password' })).toBeEnabled()
   })
 
   it('reports a refusal rather than leaving the form silent', async () => {

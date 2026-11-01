@@ -14,7 +14,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -41,17 +40,31 @@ func deletingAdminCtx(t *testing.T, ctx context.Context, st store.Store) context
 	return hubtestutil.ElevatedAdminContext(t, ctx, admin.ID)
 }
 
-// notifiedUsers reports which users the broadcaster holds a pending
-// workers-changed event for. The debounce map is the earliest observable
-// point: an internal test can read it without waiting on a flush timer.
-func notifiedUsers(b *HubEventBroadcaster) []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	out := make([]string, 0, len(b.pending))
-	for userID := range b.pending {
-		out = append(out, userID)
-	}
-	return out
+// workersChangedRecorder stands in for the CRDT registry's
+// BroadcastWorkersChanged and records each user it was called for, in call
+// order, so a test sees one entry per notification rather than a set.
+type workersChangedRecorder struct {
+	mu    sync.Mutex
+	users []string
+}
+
+func (r *workersChangedRecorder) notify(userID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users = append(r.users, userID)
+}
+
+func (r *workersChangedRecorder) notified() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.users...)
+}
+
+// reset forgets every recorded notification.
+func (r *workersChangedRecorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users = nil
 }
 
 func newDeregisterTestStore(t *testing.T) store.Store {
@@ -77,15 +90,15 @@ func TestAdminDeregisterNotifiesTheWorkersOwner(t *testing.T) {
 	owner := storetest.SeedUser(t, st, "worker-owner")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
-	broadcaster := NewHubEventBroadcaster(channelmgr.New(0))
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, broadcaster))
+	recorder := &workersChangedRecorder{}
+	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, recorder.notify))
 
 	_, err := svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, []string{owner.ID}, notifiedUsers(broadcaster),
-		"the owner is notified, not the acting administrator")
+	assert.Equal(t, []string{owner.ID}, recorder.notified(),
+		"the owner is notified once, not the acting administrator")
 }
 
 // TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses pins the ordering
@@ -99,30 +112,28 @@ func TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses(t *testing.T) {
 	owner := storetest.SeedUser(t, st, "worker-owner")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
-	broadcaster := NewHubEventBroadcaster(channelmgr.New(0))
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, broadcaster))
+	recorder := &workersChangedRecorder{}
+	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, recorder.notify))
 
 	// Already deregistered: ForceDeregister matches no ACTIVE row.
 	_, err := svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
 	}))
 	require.NoError(t, err)
-	broadcaster.mu.Lock()
-	broadcaster.pending = map[string]*pendingFlush{}
-	broadcaster.mu.Unlock()
+	recorder.reset()
 
 	_, err = svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
 	}))
 	require.Error(t, err)
-	assert.Empty(t, notifiedUsers(broadcaster), "a refused deregister must run no effect")
+	assert.Empty(t, recorder.notified(), "a refused deregister must run no effect")
 }
 
 // flagRecordingRegistry wraps a real workermgr.Manager, which holds no live
 // connection, and records every MarkDeregistering call.
 // The MarkDeregistering call proves an effect was attempted for each worker:
-// the broadcaster's debounce map is keyed by user and cannot tell one
-// worker from ten. Offline workers retain no containment marker.
+// the workers-changed notification is addressed to a user and cannot tell
+// which worker it was for. Offline workers retain no containment marker.
 type flagRecordingRegistry struct {
 	*workermgr.Manager
 	mu     sync.Mutex
@@ -202,12 +213,11 @@ func (w failingWorkerReads) GetByIDIncludeDeleted(ctx context.Context, id string
 // worker: without the effects each one keeps its Connect stream and its
 // leases until it happens to reconnect.
 //
-// The observation is PER WORKER. The broadcaster's pending map is keyed by
-// USER, so a case that reads only that map reports the same value for one
-// worker and for ten -- it cannot see the cascade stopping after the first
-// row, which is the regression the name promises to catch. The recording
-// registry sees one MarkDeregistering call per worker, so "every worker" is
-// what fails.
+// The observation is PER WORKER. The workers-changed notification carries
+// only the USER, so a case that reads only it cannot tell which worker each
+// call was for -- it cannot see the cascade stopping at the wrong row, which
+// is the regression the name promises to catch. The recording registry sees
+// one MarkDeregistering call per worker, so "every worker" is what fails.
 func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
@@ -216,12 +226,12 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 	second := storetest.SeedWorker(t, st, owner.ID)
 	workerIDs := []string{first.ID, second.ID}
 
-	broadcaster := NewHubEventBroadcaster(channelmgr.New(0))
+	recorder := &workersChangedRecorder{}
 	scopeCache := auth.NewDelegationScopeCache(st)
 	reg := newFlagRecordingRegistry(st)
 	svc := NewAdminUserService(AdminUserServiceDeps{
 		Store:         st,
-		WorkerEffects: NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st, reg), broadcaster),
+		WorkerEffects: NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st, reg), recorder.notify),
 	})
 
 	// One memoized delegation scope per worker, so the eviction branch is
@@ -239,7 +249,7 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 			"an agent on its owner's own ACTIVE worker reaches that owner's other workers")
 	}
 
-	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)}))
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t, workerIDs, reg.toldToStop(workerIDs),
@@ -248,8 +258,8 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 		assert.False(t, reg.IsDeregistering(workerID),
 			"a deleted, offline worker leaves no flag behind: there is nothing left to wait for")
 	}
-	assert.Equal(t, []string{owner.ID}, notifiedUsers(broadcaster),
-		"the workers-changed event is addressed to the deleted user")
+	assert.Equal(t, []string{owner.ID, owner.ID}, recorder.notified(),
+		"one workers-changed event per deregistered worker, each addressed to the deleted user")
 
 	for _, workerID := range workerIDs {
 		scope, err := scopeCache.Resolve(ctx, bearers[workerID])
@@ -272,7 +282,7 @@ func TestDeleteUserIncludesAWorkerRegisteredBeforeTheOwnerLock(t *testing.T) {
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
 
-	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{first.ID, addedID}, reg.toldToStop([]string{first.ID, addedID}))
 	for _, workerID := range []string{first.ID, addedID} {
@@ -297,7 +307,7 @@ func TestDeleteUserIncludesAnAlreadyDeregisteringWorker(t *testing.T) {
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
 
-	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)})
 	require.NoError(t, err)
 	workerIDs := []string{active.ID, deregistering.ID}
 	assert.ElementsMatch(t, workerIDs, reg.toldToStop(workerIDs))
@@ -329,7 +339,7 @@ func TestDeleteUserRetriesAStopInstructionThatFailedForAConnectedWorker(t *testi
 		WorkerEffects: NewWorkerDeregisterEffects(nil,
 			notifier.New(st, registry, sender, func() time.Duration { return time.Second }, nil), nil),
 	})
-	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, workerIDs, sender.workerIDs())
 	for _, workerID := range workerIDs {
@@ -388,7 +398,7 @@ func TestDeleteUserReplacesTheWorkerSnapshotAfterTransactionRollback(t *testing.
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
 
-	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{first.ID, committedID}, reg.toldToStop([]string{first.ID, committedID, rolledBackID}))
 	_, err = st.Workers().GetByIDIncludeDeleted(ctx, rolledBackID)
@@ -413,7 +423,6 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 	err := s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: s.rolledBackID, AuthToken: id.Generate(), RegisteredBy: owner,
-			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		}); err != nil {
 			return err
 		}
@@ -430,7 +439,6 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 	}
 	if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: s.committedID, AuthToken: id.Generate(), RegisteredBy: owner,
-		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 	}); err != nil {
 		return err
 	}
@@ -453,7 +461,6 @@ func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Contex
 	if owner.Matches(s.owner) && !s.inserted {
 		if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: s.workerID, AuthToken: id.Generate(), RegisteredBy: owner,
-			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		}); err != nil {
 			return err
 		}
@@ -506,7 +513,7 @@ func TestDeleteUserContinuesWhenOneWorkerCannotBeTold(t *testing.T) {
 	})
 
 	logs := testutil.CaptureDefaultLogger(t)
-	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)}))
 	require.NoError(t, err, "a failed effect must not fail an already-committed deletion")
 
 	for _, workerID := range order {
@@ -540,12 +547,9 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 	for range MaxPageLimit + 1 {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       id.Generate(),
-			RegisteredBy:    userid.MustNew(owner.ID),
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
+			ID:           workerID,
+			AuthToken:    id.Generate(),
+			RegisteredBy: userid.MustNew(owner.ID),
 		}))
 		workerIDs = append(workerIDs, workerID)
 	}
@@ -555,7 +559,7 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
-	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{User: SelectUserByID(owner.ID)}))
 	require.NoError(t, err)
 
 	assert.Len(t, reg.toldToStop(workerIDs), len(workerIDs),
@@ -684,7 +688,7 @@ func TestWorkerDeregisterEffectsToleratesAnAbsentCollaborator(t *testing.T) {
 		"no collaborator at all": NewWorkerDeregisterEffects(nil, nil, nil),
 		"scope cache only":       NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil),
 		"notifier only":          NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, newFlagRecordingRegistry(st)), nil),
-		"broadcaster only":       NewWorkerDeregisterEffects(nil, nil, NewHubEventBroadcaster(channelmgr.New(0))),
+		"notification only":      NewWorkerDeregisterEffects(nil, nil, (&workersChangedRecorder{}).notify),
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.NoError(t, effects.Apply(ctx, worker.ID, owner.ID))

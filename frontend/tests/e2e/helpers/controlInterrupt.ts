@@ -5,7 +5,7 @@ import type { QuestionRequest } from './providerToolCalls'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputQueuePauseReason } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectTurnEndedAfter } from './modelScriptFixture'
 import { sendNativeAnswer } from './nativeConversation'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
@@ -145,7 +145,7 @@ export async function exerciseControlInterrupt(context: ManagedNativeScenarioCon
   expect(await currentIdleReceipt(context.page, { agentId: agent.id, after }), 'a stopped waiting agent records no idle receipt').toBeUndefined()
   await expectTurnEndedAfter(context.modelScript, raised)
   await retryUntilPass(async () => {
-    expect((await readNativeInputQueue(context.leapmuxServer, agent.id)).paused, 'the Worker pauses the input queue after the interrupt').toBe(true)
+    expect((await readNativeInputQueue(context.leapmuxServer, agent.id)).pauseReason, 'the Worker pauses the input queue after the interrupt').not.toBe(AgentInputQueuePauseReason.UNSPECIFIED)
   })
   await resumePausedQueue(context.page)
   const next = await sendNativeAnswer(context, 'Continue after the withdrawn control.', `AFTERCONTROL${marker}`)

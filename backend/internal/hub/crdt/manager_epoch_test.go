@@ -426,7 +426,7 @@ func TestClosedTabCannotBeRecreatedByALostAcknowledgementRetry(t *testing.T) {
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{Batches: []*leapmuxv1.OpBatch{{
 		BatchId: "close-tab", Ops: []*leapmuxv1.CrdtOp{{
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabId: "closed-tab", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "closed-tab"},
 			}},
 		}},
 	}}})

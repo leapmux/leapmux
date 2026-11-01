@@ -20,7 +20,7 @@ import {
   loadPasskeys,
 } from '~/lib/passkeyManagement'
 import { passkeyBlocker } from '~/lib/systemInfo'
-import { passkeyBlockerMessage, passkeyErrorMessage, signalAcceptedPasskeys, signalPasskeyRemoved, startRegistration } from '~/lib/webauthn'
+import { passkeyBlockerMessage, passkeyErrorMessage, registerForChallenge, signalAcceptedPasskeys, signalPasskeyRemoved } from '~/lib/webauthn'
 import { warningText } from '~/styles/shared.css'
 import * as styles from './accountFields.css'
 import * as listStyles from './credentialList.css'
@@ -207,10 +207,9 @@ export const AccountPasskeys: Component = () => {
     setModalMessage(null)
     try {
       const begin = await userClient.beginPasskeyRegistration({})
-      const credentialJson = await startRegistration(begin.optionsJson)
+      const credential = await registerForChallenge(begin.challenge)
       const finish = await userClient.finishPasskeyRegistration({
-        sessionId: begin.sessionId,
-        credentialJson,
+        credential,
         friendlyName: friendlyName().trim() || 'Passkey',
       })
       forceCloseModal()
@@ -235,7 +234,7 @@ export const AccountPasskeys: Component = () => {
         const fromFinish = finish.passkey?.credentialId
         if (fromFinish)
           ids.add(fromFinish)
-        const fromJson = credentialIdFromRegistrationJson(credentialJson)
+        const fromJson = credentialIdFromRegistrationJson(credential.credentialJson ?? '')
         if (fromJson)
           ids.add(fromJson)
         signalAcceptedPasskeys(rpId(), userId, [...ids])

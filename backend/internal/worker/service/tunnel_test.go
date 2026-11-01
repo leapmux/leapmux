@@ -14,9 +14,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -35,18 +37,13 @@ func TestOpenTunnelConn_HappyPath(t *testing.T) {
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "happy-path",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	require.Len(t, w.errors, 0, "expected no errors")
-	require.Len(t, w.responses, 1, "expected one response")
-
-	var resp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.NotEmpty(t, resp.GetConnId(), "expected non-empty conn_id")
+	requireTunnelOpened(t, w)
 }
 
 func TestOpenTunnelConn_OwnershipEnforcement(t *testing.T) {
@@ -59,12 +56,11 @@ func TestOpenTunnelConn_OwnershipEnforcement(t *testing.T) {
 		TargetPort: 1234,
 	})
 	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
-		Method:  "OpenTunnelConn",
+		Method:  leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure,
 		Payload: payload,
 	}, w2)
 
-	require.Len(t, w2.errors, 1)
-	assert.Equal(t, int32(7), w2.errors[0].code, "expected PERMISSION_DENIED")
+	requireStreamRefusal(t, w2, codes.PermissionDenied)
 }
 
 func TestTunnelMutationOwnershipEnforcement(t *testing.T) {
@@ -76,12 +72,12 @@ func TestTunnelMutationOwnershipEnforcement(t *testing.T) {
 	}{
 		{
 			name:    "send data",
-			method:  "SendTunnelData",
+			method:  leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure,
 			request: &leapmuxv1.SendTunnelDataRequest{ConnId: "owner-connection", Data: []byte("secret")},
 		},
 		{
 			name:    "close connection",
-			method:  "CloseTunnelConn",
+			method:  leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure,
 			request: &leapmuxv1.CloseTunnelConnRequest{ConnId: "owner-connection"},
 		},
 	} {
@@ -105,37 +101,131 @@ func TestOpenTunnelConn_DialFailure(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
 	// Use localhost with a port that nothing is listening on.
 	// Port 1 requires root on most systems, so dial should fail immediately.
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "dial-failure",
 		TargetAddr: "127.0.0.1",
 		TargetPort: 1,
 	}, w)
 
-	require.Len(t, w.errors, 1, "expected dial error")
-	assert.Equal(t, int32(13), w.errors[0].code, "expected INTERNAL error")
+	requireStreamRefusal(t, w, codes.Internal)
 }
 
 func TestOpenTunnelConn_InvalidTargetAddr(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "invalid-address",
 		TargetAddr: "",
 		TargetPort: 80,
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, int32(3), w.errors[0].code, "expected INVALID_ARGUMENT")
+	requireStreamRefusal(t, w, codes.InvalidArgument)
 }
 
-func TestOpenTunnelConn_RequiresClientConnID(t *testing.T) {
-	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+func TestOpenTunnelConn_InvalidTargetPort(t *testing.T) {
+	_, d, _ := tunnelTestSetup(t)
+	for _, port := range []uint32{0, 65536} {
+		w := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
+			ConnId:     fmt.Sprintf("invalid-port-%d", port),
+			TargetAddr: "127.0.0.1",
+			TargetPort: port,
+		}, w)
+		requireStreamRefusal(t, w, codes.InvalidArgument)
+	}
+}
+
+// OpenTunnelConn streams the conn's events on its own correlation id, so the
+// client holds that id as a stream. A refusal must therefore arrive as a stream
+// error frame, and the method must be registered as streaming so the dispatcher
+// prepares the stream before the handler runs.
+func TestOpenTunnelConnDeniesWithAStreamFrame(t *testing.T) {
+	svc, d, w := tunnelTestSetup(t)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		TargetAddr: "127.0.0.1",
 		TargetPort: 80,
 	}, w)
 
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, int32(3), w.errors[0].code)
+	requireStreamRefusal(t, w, codes.InvalidArgument)
+
+	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
+	assert.Equal(t, shapeStream, shapes[leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure], "OpenTunnelConn must be registered as streaming")
+}
+
+// An open whose conn_id a close already canceled, or that an open conn still
+// holds, is refused before any dial. The refusal is a stream frame too, because
+// the client holds the correlation id as a stream from the moment it sends the
+// open.
+func TestOpenTunnelConn_RefusesAConnIDThatIsCanceledOrInUse(t *testing.T) {
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
+	_, d, _ := tunnelTestSetup(t)
+	open := func(connID string) *testResponseWriter {
+		w := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
+			ConnId: connID, TargetAddr: host, TargetPort: port,
+		}, w)
+		return w
+	}
+	requireInUseRefusal := func(t *testing.T, w *testResponseWriter) {
+		t.Helper()
+		requireStreamRefusal(t, w, codes.InvalidArgument)
+		assert.Contains(t, w.streamsSnapshot()[0].GetError().GetMessage(), "canceled or already in use")
+	}
+
+	t.Run("a close that arrived first", func(t *testing.T) {
+		closed := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{ConnId: "closed-first"}, closed)
+		require.Empty(t, closed.errors)
+		requireInUseRefusal(t, open("closed-first"))
+	})
+	t.Run("a conn that is still open", func(t *testing.T) {
+		requireTunnelOpened(t, open("in-use"))
+		requireInUseRefusal(t, open("in-use"))
+	})
+}
+
+// registerConnHandler decodes the request itself, so its own refusals must
+// take the reply shape the method declares: a stream frame for the
+// server-streaming OpenTunnelConn, and a unary error for the other three.
+func TestTunnelConnHandlersRefuseABadRequestInTheDeclaredShape(t *testing.T) {
+	_, d, _ := tunnelTestSetup(t)
+	payloads := []struct {
+		name    string
+		payload []byte
+		message string
+	}{
+		{"an undecodable payload", []byte{0xff}, "invalid request"},
+		{"an empty conn_id", nil, "conn_id is required"},
+	}
+	dispatchRaw := func(method string, payload []byte) *testResponseWriter {
+		w := newTestWriter()
+		d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+			Method: method, Payload: payload,
+		}, w)
+		return w
+	}
+
+	for _, p := range payloads {
+		t.Run("OpenTunnelConn with "+p.name, func(t *testing.T) {
+			w := dispatchRaw(leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, p.payload)
+			requireStreamRefusal(t, w, codes.InvalidArgument)
+			assert.Equal(t, p.message, w.streamsSnapshot()[0].GetError().GetMessage())
+		})
+		for _, unary := range []struct{ name, procedure string }{
+			{"SendTunnelData", leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure},
+			{"CloseTunnelConn", leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure},
+			{"GrantTunnelReadCredit", leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure},
+		} {
+			t.Run(unary.name+" with "+p.name, func(t *testing.T) {
+				w := dispatchRaw(unary.procedure, p.payload)
+				assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
+				assert.Empty(t, w.responses)
+				require.Len(t, w.errors, 1)
+				assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+				assert.Equal(t, p.message, w.errors[0].message)
+			})
+		}
+	}
 }
 
 func TestTunnelManagerCancelBeforeOpenPreventsLateStore(t *testing.T) {
@@ -659,9 +749,10 @@ func TestRegisterAllReassignmentStopsPriorManager(t *testing.T) {
 	prior.mu.Unlock()
 	require.NotNil(t, doneCh, "precondition: prior manager's sweeper armed")
 
-	// Re-register. The prior manager must be Stopped (its sweeper joined) and
-	// svc.tunnels replaced with a fresh manager.
-	RegisterAll(d, svc)
+	// Re-register on a fresh dispatcher: a dispatcher refuses a second handler
+	// for a method it already serves. The prior manager must be Stopped (its
+	// sweeper joined) and svc.tunnels replaced with a fresh manager.
+	RegisterAll(channel.NewDispatcher(), svc)
 	select {
 	case <-doneCh:
 	case <-time.After(5 * time.Second):
@@ -975,13 +1066,12 @@ func openTestTunnelConn(t *testing.T, d *channel.Dispatcher, connID string) {
 	echoAddr := testutil.StartEchoServer(t)
 	host, port := testutil.ParseAddr(echoAddr)
 	w := newTestWriter()
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     connID,
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
-	require.Empty(t, w.errors, "precondition: the tunnel conn must open")
-	require.Len(t, w.responses, 1)
+	requireTunnelOpened(t, w)
 }
 
 // The worker must enforce the per-frame chunk bound itself, not trust the sender to
@@ -1001,7 +1091,7 @@ func TestSendTunnelData_RejectsOversizeFrame(t *testing.T) {
 	openTestTunnelConn(t, d, connID)
 
 	w := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Seq:    0,
 		Data:   make([]byte, tunnelflow.MaxChunkBytes+1),
@@ -1027,11 +1117,11 @@ func TestSendTunnelData_RejectsIllegitimateSeqAsClientNAK(t *testing.T) {
 
 	// Apply seq 0 so the gate advances to 1; seq 0 is now a replay of an applied frame.
 	first := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: 0, Data: []byte("hi")}, first)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: 0, Data: []byte("hi")}, first)
 	require.Empty(t, first.errors, "the first in-order frame must apply")
 
 	replay := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: 0, Data: []byte("dup")}, replay)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: 0, Data: []byte("dup")}, replay)
 	require.Len(t, replay.errors, 1, "a replayed write seq must be NAKed")
 	assert.Equal(t, codeFailedPrecondition, replay.errors[0].code,
 		"a replayed write seq is a client protocol violation, not a worker INTERNAL fault")
@@ -1039,7 +1129,7 @@ func TestSendTunnelData_RejectsIllegitimateSeqAsClientNAK(t *testing.T) {
 
 	// A seq beyond the lookahead window is the same class of violation.
 	beyond := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: tunnelflow.MaxWriteSeqLookahead + 5, Data: []byte("x")}, beyond)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{ConnId: connID, Seq: tunnelflow.MaxWriteSeqLookahead + 5, Data: []byte("x")}, beyond)
 	require.Len(t, beyond.errors, 1, "a seq beyond the lookahead window must be NAKed")
 	assert.Equal(t, codeFailedPrecondition, beyond.errors[0].code,
 		"a beyond-window write seq must NAK the client, not report a worker INTERNAL fault")
@@ -1132,7 +1222,7 @@ func TestSendTunnelData_OversizeFrameDoesNotWedgeConn(t *testing.T) {
 	openTestTunnelConn(t, d, connID)
 
 	oversize := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Seq:    0,
 		Data:   make([]byte, tunnelflow.MaxChunkBytes+1),
@@ -1147,7 +1237,7 @@ func TestSendTunnelData_OversizeFrameDoesNotWedgeConn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 			ConnId: connID,
 			Seq:    1,
 			Data:   []byte("hello"),
@@ -1169,7 +1259,7 @@ func TestSendTunnelData_OversizeFrameDoesNotWedgeConn(t *testing.T) {
 func TestGrantTunnelReadCredit_RequiresConnID(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
 
-	dispatch(d, "GrantTunnelReadCredit", &leapmuxv1.GrantTunnelReadCreditRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, &leapmuxv1.GrantTunnelReadCreditRequest{
 		Credit: 4,
 	}, w)
 
@@ -1200,7 +1290,7 @@ func TestTunnelManagerGrantReadCredit_UnknownConnAcks(t *testing.T) {
 func TestSendTunnelData_AcceptsFrameAtChunkBound(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
 
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: "conn-missing",
 		Seq:    0,
 		Data:   make([]byte, tunnelflow.MaxChunkBytes),
@@ -1276,36 +1366,22 @@ func TestTunnelManagerCancelInFlightOpenMarkerClearsOnStore(t *testing.T) {
 	require.False(t, present, "store must clear the in-flight cancel marker")
 }
 
-func TestOpenTunnelConn_InvalidTargetPort(t *testing.T) {
-	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
-		ConnId:     "invalid-port",
-		TargetAddr: "127.0.0.1",
-		TargetPort: 0,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, int32(3), w.errors[0].code, "expected INVALID_ARGUMENT")
-}
-
 func TestSendTunnelData_HappyPath(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "send-data",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "send-data"
 
 	w2 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("hello"),
 	}, w2)
@@ -1316,7 +1392,7 @@ func TestSendTunnelData_HappyPath(t *testing.T) {
 
 func TestSendTunnelData_UnknownConnID(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: "nonexistent",
 		Data:   []byte("hello"),
 	}, w)
@@ -1330,18 +1406,17 @@ func TestCloseTunnelConn_HappyPath(t *testing.T) {
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "close-happy",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "close-happy"
 
 	w2 := newTestWriter()
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: connID,
 	}, w2)
 
@@ -1350,7 +1425,7 @@ func TestCloseTunnelConn_HappyPath(t *testing.T) {
 
 	// Subsequent SendTunnelData should fail.
 	w3 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("hello"),
 	}, w3)
@@ -1360,7 +1435,7 @@ func TestCloseTunnelConn_HappyPath(t *testing.T) {
 
 func TestCloseTunnelConn_UnknownConnIDIsIdempotent(t *testing.T) {
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: "nonexistent",
 	}, w)
 
@@ -1374,15 +1449,13 @@ func TestTunnelTargetEOF(t *testing.T) {
 	host, port := testutil.ParseAddr(serverAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "target-eof",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
+	requireTunnelOpened(t, w)
 
 	// Wait for stream messages (data + EOF).
 	testutil.AssertEventually(t, func() bool {
@@ -1397,16 +1470,42 @@ func TestTunnelTargetEOF(t *testing.T) {
 
 // collectTunnelEvents decodes stream payloads and returns the concatenated
 // data bytes plus whether any event signalled EOF.
+// requireStreamRefusal asserts that an OpenTunnelConn dispatch was refused with
+// exactly one terminal stream error frame carrying code, and no unary reply.
+func requireStreamRefusal(t *testing.T, w *testResponseWriter, code codes.Code) {
+	t.Helper()
+	require.Empty(t, w.errors, "a refusal must not arrive as a unary error")
+	require.Empty(t, w.responses)
+	frames := w.streamsSnapshot()
+	require.Len(t, frames, 1)
+	assert.NotNil(t, frames[0].GetError())
+	assert.True(t, frames[0].GetEnd())
+	assert.Equal(t, int32(code), frames[0].GetError().GetCode())
+}
+
+// requireTunnelOpened asserts that an OpenTunnelConn dispatch reached its
+// target: no unary reply at all, and an `opened` event as the first stream
+// frame.
+func requireTunnelOpened(t *testing.T, w *testResponseWriter) {
+	t.Helper()
+	require.Empty(t, w.errors, "the tunnel conn must open")
+	require.Empty(t, w.responses, "OpenTunnelConn is server-streaming and sends no unary reply")
+	frames := w.streamsSnapshot()
+	require.NotEmpty(t, frames, "the worker must send the opened event")
+	require.Nil(t, frames[0].GetError(), "the first frame is an error: %s", frames[0].GetError().GetMessage())
+	var event leapmuxv1.TunnelConnEvent
+	require.NoError(t, proto.Unmarshal(frames[0].GetPayload(), &event))
+	require.NotNil(t, event.GetOpened(), "the first frame must be the opened event, got %v", &event)
+}
+
 func collectTunnelEvents(streams []*leapmuxv1.InnerStreamMessage) (data []byte, hasEOF bool) {
 	for _, s := range streams {
 		var event leapmuxv1.TunnelConnEvent
 		if proto.Unmarshal(s.GetPayload(), &event) != nil {
 			continue
 		}
-		if len(event.GetData()) > 0 {
-			data = append(data, event.GetData()...)
-		}
-		if event.GetEof() {
+		data = append(data, event.GetData()...)
+		if event.GetEof() != nil {
 			hasEOF = true
 		}
 	}
@@ -1428,16 +1527,14 @@ func TestTunnelConcurrentConnections(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			w := newTestWriter()
-			dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+			dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 				ConnId:     fmt.Sprintf("concurrent-%d", idx),
 				TargetAddr: host,
 				TargetPort: port,
 			}, w)
 
-			require.Len(t, w.responses, 1)
-			var resp leapmuxv1.OpenTunnelConnResponse
-			require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-			connIDs[idx] = resp.GetConnId()
+			requireTunnelOpened(t, w)
+			connIDs[idx] = fmt.Sprintf("concurrent-%d", idx)
 		}(i)
 	}
 	wg.Wait()
@@ -1453,7 +1550,7 @@ func TestTunnelConcurrentConnections(t *testing.T) {
 	// Close all connections.
 	for _, connID := range connIDs {
 		w := newTestWriter()
-		dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{
 			ConnId: connID,
 		}, w)
 		require.Len(t, w.errors, 0)
@@ -1465,20 +1562,18 @@ func TestTunnelEchoIntegration(t *testing.T) {
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "echo-integration",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "echo-integration"
 
 	// Send data.
 	w2 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("echo test"),
 	}, w2)
@@ -1495,7 +1590,7 @@ func TestTunnelEchoIntegration(t *testing.T) {
 
 	// Clean up.
 	w3 := newTestWriter()
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: connID,
 	}, w3)
 	require.Len(t, w3.errors, 0)
@@ -1506,24 +1601,23 @@ func TestSendTunnelData_AfterClose(t *testing.T) {
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "after-close",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "after-close"
 
 	// Close the connection.
 	w2 := newTestWriter()
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w2)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w2)
 	require.Len(t, w2.errors, 0)
 
 	// Sending data after close should fail.
 	w3 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("should fail"),
 	}, w3)
@@ -1536,15 +1630,14 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 	host, port := testutil.ParseAddr(echoAddr)
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "large-transfer",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "large-transfer"
 
 	// Send 1 MB of data in 32 KB chunks.
 	totalSize := 1024 * 1024
@@ -1557,7 +1650,7 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 	var seq uint64
 	for sent := 0; sent < totalSize; sent += chunkSize {
 		w2 := newTestWriter()
-		dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 			ConnId: connID,
 			Data:   chunk,
 			Seq:    seq,
@@ -1575,7 +1668,7 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 		frames := w.streamsSnapshot()
 		if len(frames) > granted {
 			gw := newTestWriter()
-			dispatch(d, "GrantTunnelReadCredit", &leapmuxv1.GrantTunnelReadCreditRequest{
+			dispatch(d, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, &leapmuxv1.GrantTunnelReadCreditRequest{
 				ConnId: connID,
 				Credit: uint64(len(frames) - granted),
 			}, gw)
@@ -1590,7 +1683,7 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 	assert.Equal(t, totalSize, totalReceived(), "expected all data echoed back")
 
 	w3 := newTestWriter()
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
 	require.Len(t, w3.errors, 0)
 }
 
@@ -1602,21 +1695,17 @@ func TestTunnelMultipleSequentialConnections(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		w := newTestWriter()
-		dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 			ConnId:     fmt.Sprintf("sequential-%d", i),
 			TargetAddr: host,
 			TargetPort: port,
 		}, w)
-		require.Len(t, w.errors, 0, "open %d failed", i)
-		require.Len(t, w.responses, 1)
-
-		var openResp leapmuxv1.OpenTunnelConnResponse
-		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-		connID := openResp.GetConnId()
+		requireTunnelOpened(t, w)
+		connID := fmt.Sprintf("sequential-%d", i)
 
 		// Send and verify data.
 		w2 := newTestWriter()
-		dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 			ConnId: connID,
 			Data:   []byte(fmt.Sprintf("msg-%d", i)),
 		}, w2)
@@ -1624,7 +1713,7 @@ func TestTunnelMultipleSequentialConnections(t *testing.T) {
 
 		// Close.
 		w3 := newTestWriter()
-		dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
+		dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
 		require.Len(t, w3.errors, 0)
 	}
 }
@@ -1656,20 +1745,18 @@ func TestTunnelHalfClose_TargetClosesFirst(t *testing.T) {
 	host, port := testutil.ParseAddr(ln.Addr().String())
 
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "half-close",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
 
-	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "half-close"
 
 	// Send data.
 	w2 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: connID,
 		Data:   []byte("half-close-test"),
 	}, w2)
@@ -1716,14 +1803,14 @@ func TestTunnelReadLoop_TargetHalfCloseKeepsClientUploadOpen(t *testing.T) {
 
 	host, port := testutil.ParseAddr(ln.Addr().String())
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId: "half-open", TargetAddr: host, TargetPort: port,
 	}, w)
-	require.Len(t, w.responses, 1)
+	requireTunnelOpened(t, w)
 
 	// First upload chunk (seq 0).
 	w0 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: "half-open", Data: []byte("part1"), Seq: 0,
 	}, w0)
 	require.Len(t, w0.errors, 0)
@@ -1737,14 +1824,14 @@ func TestTunnelReadLoop_TargetHalfCloseKeepsClientUploadOpen(t *testing.T) {
 	// Client keeps uploading AFTER the target half-closed (seq 1). Pre-fix this
 	// was rejected because the conn had already been full-closed and evicted.
 	w1 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId: "half-open", Data: []byte("part2"), Seq: 1,
 	}, w1)
 	require.Len(t, w1.errors, 0, "upload after target half-close must not be NAKed")
 
 	// Graceful close flushes the upload, then closes the target so ReadAll returns.
 	wc := newTestWriter()
-	dispatch(d, "CloseTunnelConn", &leapmuxv1.CloseTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{
 		ConnId: "half-open", Seq: 2,
 	}, wc)
 
@@ -1813,19 +1900,17 @@ func TestSendTunnelData_HalfCloseForwardsClientEOF(t *testing.T) {
 
 	host, port := testutil.ParseAddr(ln.Addr().String())
 	_, d, w := tunnelTestSetup(t)
-	dispatch(d, "OpenTunnelConn", &leapmuxv1.OpenTunnelConnRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		ConnId:     "half-close-fwd",
 		TargetAddr: host,
 		TargetPort: port,
 	}, w)
-	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenTunnelConnResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	connID := openResp.GetConnId()
+	requireTunnelOpened(t, w)
+	connID := "half-close-fwd"
 
 	const request = "GET / HTTP/1.0\r\n\r\n"
 	w2 := newTestWriter()
-	dispatch(d, "SendTunnelData", &leapmuxv1.SendTunnelDataRequest{
+	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
 		ConnId:     connID,
 		Data:       []byte(request),
 		CloseWrite: true,
@@ -2132,6 +2217,42 @@ type dummyAddr struct{}
 
 func (dummyAddr) Network() string { return "test" }
 func (dummyAddr) String() string  { return "test" }
+
+// failingReadConn is a target whose every read fails with err.
+type failingReadConn struct {
+	net.Conn
+	err error
+}
+
+func (c failingReadConn) Read([]byte) (int, error) { return 0, c.err }
+
+// A target read that fails with anything but EOF reaches the client as the
+// `error` event of the stream, not as a stream error frame: the conn failed,
+// not the RPC. The read loop then closes the conn and evicts it.
+func TestTunnelReadLoop_TargetReadErrorSendsAnErrorEvent(t *testing.T) {
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	const connID = "read-error"
+	w := newTestWriter()
+	tc := newTunnelConn(nil, connID, failingReadConn{Conn: client, err: errors.New("connection reset by target")}, w, context.Background())
+	mgr := newTunnelManager()
+	require.True(t, mgr.store(connID, tc))
+
+	// The loop returns on its own after the error, so it runs on this goroutine.
+	tunnelReadLoop(mgr, connID, tc)
+
+	frames := w.streamsSnapshot()
+	require.Len(t, frames, 1)
+	assert.Nil(t, frames[0].GetError(), "a target read error is an event, not a stream error frame")
+	var event leapmuxv1.TunnelConnEvent
+	require.NoError(t, proto.Unmarshal(frames[0].GetPayload(), &event))
+	assert.Equal(t, "connection reset by target", event.GetError())
+	assert.Nil(t, event.GetData())
+	assert.Nil(t, event.GetEof())
+	assert.Nil(t, event.GetOpened())
+	assert.True(t, tc.closed.Load(), "a target read error closes the conn")
+	assert.Nil(t, mgr.get(connID), "and evicts it from the manager")
+}
 
 // TestWriteDataDoesNotTouchWriteDeadline pins the deadline-free write hot path:
 // writeData relies on the per-conn ctx watcher (which closes the conn on

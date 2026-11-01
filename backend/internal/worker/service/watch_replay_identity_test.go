@@ -12,6 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -21,7 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type replayIdentityWriter struct {
@@ -60,7 +60,7 @@ func openReplayIdentityWatch(t *testing.T, dispatcher *channel.Dispatcher, reque
 	t.Helper()
 	payload, err := proto.Marshal(request)
 	require.NoError(t, err)
-	dispatcher.DispatchWith(t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: "WatchEvents", Payload: payload}, writer)
+	dispatcher.DispatchWith(t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload}, writer)
 	t.Cleanup(func() { writer.deliverStreamRequest(nil, true); waitStreamEnded(t, writer.testResponseWriter) })
 }
 
@@ -95,11 +95,11 @@ func assertReplayIdentityFrames(t *testing.T, writer *testResponseWriter, agentI
 	t.Helper()
 	var ids []string
 	for _, event := range decodeAgentEvents(writer) {
-		if !event.Replay || event.AgentId != agentID {
+		if event.GetReplay() == nil || event.AgentId != agentID {
 			continue
 		}
-		assert.Equal(t, replayID, event.ReplayId)
-		assert.Equal(t, agentID, readReplayOrigin(event))
+		assert.Equal(t, replayID, event.GetReplay().GetReplayId())
+		assert.Equal(t, agentID, event.GetReplay().GetAgentId())
 		if message := event.GetAgentMessage(); message != nil && message.Seq > 0 {
 			ids = append(ids, message.Id)
 		}
@@ -109,20 +109,6 @@ func assertReplayIdentityFrames(t *testing.T, writer *testResponseWriter, agentI
 		want[i] = row.ID
 	}
 	assert.Equal(t, want, ids)
-}
-
-// readReplayOrigin reads the received generated field through the current schema.
-// An absent field returns an empty value so the old API produces a behavioral failure.
-func readReplayOrigin(event *leapmuxv1.AgentEvent) string {
-	if event == nil {
-		return ""
-	}
-	message := event.ProtoReflect()
-	field := message.Descriptor().Fields().ByName("replay_agent_id")
-	if field == nil || field.Kind() != protoreflect.StringKind {
-		return ""
-	}
-	return message.Get(field).String()
 }
 
 func createReplayOriginTree(t *testing.T, svc *Service, rootID string, childKeys ...string) (agent.ProviderServices, []string) {
@@ -153,18 +139,17 @@ func assertRootReplayOrigins(t *testing.T, writer *testResponseWriter, rootID st
 	projections := make(map[string]int, len(identities))
 	messages := make(map[string]int, len(identities))
 	for _, event := range decodeAgentEvents(writer) {
-		if !event.GetReplay() {
+		if event.GetReplay() == nil {
 			continue
 		}
 		if event.GetCatchUpStart() != nil {
 			origin = event.GetAgentId()
 		}
 		require.Contains(t, identities, origin, "each replay burst must start with its actual watched agent")
-		assert.Equal(t, identities[origin], event.GetReplayId())
-		assert.Equal(t, origin, readReplayOrigin(event), "the received origin must identify the watched agent even for root projections")
+		assert.Equal(t, identities[origin], event.GetReplay().GetReplayId())
+		assert.Equal(t, origin, event.GetReplay().GetAgentId(), "the received origin must identify the watched agent even for root projections")
 		if task := event.GetBackgroundTasksChanged(); task != nil {
 			assert.Equal(t, rootID, event.GetAgentId())
-			assert.Equal(t, rootID, task.GetAgentId())
 			var found bool
 			for _, item := range task.GetTasks() {
 				found = found || item.GetId() == "root-shell"
@@ -174,7 +159,6 @@ func assertRootReplayOrigins(t *testing.T, writer *testResponseWriter, rootID st
 		}
 		if goal := event.GetGoalChanged(); goal != nil {
 			assert.Equal(t, rootID, event.GetAgentId())
-			assert.Equal(t, rootID, goal.GetAgentId())
 			assert.Equal(t, "Keep the root goal", goal.GetGoal().GetObjective())
 			projections[origin]++
 		}
@@ -251,9 +235,7 @@ func TestWatchReplayIdentityDistinguishesSiblingOriginsWithOneLifetime(t *testin
 				}
 				topics++
 				assert.Equal(t, rootID, event.GetAgentId())
-				assert.False(t, event.GetReplay())
-				assert.Zero(t, event.GetReplayId())
-				assert.Empty(t, readReplayOrigin(event))
+				assert.Nil(t, event.GetReplay())
 			}
 			assert.Equal(t, 2, topics)
 		})
@@ -388,7 +370,7 @@ func TestWatchReplayIdentityStartsANewLifetimeAfterSkippedDemotion(t *testing.T)
 	assert.Equal(t, 2, countCatchUpCompletes(base))
 	var ids []string
 	for _, event := range decodeAgentEvents(base) {
-		if event.Replay && event.ReplayId == 4 {
+		if event.GetReplay().GetReplayId() == 4 {
 			if message := event.GetAgentMessage(); message != nil && message.Seq > 0 {
 				ids = append(ids, message.Id)
 			}
@@ -449,7 +431,7 @@ func TestWatchReplayIdentityRejectsChangedRegisteredTuple(t *testing.T) {
 			}
 			modesAtError := make(chan map[string]leapmuxv1.WatchMode, 1)
 			writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
-				if message.GetIsError() {
+				if message.GetError() != nil {
 					modesAtError <- svc.Watchers.AgentModesForChannel(base.ChannelID())
 				}
 			}}
@@ -483,8 +465,8 @@ func TestWatchReplayIdentityRejectsChangedRegisteredTuple(t *testing.T) {
 			assert.True(t, streamEndedWithError(base))
 			if streamEndedWithError(base) {
 				for _, stream := range base.streamsSnapshot() {
-					if stream.IsError {
-						assert.Equal(t, int32(codes.InvalidArgument), stream.ErrorCode)
+					if stream.GetError() != nil {
+						assert.Equal(t, int32(codes.InvalidArgument), stream.GetError().GetCode())
 					}
 				}
 			}

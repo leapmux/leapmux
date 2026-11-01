@@ -1,6 +1,6 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentGoalAction, UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalAction, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal, submitGoal } from '../helpers/goalsAndTodos'
@@ -148,7 +148,7 @@ export async function exerciseReasonixGoalErrorResume(context: ManagedNativeScen
     await expectGoalObjective(page, objective)
     await expectGoalStatus(page, 'blocked')
     const channel = await getTestChannel(context.leapmuxServer.hubUrl, context.leapmuxServer.adminToken)
-    await channel.callWorker(context.leapmuxServer.workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, { agentId: before.id, action: AgentGoalAction.RESUME })
+    await channel.callWorker(context.leapmuxServer.workerId, WorkerAgentService.method.updateAgentGoal, { agentId: before.id, action: AgentGoalAction.RESUME })
     await modelScript.waitForGate(gate)
     await expectGoalStatus(page, 'active')
     await expectGoalObjective(page, objective)

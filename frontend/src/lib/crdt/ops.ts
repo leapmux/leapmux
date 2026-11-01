@@ -1,7 +1,7 @@
 import type { OpBuilderCtx } from './bridge'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CrdtOp, OpBatch, SetFloatingWindowRegisterOp, SetNodeRegisterOp, SetTabRegisterOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
 import { DoubleListSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
@@ -71,9 +71,9 @@ export function opTarget(op: CrdtOp): OpTarget {
     case 'tombstoneNode':
       return { case: 'entity', kind: 'node', id: body.value.nodeId }
     case 'setTabRegister':
-      return { case: 'entity', kind: 'tab', id: body.value.tabId }
+      return { case: 'entity', kind: 'tab', id: body.value.tab?.tabId ?? '' }
     case 'tombstoneTab':
-      return { case: 'entity', kind: 'tab', id: body.value.tabId }
+      return { case: 'entity', kind: 'tab', id: body.value.tab?.tabId ?? '' }
     case 'reviveTab':
       // ReviveTabOp clears a tab tombstone so a closed subagent tab can re-open.
       // Targets the same tab entity as its tombstone/set siblings.
@@ -82,9 +82,7 @@ export function opTarget(op: CrdtOp): OpTarget {
       return { case: 'entity', kind: 'fw', id: body.value.windowId }
     case 'tombstoneFloatingWindow':
       return { case: 'entity', kind: 'fw', id: body.value.windowId }
-    case 'setWorkspaceRootNode':
-      return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
-    case 'setWorkspaceRegister':
+    case 'createWorkspace':
       return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
     case 'tombstoneWorkspace':
       return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
@@ -148,7 +146,10 @@ function setNodeRegister(ctx: OpBuilderCtx, nodeId: string, field: SetNodeRegist
 function setTabRegister(ctx: OpBuilderCtx, tabType: TabType, tabId: string, field: SetTabRegisterOp['field']): CrdtOp {
   return buildOp(ctx, {
     case: 'setTabRegister',
-    value: create(SetTabRegisterOpSchema, { tabType, tabId, field }),
+    value: create(SetTabRegisterOpSchema, {
+      tab: { tabType, tabId },
+      field,
+    }),
   })
 }
 
@@ -226,7 +227,9 @@ export function setTabWorkerId(ctx: OpBuilderCtx, tabType: TabType, tabId: strin
 export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'tombstoneTab',
-    value: create(TombstoneTabOpSchema, { tabType, tabId }),
+    value: create(TombstoneTabOpSchema, {
+      tab: { tabType, tabId },
+    }),
   })
 }
 

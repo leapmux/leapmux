@@ -612,6 +612,12 @@ func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
 	return out
 }
 
+// SnapshotToProto builds the whole registry that a broadcast, a replay and a
+// latest message page each carry.
+func SnapshotToProto(items []Item) *leapmuxv1.AgentBackgroundTaskSnapshot {
+	return &leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: ItemsToProto(items)}
+}
+
 // StatusWire returns the status token that child reports carry to the browser.
 // Storage uses the proto ordinal instead of this token.
 // An unspecified status returns an empty token rather than an invented outcome.

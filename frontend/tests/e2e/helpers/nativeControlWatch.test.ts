@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { nativeControlFrame } from './nativeControlWatch'
 
 function controlEvent(payload: string, options: { changed?: boolean, requestId?: string } = {}) {
@@ -10,7 +10,6 @@ function controlEvent(payload: string, options: { changed?: boolean, requestId?:
     event: {
       case: options.changed ? 'controlResponseChanged' : 'controlRequest',
       value: {
-        agentId: 'agent-1',
         requestId: options.requestId ?? 'native-control-1',
         payload: new TextEncoder().encode(payload),
         responseState: options.changed ? ControlResponseState.COMPLETED : ControlResponseState.READY,

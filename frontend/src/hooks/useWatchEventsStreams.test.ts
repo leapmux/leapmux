@@ -2,12 +2,16 @@ import type { Mock } from 'vitest'
 import type { UseWatchEventsStreamsOpts } from './useWatchEventsStreams'
 import type { WatchPlan } from './watchPlan'
 import type { WatchEventsHandle } from '~/api/workerRpc'
-import type { WatchAgentEntry, WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type {
+  WatchAgentEntry,
+  WatchEventsRequest,
+  WatchEventsResponse,
+} from '~/generated/proto/leapmux/v1/watch_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { batch, createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { AgentEventSchema, WatchAgentEntrySchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -208,9 +212,7 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: {
           agentId: 'child-1',
-          replay: true,
-          replayAgentId: 'child-1',
-          replayId,
+          replay: { replayId, agentId: 'child-1' },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
@@ -977,13 +979,11 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: create(AgentEventSchema, {
           agentId: 'a1',
-          replay: true,
-          replayId,
+          replay: { replayId, agentId: 'a1' },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
           },
-          replayAgentId: 'a1',
         }),
       },
     })
@@ -1067,15 +1067,16 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: create(AgentEventSchema, {
           agentId: 'a1',
-          replay: true,
-          replayId: wrongLifetime
-            ? replayId + 1n
-            : replayId,
+          replay: {
+            replayId: wrongLifetime
+              ? replayId + 1n
+              : replayId,
+            agentId: origin,
+          },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
           },
-          replayAgentId: origin,
         }),
       },
     }))

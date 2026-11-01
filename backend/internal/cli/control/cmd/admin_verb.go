@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/service"
 )
@@ -64,6 +65,13 @@ type adminPageFlags struct {
 func (p *adminPageFlags) bind(fs *flag.FlagSet) {
 	fs.Int64Var(&p.Limit, "limit", service.DefaultPageLimit, "page size")
 	fs.StringVar(&p.Cursor, "cursor", "", "pagination cursor from the previous page")
+}
+
+// request builds the page a listing RPC sends. The verb framework already
+// refused a limit outside [minListLimit, service.MaxPageLimit], so the
+// narrowing to int32 cannot overflow.
+func (p *adminPageFlags) request() *leapmuxv1.PageRequest {
+	return &leapmuxv1.PageRequest{Limit: int32(p.Limit), Cursor: p.Cursor}
 }
 
 // adminVerbSpec declares one `control admin ...` leaf. Run is required.

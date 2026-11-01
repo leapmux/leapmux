@@ -81,9 +81,8 @@ func TestValidate_TabPlacementSkipsPreExistingTabsWhenNoStructuralOp(t *testing.
 			CanonicalHlc: &leapmuxv1.HLC{Physical: 20, ClientId: "hub"},
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{
 				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TabId:   "tab-A",
-					Field:   &leapmuxv1.SetTabRegisterOp_Position{Position: "a1"},
+					Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-A"},
+					Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a1"},
 				},
 			},
 		},
@@ -104,9 +103,8 @@ func TestValidate_TabPlacementRejectsTouchedTabWithInvalidTile(t *testing.T) {
 			CanonicalHlc: &leapmuxv1.HLC{Physical: 20, ClientId: "hub"},
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{
 				SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TabId:   "tab-A",
-					Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
+					Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-A"},
+					Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
 				},
 			},
 		},

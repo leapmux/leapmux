@@ -12,29 +12,21 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// WorkerReconcilerService implements WorkerReconcilerServiceHandler.
-// Authenticated by the worker's auth_token (the same bearer used for
-// Connect). Provides the periodic worker-side orphan reconciler with
-// a snapshot of `workspace_tab_owned` filtered to the calling worker.
-type WorkerReconcilerService struct {
-	store store.Store
-}
-
-// NewWorkerReconcilerService returns a service handler.
-func NewWorkerReconcilerService(st store.Store) *WorkerReconcilerService {
-	return &WorkerReconcilerService{store: st}
-}
-
-// ListOwnedTabsForWorker resolves the calling worker via its bearer
-// token and returns every owned-tab row for that worker.
-func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
+// ListOwnedTabsForWorker resolves the calling worker via its bearer token (the
+// same auth_token Connect uses) and returns every owned-tab row for that
+// worker. It gives the periodic worker-side orphan reconciler a snapshot of
+// `workspace_tab_owned` filtered to the calling worker.
+func (s *WorkerConnectorService) ListOwnedTabsForWorker(
 	ctx context.Context,
 	req *leapmuxv1.ListOwnedTabsForWorkerRequest,
 ) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 	info := serverCallInfo(ctx)
 	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeUnauthenticated, err)
+		if auth.IsWorkerCredentialError(err) {
+			return nil, wrappedConnectError(connect.CodeUnauthenticated, err)
+		}
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// The bearer resolves the worker AND its registrant, so the owner axis is
 	// in hand here. It is bound in the query, because workspace_tab_owned is
@@ -62,14 +54,15 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 	}
 	out := make([]*leapmuxv1.WorkerTabState, 0, len(rows))
 	for _, r := range rows {
-		// UserId is redundant with OwnerUserId today (the query binds one
+		// The owner is redundant with OwnerUserId today (the query binds one
 		// owner) but stays per-row: it is what the reconciler keys its
 		// (tab_type, tab_id, user_id) comparison by, since a FILE tab id is
 		// unique only within a user.
 		out = append(out, &leapmuxv1.WorkerTabState{
-			TabType:      r.TabType,
-			TabId:        r.TabID,
-			UserId:       r.UserID,
+			Tab: &leapmuxv1.TabRef{
+				Tab:    &leapmuxv1.TabIdent{TabType: r.TabType, TabId: r.TabID},
+				UserId: r.UserID,
+			},
 			ArchiveState: r.ArchiveState,
 		})
 	}

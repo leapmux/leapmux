@@ -14,9 +14,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -72,24 +74,24 @@ func setupCloseTabFixture(t *testing.T, tabType leapmuxv1.TabType, scenario stri
 	return closeTabFixture{svc: svc, d: d, w: w, wtDir: wtDir, wtID: wtID, tabID: tabID}
 }
 
-// --- CloseAgent -------------------------------------------------------
+// --- CloseTab of an AGENT tab -------------------------------------------------------
 
 func TestCloseAgent_WithWorktreeActionRemove_RemovesWorktreeSync(t *testing.T) {
 	t.Parallel()
 
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "close-remove")
 
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors, "unexpected RPC errors: %+v", fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetResult().GetFailureMessage(), "expected success, got failure: %s / %s", resp.GetResult().GetFailureMessage(), resp.GetResult().GetFailureDetail())
-	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, resp.GetResult().GetWorktreeRemoval(), "last-reference close should report REMOVED")
+	assert.Empty(t, resp.GetFailureMessage(), "expected success, got failure: %s / %s", resp.GetFailureMessage(), resp.GetFailureDetail())
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, resp.GetWorktreeRemoval(), "last-reference close should report REMOVED")
 
 	// Worktree directory gone.
 	_, statErr := os.Stat(fx.wtDir)
@@ -143,24 +145,24 @@ func TestCloseAgent_WithWorktreeActionRemove_RefusesALockedWorktree(t *testing.T
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "close-locked")
 	run(t, fx.wtDir, "git", "worktree", "lock", "--reason", "held for review", fx.wtDir)
 
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
 
-	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetResult().GetWorktreeRemoval())
-	assert.Equal(t, "Worktree kept: git refuses to remove it", resp.GetResult().GetFailureMessage(),
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetWorktreeRemoval())
+	assert.Equal(t, "Worktree kept: git refuses to remove it", resp.GetFailureMessage(),
 		"the refusal names git, not unsaved work -- the lock is what kept the directory")
 	// The curated sentence, not git's raw stderr. One source states the reason,
 	// so every surface says the same thing and every one of them is actionable.
-	assert.Contains(t, resp.GetResult().GetFailureDetail(), "held for review")
-	assert.Contains(t, resp.GetResult().GetFailureDetail(), "git worktree unlock")
-	assert.NotContains(t, resp.GetResult().GetFailureDetail(), "fatal:")
+	assert.Contains(t, resp.GetFailureDetail(), "held for review")
+	assert.Contains(t, resp.GetFailureDetail(), "git worktree unlock")
+	assert.NotContains(t, resp.GetFailureDetail(), "fatal:")
 
 	// Nothing was destroyed, and the row survives to describe what is still there.
 	assert.DirExists(t, fx.wtDir)
@@ -174,8 +176,8 @@ func TestCloseAgent_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "close-keep")
 
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
 	}, fx.w)
 
@@ -203,7 +205,7 @@ func TestCloseAgent_WithWorktreeActionUnspecified_PreservesWorktree(t *testing.T
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "close-default")
 
 	// No worktree_action set = UNSPECIFIED — should behave like KEEP.
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: fx.tabID}, fx.w)
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent(fx.tabID)}, fx.w)
 
 	require.Empty(t, fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
@@ -224,16 +226,16 @@ func TestCloseAgent_NoWorktree_Succeeds(t *testing.T) {
 		WorkingDir: t.TempDir(),
 	}))
 
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        "agent-noworktree",
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent("agent-noworktree"),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetResult().GetFailureMessage())
+	assert.Empty(t, resp.GetFailureMessage())
 }
 
 func TestCloseAgent_WorktreeRemove_OtherTabsStillOpen_PreservesWorktree(t *testing.T) {
@@ -248,17 +250,17 @@ func TestCloseAgent_WorktreeRemove_OtherTabsStillOpen_PreservesWorktree(t *testi
 	createAgentForPath(t, fx.svc, siblingID, fx.wtDir)
 	fx.svc.registerTabForWorktree(fx.wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, siblingID)
 
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetResult().GetFailureMessage())
-	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, resp.GetResult().GetWorktreeRemoval(), "a close that leaves siblings should report STILL_REFERENCED")
+	assert.Empty(t, resp.GetFailureMessage())
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, resp.GetWorktreeRemoval(), "a close that leaves siblings should report STILL_REFERENCED")
 
 	// Other tab still references the worktree — it must survive.
 	_, statErr := os.Stat(fx.wtDir)
@@ -281,7 +283,7 @@ func TestCloseTabCommon_ConcurrentRemove_SerializesToSingleRemoval(t *testing.T)
 	var removals atomic.Int32
 	fx.svc.beforeWorktreeRemovalFn = func() { removals.Add(1) }
 	var wg sync.WaitGroup
-	results := make([]*leapmuxv1.CloseTabResult, 2)
+	results := make([]*leapmuxv1.CloseTabResponse, 2)
 	for i, id := range []string{fx.tabID, siblingID} {
 		wg.Add(1)
 		go func(idx int, agentID string) {
@@ -350,10 +352,10 @@ func (f *faultingDBTX) QueryRowContext(ctx context.Context, query string, args .
 }
 
 // closeAgentRemoveDirect drives closeTabCommon for an AGENT REMOVE close
-// against the current svc.Queries, mirroring how the CloseAgent handler
+// against the current svc.Queries, mirroring how the CloseTab handler
 // invokes it. Returns the partial-failure result so a test can assert
 // the WorktreeRemovalOutcome without unmarshaling an RPC response.
-func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabResult {
+func closeAgentRemoveDirect(svc *Service, agentID string) *leapmuxv1.CloseTabResponse {
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,
@@ -461,7 +463,7 @@ func TestRemoveWorktreeIfLastReference_RowRemovedUnderLock_SkipsDiskRemoval(t *t
 	// re-read failed to bail.
 	require.NoError(t, fx.svc.Queries.DeleteWorktree(context.Background(), fx.wtID))
 
-	result := &leapmuxv1.CloseTabResult{}
+	result := &leapmuxv1.CloseTabResponse{}
 	fx.svc.removeWorktreeIfLastReference(result, &stale, leapmuxv1.TabType_TAB_TYPE_AGENT, fx.tabID, "", true, fx.wtDir)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.GetWorktreeRemoval(),
@@ -730,22 +732,22 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	}))
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-fail")
 
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        "agent-fail",
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent("agent-fail"),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Equal(t, "Worktree kept: deletion was not authorized", resp.GetResult().GetFailureMessage(),
+	assert.Equal(t, "Worktree kept: deletion was not authorized", resp.GetFailureMessage(),
 		"an invalid root cannot authorize deletion")
-	assert.Contains(t, resp.GetResult().GetFailureDetail(), "linked worktree top level",
+	assert.Contains(t, resp.GetFailureDetail(), "linked worktree top level",
 		"detail should state the preflight's refusal, not git's raw stderr")
-	assert.Equal(t, bogusPath, resp.GetResult().GetWorktreePath(), "the path the user must clean up by hand rides the structured field")
-	assert.Equal(t, wtID, resp.GetResult().GetWorktreeId())
-	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetResult().GetWorktreeRemoval(), "a failed removal should report FAILED")
+	assert.Equal(t, bogusPath, resp.GetWorktreePath(), "the path the user must clean up by hand rides the structured field")
+	assert.Equal(t, wtID, resp.GetWorktreeId())
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetWorktreeRemoval(), "a failed removal should report FAILED")
 
 	// Disk orphan remains.
 	_, statErr := os.Stat(bogusPath)
@@ -769,16 +771,16 @@ func TestCloseAgent_WorktreeRemove_MissingPathRefusesDeletion(t *testing.T) {
 	// A missing directory cannot authorize deletion of its Git registration or branch.
 	require.NoError(t, os.RemoveAll(fx.wtDir))
 
-	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-		AgentId:        fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            agentTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
-	var resp leapmuxv1.CloseAgentResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
-	assert.NotEmpty(t, resp.GetResult().GetFailureMessage(), "an absent path cannot authorize deletion")
+	assert.NotEmpty(t, resp.GetFailureMessage(), "an absent path cannot authorize deletion")
 
 	row, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
 	require.NoError(t, err)
@@ -797,13 +799,13 @@ func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
 	}))
 
 	// First close.
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-idem"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-idem")}, w)
 	require.Empty(t, w.errors)
 
 	// Second close — requireAccessibleAgent should reject because the
 	// agent is now closed. That's acceptable; the key property is the
 	// handler does not wedge the Cleanup wait-group.
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-idem"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-idem")}, w)
 	// Accept either a benign error or a success response.
 	// What we actually require: Cleanup wait-group is not stuck.
 	done := make(chan struct{})
@@ -818,23 +820,23 @@ func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
 	}
 }
 
-// --- CloseTerminal mirrors --------------------------------------------
+// --- CloseTab of a TERMINAL tab --------------------------------------------
 
 func TestCloseTerminal_WithWorktreeActionRemove_RemovesWorktreeSync(t *testing.T) {
 	t.Parallel()
 
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-close-remove")
 
-	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-		TerminalId:     fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            terminalTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
 	require.Len(t, fx.w.responses, 1)
-	var resp leapmuxv1.CloseTerminalResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetResult().GetFailureMessage())
+	assert.Empty(t, resp.GetFailureMessage())
 
 	_, statErr := os.Stat(fx.wtDir)
 	assert.True(t, os.IsNotExist(statErr))
@@ -846,8 +848,8 @@ func TestCloseTerminal_WithWorktreeActionUnspecified_PreservesWorktree(t *testin
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-close-default")
 
 	// No worktree_action = UNSPECIFIED, treated as KEEP.
-	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-		TerminalId: fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: terminalTabIdent(fx.tabID),
 	}, fx.w)
 
 	require.Empty(t, fx.w.errors)
@@ -867,16 +869,16 @@ func TestCloseTerminal_NoWorktree_Succeeds(t *testing.T) {
 		Screen:     []byte{},
 	}))
 
-	dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-		TerminalId:     "term-noworktree",
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            terminalTabIdent("term-noworktree"),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 	}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.CloseTerminalResponse
+	var resp leapmuxv1.CloseTabResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetResult().GetFailureMessage())
+	assert.Empty(t, resp.GetFailureMessage())
 }
 
 func TestCloseTerminal_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
@@ -884,8 +886,8 @@ func TestCloseTerminal_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-close-keep")
 
-	dispatch(fx.d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-		TerminalId:     fx.tabID,
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            terminalTabIdent(fx.tabID),
 		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
 	}, fx.w)
 
@@ -1221,8 +1223,8 @@ func TestCleanupWorkspace_PreservesWorktreeAndCleansLinks(t *testing.T) {
 
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "cleanup-reclaimable")
 
-	dispatch(fx.d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
-		Tabs: []*leapmuxv1.TabRef{
+	dispatch(fx.d, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, &leapmuxv1.CleanupWorkspaceRequest{
+		Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: fx.tabID},
 		},
 	}, fx.w)
@@ -1245,7 +1247,7 @@ func TestCleanupWorkspace_PreservesWorktreeAndCleansLinks(t *testing.T) {
 }
 
 // TestOrphanReconciler_ClosesAnAgentThroughTheSharedTeardown pins that the
-// OFFLINE convergence path performs the same teardown as an online CloseAgent.
+// OFFLINE convergence path performs the same teardown as an online CloseTab.
 //
 // The reconciler used to run only the DB close plus StopAgent, skipping the
 // registered cleanups -- which is the spawnControlIPC teardown, so the tab's
@@ -1374,10 +1376,7 @@ func TestExecuteCreateWorktree_RecoversFromOrphanedAdminDir(t *testing.T) {
 	adminDir := filepath.Join(repoDir, ".git", "worktrees", branch)
 	require.DirExists(t, adminDir, "the orphaned admin dir is the precondition under test")
 
-	plan, err := svc.validateGitMode(ctx, repoDir, &leapmuxv1.OpenAgentRequest{
-		CreateWorktree: true,
-		WorktreeBranch: branch,
-	})
+	plan, err := svc.validateGitMode(ctx, repoDir, createWorktreeSetup(branch, ""))
 	require.NoError(t, err, "the validator cannot see the orphan, so it must admit this request")
 
 	result, err := svc.executeGitMode(ctx, plan)
@@ -1423,10 +1422,7 @@ func TestExecuteCreateWorktree_RecoversFromInterruptedAddLock(t *testing.T) {
 	// The part an interrupted add leaves behind and a completed one does not.
 	require.NoError(t, os.WriteFile(filepath.Join(adminDir, "index.lock"), nil, 0o644))
 
-	plan, err := svc.validateGitMode(ctx, repoDir, &leapmuxv1.OpenAgentRequest{
-		CreateWorktree: true,
-		WorktreeBranch: branch,
-	})
+	plan, err := svc.validateGitMode(ctx, repoDir, createWorktreeSetup(branch, ""))
 	require.NoError(t, err, "the validator stats the worktree path, which is gone, so it admits this request")
 
 	result, err := svc.executeGitMode(ctx, plan)
@@ -1453,7 +1449,7 @@ func TestCloseTabCommon_RemoveOnAlreadyClosedTabDoesNotDiscardUnsavedWork(t *tes
 	// exactly what a stale client produces.
 	require.NoError(t, closeErr(fx.svc.Queries.CloseAgent(ctx, fx.tabID)))
 
-	result, _ := fx.svc.closeAgentTabCommon("", fx.tabID,
+	result := fx.svc.closeAgentTabCommon("", fx.tabID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED,
@@ -1484,7 +1480,7 @@ func TestCloseTabCommon_RemoveOnLiveTabStillHonoursTheUsersDelete(t *testing.T) 
 	require.NoError(t, os.WriteFile(filepath.Join(wt.WorktreePath, "dirty.txt"), []byte("unsaved\n"), 0o644))
 
 	// Row is LIVE, so this close retires it: a user-confirmed delete.
-	result, _ := fx.svc.closeAgentTabCommon("", fx.tabID,
+	result := fx.svc.closeAgentTabCommon("", fx.tabID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED,
@@ -1569,12 +1565,12 @@ func TestNestedForcedRemovePreservesExistingCheckout(t *testing.T) {
 			require.NoError(t, err)
 			const tabID = "nested"
 			const userID = "user-1"
-			var result *leapmuxv1.CloseTabResult
+			var result *leapmuxv1.CloseTabResponse
 			switch tabType {
 			case leapmuxv1.TabType_TAB_TYPE_AGENT:
 				createAgentForPath(t, svc, tabID, nested)
 				svc.registerTabForWorktree(wtID, tabType, tabID)
-				result, _ = svc.closeAgentTabCommon(userID, tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+				result = svc.closeAgentTabCommon(userID, tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 			case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 				createTerminalForPath(t, svc, tabID, nested)
 				svc.registerTabForWorktree(wtID, tabType, tabID)
@@ -1605,7 +1601,7 @@ func TestUnconfirmedStaleRemovePreservesCleanExistingCheckout(t *testing.T) {
 	createAgentForPath(t, svc, "closed", wt)
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "closed")
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(context.Background(), "closed")))
-	result, _ := svc.closeAgentTabCommon("user-1", "closed", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := svc.closeAgentTabCommon("user-1", "closed", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.WorktreeRemoval)
 	checkout.assertPreserved(t)
 }
@@ -1615,7 +1611,156 @@ func TestCloseTabWithoutWorkingDirDoesNotInspectWorkerCheckout(t *testing.T) {
 	checkout := existingCheckoutForSafetyTest(t)
 	t.Chdir(checkout.worktree)
 	createAgentForPath(t, svc, "without-directory", "")
-	result, _ := svc.closeAgentTabCommon("user-1", "without-directory", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := svc.closeAgentTabCommon("user-1", "without-directory", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Empty(t, result.WorktreePath, "a missing tab directory must not select the Worker process directory")
 	checkout.assertPreserved(t)
+}
+
+// --- CloseTab request validation ---------------------------------------------
+
+// CloseTabRequest carries the tab's type, which each of the three close RPCs it
+// replaced implied. A request that states no usable identity has no close to
+// run, so it is refused before any row is read, and the agent it names stays
+// open.
+func TestCloseTab_RefusesAMalformedTab(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		tab  *leapmuxv1.TabIdent
+	}{
+		{"absent tab", nil},
+		{"empty tab id", &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		{"unspecified type", &leapmuxv1.TabIdent{TabId: "agent-1"}},
+		{"unknown type", &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType(99), TabId: "agent-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, d, w := setupTestService(t)
+			seedAgent(t, svc, "agent-1")
+
+			dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: tc.tab}, w)
+
+			require.Len(t, w.errors, 1)
+			assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+			assert.Empty(t, w.responses)
+			row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+			require.NoError(t, err)
+			assert.False(t, row.ClosedAt.Valid, "a refused close must not stamp closed_at")
+		})
+	}
+}
+
+// A payload-backed close whose row is already gone still drops the worktree
+// link, and it drops the link of the kind the caller stated: the link row
+// carries the tab type, so a guessed FILE would leave an IMAGE link standing.
+func TestCloseTab_AnAbsentPayloadRowDropsTheLinkOfTheStatedKind(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "image-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "image-wt", wtDir)
+	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+	require.NoError(t, svc.Queries.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
+		WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	}))
+
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabId: "image-1"},
+		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	_, err = svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	})
+	require.ErrorIs(t, err, sql.ErrNoRows, "the IMAGE link must go with the close")
+	assert.DirExists(t, wtDir, "a KEEP close leaves the worktree on disk")
+}
+
+// A payload-backed close reads the stored kind and ignores the kind the caller
+// stated. The link row carries the tab type, so a close of an IMAGE tab that
+// the caller calls a FILE tab must still drop the IMAGE link.
+func TestCloseTab_TheStoredPayloadKindDecidesWhichLinkToDrop(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "stored-kind-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "stored-kind-wt", wtDir)
+	_, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+	// Register links the tab to the tracked worktree as an IMAGE tab.
+	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "image-1",
+		Payload: &leapmuxv1.TabPayload{WorkingDir: wtDir, Kind: &leapmuxv1.TabPayload_Image{Image: &leapmuxv1.ImageTabPayload{AgentId: "source", Seq: 1}}},
+	}))
+	_, err = svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	})
+	require.NoError(t, err, "precondition: the IMAGE tab is linked to its worktree")
+
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            fileTabIdent("image-1"),
+		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	_, err = svc.TabPayloads.TabTypeOf(ctx, "user-1", "image-1")
+	require.ErrorIs(t, err, ErrTabPayloadNotFound, "the close revokes the payload row")
+	_, err = svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	})
+	require.ErrorIs(t, err, sql.ErrNoRows, "the stored IMAGE kind must decide which link the close drops")
+	assert.DirExists(t, wtDir, "a KEEP close leaves the worktree on disk")
+}
+
+// Only an absent payload row may fall back to the stated kind. A read that
+// fails says nothing about the kind, so the close is refused before it changes
+// anything: the guess could miss the link, and a requested REMOVE would then
+// turn into a KEEP that nobody reports.
+func TestCloseTab_APayloadReadFailureRefusesTheClose(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "read-failure-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "read-failure-wt", wtDir)
+	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+	require.NoError(t, svc.Queries.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
+		WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	}))
+
+	// A renamed table makes the kind read fail with a store error, not with
+	// ErrTabPayloadNotFound. SQLite rewrites the views that refer to the table,
+	// so the rest of the schema keeps working.
+	_, err = svc.DB.ExecContext(ctx, "ALTER TABLE worker_tab_payloads RENAME TO worker_tab_payloads_hidden")
+	require.NoError(t, err)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab:            &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabId: "image-1"},
+		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
+	}, w)
+	_, err = svc.DB.ExecContext(ctx, "ALTER TABLE worker_tab_payloads_hidden RENAME TO worker_tab_payloads")
+	require.NoError(t, err)
+
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.Internal), w.errors[0].code)
+	assert.Empty(t, w.responses)
+	_, err = svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "image-1", UserID: "user-1",
+	})
+	require.NoError(t, err, "a refused close keeps the worktree link")
+	assert.DirExists(t, wtDir, "a refused close removes no worktree")
 }

@@ -331,7 +331,10 @@ function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?:
   })
   native.agent.mockReset().mockResolvedValue(options.agent ?? settingsAgent())
   vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
-    tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' },
+    tab: {
+      tab: { tabId: 'selected-native-agent', tabType: 'TAB_TYPE_AGENT' },
+      workerId: 'resolved-native-worker',
+    },
   }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -432,6 +435,47 @@ describe('chooseSettingsOption', () => {
     expect(native.agent).toHaveBeenCalledWith({
       leapmuxServer: { hubUrl: 'http://127.0.0.1:52222', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' },
     }, 'selected-native-agent')
+  })
+
+  it.each([
+    { label: 'no tab', located: {} },
+    {
+      label: 'a tab with no identity',
+      located: {
+        tab: { workerId: 'resolved-native-worker' },
+      },
+    },
+    {
+      label: 'another tab',
+      located: {
+        tab: {
+          tab: { tabId: 'other-native-agent', tabType: 'TAB_TYPE_AGENT' },
+          workerId: 'resolved-native-worker',
+        },
+      },
+    },
+    {
+      label: 'a tab of another type',
+      located: {
+        tab: {
+          tab: { tabId: 'selected-native-agent', tabType: 'TAB_TYPE_TERMINAL' },
+          workerId: 'resolved-native-worker',
+        },
+      },
+    },
+    {
+      label: 'a tab with no Worker',
+      located: {
+        tab: {
+          tab: { tabId: 'selected-native-agent', tabType: 'TAB_TYPE_AGENT' },
+        },
+      },
+    },
+  ])('refuses a LocateTab reply with $label before it reads the Worker', async ({ located }) => {
+    const page = pageWithNativeCatalog()
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json(located))
+    await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow('The native settings tab lookup returned no matching Worker identity.')
+    expect(native.agent).not.toHaveBeenCalled()
   })
 
   it.each(['about:blank', 'data:text/html,native'])('refuses a page that no hub serves: %s', async (pageUrl) => {
@@ -597,7 +641,10 @@ describe('waitForNativeSettingsHydrated', () => {
       ],
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
-      tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' },
+      tab: {
+        tab: { tabId: 'selected-native-agent', tabType: 'TAB_TYPE_AGENT' },
+        workerId: 'resolved-native-worker',
+      },
     }), {
       status: 200,
       headers: { 'content-type': 'application/json' },

@@ -21,6 +21,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -38,6 +39,14 @@ import (
 // succeeds returns at once, so the limit is generous for a loaded machine: a
 // short limit fails a correct test when the machine is busy.
 const inputQueueWait = 30 * time.Second
+
+// The three queue-head dispatch values, short enough to keep each assertion on
+// one line.
+const (
+	queueHeadNone    = leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE
+	queueHeadSteer   = leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_STEER
+	queueHeadPreempt = leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_PREEMPT
+)
 
 func TestQueueSnapshotFitsDefaultWireBudgetWithLargeTextItems(t *testing.T) {
 	t.Parallel()
@@ -88,13 +97,13 @@ func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
 	_, dispatcher := setupInputQueueRPCService(t)
 
 	pauseWriter := newTestWriter()
-	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
 	pause := decodeQueueResponse(t, pauseWriter, &leapmuxv1.SetAgentInputQueuePausedResponse{})
 	require.NotNil(t, pause.GetSnapshot())
-	assert.True(t, pause.GetSnapshot().GetPaused())
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, pause.GetSnapshot().GetPauseReason())
 
 	enqueueWriter := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "input-1", Text: "hello",
 		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		Attachments: []*leapmuxv1.Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("body")}},
@@ -104,10 +113,38 @@ func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
 	assert.Equal(t, int64(4), enqueued.GetSnapshot().GetItems()[0].GetAttachments()[0].GetSize())
 
 	listWriter := newTestWriter()
-	dispatch(dispatcher, "ListAgentInputQueue", &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
 	listed := decodeQueueResponse(t, listWriter, &leapmuxv1.ListAgentInputQueueResponse{})
 	assert.Equal(t, enqueued.GetSnapshot().GetRevision(), listed.GetSnapshot().GetRevision())
 	assert.Equal(t, "input-1", listed.GetSnapshot().GetItems()[0].GetId())
+}
+
+// The snapshot carries the pause in its reason alone, so a queue that never
+// paused, and one that resumed, both answer UNSPECIFIED rather than the reason
+// of a pause they are not in.
+func TestAgentInputQueueSnapshotStatesThePauseByItsReasonAlone(t *testing.T) {
+	t.Parallel()
+
+	_, dispatcher := setupInputQueueRPCService(t)
+	setPaused := func(paused bool) leapmuxv1.AgentInputQueuePauseReason {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: paused}, w)
+		resp := decodeQueueResponse(t, w, &leapmuxv1.SetAgentInputQueuePausedResponse{})
+		require.NotNil(t, resp.GetSnapshot())
+		return resp.GetSnapshot().GetPauseReason()
+	}
+
+	listWriter := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
+	listed := decodeQueueResponse(t, listWriter, &leapmuxv1.ListAgentInputQueueResponse{})
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED, listed.GetSnapshot().GetPauseReason(),
+		"a queue that never paused states no reason")
+
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, setPaused(true))
+	// The queue is empty, so the resume dispatches nothing.
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED, setPaused(false),
+		"a resumed queue drops the reason of the pause it left")
 }
 
 // Only the worker creates a question-answer input: it holds the provider's
@@ -126,7 +163,7 @@ func TestEnqueueAgentInputRefusesAQuestionAnswer(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "answer-1", Text: "Red",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
 	}, writer)
@@ -160,7 +197,7 @@ func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 			before, err := svc.InputQueue.Snapshot(ctx, childID)
 			require.NoError(t, err)
 			writer := newTestWriter()
-			dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 				AgentId: childID, InputId: "refused-input", Text: "MUST_NOT_REACH_NATIVE_CHILD",
 				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 			}, writer)
@@ -200,7 +237,7 @@ func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.
 			_, err = svc.InputQueue.SetPaused(ctx, childID, true)
 			require.NoError(t, err)
 			writer := newTestWriter()
-			dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 				AgentId: childID, InputId: "accepted-input", Text: "accepted native input", Kind: tc.kind,
 			}, writer)
 			require.Empty(t, writer.errors)
@@ -230,9 +267,10 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	assert.True(t, svc.agentToProto(&dbAgent, agentLiveness{running: true}, nil).GetSupportsSteering())
-	assert.True(t, svc.buildAgentActiveStatus(&dbAgent, nil).GetSupportsSteering())
-	assert.False(t, svc.agentToProto(&dbAgent, agentLiveness{}, nil).GetSupportsSteering())
+	assert.Equal(t, queueHeadSteer, svc.agentToProto(&dbAgent, agentLiveness{running: true}, nil).GetQueueHeadDispatch())
+	assert.Equal(t, queueHeadSteer, svc.buildAgentActiveStatus(&dbAgent, nil).GetQueueHeadDispatch())
+	assert.Equal(t, queueHeadNone, svc.agentToProto(&dbAgent, agentLiveness{}, nil).GetQueueHeadDispatch(),
+		"an agent that is not running has no turn for the head to join")
 }
 
 // TestAgentInfoPublishesEffectivePreemptionCapability mirrors the steering
@@ -268,27 +306,39 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 
 	steerable, err := svc.Queries.GetAgentByID(ctx, "steerable")
 	require.NoError(t, err)
-	assert.False(t, svc.agentToProto(&steerable, agentLiveness{running: true}, nil).GetSupportsPreemption(),
-		"a provider that steers must not also offer Preempt")
-	assert.True(t, svc.agentToProto(&steerable, agentLiveness{running: true}, nil).GetSupportsSteering())
+	assert.Equal(t, queueHeadSteer, svc.agentToProto(&steerable, agentLiveness{running: true}, nil).GetQueueHeadDispatch(),
+		"a provider that steers keeps Steer and does not offer Preempt")
 
 	interruptOnly, err := svc.Queries.GetAgentByID(ctx, "interrupt-only")
 	require.NoError(t, err)
-	assert.True(t, svc.agentToProto(&interruptOnly, agentLiveness{running: true}, nil).GetSupportsPreemption())
-	assert.True(t, svc.buildAgentActiveStatus(&interruptOnly, nil).GetSupportsPreemption())
-	assert.False(t, svc.agentToProto(&interruptOnly, agentLiveness{running: true}, nil).GetSupportsSteering())
+	assert.Equal(t, queueHeadPreempt, svc.agentToProto(&interruptOnly, agentLiveness{running: true}, nil).GetQueueHeadDispatch())
+	assert.Equal(t, queueHeadPreempt, svc.buildAgentActiveStatus(&interruptOnly, nil).GetQueueHeadDispatch())
 
 	cold, err := svc.Queries.GetAgentByID(ctx, "cold")
 	require.NoError(t, err)
-	assert.False(t, svc.agentToProto(&cold, agentLiveness{running: true}, nil).GetSupportsPreemption(),
+	assert.Equal(t, queueHeadNone, svc.agentToProto(&cold, agentLiveness{running: true}, nil).GetQueueHeadDispatch(),
 		"an agent that owns no process has nothing to interrupt with")
-	assert.False(t, svc.buildAgentActiveStatus(&cold, nil).GetSupportsPreemption())
+	assert.Equal(t, queueHeadNone, svc.buildAgentActiveStatus(&cold, nil).GetQueueHeadDispatch())
+}
+
+// The output handler asks the adapter by agent id. An id with no row has no
+// running provider, so the answer is NONE, never UNSPECIFIED: every full status
+// change states one of the three values, and UNSPECIFIED is reserved for a
+// partial change, where it means "no update".
+func TestQueueHeadDispatchAnswersNoneForAnUnknownAgent(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	adapter := &agentInputQueueAdapter{svc: svc}
+
+	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch("no-such-agent"))
+	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch(""))
 }
 
 // TestLiveStatusChangePublishesPreemptionCapability covers the LIVE pushes for
 // the same reason the steering one does: the frontend applies
-// supports_preemption from every status change, so a status built without the
-// field turns the Preempt action off mid-session for an agent that has it.
+// queue_head_dispatch from every full status change, so a status built without
+// the field turns the Preempt action off mid-session for an agent that has it.
 func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
 	t.Parallel()
 
@@ -320,11 +370,10 @@ func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
 	coldSink.BroadcastStatusActive("session-cold")
 
 	preempt := requireOneStatusChange(t, preemptWatcher, preemptAgentID)
-	assert.True(t, preempt.GetSupportsPreemption(),
+	assert.Equal(t, queueHeadPreempt, preempt.GetQueueHeadDispatch(),
 		"a live status turned the Preempt action off for an interrupt-only agent")
-	assert.False(t, preempt.GetSupportsSteering())
 	cold := requireOneStatusChange(t, coldWatcher, coldAgentID)
-	assert.False(t, cold.GetSupportsPreemption(),
+	assert.Equal(t, queueHeadNone, cold.GetQueueHeadDispatch(),
 		"a live status offered Preempt for an agent that owns no process")
 }
 
@@ -357,7 +406,7 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
 	response := decodeQueueResponse(t, writer, &leapmuxv1.PreemptQueuedAgentInputResponse{})
 	require.NotNil(t, response.GetSnapshot())
 	require.Len(t, response.GetSnapshot().GetItems(), 1)
@@ -403,7 +452,7 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 	assert.False(t, snapshot.Items[0].CanPreempt, "a paused queue offers no Preempt")
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "PreemptQueuedAgentInput", &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, &leapmuxv1.PreemptQueuedAgentInputRequest{AgentId: "agent-1", InputId: "one"}, writer)
 	require.Len(t, writer.errors, 1, "the RPC refuses what the snapshot did not offer")
 	assert.Equal(t, int32(codes.FailedPrecondition), writer.errors[0].code)
 }
@@ -411,9 +460,9 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 // TestLiveStatusChangePublishesSteeringCapability covers the LIVE pushes. The
 // test above covers the initial read.
 //
-// The frontend applies supports_steering from EVERY status change it receives.
-// A status that the Worker builds without the field therefore reports false,
-// and the Steer action disappears in the middle of a session for an agent that
+// The frontend applies queue_head_dispatch from EVERY full status change it
+// receives. A status that the Worker builds without the field therefore reports
+// UNSPECIFIED, which the frontend reads as NONE, and the Steer action disappears in the middle of a session for an agent that
 // steers. buildStatusChange is the one builder every live ACTIVE push shares,
 // so the capability hook that service.New wires must reach it.
 func TestLiveStatusChangePublishesSteeringCapability(t *testing.T) {
@@ -452,10 +501,10 @@ func TestLiveStatusChangePublishesSteeringCapability(t *testing.T) {
 	coldSink.BroadcastStatusActive("session-cold")
 
 	steering := requireOneStatusChange(t, steeringWatcher, steeringAgentID)
-	assert.True(t, steering.GetSupportsSteering(),
+	assert.Equal(t, queueHeadSteer, steering.GetQueueHeadDispatch(),
 		"a live status for a steering agent turned the Steer action off")
 	cold := requireOneStatusChange(t, coldWatcher, coldAgentID)
-	assert.False(t, cold.GetSupportsSteering(),
+	assert.Equal(t, queueHeadNone, cold.GetQueueHeadDispatch(),
 		"a live status offered Steer for an agent that owns no process")
 }
 
@@ -500,14 +549,14 @@ func TestAgentInputQueueEditReturnsDataAndReclassifiesHumanCommand(t *testing.T)
 	require.NoError(t, err)
 
 	enqueueWriter := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "input-1", Text: "hello",
 		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		Attachments: []*leapmuxv1.Attachment{{Filename: "note.txt", MimeType: "text/plain", Data: []byte("body")}},
 	}, enqueueWriter)
 
 	beginWriter := newTestWriter()
-	dispatch(dispatcher, "BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure, &leapmuxv1.BeginQueuedAgentInputEditRequest{
 		AgentId: "agent-1", InputId: "input-1", ClientId: "browser-1",
 	}, beginWriter)
 	begin := decodeQueueResponse(t, beginWriter, &leapmuxv1.BeginQueuedAgentInputEditResponse{})
@@ -516,7 +565,7 @@ func TestAgentInputQueueEditReturnsDataAndReclassifiesHumanCommand(t *testing.T)
 	assert.Equal(t, "hello", begin.GetText())
 
 	updateWriter := newTestWriter()
-	dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceUpdateQueuedAgentInputProcedure, &leapmuxv1.UpdateQueuedAgentInputRequest{
 		AgentId: "agent-1", InputId: "input-1", ClientId: "browser-1",
 		ExpectedVersion: begin.GetSnapshot().GetItems()[0].GetVersion(), Text: " /summarize ",
 	}, updateWriter)
@@ -536,7 +585,7 @@ func TestAgentInputQueueRejectsConflictingEnqueueRetry(t *testing.T) {
 
 	for _, text := range []string{"first", "different"} {
 		writer := newTestWriter()
-		dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 			AgentId: "agent-1", InputId: "stable-id", Text: text,
 			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		}, writer)
@@ -1121,7 +1170,7 @@ func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{
 		AgentId:   "agent-1",
 		Action:    leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
 		Objective: "ship the release",
@@ -1164,7 +1213,7 @@ func TestUpdateAgentGoalReturnsTheQueueFullMessage(t *testing.T) {
 	}
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{
 		AgentId: "agent-1", Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_CLEAR,
 	}, writer)
 	rejections := writer.rejections()
@@ -1188,7 +1237,7 @@ func TestUpdateAgentGoalRefusesASubagentWithoutEnqueueing(t *testing.T) {
 	}))
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{
 		AgentId: "child-1", Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
 		Objective: "child objective",
 	}, writer)
@@ -1444,7 +1493,7 @@ func TestInterruptAgentRunsWhenTheQueuePauseFails(t *testing.T) {
 	stopInputQueue(t, svc, "agent-1")
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
 
 	requireInterruptReachedAgent(t, svc, "agent-1")
 	failures := writer.rejections()
@@ -1493,7 +1542,7 @@ func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T
 	svc.startAgentFn = mockAgentStarter(t, svc, func(opts agent.Options) { restartOpts = append(restartOpts, opts) })
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: agentID}, writer)
 
 	require.Empty(t, writer.rejections(), "the escalated press is a successful stop")
 	require.Len(t, restartOpts, 1, "the press replaced the process once")
@@ -1529,7 +1578,7 @@ func TestRawInterruptFramePublishesTheStop(t *testing.T) {
 		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
 	}, writer)
@@ -1557,7 +1606,7 @@ func TestInterruptAgentPutsTheIndicatorBackWhenTheStopIsRefused(t *testing.T) {
 	svc.Output.setTurnActive("agent-1", "agent-1", true)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
 
 	require.NotEmpty(t, writer.rejections(), "the control timeout is a refused stop")
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
@@ -1587,7 +1636,7 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 	// The raw frame is the stop path that waits for no answer, so the stop it sends is
 	// DELIVERED rather than merely attempted. That is the bar the cancel runs behind.
 	writer := newTestWriter()
-	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
 	}, writer)
@@ -1617,7 +1666,7 @@ func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 	stopInputQueue(t, svc, "agent-1")
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"raw-interrupt-1","request":{"subtype":"interrupt"}}`,
 	}, writer)
@@ -1709,7 +1758,7 @@ func TestUpdateAgentGoalRefusesAnObjectiveThatClears(t *testing.T) {
 	startGoalTextAgent(t, svc, "agent-1")
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceUpdateAgentGoalProcedure, &leapmuxv1.UpdateAgentGoalRequest{
 		AgentId:   "agent-1",
 		Action:    leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET,
 		Objective: "reset",
@@ -2302,13 +2351,13 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 
 	_, dispatcher := setupInputQueueRPCService(t)
 	pauseWriter := newTestWriter()
-	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
 
 	// Non-UTC input normalizes to UTC and floors to the millisecond.
 	zoned := time.Now().In(time.FixedZone("UTC+9", 9*60*60)).Add(2 * time.Hour)
 	floored := zoned.UTC().Truncate(time.Millisecond)
 	enqueueWriter := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "scheduled-1", Text: "later",
 		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		ScheduledAt: zoned.Format(time.RFC3339Nano),
@@ -2320,7 +2369,7 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 
 	// An immediate item enqueued later takes the effective first position.
 	enqueueWriter = newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "immediate-1", Text: "now",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	}, enqueueWriter)
@@ -2337,7 +2386,7 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 
 	// A list replays the same derived fields.
 	listWriter := newTestWriter()
-	dispatch(dispatcher, "ListAgentInputQueue", &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, &leapmuxv1.ListAgentInputQueueRequest{AgentId: "agent-1"}, listWriter)
 	listed := decodeQueueResponse(t, listWriter, &leapmuxv1.ListAgentInputQueueResponse{})
 	assert.Equal(t, items, listed.GetSnapshot().GetItems())
 
@@ -2346,7 +2395,7 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 	save := func(text string, scheduledAt *string) *leapmuxv1.QueuedAgentInput {
 		t.Helper()
 		beginWriter := newTestWriter()
-		dispatch(dispatcher, "BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure, &leapmuxv1.BeginQueuedAgentInputEditRequest{
 			AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
 		}, beginWriter)
 		begun := decodeQueueResponse(t, beginWriter, &leapmuxv1.BeginQueuedAgentInputEditResponse{})
@@ -2357,7 +2406,7 @@ func TestAgentInputQueueScheduleRoundTrip(t *testing.T) {
 			}
 		}
 		updateWriter := newTestWriter()
-		dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceUpdateQueuedAgentInputProcedure, &leapmuxv1.UpdateQueuedAgentInputRequest{
 			AgentId: "agent-1", InputId: "scheduled-1", ClientId: "client-1",
 			ExpectedVersion: version, Text: text, ScheduledAt: scheduledAt,
 		}, updateWriter)
@@ -2388,7 +2437,7 @@ func TestEnqueueAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "input-1", Text: "hello",
 		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		ScheduledAt: "next tuesday",
@@ -2419,7 +2468,7 @@ func TestUpdateQueuedAgentInputRefusesAMalformedSchedule(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceUpdateQueuedAgentInputProcedure, &leapmuxv1.UpdateQueuedAgentInputRequest{
 		AgentId: "agent-1", InputId: "input-1", ClientId: "client-1",
 		ExpectedVersion: begun.Items[0].Version, Text: "edited", ScheduledAt: proto.String("next tuesday"),
 	}, writer)
@@ -2445,7 +2494,7 @@ func TestEnqueueAgentInputRefusesTheAutomaticRetryKinds(t *testing.T) {
 		before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
 		require.NoError(t, err)
 		writer := newTestWriter()
-		dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 			AgentId: "agent-1", InputId: "input-1", Text: "Continue.", Kind: kind,
 		}, writer)
 		require.Len(t, writer.errors, 1)
@@ -2462,21 +2511,21 @@ func TestMoveQueuedAgentInputMapsAGroupViolationToFailedPrecondition(t *testing.
 
 	_, dispatcher := setupInputQueueRPCService(t)
 	pauseWriter := newTestWriter()
-	dispatch(dispatcher, "SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: "agent-1", Paused: true}, pauseWriter)
 	enqueueWriter := newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "future-1", Text: "later",
 		Kind:        leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		ScheduledAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
 	}, enqueueWriter)
 	enqueueWriter = newTestWriter()
-	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		AgentId: "agent-1", InputId: "now-1", Text: "now",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	}, enqueueWriter)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "MoveQueuedAgentInput", &leapmuxv1.MoveQueuedAgentInputRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentInputServiceMoveQueuedAgentInputProcedure, &leapmuxv1.MoveQueuedAgentInputRequest{
 		AgentId: "agent-1", InputId: "future-1", BeforeInputId: "now-1",
 	}, writer)
 	require.Len(t, writer.errors, 1)

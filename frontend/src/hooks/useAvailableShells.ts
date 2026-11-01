@@ -70,7 +70,7 @@ export function useAvailableShells(
     workerId,
     enabled,
     args: () => ({}),
-    fetch: args => workerRpc.listAvailableShells(args.workerId, args),
+    fetch: args => workerRpc.listAvailableShells(args.workerId, {}),
     applySuccess: (resp) => {
       setShells(resp.shells)
       setServerDefault(resp.defaultShell)

@@ -121,28 +121,30 @@ func AdoptWireMaxMessageSize(wire uint64) (int, error) {
 // NewErrorResponse is the single constructor for an error InnerRpcResponse, the
 // envelope both Go receivers (the tunnel client's Channel.deliverRPCError and
 // the worker session's channelSender.sendError) emit when an inner RPC fails.
-// Routing both through one constructor keeps the IsError+ErrorCode+ErrorMessage
-// shape in one place, alongside contracts.PingMethod and the chunk/message ceilings both
-// ends of the channel must also agree on -- so a future field (a retryable bit,
-// a category) lands once instead of in two packages whose tests would only
-// notice the day they disagree.
+// Routing both through one constructor keeps the error shape in one place,
+// alongside the chunk/message ceilings both ends of the channel must also agree
+// on -- so a future field (a retryable bit, a category) lands once instead of
+// in two packages whose tests would only notice the day they disagree.
 func NewErrorResponse(code int32, message string) *leapmuxv1.InnerRpcResponse {
-	return &leapmuxv1.InnerRpcResponse{IsError: true, ErrorCode: code, ErrorMessage: message}
+	return &leapmuxv1.InnerRpcResponse{Error: &leapmuxv1.RpcError{Code: code, Message: message}}
+}
+
+// NewStreamError is the single constructor for the InnerStreamMessage that
+// fails a stream. It sets End as well as Error, because the frame ends the
+// stream, and a reader that checks only End must stop too.
+func NewStreamError(code int32, message string) *leapmuxv1.InnerStreamMessage {
+	return &leapmuxv1.InnerStreamMessage{End: true, Error: &leapmuxv1.RpcError{Code: code, Message: message}}
 }
 
 // NewChannelMessage wraps one encrypted chunk in the ChannelMessage envelope
-// both Go senders put on the wire. The protocol version is
-// contracts.ProtocolVersion (contracts/wire.json), so a version bump is one
-// edit that moves every sender -- this constructor, the senders that bypass
-// it, and the browser's channelSession -- instead of a literal in each.
+// both Go senders put on the wire.
 func NewChannelMessage(channelID string, correlationID uint64,
 	flags leapmuxv1.ChannelMessageFlags, ciphertext []byte) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: contracts.ProtocolVersion,
-		ChannelId:       channelID,
-		CorrelationId:   correlationID,
-		Flags:           flags,
-		Ciphertext:      ciphertext,
+		ChannelId:     channelID,
+		CorrelationId: correlationID,
+		Flags:         flags,
+		Ciphertext:    ciphertext,
 	}
 }
 

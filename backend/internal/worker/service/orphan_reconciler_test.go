@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -330,7 +331,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -365,7 +366,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 	// The hub lists the agent tab and knows nothing of the quake terminal,
 	// which is the steady state for every quake panel the user ever opened.
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -418,7 +419,7 @@ func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *t
 		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"}}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -436,7 +437,7 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) ([]string, error) {
 			calls = append(calls, state)
-			require.Equal(t, "agent-archived", tabs[0].GetTabId())
+			require.Equal(t, "agent-archived", tabs[0].GetTab().GetTabId())
 			return nil, nil
 		},
 	})
@@ -444,7 +445,7 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 		ID: "agent-archived", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-archived",
+		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-archived"}},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 	}}, nil)
 
@@ -453,6 +454,46 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 	}, calls)
 	assert.Empty(t, teardown.agents)
+}
+
+// The archive pass forwards each hub row's TabRef whole, so a payload-backed
+// tab keeps its owner: worker_tab_payloads is keyed (user_id, tab_id), and an
+// id without its owner addresses no row. A row that addresses no tab, or that
+// states a type this worker cannot archive, drops out of the pass and does not
+// stop it.
+func TestOrphanReconciler_ArchivePassForwardsEachTabRefWithItsOwner(t *testing.T) {
+	t.Parallel()
+
+	received := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabRef{}
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) ([]string, error) {
+			received[state] = append(received[state], tabs...)
+			return nil, nil
+		},
+	})
+	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-active", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	archivedFile := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}, UserId: "user-a"}
+	activeAgent := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"}}
+	archived := leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
+	active := leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE
+	setFake("user-a", []*leapmuxv1.WorkerTabState{
+		{Tab: archivedFile, ArchiveState: archived},
+		{Tab: activeAgent, ArchiveState: active},
+		// A row that addresses no tab.
+		{ArchiveState: archived},
+		// A row whose type a newer hub knows and this worker does not.
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType(99), TabId: "future"}}, ArchiveState: archived},
+	}, nil)
+
+	require.True(t, runOnce(t.Context(), rec), "a row the worker cannot classify must not stop the pass")
+	require.Len(t, received[archived], 1)
+	assert.True(t, proto.Equal(archivedFile, received[archived][0]),
+		"the archived FILE tab must keep its owner, got %v", received[archived][0])
+	require.Len(t, received[active], 1)
+	assert.True(t, proto.Equal(activeAgent, received[active][0]), "got %v", received[active][0])
+	assert.Empty(t, teardown.agents, "the agent the hub lists is not reaped")
 }
 
 func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing.T) {
@@ -467,7 +508,7 @@ func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing
 		ID: "agent-live", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-live",
+		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-live"}},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 	}}, nil)
 
@@ -514,7 +555,7 @@ func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t 
 		}))
 	}
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active",
+		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"}},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 	}}, nil)
 
@@ -690,8 +731,8 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	// so neither is reaped -- and the owner-keyed comparison is what makes that
 	// true for BOTH: an owner-blind key would collapse them into one entry.
 	setFake("user-a", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-a"},
-		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-b"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-a"}},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-b"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -732,7 +773,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 
 	// Only user-a's tab survives at the hub.
 	setFake("user-b", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-a"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-a"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -780,7 +821,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	// A response scoped to user-a, listing user-a's live tab. It says nothing
 	// about user-b -- who is not "absent", merely not asked about.
 	setFake("user-a", []*leapmuxv1.WorkerTabState{
-		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a", UserId: "user-a"},
+		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}, UserId: "user-a"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -57,7 +58,7 @@ func RunTerminalSend(rawCtx any, args []string) error {
 			TerminalId: got.TabID,
 			Data:       payload,
 		}
-		if err := callInnerRPC(ctx, c, got.WorkerID, "SendInput", req, nil); err != nil {
+		if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, req, nil); err != nil {
 			return err
 		}
 		return control.EmitData(map[string]any{"tab_id": got.TabID, "bytes_sent": len(payload)})
@@ -95,7 +96,7 @@ func RunTerminalGet(rawCtx any, args []string) error {
 			return err
 		}
 		var resp leapmuxv1.ListTerminalsResponse
-		if err := callInnerRPC(ctx, c, got.WorkerID, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{got.TabID}}, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{got.TabID}}, &resp); err != nil {
 			return err
 		}
 		for _, t := range resp.GetTerminals() {
@@ -131,7 +132,7 @@ func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
 		"rows":              t.GetRows(),
 		"screen":            string(t.GetScreen()),
 		"screen_end_offset": t.GetScreenEndOffset(),
-		"exited":            t.GetExited(),
+		"exited":            t.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
 		"working_dir":       t.GetWorkingDir(),
 		"shell_start_dir":   t.GetShellStartDir(),
 		"git_branch":        gs.GetBranch(),
@@ -166,11 +167,9 @@ func RunTerminalShells(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(ctx, c, got.WorkerID); err != nil {
 			return err
 		}
-		req := &leapmuxv1.ListAvailableShellsRequest{
-			WorkerId: got.WorkerID,
-		}
+		req := &leapmuxv1.ListAvailableShellsRequest{}
 		var resp leapmuxv1.ListAvailableShellsResponse
-		if err := callInnerRPC(ctx, c, got.WorkerID, "ListAvailableShells", req, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, req, &resp); err != nil {
 			return err
 		}
 		return control.EmitData(map[string]any{
@@ -182,18 +181,18 @@ func RunTerminalShells(rawCtx any, args []string) error {
 
 // renameTerminalTab wires `tab rename` for terminal-typed tabs.
 // Mirrors the agent rename path: a single worker inner-RPC
-// (UpdateTerminalTitle) updates the in-memory manager and the DB row,
+// (RenameTerminal) updates the in-memory manager and the DB row,
 // which the worker also broadcasts on the workspace's private-event
 // channel so live clients see the new title.
 func renameTerminalTab(ctx context.Context, c *control.Client, got resolve.Resolved, title string) error {
-	req := &leapmuxv1.UpdateTerminalTitleRequest{
+	req := &leapmuxv1.RenameTerminalRequest{
 		TerminalId: got.TabID,
 		Title:      title,
 	}
 	// The reply carries the title the worker stored, which is not always the
 	// one this command sent -- see the agent arm of RunTabRename for the rule.
-	var resp leapmuxv1.UpdateTerminalTitleResponse
-	if err := callInnerRPC(ctx, c, got.WorkerID, "UpdateTerminalTitle", req, &resp); err != nil {
+	var resp leapmuxv1.RenameTerminalResponse
+	if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, req, &resp); err != nil {
 		return err
 	}
 	return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "terminal", "title": resp.GetTitle()})

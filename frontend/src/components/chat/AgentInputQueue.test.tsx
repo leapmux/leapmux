@@ -8,6 +8,7 @@ import {
   AgentInputQueueSnapshotSchema,
   AgentInputState,
   QueuedAgentInputSchema,
+  QueueHeadDispatch,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flush } from '~/test-support/async'
 import { pointerEvent } from '~/test-support/pointer'
@@ -23,7 +24,6 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
   const lockedState = state === AgentInputState.DISPATCHING || state === AgentInputState.AWAITING_ECHO
   return create(QueuedAgentInputSchema, {
     id,
-    agentId: 'agent-1',
     text: `text ${id}`,
     kind: AgentInputKind.USER_MESSAGE,
     state,
@@ -33,13 +33,12 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
 }
 
 function snapshotOf(items: ReturnType<typeof item>[]) {
-  return create(AgentInputQueueSnapshotSchema, { agentId: 'agent-1', items })
+  return create(AgentInputQueueSnapshotSchema, { items })
 }
 
 function renderQueue(overrides: {
   items?: ReturnType<typeof item>[]
-  supportsSteering?: boolean
-  supportsPreemption?: boolean
+  queueHeadDispatch?: QueueHeadDispatch
   activeEditInputId?: string
 } = {}) {
   const handlers = {
@@ -65,8 +64,7 @@ function renderQueue(overrides: {
       {...(overrides.activeEditInputId !== undefined
         ? { activeEditInputId: overrides.activeEditInputId }
         : {})}
-      supportsSteering={overrides.supportsSteering ?? false}
-      supportsPreemption={overrides.supportsPreemption ?? false}
+      queueHeadDispatch={overrides.queueHeadDispatch ?? QueueHeadDispatch.NONE}
       {...handlers}
     />
   ))
@@ -100,7 +98,7 @@ describe('AgentInputQueue', () => {
 
   it('offers Steer on the first queued row behind an awaiting-echo row', async () => {
     const handlers = renderQueue({
-      supportsSteering: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
       items: [
         item('sent', { state: AgentInputState.AWAITING_ECHO }),
         item('next', { canSteer: true }),
@@ -469,7 +467,7 @@ describe('AgentInputQueue', () => {
   // precondition itself is covered by the store's own tests.
   it('offers Steer for the head that the Worker marks steerable', async () => {
     const handlers = renderQueue({
-      supportsSteering: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
       items: [
         item('one', { canSteer: true }),
         item('two', { canSteer: true }),
@@ -485,7 +483,7 @@ describe('AgentInputQueue', () => {
 
   it('does not offer Steer for a head that the Worker refuses to steer', () => {
     renderQueue({
-      supportsSteering: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
       items: [
         item('one', { canSteer: false }),
       ],
@@ -495,7 +493,7 @@ describe('AgentInputQueue', () => {
 
   it('does not offer Steer when the provider does not support steering', () => {
     renderQueue({
-      supportsSteering: false,
+      queueHeadDispatch: QueueHeadDispatch.NONE,
       items: [
         item('one', { canSteer: true }),
       ],
@@ -508,7 +506,7 @@ describe('AgentInputQueue', () => {
   // offered: a provider either injects into the turn or cancels it.
   it('offers Preempt for a head the Worker marks preemptable when the provider cannot steer', async () => {
     const handlers = renderQueue({
-      supportsPreemption: true,
+      queueHeadDispatch: QueueHeadDispatch.PREEMPT,
       items: [
         item('one', { canPreempt: true }),
         item('two', { canPreempt: true }),
@@ -525,8 +523,7 @@ describe('AgentInputQueue', () => {
 
   it('does not offer Preempt when the provider can steer', () => {
     renderQueue({
-      supportsSteering: true,
-      supportsPreemption: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
       items: [
         item('one', { canPreempt: true, canSteer: true }),
       ],
@@ -535,9 +532,33 @@ describe('AgentInputQueue', () => {
     expect(screen.getByRole('button', { name: 'Steer' })).toBeInTheDocument()
   })
 
+  // The other half of "exactly one": a provider that can only cancel the turn
+  // offers no Steer, even for a head the Worker also marks steerable.
+  it('does not offer Steer when the provider preempts', () => {
+    renderQueue({
+      queueHeadDispatch: QueueHeadDispatch.PREEMPT,
+      items: [
+        item('one', { canPreempt: true, canSteer: true }),
+      ],
+    })
+    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preempt' })).toBeInTheDocument()
+  })
+
+  it('offers neither action when the Worker states no dispatch', () => {
+    renderQueue({
+      queueHeadDispatch: QueueHeadDispatch.UNSPECIFIED,
+      items: [
+        item('one', { canPreempt: true, canSteer: true }),
+      ],
+    })
+    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Preempt' })).not.toBeInTheDocument()
+  })
+
   it('does not offer Preempt for a head the Worker refuses to preempt', () => {
     renderQueue({
-      supportsPreemption: true,
+      queueHeadDispatch: QueueHeadDispatch.PREEMPT,
       items: [
         item('one', { canPreempt: false }),
       ],
@@ -631,7 +652,7 @@ describe('AgentInputQueue', () => {
         item('one'),
         item('two'),
       ],
-      supportsSteering: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
     })
     const first = screen.getByTestId('queued-input-one')
     for (const name of [
@@ -656,7 +677,7 @@ describe('AgentInputQueue', () => {
         item('one', { canSteer: true }),
         item('two'),
       ],
-      supportsSteering: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
     })
     const first = screen.getByTestId('queued-input-one')
     const buttons = within(first).getAllByRole('button')

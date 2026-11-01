@@ -571,8 +571,8 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 		DisplayName: "Bob User",
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, "bobuser", resp.GetUser().GetUsername())
-	assert.Equal(t, "Bob User", resp.GetUser().GetDisplayName())
+	assert.Equal(t, "bobuser", resp.GetSessionReport().GetUser().GetUsername())
+	assert.Equal(t, "Bob User", resp.GetSessionReport().GetUser().GetDisplayName())
 
 	// Verify that the response sets the session cookie.
 	setCookie := info.ResponseHeader().Get("Set-Cookie")
@@ -584,7 +584,7 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 		ProviderSubject: "sub-bob",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, resp.GetUser().GetId(), link.UserID)
+	assert.Equal(t, resp.GetSessionReport().GetUser().GetId(), link.UserID)
 
 	// Verify that the flow consumed the pending signup.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
@@ -641,7 +641,7 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	require.NoError(t, err)
 
 	// The user's email should be the provider's, not the attacker's.
-	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
 }
@@ -666,7 +666,7 @@ func TestCompleteOAuthSignup_UntrustedProviderWithNoEmail_UsesRequestEmail(t *te
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "typed@example.com", user.Email,
 		"the caller supplies the address the provider withheld")
@@ -691,7 +691,7 @@ func TestCompleteOAuthSignup_UntrustedProviderEmailBeatsRequestEmail(t *testing.
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email,
 		"a provider-supplied address is not substitutable")
@@ -782,7 +782,7 @@ func TestCompleteOAuthSignup_TrustedProviderSetsEmailVerified(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "trusted@example.com", user.Email)
 	assert.True(t, user.EmailVerified)
@@ -855,10 +855,10 @@ func TestCompleteOAuthSignup_UntrustedWithSMTPOnUsesPendingEmail(t *testing.T) {
 		Username:    "pendingoauth",
 	}))
 	require.NoError(t, err)
-	assert.True(t, resp.GetEmailVerification().GetVerificationRequired())
-	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
+	assert.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationEmailSent())
 
-	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
 	require.NoError(t, err)
 	assert.Empty(t, user.Email)
 	assert.False(t, user.EmailVerified)
@@ -974,7 +974,7 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 	}))
 	require.NoError(t, err)
 
-	userID := resp.GetUser().GetId()
+	userID := resp.GetSessionReport().GetUser().GetId()
 
 	// Verify stored tokens use the active key version and can be decrypted
 	// with the user ID as AAD (not the signup token).

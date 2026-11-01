@@ -5,6 +5,7 @@ import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
 import type { TerminalTab } from '~/stores/tab.types'
 import { createEffect, createMemo, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { createKeyedRows } from '~/lib/keyedRows'
@@ -875,7 +876,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                       : terminalTheme()}
                     contentReady={(terminal()?.contentReady ?? false)
                       || terminal()?.status === TerminalStatus.EXITED
-                      || terminal()?.status === TerminalStatus.DISCONNECTED}
+                      || terminal()?.status === TERMINAL_DISCONNECTED}
                     onInput={props.onInput}
                     onResize={props.onResize}
                     onContentReady={props.onContentReady}

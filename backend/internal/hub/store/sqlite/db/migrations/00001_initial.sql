@@ -146,9 +146,6 @@ CREATE TABLE workers (
     -- still deregistering after the grace period
     -- (CompleteStaleDeregistrations).
     deregistering_at DATETIME,
-    public_key    BLOB NOT NULL DEFAULT '',
-    mlkem_public_key  BLOB NOT NULL DEFAULT '',
-    slhdsa_public_key BLOB NOT NULL DEFAULT '',
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
     -- worker. The deregister handler refuses these so the user can't
@@ -326,8 +323,8 @@ CREATE TABLE user_state (
 -- Owned reads see every row; worker reconciliation reads them so a tab that
 -- projection keeps out of the layout does not make the worker delete a
 -- still-live agent, terminal or file tab. `rendered` marks the subset whose
--- tile is a live leaf reachable from a registered root, which ListTabs,
--- GetTab and LocateTab read. The composite foreign key ties a row to a
+-- tile is a live leaf reachable from a registered root, which ListTabs and
+-- LocateTab read. The composite foreign key ties a row to a
 -- workspace its own user owns, and through workspaces.owner_user_id to
 -- users(id).
 CREATE TABLE workspace_tab_owned (
@@ -670,7 +667,7 @@ CREATE TABLE device_authorizations (
     granted_scopes        TEXT NOT NULL DEFAULT '',
     user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
     -- Where the authorization stands: a DeviceAuthorizationState ordinal
-    -- (proto/leapmux/v1/hub_storage.proto), 1 pending, 2 approved, 3 denied.
+    -- (proto/leapmux/v1/storage.proto), 1 pending, 2 approved, 3 denied.
     -- No DEFAULT: the create binds PENDING, so an unstated state fails the
     -- INSERT. TestEnumColumnChecksMatchTheirProtoRanges checks the range.
     state                 INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 3),

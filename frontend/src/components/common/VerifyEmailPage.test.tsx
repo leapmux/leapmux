@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
 import { setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
@@ -23,8 +23,8 @@ class FakeConnectError extends Error {
   }
 }
 
-const mockVerify = vi.fn<(args: { verificationToken: string } & Record<string, string>) => Promise<{ user?: { username: string, emailVerified: boolean } | null }>>()
-const mockResend = vi.fn<(args: { captchaPayload: string, honeypot: string }) => Promise<{ emailSent: boolean }>>()
+const mockVerify = vi.fn<(args: { verificationToken: string } & Record<string, unknown>) => Promise<{ user?: { username: string, emailVerified: boolean } | null, emailVerification?: { verificationRequired: boolean } }>>()
+const mockResend = vi.fn<(args: { captcha: { payload: string, honeypot: string } }) => Promise<{ emailVerification: { verificationEmailSent: boolean } }>>()
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -44,11 +44,16 @@ vi.mock('~/components/common/CaptchaField', async () => (await import('~/test-su
 vi.mock('~/components/common/CaptchaHoneypot', async () => (await import('~/test-support/captchaMocks')).captchaHoneypotMock)
 
 const mockSetAuth = vi.fn()
-// Verifying an address is a REFRESH of the same identity, not a transition to
-// a new one, so the page adopts the response through adoptSameIdentityUser
-// rather than setAuth -- which clears the session's elevation deadline the hub
-// never touched.
-const mockAdoptSameIdentityUser = vi.fn()
+// Verifying an address changes the same identity, not a transition to a new
+// one, so the page adopts the response through openUserAdoption rather than
+// setAuth -- which clears the session's elevation deadline the hub never
+// touched. The order records when the adoption opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown, verification?: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 const mockRefreshUser = vi.fn<() => Promise<void>>(async () => {})
 const mockUser = vi.fn<() => { username: string, emailVerified: boolean } | null>()
 // A signal, not a vi.fn: the cooldownKnown gate re-runs when loading flips,
@@ -63,7 +68,7 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
-    adoptSameIdentityUser: mockAdoptSameIdentityUser,
+    openUserAdoption: mockOpenUserAdoption,
     refreshUser: mockRefreshUser,
     verificationResendAvailableAt: () => mockVerificationResendAvailableAt(),
     setVerificationResendAvailableAt: vi.fn(),
@@ -193,64 +198,56 @@ describe('VerifyEmailPage', () => {
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 
-  // The RESPONSE is the authoritative account. The page used to discard it and
-  // re-read through refreshUser, whose only failure path is an empty catch, and
-  // then navigate home regardless: a blip on that second round trip left
-  // `emailVerified` false for an address that the hub just verified, so
-  // Preferences still rendered "unverified / Verify" and RegisterWorkerDialog
-  // kept its email control disabled.
-  it('adopts the verified account from the response itself', async () => {
+  // The RESPONSE is the authoritative account and verification status. The
+  // page used to discard it and re-read through refreshUser, whose only failure
+  // path is an empty catch, and then navigate home regardless: a blip on that
+  // second round trip left `emailVerified` false for an address that the hub
+  // just verified, so Preferences still rendered "unverified / Verify" and
+  // RegisterWorkerDialog kept its email control disabled.
+  it('adopts the verified account and status from the response itself', async () => {
     const verified = { username: 'alice', emailVerified: true }
-    mockVerify.mockResolvedValueOnce({ user: verified })
+    const status = { verificationRequired: false }
+    mockVerify.mockResolvedValueOnce({ user: verified, emailVerification: status })
 
     renderPage('/verify-email?code=AB2-CDE')
 
     await waitFor(() => {
-      expect(mockAdoptSameIdentityUser).toHaveBeenCalledWith(verified)
+      expect(mockAdopt).toHaveBeenCalledWith(verified, status)
     })
-    // adoptSameIdentityUser, never setAuth: the identity did not change, and
-    // setAuth clears an elevation window the hub never touched.
+    // Never setAuth: the identity did not change, and setAuth clears an
+    // elevation window the hub never touched.
     expect(mockSetAuth).not.toHaveBeenCalled()
-  })
-
-  it('still lands home when the follow-up refresh fails', async () => {
-    const verified = { username: 'alice', emailVerified: true }
-    mockVerify.mockResolvedValueOnce({ user: verified })
-    // refreshUser discards its own failure, which is why the response has to
-    // carry the account: the page navigates home either way.
-    mockRefreshUser.mockImplementationOnce(async () => {})
-
-    renderPage('/verify-email?code=AB2-CDE')
-
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
-    expect(mockAdoptSameIdentityUser).toHaveBeenCalledWith(verified)
   })
 
-  // The refresh STAYS: the response carries the user and nothing else, while
-  // the resend cooldown and the elevation deadline come from GetCurrentUser.
-  it('keeps the account re-read for the signals the response does not carry', async () => {
-    mockVerify.mockResolvedValueOnce({
-      user: { username: 'alice', emailVerified: true },
+  // The adoption opens BEFORE the request leaves, so a reply that lands after
+  // a sign-out or a sign-in as someone else re-reads the new identity rather
+  // than adopting the old one.
+  it('opens the adoption before the verification request leaves', async () => {
+    callOrder.length = 0
+    mockVerify.mockImplementationOnce(async () => {
+      callOrder.push('verify')
+      return {
+        user: { username: 'alice', emailVerified: true },
+      }
     })
 
     renderPage('/verify-email?code=AB2-CDE')
 
-    await waitFor(() => {
-      expect(mockRefreshUser).toHaveBeenCalledTimes(1)
-    })
+    await waitFor(() => expect(mockAdopt).toHaveBeenCalledTimes(1))
+    expect(callOrder).toEqual(['open', 'verify'])
   })
 
-  // A hub that answers without one leaves the cached account alone rather than
-  // adopting a null user, which would sign the browser out of a session the
-  // verification did not touch.
-  it('adopts nothing when the response carries no user', async () => {
+  // A hub that answers without a user hands the adoption nothing to adopt, so
+  // it re-reads the account rather than signing the browser out of a session
+  // the verification did not touch. The page still lands home.
+  it('hands an absent user to the adoption, which re-reads', async () => {
     mockVerify.mockResolvedValueOnce({})
 
     renderPage('/verify-email?code=AB2-CDE')
 
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
-    expect(mockAdoptSameIdentityUser).not.toHaveBeenCalled()
-    expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+    expect(mockAdopt).toHaveBeenCalledWith(undefined, undefined)
   })
 
   it('manually-typed codes accept hyphen and lowercase, then normalize', async () => {
@@ -310,6 +307,10 @@ describe('VerifyEmailPage', () => {
       // that the page shows it rather than discarding it).
       expect(screen.getByText(/invalid or expired/i)).toBeInTheDocument()
     })
+    // The page opened an adoption before the request, and a refused code
+    // leaves it unused: the account did not change.
+    expect(mockAdopt).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
   })
 
   it('seeds resend cooldown from login verification timestamp', async () => {
@@ -328,7 +329,9 @@ describe('VerifyEmailPage', () => {
   })
 
   it('clicking Resend issues the RPC and shows a status line on success', async () => {
-    mockResend.mockResolvedValueOnce({ emailSent: true })
+    mockResend.mockResolvedValueOnce({
+      emailVerification: { verificationEmailSent: true },
+    })
 
     renderPage('/verify-email')
 
@@ -401,7 +404,9 @@ describe('VerifyEmailPage', () => {
   })
 
   it('resend reports the partial-failure state when the mail send fails', async () => {
-    mockResend.mockResolvedValueOnce({ emailSent: false })
+    mockResend.mockResolvedValueOnce({
+      emailVerification: { verificationEmailSent: false },
+    })
 
     renderPage('/verify-email')
 
@@ -420,7 +425,9 @@ describe('VerifyEmailPage', () => {
   // wiring that clears it.
   it('clears the stale code error when a resend succeeds', async () => {
     mockVerify.mockRejectedValueOnce(new FakeConnectError('not_found', 'invalid or expired verification code'))
-    mockResend.mockResolvedValueOnce({ emailSent: true })
+    mockResend.mockResolvedValueOnce({
+      emailVerification: { verificationEmailSent: true },
+    })
 
     renderPage('/verify-email')
 

@@ -178,39 +178,57 @@ func probeIsRepo(ctx context.Context, g *errgroup.Group, dir string, out *bool) 
 	})
 }
 
-// validateGitMode performs read-only validation of the git-mode fields of a
-// request and returns a gitModePlan describing what executeGitMode will do.
+// validateGitMode performs read-only validation of a request's git setup and
+// returns a gitModePlan describing what executeGitMode will do.
 // All returned errors are CodeInvalidArgument-eligible — callers should
 // surface them via sendInvalidArgument so bad user input fails fast at the
 // RPC boundary without mutating any state or creating any DB row.
-func (svc *Service) validateGitMode(ctx context.Context, workingDir string, r gitModeRequest) (gitModePlan, error) {
-	if r.GetCreateWorktree() {
-		return svc.validateCreateWorktree(ctx, workingDir, r.GetWorktreeBranch(), r.GetWorktreeBaseBranch())
+//
+// Every input has one defined result. An absent setup uses the directory as
+// it is. A present setup that selects no mode, or a mode whose required value
+// is empty, is refused here, before any git command runs. The semantic checks
+// (whether a branch exists, whether a path is a worktree) run in the per-mode
+// validators.
+func (svc *Service) validateGitMode(ctx context.Context, workingDir string, setup *leapmuxv1.GitSetup) (gitModePlan, error) {
+	if setup == nil {
+		// useCurrent: no mutation, nothing to validate against beyond the dir
+		// existing. If the dir happens to be inside a managed worktree we'll
+		// register the association during executeGitMode.
+		return gitModePlan{
+			Mode:              gitModeUseCurrent,
+			WorkingDir:        workingDir,
+			PlannedWorkingDir: workingDir,
+		}, nil
 	}
-	if wp := r.GetUseWorktreePath(); wp != "" {
-		return svc.validateUseWorktreePath(ctx, workingDir, wp)
+	switch mode := setup.GetMode().(type) {
+	case *leapmuxv1.GitSetup_CreateWorktree:
+		branch := mode.CreateWorktree.GetBranch()
+		if branch == "" {
+			return gitModePlan{}, errors.New("create_worktree.branch is required")
+		}
+		return svc.validateCreateWorktree(ctx, workingDir, branch, mode.CreateWorktree.GetBaseBranch())
+	case *leapmuxv1.GitSetup_UseWorktreePath:
+		if mode.UseWorktreePath == "" {
+			return gitModePlan{}, errors.New("use_worktree_path is required")
+		}
+		return svc.validateUseWorktreePath(ctx, workingDir, mode.UseWorktreePath)
+	case *leapmuxv1.GitSetup_CheckoutBranch:
+		if mode.CheckoutBranch == "" {
+			return gitModePlan{}, errors.New("checkout_branch is required")
+		}
+		return svc.validateCheckoutBranch(ctx, workingDir, mode.CheckoutBranch)
+	case *leapmuxv1.GitSetup_CreateBranch:
+		name := mode.CreateBranch.GetName()
+		if name == "" {
+			return gitModePlan{}, errors.New("create_branch.name is required")
+		}
+		return svc.validateCreateBranch(ctx, workingDir, name, mode.CreateBranch.GetBaseBranch())
+	default:
+		return gitModePlan{}, errors.New("git_setup selects no mode")
 	}
-	if br := r.GetCreateBranch(); br != "" {
-		return svc.validateCreateBranch(ctx, workingDir, br, r.GetCreateBranchBase())
-	}
-	if br := r.GetCheckoutBranch(); br != "" {
-		return svc.validateCheckoutBranch(ctx, workingDir, br)
-	}
-
-	// useCurrent: no mutation, nothing to validate against beyond the dir
-	// existing. If the dir happens to be inside a managed worktree we'll
-	// register the association during executeGitMode.
-	return gitModePlan{
-		Mode:              gitModeUseCurrent,
-		WorkingDir:        workingDir,
-		PlannedWorkingDir: workingDir,
-	}, nil
 }
 
 func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, branch, baseBranch string) (gitModePlan, error) {
-	if branch == "" {
-		return gitModePlan{}, errors.New("worktree_branch is required when create_worktree is true")
-	}
 	if err := gitutil.ValidateBranchName(branch); err != nil {
 		return gitModePlan{}, err
 	}
@@ -339,7 +357,7 @@ func (svc *Service) validateUseWorktreePath(ctx context.Context, workingDir, wor
 		// LINKED worktree as the working dir." Allowing the main repo
 		// through would let ensureTrackedWorktree write a Worktree DB
 		// row whose worktree_path equals repo_root; a later
-		// CloseAgent(REMOVE) would then attempt `git worktree remove`
+		// CloseTab(REMOVE) would then attempt `git worktree remove`
 		// on the main repo (which git refuses) and `git branch -D`
 		// against the main-repo HEAD branch (which can succeed and
 		// destroy the user's primary branch). attachWorktreeIfPresent
@@ -459,18 +477,6 @@ func (svc *Service) validateCheckoutBranch(ctx context.Context, workingDir, bran
 	}, nil
 }
 
-// gitModeRequest is the common interface for proto messages that carry
-// git-mode fields (OpenAgentRequest, OpenTerminalRequest, etc.).
-type gitModeRequest interface {
-	GetCreateWorktree() bool
-	GetWorktreeBranch() string
-	GetWorktreeBaseBranch() string
-	GetCheckoutBranch() string
-	GetCreateBranch() string
-	GetCreateBranchBase() string
-	GetUseWorktreePath() string
-}
-
 // gitModeResult holds the final working directory and worktree ID after
 // executeGitMode completes (or partially completes before failing).
 type gitModeResult struct {
@@ -488,7 +494,7 @@ type gitModeResult struct {
 // startup goroutine. Returns partial results with Rollback populated even on
 // error, so the caller can decide whether to emit a rollback label and then
 // call rollbackGitMode. Honors ctx cancellation between shell-outs so
-// CloseAgent/CloseTerminal can abort an in-progress phase 0.
+// CloseTab can abort an in-progress phase 0.
 func (svc *Service) executeGitMode(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
 	if err := ctx.Err(); err != nil {
 		return gitModeResult{}, err
@@ -641,7 +647,7 @@ func (svc *Service) executeCreateBranch(ctx context.Context, plan gitModePlan) (
 	// Mirror executeCheckoutBranch / executeUseCurrent: when the working
 	// dir lives inside a linked worktree, the new branch was created in
 	// that worktree, so the tab must be linked to its worktree row.
-	// Without the linkage a later CloseAgent(REMOVE) silently degrades
+	// Without the linkage a later CloseTab(REMOVE) silently degrades
 	// to KEEP. Carry the rollback so a probe failure still triggers the
 	// just-created branch's cleanup.
 	result := gitModeResult{

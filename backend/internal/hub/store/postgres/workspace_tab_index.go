@@ -266,29 +266,6 @@ func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context,
 	return store.MapSlice(rows, tabRowFromDB), nil
 }
 
-func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRenderedTabParams) (*store.WorkspaceTabRow, error) {
-	owner, ok := userid.OwnerFilter(p.UserID)
-	if !ok {
-		// An unminted caller owns nothing; binding "" would MATCH every
-		// blank-owner row rather than none. See userid.OwnerFilter.
-		return nil, store.ErrNotFound
-	}
-	row, err := s.conn.q.GetRenderedTab(ctx, gendb.GetRenderedTabParams{
-		UserID:      owner,
-		WorkspaceID: p.WorkspaceID,
-		TabType:     p.TabType,
-		TabID:       p.TabID,
-	})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, store.ErrNotFound
-		}
-		return nil, mapErr(err)
-	}
-	out := tabRowFromDB(row)
-	return &out, nil
-}
-
 func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p store.LocateAccessibleRenderedTabParams) (*store.WorkspaceTabRow, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {

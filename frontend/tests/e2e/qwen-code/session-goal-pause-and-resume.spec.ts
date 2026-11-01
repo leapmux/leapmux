@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { AgentGoalStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalStatus, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -21,8 +21,8 @@ qwenTest('pauses through the native goal control and resumes new native goal wor
       // Qwen states a reason for each pause of its own ("Three Goal turns in a
       // row recorded nothing to judge ..."). The reader's pause states none.
       await retryUntilPass(async () => {
-        const response = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: agent.id, limit: 1 })
-        expect({ status: response.goal?.status, statusDetail: response.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
+        const response = await channel.callWorker(leapmuxServer.workerId, WorkerAgentService.method.listAgentMessages, { agentId: agent.id, limit: 1 })
+        expect({ status: response.goal?.goal?.status, statusDetail: response.goal?.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
           .toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
       })
     },

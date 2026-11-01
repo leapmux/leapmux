@@ -5,17 +5,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAdminSettingsStore } from './adminSettings.store'
 
 const listSettings = vi.hoisted(() => vi.fn())
-const updateSetting = vi.hoisted(() => vi.fn())
-const updateSettingSecret = vi.hoisted(() => vi.fn())
-const resetSetting = vi.hoisted(() => vi.fn())
+const updateSettings = vi.hoisted(() => vi.fn())
+const resetSettings = vi.hoisted(() => vi.fn())
 const loadSystemInfo = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('~/api/clients', () => ({
   adminSettingsClient: {
     listSettings,
-    updateSetting,
-    updateSettingSecret,
-    resetSetting,
+    updateSettings,
+    resetSettings,
   },
 }))
 
@@ -98,44 +96,62 @@ describe('createAdminSettingsStore', () => {
 
   it('merges write replies (public, secret, reset) and records rejections without applying', async () => {
     const store = createAdminSettingsStore(() => true)
-    updateSetting.mockResolvedValue({
-      value: value('session_duration_seconds', '3600', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('session_duration_seconds', '3600', true),
+      ],
     })
     await store.update('session_duration_seconds', '3600')
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      writes: [
+        { key: 'session_duration_seconds', partialJson: '3600' },
+      ],
+    })
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('3600')
 
     // The reply must be MERGED, exactly as update and reset are: the store
-    // returns `.value` from the RPC so the row re-renders with the server's
+    // returns the one value from the RPC so the row re-renders with the server's
     // truth (a secret's `secretSet` flips to true). Asserting only the call
     // argument would still pass if the reply were dropped.
-    updateSettingSecret.mockResolvedValue({
-      value: value('smtp', '{"host":"mail"}', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('smtp', '{"host":"mail"}', true),
+      ],
     })
     await store.updateSecret('smtp', '{"password":"hunter2"}')
-    expect(updateSettingSecret).toHaveBeenCalledWith({ key: 'smtp', partialJson: '{"password":"hunter2"}' })
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      writes: [
+        { key: 'smtp', secretPartialJson: '{"password":"hunter2"}' },
+      ],
+    })
     expect(store.values().get('smtp')?.effectiveJson).toBe('{"host":"mail"}')
     expect(store.state.writeError).toBeNull()
 
     // And a refused secret write records the error against its own key
     // without disturbing the stored value, like the other two mutators.
-    updateSettingSecret.mockRejectedValue(new Error('keystore unavailable'))
+    updateSettings.mockRejectedValue(new Error('keystore unavailable'))
     await expect(store.updateSecret('smtp', '{"password":"x"}')).rejects.toThrow('keystore unavailable')
     expect(store.values().get('smtp')?.effectiveJson).toBe('{"host":"mail"}')
     expect(store.state.writeError).toMatchObject({ key: 'smtp' })
-    updateSettingSecret.mockReset()
+    updateSettings.mockReset()
 
-    updateSetting.mockRejectedValue(new Error('validation failed'))
+    updateSettings.mockRejectedValue(new Error('validation failed'))
     await expect(store.update('session_duration_seconds', '1')).rejects.toThrow('validation failed')
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('3600')
     expect(store.state.writeError).toMatchObject({ key: 'session_duration_seconds' })
 
-    resetSetting.mockResolvedValue({
-      value: value('session_duration_seconds', '604800', false),
+    resetSettings.mockResolvedValue({
+      values: [
+        value('session_duration_seconds', '604800', false),
+      ],
     })
     await store.reset('session_duration_seconds')
+    expect(resetSettings).toHaveBeenLastCalledWith({
+      keys: ['session_duration_seconds'],
+    })
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('604800')
 
-    resetSetting.mockRejectedValue(new Error('reset refused'))
+    resetSettings.mockRejectedValue(new Error('reset refused'))
     await expect(store.reset('session_duration_seconds')).rejects.toThrow('reset refused')
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('604800')
     expect(store.state.writeError).toMatchObject({ key: 'session_duration_seconds', message: 'reset refused' })
@@ -177,31 +193,65 @@ describe('createAdminSettingsStore', () => {
  * URL watched Add passkey stay disabled, on the screen that just accepted
  * the change, with no way to know why.
  */
+// The hub's write and reset verbs answer one value per listed key. A reply
+// that lists none leaves the stored value as it was, and records no error.
+describe('createAdminSettingsStore with a reply that lists no value', () => {
+  beforeEach(() => {
+    updateSettings.mockReset()
+    resetSettings.mockReset()
+  })
+
+  it('keeps the stored value for each of the three verbs', async () => {
+    listSettings.mockResolvedValue({
+      descriptors: [],
+      values: [
+        value('public_url', '"https://hub.example"', true),
+      ],
+    })
+    const store = createAdminSettingsStore(() => true)
+    await store.load()
+    updateSettings.mockResolvedValue({ values: [] })
+    resetSettings.mockResolvedValue({ values: [] })
+
+    await store.update('public_url', '"https://other.example"')
+    await store.updateSecret('public_url', '{"token":"x"}')
+    await store.reset('public_url')
+
+    expect(store.values().get('public_url')?.effectiveJson).toBe('"https://hub.example"')
+    expect(store.state.writeError).toBeNull()
+  })
+})
+
 describe('createAdminSettingsStore system-info convergence', () => {
   beforeEach(() => {
     loadSystemInfo.mockReset().mockResolvedValue(undefined)
-    updateSetting.mockReset()
-    updateSettingSecret.mockReset()
-    resetSetting.mockReset()
+    updateSettings.mockReset()
+    resetSettings.mockReset()
   })
 
   it('re-reads the system info after each accepted write', async () => {
     const store = createAdminSettingsStore(() => true)
 
-    updateSetting.mockResolvedValue({
-      value: value('public_url', '"https://hub.example"', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('public_url', '"https://hub.example"', true),
+      ],
     })
     await store.update('public_url', '"https://hub.example"')
     expect(loadSystemInfo).toHaveBeenCalledWith(true)
 
-    updateSettingSecret.mockResolvedValue({
-      value: value('smtp', '{"host":"mail"}', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('smtp', '{"host":"mail"}', true),
+      ],
     })
     await store.updateSecret('smtp', '{"password":"hunter2"}')
     expect(loadSystemInfo).toHaveBeenCalledTimes(2)
 
-    resetSetting.mockResolvedValue({
-      value: value('public_url', '""', false),
+    resetSettings.mockResolvedValue({
+      values: [
+        value('public_url', '""', false),
+      ],
     })
     await store.reset('public_url')
     expect(loadSystemInfo).toHaveBeenCalledTimes(3)
@@ -212,10 +262,10 @@ describe('createAdminSettingsStore system-info convergence', () => {
   // raised, and one the store's own admin guard raised before it asked.
   it('does not re-read after a refused write', async () => {
     const store = createAdminSettingsStore(() => true)
-    updateSetting.mockRejectedValue(new Error('validation failed'))
+    updateSettings.mockRejectedValue(new Error('validation failed'))
 
     await expect(store.update('public_url', '"nonsense"')).rejects.toThrow('validation failed')
-    expect(updateSetting).toHaveBeenCalledTimes(1)
+    expect(updateSettings).toHaveBeenCalledTimes(1)
     expect(loadSystemInfo).not.toHaveBeenCalled()
   })
 
@@ -223,7 +273,7 @@ describe('createAdminSettingsStore system-info convergence', () => {
     const store = createAdminSettingsStore(() => false)
 
     await expect(store.update('public_url', '"https://hub.example"')).rejects.toThrow(/administrator/)
-    expect(updateSetting).not.toHaveBeenCalled()
+    expect(updateSettings).not.toHaveBeenCalled()
     expect(loadSystemInfo).not.toHaveBeenCalled()
   })
 
@@ -232,8 +282,10 @@ describe('createAdminSettingsStore system-info convergence', () => {
   it('merges the reply without waiting for the refresh', async () => {
     const store = createAdminSettingsStore(() => true)
     loadSystemInfo.mockReturnValue(new Promise(() => {}))
-    updateSetting.mockResolvedValue({
-      value: value('public_url', '"https://hub.example"', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('public_url', '"https://hub.example"', true),
+      ],
     })
 
     await store.update('public_url', '"https://hub.example"')
@@ -246,8 +298,10 @@ describe('createAdminSettingsStore system-info convergence', () => {
   it('keeps an accepted write accepted when the refresh fails', async () => {
     const store = createAdminSettingsStore(() => true)
     loadSystemInfo.mockRejectedValue(new Error('hub unreachable'))
-    updateSetting.mockResolvedValue({
-      value: value('public_url', '"https://hub.example"', true),
+    updateSettings.mockResolvedValue({
+      values: [
+        value('public_url', '"https://hub.example"', true),
+      ],
     })
 
     await store.update('public_url', '"https://hub.example"')

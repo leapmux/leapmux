@@ -37,7 +37,7 @@ type OwnedTab = RenderedTab
 //   - RenderedTabs: the subset whose tile_id resolves to a live LEAF reachable
 //     from a registered root. This is an ELIGIBILITY predicate, not a layout
 //     one -- it sets the `rendered` flag of `workspace_tab_owned`, whose
-//     rendered rows serve LocateTab / GetTab / ListTabs, and the CLI derives
+//     rendered rows serve LocateTab and ListTabs, and the CLI derives
 //     a writable `--tile-id` from them.
 //     So its TileID is always the tab's own tile: the raw, addressable id that
 //     `validateTabPlacement` will accept.

@@ -8,10 +8,14 @@ import { finishCleanup } from './helpers/cleanup'
 import { spawnRegisteredWorker } from './helpers/nativeWorker'
 import { stopProcess } from './helpers/process'
 import { expandSidebarSection, expectAnyVisible, openAppAs, sidebarSectionHeader } from './helpers/ui'
+import { watchUserEvents } from './helpers/userEventsWatch'
 import { restartWorker, SEPARATE_WORKER_NAME, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /** The name of the temporary Worker that this file deregisters. */
 const TEMP_WORKER_NAME = 'deregister-test-worker'
+
+/** The name of the Worker that registers while a page shows the Workers section. */
+const LIVE_WORKER_NAME = 'live-list-test-worker'
 
 // This file registers its own temporary Worker, so that the deregistration
 // leaves the main Worker of the separate Hub to the other tests.
@@ -153,6 +157,50 @@ test.describe('Worker Deregistration', () => {
       }),
       workersSection.getByTestId('worker-name').filter({ hasText: /^—$/ }),
     )
+  })
+})
+
+test.describe('Worker List Updates', () => {
+  let liveWorker: RegisteredWorker | undefined
+
+  test.afterEach(async ({ separateHubWorker }) => {
+    const worker = liveWorker
+    liveWorker = undefined
+    if (!worker)
+      return
+    const { hubUrl, adminToken } = separateHubWorker
+    await finishCleanup([
+      stopProcess(worker.proc),
+      (async () => {
+        const workers = await listWorkersViaAPI(hubUrl, adminToken)
+        if (workers.some(listed => listed.id === worker.workerId))
+          await deregisterWorkerViaAPI(hubUrl, adminToken, worker.workerId)
+      })(),
+    ])
+  })
+
+  // The page re-fetches the list only when its /ws/userevents stream announces a change, so a worker that registers or
+  // deregisters while the page is open must reach the sidebar through those announcements alone. The page loads a
+  // worker's name only while the list reads the worker online, and a worker registers before it connects, so the name
+  // appears only because its connection is announced too.
+  test('should list a worker that registers while the page is open, and drop it after it deregisters', async ({ page, separateHubWorker }) => {
+    const watch = watchUserEvents(page)
+    const workersSection = await openWorkersSidebar(page, separateHubWorker.adminToken)
+    const liveWorkerName = workersSection.getByTestId('worker-name').filter({ hasText: LIVE_WORKER_NAME })
+    await expect(liveWorkerName).toHaveCount(0)
+
+    liveWorker = await spawnRegisteredWorker(separateHubWorker, {
+      name: LIVE_WORKER_NAME,
+      dataDir: join(separateHubWorker.dataDir, 'worker-live-list-data'),
+      output: separateHubWorker.output,
+    })
+    await expect(liveWorkerName).toBeVisible()
+    const announcedBeforeDeregistration = watch.workersChangedCount()
+    expect(announcedBeforeDeregistration, 'the registration and the connection each reached the page').toBeGreaterThanOrEqual(2)
+
+    await deregisterWorkerViaAPI(separateHubWorker.hubUrl, separateHubWorker.adminToken, liveWorker.workerId)
+    await expect(liveWorkerName).toHaveCount(0)
+    expect(watch.workersChangedCount(), 'the deregistration reached the page as another announcement').toBeGreaterThan(announcedBeforeDeregistration)
   })
 })
 

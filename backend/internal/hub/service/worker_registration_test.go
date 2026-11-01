@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/quartz"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,6 +30,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -51,6 +54,13 @@ type regKeyEnv struct {
 	mux             *http.ServeMux
 	wMgr            *workermgr.Manager
 	notifier        *notifier.Notifier
+	channelMgr      *channelmgr.Manager
+	// registry holds one in-memory CRDT manager per user, as hub/server.go
+	// wires it, so a test can subscribe to a user's /ws/userevents frames.
+	registry *crdt.Registry
+	// connector is the WorkerConnectorService behind connectorClient, for a
+	// test that drives one of its Hub-internal entry points.
+	connector *service.WorkerConnectorService
 }
 
 // regKeySeed configures the settings a registration-key env runs under;
@@ -116,15 +126,24 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
+	registry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(owner, newMemJournal(), allowAllAuth{}, nil, time.Now)
+		if err := mgr.Bootstrap(ctx); err != nil {
+			return nil, err
+		}
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 	// One notifier for both services, as hub/server.go wires it: the
 	// connector delivers DEREGISTER to a deregistering worker that connects,
-	// and the management service sends it to a connected one.
-	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() }, nil)
+	// and the management service sends it to a connected one. Every
+	// workers-changed notification goes through the CRDT registry, as there.
+	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() }, registry.BroadcastWorkersChanged)
 	connectorSt := st
 	if connectorStore != nil {
 		connectorSt = connectorStore(st)
 	}
-	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, notif, nil, sendq.NewMaxBytesPoolForTest())
+	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, pendingReqs, notif, registry, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	// Both halves of max_workers_per_user, wired from one value exactly as
 	// hub/server.go does: the service caps registered ROWS, the registry caps
 	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
@@ -135,7 +154,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, set, nil)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, registry.BroadcastWorkersChanged, notif, mailer, mail.Renderer{}, set, nil)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
@@ -152,6 +171,9 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 		mux:             mux,
 		wMgr:            wMgr,
 		notifier:        notif,
+		channelMgr:      cMgr,
+		registry:        registry,
+		connector:       connectorSvc,
 	}
 }
 
@@ -199,7 +221,7 @@ func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*leapmuxv1.Regist
 	if key != "" {
 		info.RequestHeader().Set("Authorization", "Bearer "+key)
 	}
-	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Version: "v"})
+	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{})
 }
 
 func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
@@ -543,7 +565,7 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
-func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
+func TestRevokeRegistrationKey_SoftDeletes(t *testing.T) {
 	t.Parallel()
 
 	env := setupRegKeyEnv(t)
@@ -553,7 +575,7 @@ func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
 	require.NoError(t, err)
 	key := createResp.GetRegistrationKey()
 
-	_, err = env.mgmtClient.DeleteRegistrationKey(authedReq(context.Background(), &leapmuxv1.DeleteRegistrationKeyRequest{
+	_, err = env.mgmtClient.RevokeRegistrationKey(authedReq(context.Background(), &leapmuxv1.RevokeRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.NoError(t, err)
@@ -562,6 +584,47 @@ func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
 	_, err = env.registerWithKey(t, key)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// TestRevokeRegistrationKey_RefusesAMissingOrUnknownKey pins the two
+// refusals: an empty key is the caller's malformed request, and a key the
+// caller does not own reads exactly as a key that does not exist.
+func TestRevokeRegistrationKey_RefusesAMissingOrUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+
+	_, err := env.mgmtClient.RevokeRegistrationKey(authedReq(context.Background(), &leapmuxv1.RevokeRegistrationKeyRequest{}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = env.mgmtClient.RevokeRegistrationKey(authedReq(context.Background(), &leapmuxv1.RevokeRegistrationKeyRequest{
+		RegistrationKey: "no-such-key",
+	}, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// A revoked key has nothing left to revoke, so a second revoke answers
+// NotFound, as Extend does for a dead key. Rewriting the expiry again would move
+// it forward and delay the purge.
+func TestRevokeRegistrationKey_RefusesARevokedKey(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	revoke := &leapmuxv1.RevokeRegistrationKeyRequest{RegistrationKey: createResp.GetRegistrationKey()}
+
+	_, err = env.mgmtClient.RevokeRegistrationKey(authedReq(context.Background(), revoke, token))
+	require.NoError(t, err)
+
+	_, err = env.mgmtClient.RevokeRegistrationKey(authedReq(context.Background(), revoke, token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
 func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
@@ -683,13 +746,10 @@ func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
 
 	workerID := "auto-worker-1"
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       "auto-token-1",
-		RegisteredBy:    userid.MustNew(env.adminID(t)),
-		PublicKey:       []byte{},
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
-		AutoRegistered:  true,
+		ID:             workerID,
+		AuthToken:      "auto-token-1",
+		RegisteredBy:   userid.MustNew(env.adminID(t)),
+		AutoRegistered: true,
 	}))
 
 	_, err := env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
@@ -734,7 +794,7 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 		if key != "" {
 			info.RequestHeader().Set("Authorization", "Bearer "+key)
 		}
-		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Version: "v"})
+		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{})
 		return err
 	}
 
@@ -814,9 +874,7 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
-	}))
+	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 
 	first, err := stream.Receive()
 	require.NoError(t, err)
@@ -824,7 +882,269 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 		"the FIRST message on the stream must be WorkerIdentity, not the heartbeat echo")
 	assert.Equal(t, worker.RegisteredBy, first.GetWorkerIdentity().GetRegisteredBy(),
 		"the Hub must name the worker's recorded owner")
+	// The greeting also carries the owner's username, which the worker reports
+	// to `leapmux control whoami` and could not learn any other way.
+	assert.Equal(t, "admin", first.GetWorkerIdentity().GetRegisteredByUsername(),
+		"the Hub must name the owner's username")
 	require.NoError(t, stream.CloseSend())
+}
+
+// connectAdminWorker registers a worker as the admin and opens its Connect
+// stream over a Unix socket. It returns the stream, the worker's owner id, and
+// the greeting the Hub sent first.
+func connectAdminWorker(t *testing.T, env *regKeyEnv, socketName string) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, string, *leapmuxv1.WorkerIdentity) {
+	t.Helper()
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
+	require.NoError(t, err)
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, socketName), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	stream, err := connectorClient.Connect(streamCtx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
+
+	first, err := stream.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, first.GetWorkerIdentity(), "the first frame is the greeting")
+	return stream, worker.RegisteredBy, first.GetWorkerIdentity()
+}
+
+// nextWorkerIdentity reads frames until the next WorkerIdentity frame.
+func nextWorkerIdentity(t *testing.T, stream leapmuxv1connect.WorkerConnectorServiceConnectClientStream) *leapmuxv1.WorkerIdentity {
+	t.Helper()
+	for {
+		frame, err := stream.Receive()
+		require.NoError(t, err)
+		if identity := frame.GetWorkerIdentity(); identity != nil {
+			return identity
+		}
+	}
+}
+
+// renameUser changes a user's username in the store, as UserService.UpdateProfile
+// does.
+func renameUser(t *testing.T, st store.Store, userID, username string) {
+	t.Helper()
+	user, err := st.Users().GetByID(context.Background(), userID)
+	require.NoError(t, err)
+	require.NoError(t, st.Users().UpdateProfile(context.Background(), store.UpdateUserProfileParams{
+		ID: userID, Username: username, DisplayName: user.DisplayName,
+	}))
+}
+
+// A rename reaches a connected worker without a reconnect: the Hub re-delivers
+// the identity to every worker of the owner, which is what the user-info
+// observer in hub/server.go calls for each user_info event.
+func TestRedeliverWorkerIdentity_FollowsARename(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-rename")
+	require.Equal(t, "admin", greeting.GetRegisteredByUsername())
+
+	renameUser(t, env.store, owner, "admin-renamed")
+	env.connector.RedeliverWorkerIdentity(owner)
+
+	identity := nextWorkerIdentity(t, stream)
+	assert.Equal(t, owner, identity.GetRegisteredBy(), "a rename keeps the owner")
+	assert.Equal(t, "admin-renamed", identity.GetRegisteredByUsername(), "the worker learns the new username")
+
+	// Another user's change reaches none of this owner's workers, and an owner
+	// with no connected worker costs nothing.
+	env.connector.RedeliverWorkerIdentity("someone-else")
+	env.connector.RedeliverWorkerIdentity("")
+}
+
+// A rename that commits between Connect's greeting read and the registration
+// misses the user-info re-delivery, because the registry does not hold the
+// connection yet. Connect reads the username again after it registers the
+// connection and sends the changed name, so the worker never keeps the old one.
+func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var renamed atomic.Bool
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return renameAfterFirstReadStore{Store: st, renamed: &renamed, username: "admin-raced"}
+	})
+	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-race")
+	require.Equal(t, "admin", greeting.GetRegisteredByUsername(), "the greeting holds the name read before the rename")
+	require.True(t, renamed.Load(), "precondition: the rename landed during Connect")
+
+	identity := nextWorkerIdentity(t, stream)
+	assert.Equal(t, owner, identity.GetRegisteredBy())
+	assert.Equal(t, "admin-raced", identity.GetRegisteredByUsername(),
+		"Connect re-delivers a username that changed before the registration")
+}
+
+// A failed username read keeps the name each worker holds: the re-delivery
+// sends nothing rather than an empty name.
+func TestRedeliverWorkerIdentity_SendsNothingWhenTheAccountCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var failReads atomic.Bool
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return userReadFailStore{Store: st, fail: &failReads}
+	})
+	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-read-fails")
+
+	failReads.Store(true)
+	env.connector.RedeliverWorkerIdentity(owner)
+	failReads.Store(false)
+	renameUser(t, env.store, owner, "admin-after")
+	env.connector.RedeliverWorkerIdentity(owner)
+
+	// The first identity frame after the greeting is the second re-delivery:
+	// the failed one sent nothing.
+	identity := nextWorkerIdentity(t, stream)
+	assert.Equal(t, "admin-after", identity.GetRegisteredByUsername())
+}
+
+// The username is display only, so a failed read never refuses a connection:
+// the greeting names the owner with no username, and no second frame repeats
+// the empty name. The connection stays live, so a later re-delivery reaches it.
+func TestConnect_GreetsWithNoUsernameWhenTheAccountCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var failReads atomic.Bool
+	failReads.Store(true)
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return userReadFailStore{Store: st, fail: &failReads}
+	})
+	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-unreadable")
+	assert.Equal(t, owner, greeting.GetRegisteredBy(), "the greeting still names the owner")
+	assert.Empty(t, greeting.GetRegisteredByUsername(), "an unread username is sent as none")
+
+	failReads.Store(false)
+	renameUser(t, env.store, owner, "admin-later")
+	env.connector.RedeliverWorkerIdentity(owner)
+
+	// The first identity frame after the greeting is the re-delivery: Connect
+	// sent no second frame for the read that failed.
+	identity := nextWorkerIdentity(t, stream)
+	assert.Equal(t, "admin-later", identity.GetRegisteredByUsername())
+}
+
+// A user-info event fires for every account change, so a re-delivery for an
+// owner with no worker connected to this Hub must cost nothing: no store read,
+// no frame. The owner with a connected worker is the control that shows the
+// counter sees the read.
+func TestRedeliverWorkerIdentity_ReadsNothingForAnOwnerWithNoConnectedWorker(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var reads atomic.Int64
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return userReadCountingStore{Store: st, reads: &reads}
+	})
+	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-no-conn")
+
+	reads.Store(0)
+	env.connector.RedeliverWorkerIdentity("someone-else")
+	env.connector.RedeliverWorkerIdentity("")
+	assert.Zero(t, reads.Load(), "an owner with no connected worker costs no read")
+
+	renameUser(t, env.store, owner, "admin-counted")
+	env.connector.RedeliverWorkerIdentity(owner)
+	assert.Equal(t, int64(1), reads.Load(), "an owner with a connected worker costs one read")
+	assert.Equal(t, "admin-counted", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
+}
+
+// userReadCountingStore counts the connector's user reads by id.
+type userReadCountingStore struct {
+	store.Store
+	reads *atomic.Int64
+}
+
+func (s userReadCountingStore) Users() store.UserStore {
+	return userReadCountingUsers{UserStore: s.Store.Users(), reads: s.reads}
+}
+
+type userReadCountingUsers struct {
+	store.UserStore
+	reads *atomic.Int64
+}
+
+func (u userReadCountingUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	u.reads.Add(1)
+	return u.UserStore.GetByID(ctx, id)
+}
+
+// renameAfterFirstReadStore renames a user right after the connector's first
+// read of that user, which is the greeting read in Connect.
+type renameAfterFirstReadStore struct {
+	store.Store
+	renamed  *atomic.Bool
+	username string
+}
+
+func (s renameAfterFirstReadStore) Users() store.UserStore {
+	return renameAfterFirstReadUsers{UserStore: s.Store.Users(), renamed: s.renamed, username: s.username}
+}
+
+type renameAfterFirstReadUsers struct {
+	store.UserStore
+	renamed  *atomic.Bool
+	username string
+}
+
+func (u renameAfterFirstReadUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	user, err := u.UserStore.GetByID(ctx, id)
+	if err != nil || !u.renamed.CompareAndSwap(false, true) {
+		return user, err
+	}
+	if err := u.UpdateProfile(ctx, store.UpdateUserProfileParams{
+		ID: id, Username: u.username, DisplayName: user.DisplayName,
+	}); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// userReadFailStore fails the connector's user reads while fail is set.
+type userReadFailStore struct {
+	store.Store
+	fail *atomic.Bool
+}
+
+func (s userReadFailStore) Users() store.UserStore {
+	return userReadFailUsers{UserStore: s.Store.Users(), fail: s.fail}
+}
+
+type userReadFailUsers struct {
+	store.UserStore
+	fail *atomic.Bool
+}
+
+func (u userReadFailUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	if u.fail.Load() {
+		return nil, errors.New("user read failed")
+	}
+	return u.UserStore.GetByID(ctx, id)
 }
 
 // TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck pins the
@@ -857,11 +1177,7 @@ func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) 
 	streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
 	stream, err := connectorClient.Connect(streamCtx)
 	require.NoError(t, err)
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
-			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-		}},
-	}))
+	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
 
 	var instruction *leapmuxv1.ConnectResponse
 	for instruction == nil {
@@ -909,19 +1225,18 @@ func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing
 				info.RequestHeader().Set("Authorization", "Bearer "+registered.GetAuthToken())
 				stream, err := client.Connect(streamCtx)
 				require.NoError(t, err)
-				err = stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-					Heartbeat: &leapmuxv1.Heartbeat{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM},
-				}})
+				err = stream.Send(helloRequest(postQuantumHello(0x31)))
 				if !errors.Is(err, io.EOF) {
 					require.NoError(t, err)
 				}
 				return stream
 			}
 			first := open()
+			// The identity frame proves the Hub registered the connection.
 			for {
 				frame, err := first.Receive()
 				require.NoError(t, err)
-				if frame.GetHeartbeat() != nil {
+				if frame.GetWorkerIdentity() != nil {
 					break
 				}
 			}
@@ -1062,11 +1377,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 			streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
 			stream, err := connectorClient.Connect(streamCtx)
 			require.NoError(t, err)
-			require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
-					EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-				}},
-			}))
+			require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
 
 			var instruction *leapmuxv1.ConnectResponse
 			for instruction == nil {
@@ -1140,11 +1451,7 @@ func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 	streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
 	stream, err := connectorClient.Connect(streamCtx)
 	require.NoError(t, err)
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
-			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-		}},
-	}))
+	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
 
 	for {
 		frame, err := stream.Receive()
@@ -1208,9 +1515,7 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	// is the cheapest refuse path (no greeting enqueue), so on a fast runner
 	// the Hub often closes before the heartbeat envelope finishes writing —
 	// requiring Send to succeed flakes as "unknown: write envelope: EOF".
-	err = stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
-	})
+	err = stream.Send(helloRequest(classicHello(0x31)))
 	if err != nil {
 		require.ErrorIs(t, err, io.EOF,
 			"server may close before the first Send finishes; got %v", err)
@@ -1262,15 +1567,10 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// The mode is declared on EVERY heartbeat, as a real worker declares it: the
-	// Hub caches the first one and terminates the stream if a later heartbeat
-	// arrives UNSPECIFIED, so a bare repeat would end this connection for a
-	// reason that has nothing to do with the cap.
-	heartbeat := &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
-			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-		}},
-	}
+	// Every stream opens with a hello, as a real worker's does; later messages
+	// are bare heartbeats.
+	hello := helloRequest(postQuantumHello(0x31))
+	heartbeat := &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}
 	type workerStream = leapmuxv1connect.WorkerConnectorServiceConnectClientStream
 
 	// openStream starts a Connect stream and returns the Hub's first frame. The
@@ -1285,7 +1585,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 		if err != nil {
 			return workerStream{}, nil, err
 		}
-		if err := stream.Send(heartbeat); err != nil && !errors.Is(err, io.EOF) {
+		if err := stream.Send(hello); err != nil && !errors.Is(err, io.EOF) {
 			return stream, nil, err
 		}
 		first, err := stream.Receive()
@@ -1315,6 +1615,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, greeting.GetWorkerIdentity(),
 		"the greeting is enqueued before the conn is published, so receiving it proves membership")
+	require.NoError(t, firstStream.Send(heartbeat))
 	awaitHeartbeat(t, firstStream)
 
 	live := env.wMgr.ConnForTrustedPath(first.GetWorkerId())
@@ -1382,4 +1683,181 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	require.NoError(t, err, "a freed slot must be usable")
 	assert.NotNil(t, greeting.GetWorkerIdentity())
 	require.NoError(t, thirdStream.CloseSend())
+}
+
+// subscribeUserEvents subscribes to userID's CRDT manager the way a
+// /ws/userevents connection does, with a filter that admits no workspace, and
+// returns the events it receives.
+func (e *regKeyEnv) subscribeUserEvents(t *testing.T, userID string) <-chan *leapmuxv1.WatchUserEvent {
+	t.Helper()
+	mgr, err := e.registry.Get(context.Background(), userID)
+	require.NoError(t, err)
+	events := make(chan *leapmuxv1.WatchUserEvent, 64)
+	_, unsub := mgr.Subscribe(&crdt.Subscriber{
+		UserID: userID,
+		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}},
+		Send: func(evt *crdt.MarshaledEvent) error {
+			events <- evt.Event
+			return nil
+		},
+	})
+	t.Cleanup(unsub)
+	return events
+}
+
+// requireWorkersChanged waits for the next workers_changed event on events,
+// skipping any other event, and fails with failMsg at the test deadline.
+func requireWorkersChanged(t *testing.T, events <-chan *leapmuxv1.WatchUserEvent, failMsg string) {
+	t.Helper()
+	deadline := testutil.DeadlineContext(t)
+	for {
+		select {
+		case evt := <-events:
+			if evt.GetWorkersChanged() != nil {
+				return
+			}
+		case <-deadline.Done():
+			t.Fatal(failMsg)
+		}
+	}
+}
+
+// registerWorker mints a registration key as the admin and registers one
+// worker with it, returning the new worker's ID.
+func (e *regKeyEnv) registerWorker(t *testing.T, token string) string {
+	t.Helper()
+	createResp, err := e.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	resp, err := e.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+	return resp.GetWorkerId()
+}
+
+// A user whose only connection is /ws/userevents -- no channel socket open,
+// because no worker is online yet -- must still learn that a worker joined.
+func TestRegisterNotifiesAUserWithNoChannelSocket(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	events := env.subscribeUserEvents(t, env.adminID(t))
+	env.registerWorker(t, env.login(t, "admin", "admin123"))
+
+	requireWorkersChanged(t, events, "the user's /ws/userevents subscriber heard nothing about the new worker")
+}
+
+// The owner's own deregistration announces the change on the same stream.
+func TestDeregisterNotifiesTheOwnersUserEvents(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	workerID := env.registerWorker(t, token)
+	// Subscribe only now, so the registration's own event cannot satisfy the wait.
+	events := env.subscribeUserEvents(t, env.adminID(t))
+
+	_, err := env.mgmtClient.DeregisterWorker(authedReq(context.Background(),
+		&leapmuxv1.DeregisterWorkerRequest{WorkerId: workerID}, token))
+	require.NoError(t, err)
+
+	requireWorkersChanged(t, events, "the owner's /ws/userevents subscriber heard nothing about the deregistration")
+}
+
+// workersChangedSoFar counts the workers_changed events already delivered to
+// events, without waiting for more.
+func workersChangedSoFar(events <-chan *leapmuxv1.WatchUserEvent) int {
+	n := 0
+	for {
+		select {
+		case evt := <-events:
+			if evt.GetWorkersChanged() != nil {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+}
+
+// The client loads a worker's name only while the list reads the worker online,
+// and a worker registers before it connects. So the list must be re-fetched when
+// the worker comes online and when it goes offline, not only when it registers.
+// A connection that replaces a live one leaves the worker online, so it
+// announces nothing.
+func TestConnectAndDisconnectNotifyTheOwnersUserEvents(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+	workerID := regResp.GetWorkerId()
+	// Subscribe only now, so the registration's own event cannot satisfy a wait.
+	events := env.subscribeUserEvents(t, env.adminID(t))
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-online-events"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx := testutil.DeadlineContext(t)
+	connectStream := func(fill byte) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+		streamCtx, streamInfo := connect.NewClientContext(ctx)
+		streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+		stream, err := connectorClient.Connect(streamCtx)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.Close() })
+		require.NoError(t, stream.Send(helloRequest(classicHello(fill))))
+		identity, err := stream.Receive()
+		require.NoError(t, err)
+		require.NotNil(t, identity.GetWorkerIdentity(), "the first frame after a valid hello is WorkerIdentity")
+		return stream
+	}
+
+	first := connectStream(0x41)
+	requireWorkersChanged(t, events, "the owner heard nothing when the worker came online")
+	// The hub announces after Register published the connection.
+	assert.True(t, env.wMgr.OnlineForTrustedPath(workerID), "a list read after the announcement shows the worker online")
+
+	// The hub drains the greeting only after Register returned, so once the
+	// replacement's identity arrived, any announcement of its Register was
+	// already delivered. The superseded handler announces from its teardown,
+	// which ends before its stream does.
+	second := connectStream(0x42)
+	for {
+		if _, err := first.Receive(); err != nil {
+			break
+		}
+	}
+	assert.Zero(t, workersChangedSoFar(events), "a replacement leaves the worker online and announces nothing")
+
+	require.NoError(t, second.CloseSend())
+	requireWorkersChanged(t, events, "the owner heard nothing when the worker went offline")
+	assert.False(t, env.wMgr.OnlineForTrustedPath(workerID), "a list read after the announcement shows the worker offline")
+}
+
+// A worker-list change must not reach a channel socket: the Go tunnel client
+// tries to decrypt every frame on it, and a plaintext frame closes its channel.
+func TestAWorkerListChangeSendsNothingOnChannelSockets(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	adminID := env.adminID(t)
+	events := env.subscribeUserEvents(t, adminID)
+	channelFrames := make(chan *leapmuxv1.ChannelMessage, 8)
+	env.channelMgr.BindUser(adminID, "recording-socket", func(msg *leapmuxv1.ChannelMessage) error {
+		channelFrames <- msg
+		return nil
+	}, func() {})
+
+	env.registerWorker(t, env.login(t, "admin", "admin123"))
+
+	// Register delivers workers_changed to the subscriber before it answers,
+	// so once the event arrived, any frame it sent to a channel socket arrived
+	// too.
+	requireWorkersChanged(t, events, "the user's /ws/userevents subscriber heard nothing about the new worker")
+	assert.Empty(t, channelFrames, "no channel socket may receive a worker-list change")
 }

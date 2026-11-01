@@ -3,7 +3,7 @@ import type { TabMetadataStore } from './tabMetadata.store'
 import type { TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { Projection, RenderedTab } from '~/lib/crdt'
 import { createMemo, mapArray } from 'solid-js'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { cmpStr, hlcIsZero } from '~/lib/crdt'
 import { shallowEqual, shallowEqualArraysDeep } from '~/lib/shallowEqual'
 import { tabKey } from './tab.helpers'
@@ -358,8 +358,8 @@ export function createTabView(opts: CreateTabViewOpts) {
    * `undefined` that an absent metadata field reads as. The intersection with `T`
    * keeps the real type of each value. Thus `satisfies Complete<AgentTab>` turns a
    * forgotten field into a compile error, instead of a UI affordance that silently
-   * disappears -- commit b25bdf4b had to add `supportsSteering` and `rootAgentId`
-   * after their absence hid the Steer action.
+   * disappears, as the Steer action once did while the steering capability and
+   * `rootAgentId` were missing here.
    *
    * The mapped form `{ [K in keyof T]-?: T[K] | undefined }` is impossible here:
    * TypeScript strips `undefined` from the property type when `-?` removes the
@@ -399,8 +399,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           parentAgentId: m.parentAgentId,
           acceptsMessages: m.acceptsMessages,
           acceptsInterrupt: m.acceptsInterrupt,
-          supportsSteering: m.supportsSteering,
-          supportsPreemption: m.supportsPreemption,
+          queueHeadDispatch: m.queueHeadDispatch,
           rootAgentId: m.rootAgentId,
         } satisfies Complete<AgentTab>
       case TabType.TERMINAL:

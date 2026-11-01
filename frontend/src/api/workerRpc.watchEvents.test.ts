@@ -1,8 +1,7 @@
 import type { ChannelManager } from '~/lib/channel'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode, WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
 
 const fixture = vi.hoisted(() => ({ current: undefined as ReturnType<typeof fakeChannelStream> | undefined }))
@@ -60,7 +59,7 @@ describe('watchEventsViaChannel', () => {
     if (!(payload instanceof Uint8Array))
       throw new TypeError('The opening call must transmit protobuf bytes.')
     expect(channelId).toBe('native-channel')
-    expect(method).toBe('WatchEvents')
+    expect(method).toBe(WorkerWatchService.method.watchEvents)
     const encoded = fromBinary(WatchEventsRequestSchema, payload)
     expect(encoded.updateId).toBe(17n)
     expect(encoded.agents[0]).toMatchObject({ replayId, cursorSeq, windowTailSeq: 0n })
@@ -132,21 +131,19 @@ describe('watchEventsViaChannel', () => {
         case: 'agentEvent',
         value: create(AgentEventSchema, {
           agentId: 'agent-1',
-          replay: true,
-          replayId: 11n,
+          replay: { replayId: 11n, agentId: 'agent-1' },
           event: {
             case: 'catchUpStart',
             value: { latestSeq: 7n },
           },
-          replayAgentId: 'agent-1',
         }),
       },
     })))
     expect(received.mock.calls[0]?.[0].event.value.agentStates).toEqual([
       expect.objectContaining({ agentId: 'agent-1', mode: WatchMode.FULL, replayId: 11n }),
     ])
-    expect(received.mock.calls[1]?.[0].event.value.replayId).toBe(11n)
-    expect(Reflect.get(received.mock.calls[1]?.[0].event.value, 'replayAgentId')).toBe('agent-1')
+    expect(received.mock.calls[1]?.[0].event.value.replay?.replayId).toBe(11n)
+    expect(received.mock.calls[1]?.[0].event.value.replay?.agentId).toBe('agent-1')
     handle.close()
   })
 
@@ -162,13 +159,11 @@ describe('watchEventsViaChannel', () => {
     handle.onEvent(received)
     const event = create(AgentEventSchema, {
       agentId: 'root-1',
-      replay: true,
-      replayId,
+      replay: { replayId, agentId: 'child-1' },
       event: {
         case: 'backgroundTasksChanged',
-        value: { agentId: 'root-1', tasks: [] },
+        value: { tasks: [] },
       },
-      replayAgentId: 'child-1',
     })
     stream.message(toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
       event: { case: 'agentEvent', value: event },
@@ -176,9 +171,7 @@ describe('watchEventsViaChannel', () => {
     expect(received).toHaveBeenCalledOnce()
     expect(received.mock.calls[0]?.[0].event.value).toMatchObject({
       agentId: 'root-1',
-      replay: true,
-      replayId,
-      replayAgentId: 'child-1',
+      replay: { replayId, agentId: 'child-1' },
     })
     handle.close()
   })

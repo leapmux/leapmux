@@ -90,7 +90,7 @@ func PruneTombstonesAtOrBelow(state *leapmuxv1.UserCrdtState, watermark *leapmux
 
 // NewState returns an empty UserCrdtState seeded with the given user id.
 // The workspaces map is initialized empty; the lifecycle create/delete
-// paths add and remove entries via SetWorkspaceRegisterOp /
+// paths add and remove entries via CreateWorkspaceOp /
 // TombstoneWorkspaceOp in the op log (the same serialized pipeline every
 // other op flows through).
 func NewState(userID string) *leapmuxv1.UserCrdtState {
@@ -114,6 +114,10 @@ func NewState(userID string) *leapmuxv1.UserCrdtState {
 //   - Tombstone op: write tombstone_at if hlc > current; clear all
 //     non-tombstone registers on the entity.
 //   - Set op on a tombstoned entity: drop (remove-wins).
+//   - Set op that selects no register: drop, and create no record. The
+//     validator refuses such an op, but a replayed journal op skips the
+//     validator, and an op stored under an older numbering can decode
+//     with no register selected.
 //   - Set op on a live entity: replace the targeted register if
 //     (op.canonical_hlc, op.origin_client_id) > current register HLC.
 //   - parent_id (set-once): write only if pre-state is "" (zero value).
@@ -142,10 +146,8 @@ func Apply(state *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) {
 		applySetFloatingWindowRegister(state, body.SetFloatingWindowRegister, canon)
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		applyTombstoneFloatingWindow(state, body.TombstoneFloatingWindow, canon)
-	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
-		applySetWorkspaceRootNode(state, body.SetWorkspaceRootNode)
-	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
-		applySetWorkspaceRegister(state, body.SetWorkspaceRegister)
+	case *leapmuxv1.CrdtOp_CreateWorkspace:
+		applyCreateWorkspace(state, body.CreateWorkspace)
 	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		applyTombstoneWorkspace(state, body.TombstoneWorkspace)
 	}
@@ -240,6 +242,10 @@ func setLWWNodeKind(slot **leapmuxv1.LWWNodeKind, hlc *leapmuxv1.HLC, value leap
 // --- Node register transitions ---
 
 func applySetNodeRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetNodeRegisterOp, hlc *leapmuxv1.HLC) {
+	if op.GetField() == nil {
+		// Writes no register, so it creates no record: see Apply.
+		return
+	}
 	id := op.GetNodeId()
 	rec, ok := state.Nodes[id]
 	if !ok {
@@ -288,14 +294,28 @@ func applyTombstoneNode(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneN
 
 // --- Tab register transitions ---
 
+// tabIdentity returns the tab an op names, and whether it names one by the rule
+// EntityRef.HasIdentity states: a type and an id.
+//
+// A replayed journal op bypasses the validator, and an op stored under an older
+// numbering can decode with no tab identity, so apply must not trust the op: an
+// empty id would create a record every reader treats as a tab.
+func tabIdentity(tab *leapmuxv1.TabIdent) (id string, tabType leapmuxv1.TabType, ok bool) {
+	ref := EntityRef{Kind: EntityKindTab, TabType: tab.GetTabType(), TabID: tab.GetTabId()}
+	return ref.TabID, ref.TabType, ref.HasIdentity()
+}
+
 func applySetTabRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetTabRegisterOp, hlc *leapmuxv1.HLC) {
-	id := op.GetTabId()
+	id, tabType, ok := tabIdentity(op.GetTab())
+	if !ok || op.GetField() == nil {
+		return
+	}
 	rec, ok := state.Tabs[id]
 	if !ok {
-		rec = &leapmuxv1.TabRecord{TabType: op.GetTabType(), TabId: id}
+		rec = &leapmuxv1.TabRecord{TabType: tabType, TabId: id}
 		state.Tabs[id] = rec
 	}
-	if rec.GetTabType() != op.GetTabType() {
+	if rec.GetTabType() != tabType {
 		// Defense in depth: validator already rejected this. Drop.
 		return
 	}
@@ -319,7 +339,10 @@ func applySetTabRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetTabReg
 }
 
 func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTabOp, hlc *leapmuxv1.HLC) {
-	id := op.GetTabId()
+	id, tabType, ok := tabIdentity(op.GetTab())
+	if !ok {
+		return
+	}
 	rec := state.Tabs[id]
 	// The tombstone is a true LWW register over both tombstone and revive
 	// writes: a tombstone applies only when its HLC is newer than the current
@@ -330,7 +353,6 @@ func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTa
 		// Preserve the existing tab_type when one is on file (it's
 		// immutable on the record); fall back to the op's tab_type
 		// when materializing a tombstone for a never-seen tab.
-		tabType := op.GetTabType()
 		if rec != nil {
 			tabType = rec.GetTabType()
 		}
@@ -359,16 +381,16 @@ func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTa
 // tab the user reopened. A losing revive (older than the tombstone) is a no-op
 // and never stamps revived_at.
 func applyReviveTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.ReviveTabOp, hlc *leapmuxv1.HLC) {
-	id := op.GetTab().GetTabId()
-	if id == "" {
+	id, tabType, ok := tabIdentity(op.GetTab())
+	if !ok {
 		return
 	}
 	rec, ok := state.Tabs[id]
 	if !ok {
 		// A revive of a never-seen tab: materialize a live record (the same
-		// batch's Set ops complete it). tab_type comes from the op's TabRef.
+		// batch's Set ops complete it). tab_type comes from the op's TabIdent.
 		state.Tabs[id] = &leapmuxv1.TabRecord{
-			TabType:   op.GetTab().GetTabType(),
+			TabType:   tabType,
 			TabId:     id,
 			RevivedAt: HLCClone(hlc),
 		}
@@ -390,6 +412,10 @@ func applyReviveTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.ReviveTabOp, h
 // --- Floating window register transitions ---
 
 func applySetFloatingWindowRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetFloatingWindowRegisterOp, hlc *leapmuxv1.HLC) {
+	if op.GetField() == nil {
+		// Writes no register, so it creates no record: see Apply.
+		return
+	}
 	id := op.GetWindowId()
 	rec, ok := state.FloatingWindows[id]
 	if !ok {
@@ -431,54 +457,33 @@ func applyTombstoneFloatingWindow(state *leapmuxv1.UserCrdtState, op *leapmuxv1.
 	}
 }
 
-// --- Workspace-root assignment ---
+// --- Workspace records ---
 
-func applySetWorkspaceRootNode(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetWorkspaceRootNodeOp) {
+// applyCreateWorkspace creates a workspace's WorkspaceContentsRecord with its
+// set-once root. The record is created when absent; an existing record keeps
+// any root it already holds and takes this one only when its root is empty. So
+// a re-drained create seed batch (after a transient consume fault) never
+// clobbers a workspace the user has since rooted or populated. An empty
+// workspace id is ignored, for the reason applySetTabRegister ignores an empty
+// tab id.
+//
+// A dangling entry after a restart-then-delete-then-restart cycle is harmless:
+// SQL `workspaces.deleted_at` is authoritative for visibility,
+// ListAccessibleWorkspaces excludes deleted rows, and SubscriberFilter is built
+// from that list -- so the dangling CRDT record can't reach any subscriber's
+// projection.
+func applyCreateWorkspace(state *leapmuxv1.UserCrdtState, op *leapmuxv1.CreateWorkspaceOp) {
 	wsID := op.GetWorkspaceId()
+	if wsID == "" {
+		return
+	}
 	rec, ok := state.Workspaces[wsID]
 	if !ok {
-		// Live-session path: the lifecycle create batch seeds the record
-		// via a SetWorkspaceRegisterOp in the SAME batch as this op, so
-		// `rec` is normally already present when this runs. This lazy
-		// create is the bootstrap-replay safety net for op logs written
-		// before SetWorkspaceRegisterOp existed: on restart such a log is
-		// replayed against a state blob, and a SetWorkspaceRootNode op
-		// with no companion register would arrive with no placeholder.
-		// (Compaction can't strand the op this way — SetWorkspaceRegister
-		// and SetWorkspaceRootNode share one atomic batch, and compaction
-		// drops whole batches, never single ops; PruneTombstonesAtOrBelow
-		// never touches the Workspaces map.) Without creating the record
-		// here, `state.Workspaces[wsID]` stays absent and the subscriber's
-		// projection never surfaces the workspace's root_node_id (the
-		// frontend's awaitWorkspaceBootstrap then polls forever and
-		// surfaces the 30s "Workspace load timed out" toast).
-		//
-		// A dangling entry after a restart-then-delete-then-restart
-		// cycle is harmless: SQL `workspaces.deleted_at` is authoritative
-		// for visibility, ListAccessibleWorkspaces excludes deleted rows,
-		// and SubscriberFilter is built from that list -- so the
-		// dangling CRDT record can't reach any subscriber's projection.
 		rec = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: wsID}
 		state.Workspaces[wsID] = rec
 	}
 	if rec.GetRootNodeId() == "" {
 		rec.RootNodeId = op.GetRootNodeId()
-	}
-}
-
-// applySetWorkspaceRegister seeds the WorkspaceContentsRecord map entry
-// for a workspace (root_node_id empty). Idempotent: a workspace that
-// already exists is left untouched, so a re-drained create seed batch
-// (after a transient consume fault) never clobbers a workspace the user
-// has since rooted or populated. The accompanying SetWorkspaceRootNodeOp
-// in the same batch fills root_node_id.
-func applySetWorkspaceRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetWorkspaceRegisterOp) {
-	wsID := op.GetWorkspaceId()
-	if wsID == "" {
-		return
-	}
-	if _, exists := state.Workspaces[wsID]; !exists {
-		state.Workspaces[wsID] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: wsID}
 	}
 }
 

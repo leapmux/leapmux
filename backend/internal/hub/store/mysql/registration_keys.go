@@ -79,10 +79,12 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 	if !ok {
 		return 0, nil // an unminted caller owns nothing; see OwnerFilter
 	}
+	now := time.Now()
 	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: owner,
-		ExpiresAt: sqltime.NewMySQLTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
+		Now:       sqltime.NewMySQLTime(now),
 	}))
 }
 
@@ -123,9 +125,11 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 }
 
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
+	now := time.Now()
 	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
-		ExpiresAt: sqltime.NewMySQLTime(time.Now().Add(store.RegistrationKeySoftDeleteOffset)),
+		ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
+		Now:       sqltime.NewMySQLTime(now),
 	}))
 }
 

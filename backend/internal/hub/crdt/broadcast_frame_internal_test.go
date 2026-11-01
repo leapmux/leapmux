@@ -39,7 +39,7 @@ func TestBroadcastFrame_PrewarmMarshalsNothingWhenNoSubscriberAdmitsTheWorkspace
 		{Filter: NewSubscriberFilter(map[string]bool{})},
 	}
 
-	frame.prewarm(subs, "w1")
+	frame.prewarm(subs, admitsWorkspace("w1"))
 
 	assert.Nil(t, frame.me,
 		"no subscriber admits w1, so no wire frame for it should exist yet")
@@ -52,7 +52,7 @@ func TestBroadcastFrame_PrewarmMarshalsWhenSomeSubscriberAdmitsTheWorkspace(t *t
 		{Filter: NewSubscriberFilter(map[string]bool{"w1": true})},
 	}
 
-	frame.prewarm(subs, "w1")
+	frame.prewarm(subs, admitsWorkspace("w1"))
 
 	require.NotNil(t, frame.me, "a subscriber admits w1, so its frame is built ahead of the lock")
 	assert.True(t, frame.me.AlreadyMarshaledForTest(),
@@ -66,7 +66,7 @@ func TestBroadcastFrame_PrewarmMarshalsWhenSomeSubscriberAdmitsTheWorkspace(t *t
 func TestBroadcastFrame_PrewarmMarshalsNothingForAnEmptySubscriberSet(t *testing.T) {
 	frame := &broadcastFrame{evt: presenceEvent("w1", "client-a")}
 
-	frame.prewarm(nil, "w1")
+	frame.prewarm(nil, admitsWorkspace("w1"))
 
 	assert.Nil(t, frame.me)
 }
@@ -114,7 +114,7 @@ func TestFanOutFrame_DeliversToASubscriberPublishedWhileItWaitedForTheLock(t *te
 	frame := &broadcastFrame{evt: evt}
 	// The pre-check, exactly as broadcastTo runs it: against the snapshot as it
 	// stands before the registration publishes anything.
-	frame.prewarm(m.snapshotSubs(), "w1")
+	frame.prewarm(m.snapshotSubs(), admitsWorkspace("w1"))
 	require.Nil(t, frame.me, "nobody is published yet, so the pre-check has nothing to pre-warm")
 
 	// Stand in for the registration in flight: hold the lock the register window
@@ -123,7 +123,7 @@ func TestFanOutFrame_DeliversToASubscriberPublishedWhileItWaitedForTheLock(t *te
 	fanOutDone := make(chan struct{})
 	go func() {
 		defer close(fanOutDone)
-		m.fanOutFrame("w1", frame)
+		m.fanOutFrame(admitsWorkspace("w1"), frame)
 	}()
 	reg := m.registerForFallbackLocked(sub, fallbackCold)
 	m.projection.Unlock()
@@ -163,7 +163,7 @@ func TestFanOutFrame_SkipsSubscribersThatDoNotAdmitTheWorkspace(t *testing.T) {
 	t.Cleanup(reg.unsub)
 
 	frame := &broadcastFrame{evt: presenceEvent("w1", "client-a")}
-	m.fanOutFrame("w1", frame)
+	m.fanOutFrame(admitsWorkspace("w1"), frame)
 
 	assert.Zero(t, sends, "a subscriber that cannot see w1 must not receive its presence update")
 	assert.Nil(t, frame.me, "and no frame is minted for a fan-out that admitted nobody")
@@ -206,4 +206,50 @@ func TestBroadcastTo_SharesOneMarshaledFrameAcrossAdmittedSubscribers(t *testing
 	assert.Same(t, evt, received[0].Event)
 	assert.True(t, received[0].AlreadyMarshaledForTest())
 	assert.Zero(t, hidden)
+}
+
+// The worker list belongs to the user, so BroadcastWorkersChanged reaches a
+// subscriber whose filter admits no workspace as it reaches one that admits
+// some. It still shares one marshaled frame across the whole fan-out.
+func TestBroadcastWorkersChanged_SharesOneMarshaledFrameWithEverySubscriber(t *testing.T) {
+	m := NewManager(userid.MustNew("user-1"), nil, nil, nil, nil)
+	m.state = NewState(m.owner.String())
+
+	received := make([]*MarshaledEvent, 0, 2)
+	record := func(evt *MarshaledEvent) error {
+		received = append(received, evt)
+		return nil
+	}
+	for _, filter := range []SubscriberFilter{
+		NewSubscriberFilter(map[string]bool{"w1": true}),
+		NewSubscriberFilter(map[string]bool{}),
+	} {
+		reg := m.registerForFallback(&Subscriber{UserID: "user-1", Filter: filter, Send: record}, fallbackCold)
+		t.Cleanup(reg.unsub)
+	}
+
+	m.BroadcastWorkersChanged()
+
+	require.Len(t, received, 2, "every subscriber hears the change, whatever its filter admits")
+	assert.Same(t, received[0], received[1], "one marshaled buffer is shared across the fan-out")
+	assert.NotNil(t, received[0].Event.GetWorkersChanged())
+	assert.True(t, received[0].AlreadyMarshaledForTest(), "the frame is marshaled before the projection lock")
+}
+
+// The pre-warm for a user-wide event marshals as soon as one subscriber
+// exists, even one whose filter admits no workspace, and skips the work when
+// nobody listens.
+func TestBroadcastFrame_PrewarmForEverySubscriberMarshalsWhenAnyoneListens(t *testing.T) {
+	evt := &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}},
+	}
+
+	nobody := &broadcastFrame{evt: evt}
+	nobody.prewarm(nil, admitsEverySubscriber)
+	assert.Nil(t, nobody.me)
+
+	narrow := &broadcastFrame{evt: evt}
+	narrow.prewarm([]*Subscriber{{Filter: NewSubscriberFilter(map[string]bool{})}}, admitsEverySubscriber)
+	require.NotNil(t, narrow.me)
+	assert.True(t, narrow.me.AlreadyMarshaledForTest())
 }

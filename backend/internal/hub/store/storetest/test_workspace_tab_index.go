@@ -262,19 +262,15 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		require.NoError(t, st.WorkspaceTabIndex().BulkUpsert(ctx, rows))
 
 		assert.Equal(t, []string{"r1"}, renderedTabIDs(t, st, owner, ws))
-		_, err := st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID: owner, WorkspaceID: ws, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "h1",
-		})
-		assert.ErrorIs(t, err, store.ErrNotFound, "a hidden row is not a rendered tab")
-		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+		_, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
 			UserID: owner, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "h1",
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound, "a hidden row cannot be located")
 		hidden, err := st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{UserID: owner, TabID: "h1"})
 		require.NoError(t, err)
 		assert.False(t, hidden.Rendered)
-		visible, err := st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID: owner, WorkspaceID: ws, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "r1",
+		visible, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			UserID: owner, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "r1",
 		})
 		require.NoError(t, err)
 		assert.True(t, visible.Rendered)
@@ -572,22 +568,14 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab, TileID: "tile-owner", Position: "a0", Rendered: true,
 		}))
 
-		row, err := st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID: ownerID, WorkspaceID: wsID,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
+		foreign, err := st.WorkspaceTabIndex().ListRenderedByWorkspaceIDs(ctx, store.ListRenderedTabsByWorkspaceIDsParams{
+			UserID: otherID, WorkspaceIDs: []string{wsID},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "tile-owner", row.TileID, "GetRendered must return the CALLER's row")
+		assert.Empty(t, foreign, "a caller who does not own the workspace reaches none of its tabs")
 
-		_, err = st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID: otherID, WorkspaceID: wsID,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
-		})
-		assert.ErrorIs(t, err, store.ErrNotFound, "a caller who does not own the workspace reaches none of its tabs")
-
-		row, err = st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			UserID: otherID, WorkspaceID: otherWS,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
+		row, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			UserID: otherID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "tile-other", row.TileID, "control: the other owner still reaches their own row")
@@ -607,8 +595,8 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 
 		// A zero owner is a refusal, not a wildcard: "" would MATCH every
 		// blank-owner row rather than none.
-		_, err = st.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-			WorkspaceID: wsID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
+		_, err = st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: sharedTab,
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound, "an unminted caller owns no rendered tab")
 		got, err = st.WorkspaceTabIndex().ListRenderedByWorkspaceIDs(ctx, store.ListRenderedTabsByWorkspaceIDsParams{

@@ -3,8 +3,11 @@ import type { MemoryHistory } from '@solidjs/router'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { SignInRecoveryGate } from '~/components/common/SignInRecoveryGate'
+import { settle } from '~/test-support/async'
 import OAuthCompleteSignupPage from './complete-signup'
 
 const mockGetPendingOAuthSignup = vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>()
@@ -49,6 +52,9 @@ vi.mock('~/components/common/CaptchaField', () => ({
 
 const mockSetAuth = vi.fn()
 const mockSetVerificationResendAvailableAt = vi.fn()
+// The sign-in recovery the gate renders; a test sets it when the adoption of
+// the completion's report recovers.
+const [signInRecovery, setSignInRecovery] = createSignal<{ error: string | null, verificationRequired: boolean, completed: boolean } | null>(null)
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => null,
@@ -57,6 +63,9 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: mockSetAuth,
+    signInRecovery: () => signInRecovery(),
+    retrySignInRecovery: vi.fn(),
+    finishSignInRecovery: () => setSignInRecovery(null),
     setVerificationResendAvailableAt: mockSetVerificationResendAvailableAt,
     isAuthenticated: () => false,
   }),
@@ -71,16 +80,30 @@ function createHistoryAt(url: string): MemoryHistory {
 
 function renderPage(token = 'test-token') {
   const history = createHistoryAt(`/?token=${token}`)
-  return render(() => (
-    <MemoryRouter history={history}>
-      <Route path="/" component={OAuthCompleteSignupPage} />
-    </MemoryRouter>
-  ))
+  return {
+    history,
+    ...render(() => (
+      <MemoryRouter history={history} root={props => <SignInRecoveryGate>{props.children}</SignInRecoveryGate>}>
+        <Route path="/" component={OAuthCompleteSignupPage} />
+        <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
+      </MemoryRouter>
+    )),
+  }
+}
+
+/** Submit the form as `username` once the pending sign-up loaded. */
+async function submitAs(username: string) {
+  fireEvent.input(await screen.findByLabelText('Username'), {
+    target: { value: username },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
 }
 
 describe('signup completion page (OAuthCompleteSignupPage)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setSignInRecovery(null)
+    mockSetAuth.mockResolvedValue('adopted')
   })
 
   it('renders form with pre-filled display name and email', async () => {
@@ -124,7 +147,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       providerName: 'GitHub',
     })
     mockCompleteOAuthSignup.mockResolvedValue({
-      user: { id: 'u1', username: 'testuser' },
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
     })
 
     renderPage()
@@ -150,12 +175,113 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
         // provider-supplied address always takes precedence, so echoing it
         // back is safe.
         email: 'test@example.com',
-        captchaPayload: '',
-        honeypot: '',
+        captcha: { payload: '', honeypot: '' },
       })
     })
 
-    expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u1', username: 'testuser' })
+    expect(mockSetAuth).toHaveBeenCalledWith({
+      user: { id: 'u1', username: 'testuser' },
+    })
+  })
+
+  // The hub accepted the single-use signup token, so the account exists, but
+  // the reply could not report it and the account read fails. The page must
+  // never send the token again: the adoption recovers, the recovery panel
+  // replaces the page, and Submit is gone -- whatever verification needs.
+  for (const verificationRequired of [false, true]) {
+    it(`recovers rather than re-submitting when the account cannot be read (verification required: ${verificationRequired})`, async () => {
+      mockGetPendingOAuthSignup.mockResolvedValue({
+        email: 'test@example.com',
+        displayName: 'Test User',
+        providerName: 'GitHub',
+      })
+      mockCompleteOAuthSignup.mockResolvedValue({
+        sessionReport: {
+          emailVerification: { verificationRequired },
+        },
+      })
+      mockSetAuth.mockImplementation(async () => {
+        setSignInRecovery({ error: 'account read failed', verificationRequired, completed: false })
+        return 'recovering'
+      })
+
+      renderPage()
+      fireEvent.input(await screen.findByLabelText('Username'), {
+        target: { value: 'testuser' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+      expect(await screen.findByTestId('signin-recovery')).toHaveTextContent('account read failed')
+      expect(screen.queryByRole('button', { name: 'Create account' })).not.toBeInTheDocument()
+      expect(mockCompleteOAuthSignup).toHaveBeenCalledOnce()
+      expect(mockSetAuth).toHaveBeenCalledWith({
+        emailVerification: { verificationRequired },
+      })
+    })
+  }
+
+  // Only an adopted account is routed from here. Verification decides the
+  // destination, read from the report the completion returned.
+  it('goes to the verification page when the adopted account must verify its email', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+        emailVerification: { verificationRequired: true },
+      },
+    })
+
+    const { history } = renderPage()
+    await submitAs('testuser')
+
+    expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+    expect(history.get()).toBe('/verify-email')
+  })
+
+  it('goes home when the adopted account needs no verification', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
+    })
+
+    const { history } = renderPage()
+    await submitAs('testuser')
+
+    await vi.waitFor(() => expect(history.get()).toBe('/'))
+  })
+
+  // A newer sign-in owns the state, so this page must not navigate over it.
+  it('stays put when a newer sign-in superseded the adoption', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+        emailVerification: { verificationRequired: true },
+      },
+    })
+    mockSetAuth.mockResolvedValue('superseded')
+
+    const { history } = renderPage()
+    await submitAs('testuser')
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledOnce())
+    await settle()
+    expect(history.get()).toBe('/?token=test-token')
+    expect(mockCompleteOAuthSignup).toHaveBeenCalledOnce()
   })
 
   it('shows email as read-only when provider supplies it', async () => {
@@ -188,7 +314,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       providerName: 'GitHub',
     })
     mockCompleteOAuthSignup.mockResolvedValue({
-      user: { id: 'u1', username: 'testuser' },
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
     })
 
     renderPage()
@@ -241,6 +369,10 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('username already taken')).toBeInTheDocument()
     })
+    // A failed completion is the one failure that re-enables Submit, and it
+    // adopts nothing.
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled()
+    expect(mockSetAuth).not.toHaveBeenCalled()
   })
 
   it('hands the captcha field the complete_signup action under an external provider', async () => {

@@ -86,8 +86,8 @@ func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string 
 func TestInterceptor_PublicProcedure_NoTokenRequired(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
-	// GetSystemInfo is a public procedure -- it should succeed without a cookie.
-	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	// GetOAuthProviders is a public procedure -- it should succeed without a cookie.
+	resp, err := client.GetOAuthProviders(context.Background(), &leapmuxv1.GetOAuthProvidersRequest{})
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
 }
@@ -113,8 +113,8 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 
 	// The interceptor should have attached UserInfo to the context, allowing
 	// GetCurrentUser to return the admin user.
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
-	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
+	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
 }
 
 func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
@@ -285,7 +285,7 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	resp, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
 		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 }
 
 func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T) {
@@ -479,12 +479,9 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	// Seed a worker so the delegation row's worker_id FK is satisfied.
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("delegation-x25519-key-32-bytes-pad"),
-		MlkemPublicKey:  []byte("dele-mlkem"),
-		SlhdsaPublicKey: []byte("dele-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 	// Seed a workspace owned by the user so the delegation's
 	// workspace_id is meaningful for downstream scope checks.
@@ -523,12 +520,9 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("revoked-x25519-key-32-bytes-padxx"),
-		MlkemPublicKey:  []byte("rev-mlkem"),
-		SlhdsaPublicKey: []byte("rev-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -565,12 +559,9 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("expired-x25519-key-32-bytes-padxx"),
-		MlkemPublicKey:  []byte("exp-mlkem"),
-		SlhdsaPublicKey: []byte("exp-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -890,7 +881,7 @@ func TestLogout_EvictsSessionFromCache(t *testing.T) {
 	// Verify the session is valid.
 	resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 
 	// Logout — deletes session from DB and evicts from cache.
 	_, err = client.Logout(authedReq(context.Background(), &leapmuxv1.LogoutRequest{}, token))
@@ -912,7 +903,7 @@ func TestAuthContextRegistry_RapidRequestsSucceed(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 		require.NoError(t, err)
-		assert.Equal(t, "admin", resp.GetUser().GetUsername())
+		assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 	}
 }
 

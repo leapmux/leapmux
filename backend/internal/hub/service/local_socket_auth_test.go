@@ -119,8 +119,8 @@ func TestLocalSocket_SoloMode_AutoAuths(t *testing.T) {
 
 	resp, err := client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "solo", resp.GetUser().GetUsername())
-	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.Equal(t, "solo", resp.GetSessionReport().GetUser().GetUsername())
+	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
 }
 
 func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
@@ -157,7 +157,7 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
 	resp, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 }
 
 func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {

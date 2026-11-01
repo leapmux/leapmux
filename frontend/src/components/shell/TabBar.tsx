@@ -1,9 +1,9 @@
 import type { Component, JSX } from 'solid-js'
+import type { TerminalDisplayStatus } from './terminalStatus'
 import type { TileActions } from './TileActionsMenu'
 import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { DragAxis, GuardedDragRow } from '~/lib/dragRow'
 import type { Tab } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
@@ -53,7 +53,7 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
 
 // `status` carries an explicit undefined for the non-terminal kinds — that is
 // `terminalStatusOf`'s documented answer, not a missing value.
-const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalStatus | undefined }> = (props) => {
+const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalDisplayStatus | undefined }> = (props) => {
   return (
     <Tooltip text={props.tooltip} showWhen={props.showWhen}>
       <span
@@ -73,7 +73,7 @@ const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 
  * tab through an accessor now, and two calls to that accessor are two separate
  * expressions, so a guard on the first cannot narrow the second.
  */
-function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
+function terminalStatusOf(tab: Tab): TerminalDisplayStatus | undefined {
   return isTerminalTab(tab)
     ? tab.status
     : undefined

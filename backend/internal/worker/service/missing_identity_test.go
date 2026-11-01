@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -58,7 +59,7 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 	ipc := &noIdentityRemoteIPC{failFrom: 1}
 	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir: t.TempDir(),
 	}, w)
 
@@ -92,7 +93,7 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 	// ...and the row must be tombstoned. This is the only startup failure that
 	// answers the RPC with an error instead of an OpenAgentResponse, so the
 	// client never learns the agent id: it cannot list the tab and will never
-	// send CloseAgent. An open row here is a tab nobody can name and nobody can
+	// send CloseTab. An open row here is a tab nobody can name and nobody can
 	// close, left for the hourly OrphanReconciler to notice.
 	assert.True(t, row.ClosedAt.Valid,
 		"nothing will ever close this row: the refusal must tombstone it itself")

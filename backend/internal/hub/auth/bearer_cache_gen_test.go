@@ -954,7 +954,6 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 		leapmuxv1connect.WorkspaceServiceListTabsProcedure,
-		leapmuxv1connect.WorkspaceServiceGetTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
 		leapmuxv1connect.UserCRDTSubmitOpsProcedure,

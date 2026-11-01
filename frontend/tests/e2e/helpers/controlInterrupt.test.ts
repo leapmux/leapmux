@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseControlInterrupt, raiseWaitingControl, WAITING_CONTROL_CALL_ID, WAITING_QUESTION, waitingControlSteps } from './controlInterrupt'
 import { askUserQuestionToolCall, bashToolCall } from './providerToolCalls'
 
@@ -23,6 +23,8 @@ const flow = vi.hoisted(() => ({
   keepsHistory: true,
   /** The receipt that the browser records for the stop. A stop from WAITING_FOR_USER records none. */
   receipt: undefined as { agentId: string, state: string } | undefined,
+  /** The pause reason that the Worker reports for the input queue. `beforeEach` sets the real enum value. */
+  pauseReason: 0 as AgentInputQueuePauseReason,
   workingDir: '',
   turnEnded: vi.fn<(script: unknown, nextStep: number) => Promise<void>>(),
   nativeEnd: vi.fn<(text: string) => Promise<void>>(),
@@ -103,10 +105,11 @@ vi.mock('./nativeScenario', async importOriginal => ({
   },
 }))
 
+// A real snapshot message, so a field that the helper reads holds its proto default and not undefined.
 vi.mock('./nativeInputQueueIdle', () => ({
   readNativeInputQueue: async () => {
-    flow.events.push('queue:paused')
-    return { agentId: 'waiting-agent', paused: true, items: [] }
+    flow.events.push(`queue:${AgentInputQueuePauseReason[flow.pauseReason]}`)
+    return create(AgentInputQueueSnapshotSchema, { pauseReason: flow.pauseReason })
   },
 }))
 
@@ -246,6 +249,7 @@ describe('exerciseControlInterrupt', () => {
     flow.answers = []
     flow.keepsHistory = true
     flow.receipt = undefined
+    flow.pauseReason = AgentInputQueuePauseReason.INTERRUPTED
     flow.turnEnded.mockReset().mockResolvedValue(undefined)
     flow.nativeEnd.mockReset().mockResolvedValue(undefined)
     mkdirSync(SCRATCH_ROOT, { recursive: true })
@@ -298,7 +302,7 @@ describe('exerciseControlInterrupt', () => {
       '[data-testid="result-divider"]:visible holds:interrupted',
       'receipt:waiting-agent:4',
       'turn-ended:2',
-      'queue:paused',
+      'queue:INTERRUPTED',
       'resume-queue',
       `answer:Continue after the withdrawn control.=>AFTERCONTROL${marker}`,
     ])
@@ -361,6 +365,14 @@ describe('exerciseControlInterrupt', () => {
     flow.turnEnded.mockRejectedValue(unexpected)
     const { script } = fakeScript(1)
     await expect(exerciseControlInterrupt(context(script), { control: 'question' })).rejects.toBe(unexpected)
+    expect(flow.events).not.toContain('resume-queue')
+  })
+
+  it('fails while the Worker leaves the input queue unpaused after the interrupt, and resumes no queue', async () => {
+    flow.pauseReason = AgentInputQueuePauseReason.UNSPECIFIED
+    const { script } = fakeScript(1)
+    await expect(exerciseControlInterrupt(context(script), { control: 'question' })).rejects.toThrow('the Worker pauses the input queue after the interrupt')
+    expect(flow.events).toContain('queue:UNSPECIFIED')
     expect(flow.events).not.toContain('resume-queue')
   })
 

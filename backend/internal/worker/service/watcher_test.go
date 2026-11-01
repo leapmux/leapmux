@@ -212,8 +212,7 @@ func testAgentEvent(agentID string) *leapmuxv1.AgentEvent {
 	return &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_StatusChange{StatusChange: &leapmuxv1.AgentStatusChange{
-			AgentId: agentID,
-			Status:  leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+			Status: leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
 		}},
 	}
 }
@@ -1120,7 +1119,7 @@ func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
 	retired := 0
 	var sink *replaySink
 	writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
-		if message.GetIsError() {
+		if message.GetError() != nil {
 			assert.Equal(t, 1, retired)
 			assert.False(t, sink.alive())
 			sink.fail(errors.New("reentrant failure"))
@@ -1138,7 +1137,7 @@ func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
 	sink.fail(errors.New("duplicate failure"))
 	assert.Equal(t, 1, retired)
 	require.Len(t, base.streamsSnapshot(), 1)
-	assert.True(t, base.streamsSnapshot()[0].GetIsError())
+	assert.NotNil(t, base.streamsSnapshot()[0].GetError())
 }
 
 // TestTransportDead_ClassifiesEachFailureKind pins the one place two
@@ -1216,8 +1215,7 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 	unencodable := &leapmuxv1.AgentEvent{
 		AgentId: string([]byte{0x80}),
 		Event: &leapmuxv1.AgentEvent_StatusChange{StatusChange: &leapmuxv1.AgentStatusChange{
-			AgentId: string([]byte{0x80}),
-			Status:  leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
+			Status: leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE,
 		}},
 	}
 	require.Error(t, broadcastWatchEvent(w, &leapmuxv1.WatchEventsResponse{
@@ -1474,7 +1472,7 @@ func TestBroadcast_InputQueueChangedSkipsNotifyWatcher(t *testing.T) {
 		return &leapmuxv1.AgentEvent{
 			AgentId: "agent-1",
 			Event: &leapmuxv1.AgentEvent_InputQueueChanged{
-				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: &leapmuxv1.AgentInputQueueSnapshot{AgentId: "agent-1"}},
+				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: &leapmuxv1.AgentInputQueueSnapshot{}},
 			},
 		}
 	}
@@ -1498,7 +1496,7 @@ func TestBroadcast_TodosChangedReachesNotifyWatcher(t *testing.T) {
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
 		Event: &leapmuxv1.AgentEvent_TodosChanged{
-			TodosChanged: &leapmuxv1.AgentTodosChanged{},
+			TodosChanged: &leapmuxv1.AgentTodoSnapshot{},
 		},
 	})
 	assert.Equal(t, int64(1), mock.streamCount.Load())

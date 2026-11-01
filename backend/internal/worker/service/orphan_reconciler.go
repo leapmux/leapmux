@@ -375,23 +375,20 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// dropped row simply never matches, exactly as before the archive pass
 	// existed.
 	var archivedTabs, activeTabs []*leapmuxv1.TabRef
-	for _, tab := range hubTabs {
+	for _, state := range hubTabs {
+		// The owner rides along on the TabRef, and dropping it here is what used
+		// to make a payload-backed tab unaddressable: worker_tab_payloads is
+		// keyed (user_id, tab_id), and a client-minted id is unique only within
+		// one account. AGENT and TERMINAL ids are globally unique, so the owner
+		// is simply unused for them.
+		ref := state.GetTab()
+		tab := ref.GetTab()
 		if !archivableTabType(tab.GetTabType()) {
 			r.logger.Warn("orphan reconciler: hub returned a tab type this worker cannot archive",
 				"tab_id", tab.GetTabId(), "tab_type", tab.GetTabType())
 			continue
 		}
-		// The owner rides along, and dropping it here is what used to make a
-		// payload-backed tab unaddressable: worker_tab_payloads is keyed
-		// (user_id, tab_id), and a client-minted id is unique only within one
-		// account. AGENT and TERMINAL ids are globally unique, so the field is
-		// simply unused for them.
-		ref := &leapmuxv1.TabRef{
-			TabType: tab.GetTabType(),
-			TabId:   tab.GetTabId(),
-			UserId:  tab.GetUserId(),
-		}
-		switch tab.GetArchiveState() {
+		switch state.GetArchiveState() {
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
 			archivedTabs = append(archivedTabs, ref)
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:
@@ -401,7 +398,7 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 				"tab_id", tab.GetTabId())
 		default:
 			r.logger.Warn("orphan reconciler: hub returned an unknown archive state",
-				"tab_id", tab.GetTabId(), "archive_state", tab.GetArchiveState())
+				"tab_id", tab.GetTabId(), "archive_state", state.GetArchiveState())
 		}
 	}
 	// Each tab lands in exactly one bucket, so the order of these two calls
@@ -415,7 +412,8 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	}
 	hubByKey := make(map[ownedTabKey]*leapmuxv1.WorkerTabState, len(hubTabs))
 	for _, t := range hubTabs {
-		hubByKey[newOwnedTabKey(t.GetTabType(), t.GetTabId(), t.GetUserId())] = t
+		ref := t.GetTab()
+		hubByKey[newOwnedTabKey(ref.GetTab().GetTabType(), ref.GetTab().GetTabId(), ref.GetUserId())] = t
 	}
 
 	// Only the file-tab pass takes the owner. Local agents / terminals carry no
@@ -684,7 +682,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 			// (closed_at != NULL just keeps it from being respawned
 			// on the NEXT worker startup); for long-running
 			// workers that's an open-ended leak.
-			// Route through the SAME teardown an online CloseAgent runs.
+			// Route through the SAME teardown an online CloseTab runs.
 			// Doing only the DB close plus StopAgent -- which is what this used
 			// to do -- skipped the startup cancel, the runtime-state clear, and
 			// the registered cleanups; the last of those is the remote-IPC

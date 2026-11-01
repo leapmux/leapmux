@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
@@ -107,7 +108,7 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 	assert.Len(t, sync.GetTabs(), 2)
 
 	// Collect tabs into a map for order-independent assertion.
-	tabMap := make(map[string]*leapmuxv1.TabRef)
+	tabMap := make(map[string]*leapmuxv1.TabIdent)
 	for _, tab := range sync.GetTabs() {
 		tabMap[tab.GetTabId()] = tab
 	}
@@ -309,10 +310,11 @@ func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*P
 // silent identity change.
 //
 // The keys describe the worker, not the session's cipher: the handshake
-// picks its mode from EncryptionMode alone. Withholding them in classic
-// mode still overwrites the hub's stored columns with empty blobs, and
-// every client that had pinned the worker then fails TOFU verification
-// with a key mismatch it cannot clear without manual intervention.
+// picks its mode from EncryptionMode alone. The hub answers every channel's
+// handshake parameters from the worker's hello, so withholding them in
+// classic mode hands each client empty keys, and every client that had
+// pinned the worker then fails TOFU verification with a key mismatch it
+// cannot clear without manual intervention.
 func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
 	for _, mode := range []leapmuxv1.EncryptionMode{
 		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
@@ -323,9 +325,9 @@ func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
 
 			assert.NotEmpty(t, client.PublicKey, "X25519 key must be advertised")
 			assert.NotEmpty(t, client.MlkemPublicKey,
-				"ML-KEM key must be advertised so a heartbeat cannot blank the stored pin")
+				"ML-KEM key must be advertised so the hello cannot break a client's pin with an empty key")
 			assert.NotEmpty(t, client.SlhdsaPublicKey,
-				"SLH-DSA key must be advertised so a heartbeat cannot blank the stored pin")
+				"SLH-DSA key must be advertised so the hello cannot break a client's pin with an empty key")
 			assert.Equal(t, mode, client.EncryptionMode,
 				"the mode, not key presence, is what selects the handshake")
 		})
@@ -535,12 +537,34 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 
 	require.NotNil(t, client.OnWorkerIdentity,
 		"the identity handler must survive the background-loop wiring that wraps it")
-	client.OnWorkerIdentity("user-1")
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
 	// The wrapper must still do the delivery it wrapped.
 	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
 		5*time.Second, 10*time.Millisecond,
 		"the identity nudge dropped the delivery it wraps")
+	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")),
+		"the delivery carries the owner's username to the service")
+}
+
+// The control IPC factory answers Whoami's username from the live service, so
+// each spawned process reports the owner the Hub delivered last, and only to
+// the owner.
+func TestWire_ControlIPCReadsTheOwnerUsernameFromTheService(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	factory, ok := w.Service.ControlIPC.(*controlipc.Factory)
+	require.True(t, ok, "Wire installs the control IPC factory, got %T", w.Service.ControlIPC)
+	require.NotNil(t, factory.OwnerUsername, "without the lookup, Whoami reports no username")
+	owner := userid.MustNew("user-1")
+	assert.Empty(t, factory.OwnerUsername(owner), "no username before the Hub delivers the identity")
+
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+	assert.Equal(t, "alice", factory.OwnerUsername(owner))
+	assert.Empty(t, factory.OwnerUsername(userid.MustNew("user-2")), "another user is never told the owner's name")
+
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	assert.Equal(t, "alice2", factory.OwnerUsername(owner), "a re-delivered identity reaches the factory")
 }
 
 // C-M5: the worker sweeps the agent directories that ended workers left when it

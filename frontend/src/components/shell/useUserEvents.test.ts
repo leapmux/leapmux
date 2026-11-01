@@ -3,6 +3,7 @@ import type { WatchUserEvent } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TabIdentSchema, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   HLCSchema,
   LWWStringSchema,
@@ -16,11 +17,9 @@ import {
   OpBatchSchema,
   PresenceUpdateSchema,
   SetTabRegisterOpSchema,
-  TabIdentSchema,
   WatchUserEventSchema,
   WorkspaceCreatedSchema,
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { flushStorageWrites, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { isStatePopulated } from '~/lib/crdt/pendingOps'
@@ -697,8 +696,7 @@ describe('useUserEvents (websocket dispatch)', () => {
         body: {
           case: 'setTabRegister',
           value: create(SetTabRegisterOpSchema, {
-            tabType: TabType.AGENT,
-            tabId: 'tA',
+            tab: { tabType: TabType.AGENT, tabId: 'tA' },
             field: { case: 'tileId', value: 'root1' },
           }),
         },
@@ -828,6 +826,78 @@ describe('useUserEvents (websocket dispatch)', () => {
       }))
 
       expect(onWorkspaceLifecycleChanged).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('invokes onWorkersChanged for each workersChanged event and nothing else', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const onWorkersChanged = vi.fn()
+      const onWorkspaceLifecycleChanged = vi.fn()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => makeFakePending() as never,
+        onWorkersChanged,
+        onWorkspaceLifecycleChanged,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'workersChanged', value: {} },
+      }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'workersChanged', value: {} },
+      }))
+
+      expect(onWorkersChanged).toHaveBeenCalledTimes(2)
+      expect(onWorkspaceLifecycleChanged, 'a worker change is not a workspace change').not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+
+  // Neither UserMaterialized nor ResumeDelta replays a workersChanged event, so
+  // a worker that registered while this client was disconnected reaches the
+  // sidebar only through a re-fetch on bootstrap.
+  it('invokes onWorkersChanged on an initial snapshot and on a delta', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending({ populated: true })
+      const onWorkersChanged = vi.fn()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        onWorkersChanged,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'initial',
+          value: create(UserMaterializedSchema, { userId: 'user-1', currentEpoch: 9n }),
+        },
+      }))
+      expect(onWorkersChanged, 'an initial snapshot re-fetches the list').toHaveBeenCalledTimes(1)
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'delta',
+          value: {
+            frames: [],
+            maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+            currentEpoch: 9n,
+            subscriberClientId: 'client-from-hub',
+            userId: 'user-1',
+          },
+        },
+      }))
+      expect(onWorkersChanged, 'and so does a delta').toHaveBeenCalledTimes(2)
       dispose()
     })
   })

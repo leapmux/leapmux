@@ -4,12 +4,13 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
 func registerCleanupHandlers(d registrar, svc *Service) {
-	registerOwnerGuarded(d, "CleanupWorkspace", leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE, dispatchTracked, handleCleanupWorkspace(svc))
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, dispatchTracked, handleCleanupWorkspace(svc))
 }
 
 // handleCleanupWorkspace stops the processes and closes the rows for a deleted workspace.

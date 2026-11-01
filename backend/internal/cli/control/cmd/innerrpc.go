@@ -178,10 +178,10 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 		}
 		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
-	if resp.GetIsError() {
-		// dispatchLocal fills the in-band envelope with a gRPC code in ErrorCode.
+	if rpcErr := resp.GetError(); rpcErr != nil {
+		// dispatchLocal answers a local failure in-band, with its code.
 		// Rebuild the error with that code so callers can classify it.
-		return &codedRPCError{Code: "rpc_error", Cause: inBandError(resp)}
+		return &codedRPCError{Code: "rpc_error", Cause: inBandError(rpcErr)}
 	}
 	if out != nil && len(resp.GetPayload()) > 0 {
 		if err := proto.Unmarshal(resp.GetPayload(), out); err != nil {
@@ -191,13 +191,15 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 	return nil
 }
 
-// inBandError rebuilds an error from the CallInnerResponse envelope for a local handler failure.
+// inBandError rebuilds an error from the in-band error of a local handler failure.
 //
-// dispatchLocal writes a gRPC code in ErrorCode. The gRPC and Connect enums differ, so convert the code through an explicit map.
-// A zero or absent code returns the message without a code.
-func inBandError(msg *leapmuxv1.CallInnerResponse) error {
-	cause := errors.New(msg.GetErrorMessage())
-	if code := codes.Code(msg.GetErrorCode()); code != codes.OK {
+// The code is a google.rpc.Code value, which gRPC and Connect number alike.
+// grpcToConnectCode still maps it explicitly, because it keeps only the codes
+// that a CLI decision reads.
+// A zero code returns the message without a code.
+func inBandError(rpcErr *leapmuxv1.RpcError) error {
+	cause := errors.New(rpcErr.GetMessage())
+	if code := codes.Code(rpcErr.GetCode()); code != codes.OK {
 		return connect.NewError(grpcToConnectCode(code), cause.Error()).WithCause(cause)
 	}
 	return cause

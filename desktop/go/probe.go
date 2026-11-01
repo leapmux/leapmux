@@ -20,7 +20,7 @@ import (
 // connections with no owner that can close them.
 func probeHub(ctx context.Context, endpoint *hubtransport.Endpoint) error {
 	baseURL := strings.TrimRight(endpoint.BaseURL(), "/")
-	target := baseURL + "/leapmux.v1.AuthService/GetSystemInfo"
+	target := baseURL + "/leapmux.v1.SystemService/GetSystemInfo"
 
 	// Pin redirects to the hub origin, the same as every other hub-directed
 	// client (see HubProxy in proxy.go). The hub URL arrives from the webview,

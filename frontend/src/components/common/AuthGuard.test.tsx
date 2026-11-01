@@ -2,7 +2,7 @@ import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthGuard } from '~/components/common/AuthGuard'
-import { SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
+import { SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 
 // Mock the auth context module
 const mockUser = vi.fn()

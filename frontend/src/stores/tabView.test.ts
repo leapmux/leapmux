@@ -7,10 +7,10 @@ import type { createTestLayoutStore } from '~/test-support/tabStores'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { EntityRemovedSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ctxFromBridge, getCRDTBridge, hlcIsZero, newBatch, setNodeKind, setNodeParentId, setNodePosition, setTabTileId, setTabWorkerId, tombstoneNode, tombstoneTab } from '~/lib/crdt'
 import { installTestBridge, seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores, projectionMemo } from '~/test-support/tabStores'
@@ -303,7 +303,7 @@ describe('tabView', () => {
         metadata.patch('a1', {
           title: 'My Agent',
           gitToplevel: '/repo',
-          supportsSteering: true,
+          queueHeadDispatch: QueueHeadDispatch.STEER,
           rootAgentId: 'root-1',
         })
 
@@ -315,7 +315,7 @@ describe('tabView', () => {
         // ...metadata from the store, joined on tab id.
         expect(tab.title).toBe('My Agent')
         expect(tab.gitToplevel).toBe('/repo')
-        expect(tab.supportsSteering).toBe(true)
+        expect(tab.queueHeadDispatch).toBe(QueueHeadDispatch.STEER)
         expect(tab.rootAgentId).toBe('root-1')
         dispose()
       })
@@ -353,7 +353,7 @@ describe('tabView', () => {
           parentAgentId: 'parent-1',
           acceptsMessages: true,
           acceptsInterrupt: true,
-          supportsSteering: true,
+          queueHeadDispatch: QueueHeadDispatch.STEER,
           rootAgentId: 'root-1',
         })
 
@@ -380,7 +380,7 @@ describe('tabView', () => {
         expect(tab.parentAgentId).toBe('parent-1')
         expect(tab.acceptsMessages).toBe(true)
         expect(tab.acceptsInterrupt).toBe(true)
-        expect(tab.supportsSteering).toBe(true)
+        expect(tab.queueHeadDispatch).toBe(QueueHeadDispatch.STEER)
         expect(tab.rootAgentId).toBe('root-1')
         dispose()
       })

@@ -12,7 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
@@ -59,9 +60,9 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 // returned to the caller without reshaping that interface; logging it is what
 // keeps it recoverable today, and mirrors both the malformed-frame log above and
 // crossworker.Client.StreamInner, which surfaces the identical envelope.
-func logEndingStreamError(logger *slog.Logger, transportName string, code int32, message string) {
+func logEndingStreamError(logger *slog.Logger, transportName string, rpcErr *leapmuxv1.RpcError) {
 	logger.Error("streamevents: subscription ended with a server error",
-		"transport", transportName, "code", code, "error", message)
+		"transport", transportName, "code", rpcErr.GetCode(), "error", rpcErr.GetMessage())
 }
 
 // Handle is a live WatchEvents subscription on one transport stream.
@@ -78,7 +79,8 @@ type Handle interface {
 //   - hub-bound: open an E2EE channel via `*control.Client.OpenE2EEChannel`,
 //     then `SendRPCNoWait` with atomically registered response and stream handlers.
 //   - local-IPC: call `ControlIPCService.StreamInner` with method
-//     `worker.WatchEvents` over the per-agent socket.
+//     `"worker." + WorkerWatchServiceWatchEventsProcedure` over the per-agent
+//     socket.
 //
 // Both flows decode the same `WatchEventsResponse` payload off the
 // wire. By writing the cursor + reconnect logic against this
@@ -185,14 +187,14 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 	// can race teardown.
 	var closed atomic.Bool
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := t.channel.SendRPCNoWait(ctx, "WatchEvents", payload, tunnel.RPCHandlers{
+	reqID, err := t.channel.SendRPCNoWait(ctx, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, payload, tunnel.RPCHandlers{
 		Response: respCh,
 		Stream: func(msg *leapmuxv1.InnerStreamMessage) {
 			if closed.Load() {
 				return
 			}
-			if msg.GetIsError() {
-				logEndingStreamError(transportLogger(t.logger), "channel", msg.GetErrorCode(), msg.GetErrorMessage())
+			if rpcErr := msg.GetError(); rpcErr != nil {
+				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
 				cancel()
 				return
 			}
@@ -218,8 +220,8 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 		case <-ctx.Done():
 		case <-t.channel.Context().Done():
 		case resp := <-respCh:
-			if resp.GetIsError() {
-				logEndingStreamError(transportLogger(t.logger), "channel", resp.GetErrorCode(), resp.GetErrorMessage())
+			if rpcErr := resp.GetError(); rpcErr != nil {
+				logEndingStreamError(transportLogger(t.logger), "channel", rpcErr)
 			}
 		}
 		closed.Store(true)
@@ -242,7 +244,6 @@ type LocalIPCTransport struct {
 	// sibling workers via the router's cross-worker dispatch.
 	targetWorkerID string
 	logger         *slog.Logger
-	nextReqID      atomic.Uint64
 }
 
 // NewLocalIPCTransport wires the local-IPC client + target. A nil
@@ -295,8 +296,9 @@ func (h *localIPCHandle) Cancel() {
 	// Detach from parentCtx so a cancelled parent still retires the worker stream.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.parentCtx), 5*time.Second)
 	defer cancel()
-	if _, err := h.client.Cancel(ctx, &leapmuxv1.CancelRequest{
+	if _, err := h.client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
+		Cancel:          true,
 	}); err != nil {
 		slog.Debug("localIPCHandle.Cancel failed", "error", err)
 	}
@@ -315,10 +317,13 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 	if err != nil {
 		return nil, err
 	}
-	clientReqID := fmt.Sprintf("watch-%d", t.nextReqID.Add(1))
+	// Unique across processes, not only within this one: every CLI process that
+	// a worker spawned shares that worker's router, which keys a stream by this
+	// id, and a reused id would retire another process's stream.
+	clientReqID := id.Generate()
 	ctx, cancel := context.WithCancel(parentCtx)
 	stream, err := t.client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
-		Method:          "worker.WatchEvents",
+		Method:          "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 		Payload:         payload,
 		TargetWorkerId:  t.targetWorkerID,
 		ClientRequestId: clientReqID,
@@ -342,8 +347,8 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 				return
 			}
 			env := msg
-			if env.GetIsError() {
-				logEndingStreamError(transportLogger(t.logger), "local-ipc", env.GetErrorCode(), env.GetErrorMessage())
+			if rpcErr := env.GetError(); rpcErr != nil {
+				logEndingStreamError(transportLogger(t.logger), "local-ipc", rpcErr)
 				return
 			}
 			if len(env.GetPayload()) == 0 {

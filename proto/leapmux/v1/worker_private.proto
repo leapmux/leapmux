@@ -1,8 +1,8 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
-import "leapmux/v1/workspace.proto";
 
 // WorkerPrivateService is a worker-side service whose RPCs travel
 // only over an E2EE channel. It carries content the hub deliberately
@@ -10,6 +10,7 @@ import "leapmux/v1/workspace.proto";
 // subscribe once per worker that hosts any of their tabs; titles and
 // payloads never traverse the hub.
 service WorkerPrivateService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
   // WatchWorkerPrivateEvents streams the calling user's private events
   // from this worker.
   //
@@ -22,27 +23,23 @@ service WorkerPrivateService {
   // The worker emits a one-shot bootstrap reply at subscribe time: one
   // TabPayloadRegistered per row in worker_tab_payloads owned by the caller,
   // followed by live events.
-  rpc WatchWorkerPrivateEvents(WatchWorkerPrivateEventsRequest)
-      returns (stream WorkerPrivateEvent);
+  rpc WatchWorkerPrivateEvents(WatchWorkerPrivateEventsRequest) returns (stream WorkerPrivateEvent) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
 
   // RegisterTabPayload persists (tab_id, payload) on the worker (user is
   // implied by the authenticated principal). The payload is plaintext on the
   // wire -- this RPC must travel via E2EE. Emits TabPayloadRegistered.
-  rpc RegisterTabPayload(RegisterTabPayloadRequest) returns (RegisterTabPayloadResponse);
+  rpc RegisterTabPayload(RegisterTabPayloadRequest) returns (RegisterTabPayloadResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
 
   // GetTabPayload returns the worker-stored payload for a tab. Used by
   // late-joining clients that received a TabRecord via the CRDT before the
   // corresponding TabPayloadRegistered event.
-  rpc GetTabPayload(GetTabPayloadRequest) returns (GetTabPayloadResponse);
-
-  // RevokeTabPayload deletes the worker-stored payload. Emits
-  // TabPayloadRevoked.
-  //
-  // Mirrors the CloseAgent / CloseTerminal contract: the request
-  // carries a WorktreeAction, the response carries a CloseTabResult,
-  // and the worker drives the same closeTabCommon path so worktree
-  // removal stays consistent across tab types.
-  rpc RevokeTabPayload(RevokeTabPayloadRequest) returns (RevokeTabPayloadResponse);
+  rpc GetTabPayload(GetTabPayloadRequest) returns (GetTabPayloadResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
 
   // SetQuakePanel asks every one of the caller's frontends to show or hide the
   // quake panel of one WORKING DIRECTORY on this worker. It stores nothing:
@@ -52,7 +49,9 @@ service WorkerPrivateService {
   //
   // The Control CLI is the only caller. A frontend toggles its own panel
   // locally and never round-trips, so there is no echo to suppress.
-  rpc SetQuakePanel(SetQuakePanelRequest) returns (SetQuakePanelResponse);
+  rpc SetQuakePanel(SetQuakePanelRequest) returns (SetQuakePanelResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
 }
 
 // WatchWorkerPrivateEventsRequest is deliberately empty: the worker the
@@ -192,22 +191,6 @@ message GetTabPayloadResponse {
   // rather than OK with an unset payload, so a reader that sees this field
   // absent is reading a payload branch its build does not know.
   TabPayload payload = 1;
-}
-
-message RevokeTabPayloadRequest {
-  string tab_id = 1;
-  // Worktree disposition chosen by the user when this tab was the last tab on
-  // a tracked worktree. UNSPECIFIED / KEEP leaves the worktree in place;
-  // REMOVE asks the worker to `git worktree remove` once no other tabs
-  // reference it. Mirrors CloseAgentRequest.
-  WorktreeAction worktree_action = 2;
-}
-
-// RevokeTabPayloadResponse reports the outcome of the close. See
-// CloseTabResult for why partial failures are returned in-band rather
-// than as RPC errors.
-message RevokeTabPayloadResponse {
-  CloseTabResult result = 1;
 }
 
 message SetQuakePanelRequest {

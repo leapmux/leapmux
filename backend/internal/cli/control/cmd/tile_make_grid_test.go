@@ -152,7 +152,7 @@ func TestMakeGridMigration_PreservesTabOrder(t *testing.T) {
 			continue
 		}
 		assignments = append(assignments, assignment{
-			tabID: body.SetTabRegister.GetTabId(),
+			tabID: body.SetTabRegister.GetTab().GetTabId(),
 			pos:   f.Position,
 		})
 	}
@@ -202,7 +202,7 @@ func TestInverseSplitMigration_PreservesSiblingTabOrder(t *testing.T) {
 		if !ok {
 			continue
 		}
-		posOrder = append(posOrder, body.SetTabRegister.GetTabId())
+		posOrder = append(posOrder, body.SetTabRegister.GetTab().GetTabId())
 		posValues = append(posValues, f.Position)
 	}
 	require.Len(t, posOrder, 3, "inverse-split must re-stamp positions for every migrated sibling tab")

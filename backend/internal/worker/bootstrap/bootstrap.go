@@ -237,13 +237,12 @@ func Wire(p Params) *Wiring {
 	// worker advertising them still gets the classical handshake.
 	//
 	// Gating them on mode -- which the CLI did, and which unifying the
-	// two entry points spread to solo/desktop -- makes a classic
-	// heartbeat overwrite the stored PQ keys with empty blobs
-	// (UpdatePublicKey writes all three columns unconditionally). Every
-	// client that had pinned that worker then fails TOFU verification in
+	// two entry points spread to solo/desktop -- makes a classic worker's
+	// WorkerHello carry empty ML-KEM and SLH-DSA keys. The Hub answers
+	// GetWorkerHandshakeParams from that hello, so every client that had
+	// pinned the worker's keys then fails TOFU verification in
 	// pinStore.Verify and cannot open a channel until the pin is cleared
-	// by hand. Registration already sends them unconditionally, so
-	// gating here also made the two disagree.
+	// by hand.
 	p.Client.MlkemPublicKey = p.CompositeKey.MlkemPublicKeyBytes()
 	slhdsaPub, _ := p.CompositeKey.SlhdsaPublicKeyBytes()
 	p.Client.SlhdsaPublicKey = slhdsaPub
@@ -251,14 +250,14 @@ func Wire(p Params) *Wiring {
 	// The Hub owns workers.registered_by and re-delivers it on every
 	// connect, so the worker never caches it. It arrives before any
 	// ChannelOpen on the same stream, hence before any handler the owner
-	// gates can run. UpdateRegisteredBy is the service's own method rather
+	// gates can run. ApplyWorkerIdentity is the service's own method rather
 	// than a closure over SetRegisteredBy, so the drift warning and the
 	// empty-owner refusal are shared by both entry points.
 	//
 	// startBackgroundLoops wraps this to nudge the reconciler as well, because
 	// the owner arriving is what unblocks the resume sweep. Assigned here first
 	// so a Wire that never starts the loops still delivers the identity.
-	p.Client.OnWorkerIdentity = svc.UpdateRegisteredBy
+	p.Client.OnWorkerIdentity = svc.ApplyWorkerIdentity
 
 	resumer := startBackgroundLoops(p, svc)
 
@@ -308,13 +307,14 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 	}
 
 	return &controlipc.Factory{
-		WorkerID:    p.WorkerID,
-		Dispatcher:  dispatcher,
-		CrossWorker: cwClient,
-		HubBridge:   hubBridge,
-		HubStreams:  hubStreams,
-		Streams:     svc,
-		Delegation:  delegation,
+		WorkerID:      p.WorkerID,
+		Dispatcher:    dispatcher,
+		CrossWorker:   cwClient,
+		HubBridge:     hubBridge,
+		HubStreams:    hubStreams,
+		Streams:       svc,
+		Delegation:    delegation,
+		OwnerUsername: svc.OwnerUsername,
 	}
 }
 
@@ -444,9 +444,9 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// sweep refuses for a zero owner, the reconciler stops retrying, and the next
 	// pass is the hourly tick -- an hour with every agent cold on a worker that
 	// is otherwise healthy.
-	deliverIdentity := svc.UpdateRegisteredBy
-	p.Client.OnWorkerIdentity = func(userID string) {
-		deliverIdentity(userID)
+	deliverIdentity := svc.ApplyWorkerIdentity
+	p.Client.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) {
+		deliverIdentity(identity)
 		reconciler.Trigger()
 	}
 
@@ -522,7 +522,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 		return nil, fmt.Errorf("list payload-backed tab ids: %w", err)
 	}
 
-	var tabs []*leapmuxv1.TabRef
+	var tabs []*leapmuxv1.TabIdent
 	// One default-less switch over every TabType, so `exhaustive` (enabled in
 	// .golangci.yml) fails the BUILD when a type is added. That matters more here
 	// than almost anywhere: the hub tombstones every owned tab this report omits,
@@ -571,7 +571,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			return nil, fmt.Errorf("list %s ids: %w", tabType, err)
 		}
 		for _, id := range ids {
-			tabs = append(tabs, &leapmuxv1.TabRef{TabType: tabType, TabId: id})
+			tabs = append(tabs, &leapmuxv1.TabIdent{TabType: tabType, TabId: id})
 		}
 	}
 

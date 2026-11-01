@@ -57,7 +57,7 @@ describe('readAllAgentMessages', () => {
         hasMore: false,
       }))
     expect((await readAllAgentMessages(context, 'parent')).map(value => value.id)).toEqual(['one', 'two', 'three'])
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({
+    expect(calls.worker.mock.calls[1]?.[2]).toEqual({
       agentId: 'parent',
       anchor: MessagePageAnchor.AFTER,
       cursorSeq: 2n,
@@ -204,8 +204,8 @@ describe('readNativeMessageSnapshot', () => {
     const result = await readNativeMessageSnapshot(context, 'parent')
     expect(result.messages.map(value => value.id)).toEqual(['one', 'two', 'three'])
     expect(result.agentSessionId).toBe('native-session')
-    expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({
+    expect(calls.worker.mock.calls[0]?.[2]).toEqual({ agentId: 'parent', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[2]).toEqual({
       agentId: 'parent',
       anchor: MessagePageAnchor.AFTER,
       cursorSeq: 1n,
@@ -250,8 +250,8 @@ describe('readNativeMessageSnapshot', () => {
       { text: 'ACTUAL_CHILD_START' },
       { text: 'ACTUAL_CHILD_END' },
     ])
-    expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: 'child', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({
+    expect(calls.worker.mock.calls[0]?.[2]).toEqual({ agentId: 'child', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[2]).toEqual({
       agentId: 'child',
       anchor: MessagePageAnchor.AFTER,
       cursorSeq: 1n,
@@ -415,7 +415,7 @@ describe('readNativeMessageSnapshot', () => {
         ],
       }))
     await readNativeMessageSnapshot(context, 'parent')
-    expect(calls.worker.mock.calls[1]?.[4].cursorSeq).toBe(large)
+    expect(calls.worker.mock.calls[1]?.[2].cursorSeq).toBe(large)
     calls.worker.mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, {
       messages: [
         message('later', 2n),

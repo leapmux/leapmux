@@ -280,6 +280,40 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	}
 }
 
+// TestUpdateProfileReportsTheAccountsLinkedProviders pins that UpdateProfile
+// returns the COMPLETE projection. The account holds no password and no
+// passkey, so its one linked provider is its only step-up option; a reply that
+// dropped the provider list would make the client adopt an account that
+// "has nothing to verify with".
+func TestUpdateProfileReportsTheAccountsLinkedProviders(t *testing.T) {
+	t.Parallel()
+
+	env := setupOAuthUserTest(t)
+	ctx := context.Background()
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	providerID := createTestProvider(t, env.store, ks)
+	require.NoError(t, env.store.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(env.userID), ProviderID: providerID, ProviderSubject: "provider-subject-1",
+	}))
+
+	resp, err := env.client.UpdateProfile(authedReq(ctx, &leapmuxv1.UpdateProfileRequest{
+		Username:    "testuser",
+		DisplayName: "Renamed",
+	}, env.token))
+	require.NoError(t, err)
+	user := resp.GetUser()
+	require.NotNil(t, user, "a readable account is reported")
+	assert.Equal(t, "Renamed", user.GetDisplayName(), "the reply reports the stored name")
+	require.Len(t, user.GetOauthProviders(), 1)
+	assert.Equal(t, providerID, user.GetOauthProviders()[0].GetId())
+	assert.True(t, user.GetOauthProviders()[0].GetEnabled())
+	assert.True(t, user.GetMayElevateThroughAProvider(),
+		"the provider is this account's step-up option, as GetCurrentUser reports")
+}
+
 func TestUserService_UpdateProfile(t *testing.T) {
 	t.Parallel()
 
@@ -291,8 +325,8 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	assert.Equal(t, "newname", resp.GetUsername())
-	assert.Equal(t, "New Display", resp.GetDisplayName())
+	assert.Equal(t, "newname", resp.GetUser().GetUsername())
+	assert.Equal(t, "New Display", resp.GetUser().GetDisplayName())
 
 	// Verify that the update reached the database.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
@@ -1124,6 +1158,15 @@ func TestVerifyEmail_Success(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, "verified@example.com", resp.GetUser().GetEmail())
+	assert.True(t, resp.GetUser().GetEmailVerified(), "the reply reports the state the write produced")
+	assert.Empty(t, resp.GetUser().GetPendingEmail())
+	// The reply also reports the verification state, so the client leaves
+	// the verification screen without a second round trip.
+	status := resp.GetEmailVerification()
+	require.NotNil(t, status, "the reply carries the verification status")
+	assert.False(t, status.GetVerificationRequired(), "a verified address holds the account back no longer")
+	assert.False(t, status.GetVerificationEmailSent(), "a verification sends no mail")
+	assert.Nil(t, status.GetNextResendAvailableAt(), "nothing is pending, so no cooldown is reported")
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
@@ -1374,7 +1417,11 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 
 	resp, err := env.client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.NoError(t, err)
-	assert.True(t, resp.GetEmailSent())
+	status := resp.GetEmailVerification()
+	assert.True(t, status.GetVerificationEmailSent())
+	assert.True(t, status.GetVerificationRequired(), "a resend runs only for a pending address")
+	require.NotNil(t, status.GetNextResendAvailableAt(), "a successful send starts the cooldown")
+	assert.True(t, status.GetNextResendAvailableAt().AsTime().After(time.Now()))
 
 	// A fresh code must replace the original — otherwise users who lost
 	// the email could still verify with the leaked-but-presumed-private
@@ -2306,7 +2353,8 @@ func TestGuardedRPCs_TellASessionToElevate(t *testing.T) {
 	assertElevationRequired(t, info, err)
 
 	_, err = env.client.FinishPasskeyRegistration(authedReq(ctx, &leapmuxv1.FinishPasskeyRegistrationRequest{
-		SessionId: "ceremony-1", CredentialJson: "{}", FriendlyName: "Added",
+		FriendlyName: "Added",
+		Credential:   &leapmuxv1.WebAuthnCredential{SessionId: "ceremony-1", CredentialJson: "{}"},
 	}, env.token))
 	assertElevationRequired(t, info, err)
 
@@ -2885,8 +2933,8 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 
 	resp, err := client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, token))
 	require.NoError(t, err)
-	assert.True(t, resp.GetEmailSent())
-	require.NotNil(t, resp.GetNextResendAvailableAt())
+	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, resp.GetEmailVerification().GetNextResendAvailableAt())
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
@@ -2918,7 +2966,7 @@ func TestResendVerificationEmail_NextResendAvailableAt(t *testing.T) {
 	resp, err := env.client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.NoError(t, err)
 
-	nextAt := resp.GetNextResendAvailableAt().AsTime()
+	nextAt := resp.GetEmailVerification().GetNextResendAvailableAt().AsTime()
 	assert.True(t, nextAt.After(before.Add(59*time.Second)))
 	assert.True(t, nextAt.Before(before.Add(61*time.Second)))
 }
@@ -2948,10 +2996,10 @@ func TestResendVerificationEmail_FailedSendReportsFailureWindow(t *testing.T) {
 	before := time.Now().UTC()
 	resp, err := env.client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, env.token))
 	require.NoError(t, err)
-	assert.False(t, resp.GetEmailSent())
-	require.NotNil(t, resp.GetNextResendAvailableAt(),
+	assert.False(t, resp.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, resp.GetEmailVerification().GetNextResendAvailableAt(),
 		"a failed send arms the failure window, so the response must report it")
-	nextAt := resp.GetNextResendAvailableAt().AsTime()
+	nextAt := resp.GetEmailVerification().GetNextResendAvailableAt().AsTime()
 	assert.True(t, nextAt.After(before.Add(8*time.Second)),
 		"the reported window is the failure cooldown")
 	assert.True(t, nextAt.Before(before.Add(12*time.Second)),
@@ -3079,8 +3127,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	require.NoError(t, err)
 
 	_, err = client.FinishPasskeyElevation(authedReq(context.Background(), &leapmuxv1.FinishPasskeyElevationRequest{
-		SessionId:      sessionID,
-		CredentialJson: "not-a-credential",
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: sessionID, CredentialJson: "not-a-credential"},
 	}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
@@ -3091,6 +3138,35 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	row, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt, "a failed assertion must not elevate")
+}
+
+// TestUserFinishHandlersRefuseAnEmptyCredential is the consistency half of the
+// request check on the two authenticated Finish handlers. The session is
+// elevated, so the passkey-management gate passes and the request check is
+// what answers.
+func TestUserFinishHandlersRefuseAnEmptyCredential(t *testing.T) {
+	t.Parallel()
+	env := setupUserTest(t)
+	hubtestutil.ElevateSession(t, env.store, env.token, env.userID)
+	ctx := context.Background()
+
+	for name, cred := range map[string]*leapmuxv1.WebAuthnCredential{
+		"an absent credential": nil,
+		"no session id":        {CredentialJson: `{"id":"x"}`},
+		"no credential":        {SessionId: "session"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := env.client.FinishPasskeyRegistration(authedReq(ctx, &leapmuxv1.FinishPasskeyRegistrationRequest{
+				Credential: cred, FriendlyName: "Laptop",
+			}, env.token))
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "FinishPasskeyRegistration: %v", err)
+
+			_, err = env.client.FinishPasskeyElevation(authedReq(ctx, &leapmuxv1.FinishPasskeyElevationRequest{
+				Credential: cred,
+			}, env.token))
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "FinishPasskeyElevation: %v", err)
+		})
+	}
 }
 
 // TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt pins WHERE the
@@ -3172,7 +3248,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 
 	begun, err := begin()
 	require.NoError(t, err)
-	assert.NotEmpty(t, begun.GetSessionId())
+	assert.NotEmpty(t, begun.GetChallenge().GetSessionId())
 }
 
 // TestDeletePasskey_ElevationWindowCoversRepeatedActions is the property

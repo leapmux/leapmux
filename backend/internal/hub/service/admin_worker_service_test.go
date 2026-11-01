@@ -55,9 +55,10 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	// A real effects value over a real delegation-scope cache; the notifier
-	// and the broadcaster need a worker manager and a channel manager this
-	// harness does not build, and Apply skips the ones it was not given.
+	// A real effects value over a real delegation-scope cache. The notifier
+	// needs a worker manager and the workers-changed notification needs a CRDT
+	// registry, and this harness builds neither; Apply skips the effects it
+	// was not given.
 	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	connectServer := connect.NewServer(interceptor)
@@ -97,13 +98,14 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "not found or not active")
 
+	// A filter that is present but selects nothing is a malformed request,
+	// not "every owner": only an ABSENT selector lists every owner.
 	_, err = env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		UserId:   env.userID,
-		Username: "admin",
+		User: &leapmuxv1.UserSelector{},
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "mutually exclusive")
+	assert.Contains(t, err.Error(), "selects no id or username")
 
 	worker := storetest.SeedWorker(t, env.st, env.userID)
 
@@ -193,6 +195,74 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 	assert.Zero(t, got.GetPurged())
 }
 
+// TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey pins the
+// page wiring of the key listing: the limit caps one reply, the cursor reaches
+// the rest, the final page states that no rows remain, and a malformed cursor
+// is the caller's to fix.
+func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	var seeded []string
+	for range 3 {
+		keyID := id.Generate()
+		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID:        keyID,
+			CreatedBy: userid.MustNew(env.userID),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}))
+		seeded = append(seeded, keyID)
+	}
+	list := func(page *leapmuxv1.PageRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
+		return env.client.ListRegistrationKeys(authedReq(ctx, &leapmuxv1.ListRegistrationKeysRequest{Page: page}, env.token))
+	}
+
+	first, err := list(&leapmuxv1.PageRequest{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, first.GetKeys(), 2, "the limit caps one page")
+	require.NotEmpty(t, first.GetPage().GetNextCursor(), "a full page states where the next one starts")
+
+	last, err := list(&leapmuxv1.PageRequest{Limit: 2, Cursor: first.GetPage().GetNextCursor()})
+	require.NoError(t, err)
+	require.Len(t, last.GetKeys(), 1)
+	assert.Empty(t, last.GetPage().GetNextCursor(), "the final page states that no rows remain")
+
+	var listed []string
+	for _, k := range append(first.GetKeys(), last.GetKeys()...) {
+		listed = append(listed, k.GetId())
+		assert.Equal(t, "admin", k.GetCreatorUsername())
+	}
+	assert.ElementsMatch(t, seeded, listed, "the pages hold every key once")
+
+	_, err = list(&leapmuxv1.PageRequest{Cursor: "not-a-cursor"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// An expired key has nothing left to revoke: the operator's revoke answers
+// NotFound and leaves its expiry, so the purge still deletes it on schedule.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesAnExpiredKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	expired := time.Now().UTC().Add(-time.Hour)
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: expired,
+	}))
+
+	_, err := env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	got, err := env.st.RegistrationKeys().GetByID(ctx, keyID)
+	require.NoError(t, err)
+	assert.WithinDuration(t, expired, got.ExpiresAt, time.Second, "the refused revoke leaves the expiry")
+}
+
 // TestAdminWorkerService_GetWorkerReportsADeletedOwner pins the case
 // GetAdmin exists for.
 //
@@ -233,7 +303,7 @@ func TestAdminWorkerService_GetWorkerReportsADeletedOwner(t *testing.T) {
 		"the owner id stays, which is the only stable handle left")
 
 	listed, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		UserId: victim.ID,
+		User: service.SelectUserByID(victim.ID),
 	}, env.token))
 	require.NoError(t, err)
 	require.Len(t, listed.GetWorkers(), 1)
@@ -253,27 +323,24 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	owner := userid.MustNew(env.userID)
 	for range service.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              id.Generate(),
-			AuthToken:       id.Generate(),
-			RegisteredBy:    owner,
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
+			ID:           id.Generate(),
+			AuthToken:    id.Generate(),
+			RegisteredBy: owner,
 		}))
 	}
 
 	page, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		Limit: 100000,
+		Page: &leapmuxv1.PageRequest{Limit: 100000},
 	}, env.token))
 	require.NoError(t, err)
 	assert.Len(t, page.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
-	require.NotEmpty(t, page.GetNextCursor(), "a capped page says where the next one starts")
+	require.NotEmpty(t, page.GetPage().GetNextCursor(), "a capped page says where the next one starts")
 
 	next, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		Limit: 100000, Cursor: page.GetNextCursor(),
+		Page: &leapmuxv1.PageRequest{Limit: 100000, Cursor: page.GetPage().GetNextCursor()},
 	}, env.token))
 	require.NoError(t, err)
 	assert.Len(t, next.GetWorkers(), 1)
-	assert.Empty(t, next.GetNextCursor())
+	assert.Empty(t, next.GetPage().GetNextCursor())
 }

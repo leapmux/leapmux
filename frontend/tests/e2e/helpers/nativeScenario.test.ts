@@ -7,7 +7,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
-import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   currentNativeAgent,
   expectNativeOptionValue,
@@ -1157,7 +1157,7 @@ describe('nativeAgentsByIds', () => {
     ]
     workerChannel.callWorker.mockResolvedValueOnce({ agents })
     expect(await nativeAgentsByIds(server, ['first', 'second'])).toBe(agents)
-    expect(workerChannel.callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', 'ListAgents', expect.anything(), expect.anything(), {
+    expect(workerChannel.callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', WorkerAgentService.method.listAgents, {
       tabIds: ['first', 'second'],
     })
   })
@@ -1194,7 +1194,7 @@ describe('nativeAgentById', () => {
       ],
     })
     expect(await nativeAgentById(server, 'wanted')).toBe(agent)
-    expect(workerChannel.callWorker).toHaveBeenCalledWith('worker-1', 'ListAgents', expect.anything(), expect.anything(), {
+    expect(workerChannel.callWorker).toHaveBeenCalledWith('worker-1', WorkerAgentService.method.listAgents, {
       tabIds: ['wanted'],
     })
   })

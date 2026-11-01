@@ -285,7 +285,6 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       rows: DEFAULT_TERMINAL_ROWS,
       workingDir: key.workingDir,
       shell: '',
-      workerId: key.workerId,
       shellStartDir: '',
       quake: true,
     })

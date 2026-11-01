@@ -23,13 +23,10 @@ import (
 var adminProcedureRationale = map[string]string{
 	// Instance-wide configuration: every user of the hub lives under
 	// whatever these write.
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        "reads every instance setting including secret presence",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       "rewrites instance-wide configuration (sign-up, SMTP, limits)",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: "writes the encrypted halves (SMTP password, captcha secrets)",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      "rewrites several instance settings at once, both halves, in one transaction",
-	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        "returns instance configuration to defaults, cross-key validated",
-	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       "returns several instance settings to defaults in one transaction",
-	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure:      "describes the host's network interfaces and which addresses the hub answers on",
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   "reads every instance setting including secret presence",
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure: "rewrites instance-wide configuration (sign-up, SMTP, limits), both halves including the encrypted secrets, in one transaction",
+	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:  "returns instance configuration to defaults in one transaction, cross-key validated",
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: "describes the host's network interfaces and which addresses the hub answers on",
 
 	// Credential and identity administration: these mint or destroy other
 	// users' credentials, which is the definition of administration.

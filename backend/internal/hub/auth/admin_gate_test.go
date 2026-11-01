@@ -220,12 +220,9 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	// The delegation row's worker reference is foreign-keyed; seed a real one.
 	workerID := id.Generate()
 	require.NoError(t, f.st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    owner,
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: owner,
 	}))
 
 	tokenID := id.Generate()

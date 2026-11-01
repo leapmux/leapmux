@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
 import type { WorkspaceStartActions } from './workspaceStartActions'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
-import type { TabType, Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 
 import type { createRepoGitStore } from '~/stores/repoGit.store'

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
+	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -61,7 +64,7 @@ func (j *tabSyncJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) erro
 	j.batchIDs = append(j.batchIDs, c.Batch.GetBatchId())
 	for _, op := range c.Batch.GetOps() {
 		if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab); ok {
-			j.byUser[c.UserID] = append(j.byUser[c.UserID], body.TombstoneTab.GetTabId())
+			j.byUser[c.UserID] = append(j.byUser[c.UserID], body.TombstoneTab.GetTab().GetTabId())
 		}
 	}
 	return nil
@@ -122,6 +125,11 @@ func (r *recordingRegistry) Get(ctx context.Context, userID string) (*crdt.Manag
 	return r.inner.Get(ctx, userID)
 }
 
+// BroadcastWorkersChanged forwards to the wrapped registry; it records nothing.
+func (r *recordingRegistry) BroadcastWorkersChanged(userID string) {
+	r.inner.BroadcastWorkersChanged(userID)
+}
+
 func (r *recordingRegistry) seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -161,7 +169,7 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
@@ -210,7 +218,7 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	var sent atomic.Int32
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
@@ -244,7 +252,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
@@ -256,7 +264,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 
 	// The worker hosts the tab, in alice's workspace, exactly as her row says.
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabRef{
+		Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "dup-tab"},
 		},
 	})
@@ -290,7 +298,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 
 	logs := testutil.CaptureDefaultLogger(t)
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	sent := 0
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
 		sent++
@@ -298,7 +306,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	})
 
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabRef{
+		Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "not-in-crdt"},
 		},
@@ -335,7 +343,7 @@ func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) st
 // the channels go, whatever else is happening to the process.
 func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	cMgr.RegisterWithAuthInfo("ch1", "w1", "u1", channelmgr.AuthInfo{}, nil)
 	cMgr.RegisterWithAuthInfo("ch2", "w1", "u1", channelmgr.AuthInfo{}, nil)
@@ -352,7 +360,7 @@ func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 // shutdown, and they must leave no trace: nothing to close means nothing to say.
 func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	buf := testutil.CaptureDefaultLogger(t)
 
 	svc.closeWorkerChannels("w-with-no-channels")
@@ -372,4 +380,65 @@ func TestStreamEndReason(t *testing.T) {
 	assert.Equal(t,
 		"worker stream failed: read unix /hub.sock->: i/o timeout",
 		streamEndReason(errors.New("read unix /hub.sock->: i/o timeout")))
+}
+
+func TestValidateWorkerHello(t *testing.T) {
+	t.Parallel()
+
+	x25519 := bytes.Repeat([]byte{1}, noise.EphemeralPublicKeySize)
+	mlkem := bytes.Repeat([]byte{2}, noise.MlkemPublicKeySize)
+	slhdsa := bytes.Repeat([]byte{3}, noise.SlhdsaPublicKeySize)
+	hello := func(mode leapmuxv1.EncryptionMode, x, m, s []byte) *leapmuxv1.ConnectRequest {
+		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{
+			Keys:           &leapmuxv1.WorkerPublicKeys{X25519: x, Mlkem: m, Slhdsa: s},
+			EncryptionMode: mode,
+		}}}
+	}
+	classic := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
+	pq := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+
+	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
+		"classic with only x25519":    hello(classic, x25519, nil, nil),
+		"classic with every key":      hello(classic, x25519, mlkem, slhdsa),
+		"post-quantum with every key": hello(pq, x25519, mlkem, slhdsa),
+	} {
+		t.Run("accepts "+name, func(t *testing.T) {
+			got, err := validateWorkerHello(msg)
+			require.NoError(t, err)
+			assert.Same(t, msg.GetHello(), got)
+		})
+	}
+
+	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
+		"a nil message":                   nil,
+		"a heartbeat":                     {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
+		"a hello with no keys":            {Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{EncryptionMode: classic}}},
+		"an unspecified mode":             hello(leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, x25519, mlkem, slhdsa),
+		"an unknown mode":                 hello(leapmuxv1.EncryptionMode(99), x25519, mlkem, slhdsa),
+		"a short x25519":                  hello(classic, x25519[:31], nil, nil),
+		"a long x25519":                   hello(classic, append(bytes.Clone(x25519), 0), nil, nil),
+		"post-quantum without mlkem":      hello(pq, x25519, nil, slhdsa),
+		"post-quantum without slhdsa":     hello(pq, x25519, mlkem, nil),
+		"post-quantum with a short mlkem": hello(pq, x25519, mlkem[:100], slhdsa),
+		"classic with a short mlkem":      hello(classic, x25519, mlkem[:100], nil),
+		"classic with a short slhdsa":     hello(classic, x25519, nil, slhdsa[:10]),
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			_, err := validateWorkerHello(msg)
+			require.Error(t, err)
+		})
+	}
+}
+
+// The queue pool and the clock carry no nil-tolerant default, so the
+// constructor refuses each one loudly rather than let the first Connect panic.
+func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a queue pool", func() {
+		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, nil, quartz.NewReal())
+	})
+	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a clock", func() {
+		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), nil)
+	})
 }

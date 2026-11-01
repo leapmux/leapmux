@@ -218,7 +218,7 @@ func sendRekeyOutcomeWithRetry(t *testing.T, peer *noiseutil.Session, peerWS *we
 
 func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	tc := newConn(ch, "conn-rekey", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-rekey", "example.test", 443)
 	t.Cleanup(func() { _ = tc.Close() })
 
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)

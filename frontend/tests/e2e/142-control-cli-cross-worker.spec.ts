@@ -10,7 +10,7 @@
  * The DOM-observable assertions:
  *   - The CLI runs `agent open --worker-id <B>`. The hub publishes a
  *     snapshot; both browsers reconcile their `tabStore` and render
- *     the new tab. `GetTab` against the hub confirms the new tab is
+ *     the new tab. `LocateTab` against the hub confirms the new tab is
  *     pinned to Worker B (not A) — proving the harness produced a
  *     real cross-worker workspace, not a fake.
  *
@@ -97,8 +97,8 @@ test.describe('control CLI cross-worker', () => {
         //    publishes a snapshot containing the new tab; both
         //    browsers reconcile their `tabStore` from
         //    `snapshot.tabs` and render it. This proves the entire
-        //    cross-worker stack: CLI → hub bearer auth → AddTab on
-        //    a tab pinned to a different worker → snapshot fan-out
+        //    cross-worker stack: CLI → hub bearer auth → SubmitOps
+        //    adding a tab pinned to a different worker → snapshot fan-out
         //    → frontend reconciler.
         const agentB = await cliAgentOpen(cli, { workspaceId, workerId: workerB.id })
         await Promise.all([
@@ -148,14 +148,15 @@ test.describe('control CLI cross-worker', () => {
   })
 })
 
-/** Fetch a tab via `WorkspaceService.GetTab` and return its worker. */
+/** Locate an agent tab via `WorkspaceService.LocateTab`, check its workspace, and return its worker. */
 async function fetchTab(harness: MultiWorkerHarness, workspaceId: string, tabId: string): Promise<{ workerId: string }> {
-  const res = await callHub<{ tab?: { workerId?: string } }>(harness.hubUrl, 'WorkspaceService/GetTab', {
-    workspaceId,
+  const res = await callHub<{ tab?: { workerId?: string, workspaceId?: string } }>(harness.hubUrl, 'WorkspaceService/LocateTab', {
     tabId,
     tabType: 'TAB_TYPE_AGENT',
   }, { cookie: harness.adminToken, operation: `fetchTab(${tabId})` })
-  if (!res.tab?.workerId)
-    throw new Error(`GetTab: missing tab.workerId in response`)
+  if (res.tab?.workspaceId !== workspaceId)
+    throw new Error(`LocateTab: tab ${tabId} is in workspace ${res.tab?.workspaceId ?? '(none)'}, not ${workspaceId}`)
+  if (!res.tab.workerId)
+    throw new Error(`LocateTab: missing tab.workerId in response`)
   return { workerId: res.tab.workerId }
 }

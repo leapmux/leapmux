@@ -1,7 +1,7 @@
-import { create, toBinary } from '@bufbuild/protobuf'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkerPrivateEventSchema } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WatchWorkerPrivateEventsRequestSchema, WorkerPrivateEventSchema, WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 
 // Mock the E2EE channel transport so we can drive connect / message / error
 // entirely from the test.
@@ -110,6 +110,24 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
       throw new Error(`expected a fake stream at index ${index}`)
     return s
   }
+
+  // The stream travels under the generated descriptor, so the procedure on
+  // the wire matches the handler the worker registers.
+  it('opens the stream on the worker\'s channel under the WatchWorkerPrivateEvents descriptor', async () => {
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
+    await tick(0)
+
+    expect(getOrOpenChannel).toHaveBeenCalledWith('w')
+    expect(stream).toHaveBeenCalledOnce()
+    const [channelId, method, payload] = stream.mock.calls[0] ?? []
+    expect(channelId).toBe('chan')
+    expect(method).toBe(WorkerPrivateService.method.watchWorkerPrivateEvents)
+    expect(fromBinary(WatchWorkerPrivateEventsRequestSchema, payload as Uint8Array).$typeName).toBe('leapmux.v1.WatchWorkerPrivateEventsRequest')
+    stop()
+  })
 
   it('backs off exponentially on repeated failures and resets after a healthy message', async () => {
     const stop = openWorkerPrivateEventStream({

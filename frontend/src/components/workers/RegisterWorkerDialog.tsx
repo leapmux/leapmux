@@ -49,12 +49,12 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
 
   const canEmail = createMemo(() => Boolean(auth.user()?.emailVerified))
 
-  // Soft-delete the key on close. This discards the errors because the
+  // Revoke the key on close. This discards the errors because the
   // dialog closes regardless — the key expires on its own.
   onCleanup(() => {
     const k = registrationKey()
     if (k)
-      workerClient.deleteRegistrationKey({ registrationKey: k }).catch(() => {})
+      workerClient.revokeRegistrationKey({ registrationKey: k }).catch(() => {})
   })
 
   // Single onMount with a synchronous timer setup followed by a

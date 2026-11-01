@@ -3,7 +3,7 @@ import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it, vi } from 'vitest'
 import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { computeSeparator, getEditorRef, insertIntoAgentEditor, insertIntoMruAgentEditor, registerEditorRef, unregisterEditorRef } from './editorRef.store'
 
 /** An EditorRef with the parts a test does not care about filled in. */

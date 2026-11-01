@@ -2,6 +2,8 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
+import "leapmux/v1/access.proto";
+import "leapmux/v1/common.proto";
 import "leapmux/v1/scope.proto";
 
 // AppService manages OAuth app REGISTRATIONS: the rows a consent screen
@@ -22,29 +24,57 @@ import "leapmux/v1/scope.proto";
 // and authorizable to that user alone; an administrator's app is hub-wide. One
 // column carries that rule (oauth_clients.owner_user_id), so no second flag can
 // disagree with it.
+//
+// The whole service sits behind admin:apps: an app that could register an
+// app would choose its own redirect address and its own scope ceiling, and
+// the next consent screen would be the attacker's. Keeping it OUT of the
+// app-reachable vocabulary was what SCOPE_NEVER marked here before; the
+// separate admin family gives the same protection to ordinary grants
+// (an app's ceiling may list admin:apps only if an administrator
+// registered it that way) while letting a command-line credential reach
+// the documented `control admin app` verbs.
+//
+// Reading is the same scope rather than a weaker one: the listing carries
+// every registration's redirect addresses and ceilings, which is the
+// reconnaissance an app would want before it forged one.
 service AppService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // RegisterApp creates a registration owned by the caller, or hub-wide when an
   // administrator asks for that. The client secret crosses ONCE, in the
   // response: the hub stores only its hash and can never show it again.
-  rpc RegisterApp(RegisterAppRequest) returns (RegisterAppResponse);
+  rpc RegisterApp(RegisterAppRequest) returns (RegisterAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // ListApps pages the registrations the caller may EDIT -- their own, plus the
   // hub-wide catalogue for an administrator.
-  rpc ListApps(ListAppsRequest) returns (ListAppsResponse);
+  rpc ListApps(ListAppsRequest) returns (ListAppsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // UpdateApp changes the editable fields of one registration.
-  rpc UpdateApp(UpdateAppRequest) returns (UpdateAppResponse);
+  rpc UpdateApp(UpdateAppRequest) returns (UpdateAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // SetAppElevationAllowed toggles whether the app may run the step-up
   // ceremony. It is separate because it is the ONE field a built-in
   // registration may still change, and because it is not part of the grant.
-  rpc SetAppElevationAllowed(SetAppElevationAllowedRequest) returns (SetAppElevationAllowedResponse);
+  rpc SetAppElevationAllowed(SetAppElevationAllowedRequest) returns (SetAppElevationAllowedResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // VerifyApp records an administrator's vouch, or withdraws it. An unverified
   // app is the default and the consent page says so.
-  rpc VerifyApp(VerifyAppRequest) returns (VerifyAppResponse);
+  rpc VerifyApp(VerifyAppRequest) returns (VerifyAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // RevokeApp retires the app and revokes every credential it holds, for every
   // user, in one transaction.
-  rpc RevokeApp(RevokeAppRequest) returns (RevokeAppResponse);
+  rpc RevokeApp(RevokeAppRequest) returns (RevokeAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
   // DeleteApp removes a registration that never held a credential. The hub
   // refuses it otherwise rather than orphaning credentials.
-  rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse);
+  rpc DeleteApp(DeleteAppRequest) returns (DeleteAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ADMIN_APPS };
+  }
 }
 
 // AppVisibility is who may see and authorize a registration.
@@ -139,22 +169,21 @@ message RegisterAppResponse {
 
 // ListAppsRequest pages the registrations the caller may edit.
 message ListAppsRequest {
-  string cursor = 1;
-  int32 limit = 2;
+  PageRequest page = 1;
   // Include registrations that were revoked. They stay readable because a live
   // credential on a retired app must still be explainable.
-  bool include_revoked = 3;
+  bool include_revoked = 2;
   // Narrow the listing to one reach. APP_VISIBILITY_UNSPECIFIED keeps the
   // caller's whole editable set -- an administrator's own apps beside the
   // hub-wide catalogue. HUB_WIDE asks for the catalogue alone (administrators
   // only), and PRIVATE for the caller's own registrations, so a surface that
   // draws one reach does not fetch and discard the other.
-  AppVisibility visibility = 4;
+  AppVisibility visibility = 3;
 }
 
 message ListAppsResponse {
   repeated App apps = 1;
-  string next_cursor = 2;
+  PageResponse page = 2;
   // Whether RFC 7591 dynamic registration is on. The surface reads it here so
   // an administrator sees the switch beside what it affects.
   bool open_registration_enabled = 3;

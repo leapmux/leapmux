@@ -1,6 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { HLCClock } from './hlc'
 import type { HydrationPayload } from './hydrate'
+import type { OpEntityKind } from './ops'
 import type { FloatingWindowRecord, HLC, NodeRecord, TabRecord, UserCrdtState, WorkspaceContentsRecord } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type {
   BatchCommitted,
@@ -972,37 +973,26 @@ export class PendingOpsManager {
       this.clock.observe(evt.atHlc)
     const entity = evt.entity
     switch (entity.case) {
+      // Every op that targets the removed entity goes, whatever its body:
+      // opTarget is the one mapping from a body to its entity, so a body
+      // added later (as reviveTab once was) cannot survive the removal and
+      // recreate the entity the view just lost.
       case 'tab': {
-        const ident = entity.value
-        delete this.state.confirmedState.tabs[ident.tabId]
-        droppedPending = this.dropPendingByPredicate((op) => {
-          const body = op.body
-          if (body.case === 'setTabRegister' || body.case === 'tombstoneTab')
-            return body.value.tabId === ident.tabId
-          return false
-        })
+        const id = entity.value.tabId
+        delete this.state.confirmedState.tabs[id]
+        droppedPending = this.dropPendingByPredicate(op => targetsEntity(op, 'tab', id))
         break
       }
       case 'windowId': {
         const id = entity.value
         delete this.state.confirmedState.floatingWindows[id]
-        droppedPending = this.dropPendingByPredicate((op) => {
-          const body = op.body
-          if (body.case === 'setFloatingWindowRegister' || body.case === 'tombstoneFloatingWindow')
-            return body.value.windowId === id
-          return false
-        })
+        droppedPending = this.dropPendingByPredicate(op => targetsEntity(op, 'fw', id))
         break
       }
       case 'nodeId': {
         const id = entity.value
         delete this.state.confirmedState.nodes[id]
-        droppedPending = this.dropPendingByPredicate((op) => {
-          const body = op.body
-          if (body.case === 'setNodeRegister' || body.case === 'tombstoneNode')
-            return body.value.nodeId === id
-          return false
-        })
+        droppedPending = this.dropPendingByPredicate(op => targetsEntity(op, 'node', id))
         break
       }
       default:
@@ -1107,6 +1097,12 @@ function applySpeculative(state: UserCrdtState, op: CrdtOp): void {
     : (op.clientHlc ?? undefined))
 }
 
+/** Whether `op` targets the entity of `kind` with `id`, by opTarget's mapping. */
+function targetsEntity(op: CrdtOp, kind: OpEntityKind, id: string): boolean {
+  const target = opTarget(op)
+  return target.case === 'entity' && target.kind === kind && target.id === id
+}
+
 /**
  * cloneStateForBatches returns a state where every record the
  * `batches` will mutate is deep-cloned, and every other record is
@@ -1115,14 +1111,14 @@ function applySpeculative(state: UserCrdtState, op: CrdtOp): void {
  * tombstone-replace) lands in the cloned map without leaking into
  * `state`.
  *
- * apply.ts mutates a record in place for `set*Register` ops, but
- * tombstone ops REPLACE the map slot with a fresh record — those
- * don't need pre-cloning. Similarly setWorkspaceRootNode mutates the
- * workspace record in place, so we pre-clone its slot when present.
- * setWorkspaceRegister only creates a record when absent (never mutates
- * an existing one) and tombstoneWorkspace `delete`s the slot — both land
- * in the shallow-copied `workspaces` map without touching the shared
- * record, so neither needs a pre-clone (same reasoning as tombstone ops).
+ * apply.ts mutates a record in place for `set*Register` ops and for
+ * `reviveTab` (which clears tombstoneAt), but tombstone ops REPLACE the
+ * map slot with a fresh record — those don't need pre-cloning. Similarly
+ * createWorkspace sets an empty root of an existing workspace record in
+ * place, so we pre-clone that slot. A createWorkspace for an absent
+ * record and tombstoneWorkspace's `delete` both land in the shallow-copied
+ * `workspaces` map without touching the shared record, so neither needs a
+ * pre-clone (same reasoning as tombstone ops).
  *
  * Mirrors the backend's `CloneStateForBatch` (state.go).
  */
@@ -1148,8 +1144,11 @@ function cloneStateForBatches(state: UserCrdtState, batches: OpBatch[]): UserCrd
           }
           break
         }
-        case 'setTabRegister': {
-          const id = body.value.tabId
+        // A revive clears tombstoneAt IN PLACE, exactly as a register write
+        // mutates its register, so it needs the same pre-clone.
+        case 'setTabRegister':
+        case 'reviveTab': {
+          const id = body.value.tab?.tabId ?? ''
           if (!clonedTabs.has(id) && tabs[id]) {
             tabs[id] = clone(TabRecordSchema, tabs[id])
             clonedTabs.add(id)
@@ -1164,12 +1163,13 @@ function cloneStateForBatches(state: UserCrdtState, batches: OpBatch[]): UserCrd
           }
           break
         }
-        case 'setWorkspaceRootNode': {
+        case 'createWorkspace': {
           const id = body.value.workspaceId
-          // SetWorkspaceRootNode is set-once via applyOp; if rootNodeId
-          // is already non-empty the op is a no-op and cloning the
-          // record would be wasted work. Only clone when the slot is
-          // empty or the workspace record is yet to be materialized.
+          // The root a create carries is set-once via applyOp; if rootNodeId
+          // is already non-empty the op is a no-op and cloning the record
+          // would be wasted work. Only clone when the slot is empty. An
+          // absent record is created in the shallow-copied map, which needs
+          // no pre-clone.
           if (!clonedWss.has(id) && workspaces[id] && workspaces[id].rootNodeId === '') {
             workspaces[id] = clone(WorkspaceContentsRecordSchema, workspaces[id])
             clonedWss.add(id)

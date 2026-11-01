@@ -247,7 +247,6 @@ type WorkerStore interface {
 	// deregistering worker must still connect, because connecting is how it
 	// is told to stop. A deleted worker is ErrNotFound.
 	GetByAuthToken(ctx context.Context, token string) (*Worker, error)
-	GetPublicKey(ctx context.Context, id string) (*WorkerPublicKeys, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
@@ -261,7 +260,6 @@ type WorkerStore interface {
 	// them for status=WORKER_STATUS_DELETED.
 	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
 	UpdateLastSeen(ctx context.Context, id string) error
-	UpdatePublicKey(ctx context.Context, p UpdateWorkerPublicKeyParams) error
 	// Deregister stamps deregistering_at on an ACTIVE worker the caller
 	// registered and reports the rows it changed: 0 for a worker that is
 	// already deregistering or deleted. ForceDeregister is the same without
@@ -303,14 +301,17 @@ type RegistrationKeyStore interface {
 	// against a concurrent Consume. The caller still owns the
 	// service-level anti-spam buffer check.
 	Extend(ctx context.Context, p ExtendRegistrationKeyParams) (int64, error)
-	// SoftDelete pushes ExpiresAt into the past for a row owned by
-	// CreatedBy. Returns rows-affected: 0 means missing or not owned
-	// (callers map to NotFound). Idempotent on already-dead rows.
+	// SoftDelete pushes ExpiresAt into the past for a live row owned by
+	// CreatedBy. Returns rows-affected: 0 means missing, not owned, or
+	// already dead (expired, consumed or revoked); callers map it to
+	// NotFound. A dead row keeps its ExpiresAt, so the purge still finds it
+	// by age.
 	SoftDelete(ctx context.Context, p SoftDeleteRegistrationKeyParams) (int64, error)
 	// AdminSoftDelete is the operator-driven counterpart to SoftDelete:
-	// it pushes ExpiresAt into the past without an ownership check.
-	// Returns rows-affected: 0 means missing. Used by `admin worker
-	// reg-key revoke` to defuse a leaked key regardless of its creator.
+	// it pushes ExpiresAt into the past for a live row without an
+	// ownership check. Returns rows-affected: 0 means missing or already
+	// dead. Used by `admin worker reg-key revoke` to defuse a leaked key
+	// regardless of its creator.
 	AdminSoftDelete(ctx context.Context, id string) (int64, error)
 	// Consume atomically marks a *live* row as soft-deleted and returns
 	// it. Returns ErrNotFound if the row is missing or already expired
@@ -345,7 +346,7 @@ type WorkspaceStore interface {
 // non-tombstoned tab in the user doc: one workspace_tab_owned row per tab,
 // whose Rendered flag marks the tabs that render. The CRDT manager keeps it in
 // sync with UserCrdtState. The client tab RPCs read only the rendered rows
-// (ListRenderedByWorkspaceIDs, GetRendered, LocateAccessibleRendered); worker
+// (ListRenderedByWorkspaceIDs, LocateAccessibleRendered); worker
 // reconciliation and the delegation handler read every row.
 type WorkspaceTabIndexStore interface {
 	// UpsertOwned writes one row. Only tests call it; the CRDT manager writes
@@ -391,7 +392,7 @@ type WorkspaceTabIndexStore interface {
 	// renders, or ErrNotFound. It takes
 	// no workspace: the mint-time check asks "does this user own this tab on this
 	// worker", and which workspace holds it is not part of that question. The
-	// indexed point-lookup mirrors GetRendered and lets the delegation
+	// indexed point-lookup lets the delegation
 	// handler's mint-time propagation wait poll a single row instead
 	// of materializing every owned tab the user has. A zero
 	// p.UserID is ErrNotFound: it is an ownership gate, so it must
@@ -406,11 +407,6 @@ type WorkspaceTabIndexStore interface {
 	// p.UserID: it is an ownership gate, so it must never bind a blank
 	// owner (see userid.OwnerFilter).
 	ListRenderedByWorkspaceIDs(ctx context.Context, p ListRenderedTabsByWorkspaceIDsParams) ([]WorkspaceTabRow, error)
-	// GetRendered returns the single rendered workspace_tab_owned row
-	// identified by (user_id, workspace_id, tab_type, tab_id), or ErrNotFound;
-	// a row that does not render is ErrNotFound too. A zero
-	// p.UserID is ErrNotFound, for the same reason as GetOwned.
-	GetRendered(ctx context.Context, p GetRenderedTabParams) (*WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
 	// (tab_type, tab_id) across every workspace the user owns.
 	// Returns ErrNotFound when no owned workspace contains the tab.

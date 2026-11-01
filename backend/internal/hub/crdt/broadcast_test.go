@@ -106,7 +106,7 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-edit",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
 			}},
 		}},
@@ -161,7 +161,7 @@ func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
@@ -210,7 +210,7 @@ func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
@@ -260,7 +260,7 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
@@ -283,7 +283,7 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 }
 
 // TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber pins that
-// the workspace membership ops (SetWorkspaceRegister / TombstoneWorkspace) —
+// the workspace membership ops (CreateWorkspace / TombstoneWorkspace) —
 // which replaced the old out-of-band MutateInternal and now flow through the
 // serialized submit pipeline — are broadcast to subscribers that admit the
 // workspace. The EntityKindWorkspaceRoot arm of opVisibleForSubscriber keeps an
@@ -302,45 +302,53 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 
 	// Submit the create and delete as SEPARATE batches, mirroring the real
 	// lifecycle (a create batch, then a later delete batch). Within a single
-	// batch a register+tombstone pair would net to no workspaces-map change
+	// batch a create+tombstone pair would net to no workspaces-map change
 	// and be filtered as not-visible-to-anyone; separate batches each
 	// produce a real pre→post transition the EntityKindWorkspaceRoot arm
 	// keeps (preVisible || postVisible).
-	registerBatch := []*leapmuxv1.CrdtOp{{
-		OpId: "ws-reg", Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
-		},
-	}}
-	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}}),
+	created, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: workspaceCreateOps("w1", "root-w1")}}),
 	})
 	require.NoError(t, err)
+	require.Len(t, created, 1)
+	require.NotNil(t, created[0].GetCommitted(), "the create seed must commit; got %v", created[0])
 
-	tombstoneBatch := []*leapmuxv1.CrdtOp{{
-		OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
-			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+	// The production delete shape: the root's tombstone with the record's, so
+	// removing the record orphans nothing.
+	tombstoneBatch := []*leapmuxv1.CrdtOp{
+		{
+			OpId: "ws-del-root", Body: &leapmuxv1.CrdtOp_TombstoneNode{
+				TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "root-w1"},
+			},
 		},
-	}}
-	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		{
+			OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
+				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+			},
+		},
+	}
+	deleted, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
 		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}}),
 	})
 	require.NoError(t, err)
+	require.Len(t, deleted, 1)
+	require.NotNil(t, deleted[0].GetCommitted(), "the delete batch must commit; got %v", deleted[0])
 
 	// Both ops must reach the admitting subscriber's Batch event stream.
-	var seenRegister, seenTombstone bool
+	var seenCreate, seenTombstone bool
 	for _, evt := range snapshot() {
 		if b := evt.GetBatch(); b != nil {
 			for _, op := range b.GetOps() {
 				switch op.GetBody().(type) {
-				case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
-					seenRegister = true
+				case *leapmuxv1.CrdtOp_CreateWorkspace:
+					seenCreate = true
 				case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 					seenTombstone = true
 				}
 			}
 		}
 	}
-	assert.True(t, seenRegister, "admitting subscriber must receive the SetWorkspaceRegister op")
+	assert.True(t, seenCreate, "admitting subscriber must receive the CreateWorkspace op")
 	assert.True(t, seenTombstone, "admitting subscriber must receive the TombstoneWorkspace op")
 }
 
@@ -372,25 +380,33 @@ func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
 	defer unsub()
 
 	// Seed the record so the tombstone has a real pre→post OUT transition.
-	registerBatch := []*leapmuxv1.CrdtOp{{
-		OpId: "ws-reg", Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
-		},
-	}}
-	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}}),
+	created, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: workspaceCreateOps("w1", "root-w1")}}),
 	})
 	require.NoError(t, err)
+	require.Len(t, created, 1)
+	require.NotNil(t, created[0].GetCommitted(), "the create seed must commit; got %v", created[0])
 
-	tombstoneBatch := []*leapmuxv1.CrdtOp{{
-		OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
-			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+	// The production delete shape: the root's tombstone with the record's, so
+	// removing the record orphans nothing.
+	tombstoneBatch := []*leapmuxv1.CrdtOp{
+		{
+			OpId: "ws-del-root", Body: &leapmuxv1.CrdtOp_TombstoneNode{
+				TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "root-w1"},
+			},
 		},
-	}}
-	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		{
+			OpId: "ws-del", Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
+				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
+			},
+		},
+	}
+	deleted, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
 		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}}),
 	})
 	require.NoError(t, err)
+	require.Len(t, deleted, 1)
+	require.NotNil(t, deleted[0].GetCommitted(), "the delete batch must commit; got %v", deleted[0])
 
 	events := snapshot()
 	require.NotEmpty(t, events, "subscriber should have received the lifecycle batch events")
@@ -433,7 +449,7 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
@@ -480,15 +496,15 @@ func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
 		BatchId: "multi",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-mv-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}}},
 			{OpId: "op-mv-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "newp"},
 			}}},
 			{OpId: "op-mv-wkr", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr-new"},
 			}}},
 		},
@@ -536,7 +552,7 @@ func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},
@@ -588,7 +604,7 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-close",
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			}},
 		}},
 	}
@@ -644,7 +660,7 @@ func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-close",
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			}},
 		}},
 	}
@@ -771,7 +787,7 @@ func TestBroadcast_MaterializedPrecedesBatchThatReferencesIt(t *testing.T) {
 			Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "m"},
 		}}},
 		{OpId: "op-tab", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "childA"},
 		}}},
 	}}

@@ -101,8 +101,8 @@ func TestCommute_PermutedSetsConverge(t *testing.T) {
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "A"}}, hlcAt(10, 0, "a")),
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1", Field: &leapmuxv1.SetNodeRegisterOp_Position{Position: "B"}}, hlcAt(20, 0, "b")),
 		stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n2", Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF}}, hlcAt(15, 0, "a")),
-		stamped(&leapmuxv1.SetTabRegisterOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1", Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "n2"}}, hlcAt(25, 0, "a")),
-		stamped(&leapmuxv1.SetTabRegisterOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1", Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "z"}}, hlcAt(30, 0, "b")),
+		stamped(&leapmuxv1.SetTabRegisterOp{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}, Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "n2"}}, hlcAt(25, 0, "a")),
+		stamped(&leapmuxv1.SetTabRegisterOp{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}, Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "z"}}, hlcAt(30, 0, "b")),
 	}
 
 	baseline := canonicalize(t, applyAll(t, shuffleOps(0, ops)))
@@ -132,8 +132,8 @@ func TestCommute_TombstonePairs(t *testing.T) {
 		{
 			name: "tab set then tombstone",
 			ops: []*leapmuxv1.CrdtOp{
-				stamped(&leapmuxv1.SetTabRegisterOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1", Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "n2"}}, hlcAt(5, 0, "a")),
-				stamped(&leapmuxv1.TombstoneTabOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}, hlcAt(10, 0, "a")),
+				stamped(&leapmuxv1.SetTabRegisterOp{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}, Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "n2"}}, hlcAt(5, 0, "a")),
+				stamped(&leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}}, hlcAt(10, 0, "a")),
 			},
 		},
 		{

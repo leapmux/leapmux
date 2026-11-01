@@ -1,7 +1,6 @@
-import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component, JSX } from 'solid-js'
 
-import type { FinishPasskeySignUpResponse, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { SessionReport } from '~/generated/proto/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -11,21 +10,21 @@ import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
-import { passkeyErrorMessage, startRegistration } from '~/lib/webauthn'
+import { passkeyErrorMessage, registerForChallenge } from '~/lib/webauthn'
 import { errorText } from '~/styles/shared.css'
 import { passwordCanSubmit, PasswordFields } from './PasswordFields'
 import { Spinner } from './Spinner'
 import { UsernameField } from './UsernameField'
 
 /**
- * What a successful sign-up hands its caller. `user` is always set on a
- * successful RPC; `verificationEmailSent` is a display detail that the callers
- * never read, so it stays out of the contract.
+ * What a successful sign-up hands its caller: the session it established.
+ *
+ * `report.user` is absent when the hub could not read the new account back.
+ * The sign-up still succeeded, so the caller hands the report to
+ * `auth.setAuth`, which starts sign-in recovery for it.
  */
 export interface SignupResult {
-  user: User
-  verificationRequired: boolean
-  nextResendAvailableAt?: Timestamp
+  report: SessionReport | undefined
 }
 
 interface SignupFormProps {
@@ -42,7 +41,7 @@ interface SignupFormProps {
    * Runs once the account exists and the session is live.
    *
    * It may return a promise, and this form AWAITS it: every caller adopts the
-   * identity through `auth.setAuth`, which now has to load the account's stored
+   * session through `auth.setAuth`, which has to load the account's stored
    * preferences before it publishes the identity. A caller that navigated
    * without waiting would mount the next route on the previous account's
    * namespace.
@@ -119,10 +118,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     setSubmitting(true)
     setError(null)
     try {
-      // The generated responses spell their optional fields `?: T | undefined`
-      // (a present-but-unset field), so the accumulator borrows that shape via
-      // Pick rather than restating a stricter one the RPC types cannot meet.
-      let resp: Pick<FinishPasskeySignUpResponse, 'user' | 'emailVerification'>
+      let report: SessionReport | undefined
       if (effectiveMethod() === 'passkey') {
         const begin = await authClient.beginPasskeySignUp({
           username: fields.slug,
@@ -130,33 +126,25 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           email: fields.email,
           ...captcha.fields(),
         })
-        const credentialJson = await startRegistration(begin.optionsJson)
         const passkeyResp = await authClient.finishPasskeySignUp({
-          sessionId: begin.sessionId,
-          credentialJson,
+          credential: await registerForChallenge(begin.challenge),
         })
-        resp = passkeyResp
+        report = passkeyResp.sessionReport
       }
       else {
-        resp = await authClient.signUp({
+        const passwordResp = await authClient.signUp({
           username: fields.slug,
           password: password(),
           displayName: fields.sanitizedDisplayName,
           email: fields.email,
           ...captcha.fields(),
         })
+        report = passwordResp.sessionReport
       }
-      // One success path for both branches: the two responses carry the same
-      // two fields, and the `?? false` defaults were spelled twice.
-      if (!resp.user)
-        throw new Error('sign-up response missing user')
-      await props.onSuccess({
-        user: resp.user,
-        verificationRequired: resp.emailVerification?.verificationRequired ?? false,
-        ...(resp.emailVerification?.nextResendAvailableAt !== undefined
-          ? { nextResendAvailableAt: resp.emailVerification.nextResendAvailableAt }
-          : {}),
-      })
+      // One success path for both branches. An absent account is not a
+      // failure here: the sign-up succeeded, and the caller's setAuth starts
+      // recovery for it.
+      await props.onSuccess({ report })
     }
     catch (err) {
       // A dismissed passkey prompt is not a sign-up failure: leave the

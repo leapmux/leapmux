@@ -1,0 +1,126 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/access.proto";
+import "leapmux/v1/build_info.proto";
+
+// SystemService answers questions about the hub itself rather than about one
+// account: what the hub offers before sign-in, and the timeouts every client
+// applies. Called by Frontend, the CLI and the desktop app on Hub via
+// ConnectRPC.
+service SystemService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
+  // Get public system information (no auth required).
+  rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Get the current timeout configuration.
+  rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_READ };
+  }
+}
+
+message GetTimeoutsRequest {}
+
+message GetTimeoutsResponse {
+  // The deadline a client applies to one API call, in seconds.
+  int32 api_timeout_seconds = 1;
+}
+
+message GetSystemInfoRequest {}
+
+// SoloAccess tells the client how this connection reaches a solo hub.
+enum SoloAccess {
+  // This is not a solo hub.
+  SOLO_ACCESS_UNSPECIFIED = 0;
+  // The request arrived through local IPC. The local socket needs no
+  // credential, even after the solo account gets a password.
+  SOLO_ACCESS_CREDENTIAL_FREE = 1;
+  // The request arrived through TCP, and the solo account has no usable
+  // password. The client can only set the first password.
+  SOLO_ACCESS_PASSWORD_SETUP = 2;
+  // The request arrived through TCP, and the solo account has a usable
+  // password. The client must sign in.
+  SOLO_ACCESS_SIGN_IN_REQUIRED = 3;
+}
+
+// CaptchaProvider identifies the bot-protection provider securing the
+// unauthenticated credential endpoints. The numbers are part of the wire
+// API and must stay stable.
+enum CaptchaProvider {
+  CAPTCHA_PROVIDER_UNSPECIFIED = 0;
+  // Built-in self-hosted proof-of-work: no third party, no verification
+  // egress, challenges issued by the hub itself.
+  CAPTCHA_PROVIDER_ALTCHA = 1;
+  // Google reCAPTCHA v3: invisible, score-based.
+  CAPTCHA_PROVIDER_RECAPTCHA_V3 = 2;
+  // Cloudflare Turnstile: a checkbox challenge.
+  CAPTCHA_PROVIDER_TURNSTILE = 3;
+}
+
+message GetSystemInfoResponse {
+  bool signup_enabled = 1;
+  bool solo_mode = 2;
+  BuildInfo build = 3; // the hub's build
+  bool oauth_enabled = 4; // true if at least one OAuth provider is configured and enabled
+  bool setup_required = 5; // true when no users exist (first-time setup needed)
+  // URL the `leapmux worker --hub <url>` command should target. The hub
+  // populates it in two cases: an explicit public_url setting exists (e.g.
+  // behind a reverse proxy), or the hub has no TCP listener at all
+  // (desktop app's local-only mode, where the browser origin is
+  // `tauri://localhost` and the only viable URL is the unix-socket /
+  // named-pipe address). Empty otherwise — the caller should fall back
+  // to window.location.origin, which already reflects whatever proxy or
+  // hostname the user connects through.
+  string worker_hub_url = 6;
+  // True when the hub has SMTP configured (the smtp setting's host
+  // non-empty). Frontend restriction: when false, the frontend hides the
+  // "Send email" affordance on the worker registration dialog — calling
+  // EmailRegistrationInstructions on a hub without SMTP returns
+  // FailedPrecondition, so showing the button would mislead users.
+  bool email_enabled = 7;
+  // True when the hub requires captcha verification on Login, SignUp, and
+  // CompleteOAuthSignup. Always false in solo mode.
+  bool captcha_enabled = 8;
+  // Active ALTCHA algorithm name (e.g. "PBKDF2/SHA-256"), populated only
+  // when captcha_provider is "altcha". Informational; the authoritative
+  // parameters arrive with each GetAltchaChallenge response.
+  string altcha_algorithm = 9;
+  // Active captcha provider. The hub reports ALTCHA by default; switching
+  // providers is an admin CLI operation.
+  CaptchaProvider captcha_provider = 10;
+  // Public site key for external providers (recaptcha_v3 / turnstile);
+  // empty for altcha. The frontend pairs it with captcha_provider to load
+  // the right widget.
+  string captcha_site_key = 11;
+  // True when passkey ceremonies can run for THE BROWSER THAT ASKED: a
+  // keystore is configured, the hub has a usable browser origin (public_url
+  // or a TCP listener), and the request's Origin header identifies an
+  // origin the hub serves. A caller that sends no Origin header (a
+  // non-browser client) gets the hub-wide answer, because it has no browser
+  // ceremony to mislead.
+  //
+  // Frontend restriction: when false, the frontend hides the passkey
+  // sign-in and sign-up options and disables Add passkey with the reason —
+  // every Begin would answer FailedPrecondition, so offering them would
+  // mislead users.
+  //
+  // The origin half matters on its own. A hub published at one address and
+  // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
+  // is configured for passkeys and still runs none for that page.
+  bool passkey_enabled = 12;
+  // The access state for this connection. This value separates local IPC,
+  // restricted TCP setup, and ordinary TCP sign-in without two booleans that
+  // can describe an invalid combination.
+  SoloAccess solo_access = 13;
+  // True when the single account holds a password that can sign in. Solo
+  // mode only; false on a multi-user hub, where each account answers for
+  // itself.
+  //
+  // Frontend restriction: the Network access panel asks for a password
+  // beside the addresses it guards while this is false, and points at
+  // Account → Password once it is true. It answers for the HUB -- whether a
+  // network address can be signed in to at all, which is the question that
+  // panel asks. An account's own password is User.password_set.
+  bool solo_password_set = 14;
+}

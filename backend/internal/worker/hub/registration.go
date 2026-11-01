@@ -27,7 +27,10 @@ type RegistrationResult struct {
 // worker credentials (auth token + worker ID) in response. The
 // registering user (`registered_by`) is no longer returned here; the
 // hub delivers worker ownership via the WorkerIdentity greeting on every
-// Connect, so the worker keeps no cached copy of it (see UpdateRegisteredBy).
+// Connect, so the worker keeps no cached copy of it (see ApplyWorkerIdentity).
+//
+// The request carries nothing else: the worker announces its keys in the
+// WorkerHello of each Connect stream, not at registration.
 //
 // Network errors (hub unreachable) are retried with exponential backoff
 // because they typically reflect transient transport issues. Application
@@ -39,14 +42,14 @@ type RegistrationResult struct {
 // reaches the matching socket automatically. The call takes the HTTP2Only
 // client for the same reason Connect does: the gRPC protocol needs HTTP/2
 // trailers, which HTTP/1.1 has no way to carry.
-func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registrationKey, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
+func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registrationKey string) (*RegistrationResult, error) {
 	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 		endpoint.HTTP2OnlyClient(),
 		endpoint.BaseURL(),
 		connecthttp.WithReadMaxBytes(0),
 		connecthttp.WithGRPC(),
 	)))
-	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultRegisterRetry())
+	return registerWithClient(ctx, client, registrationKey, newDefaultRegisterRetry())
 }
 
 const registerRetryTimerTag = "hub-register-retry"
@@ -79,8 +82,6 @@ func registerWithClient(
 	ctx context.Context,
 	client leapmuxv1connect.WorkerConnectorServiceClient,
 	registrationKey string,
-	version string,
-	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
 	retry registerRetry,
 ) (*RegistrationResult, error) {
 	if registrationKey == "" {
@@ -88,12 +89,7 @@ func registerWithClient(
 	}
 
 	for {
-		req := &leapmuxv1.RegisterRequest{
-			Version:         version,
-			PublicKey:       publicKey,
-			MlkemPublicKey:  mlkemPublicKey,
-			SlhdsaPublicKey: slhdsaPublicKey,
-		}
+		req := &leapmuxv1.RegisterRequest{}
 		// The handler authenticates by reading the bearer key from the
 		// Authorization header — this is *not* the long-lived auth_token
 		// flow, that one is bound to a different RPC. The header is request

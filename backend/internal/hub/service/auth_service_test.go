@@ -44,7 +44,7 @@ import (
 // its first request; nil leaves every setting at its default.
 type authTestSeed func(t *testing.T, set *settings.Manager)
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed, closers ...auth.CredentialChannelCloser) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed, closers ...auth.CredentialChannelCloser) (authTestClient, store.Store, *settings.Manager) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -62,14 +62,13 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed
 	}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
-	return client, st, set
+	return newAuthTestClient(server.Client(), server.URL), st, set
 }
 
 func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
@@ -88,11 +87,11 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 
 // setupEmptyAuthTestServer creates a test auth server with an empty database
 // (no users). Used for testing the initial setup flow.
-func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
+func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (authTestClient, store.Store, *settings.Manager) {
 	return setupAuthTestServerBase(t, cfg, seed)
 }
 
-func setupAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
+func setupAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (authTestClient, store.Store, *settings.Manager) {
 	client, st, set := setupAuthTestServerBase(t, cfg, seed)
 	hubtestutil.CreateTestAdmin(t, st)
 	return client, st, set
@@ -123,8 +122,8 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
-	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
+	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
 
 	// Verify Set-Cookie header is present with session cookie.
 	setCookie := callInfo.ResponseHeader().Get("Set-Cookie")
@@ -156,8 +155,8 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 		Password: "correct-horse-battery-staple",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, response.GetUser().GetUsername())
-	assert.True(t, response.GetUser().GetPasswordSet())
+	assert.Equal(t, usernames.Solo, response.GetSessionReport().GetUser().GetUsername())
+	assert.True(t, response.GetSessionReport().GetUser().GetPasswordSet())
 
 	sessionID := sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 	info, err := auth.ValidateToken(context.Background(), st, sessionID)
@@ -169,7 +168,7 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	// client that had to recover it from a following GetCurrentUser would show
 	// the operator an un-elevated session, and prompt for the password they
 	// just chose, whenever that call failed transiently.
-	reported := response.GetElevationExpiresAt()
+	reported := response.GetSessionReport().GetElevationExpiresAt()
 	require.NotNil(t, reported, "the reply must carry the elevation it granted")
 	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), reported.AsTime(), time.Minute)
 	assert.True(t, info.Elevated(reported.AsTime().Add(-time.Second)),
@@ -274,7 +273,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 
 	resp, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 }
 
 // TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount is
@@ -297,7 +296,7 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(
 		Username: "admin", Password: "admin123",
 	})
 	require.NoError(t, err)
-	userID := loginResp.GetUser().GetId()
+	userID := loginResp.GetSessionReport().GetUser().GetId()
 
 	for _, p := range []struct {
 		id           string
@@ -321,10 +320,10 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	assert.False(t, resp.GetUser().GetMayElevateThroughAProvider(),
+	assert.False(t, resp.GetSessionReport().GetUser().GetMayElevateThroughAProvider(),
 		"a password account elevates with the password, never with a provider")
 	ids := []string{}
-	for _, p := range resp.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetSessionReport().GetUser().GetOauthProviders() {
 		ids = append(ids, p.GetId())
 		assert.Truef(t, p.GetEnabled(), "%s is an enabled provider", p.GetId())
 	}
@@ -384,10 +383,10 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	assert.True(t, resp.GetUser().GetMayElevateThroughAProvider(),
+	assert.True(t, resp.GetSessionReport().GetUser().GetMayElevateThroughAProvider(),
 		"an account with no other factor elevates through any linked provider")
 	ids := []string{}
-	for _, p := range resp.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetSessionReport().GetUser().GetOauthProviders() {
 		ids = append(ids, p.GetId())
 	}
 	assert.ElementsMatch(t, []string{"gh", "okta"}, ids)
@@ -466,9 +465,9 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 
 	resp, err := svc.GetCurrentUser(acting, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err, "a page load must survive a transient read of a list most accounts have no row in")
-	assert.False(t, resp.GetUser().GetMayElevateThroughAProvider(),
+	assert.False(t, resp.GetSessionReport().GetUser().GetMayElevateThroughAProvider(),
 		"an unread count must not report an option the OAuth legs would refuse")
-	assert.EqualValues(t, 0, resp.GetUser().GetPasskeyCount(),
+	assert.EqualValues(t, 0, resp.GetSessionReport().GetUser().GetPasskeyCount(),
 		"the DISPLAYED number still degrades to zero")
 }
 
@@ -509,7 +508,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	links := resp.GetUser().GetOauthProviders()
+	links := resp.GetSessionReport().GetUser().GetOauthProviders()
 	require.Len(t, links, 1, "the link must stay visible so the owner can detach it")
 	assert.Equal(t, "gh", links[0].GetId())
 	assert.False(t, links[0].GetEnabled(), "the screen that offers step-up options filters on this")
@@ -539,8 +538,8 @@ func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T)
 		Email: "pending@example.test",
 	})
 	require.NoError(t, err)
-	require.True(t, signUp.GetEmailVerification().GetVerificationRequired())
-	seeded := signUp.GetEmailVerification().GetNextResendAvailableAt()
+	require.True(t, signUp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
+	seeded := signUp.GetSessionReport().GetEmailVerification().GetNextResendAvailableAt()
 	require.NotNil(t, seeded, "sign-up hands out the first cooldown")
 
 	req := &leapmuxv1.GetCurrentUserRequest{}
@@ -549,7 +548,7 @@ func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	status := resp.GetEmailVerification()
+	status := resp.GetSessionReport().GetEmailVerification()
 	require.NotNil(t, status, "the bootstrap response must carry the status")
 	assert.True(t, status.GetVerificationRequired())
 	require.NotNil(t, status.GetNextResendAvailableAt(),
@@ -617,8 +616,8 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// The Set-Cookie check above replaces the token assertion.
-	assert.Equal(t, "newuser", resp.GetUser().GetUsername())
-	assert.Equal(t, "New User", resp.GetUser().GetDisplayName())
+	assert.Equal(t, "newuser", resp.GetSessionReport().GetUser().GetUsername())
+	assert.Equal(t, "New User", resp.GetSessionReport().GetUser().GetDisplayName())
 
 	// Verify Set-Cookie header is present.
 	setCookie := callInfo.ResponseHeader().Get("Set-Cookie")
@@ -666,7 +665,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
 		resp, st, sessionID := signUp(t, enableSignup, "newuser")
-		require.False(t, resp.GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
+		require.False(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -679,7 +678,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		}, "unverified")
 		// Without this the subtest would silently repeat the branch above, and
 		// the second CreateSession call site would go unexercised.
-		require.True(t, resp.GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
+		require.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -926,7 +925,7 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 		Email:       "",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "emptyemail1", resp1.GetUser().GetUsername())
+	assert.Equal(t, "emptyemail1", resp1.GetSessionReport().GetUser().GetUsername())
 
 	// Second signup with empty email should also succeed.
 	resp2, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
@@ -936,7 +935,7 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 		Email:       "",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "emptyemail2", resp2.GetUser().GetUsername())
+	assert.Equal(t, "emptyemail2", resp2.GetSessionReport().GetUser().GetUsername())
 }
 
 // setupEmailVerificationTestServer creates a test server with both
@@ -1091,9 +1090,9 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 
 	// The response should indicate verification was required and that
 	// the (stub) email send succeeded.
-	assert.True(t, resp.GetEmailVerification().GetVerificationRequired())
-	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
-	assert.Equal(t, "verifyuser", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationEmailSent())
+	assert.Equal(t, "verifyuser", resp.GetSessionReport().GetUser().GetUsername())
 
 	// Email stays in the pending column until the user submits the code.
 	// No more stub auto-verify: a real (stub-logged) email was dispatched
@@ -1335,7 +1334,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	user := resp.GetUser()
+	user := resp.GetSessionReport().GetUser()
 	assert.Equal(t, "myadmin", user.GetUsername())
 	assert.True(t, user.GetIsAdmin())
 	assert.Equal(t, "admin@example.com", user.GetEmail())
@@ -1371,7 +1370,7 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	user := resp.GetUser()
+	user := resp.GetSessionReport().GetUser()
 	assert.True(t, user.GetIsAdmin())
 	assert.Empty(t, user.GetEmail())
 	// With no address at all there is nothing anybody could have confirmed,
@@ -1384,6 +1383,36 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	assert.True(t, dbUser.IsAdmin)
 	assert.False(t, dbUser.EmailVerified)
 	assert.True(t, auth.EmailVerificationFactsFromUser(dbUser).Satisfied(true))
+}
+
+// TestLoginReportsTheCompleteProjectionAndNoElevation pins the SessionReport a
+// sign-in returns: the same complete projection GetCurrentUser builds, linked
+// providers included, and no elevation, because a fresh sign-in grants none.
+func TestLoginReportsTheCompleteProjectionAndNoElevation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+	admin, err := st.Users().GetByUsername(ctx, "admin")
+	require.NoError(t, err)
+	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
+		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub", ClientID: "cid",
+		ClientSecret: []byte("secret"), Enabled: true,
+	}))
+	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+		UserID: userid.MustNew(admin.ID), ProviderID: "gh", ProviderSubject: "sub-gh",
+	}))
+
+	resp, err := client.Login(ctx, &leapmuxv1.LoginRequest{Username: "admin", Password: "admin123"})
+	require.NoError(t, err)
+	report := resp.GetSessionReport()
+	require.NotNil(t, report.GetUser(), "a readable account is reported with the sign-in")
+	assert.Equal(t, admin.ID, report.GetUser().GetId())
+	require.Len(t, report.GetUser().GetOauthProviders(), 1, "the sign-in reports the linked providers")
+	assert.Equal(t, "gh", report.GetUser().GetOauthProviders()[0].GetId())
+	assert.True(t, report.GetUser().GetPasswordSet())
+	assert.NotNil(t, report.GetEmailVerification(), "the verification outcome rides the report")
+	assert.Nil(t, report.GetElevationExpiresAt(), "a fresh sign-in carries no elevation")
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
@@ -1476,7 +1505,7 @@ func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	user := resp.GetUser()
+	user := resp.GetSessionReport().GetUser()
 	assert.False(t, user.GetIsAdmin())
 
 	dbUser, err := st.Users().GetByUsername(context.Background(), "regularuser")
@@ -1498,7 +1527,7 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	user := resp.GetUser()
+	user := resp.GetSessionReport().GetUser()
 	assert.True(t, user.GetIsAdmin(), "first user should be admin even when signup is enabled")
 	// Unconfirmed, like every other setup-mode address; the login gate is
 	// what keeps the administrator in.
@@ -1701,8 +1730,8 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 		DisplayName: "First Admin",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.GetUser().GetUsername())
-	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
+	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
 }
 
 // The other half of the setup exemption, and the half that matters for
@@ -1769,7 +1798,7 @@ func TestSignUp_SMTPOff_StoresUnverifiedEmail(t *testing.T) {
 		Email:       "smtpoff@example.com",
 	})
 	require.NoError(t, err)
-	assert.False(t, resp.GetEmailVerification().GetVerificationRequired())
+	assert.False(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 	assert.NotEmpty(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 
 	user, err := st.Users().GetByUsername(context.Background(), "smtpoff")
@@ -1802,10 +1831,10 @@ func TestLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
 		Password: "password123",
 	})
 	require.NoError(t, err)
-	assert.True(t, loginResp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 	// Signup already issued pending_email; login surfaces cooldown without resending.
-	assert.False(t, loginResp.GetEmailVerification().GetVerificationEmailSent())
-	require.NotNil(t, loginResp.GetEmailVerification().GetNextResendAvailableAt())
+	assert.False(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.GetSessionReport().GetEmailVerification().GetNextResendAvailableAt())
 }
 
 func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
@@ -1818,10 +1847,10 @@ func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) 
 
 	begin := beginPasskeySignUp(t, env.client, "pkfailclosed", "pkfailclosed@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
-	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 
@@ -1839,24 +1868,24 @@ func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *
 
 	begin := beginPasskeySignUp(t, env.client, "pkgated", "pkgated@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
-	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.True(t, signUpResp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, signUpResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 
 	user, err := env.store.Users().GetByUsername(context.Background(), "pkgated")
 	require.NoError(t, err)
 	assert.False(t, user.EmailVerified)
 
 	loginBegin := beginPasskeyLogin(t, env.client, "pkgated")
-	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
-	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetChallenge().GetSessionId(), assertionJSON)
 	require.NoError(t, err)
-	assert.True(t, loginResp.GetEmailVerification().GetVerificationRequired())
-	assert.False(t, loginResp.GetEmailVerification().GetVerificationEmailSent())
-	require.NotNil(t, loginResp.GetEmailVerification().GetNextResendAvailableAt())
+	assert.True(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
+	assert.False(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.GetSessionReport().GetEmailVerification().GetNextResendAvailableAt())
 }
 
 func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
@@ -1924,14 +1953,14 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	// exemption reaches the passkey path's username rule too.
 	begin := beginPasskeySignUp(t, env.client, usernames.Admin, "first@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
-	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.True(t, signUpResp.GetUser().GetIsAdmin())
-	assert.Equal(t, int32(1), signUpResp.GetUser().GetPasskeyCount())
-	assert.False(t, signUpResp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, signUpResp.GetSessionReport().GetUser().GetIsAdmin())
+	assert.Equal(t, int32(1), signUpResp.GetSessionReport().GetUser().GetPasskeyCount())
+	assert.False(t, signUpResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 
 	dbUser, err := env.store.Users().GetByUsername(context.Background(), usernames.Admin)
 	require.NoError(t, err)
@@ -1948,11 +1977,15 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 
 	// And the credential works: the account can sign back in with it.
 	loginBegin := beginPasskeyLogin(t, env.client, usernames.Admin)
-	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
-	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetChallenge().GetSessionId(), assertionJSON)
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Admin, loginResp.GetUser().GetUsername())
+	assert.Equal(t, usernames.Admin, loginResp.GetSessionReport().GetUser().GetUsername())
+	// The passkey sign-in reports the complete projection, as GetCurrentUser
+	// does: the stored passkey count, and no elevation for a fresh session.
+	assert.Equal(t, int32(1), loginResp.GetSessionReport().GetUser().GetPasskeyCount())
+	assert.Nil(t, loginResp.GetSessionReport().GetElevationExpiresAt())
 }
 
 // An administrator never waits behind a pending verification row, so their
@@ -1967,12 +2000,12 @@ func TestFinishPasskeySignUp_SetupModePromotesEmailPastVerification(t *testing.T
 
 	begin := beginPasskeySignUp(t, env.client, "pksetupmail", "pksetupmail@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
-	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.False(t, signUpResp.GetEmailVerification().GetVerificationRequired())
+	assert.False(t, signUpResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 
 	dbUser, err := env.store.Users().GetByUsername(context.Background(), "pksetupmail")
 	require.NoError(t, err)
@@ -2000,14 +2033,14 @@ func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyReservesAdmin(t *testing.
 
 	begin := beginPasskeySignUp(t, env.client, usernames.Admin, "race@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
 	// The race: somebody else finishes setup first, under a different name so
 	// the refusal below is the reserved rule rather than a name collision.
 	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
 
-	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "reserved username")
@@ -2026,12 +2059,12 @@ func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyHonorsSignupDisabled(t *t
 
 	begin := beginPasskeySignUp(t, env.client, "racer", "racer@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
 	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
 
-	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "sign-up is disabled")
@@ -2118,19 +2151,19 @@ func TestFinishPasskeyLogin_FailedAssertionConsumesCeremony(t *testing.T) {
 
 	begin := beginPasskeySignUp(t, env.client, "pkburn", "pkburn@example.com")
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
-	_, err = finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.NoError(t, err)
 
 	loginBegin := beginPasskeyLogin(t, env.client, "pkburn")
-	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), "not-a-credential")
+	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetChallenge().GetSessionId(), "not-a-credential")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
-	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
-	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
+	_, err = finishPasskeyLogin(t, env.client, loginBegin.GetChallenge().GetSessionId(), assertionJSON)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "failed Finish must consume the ceremony")
 }
@@ -2160,7 +2193,7 @@ func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
 		Username: "admin", Password: "admin123",
 	})
 	require.NoError(t, err)
-	userID := loginResp.GetUser().GetId()
+	userID := loginResp.GetSessionReport().GetUser().GetId()
 
 	for _, p := range []struct {
 		id      string
@@ -2185,7 +2218,7 @@ func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	enabledByID := map[string]bool{}
-	for _, p := range resp.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetSessionReport().GetUser().GetOauthProviders() {
 		enabledByID[p.GetId()] = p.GetEnabled()
 	}
 	assert.Equal(t, map[string]bool{"live": true, "dead": false}, enabledByID,

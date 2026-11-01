@@ -17,7 +17,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -62,7 +61,8 @@ type WorkerManagementService struct {
 // That is why they differ from the effect collaborators below, and the
 // refusal is loud at construction so a new caller cannot forget one.
 //
-// b and n only carry post-deregister EFFECTS, so each is nil-tolerant
+// notifyWorkersChanged (the CRDT registry's BroadcastWorkersChanged) and n
+// only carry post-deregister EFFECTS, so each is nil-tolerant
 // through WorkerDeregisterEffects (a test that exercises the store half
 // alone passes nil) -- the same rule auth.CredentialLifecycleEffects holds.
 // renderer is a value type; it carries the hub URL used in the registration
@@ -71,7 +71,7 @@ type WorkerManagementService struct {
 // instance shared with CRDTService so the eviction reaches the cache
 // SubmitOps resolves through, and the containment takes effect immediately
 // rather than after the cache TTL.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, notifyWorkersChanged func(userID string), n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
 	if st == nil {
 		panic("service: NewWorkerManagementService requires a store")
 	}
@@ -89,7 +89,7 @@ func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEv
 	}
 	return &WorkerManagementService{
 		store: st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
-		deregisterEffects: NewWorkerDeregisterEffects(scopeCache, n, b),
+		deregisterEffects: NewWorkerDeregisterEffects(scopeCache, n, notifyWorkersChanged),
 	}
 }
 
@@ -174,10 +174,10 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 	}, nil
 }
 
-func (s *WorkerManagementService) DeleteRegistrationKey(
+func (s *WorkerManagementService) RevokeRegistrationKey(
 	ctx context.Context,
-	req *leapmuxv1.DeleteRegistrationKeyRequest,
-) (*leapmuxv1.DeleteRegistrationKeyResponse, error) {
+	req *leapmuxv1.RevokeRegistrationKeyRequest,
+) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -188,11 +188,12 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
-	// One conditional UPDATE: ownership lives in the WHERE clause, so a
-	// missing key and someone-else's key both surface as 0 rows-affected
-	// and map to NotFound (same oracle convention as GetOwned).
-	// Idempotent on already-consumed rows — the dialog's onCleanup may run
-	// after a successful registration.
+	// One conditional UPDATE: ownership and liveness live in the WHERE
+	// clause, so a missing key, someone else's key and a dead key (expired,
+	// consumed or already revoked) all surface as 0 rows-affected and map to
+	// NotFound (same oracle convention as GetOwned). The register dialog's
+	// onCleanup revokes its key even after a successful registration
+	// consumed it, and ignores this NotFound.
 	rows, err := s.store.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
 		ID:        keyID,
 		CreatedBy: user.ID,
@@ -204,7 +205,7 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 		return nil, connect.NewError(connect.CodeNotFound, "registration key not found")
 	}
 
-	return &leapmuxv1.DeleteRegistrationKeyResponse{}, nil
+	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
 }
 
 func (s *WorkerManagementService) EmailRegistrationInstructions(
@@ -285,24 +286,16 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	// NormalizePageParams, not a hand-written default: it applies the same page
+	// pageParams, not a hand-written default: it applies the same page
 	// default AND the same ceiling every other paginated handler uses. The
 	// hand-written form had no ceiling at all, so `page.limit = 100000`
 	// returned the caller's whole worker row set in one response.
-	reqPage := req.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		PageParams:   NormalizePageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
+		PageParams:   pageParams(req.GetPage()),
 	})
 	if err != nil {
-		// A malformed or stale opaque cursor is bad client input, not a server
-		// fault: the store's cursor decode wraps store.ErrInvalidCursor before
-		// any query runs, and it must surface as 400 InvalidArgument rather
-		// than the 500 Internal that genuine store failures map to.
-		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, pageListError(err, "list workers")
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
@@ -312,10 +305,7 @@ func (s *WorkerManagementService) ListWorkers(
 
 	return &leapmuxv1.ListWorkersResponse{
 		Workers: protoWorkers,
-		Page: &leapmuxv1.PageResponse{
-			NextCursor: page.NextCursor,
-			HasMore:    page.HasMore(),
-		},
+		Page:    pageResponse(page.NextCursor),
 	}, nil
 }
 
@@ -396,16 +386,11 @@ func (s *WorkerManagementService) DeregisterWorker(
 // the caller's user_id, so the query implies the owner and
 // needs no per-worker round-trip.
 func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
-	lastSeen := ""
-	if b.LastSeenAt != nil {
-		lastSeen = timefmt.Format(*b.LastSeenAt)
-	}
-
 	return &leapmuxv1.Worker{
 		Id:             b.ID,
 		Online:         s.workerMgr.OnlineForTrustedPath(b.ID),
-		CreatedAt:      timefmt.Format(b.CreatedAt),
-		LastSeenAt:     lastSeen,
+		CreatedAt:      timestamppb.New(b.CreatedAt),
+		LastSeenAt:     optTimestamp(b.LastSeenAt),
 		RegisteredBy:   b.RegisteredBy,
 		AutoRegistered: b.AutoRegistered,
 	}

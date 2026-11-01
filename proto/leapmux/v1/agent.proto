@@ -1,7 +1,102 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/git.proto";
+
+// WorkerAgentService opens, drives and reads agents. Served by the Worker inside
+// an E2EE channel.
+service WorkerAgentService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc OpenAgent(OpenAgentRequest) returns (OpenAgentResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc SendAgentRawMessage(SendAgentRawMessageRequest) returns (SendAgentRawMessageResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc RenameAgent(RenameAgentRequest) returns (RenameAgentResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc UpdateAgentSettings(UpdateAgentSettingsRequest) returns (UpdateAgentSettingsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc SendControlResponse(SendControlResponseRequest) returns (SendControlResponseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc InterruptAgent(InterruptAgentRequest) returns (InterruptAgentResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc UpdateAgentGoal(UpdateAgentGoalRequest) returns (UpdateAgentGoalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc ApproveAutoReviewDenial(ApproveAutoReviewDenialRequest) returns (ApproveAutoReviewDenialResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc RetryAgentTurn(RetryAgentTurnRequest) returns (RetryAgentTurnResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc ListAgentMessages(ListAgentMessagesRequest) returns (ListAgentMessagesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc GetAgentMessage(GetAgentMessageRequest) returns (GetAgentMessageResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc GetAgentSpanMessages(GetAgentSpanMessagesRequest) returns (GetAgentSpanMessagesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc ListMessageMarks(ListMessageMarksRequest) returns (ListMessageMarksResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc ListAvailableProviders(ListAvailableProvidersRequest) returns (ListAvailableProvidersResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc ListAgentSessions(ListAgentSessionsRequest) returns (ListAgentSessionsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+}
+
+// WorkerAgentInputService manages an agent's queue of pending inputs. Served by
+// the Worker inside an E2EE channel.
+service WorkerAgentInputService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc EnqueueAgentInput(EnqueueAgentInputRequest) returns (EnqueueAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc BeginQueuedAgentInputEdit(BeginQueuedAgentInputEditRequest) returns (BeginQueuedAgentInputEditResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc UpdateQueuedAgentInput(UpdateQueuedAgentInputRequest) returns (UpdateQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc CancelQueuedAgentInputEdit(CancelQueuedAgentInputEditRequest) returns (CancelQueuedAgentInputEditResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc DeleteQueuedAgentInput(DeleteQueuedAgentInputRequest) returns (DeleteQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc MoveQueuedAgentInput(MoveQueuedAgentInputRequest) returns (MoveQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc SetAgentInputQueuePaused(SetAgentInputQueuePausedRequest) returns (SetAgentInputQueuePausedResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc SteerQueuedAgentInput(SteerQueuedAgentInputRequest) returns (SteerQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc PreemptQueuedAgentInput(PreemptQueuedAgentInputRequest) returns (PreemptQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc RetryQueuedAgentInput(RetryQueuedAgentInputRequest) returns (RetryQueuedAgentInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
+  rpc ListAgentInputQueue(ListAgentInputQueueRequest) returns (ListAgentInputQueueResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+}
 
 // AgentProvider identifies the coding agent backend.
 enum AgentProvider {
@@ -130,29 +225,23 @@ enum ContentCompression {
 // --- Agent CRUD ---
 
 message OpenAgentRequest {
-  // Target: where the agent runs. No workspace_id -- a Worker stores none, and
-  // which workspace the tab lands in is decided by the CRDT tile the client
-  // places it on.
-  string worker_id = 1;         // Target worker (required)
-  string working_dir = 2;       // Working directory on the worker (required)
+  // Target: where the agent runs. No worker_id -- the channel the request
+  // travels on identifies the worker. No workspace_id -- a Worker stores none,
+  // and which workspace the tab lands in is decided by the CRDT tile the
+  // client places it on.
+  string working_dir = 1;       // Working directory on the worker (required)
 
   // Agent configuration.
-  AgentProvider agent_provider = 3; // Coding agent provider (default: CLAUDE_CODE)
-  string title = 4;
-  string agent_session_id = 5;  // If set, resume from this session ID
+  AgentProvider agent_provider = 2; // Coding agent provider (default: CLAUDE_CODE)
+  string title = 3;
+  string agent_session_id = 4;  // If set, resume from this session ID
   // Initial option selections keyed by option-group id (e.g. "model", "effort",
   // "permissionMode", and provider-specific axes). Missing well-known ids are
   // filled with provider defaults server-side.
-  map<string, string> options = 6;
+  map<string, string> options = 5;
 
-  // Git worktree / branch selection (mutually exclusive modes).
-  bool create_worktree = 7;         // If true, create a git worktree before starting
-  string worktree_branch = 8;      // Branch name for the worktree
-  string worktree_base_branch = 9; // Base branch for "Create new worktree" (default: current branch)
-  string use_worktree_path = 10;    // "Use existing worktree" mode
-  string checkout_branch = 11;      // "Switch to branch" mode
-  string create_branch = 12;        // "Create new branch" mode -- branch name to create
-  string create_branch_base = 13;   // Base branch for "Create new branch" (default: current branch)
+  // How to prepare the working directory. Absent = use it as it is.
+  GitSetup git_setup = 6;
 
   // True when `title` is the suggestion this client PRE-FILLED and the user
   // left alone, so nobody chose it. The worker records it, and plan mode then
@@ -168,41 +257,11 @@ message OpenAgentRequest {
   // (the CLI, and any client that sends a title it did not generate) keeps the
   // title it sent. An empty `title` is auto-generated regardless -- the worker
   // picked that one itself.
-  bool title_auto_generated = 14;
+  bool title_auto_generated = 7;
 }
 
 message OpenAgentResponse {
   AgentInfo agent = 1;
-}
-
-message CloseAgentRequest {
-  string agent_id = 1;
-  WorktreeAction worktree_action = 2;
-}
-
-// CloseAgentResponse reports the outcome of CloseAgent. See CloseTabResult
-// for why partial failures are returned in-band rather than as RPC errors.
-message CloseAgentResponse {
-  CloseTabResult result = 1;
-  // Every subagent BELOW the closed agent, at any depth, in NO particular
-  // order. An agent id is also its tab id, so a client retires those tabs
-  // alongside the one it closed.
-  //
-  // The worker answers because only it holds the parent chain: a child agent is
-  // a transcript the parent's process feeds, so with the parent gone nothing can
-  // add to it and the tab claims a lineage the user can no longer see. Read
-  // BEFORE any teardown, and reported for a child close too -- that close is
-  // UI-only, but the child's own subagents still go with it.
-  //
-  // A client that needs a bottom-up order must sort for itself: the query walks
-  // the tree breadth-first and returns a parent BEFORE its own children. Order
-  // does not matter to a tombstone, which is last-writer-wins per tab id.
-  //
-  // These are agent ROWS, and a row exists for every subagent the provider ever
-  // spawned -- not only the ones someone opened a tab for. A client MUST retire
-  // only the ids it holds a live tab record for; tombstoning an id the CRDT has
-  // never seen is rejected, and it takes the whole batch with it.
-  repeated string descendant_agent_ids = 2;
 }
 
 message ListAgentsRequest {
@@ -239,70 +298,75 @@ message RenameAgentResponse {
   string title = 1;
 }
 
+// How a queued input reaches an agent whose turn is in progress. One field,
+// because the three states exclude each other by construction.
+enum QueueHeadDispatch {
+  QUEUE_HEAD_DISPATCH_UNSPECIFIED = 0; // Treated as NONE.
+  QUEUE_HEAD_DISPATCH_NONE = 1;        // The head waits for the turn to end.
+  QUEUE_HEAD_DISPATCH_STEER = 2;       // The head joins the running turn.
+  QUEUE_HEAD_DISPATCH_PREEMPT = 3;     // The head cancels the running turn first.
+}
+
 message AgentInfo {
   // Identity. No workspace_id: the Worker does not know which workspace hosts
   // the tab -- the CRDT projection does, from the tab's tile.
   string id = 1;
   string title = 2;
 
-  // Worker / location.
+  // Worker / location. The worker's name and home directory come from
+  // GetWorkerSystemInfo, which a client reads once per worker.
   string worker_id = 3;         // Worker this agent runs on
-  string worker_name = 4;       // Human-readable worker name
-  string working_dir = 5;       // Working directory on the worker
-  string home_dir = 6;          // Worker's home directory for tilde path display
+  string working_dir = 4;       // Working directory on the worker
 
   // Agent configuration.
-  AgentProvider agent_provider = 7; // Coding agent provider
+  AgentProvider agent_provider = 5; // Coding agent provider
   // All agent configuration axes (model, effort, permission mode, and every
   // provider-specific option) reported by the agent process, each with its
   // current value, default, mutability, and display order.
-  repeated AvailableOptionGroup option_groups = 8;
+  repeated AvailableOptionGroup option_groups = 6;
 
   // Lifecycle / status.
-  AgentStatus status = 9;
-  string agent_session_id = 10; // Non-empty if agent session can be resumed
-  string created_at = 11;
-  string closed_at = 12;
-  string startup_error = 13;    // Populated when status=AGENT_STATUS_STARTUP_FAILED
-  string startup_message = 14;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
+  AgentStatus status = 7;
+  string agent_session_id = 8;  // Non-empty if agent session can be resumed
+  string created_at = 9;
+  string closed_at = 10;
+  string startup_error = 11;    // Populated when status=AGENT_STATUS_STARTUP_FAILED
+  string startup_message = 12;  // Populated when status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
 
   // Git.
-  GitRepoStatus git_status = 15; // Git status for the agent's working directory
+  GitRepoStatus git_status = 13; // Git status for the agent's working directory
 
   // Subagent linkage. parent_agent_id is non-empty only for virtual child
   // agents (subagent transcripts fed by the parent provider's process); a
   // child never owns a process. spawn_span_id is the tool_use span in the
   // PARENT transcript that spawned this child (the tab/spawn correlation key).
-  string parent_agent_id = 16;
-  string spawn_span_id = 17;
+  string parent_agent_id = 14;
+  string spawn_span_id = 15;
   // Whether this agent accepts a user message sent directly to it. Roots:
   // always true. Children: true only when the feeding provider supports direct
   // input to a subagent conversation. Codex Multi-Agent V2 rejects that input,
   // so its child transcripts are read-only. The frontend enables the composer from
   // this field.
-  bool accepts_messages = 18;
+  bool accepts_messages = 16;
   // Whether this agent's turn can be interrupted from its own tab. Roots:
   // always true. Children: true only when the feeding provider can interrupt a
   // subagent turn inside its process (Provider.ChildCapabilities). The
   // frontend shows the Interrupt control of a child tab on this field.
-  bool accepts_interrupt = 25;
+  bool accepts_interrupt = 17;
   // The ROOT owner agent id (the top of the parent_agent_id chain). For a root
   // agent this equals its own id. The background-task registry and the root's
-  // TodosChanged/BackgroundTasksChanged events are keyed by this id, so a child
+  // todos_changed/background_tasks_changed events are keyed by this id, so a child
   // tab resolves its registry owner and its NOTIFY subscription from this field
   // directly -- without walking a client-side parent chain that can be partially
   // hydrated and fall back to the wrong id.
-  string root_agent_id = 19;
-  // True when the running provider can safely add the queue head to an active
-  // regular turn. The Worker computes this from the live provider capability.
-  bool supports_steering = 20;
-
-  // True when the running provider cannot steer but CAN interrupt: the queue
-  // head can still be sent promptly by cancelling the active turn first and
-  // letting the normal dispatch take over. The Worker computes this from the
-  // live provider capability (running, root, and not steerable). The client
-  // offers a Preempt control in place of Steer for such an agent.
-  bool supports_preemption = 24;
+  string root_agent_id = 18;
+  // How a queued input reaches this agent while its turn is in progress. The
+  // Worker computes it from the live provider capability: STEER when the running
+  // provider can add the queue head to an active regular turn; PREEMPT when it
+  // cannot steer but can interrupt, so the head is sent by cancelling the active
+  // turn first; NONE otherwise, and always for an agent that does not run. The
+  // client offers Steer or Preempt from it.
+  QueueHeadDispatch queue_head_dispatch = 19;
 
   // What the agent is doing, derived by the Worker from the provider's turn
   // bookkeeping, the background-task registry, the pending control requests and
@@ -313,7 +377,7 @@ message AgentInfo {
   //
   // The EXACT derivation, which ignores the Worker's settle debounce. Both close
   // guards read it, so neither refuses a close for work that already finished.
-  AgentActivityState activity_state = 21;
+  AgentActivityState activity_state = 20;
 
   // What the Worker last BROADCAST for this agent, which is what a client that
   // caches the pushed state already holds.
@@ -325,7 +389,7 @@ message AgentInfo {
   // Worker derives a state equal to what it already published
   // and broadcasts nothing, so that tab shows no spinner for
   // the rest of the turn. See the Worker's AgentActivityPublished.
-  AgentActivityState published_activity_state = 23;
+  AgentActivityState published_activity_state = 21;
 
   // Rows in pending/running state in this tab's background-task registry. For a
   // root that is every descendant's work; for a subagent tab it is that
@@ -333,7 +397,7 @@ message AgentInfo {
   // guard can say WHAT it is refusing to interrupt, not just that it refuses.
   int32 active_background_tasks = 22;
   // The stable native key of a virtual child. A provider can omit its spawn span.
-  string provider_child_key = 26;
+  string provider_child_key = 23;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -449,48 +513,47 @@ message QueuedAgentInputAttachment {
 
 message QueuedAgentInput {
   string id = 1;
-  string agent_id = 2;
-  AgentInputKind kind = 3;
+  AgentInputKind kind = 2;
   // A size-limited text preview. BeginQueuedAgentInputEdit returns the full text.
-  string text = 4;
-  repeated QueuedAgentInputAttachment attachments = 5;
-  int64 order = 6;
-  AgentInputState state = 7;
-  string error = 8;
-  string edit_owner_client_id = 9;
-  uint64 version = 10;
-  string created_at = 11;
-  string updated_at = 12;
+  string text = 3;
+  repeated QueuedAgentInputAttachment attachments = 4;
+  int64 order = 5;
+  AgentInputState state = 6;
+  string error = 7;
+  string edit_owner_client_id = 8;
+  uint64 version = 9;
+  string created_at = 10;
+  string updated_at = 11;
   // True when SteerQueuedAgentInput accepts this item right now. The Worker
   // computes it from the same predicate its steering guard applies, so a
   // client never offers a Steer that the Worker then refuses. A client that
   // derives this from the kind alone drifts the moment AgentInputKind grows.
-  bool can_steer = 13;
+  bool can_steer = 12;
   // Preemption's counterpart of can_steer: true when PreemptQueuedAgentInput
   // accepts this item right now (head, queued, editable, an active turn to
   // cancel). The Worker computes it from the same predicate its preemption
   // guard applies, for the same reason can_steer exists.
-  bool can_preempt = 14;
+  bool can_preempt = 13;
   // Empty means immediate. Otherwise this is the canonical UTC send-not-before
   // timestamp. A timestamp at or before the Worker's current time is immediate.
-  string scheduled_at = 15;
+  string scheduled_at = 14;
   // The item's reorder segment in this snapshot: a run of contiguous,
   // unlocked items that share one reorder group (all immediate items, or all
   // items scheduled at exactly one instant). A move is legal only between two
   // items with the same non-zero value, and 0 marks a locked item. The values
   // mean nothing outside one snapshot. Clients compare them and never
   // calculate them, because the Worker's clock decides the groups.
-  uint32 reorder_segment = 16;
+  uint32 reorder_segment = 15;
 }
 
+// One agent's input queue. The carrier identifies the agent: the request of an
+// RPC response, or AgentEvent.agent_id of a broadcast.
 message AgentInputQueueSnapshot {
-  string agent_id = 1;
-  uint64 revision = 2;
-  bool paused = 3;
-  AgentInputQueuePauseReason pause_reason = 4;
-  bool active_turn = 5;
-  repeated QueuedAgentInput items = 6;
-  bool active_turn_steerable = 7;
+  uint64 revision = 1;
+  AgentInputQueuePauseReason pause_reason = 2; // UNSPECIFIED = not paused
+  bool active_turn = 3;
+  repeated QueuedAgentInput items = 4;
+  bool active_turn_steerable = 5;
 }
 
 message AgentInputQueueChanged {
@@ -657,28 +720,24 @@ message AgentChatMessage {
   bool transcript_only = 22;
 }
 
-// AgentStatusChange notifies of agent status transitions.
+// AgentStatusChange notifies of agent status transitions. AgentEvent.agent_id
+// identifies the agent.
 message AgentStatusChange {
-  // Identity.
-  string agent_id = 1;
-  AgentProvider agent_provider = 2; // Provider for this agent
+  AgentProvider agent_provider = 1; // Provider for this agent
 
   // Lifecycle / status.
-  AgentStatus status = 3;
-  string agent_session_id = 4;  // Non-empty if agent session can be resumed
-  bool worker_online = 5;       // Whether the worker hosting this agent is online
-  string startup_error = 6;     // Populated when status=AGENT_STATUS_STARTUP_FAILED
-  string startup_message = 7;   // Phase label shown in the startup panel while status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
+  AgentStatus status = 2;
+  string agent_session_id = 3;  // Non-empty if agent session can be resumed
+  string startup_error = 4;     // Populated when status=AGENT_STATUS_STARTUP_FAILED
+  string startup_message = 5;   // Phase label shown in the startup panel while status=AGENT_STATUS_STARTING (e.g. "Checking Git status...")
 
   // Agent configuration: all axes reported by the agent (empty = don't update).
-  repeated AvailableOptionGroup option_groups = 8;
+  repeated AvailableOptionGroup option_groups = 6;
 
   // Git.
-  GitRepoStatus git_status = 9; // Git status for the agent's working directory
-  bool supports_steering = 10;
-  // Steering's counterpart for providers that can only interrupt: true when the
-  // running provider cannot steer but a queued head may pre-empt the active turn.
-  bool supports_preemption = 11;
+  GitRepoStatus git_status = 7; // Git status for the agent's working directory
+  // See AgentInfo.queue_head_dispatch.
+  QueueHeadDispatch queue_head_dispatch = 8;
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
@@ -702,31 +761,6 @@ enum MessagePageAnchor {
   MESSAGE_PAGE_ANCHOR_AFTER = 4;
 }
 
-// WatchReplayMode selects which history a WatchEvents subscriber replays before
-// the live stream begins. Sibling of MessagePageAnchor, narrowed to the modes
-// a tail subscription actually supports -- so OLDEST/BEFORE (meaningless for a
-// live tail) are simply unrepresentable rather than rejected at runtime.
-enum WatchReplayMode {
-  // Unset/unknown. The handler resolves it to LATEST (cold-start view).
-  WATCH_REPLAY_MODE_UNSPECIFIED = 0;
-  // Replay the most recent page, then stream live. cursor_seq is ignored. The
-  // cold-start subscription, matching the windowing client's initial LATEST load
-  // so the two dedup instead of tearing a gap into the loaded window.
-  WATCH_REPLAY_MODE_LATEST = 1;
-  // Replay every message after cursor_seq (seq > cursor_seq), then stream live.
-  // The reconnect/resume subscription that bridges the disconnect gap.
-  WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
-  // Replay every message after cursor_seq, as AFTER_CURSOR does, but replay
-  // NOTHING when the gap to the live tail is larger than
-  // contracts.CatchUpGapLimit. The worker measures the gap from
-  // WatchAgentEntry.window_tail_seq when the client declares it, else from
-  // cursor_seq. A windowed client abandons a gap that large and re-anchors on
-  // the newest page, so the burst would be pure waste. The client learns the
-  // tail from CatchUpStart.latest_seq. The worker sends this field for every
-  // replay mode.
-  WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE = 3;
-}
-
 message ListAgentMessagesRequest {
   string agent_id = 1;
   MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
@@ -740,16 +774,11 @@ message ListAgentMessagesResponse {
   // Authoritative provider-agnostic to-do list at the time the response is
   // served. Drives the sidebar without re-scanning message history; survives
   // page reloads and cross-client opens via the worker's agent_todos table.
-  // Only meaningful when todos_loaded is true -- an empty repeated field is
-  // indistinguishable on the wire from "the snapshot couldn't be loaded".
-  repeated TodoItem todos = 3;
-  // Whether `todos` carries an authoritative snapshot. True only on a latest
-  // page whose LoadTodos succeeded; false on a non-latest page OR when the
-  // LoadTodos query errored. The client overwrites its to-do list ONLY when
-  // this is true, so a transient DB error can't wipe a populated list with an
-  // empty array (protobuf-es always materializes the repeated field as [], so
-  // [] alone can't signal "leave todos alone").
-  bool todos_loaded = 4;
+  // Present only on a latest page whose LoadTodos succeeded. Absent on a
+  // non-latest page OR when the LoadTodos query errored, and the client then
+  // leaves its to-do list alone, so a transient DB error can't wipe a populated
+  // list. A present snapshot with no items is an empty list.
+  AgentTodoSnapshot todos = 3;
   // The agent's authoritative live-tail seq at the time the response is served. Lets
   // the `--follow` CLI resolve a resume point WITHOUT inferring it from the page's
   // content: when page 1 comes back empty it resumes after latest_seq instead of seq 0,
@@ -759,36 +788,22 @@ message ListAgentMessagesResponse {
   // (a DB error) and the consumer skips reconciliation / falls back to its loaded
   // cursor; present 0 = the agent genuinely has no messages;
   // present >0 = the authoritative MAX(seq).
-  optional int64 latest_seq = 5;
+  optional int64 latest_seq = 4;
   // Authoritative provider-agnostic background-task registry at the time the
   // response is served. Drives the "Background tasks" sidebar section; survives
   // page reloads and cross-client opens via the worker's
-  // agent_background_tasks table. Same explicit-presence contract as
-  // todos/todos_loaded: only meaningful when background_tasks_loaded is true.
-  repeated BackgroundTaskItem background_tasks = 6;
-  // Whether `background_tasks` carries an authoritative snapshot. True only on
-  // a latest page whose LoadBackgroundTasks succeeded; false otherwise. The
-  // client overwrites its registry ONLY when this is true, so a transient DB
-  // error can't wipe a populated list with an empty array.
-  bool background_tasks_loaded = 7;
-  // Authoritative session goal at the time the response is served, absent when
-  // the agent has none. Same explicit-presence contract as the two pairs above:
-  // only meaningful when goal_loaded is true.
-  AgentGoal goal = 8;
-  // Whether `goal` carries an authoritative answer. True only on a latest page
-  // the worker could read; false on a non-latest page or a DB error. A CHILD
-  // agent answers true with an absent goal -- a child never owns one, and
-  // answering false would let it keep whatever its previous root put there.
-  bool goal_loaded = 9;
-  // The goal actions the running agent supports, for the reason
-  // AgentGoalChanged.supported_actions carries them: the panel must know
-  // whether a goal can be SET on an agent that has none.
-  repeated AgentGoalAction goal_supported_actions = 10;
-  // The ordering stamp for `goal`, read from the same row in the same query.
-  // See AgentGoalChanged.goal_updated_at: this response is the STALE side of
-  // that race, because the worker reads the row here and the browser applies
-  // the answer a network round trip later.
-  string goal_updated_at = 11;
+  // agent_background_tasks table. Same presence contract as `todos`: present
+  // only on a latest page whose LoadBackgroundTasks succeeded.
+  AgentBackgroundTaskSnapshot background_tasks = 5;
+  // Authoritative session goal at the time the response is served. Same
+  // presence contract as `todos`: present only on a latest page the worker
+  // could read. A CHILD agent answers with a present snapshot whose goal is
+  // absent -- a child never owns one, and an absent snapshot would let it keep
+  // whatever its previous root put there. The snapshot's goal_updated_at is
+  // the STALE side of the race AgentGoalSnapshot.goal_updated_at describes,
+  // because the worker reads the row here and the browser applies the answer a
+  // network round trip later.
+  AgentGoalSnapshot goal = 6;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
@@ -866,12 +881,13 @@ enum TodoStatus {
   TODO_STATUS_BLOCKED = 5;
 }
 
-// AgentTodosChanged is broadcast whenever a message mutates an agent's
-// to-do list (after persistence). Recipients should replace the agent's
-// list with todos verbatim — this event is authoritative.
-message AgentTodosChanged {
-  string agent_id = 1;
-  repeated TodoItem todos = 2;
+// AgentTodoSnapshot is an agent's whole to-do list. AgentEvent.todos_changed
+// broadcasts it whenever a message mutates the list (after persistence), and
+// ListAgentMessagesResponse carries it on a latest page. Recipients should
+// replace the agent's list with todos verbatim -- the snapshot is
+// authoritative.
+message AgentTodoSnapshot {
+  repeated TodoItem todos = 1;
 }
 
 // BackgroundTaskItem is a row in the provider-neutral background-task registry
@@ -936,13 +952,14 @@ enum BackgroundTaskStatus {
   BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME = 8;
 }
 
-// AgentBackgroundTasksChanged is broadcast whenever a background-task registry
-// row mutates (after persistence). agent_id is the ROOT owner agent id.
-// Recipients should replace the agent's registry with tasks verbatim -- this
-// event is authoritative.
-message AgentBackgroundTasksChanged {
-  string agent_id = 1;                       // ROOT owner agent id
-  repeated BackgroundTaskItem tasks = 2;     // authoritative; replace wholesale
+// AgentBackgroundTaskSnapshot is an agent's whole background-task registry.
+// AgentEvent.background_tasks_changed broadcasts it whenever a registry row
+// mutates (after persistence), addressed to the ROOT owner agent id, and
+// ListAgentMessagesResponse carries it on a latest page. Recipients should
+// replace the agent's registry with tasks verbatim -- the snapshot is
+// authoritative.
+message AgentBackgroundTaskSnapshot {
+  repeated BackgroundTaskItem tasks = 1;     // authoritative; replace wholesale
 }
 
 // --- Session goal ---
@@ -987,8 +1004,8 @@ message AgentGoal {
   string native_id = 5;
   // No updated_at here. The stamp that ORDERS two answers about the goal must
   // exist when the goal does NOT -- a clear is an answer too -- so it rides the
-  // carrier beside the goal: AgentGoalChanged.goal_updated_at and
-  // ListAgentMessagesResponse.goal_updated_at. One value, one home.
+  // carrier beside the goal: AgentGoalSnapshot.goal_updated_at. One value, one
+  // home.
 }
 
 // AgentGoalStatus is the neutral status vocabulary. Four of its values come
@@ -1046,16 +1063,16 @@ enum AgentGoalAction {
   AGENT_GOAL_ACTION_RESUME = 4;
 }
 
-// AgentGoalChanged is broadcast when the goal's durable half changes -- the
-// objective, the status, or the identity. It is NOT broadcast for a progress
-// update, which is what keeps a 200-tool turn from costing 200 broadcasts.
-// Recipients replace their copy wholesale; this event is authoritative.
-message AgentGoalChanged {
-  string agent_id = 1;
+// AgentGoalSnapshot is an agent's session goal and what the agent can do with
+// it. AgentEvent.goal_changed broadcasts it when the goal's durable half
+// changes -- the objective, the status, or the identity. It is NOT broadcast
+// for a progress update, which is what keeps a 200-tool turn from costing 200
+// broadcasts. ListAgentMessagesResponse carries it on a latest page.
+// Recipients replace their copy wholesale; the snapshot is authoritative.
+message AgentGoalSnapshot {
   // Absent when the agent has no goal. A message field carries explicit
-  // presence, so this needs no companion boolean the way the cold-load
-  // hydration pair does.
-  AgentGoal goal = 2;
+  // presence, so this needs no companion boolean.
+  AgentGoal goal = 1;
   // What the RUNNING agent can do, decided by the worker from the live process
   // -- never a static per-provider table. Goal support is version-dependent
   // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2). Goose, Copilot,
@@ -1072,12 +1089,12 @@ message AgentGoalChanged {
   // cannot drift from the code that implements it. AgentInfo.accepts_messages
   // and accepts_interrupt are static provider capabilities instead, and a
   // conformance suite pins each one to the agent type that implements it.
-  repeated AgentGoalAction supported_actions = 3;
+  repeated AgentGoalAction supported_actions = 2;
   // When the worker last WROTE the goal columns, in the same layout
   // AgentGoal.created_at uses. Empty when the agent never had a goal.
   //
   // It orders two answers about the same agent, which last-write-wins cannot do
-  // on its own. Three writers race: this broadcast, the WatchEvents replay, and
+  // on its own. Three writers race: the goal_changed broadcast, the WatchEvents replay, and
   // the ListAgentMessages cold load -- and the cold load reads the row long
   // before its response is applied, so a clear that happens in between is
   // undone by the stale answer landing second. The recipient keeps the stamp it
@@ -1086,29 +1103,29 @@ message AgentGoalChanged {
   // On the carrier rather than inside AgentGoal because the case it exists for
   // is the one where `goal` is absent: a cleared goal has no message to hang a
   // field on, and that is exactly the write a stale answer resurrects.
-  string goal_updated_at = 4;
+  string goal_updated_at = 3;
 }
 
 // --- Control Request/Response ---
 
 // AgentControlRequest carries a provider request that needs a user response.
+// AgentEvent.agent_id identifies the agent.
 message AgentControlRequest {
-  string agent_id = 1;
-  string request_id = 2;
-  bytes payload = 3;  // Full JSON of the control_request (verbatim)
-  AgentProvider agent_provider = 4; // Provider for this agent
+  string request_id = 1;
+  bytes payload = 2;  // Full JSON of the control_request (verbatim)
+  AgentProvider agent_provider = 3; // Provider for this agent
   // claim_token identifies the request instance. An identical pending announcement keeps its token.
   // A new request after deletion, or a changed payload, receives a fresh token.
   // The frontend echoes the token in SendControlResponseRequest to deduplicate answers per instance.
-  string claim_token = 5;
+  string claim_token = 4;
   // Optional transcript source, outside the original provider payload. Zero means no source is available.
-  int64 source_seq = 6;
-  string agent_session_id = 7;
-  ControlResponseState response_state = 8;
+  int64 source_seq = 5;
+  string agent_session_id = 6;
+  ControlResponseState response_state = 7;
   // A non-blocking request does not stop the agent: the agent continues its turn,
   // and the request waits until the user answers or skips it. A process exit and
   // an interrupt keep it. The browser shows it only when the user opens it.
-  bool non_blocking = 9;
+  bool non_blocking = 8;
 }
 
 // ControlResponseState describes the worker's evidence for one response instance.
@@ -1123,12 +1140,12 @@ enum ControlResponseState {
 }
 
 // AgentControlCancelRequest identifies the removed request instance.
+// AgentEvent.agent_id identifies the agent.
 message AgentControlCancelRequest {
-  string agent_id = 1;
-  string request_id = 2;
-  string claim_token = 3;
+  string request_id = 1;
+  string claim_token = 2;
   // A delivered response can still need recording after the provider cancels its prompt.
-  ControlResponseState response_state = 4;
+  ControlResponseState response_state = 3;
 }
 
 // PlanApprovalSettings carries LeapMux settings separately from provider response bytes.
@@ -1202,15 +1219,14 @@ message ListAvailableProvidersResponse {
 // holds sessions started outside LeapMux as well. A handle both sources carry
 // appears once.
 message ListAgentSessionsRequest {
-  string worker_id = 1;
   // Which provider's sessions to list. A resume handle is only meaningful to
   // the CLI that issued it, so the answer is per-provider and changes with the
   // dialog's provider selector.
-  AgentProvider agent_provider = 2;
+  AgentProvider agent_provider = 1;
   // The directory the sessions must have run in, matched exactly. Every
   // provider store records a session's working directory, and the sessions of
   // the directory where a user starts an agent are the relevant ones.
-  string working_dir = 3;
+  string working_dir = 2;
 }
 
 message AgentSessionSummary {
@@ -1258,7 +1274,7 @@ message UpdateAgentGoalRequest {
 // commands (Codex's thread/goal/set, ZCode's session/goal) reply with the
 // resulting goal. A text-route provider knows nothing when this RPC returns,
 // because the queue has not delivered its command yet. A response field that
-// most providers cannot fill would be a field that lies. The AgentGoalChanged
+// most providers cannot fill would be a field that lies. The goal_changed
 // broadcast is the single source of the new state.
 message UpdateAgentGoalResponse {}
 

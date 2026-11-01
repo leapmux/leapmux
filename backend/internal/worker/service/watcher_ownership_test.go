@@ -54,9 +54,7 @@ func TestWatcherOwnershipSurvivesConcurrentReplacement(t *testing.T) {
 		require.True(t, manager.isOwner("channel", latestID))
 		manager.BroadcastAgentEvent("agent", &leapmuxv1.AgentEvent{
 			AgentId: "agent",
-			Event: &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: &leapmuxv1.AgentControlRequest{
-				AgentId: "agent", RequestId: "pending-question",
-			}},
+			Event:   &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: &leapmuxv1.AgentControlRequest{RequestId: "pending-question"}},
 		})
 		manager.BroadcastTerminalEvent("terminal", testTerminalEvent("terminal", []byte("output")))
 		require.Equal(t, int64(2), latest.streamCount.Load(), "round %d: both events must reach the latest session", round)

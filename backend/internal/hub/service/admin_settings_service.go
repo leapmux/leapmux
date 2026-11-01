@@ -117,7 +117,7 @@ func (s *AdminSettingsService) ListSettings(ctx context.Context, _ *leapmuxv1.Li
 }
 
 // descriptorFor resolves one settings key for a write path, refusing an
-// empty or unregistered key. Shared by the three write handlers so the
+// empty or unregistered key. Shared by the two write handlers so the
 // argument validation and its wording cannot drift between them.
 func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, error) {
 	if key == "" {
@@ -175,52 +175,7 @@ func (s *AdminSettingsService) writeUnderElevation(ctx context.Context, write fu
 	return writeUnderElevation(ctx, s.store, s.now, write)
 }
 
-// UpdateSetting merges a partial document onto one key's public half.
-// UpdateSettingSecret does NOT route through it: the two write different
-// halves of the row, so they call different Manager verbs. What they DO
-// share is descriptorFor, which is where an argument check belongs if it
-// must cover both.
-func (s *AdminSettingsService) UpdateSetting(ctx context.Context, req *leapmuxv1.UpdateSettingRequest) (*leapmuxv1.UpdateSettingResponse, error) {
-	desc, err := s.descriptorFor(req.GetKey())
-	if err != nil {
-		return nil, err
-	}
-	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.Update(ctx, desc, json.RawMessage(req.GetPartialJson())); err != nil {
-			return settingWriteConnectError(err)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return &leapmuxv1.UpdateSettingResponse{
-		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-		// The manager stores the write, but a restart-class key keeps its
-		// previous value in this process until it restarts. Report that here
-		// rather than leave the caller to look the descriptor up again.
-		Restart: desc.Propagation() == settings.PropagationRestart,
-	}, nil
-}
-
-func (s *AdminSettingsService) UpdateSettingSecret(ctx context.Context, req *leapmuxv1.UpdateSettingSecretRequest) (*leapmuxv1.UpdateSettingSecretResponse, error) {
-	desc, err := s.descriptorFor(req.GetKey())
-	if err != nil {
-		return nil, err
-	}
-	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.UpdateSecret(ctx, desc, json.RawMessage(req.GetPartialJson())); err != nil {
-			return settingWriteConnectError(err)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return &leapmuxv1.UpdateSettingSecretResponse{
-		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-	}, nil
-}
-
-// UpdateSettings applies several keys' edits atomically.
+// UpdateSettings applies one or more keys' edits atomically.
 func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv1.UpdateSettingsRequest) (*leapmuxv1.UpdateSettingsResponse, error) {
 	msgs := req.GetWrites()
 	if len(msgs) == 0 {
@@ -232,11 +187,11 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv
 		if err != nil {
 			return nil, err
 		}
-		// A write that carries neither half, an inert document, and a secret
-		// half for a key with no secret fields are all Manager.UpdateMany's
-		// refusals now. Restating one of them here gave the same rule two
-		// messages, and the handler is not the layer that knows which fields
-		// a key declares.
+		// A write that carries neither half, an inert document, a secret half
+		// for a key with no secret fields, and a secret half that specifies
+		// no secret field are all Manager.UpdateMany's refusals. Restating one
+		// of them here gave the same rule two messages, and the handler is not
+		// the layer that knows which fields a key declares.
 		writes = append(writes, settings.KeyWrite{
 			Desc:   desc,
 			Public: json.RawMessage(w.GetPartialJson()),
@@ -256,33 +211,20 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv
 	// be reported from different moments.
 	snap := s.set.Snapshot(ctx)
 	values := make([]*leapmuxv1.SettingValue, 0, len(writes))
+	var restartKeys []string
 	for _, w := range writes {
 		values = append(values, s.settingValueToProto(snap, w.Desc))
-	}
-	return &leapmuxv1.UpdateSettingsResponse{Values: values}, nil
-}
-
-func (s *AdminSettingsService) ResetSetting(ctx context.Context, req *leapmuxv1.ResetSettingRequest) (*leapmuxv1.ResetSettingResponse, error) {
-	desc, err := s.descriptorFor(req.GetKey())
-	if err != nil {
-		return nil, err
-	}
-	// The post-reset step is PART of the write: a reset is not complete until
-	// it ran, so a failure there must not count as use of the window either.
-	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.Reset(ctx, desc); err != nil {
-			return settingWriteConnectError(err)
+		// The manager stores the write, but a restart-class key keeps its
+		// previous value in this process until it restarts. Report that here
+		// rather than leave the caller to look the descriptor up again.
+		if w.Desc.Propagation() == settings.PropagationRestart {
+			restartKeys = append(restartKeys, w.Desc.Name())
 		}
-		return s.runAfterReset(ctx, []settings.Descriptor{desc})
-	}); err != nil {
-		return nil, err
 	}
-	return &leapmuxv1.ResetSettingResponse{
-		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-	}, nil
+	return &leapmuxv1.UpdateSettingsResponse{Values: values, RestartKeys: restartKeys}, nil
 }
 
-// ResetSettings clears several keys in ONE transaction.
+// ResetSettings clears one or more keys in ONE transaction.
 func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *leapmuxv1.ResetSettingsRequest) (*leapmuxv1.ResetSettingsResponse, error) {
 	keys := req.GetKeys()
 	if len(keys) == 0 {

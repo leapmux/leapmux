@@ -1,4 +1,5 @@
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { timestampMs } from '@bufbuild/protobuf/wkt'
 import { assertNever } from '~/lib/assertNever'
 import { compareNames, compareOptionalValue } from '~/lib/fileSort'
 
@@ -128,10 +129,9 @@ export function sortWorkspaces(
         // A counter of 0 is a real value, so only `undefined` is absent.
         return compareOptionalValue(recency!.get(a.id), recency!.get(b.id), flip) ?? byTitle(a, b)
       case 'created':
-        // The hub writes every timestamp in one fixed-width layout, so a
-        // lexicographic compare is a chronological one and needs no parsing.
-        // An EMPTY string means "not reported", so it maps to `undefined`.
-        return compareOptionalValue(a.createdAt || undefined, b.createdAt || undefined, flip)
+        // An ABSENT timestamp means "not reported", so it maps to `undefined`
+        // and sorts as compareOptionalValue sorts a missing value.
+        return compareOptionalValue(createdAtMs(a), createdAtMs(b), flip)
           ?? byTitle(a, b)
       // `manual` returned above, so this case is unreachable -- but listing
       // every key rather than writing a `default` is what makes a NEW key a
@@ -172,4 +172,11 @@ export function filterWorkspaces(workspaces: readonly Workspace[], query: string
  */
 export function canReorderWithin(order: WorkspaceSortOrder, filterQuery: string): boolean {
   return order.key === 'manual' && filterQuery.trim() === ''
+}
+
+/** A workspace's creation time in epoch milliseconds, or undefined when the hub reported none. */
+function createdAtMs(workspace: Workspace): number | undefined {
+  return workspace.createdAt
+    ? timestampMs(workspace.createdAt)
+    : undefined
 }

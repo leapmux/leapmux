@@ -1,7 +1,7 @@
 import type { MockModelRule } from '../helpers/mockModelScript'
 import type { NativeGoalScenario } from '../helpers/nativeGoalLifecycle'
 import { expect } from '@playwright/test'
-import { AgentGoalStatus, AgentProvider, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalStatus, AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { grokTest } from '../grok-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { exerciseNativeGoalPauseAndResume } from '../helpers/nativeGoalLifecycle'
@@ -95,8 +95,8 @@ grokTest('records the native user pause and resumes new native goal model work',
       const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
       // `user_paused` states no reason. Each pause of Grok's own states one.
       await retryUntilPass(async () => {
-        const response = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: agent.id, limit: 1 })
-        expect({ status: response.goal?.status, statusDetail: response.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
+        const response = await channel.callWorker(leapmuxServer.workerId, WorkerAgentService.method.listAgentMessages, { agentId: agent.id, limit: 1 })
+        expect({ status: response.goal?.goal?.status, statusDetail: response.goal?.goal?.statusDetail }, 'the Worker holds the goal paused by the reader, with no reason')
           .toEqual({ status: AgentGoalStatus.PAUSED, statusDetail: '' })
       })
     },

@@ -1,7 +1,8 @@
 import type { AgentInputQueueSnapshot } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ChannelManager } from '../../../src/lib/channel'
 import type { AgentWatchServer } from './agentEventWatch'
-import { ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { agentWatchRequest, readAgentWatchFrame } from './agentEventWatch'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
@@ -20,12 +21,10 @@ export async function readNativeInputQueue(server: AgentWatchServer, agentId: st
   if (!agentId.trim())
     throw new Error('The input queue read requires an agent ID.')
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const response = await channel.callWorker(server.workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId })
+  const response = await channel.callWorker(server.workerId, WorkerAgentInputService.method.listAgentInputQueue, { agentId })
   const snapshot = response.snapshot
   if (!snapshot)
     throw new Error(`The Worker sent no input queue snapshot for agent ${agentId}.`)
-  if (snapshot.agentId !== agentId)
-    throw new Error(`The Worker sent the input queue of agent ${snapshot.agentId} for agent ${agentId}.`)
   return snapshot
 }
 
@@ -59,8 +58,6 @@ export class NativeInputQueueIdleCollector {
     const snapshot = event.value.snapshot
     if (!snapshot)
       throw new Error('The Worker input queue event has no queue snapshot.')
-    if (snapshot.agentId !== this.agentId)
-      throw new Error('The Worker queue snapshot identifies a different agent.')
     if (this.latestSnapshot && snapshot.revision < this.latestSnapshot.revision)
       return
     // Derived item capabilities can change without a queue revision. Only the turn flag decides completion.
@@ -112,7 +109,7 @@ export async function waitForNativeInputQueueIdle(
       const channelId = await channel.getOrOpenChannel(server.workerId)
       if (completed)
         return
-      watch = channel.stream(channelId, 'WatchEvents', agentWatchRequest(agentId))
+      watch = channel.stream(channelId, WorkerWatchService.method.watchEvents, agentWatchRequest(agentId))
       watch.onMessage((frame) => {
         if (completed)
           return

@@ -99,12 +99,7 @@ func runWorker(args []string) error {
 		if cfg.RegistrationKey == "" {
 			return fmt.Errorf("worker is unregistered: pass --registration-key <key> from the hub UI")
 		}
-		compositeKey, ckErr := state.CompositeKeypair()
-		if ckErr != nil {
-			return fmt.Errorf("restore composite keypair for registration: %w", ckErr)
-		}
-		slhdsaPub, _ := compositeKey.SlhdsaPublicKeyBytes()
-		result, regErr := hub.Register(ctx, hubEndpoint, cfg.RegistrationKey, version.Value, compositeKey.X25519Public, compositeKey.MlkemPublicKeyBytes(), slhdsaPub)
+		result, regErr := hub.Register(ctx, hubEndpoint, cfg.RegistrationKey)
 		if regErr != nil {
 			return fmt.Errorf("registration: %w", regErr)
 		}

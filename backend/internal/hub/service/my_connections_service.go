@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"connectrpc.com/connect/v2"
@@ -103,17 +102,14 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMy
 	}
 	page, err := s.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
 		UserID: userInfo.ID,
-		// Through NormalizePageParams like every other paginated handler: an
+		// Through pageParams like every other paginated handler: an
 		// omitted limit is the proto3 zero, and the queries read zero as
 		// "return no rows", so a caller that simply left it out would get an
 		// empty page it could not distinguish from an empty table.
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, pageListError(err, "list api tokens")
 	}
 	currentTokenID := callerAPITokenID(userInfo)
 	tokens := make([]*leapmuxv1.MyAPIToken, 0, len(page.Rows))
@@ -121,8 +117,8 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMy
 		tokens = append(tokens, myAPITokenToProto(row, currentTokenID))
 	}
 	return &leapmuxv1.ListMyAPITokensResponse{
-		Tokens:     tokens,
-		NextCursor: page.NextCursor,
+		Tokens: tokens,
+		Page:   pageResponse(page.NextCursor),
 	}, nil
 }
 

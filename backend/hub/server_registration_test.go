@@ -32,7 +32,23 @@ func TestRegisterWorkerRequiresALiveOwner(t *testing.T) {
 				require.NoError(t, err)
 				assert.True(t, worker.AutoRegistered)
 				assert.Equal(t, owner.ID, worker.RegisteredBy)
+				// The co-located worker connects with the token it was handed,
+				// so that token must resolve to this row.
+				byToken, err := st.Workers().GetByAuthToken(ctx, credentials.AuthToken)
+				require.NoError(t, err)
+				assert.Equal(t, credentials.WorkerID, byToken.ID)
 			}
 		})
 	}
+}
+
+// A worker with a blank registrant would be owned by nobody, so its real
+// owner's gate would refuse it for the life of the process.
+func TestRegisterWorkerRefusesABlankRegistrant(t *testing.T) {
+	t.Parallel()
+	st := hubtestutil.OpenTestStore(t)
+
+	credentials, err := (&Server{store: st}).RegisterWorker(context.Background(), "")
+	require.ErrorContains(t, err, "registeredBy is required")
+	assert.Nil(t, credentials)
 }

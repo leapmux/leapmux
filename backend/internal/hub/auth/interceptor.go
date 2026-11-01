@@ -28,7 +28,7 @@ import (
 // auth_token in its own header.
 //
 // "Public" here means "the handler authenticates itself", NOT "anyone may
-// call it". Each worker-facing entry below refuses without a credential of its
+// call it". Each worker-facing entry refuses without a credential of its
 // own; the exemption only keeps the interceptor from rejecting that credential
 // as neither a session cookie nor an `lmx_` API token. Adding a procedure that
 // does NOT authenticate itself is an auth bypass.
@@ -39,41 +39,20 @@ import (
 // AuthenticateWorkerBearer. The rationale map in the package's test specifies
 // the mechanism per entry, which is the check that keeps this list honest.
 //
-// Procedure names come from the generated `leapmuxv1connect` constants
-// so a rename in the proto definition turns a typo here into a build
-// error instead of a silent auth bypass.
-var publicProcedures = map[string]bool{
-	leapmuxv1connect.AuthServiceLoginProcedure:                  true,
-	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure: true,
-	leapmuxv1connect.AuthServiceSignUpProcedure:                 true,
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:          true,
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:    true,
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:     true,
-	// Same worker auth_token as Connect, on a plain unary RPC rather than the
-	// stream. The worker's orphan reconciler is the only caller, and it is what
-	// converges a worker after a close or a cross-workspace move that landed
-	// while the worker was offline -- so without this entry the interceptor
-	// answers `unauthenticated` and the worker never learns a tab is gone.
-	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: true,
-	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  true,
-	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              true,
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:                true,
-	// Public by design: ALTCHA challenges carry no secret and must be
-	// fetchable before login. The captcha interceptor guards the
-	// procedures that consume solutions, not the one that issues
-	// challenges.
-	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:              true,
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:               true,
-	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:              true,
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:              true,
-	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:             true,
-	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:          true,
-	leapmuxv1connect.AuthServiceCompleteAccountRecoveryPasswordProcedure: true,
-	// The passkey path of recovery: authorized by the emailed recovery token
-	// (attempt-capped at the handler), not by a session, so both procedures
-	// are public like the passkey signup pair above.
-	leapmuxv1connect.AuthServiceBeginAccountRecoveryPasskeyProcedure:  true,
-	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure: true,
+// It is derived at init from procedureScopes: a HUB method whose
+// (leapmux.v1.access) option selects `public` is on it, and nothing else is.
+// The proto option is the one source, so a public method cannot be recorded
+// in one table and missing from the other.
+var publicProcedures = derivePublicProcedures()
+
+func derivePublicProcedures() map[string]bool {
+	out := make(map[string]bool)
+	for procedure, requirement := range procedureScopes {
+		if requirement.IsPublic() {
+			out[procedure] = true
+		}
+	}
+	return out
 }
 
 // PublicProcedures lists every procedure the auth interceptor waives, so
@@ -134,12 +113,9 @@ const adminProcedurePrefix = "/leapmux.v1.Admin"
 // (usernames.IsReservedSystem) is what keeps a stored row from taking
 // that identity.
 var adminProcedures = map[string]bool{
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      true,
-	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        true,
-	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       true,
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   true,
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure: true,
+	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:  true,
 
 	// Which addresses the hub answers on, and what this machine could answer
 	// on. It reports no credential and no user data, but it does describe the

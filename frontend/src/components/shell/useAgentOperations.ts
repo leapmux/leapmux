@@ -2,7 +2,7 @@ import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
 import type { ControlResponseHandler } from '~/components/chat/controls/types'
 import type { ProviderSettingChange } from '~/components/chat/providerSettings'
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
@@ -27,8 +27,7 @@ import { optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
 import { AgentOptionSettlementState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { goalActionToProto } from '~/stores/chatGoal'
 import { openedAgentTabFields, planOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
@@ -36,16 +35,6 @@ import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
 import '~/components/chat/providers'
-
-/**
- * The proto close responses carry `result` as present-but-undefined when the
- * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
- */
-function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined
-    ? {}
-    : { result: resp.result }
-}
 
 export interface UseAgentOperationsProps {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -183,7 +172,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // tab_names.go). The response carries the resolved title back.
       const resp = await workerRpc.openAgent(workerId, {
         agentProvider,
-        workerId,
         workingDir,
         ...openAgentRequestOptions(agentProvider),
         ...(sessionId
@@ -618,7 +606,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // the caller returns. The worker close RPC and Hub unregister are
   // fire-and-forget; failures are surfaced via toast without blocking
   // the UI or rolling back the local state — the tab is already gone.
-  const handleAgentClose = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
+  const handleAgentClose = (agentId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResponse | undefined> => {
     const workerId = getAgentWorkerId(agentId)
 
     // Synchronous local cleanup: the tab disappears immediately.
@@ -640,7 +628,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // remove the worktree. Partial failures come back as a non-empty
     // failure_message on the response; the resolved result lets the
     // delete-branch flow report the actual worktree outcome.
-    const rpc = workerRpc.closeAgent(workerId, { agentId, worktreeAction })
+    const rpc = workerRpc.closeTab(workerId, {
+      tab: { tabType: TabType.AGENT, tabId: agentId },
+      worktreeAction,
+    })
 
     // Retire the subagent tabs the worker reports underneath this one.
     //
@@ -679,7 +670,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       emitRemoveTabs(TabType.AGENT, ids)
     }, () => {})
 
-    return awaitCloseResult(rpc.then(closeResultView), 'Failed to close agent')
+    return awaitCloseResult(rpc, 'Failed to close agent')
   }
 
   return {

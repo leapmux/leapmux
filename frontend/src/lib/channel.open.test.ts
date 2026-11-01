@@ -1,20 +1,21 @@
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from './channel'
 import type { KeyPinDecision } from './keyPinStore'
 import type { Session } from './noise'
-import { create, toBinary } from '@bufbuild/protobuf'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_MAX_MESSAGE_SIZE,
   INNER_ENVELOPE_HEADROOM,
   MAX_CHUNK_SIZE,
   MAX_CONFIGURABLE_MESSAGE_SIZE,
-  PING_METHOD,
 } from '~/generated/contracts/wire'
 import {
   EncryptionMode,
   InnerMessageSchema,
   InnerRpcResponseSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
+import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
 import { ChannelManager } from './channel'
 import {
@@ -25,6 +26,7 @@ import {
   clearAllKeyPins,
   createMockTransport,
   createTestSession,
+  decodeWireMessage,
   encodeWireMessage,
   makeCountingTransport,
   makeIdentityCipherManager,
@@ -39,6 +41,7 @@ import {
 } from './channel.test-support'
 import { KeyPinStore } from './keyPinStore'
 import { maxReassembledMessageSize } from './reassembler'
+import { procedureOf } from './rpcProcedure'
 
 describe('ChannelManager openChannel', () => {
   const h = new ChannelManagerTestHarness()
@@ -50,6 +53,26 @@ describe('ChannelManager openChannel', () => {
     expect(channelId).toBeTruthy()
     expect(h.mgr.isOpen(channelId)).toBe(true)
     expect(channelInternals(h.mgr, channelId).workerId).toBe('w1')
+  })
+
+  // The open proves the session with WorkerSystemService.Ping. The worker
+  // registers that handler under this exact procedure, so a different string
+  // fails every open with a timeout.
+  it('proves the session with the ping procedure the worker registers', async () => {
+    const openPromise = h.mgr.openChannel('w1')
+    await h.flushMicrotasks()
+    h.mockWs.simulateOpen()
+    await h.flushMicrotasks()
+
+    const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    const envelope = fromBinary(InnerMessageSchema, sessions.get(sentMsg.channelId)!.responder.receive.decrypt(sentMsg.ciphertext))
+    if (envelope.kind.case !== 'request')
+      throw new Error('the open must send the ping as an inner request')
+    expect(envelope.kind.value.method).toBe('/leapmux.v1.WorkerSystemService/Ping')
+    expect(envelope.kind.value.payload).toHaveLength(0)
+
+    h.sendResponseFromWorker(sentMsg.channelId, Number(sentMsg.correlationId), new Uint8Array())
+    await expect(openPromise).resolves.toBe(sentMsg.channelId)
   })
 
   it('wraps unexpected key-pin errors as ChannelError', async () => {
@@ -145,7 +168,7 @@ describe('ChannelManager openChannel', () => {
       brokenWs.simulateOpen()
       await h.flushMicrotasks()
       // The worker never answers the ping.
-      await expect(openPromise).rejects.toThrow(`RPC call '${PING_METHOD}' timed out`)
+      await expect(openPromise).rejects.toThrow(`RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`)
       expect(closed).toHaveLength(1)
     }
     finally {
@@ -467,7 +490,7 @@ describe('ChannelManager openChannel', () => {
       await h.flushMicrotasks()
       // The worker never answers the ping: the session is dead in at least one
       // direction. The open must fail rather than cache a broken channel.
-      await expect(openPromise).rejects.toThrow(`RPC call '${PING_METHOD}' timed out`)
+      await expect(openPromise).rejects.toThrow(`RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`)
       expect(brokenMgr.isOpen('ch-1')).toBe(false)
     }
     finally {
@@ -670,7 +693,6 @@ describe('ChannelManager encryption modes', () => {
 
     const resp = create(InnerRpcResponseSchema, {
       payload: new Uint8Array([3, 4]),
-      isError: false,
     })
     const respEnv = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -791,7 +813,7 @@ describe('ChannelManager open-time verification', () => {
       // call() still permits 'opening' so the verification Ping can complete;
       // stream() requires verified and must reject here.
       const raced = cm.call('ch-1', 'Test', new Uint8Array())
-      expect(() => cm.stream('ch-1', 'WatchEvents', new Uint8Array())).toThrow('channel not open')
+      expect(() => cm.stream('ch-1', WorkerWatchService.method.watchEvents, new Uint8Array())).toThrow('channel not open')
 
       let openErr: unknown
       let racedErr: unknown

@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { HLCSchema, NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
-import { CrdtOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, SetWorkspaceRootNodeOpSchema, TombstoneNodeOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { CrdtOpSchema, CreateWorkspaceOpSchema, SetNodeRegisterOpSchema, SetTabRegisterOpSchema, TombstoneNodeOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { applyOp, HLCClock, hlcCmp, hlcIsZero, newState, project } from '~/lib/crdt'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {
@@ -69,21 +69,20 @@ function setTabTileId(tabId: string, tileId: string, atHlc: ReturnType<typeof hl
     body: {
       case: 'setTabRegister',
       value: create(SetTabRegisterOpSchema, {
-        tabType: TabType.AGENT,
-        tabId,
+        tab: { tabType: TabType.AGENT, tabId },
         field: { case: 'tileId', value: tileId },
       }),
     },
   })
 }
 
-function setWorkspaceRootNode(workspaceId: string, rootNodeId: string, atHlc: ReturnType<typeof hlc>) {
+function createWorkspace(workspaceId: string, rootNodeId: string, atHlc: ReturnType<typeof hlc>) {
   return create(CrdtOpSchema, {
-    opId: `set-ws-root-${workspaceId}`,
+    opId: `create-ws-${workspaceId}`,
     canonicalHlc: atHlc,
     body: {
-      case: 'setWorkspaceRootNode',
-      value: create(SetWorkspaceRootNodeOpSchema, { workspaceId, rootNodeId }),
+      case: 'createWorkspace',
+      value: create(CreateWorkspaceOpSchema, { workspaceId, rootNodeId }),
     },
   })
 }
@@ -125,30 +124,25 @@ describe('crdt apply', () => {
     expect(state.nodes.n1?.parentId).toBe('P1')
   })
 
-  // Regression: pre-fix, `applySetWorkspaceRootNode` early-returned
-  // when `state.workspaces[workspaceId]` was missing. The hub's
-  // lifecycle create batch seeds the record via a
-  // `SetWorkspaceRegisterOp` in the same batch as this op — but a
-  // subscriber whose filter drops that seed batch (or a replay where
-  // the companion op was compacted away) reaches this op with no
-  // record. The lazy-create is the bootstrap-replay safety net; the old
-  // early-return left `state.workspaces[wsId]` undefined, the agent tab
-  // seed waited forever for `rootNodeId != ''`, and the new workspace
-  // appeared tile-less.
-  it('setWorkspaceRootNode lazy-creates the WorkspaceContentsRecord', () => {
+  // Regression: the op that assigned a workspace's root once early-returned
+  // when `state.workspaces[workspaceId]` was missing, which left
+  // `state.workspaces[wsId]` undefined: the agent tab seed waited forever for
+  // `rootNodeId != ''`, and the new workspace appeared tile-less. The create
+  // op makes the record itself.
+  it('createWorkspace creates the WorkspaceContentsRecord', () => {
     const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
-    applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
+    applyOp(state, createWorkspace('w1', 'root1', hlc(1n, 0n, 'a')))
     expect(state.workspaces.w1).toBeDefined()
     expect(state.workspaces.w1?.rootNodeId).toBe('root1')
   })
 
   // The op is set-once: re-applying with a different root id must not
   // overwrite an already-seeded record.
-  it('setWorkspaceRootNode is set-once on the rootNodeId slot', () => {
+  it('createWorkspace is set-once on the rootNodeId slot', () => {
     const state = newState('user')
-    applyOp(state, setWorkspaceRootNode('w1', 'root1', hlc(1n, 0n, 'a')))
-    applyOp(state, setWorkspaceRootNode('w1', 'root2', hlc(2n, 0n, 'a')))
+    applyOp(state, createWorkspace('w1', 'root1', hlc(1n, 0n, 'a')))
+    applyOp(state, createWorkspace('w1', 'root2', hlc(2n, 0n, 'a')))
     expect(state.workspaces.w1?.rootNodeId).toBe('root1')
   })
 

@@ -187,6 +187,12 @@ export interface UseUserEventsOpts {
    */
   onWorkspaceLifecycleChanged?: () => void
   /**
+   * Called when the user's worker list changed (a worker registered,
+   * deregistered, came online or went offline), and on every bootstrap,
+   * because ResumeDelta does not replay the change. The callback re-fetches the worker list.
+   */
+  onWorkersChanged?: () => void
+  /**
    * Called whenever the hub tells us our effective subscriber identity
    * via `UserMaterialized.subscriber_client_id`. The hub derives this
    * from the authenticated session (or bearer token id) — the active-
@@ -705,6 +711,9 @@ function dispatchEvent(
       // requiring a reconnect.
       opts.onWorkspaceLifecycleChanged?.()
       break
+    case 'workersChanged':
+      opts.onWorkersChanged?.()
+      break
   }
 }
 
@@ -749,6 +758,10 @@ function adoptBootstrapFrame(
   // the sidebar showing a deleted workspace, a stale title, or missing a new
   // one indefinitely.
   opts.onWorkspaceLifecycleChanged?.()
+  // The worker list has the same gap: a worker that registered or deregistered
+  // while this client was disconnected sent its `workersChanged` frame to
+  // nobody, and no bootstrap frame carries it.
+  opts.onWorkersChanged?.()
 }
 
 /**

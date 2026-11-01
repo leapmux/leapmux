@@ -42,8 +42,8 @@
     "read that field and silently no-op without it, so an op missing one would",
     "make a case assert nothing on both sides at once.",
     "",
-    "A case is a pure op log -- no seeded state. Both sides lazily create the",
-    "WorkspaceContentsRecord on SetWorkspaceRootNodeOp, so the log can build a",
+    "A case is a pure op log -- no seeded state. Both sides create the",
+    "WorkspaceContentsRecord on CreateWorkspaceOp, so the log can build a",
     "workspace from nothing.",
     "",
     "'owned' and 'rendered' are both spelled out as full rows rather than",
@@ -58,15 +58,15 @@
       "why": "the baseline every other case varies from",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "M" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "M" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "workerId": "wkr-1" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "workerId": "wkr-1" } }
       ],
       "expect": {
         "owned": [
@@ -82,11 +82,11 @@
       "why": "a tab only renders on a LEAF; on a SPLIT it is the user's tab with nowhere to draw it",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -100,11 +100,11 @@
       "why": "an orphan is not the user's tab in any workspace -- worker reconciliation must not see it either",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "ghost-tile" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "ghost-tile" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -113,13 +113,13 @@
       "why": "remove is terminal; a closed tab is not owned",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "tombstoneTab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" } }
+          "tombstoneTab": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" } } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -128,7 +128,7 @@
       "why": "the chain dies at the tombstone, so the tab can no longer reach a root",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -140,7 +140,7 @@
         { "canonicalHlc": { "physical": "3", "logical": "3", "clientId": "a" },
           "setNodeRegister": { "nodeId": "sibling", "parentId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "child" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "child" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "child" } }
       ],
@@ -151,15 +151,15 @@
       "why": "clock ties are broken by the logical counter before anything else",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "9", "logical": "1", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "WINNER" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "WINNER" } },
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "loser" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "loser" } }
       ],
       "expect": {
         "owned": [
@@ -175,15 +175,15 @@
       "why": "the last tie-break is pure convention -- the easiest thing to implement backwards on one side, and invisible until two clients race",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "9", "logical": "9", "clientId": "zzz" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "WINNER" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "WINNER" } },
         { "canonicalHlc": { "physical": "9", "logical": "9", "clientId": "aaa" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "loser" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "loser" } }
       ],
       "expect": {
         "owned": [
@@ -199,15 +199,15 @@
       "why": "the tombstone is not an LWW register -- a higher-HLC write after it is dropped, which is why a cross-workspace move must never be tombstone-then-re-add",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "tombstoneTab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" } },
+          "tombstoneTab": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" } } },
         { "canonicalHlc": { "physical": "99", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -216,15 +216,15 @@
       "why": "same op set as the LWW-logical case, shuffled -- a merge that depends on arrival order diverges between a client replaying a journal and a hub applying a batch",
       "ops": [
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "loser" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "loser" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "9", "logical": "1", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "WINNER" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "WINNER" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } }
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -240,7 +240,7 @@
       "why": "both sides report the RAW tile_id, which is the only id validateTabPlacement accepts as a write target, so a tab under a collapsed SPLIT must still name childA. This pins the tab rows only -- it cannot see the render tree's collapse relabelling, which is out of scope here and guarded by project.test.ts instead.",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -256,7 +256,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "2", "clientId": "a" },
           "setNodeRegister": { "nodeId": "childB", "position": "V" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "childA" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "childA" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "childB" } }
       ],
@@ -274,7 +274,7 @@
       "why": "a floating-window root is the second kind of registered root; a side that forgets it drops every popped-out tab",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -284,7 +284,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwRoot" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwRoot" } }
       ],
       "expect": {
         "owned": [
@@ -300,7 +300,7 @@
       "why": "a dead window stops contributing a root, so its tabs stop resolving -- the inverse of the case above, and the guard against a stale root set",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -310,7 +310,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwRoot" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwRoot" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "tombstoneFloatingWindow": { "windowId": "fw1" } }
       ],
@@ -321,9 +321,9 @@
       "why": "parent_id is creation-only on both sides. If one side honoured a re-parent, a tab would silently change workspace on that client only",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "rootA" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "rootA" } },
         { "canonicalHlc": { "physical": "1", "logical": "1", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w2", "rootNodeId": "rootB" } },
+          "createWorkspace": { "workspaceId": "w2", "rootNodeId": "rootB" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootA", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "2", "logical": "1", "clientId": "a" },
@@ -335,7 +335,7 @@
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "leaf", "parentId": "rootB" } },
         { "canonicalHlc": { "physical": "10", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leaf" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leaf" } }
       ],
       "expect": {
         "owned": [
@@ -351,7 +351,7 @@
       "why": "the node tombstone is not an LWW register either; a side that treated it as one would resurrect closed tiles",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -359,7 +359,7 @@
         { "canonicalHlc": { "physical": "3", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "leaf", "parentId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leaf" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leaf" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "leaf" } },
         { "canonicalHlc": { "physical": "99", "logical": "0", "clientId": "a" },
@@ -372,7 +372,7 @@
       "why": "TombstoneNode for a never-seen id creates a dead record on purpose, so an op log replayed out of order cannot create the node afterwards",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -382,7 +382,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "leaf", "parentId": "root" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leaf" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leaf" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -391,7 +391,7 @@
       "why": "kind drives whether a tab renders at all, so a tie-break difference shows up as a tab that is visible on one client and not the other",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
@@ -399,7 +399,7 @@
         { "canonicalHlc": { "physical": "7", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_GRID" } },
         { "canonicalHlc": { "physical": "10", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -415,13 +415,13 @@
       "why": "NODE_KIND_UNSPECIFIED is the zero value, so a node created by a parent_id write alone must not render tabs -- a side that treated 'not SPLIT' as 'leaf' would differ here",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "kindless", "parentId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "kindless" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "kindless" } }
       ],
       "expect": {
         "owned": [
@@ -435,13 +435,13 @@
       "why": "the walk runs out of chain rather than reaching a registered root; a side that treated 'no parent' as 'is a root' would leak orphans into both views",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "stray", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "stray" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "stray" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -450,7 +450,7 @@
       "why": "both walks carry a visited set. Without one this is an infinite loop, not a wrong answer -- the fixture pins that the cycle resolves to 'no workspace'",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -462,7 +462,7 @@
         { "canonicalHlc": { "physical": "3", "logical": "3", "clientId": "a" },
           "setNodeRegister": { "nodeId": "cycleB", "parentId": "cycleA" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "cycleA" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "cycleA" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -471,7 +471,7 @@
       "why": "the degenerate one-node case of the walk guard; parent_id is set-once so this state is reachable and must terminate",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -479,7 +479,7 @@
         { "canonicalHlc": { "physical": "3", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "selfie", "parentId": "selfie" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "selfie" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "selfie" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -488,7 +488,7 @@
       "why": "the walk is recursive on both sides; a depth limit or an off-by-one would only show below the surface",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -504,7 +504,7 @@
         { "canonicalHlc": { "physical": "5", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "lvl3", "parentId": "lvl2" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "lvl3" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "lvl3" } }
       ],
       "expect": {
         "owned": [
@@ -520,11 +520,11 @@
       "why": "the same answer a tombstoned NON-root tile gets. The roots map is consulted before the tombstone check, so reaching a root short-circuits the walk -- ownership therefore has to test chain liveness itself, or the same dead tile gives two different answers depending on whether it happens to be a root",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "root" } }
       ],
@@ -535,7 +535,7 @@
       "why": "each register carries its own HLC. A side that stamped one clock per RECORD would let a tile move clobber a concurrent rename, and the loss would be silent",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -547,11 +547,11 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "leafB", "parentId": "root" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leafA" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leafA" } },
         { "canonicalHlc": { "physical": "20", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "KEPT" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "KEPT" } },
         { "canonicalHlc": { "physical": "30", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leafB" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leafB" } }
       ],
       "expect": {
         "owned": [
@@ -567,13 +567,13 @@
       "why": "tab_type is immutable on the record, so a mismatched op is defence-in-depth behind the validator. The op is discarded ENTIRELY -- its payload must not land under the original type",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "position": "SHOULD-NOT-LAND" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "position": "SHOULD-NOT-LAND" } }
       ],
       "expect": {
         "owned": [
@@ -589,15 +589,15 @@
       "why": "worker_id is what a close RPC is addressed to, so the wrong winner sends the request to a worker that never had the tab",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "workerId": "wkr-new" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "workerId": "wkr-new" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "workerId": "wkr-old" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "workerId": "wkr-old" } }
       ],
       "expect": {
         "owned": [
@@ -613,11 +613,11 @@
       "why": "the empty tile short-circuits before the walk. A side that treated '' as 'look it up anyway' would either crash or match a node named ''",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "workerId": "wkr-1" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "workerId": "wkr-1" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -626,17 +626,17 @@
       "why": "a second root assignment is ignored, so a replayed or duplicated create batch cannot silently re-home a whole workspace's tabs",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "firstRoot" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "firstRoot" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "secondRoot" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "secondRoot" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "firstRoot", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "secondRoot", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "onFirst", "tileId": "firstRoot" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "onFirst" }, "tileId": "firstRoot" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "onSecond", "tileId": "secondRoot" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "onSecond" }, "tileId": "secondRoot" } }
       ],
       "expect": {
         "owned": [
@@ -648,15 +648,15 @@
       }
     },
     {
-      "name": "a workspace registered but never rooted claims nothing",
-      "why": "an empty root_node_id is not registered as a root, so its tabs never resolve -- the state a workspace sits in between its register op and its root op",
+      "name": "a workspace created without a root claims nothing",
+      "why": "an empty root_node_id is not registered as a root, so its tabs never resolve -- the state a record holds when the create op that made it carried no root",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRegister": { "workspaceId": "w1" } },
+          "createWorkspace": { "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -665,11 +665,11 @@
       "why": "the record is deleted outright, so the root deregisters and every tab under it stops resolving. Worker reconciliation reads OwnedTabs, so a side that kept them would keep the agents running",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
           "tombstoneWorkspace": { "workspaceId": "w1" } }
       ],
@@ -680,17 +680,17 @@
       "why": "a tab's workspace is DERIVED from its tile's chain, never stored. This is the whole cross-workspace move: one tile_id write, and both sides must agree the tab changed hands",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "rootA" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "rootA" } },
         { "canonicalHlc": { "physical": "1", "logical": "1", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w2", "rootNodeId": "rootB" } },
+          "createWorkspace": { "workspaceId": "w2", "rootNodeId": "rootB" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootA", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "2", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootB", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "rootA" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "rootA" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "rootB" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "rootB" } }
       ],
       "expect": {
         "owned": [
@@ -706,17 +706,17 @@
       "why": "the projection is user-wide and both workspaces are live at once; a side that scoped resolution to one workspace would drop the other's tabs",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "rootA" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "rootA" } },
         { "canonicalHlc": { "physical": "1", "logical": "1", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w2", "rootNodeId": "rootB" } },
+          "createWorkspace": { "workspaceId": "w2", "rootNodeId": "rootB" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootA", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "2", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootB", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "inOne", "tileId": "rootA" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "inOne" }, "tileId": "rootA" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "inTwo", "tileId": "rootB" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "inTwo" }, "tileId": "rootB" } }
       ],
       "expect": {
         "owned": [
@@ -734,7 +734,7 @@
       "why": "grid cells are ordinary leaves under a GRID parent. Only the cell is a valid tab anchor, and a side that let the GRID node hold tabs would render them nowhere",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "grid" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "grid" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "grid", "kind": "NODE_KIND_GRID" } },
         { "canonicalHlc": { "physical": "2", "logical": "1", "clientId": "a" },
@@ -748,9 +748,9 @@
         { "canonicalHlc": { "physical": "3", "logical": "2", "clientId": "a" },
           "setNodeRegister": { "nodeId": "cell00", "position": "0,0" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "inCell", "tileId": "cell00" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "inCell" }, "tileId": "cell00" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "onGrid", "tileId": "grid" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "onGrid" }, "tileId": "grid" } }
       ],
       "expect": {
         "owned": [
@@ -767,7 +767,7 @@
       "why": "a window cannot be re-rooted, so a duplicated create op cannot silently move a whole popped-out subtree. The second root never registers, and tabs anchored to it resolve nowhere",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -781,9 +781,9 @@
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "7", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "onFirst", "tileId": "fwFirst" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "onFirst" }, "tileId": "fwFirst" } },
         { "canonicalHlc": { "physical": "8", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "onSecond", "tileId": "fwSecond" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "onSecond" }, "tileId": "fwSecond" } }
       ],
       "expect": {
         "owned": [
@@ -799,9 +799,9 @@
       "why": "dragging a popped-out window to another workspace is one register write; the tabs inside it change hands without any tab op at all",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "rootA" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "rootA" } },
         { "canonicalHlc": { "physical": "1", "logical": "1", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w2", "rootNodeId": "rootB" } },
+          "createWorkspace": { "workspaceId": "w2", "rootNodeId": "rootB" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "rootA", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "2", "logical": "1", "clientId": "a" },
@@ -815,7 +815,7 @@
         { "canonicalHlc": { "physical": "9", "logical": "0", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w2" } },
         { "canonicalHlc": { "physical": "10", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwRoot" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwRoot" } }
       ],
       "expect": {
         "owned": [
@@ -831,7 +831,7 @@
       "why": "same rule as tabs and nodes, on the third record kind. A side that let a geometry op resurrect a closed window would re-register its root and bring back tabs the user closed with it",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -841,7 +841,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwRoot" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwRoot" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "tombstoneFloatingWindow": { "windowId": "fw1" } },
         { "canonicalHlc": { "physical": "99", "logical": "0", "clientId": "a" },
@@ -854,7 +854,7 @@
       "why": "its root registers with an empty workspace, and an empty workspace id is not ownership -- the window's tabs fall out of both views rather than landing in a workspace named ''",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -862,7 +862,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "rootNodeId": "fwRoot" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwRoot" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwRoot" } }
       ],
       "expect": { "owned": [], "rendered": [] }
     },
@@ -871,7 +871,7 @@
       "why": "a popped-out pane can be split, so the chain has to terminate at the WINDOW root rather than the workspace root. A side that only walked to workspace roots would drop every tab in a split floating window",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -889,7 +889,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1", "tileId": "fwLeafA" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "t1" }, "tileId": "fwLeafA" } }
       ],
       "expect": {
         "owned": [
@@ -905,7 +905,7 @@
       "why": "a window carries its own workspace_id and registers its root from the window RECORD, so deleting the WorkspaceContentsRecord used to leave its tabs resolving to a workspace the projection no longer contains -- reported as on-screen with nothing to draw them in, since the client's tree drops such a window. Ownership now requires the workspace to still exist",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -915,9 +915,9 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setFloatingWindowRegister": { "windowId": "fw1", "workspaceId": "w1" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "inMain", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "inMain" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "inWindow", "tileId": "fwRoot" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "inWindow" }, "tileId": "fwRoot" } },
         { "canonicalHlc": { "physical": "7", "logical": "0", "clientId": "a" },
           "tombstoneWorkspace": { "workspaceId": "w1" } }
       ],
@@ -928,7 +928,7 @@
       "why": "distinct from the tile's own tombstone: here the leaf is perfectly alive and only a node above it died. The walk must fail at the dead ancestor rather than skipping past it to the root",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_SPLIT" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
@@ -940,7 +940,7 @@
         { "canonicalHlc": { "physical": "4", "logical": "1", "clientId": "a" },
           "setNodeRegister": { "nodeId": "leaf", "parentId": "mid" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "leaf" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "leaf" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "mid" } }
       ],
@@ -951,19 +951,19 @@
       "why": "FILE is the third TabType and carries registers the projection never reads (display_mode, file_view_mode, file_diff_base). Those must not change how it resolves, and the type must survive to the row",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_FILE", "tabId": "f1", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_FILE", "tabId": "f1" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_FILE", "tabId": "f1", "displayMode": 2 } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_FILE", "tabId": "f1" }, "displayMode": 2 } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_FILE", "tabId": "f1", "fileViewMode": 1 } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_FILE", "tabId": "f1" }, "fileViewMode": 1 } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_FILE", "tabId": "f1", "fileDiffBase": "HEAD" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_FILE", "tabId": "f1" }, "fileDiffBase": "HEAD" } },
         { "canonicalHlc": { "physical": "7", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_FILE", "tabId": "f1", "position": "M" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_FILE", "tabId": "f1" }, "position": "M" } }
       ],
       "expect": {
         "owned": [
@@ -981,7 +981,7 @@
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
           "tombstoneNode": { "nodeId": "childB" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "childA" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "childA" } },
         { "canonicalHlc": { "physical": "4", "logical": "2", "clientId": "a" },
           "setNodeRegister": { "nodeId": "childB", "position": "V" } },
         { "canonicalHlc": { "physical": "3", "logical": "1", "clientId": "a" },
@@ -997,7 +997,7 @@
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "childA", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } }
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -1013,17 +1013,17 @@
       "why": "the arrays are compared positionally by every consumer. Includes a non-ASCII id on purpose: Go orders strings bytewise (UTF-8), JS by UTF-16 code unit, and the two diverge above the BMP. Today's ids are ASCII nanoids so it cannot bite -- this pins that assumption somewhere it will be seen if it ever stops holding.",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "zebra", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "zebra" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "Apple", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "Apple" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "mango", "tileId": "root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_TERMINAL", "tabId": "mango" }, "tileId": "root" } },
         { "canonicalHlc": { "physical": "6", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "éclair", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "éclair" }, "tileId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -1045,9 +1045,9 @@
       "why": "the root is registered but its SetNodeRegister has not landed yet. Absent is not tombstoned -- the root is registered, its record simply has not materialised -- so the tab is owned. It is NOT rendered, because tileIsLeaf needs the record. Both sides already agreed on this pairing; it is here to keep the absent-root rule from being quietly narrowed on one side, not because they once differed.",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -1061,13 +1061,13 @@
       "why": "the walk must STOP at a registered root. Go's chainAlive kept climbing past it to parent_id == \"\", so a missing or tombstoned node ABOVE a root killed the chain on that side only. A registered root is by definition the top of the workspace's tree; whatever sits above it is irrelevant.",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "root", "parentId": "ghost" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "root" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "root" } }
       ],
       "expect": {
         "owned": [
@@ -1083,15 +1083,15 @@
       "why": "A root-node collision is representable in speculative state and in this harness, which applies ops with no validator. Go ranges a map and TS ranges an object, so \"whichever came last\" is not an answer the two share -- and neither is insertion order, since these records arrive over the wire where protobuf leaves map ordering unspecified. Both sides therefore sort workspace ids and let the FIRST claim win, so w1 beats w2 regardless of the order the ops arrived in. The generated corpus cannot certify this class at all, because it RECORDS one side's answer.",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w2", "rootNodeId": "shared-root" } },
+          "createWorkspace": { "workspaceId": "w2", "rootNodeId": "shared-root" } },
         { "canonicalHlc": { "physical": "2", "logical": "0", "clientId": "a" },
-          "setWorkspaceRootNode": { "workspaceId": "w1", "rootNodeId": "shared-root" } },
+          "createWorkspace": { "workspaceId": "w1", "rootNodeId": "shared-root" } },
         { "canonicalHlc": { "physical": "3", "logical": "0", "clientId": "a" },
           "setNodeRegister": { "nodeId": "shared-root", "kind": "NODE_KIND_LEAF" } },
         { "canonicalHlc": { "physical": "4", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "tileId": "shared-root" } },
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "tileId": "shared-root" } },
         { "canonicalHlc": { "physical": "5", "logical": "0", "clientId": "a" },
-          "setTabRegister": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1", "position": "m" } }
+          "setTabRegister": { "tab": { "tabType": "TAB_TYPE_AGENT", "tabId": "t1" }, "position": "m" } }
       ],
       "expect": {
         "owned": [

@@ -2,16 +2,28 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
-import "leapmux/v1/settings.proto";
+import "leapmux/v1/access.proto";
 import "leapmux/v1/auth.proto";
+import "leapmux/v1/common.proto";
+import "leapmux/v1/settings.proto";
 
 // UserService manages user profile and preferences.
 // Called by Frontend on Hub via ConnectRPC.
+//
+// The methods whose access is SCOPE_NEVER are the account's authenticators
+// and credentials, refused to every app: each of them ADDS a factor,
+// ENUMERATES the account's factors, or ends ANOTHER app's connection. See
+// SCOPE_NEVER in scope.proto.
 service UserService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Update the current user's profile (username and display name only).
-  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_WRITE };
+  }
   // Request an email address change. May require verification.
-  rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse);
+  rpc RequestEmailChange(RequestEmailChangeRequest) returns (RequestEmailChangeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // Verify a pending email — the same RPC handles both signup verification
   // and email-change verification. Authenticated; the session user must own
   // the pending email row identified by `verification_token`. The token is
@@ -19,7 +31,9 @@ service UserService {
   // received in their verification email. Captcha-protected like the
   // anonymous credential RPCs: the wrong-guess budget is free to charge,
   // so automation must pre-pay here too.
-  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // Re-issue the verification email for the current user's pending
   // address. Authenticated; requires a pending verification to exist
   // (FailedPrecondition otherwise). The RPC invalidates the previous code
@@ -27,28 +41,45 @@ service UserService {
   // this when the original mail was lost or never arrived.
   // Captcha-protected: every attempt drives an SMTP send toward the
   // cooldown gate, so automation must pre-pay here too.
-  rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse);
+  rpc ResendVerificationEmail(ResendVerificationEmailRequest) returns (ResendVerificationEmailResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // Change the current user's password. Requires an elevated session,
   // except on an account that has neither a password nor a passkey -- that
   // account has nothing to elevate WITH, so it falls to the
   // first-credential rule instead (a recent sign-in plus a durable
   // identity).
-  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  //
+  // Changes a factor the account ALREADY has, and separately demands proof
+  // of it: the handler refuses an un-elevated credential, and an app's
+  // elevation needs oauth_clients.elevation_allowed, which is off for every
+  // app somebody registers. That is why it takes a scope rather than
+  // SCOPE_NEVER, and it is what keeps the built-in control CLI able to
+  // change the password.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_WRITE };
+  }
   // Unlink an OAuth provider from the current user's account.
-  rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse);
+  rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // List the current user's account settings: one descriptor per declared
   // key plus its stored value. Same shape as AdminSettingsService's
   // hub-scope listing, so one client widget layer renders both.
-  rpc ListUserSettings(ListUserSettingsRequest) returns (ListUserSettingsResponse);
+  rpc ListUserSettings(ListUserSettingsRequest) returns (ListUserSettingsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_READ };
+  }
   // Merge a partial JSON document onto ONE account setting's current
   // value. Per-key (not whole-blob) so two devices editing different
   // settings never overwrite each other.
-  rpc UpdateUserSetting(UpdateUserSettingRequest) returns (UpdateUserSettingResponse);
+  rpc UpdateUserSetting(UpdateUserSettingRequest) returns (UpdateUserSettingResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_WRITE };
+  }
   // Remove one account setting's stored value, returning it to its
   // default.
-  rpc ResetUserSetting(ResetUserSettingRequest) returns (ResetUserSettingResponse);
-  // Get the current timeout configuration.
-  rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse);
+  rpc ResetUserSetting(ResetUserSettingRequest) returns (ResetUserSettingResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_WRITE };
+  }
   // Session elevation ("sudo mode"). One proven factor admits every
   // sensitive action for a window, and each successful action slides that
   // window forward, so an uninterrupted work session answers one prompt.
@@ -63,18 +94,42 @@ service UserService {
   // serve only one RPC.) An OAuth-only account elevates through the OAuth
   // re-authentication stage at /auth/idp/<provider>/reauth, which is a
   // browser redirect rather than an RPC.
-  rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse);
-  rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse);
-  rpc FinishPasskeyElevation(FinishPasskeyElevationRequest) returns (FinishPasskeyElevationResponse);
+  //
+  // The SESSION step-up ceremony. An app credential holds no session and
+  // elevates through /oauth/step-up, which is the browser stage the
+  // elevation_allowed flag governs.
+  rpc ElevateSession(ElevateSessionRequest) returns (ElevateSessionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc BeginPasskeyElevation(BeginPasskeyElevationRequest) returns (BeginPasskeyElevationResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc FinishPasskeyElevation(FinishPasskeyElevationRequest) returns (FinishPasskeyElevationResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // End the elevation immediately, without waiting for the window.
-  rpc DropElevation(DropElevationRequest) returns (DropElevationResponse);
+  rpc DropElevation(DropElevationRequest) returns (DropElevationResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // Passkey management
-  rpc BeginPasskeyRegistration(BeginPasskeyRegistrationRequest) returns (BeginPasskeyRegistrationResponse);
-  rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (FinishPasskeyRegistrationResponse);
-  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
-  rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse);
-  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
-  rpc DeactivatePasskeyAuth(DeactivatePasskeyAuthRequest) returns (DeactivatePasskeyAuthResponse);
+  rpc BeginPasskeyRegistration(BeginPasskeyRegistrationRequest) returns (BeginPasskeyRegistrationResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (FinishPasskeyRegistrationResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  rpc DeactivatePasskeyAuth(DeactivatePasskeyAuthRequest) returns (DeactivatePasskeyAuthResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
   // The caller's own CONNECTIONS: which apps hold access to this account, and
   // how to end that access.
   //
@@ -88,9 +143,25 @@ service UserService {
   // NONE requires an elevated session, deliberately. Listing returns metadata
   // only, and both endings can only REDUCE access -- demanding a fresh factor
   // from somebody who believes a token is stolen is the wrong failure mode.
-  rpc ListMyAPITokens(ListMyAPITokensRequest) returns (ListMyAPITokensResponse);
-  rpc DisconnectApp(DisconnectAppRequest) returns (DisconnectAppResponse);
-  rpc RevokeMyAPIToken(RevokeMyAPITokenRequest) returns (RevokeMyAPITokenResponse);
+  //
+  // A READ of this account's own connection list, disclosing no secret. It
+  // is what `leapmux control auth credentials` prints, and reading which
+  // apps you connected is something the account owner can already do.
+  rpc ListMyAPITokens(ListMyAPITokensRequest) returns (ListMyAPITokensResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_READ };
+  }
+  // The same refusal one level up: DisconnectApp ends EVERY credential the
+  // account holds for one app, so an app that reached it could retire a
+  // rival on its owner's behalf.
+  rpc DisconnectApp(DisconnectAppRequest) returns (DisconnectAppResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
+  // Ends a credential the caller may not hold. An app disconnects ITSELF
+  // through /oauth/revoke, which needs no scope because it presents the
+  // token it revokes.
+  rpc RevokeMyAPIToken(RevokeMyAPITokenRequest) returns (RevokeMyAPITokenResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_NEVER };
+  }
 }
 
 message UpdateProfileRequest {
@@ -99,10 +170,11 @@ message UpdateProfileRequest {
 }
 
 message UpdateProfileResponse {
-  string username = 1;
-  string display_name = 2;
-  string email = 3;
-  string pending_email = 4;
+  // The STORED account after the update, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser. It never carries an elevation, so
+  // the reply cannot restore an elevation the user ended.
+  User user = 1;
 }
 
 message RequestEmailChangeRequest {
@@ -115,29 +187,24 @@ message RequestEmailChangeResponse {
 
 message VerifyEmailRequest {
   string verification_token = 1;
-  // Provider token; see LoginRequest.captcha_payload.
-  string captcha_payload = 2;
-  // Hidden anti-bot field value; see LoginRequest.honeypot.
-  string honeypot = 3;
+  CaptchaProof captcha = 2;
 }
 
 message VerifyEmailResponse {
+  // The complete projection, as on UpdateProfileResponse; absent = re-read.
   User user = 1;
+  EmailVerificationStatus email_verification = 2;
 }
 
 message ResendVerificationEmailRequest {
-  // Provider token; see LoginRequest.captcha_payload.
-  string captcha_payload = 1;
-  // Hidden anti-bot field value; see LoginRequest.honeypot.
-  string honeypot = 2;
+  CaptchaProof captcha = 1;
 }
 
 message ResendVerificationEmailResponse {
-  // True iff the hub sent the verification email successfully. False
-  // means the hub refreshed the row but the mail backend failed; the
-  // frontend should surface a "couldn't send, try again" message.
-  bool email_sent = 1;
-  google.protobuf.Timestamp next_resend_available_at = 2;
+  // verification_email_sent is false when the hub refreshed the row but the
+  // mail backend failed; the frontend should surface a "couldn't send, try
+  // again" message.
+  EmailVerificationStatus email_verification = 1;
 }
 
 message ChangePasswordRequest {
@@ -176,25 +243,15 @@ message ResetUserSettingResponse {
   SettingValue value = 1;
 }
 
-message GetTimeoutsRequest {}
-
-message GetTimeoutsResponse {
-  int32 api_timeout_seconds = 1;
-  int32 agent_startup_timeout_seconds = 2;
-  int32 worktree_create_timeout_seconds = 3;
-}
-
 message BeginPasskeyRegistrationRequest {}
 
 message BeginPasskeyRegistrationResponse {
-  string session_id = 1;
-  string options_json = 2;
+  WebAuthnChallenge challenge = 1;
 }
 
 message FinishPasskeyRegistrationRequest {
-  string session_id = 1;
-  string credential_json = 2;
-  string friendly_name = 3;
+  WebAuthnCredential credential = 1;
+  string friendly_name = 2;
 }
 
 message FinishPasskeyRegistrationResponse {
@@ -218,13 +275,11 @@ message ElevateSessionResponse {
 message BeginPasskeyElevationRequest {}
 
 message BeginPasskeyElevationResponse {
-  string session_id = 1;
-  string options_json = 2;
+  WebAuthnChallenge challenge = 1;
 }
 
 message FinishPasskeyElevationRequest {
-  string session_id = 1;
-  string credential_json = 2;
+  WebAuthnCredential credential = 1;
 }
 
 message FinishPasskeyElevationResponse {
@@ -328,13 +383,12 @@ message MyAPIToken {
 }
 
 message ListMyAPITokensRequest {
-  int64 limit = 1;
-  string cursor = 2;
+  PageRequest page = 1;
 }
 
 message ListMyAPITokensResponse {
   repeated MyAPIToken tokens = 1;
-  string next_cursor = 2;
+  PageResponse page = 2;
 }
 
 message RevokeMyAPITokenRequest {

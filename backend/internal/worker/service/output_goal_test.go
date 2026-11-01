@@ -192,7 +192,7 @@ func TestGoalUnknownProcessExitAndReplayDeriveDormantWithoutAWrite(t *testing.T)
 	require.NotNil(t, snapshot.Goal)
 	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT, snapshot.Goal.GetStatus())
 	assert.Empty(t, snapshot.Goal.GetStatusDetail())
-	var projected *leapmuxv1.AgentGoalChanged
+	var projected *leapmuxv1.AgentGoalSnapshot
 	for _, event := range decodeAgentEvents(writer.testResponseWriter) {
 		if event.GetGoalChanged() != nil {
 			projected = event.GetGoalChanged()
@@ -204,10 +204,10 @@ func TestGoalUnknownProcessExitAndReplayDeriveDormantWithoutAWrite(t *testing.T)
 	replayed := &replayIdentityWriter{testResponseWriter: &testResponseWriter{channelID: "unknown-goal-replay"}}
 	openReplayIdentityWatch(t, dispatcher, &leapmuxv1.WatchEventsRequest{UpdateId: 71, Agents: []*leapmuxv1.WatchAgentEntry{replayOriginEntry(before.ID, 71)}}, replayed)
 	require.Eventually(t, func() bool { return countCatchUpCompletes(replayed.testResponseWriter) == 1 }, 30*time.Second, time.Millisecond)
-	var replayGoal *leapmuxv1.AgentGoalChanged
+	var replayGoal *leapmuxv1.AgentGoalSnapshot
 	for _, event := range decodeAgentEvents(replayed.testResponseWriter) {
 		if event.GetGoalChanged() != nil {
-			assert.Equal(t, before.ID, readReplayOrigin(event))
+			assert.Equal(t, before.ID, event.GetReplay().GetAgentId())
 			replayGoal = event.GetGoalChanged()
 		}
 	}
@@ -487,7 +487,7 @@ func TestGoal_ChangedEventCarriesTheGoalAndItsStamp(t *testing.T) {
 	event := GoalChangedEvent(agentID, stored, svc.Output.SupportedGoalActions(agentID))
 	changed := event.GetGoalChanged()
 	require.NotNil(t, changed)
-	assert.Equal(t, agentID, changed.GetAgentId())
+	assert.Equal(t, agentID, event.GetAgentId())
 	assert.Equal(t, "Ship it", changed.GetGoal().GetObjective())
 	assert.Equal(t, stored.UpdatedAt, changed.GetGoalUpdatedAt())
 	assert.NotEmpty(t, changed.GetGoalUpdatedAt())
@@ -545,8 +545,7 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 
 	// Require serialization of the complete response that carries the projection.
 	_, marshalErr := proto.Marshal(&leapmuxv1.ListAgentMessagesResponse{
-		Goal:       loaded.Goal,
-		GoalLoaded: true,
+		Goal: loaded.Proto(nil),
 	})
 	assert.NoError(t, marshalErr, "one bad byte would fail the entire message page")
 }

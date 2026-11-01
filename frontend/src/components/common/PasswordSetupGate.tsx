@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { SignInOutcome } from '~/context/AuthContext'
 import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -46,24 +47,31 @@ export const PasswordSetupGate: Component = () => {
       return
     setBusy(true)
     setMessage(null)
+    let outcome: SignInOutcome
     try {
       const response = await authClient.setInitialSoloPassword({
         password: password(),
       })
-      if (!response.user)
-        throw new Error('The hub returned no solo user')
-      // The elevation travels WITH the reply. The transaction that stored the
-      // password created this session and elevated it, so the deadline is
-      // known here and needs no second round trip. `setAuth` clears the
-      // elevation on its own, which is right for every other caller and wrong
-      // for this one.
-      await auth.setAuth(response.user, response.elevationExpiresAt)
+      // The elevation travels WITH the reply's report. The transaction that
+      // stored the password created this session and elevated it, so the
+      // deadline is known here and needs no second round trip; `setAuth`
+      // adopts it after it clears the previous identity's.
+      outcome = await auth.setAuth(response.sessionReport)
     }
     catch (e) {
       setMessage({
         type: 'error',
         text: formatErrorMessage(e, 'Failed to set the password'),
       })
+      setBusy(false)
+      return
+    }
+    // The password is stored either way. A report with no account recovers,
+    // and SignInRecoveryGate has replaced this screen; a superseded adoption
+    // belongs to the newer operation. Only an adopted account continues here.
+    // The form becomes usable again, because a superseded adoption can leave
+    // this gate on screen, and the finally below is not reached from here.
+    if (outcome !== 'adopted') {
       setBusy(false)
       return
     }

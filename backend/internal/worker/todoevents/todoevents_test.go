@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -162,4 +163,37 @@ func TestMergeAndSnapshotCarryTheirRowsApart(t *testing.T) {
 func TestEventKind_HasNoVariantWithoutAProducer(t *testing.T) {
 	assert.Equal(t, EventKind(3), KindDetail)
 	assert.Equal(t, EventKind(4), KindMerge)
+}
+
+// --- SnapshotToProto -------------------------------------------------
+
+// A snapshot is the whole list, so it carries every row in order, with each
+// field the client renders.
+func TestSnapshotToProto(t *testing.T) {
+	snapshot := SnapshotToProto([]Item{
+		{ID: "1", Content: "Write the parser", Status: StatusInProgress, ActiveForm: "Writing the parser", Description: "d"},
+		{ID: "2", Content: "Ship it", Status: StatusPending},
+	})
+	require.NotNil(t, snapshot)
+	require.Len(t, snapshot.GetTodos(), 2)
+	first := snapshot.GetTodos()[0]
+	assert.Equal(t, "1", first.GetId())
+	assert.Equal(t, "Write the parser", first.GetContent())
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS, first.GetStatus())
+	assert.Equal(t, "Writing the parser", first.GetActiveForm())
+	assert.Equal(t, "d", first.GetDescription())
+	assert.Equal(t, "2", snapshot.GetTodos()[1].GetId())
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_PENDING, snapshot.GetTodos()[1].GetStatus())
+}
+
+// An empty list is still a snapshot: it tells the client to clear its rows. A
+// nil message would mean that no snapshot was sent at all.
+func TestSnapshotToProtoOfAnEmptyListIsAnEmptySnapshot(t *testing.T) {
+	for name, items := range map[string][]Item{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := SnapshotToProto(items)
+			require.NotNil(t, snapshot)
+			assert.Empty(t, snapshot.GetTodos())
+		})
+	}
 }

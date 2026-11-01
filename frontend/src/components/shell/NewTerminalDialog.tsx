@@ -107,12 +107,11 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       rows: DEFAULT_TERMINAL_ROWS,
       workingDir: worker.workingDir(),
       shell: shell(),
-      workerId: worker.workerId(),
       // The CLEANED title: the worker applies the same rule to whatever
       // arrives, so sending the raw text would show one title here and store
       // another until the next refresh replaced it.
       title: title.cleaned(),
-      ...gitMode.toGitFields(),
+      gitSetup: gitMode.toGitSetup(),
     })
     props.onCreated(resp.terminalId, worker.workerId(), worker.workingDir(), resp.title, {
       seedGitFromActiveTab: gitMode.gitMode() === GitMode.Current,

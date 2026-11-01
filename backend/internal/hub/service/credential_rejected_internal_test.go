@@ -141,7 +141,7 @@ func TestIssueAPIToken_PreservesTheScopeParserCause(t *testing.T) {
 	require.NoError(t, err)
 	svc := &AdminUserService{store: st}
 	_, err = svc.IssueAPIToken(t.Context(), &leapmuxv1.IssueAPITokenRequest{
-		UserId: user.ID, ClientId: "corrupt-app", InstallationName: "test",
+		User: SelectUserByID(user.ID), ClientId: "corrupt-app", InstallationName: "test",
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))

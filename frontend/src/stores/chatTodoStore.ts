@@ -58,7 +58,7 @@ function isJsonValue(value: unknown): value is JsonValue {
 // To-do list slice
 //
 // The latest server-authoritative to-do list per agent (delivered via the
-// cold-start ListAgentMessages page and AgentTodosChanged broadcasts). Wraps the
+// cold-start ListAgentMessages page and todos_changed broadcasts). Wraps the
 // provider-neutral to-do model in a reactive slice; independent of the
 // windowing invariants.
 // ---------------------------------------------------------------------------

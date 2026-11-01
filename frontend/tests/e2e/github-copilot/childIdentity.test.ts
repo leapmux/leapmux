@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test'
 import type { AgentInfo, BackgroundTaskItem } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentInfoSchema, AgentProvider, AgentStatus, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { matchesRequest } from '../helpers/mockModelScript'
 import { startWaitLimitForTests } from '../helpers/testDeadline'
 import { copilotChildTaskId, copilotChildTaskMatcher, readCopilotChildTaskId } from './childIdentity'
@@ -33,7 +33,7 @@ vi.mock('../helpers/nativeSidebarSnapshot', () => ({
   readNativeSidebarSnapshot: async () => {
     native.sidebarReads++
     native.onSidebar?.()
-    return create(ListAgentMessagesResponseSchema, { todosLoaded: true, backgroundTasksLoaded: true, backgroundTasks: native.tasks })
+    return { todos: [], backgroundTasks: native.tasks, goal: undefined }
   },
 }))
 

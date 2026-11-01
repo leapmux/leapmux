@@ -142,12 +142,9 @@ func SeedWorker(t *testing.T, st store.Store, registeredBy string) *store.Worker
 	workerID := id.Generate()
 	token := id.Generate()
 	err := st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       token,
-		RegisteredBy:    userid.MustNew(registeredBy),
-		PublicKey:       []byte{},
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
+		ID:           workerID,
+		AuthToken:    token,
+		RegisteredBy: userid.MustNew(registeredBy),
 	})
 	require.NoError(t, err)
 

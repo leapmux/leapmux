@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -176,7 +178,7 @@ func registerTerminalWatch(svc *Service, channelID, terminalID string, mode leap
 
 // rejections returns every error the handler reported, in whichever
 // shape it used: a unary InnerRpcResponse error for a unary method, or an
-// InnerStreamMessage carrying IsError for a streaming one.
+// InnerStreamMessage carrying an error for a streaming one.
 //
 // A gate rejection means the same thing either way, so a test asserting
 // that a method denies access should not have to know which kind of
@@ -188,8 +190,8 @@ func (w *testResponseWriter) rejections() []testError {
 	defer w.mu.Unlock()
 	out := append([]testError(nil), w.errors...)
 	for _, m := range w.streams {
-		if m.GetIsError() {
-			out = append(out, testError{code: m.GetErrorCode(), message: m.GetErrorMessage()})
+		if m.GetError() != nil {
+			out = append(out, testError{code: m.GetError().GetCode(), message: m.GetError().GetMessage()})
 		}
 	}
 	return out
@@ -421,7 +423,7 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 // does not release the handle.
 func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workingDir string) string {
 	t.Helper()
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: workingDir,
 		// 200 cols rather than 80 so cmd.exe's long t.TempDir-derived
@@ -454,14 +456,14 @@ func sendShellLine(t *testing.T, d *channel.Dispatcher, terminalID string, line 
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		for i := 0; i < len(line); i++ {
-			dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+			dispatch(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
 				TerminalId: terminalID,
 				Data:       []byte{line[i]},
 			}, newTestWriter())
 		}
 		return
 	}
-	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
 		TerminalId: terminalID,
 		Data:       line,
 	}, newTestWriter())
@@ -522,7 +524,14 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 
 // dispatchAs is dispatch with an explicit caller, for the access-control probes
 // that need someone OTHER than the worker's owner.
+//
+// It panics, and so fails the calling test, when the dispatcher holds no
+// handler for the method: the dispatcher would answer Unimplemented, and a test
+// asserting a refusal would then pass for the wrong reason.
 func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+	if !slices.Contains(d.Methods(), method) {
+		panic("dispatch: no handler is registered for " + method)
+	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		panic(err)
@@ -554,7 +563,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify messages are returned when agent is open.
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: "agent-1",
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -567,7 +576,7 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 
 	// Verify empty response for closed agent.
 	w2 := newTestWriter()
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: "agent-1",
 	}, w2)
 	require.Len(t, w2.responses, 1)
@@ -596,7 +605,7 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	// Close one agent.
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-closed")))
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"agent-open", "agent-closed"},
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -629,7 +638,7 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 		ClosedAt:   sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"term-open", "term-closed"},
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -661,7 +670,7 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-closed")))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
 			{AgentId: "agent-closed", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
 		},
@@ -696,7 +705,7 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 		ClosedAt:   sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-closed"}},
 	}, w)
 
@@ -722,7 +731,7 @@ func TestWatchEvents_UnknownAgent_NotWatched(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
 			{AgentId: "agent-unknown", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST},
 		},
@@ -745,7 +754,7 @@ func TestWatchEvents_UnknownTerminal_NotWatched(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-unknown"}},
 	}, w)
 
@@ -777,7 +786,7 @@ func TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers(t *testing.T) {
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{
 			TerminalId: terminalID,
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
@@ -845,7 +854,7 @@ func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{
 			TerminalId: terminalID,
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
@@ -862,7 +871,7 @@ func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
 		return nil, nil
 	}
 	wAgent := newTestWriter()
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, wAgent)
@@ -1017,7 +1026,7 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 	w2 := newTestWriter()
 	// Send the echo marker as a separate input so exitTerminalAndWait
 	// can drive the canonical `exit + enter` flow and wait for IsExited.
-	dispatch(d, "SendInput", &leapmuxv1.SendInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, &leapmuxv1.SendInputRequest{
 		TerminalId: terminalID,
 		Data:       []byte("echo exit_notice_test" + enter),
 	}, w2)
@@ -1077,7 +1086,7 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 		}))
 	}
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}, {AgentId: "agent-2"}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -1129,7 +1138,7 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}
-	dispatch(d, "WatchEvents", req, w)
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, req, w)
 	waitTerminalWatchCount(t, svc, "term-1", 1)
 
 	// Break ONLY the terminal lookup, so the agent half still verifies and
@@ -1183,7 +1192,7 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 	_, err := svc.DB.Exec("DROP TABLE terminals")
 	require.NoError(t, err)
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}, w)
@@ -1227,7 +1236,7 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 		Screen:     []byte("s"),
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}, w)
@@ -1331,8 +1340,8 @@ func TestShutdown_RefusesNewTabs(t *testing.T) {
 		method string
 		req    proto.Message
 	}{
-		{"OpenTerminal", &leapmuxv1.OpenTerminalRequest{WorkingDir: t.TempDir(), Shell: "/bin/zsh"}},
-		{"OpenAgent", &leapmuxv1.OpenAgentRequest{
+		{leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{WorkingDir: t.TempDir(), Shell: "/bin/zsh"}},
+		{leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 			WorkingDir:    t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}},

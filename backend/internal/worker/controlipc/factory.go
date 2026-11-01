@@ -56,6 +56,12 @@ type Factory struct {
 	// instead of leaving the row to expire. nil is allowed (tests) and
 	// disables the revoke-on-close path.
 	Delegation DelegationLifecycle
+
+	// OwnerUsername answers the username Whoami reports for a token's user:
+	// the worker owner's username when the user is the owner, "" otherwise.
+	// It is the worker service's OwnerUsername, read at every Whoami so a
+	// spawned process sees a rename. nil is allowed (tests) and reports "".
+	OwnerUsername func(userid.UserID) string
 }
 
 // HubBridge is the subset of hub-side calls the IPC router needs.
@@ -138,10 +144,11 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 	}
 	router := f.newRouter(sc.UserID)
 	srv, err := Listen(Options{
-		SocketURL: socketURL,
-		Token:     token,
-		TokenInfo: tokenInfo,
-		Router:    router,
+		SocketURL:     socketURL,
+		Token:         token,
+		TokenInfo:     tokenInfo,
+		Router:        router,
+		OwnerUsername: f.OwnerUsername,
 	})
 	if err != nil {
 		return nil, nil, err

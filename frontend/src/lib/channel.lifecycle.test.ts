@@ -1,5 +1,6 @@
 import type { ChannelTransport } from './channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WorkerWatchService } from '../generated/proto/leapmux/v1/watch_pb'
 import { ChannelError, ChannelManager } from './channel'
 import {
   ChannelManagerTestHarness,
@@ -33,7 +34,7 @@ describe('ChannelManager closeChannel', () => {
   it('should end active streams on close', async () => {
     const channelId = await h.openTestChannel('w1')
     const endFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onEnd(endFn)
 
     await h.mgr.closeChannel(channelId)
@@ -118,7 +119,7 @@ describe('ChannelManager close notification', () => {
   it('should error active streams on close notification', async () => {
     const channelId = await h.openTestChannel('w1')
     const errorFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     h.mockWs.simulateMessage(encodeCloseMessage(channelId))
@@ -163,7 +164,7 @@ describe('ChannelManager decrypt failure', () => {
   it('should error active streams on decrypt failure', async () => {
     const channelId = await h.openTestChannel('w1')
     const endFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onEnd(endFn)
 
     const corruptCiphertext = new Uint8Array(32)
@@ -193,7 +194,7 @@ describe('ChannelManager webSocket close', () => {
   it('should error all streams when WebSocket closes', async () => {
     const channelId = await h.openTestChannel('w1')
     const errorFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     h.mockWs.simulateClose()

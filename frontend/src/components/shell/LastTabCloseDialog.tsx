@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { TabBusyReason } from './tabBusyProbe'
+import type { TabType as TabTypeT } from '~/generated/proto/leapmux/v1/common_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
-import type { TabType as TabTypeT } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { PathFlavor } from '~/lib/paths'
 import { createMemo, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
@@ -11,8 +11,8 @@ import { Dialog } from '~/components/common/Dialog'
 import { showWarnToast } from '~/components/common/Toast'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { createLogger } from '~/lib/logger'
 import { flavorFromOs } from '~/lib/paths'
@@ -126,8 +126,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   const refreshStatus = async () => {
     try {
       const updated = await workerRpc.inspectLastTabClose(props.state.workerId, {
-        tabType: props.state.tabType,
-        tabId: props.state.tabId,
+        tab: { tabType: props.state.tabType, tabId: props.state.tabId },
       })
       if (updated.errorHint) {
         showWarnToast(updated.errorHint)

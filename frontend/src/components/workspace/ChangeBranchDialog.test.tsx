@@ -179,7 +179,7 @@ describe('ChangeBranchDialog', () => {
     // re-break this assertion.
     expect(workerRpc.inspectBranchChange).toHaveBeenCalledWith(
       'w1',
-      expect.objectContaining({ path: '/repo', workerId: 'w1' }),
+      { path: '/repo' },
       expect.objectContaining({
         signal: expect.any(AbortSignal),
       }),
@@ -267,7 +267,6 @@ describe('ChangeBranchDialog', () => {
     expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0]?.[1]).toMatchObject({
       path: '/repo',
       branch: 'main',
-      workerId: 'w1',
     })
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalled())
     await waitFor(() => expect(props.onClose).toHaveBeenCalled())
@@ -389,7 +388,7 @@ describe('ChangeBranchDialog', () => {
     expect(screen.getByText('A branch with this name already exists')).toBeInTheDocument()
   })
 
-  it('worktree mode (agent): calls openAgent with createWorktree=true', async () => {
+  it('worktree mode (agent): calls openAgent with a create_worktree setup', async () => {
     vi.mocked(workerRpc.openAgent).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenAgentResponse',
       agent: {
@@ -402,13 +401,23 @@ describe('ChangeBranchDialog', () => {
     const props = renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
+    fireEvent.input(screen.getByPlaceholderText('feature-branch'), {
+      target: { value: 'wt-feature' },
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[0]).toBe('w1')
     expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1]).toMatchObject({
-      createWorktree: true,
-      workerId: 'w1',
       workingDir: '/repo',
+    })
+    // The whole setup, so the typed name and the base branch reach the wire,
+    // not only the mode.
+    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
+      mode: {
+        case: 'createWorktree',
+        value: { branch: 'wt-feature', baseBranch: 'feature' },
+      },
     })
     await waitFor(() => expect(props.onAgentCreated).toHaveBeenCalled())
   })
@@ -474,8 +483,11 @@ describe('ChangeBranchDialog', () => {
 
     fireEvent.click(apply)
     await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[0]).toBe('w1')
     expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[1]).toMatchObject({
-      createWorktree: true,
+      gitSetup: {
+        mode: { case: 'createWorktree' },
+      },
       shell: '/bin/zsh',
     })
     await waitFor(() => expect(props.onTerminalCreated).toHaveBeenCalledWith('t1', 'w1', '/repo', 'bash'))

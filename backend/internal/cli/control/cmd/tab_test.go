@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -42,15 +43,15 @@ func TestSpawnOptions_SeedsPermissionModeWithModelAndEffort(t *testing.T) {
 // bug that motivated the filter in the first place.
 func TestFilterTabsByType_DropsNonMatchingRows(t *testing.T) {
 	in := []*leapmuxv1.WorkspaceTab{
-		{TabId: "a1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-		{TabId: "t1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
-		{TabId: "a2", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-		{TabId: "f1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t1"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a2"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "f1"}},
 	}
 	got := filterTabsByType(in, leapmuxv1.TabType_TAB_TYPE_AGENT)
 	ids := make([]string, 0, len(got))
 	for _, t := range got {
-		ids = append(ids, t.GetTabId())
+		ids = append(ids, t.GetTab().GetTabId())
 	}
 	assert.Equal(t, []string{"a1", "a2"}, ids)
 }
@@ -62,20 +63,20 @@ func TestFilterTabsByType_DropsNonMatchingRows(t *testing.T) {
 // nil/empty special case at the call site.
 func TestFilterTabsByType_UnspecifiedReturnsAll(t *testing.T) {
 	in := []*leapmuxv1.WorkspaceTab{
-		{TabId: "a1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-		{TabId: "t1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a1"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t1"}},
 	}
 	got := filterTabsByType(in, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED)
 	assert.Len(t, got, 2)
-	assert.Equal(t, "a1", got[0].GetTabId())
-	assert.Equal(t, "t1", got[1].GetTabId())
+	assert.Equal(t, "a1", got[0].GetTab().GetTabId())
+	assert.Equal(t, "t1", got[1].GetTab().GetTabId())
 }
 
 // TestFilterTabsByType_NoMatchesYieldsEmpty pins that a filter with no
 // matching rows returns a length-zero slice, not a nil-shaped surprise.
 func TestFilterTabsByType_NoMatchesYieldsEmpty(t *testing.T) {
 	in := []*leapmuxv1.WorkspaceTab{
-		{TabId: "t1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t1"}},
 	}
 	got := filterTabsByType(in, leapmuxv1.TabType_TAB_TYPE_AGENT)
 	assert.Empty(t, got)
@@ -474,7 +475,7 @@ func TestParseTabCloseWorktree_RejectsUnknown(t *testing.T) {
 }
 
 // TestTabCloseWorktree_WorktreeAction maps each parsed choice to the
-// CloseAgent/CloseTerminal WorktreeAction enum. push collapses to KEEP
+// CloseTab WorktreeAction enum. push collapses to KEEP
 // because the push side-effect ran before close — the worktree stays.
 func TestTabCloseWorktree_WorktreeAction(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, closeWorktreeUnspecified.worktreeAction())
@@ -589,12 +590,12 @@ func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 	d.mu.Unlock()
 	var reply proto.Message
 	switch req.GetMethod() {
-	case "InspectLastTabClose":
+	case leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure:
 		reply = d.inspect
-	case "ListAgents":
+	case leapmuxv1connect.WorkerAgentServiceListAgentsProcedure:
 		// The busy gate's agent branch. Empty (an idle agent) unless a test arms it.
 		reply = &leapmuxv1.ListAgentsResponse{Agents: d.agents}
-	case "InspectTerminalProcesses":
+	case leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure:
 		reply = &leapmuxv1.InspectTerminalProcessesResponse{Terminals: d.terminals}
 	default:
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
@@ -622,7 +623,7 @@ func (d *closeDispatcher) called() []string {
 // The removal runs after the tab is gone, so a refusal that arrives afterwards
 // reaches a command that already reported success and a tab that is already
 // destroyed. Only the ORDER prevents that, and only an end-to-end run can see
-// it: the CRDT tombstone (SubmitOps) and the worker teardown (CloseAgent) must
+// it: the CRDT tombstone (SubmitOps) and the worker teardown (CloseTab) must
 // both be absent from what the command issued.
 func TestRunTabClose_BlockedDiscardRefusesBeforeTheTombstone(t *testing.T) {
 	disp := &closeDispatcher{inspect: &leapmuxv1.InspectLastTabCloseResponse{
@@ -663,8 +664,8 @@ func TestRunTabClose_BlockedDiscardRefusesBeforeTheTombstone(t *testing.T) {
 
 	assert.NotContains(t, hub.called(), "SubmitOps",
 		"the refusal must land BEFORE the CRDT tombstone, or the tab is destroyed and the refusal has nowhere to go")
-	assert.Equal(t, []string{"InspectLastTabClose"}, disp.called(),
-		"the command must stop after the inspect: no CloseAgent, no worktree teardown")
+	assert.Equal(t, []string{leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure}, disp.called(),
+		"the command must stop after the inspect: no CloseTab, no worktree teardown")
 }
 
 // The mirror case over the same end-to-end path: an empty reason must let the
@@ -736,7 +737,7 @@ func replyingWorkerCaller(calls *[]recordedWorkerCall, reply proto.Message) work
 func TestDispatchWorkerClose_AgentReturnsTheSubagentTabsToRetire(t *testing.T) {
 	var calls []recordedWorkerCall
 	subagents, err := dispatchWorkerClose(
-		replyingWorkerCaller(&calls, &leapmuxv1.CloseAgentResponse{
+		replyingWorkerCaller(&calls, &leapmuxv1.CloseTabResponse{
 			DescendantAgentIds: []string{"grandchild-1", "child-1"},
 		}),
 		resolve.Resolved{TabID: "root-1", WorkerID: "w1"},
@@ -745,7 +746,7 @@ func TestDispatchWorkerClose_AgentReturnsTheSubagentTabsToRetire(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, calls, 1)
-	assert.Equal(t, "CloseAgent", calls[0].method)
+	assert.Equal(t, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, calls[0].method)
 	assert.Equal(t, []string{"grandchild-1", "child-1"}, subagents,
 		"the worker's list rides back out, deepest first, for the caller to tombstone")
 }
@@ -776,13 +777,46 @@ func TestDispatchWorkerClose_ReportsNoSubagentsForOtherTabs(t *testing.T) {
 	}
 }
 
-// A failed CloseAgent reports no subagents. The command tombstones whatever
+// The last-tab inspect names its tab by the full identity, type and id. The
+// worker reads an absent tab as an empty id and an unspecified type, and
+// answers that no prompt is needed, so an inspect without the identity would
+// skip the worktree prompt for every close.
+func TestInspectLastTabCloseBest_SendsTheTabIdentity(t *testing.T) {
+	var calls []recordedWorkerCall
+	resp, err := inspectLastTabCloseBest(
+		replyingWorkerCaller(&calls, &leapmuxv1.InspectLastTabCloseResponse{WorkingDir: "/src/wt"}),
+		leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "/src/wt", resp.GetWorkingDir(), "the worker's answer rides back out")
+
+	require.Len(t, calls, 1)
+	assert.Equal(t, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, calls[0].method)
+	req, ok := calls[0].in.(*leapmuxv1.InspectLastTabCloseRequest)
+	require.True(t, ok, "unexpected request type %T", calls[0].in)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, req.GetTab().GetTabType())
+	assert.Equal(t, "term-1", req.GetTab().GetTabId())
+}
+
+// A failed inspect returns no response, so the caller cannot read a
+// half-filled answer as the worker's verdict.
+func TestInspectLastTabCloseBest_ReturnsNoResponseWhenTheCallFails(t *testing.T) {
+	boom := errors.New("worker unreachable")
+	resp, err := inspectLastTabCloseBest(func(_ string, _, out proto.Message) error {
+		proto.Merge(out, &leapmuxv1.InspectLastTabCloseResponse{WorkingDir: "/half"})
+		return boom
+	}, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1")
+	require.ErrorIs(t, err, boom)
+	assert.Nil(t, resp)
+}
+
+// A failed agent close reports no subagents. The command tombstones whatever
 // this returns, and the ids in a half-filled response describe a close that did
 // not happen.
 func TestDispatchWorkerClose_AgentReportsNoSubagentsWhenTheCloseFails(t *testing.T) {
 	subagents, err := dispatchWorkerClose(
 		func(_ string, _, out proto.Message) error {
-			proto.Merge(out, &leapmuxv1.CloseAgentResponse{DescendantAgentIds: []string{"child-1"}})
+			proto.Merge(out, &leapmuxv1.CloseTabResponse{DescendantAgentIds: []string{"child-1"}})
 			return errors.New("worker unreachable")
 		},
 		resolve.Resolved{TabID: "root-1", WorkerID: "w1"},
@@ -795,7 +829,7 @@ func TestDispatchWorkerClose_AgentReportsNoSubagentsWhenTheCloseFails(t *testing
 
 // A FILE tab's teardown is an RPC, not a no-op. `worker_tab_payloads` and the
 // worktree_tabs link are worker-side rows that the CRDT tombstone does not
-// touch, and RevokeTabPayload is what drives the shared closeTabCommon flow
+// touch, and CloseTab is what drives the shared closeTabCommon flow
 // -- so a `--worktree=discard` on a file tab has to reach the worker or the
 // worktree the user asked to remove simply stays.
 func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
@@ -808,27 +842,29 @@ func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, calls, 1, "a file tab close must dispatch worker-side teardown")
-	assert.Equal(t, "RevokeTabPayload", calls[0].method)
-	req, ok := calls[0].in.(*leapmuxv1.RevokeTabPayloadRequest)
+	assert.Equal(t, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, calls[0].method)
+	req, ok := calls[0].in.(*leapmuxv1.CloseTabRequest)
 	require.True(t, ok, "unexpected request type %T", calls[0].in)
-	assert.Equal(t, "file-1", req.GetTabId())
+	assert.Equal(t, "file-1", req.GetTab().GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, req.GetTab().GetTabType())
 	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, req.GetWorktreeAction(),
 		"the user's --worktree choice must ride along, or discard silently keeps the worktree")
 }
 
-// Every type routes to its own teardown RPC, and a tab whose worker is
-// unknown dispatches nothing at all -- there is nowhere to send it, and the
-// CRDT tombstone still removed the tab.
-func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
+// Every type goes through the one CloseTab RPC with its own type, and a tab
+// whose worker is unknown dispatches nothing at all -- there is nowhere to send
+// it, and the CRDT tombstone still removed the tab.
+func TestDispatchWorkerClose_SendsEveryTabTypeThroughCloseTab(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		tabType  leapmuxv1.TabType
 		workerID string
 		method   string
 	}{
-		{"agent", leapmuxv1.TabType_TAB_TYPE_AGENT, "w1", "CloseAgent"},
-		{"terminal", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "w1", "CloseTerminal"},
-		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1", "RevokeTabPayload"},
+		{"agent", leapmuxv1.TabType_TAB_TYPE_AGENT, "w1", leapmuxv1connect.WorkerTabServiceCloseTabProcedure},
+		{"terminal", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "w1", leapmuxv1connect.WorkerTabServiceCloseTabProcedure},
+		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1", leapmuxv1connect.WorkerTabServiceCloseTabProcedure},
+		{"image", leapmuxv1.TabType_TAB_TYPE_IMAGE, "w1", leapmuxv1connect.WorkerTabServiceCloseTabProcedure},
 		{"no worker", leapmuxv1.TabType_TAB_TYPE_FILE, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -846,6 +882,10 @@ func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
 			}
 			require.Len(t, calls, 1)
 			assert.Equal(t, tc.method, calls[0].method)
+			req, ok := calls[0].in.(*leapmuxv1.CloseTabRequest)
+			require.True(t, ok, "unexpected request type %T", calls[0].in)
+			assert.Equal(t, tc.tabType, req.GetTab().GetTabType())
+			assert.Equal(t, "t-1", req.GetTab().GetTabId())
 		})
 	}
 }
@@ -876,7 +916,7 @@ func TestSubagentTombstoneOps_TombstonesEachIdAsAnAgentTab(t *testing.T) {
 		cases = append(cases, opCase(op))
 		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
 		require.True(t, ok, "unexpected op body %T", op.GetBody())
-		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, body.TombstoneTab.GetTabType())
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, body.TombstoneTab.GetTab().GetTabType())
 	}
 	assert.Equal(t, []string{"tombstoneTab:grandchild-1", "tombstoneTab:child-1"}, cases,
 		"the worker's order rides through unchanged")
@@ -920,7 +960,7 @@ func TestSubagentTombstoneOps_SkipsAnAlreadyTombstonedTab(t *testing.T) {
 // batch.
 //
 // Order and batching are both load-bearing. A parent tombstoned first -- which
-// is all a client could do if it learned the ids only from the CloseAgent
+// is all a client could do if it learned the ids only from the CloseTab
 // response -- leaves every peer promoting the orphaned children to top-level
 // rows for the length of the worker teardown. Two batches would reopen the same
 // window, narrower.
@@ -951,7 +991,7 @@ func TestCloseBatchOps_IsJustTheTabWhenItOwnsNoSubagents(t *testing.T) {
 	assert.Equal(t, "tombstoneTab:t-1", opCase(ops[0]))
 	body, ok := ops[0].GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
 	require.True(t, ok)
-	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, body.TombstoneTab.GetTabType(),
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, body.TombstoneTab.GetTab().GetTabType(),
 		"the tab keeps its own type; only the subagents are forced to AGENT")
 }
 
@@ -973,7 +1013,7 @@ func TestCloseBatchOps_DropsAnUnopenedSubagentWithoutLosingTheTab(t *testing.T) 
 // The second batch carries only what the first did not.
 //
 // A close learns the subtree twice: from the inspect, before the parent's
-// tombstone, and from CloseAgent, after the teardown. The second answer is a
+// tombstone, and from CloseTab, after the teardown. The second answer is a
 // superset. Re-tombstoning an id the first batch retired would fail the WHOLE
 // second batch, because the hub cannot resolve a workspace for a record whose
 // tile id the first tombstone stripped.
@@ -1015,8 +1055,9 @@ func TestTerminalOpenRequest_CarriesTheTitle(t *testing.T) {
 	})
 
 	assert.Equal(t, "Deploy log", req.GetTitle())
-	assert.Equal(t, "w-1", req.GetWorkerId())
 	assert.Equal(t, "/src/app", req.GetWorkingDir())
+	// The CLI opens a terminal in the directory as it is.
+	assert.Nil(t, req.GetGitSetup())
 	assert.Equal(t, "/bin/zsh", req.GetShell())
 	assert.Equal(t, "/src/app/sub", req.GetShellStartDir())
 	// Zero so the worker applies its own 80x25 default; the frontend resizes
@@ -1031,6 +1072,108 @@ func TestTerminalOpenRequest_CarriesTheTitle(t *testing.T) {
 func TestTerminalOpenRequest_EmptyTitleMeansTheWorkerPicks(t *testing.T) {
 	req := terminalOpenRequest(openTerminalArgs{WorkerID: "w-1", WorkingDir: "/src"})
 	assert.Empty(t, req.GetTitle())
+}
+
+// rollbackDispatcher stands in for the worker during a spawn that unwinds.
+// It opens a terminal as term-9, accepts CloseTab, and records each method
+// with the CloseTab request it decoded.
+type rollbackDispatcher struct {
+	mu      sync.Mutex
+	methods []string
+	closes  []*leapmuxv1.CloseTabRequest
+}
+
+func (d *rollbackDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	d.mu.Lock()
+	d.methods = append(d.methods, req.GetMethod())
+	d.mu.Unlock()
+	var reply proto.Message
+	switch req.GetMethod() {
+	case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
+		reply = &leapmuxv1.OpenTerminalResponse{TerminalId: "term-9"}
+	case leapmuxv1connect.WorkerTabServiceCloseTabProcedure:
+		var in leapmuxv1.CloseTabRequest
+		if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+			_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+			return
+		}
+		d.mu.Lock()
+		d.closes = append(d.closes, &in)
+		d.mu.Unlock()
+		reply = &leapmuxv1.CloseTabResponse{}
+	default:
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	payload, err := proto.Marshal(reply)
+	if err != nil {
+		_ = w.SendError(int32(codes.Internal), err.Error())
+		return
+	}
+	_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
+}
+
+func (d *rollbackDispatcher) recorded() ([]string, []*leapmuxv1.CloseTabRequest) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.methods...), append([]*leapmuxv1.CloseTabRequest(nil), d.closes...)
+}
+
+// A terminal that opened but never got its tab must be closed, or the PTY
+// runs on with no tab that can reach it. The rollback goes through CloseTab
+// with the terminal's own identity. The hub stub here refuses the CRDT
+// bootstrap, which is the first step after the open.
+func TestOpenTerminalAndAddTab_RollsBackTheTerminalThroughCloseTab(t *testing.T) {
+	disp := &rollbackDispatcher{}
+	startSpawnIPC(t, &recordingHub{}, disp)
+	c, err := requireClient("")
+	require.NoError(t, err)
+
+	var openErr error
+	out := withCapturedStdout(t, func() {
+		_, openErr = openTerminalAndAddTab(t.Context(), c, workerCall{c: c, workerID: "worker-A"}, openTerminalArgs{
+			WorkspaceID: "ws-1", WorkerID: "worker-A", WorkingDir: "/src",
+		})
+	})
+	require.Error(t, openErr)
+
+	var env struct {
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	assert.Equal(t, "crdt_bootstrap_failed", env.Error["code"])
+
+	methods, closes := disp.recorded()
+	assert.Equal(t, []string{
+		leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure,
+		leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
+	}, methods, "the failed tab write must roll the open back")
+	require.Len(t, closes, 1)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, closes[0].GetTab().GetTabType())
+	assert.Equal(t, "term-9", closes[0].GetTab().GetTabId(), "the rollback closes the terminal the worker opened")
+	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, closes[0].GetWorktreeAction())
+}
+
+// An agent that spawned but never got its tab is closed through CloseTab as
+// an AGENT tab. The worker chooses the close path from the type: an
+// unspecified type is refused, and another type looks the id up in the wrong
+// table. Either way the rollback would leave the agent running.
+func TestCloseOrphanAgent_ClosesTheAgentTab(t *testing.T) {
+	disp := &rollbackDispatcher{}
+	startSpawnIPC(t, &recordingHub{}, disp)
+	c, err := requireClient("")
+	require.NoError(t, err)
+
+	out := withCapturedStdout(t, func() {
+		closeOrphanAgent(t.Context(), workerCall{c: c, workerID: "worker-A"}, "agent-9")
+	})
+	assert.Empty(t, out, "a successful rollback prints nothing over the caller's own envelope")
+
+	methods, closes := disp.recorded()
+	assert.Equal(t, []string{leapmuxv1connect.WorkerTabServiceCloseTabProcedure}, methods)
+	require.Len(t, closes, 1)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, closes[0].GetTab().GetTabType())
+	assert.Equal(t, "agent-9", closes[0].GetTab().GetTabId())
 }
 
 // The envelope's tab_type is the CANONICAL name, whatever spelling the flag
@@ -1065,10 +1208,95 @@ func TestRunTabClose_NestedDiscardRefusesBeforeTombstone(t *testing.T) {
 			_ = withCapturedStdout(t, func() { _ = RunTabClose(fakeCmdCtx{}, args) })
 			if discard {
 				assert.NotContains(t, hub.called(), "SubmitOps")
-				assert.Equal(t, []string{"InspectLastTabClose"}, disp.called())
+				assert.Equal(t, []string{leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure}, disp.called())
 			} else {
 				assert.Contains(t, hub.called(), "SubmitOps")
 			}
 		})
 	}
+}
+
+// `tab get` locates the tab without a workspace filter. A workspace the caller
+// names that does not hold the tab must never print a tab from elsewhere. The
+// resolver catches a named workspace that disagrees with the tab's own and
+// answers invalid_request (conflicting inputs) before any lookup of the
+// command's.
+func TestRunTabGet_RefusesATabOutsideTheNamedWorkspace(t *testing.T) {
+	hub := &recordingHub{
+		materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st,
+		locateTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"},
+			TileId:      "root-1",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-other",
+		},
+	}
+	startSpawnIPC(t, hub, nil)
+
+	out := withCapturedStdout(t, func() {
+		_ = RunTabGet(fakeCmdCtx{}, []string{"--tab-id", "agent-2", "--tab-type", "agent", "--workspace-id", "ws-1"})
+	})
+
+	var env struct {
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.NotNil(t, env.Error, "a tab in another workspace must not be printed")
+	assert.Equal(t, "invalid_request", env.Error["code"])
+	assert.Nil(t, env.Data)
+}
+
+// A tab that moves between the resolver's lookup and the command's own lands
+// in a workspace the resolver did not answer for. The command answers
+// not_found, as a lookup scoped to the resolved workspace would, rather than
+// print the row from the other workspace.
+func TestRunTabGet_RefusesATabThatMovedAfterTheResolverLocatedIt(t *testing.T) {
+	hub := &recordingHub{
+		materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st,
+		relocatedTab: &leapmuxv1.WorkspaceTab{
+			Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"},
+			TileId:      "elsewhere",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-other",
+		},
+	}
+	startSpawnIPC(t, hub, nil)
+
+	out := withCapturedStdout(t, func() {
+		_ = RunTabGet(fakeCmdCtx{}, []string{"--tab-id", "agent-2", "--tab-type", "agent", "--workspace-id", "ws-1"})
+	})
+
+	var env struct {
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "not_found", env.Error["code"])
+	assert.Nil(t, env.Data)
+}
+
+// The happy path prints the located row, with the tab identity flattened into
+// the JSON fields every `tab` verb prints.
+func TestRunTabGet_PrintsTheLocatedTab(t *testing.T) {
+	hub := &recordingHub{
+		materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st,
+	}
+	startSpawnIPC(t, hub, nil)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunTabGet(fakeCmdCtx{}, []string{"--tab-id", "agent-2", "--tab-type", "agent", "--workspace-id", "ws-1"}))
+	})
+
+	var env struct {
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.Nil(t, env.Error)
+	assert.Equal(t, "agent-2", env.Data["tab_id"])
+	assert.Equal(t, "agent", env.Data["tab_type"])
+	assert.Equal(t, "ws-1", env.Data["workspace_id"])
+	assert.Equal(t, "worker-A", env.Data["worker_id"])
 }

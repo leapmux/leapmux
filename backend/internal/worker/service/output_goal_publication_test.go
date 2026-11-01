@@ -388,7 +388,7 @@ func TestGoalPublicationRetriedNotificationDoesNotAttachProgressToReplayedReplac
 	replayWriter := &replayIdentityWriter{testResponseWriter: &testResponseWriter{channelID: "goal-replacement-replay"}}
 	openReplayIdentityWatch(t, dispatcher, &leapmuxv1.WatchEventsRequest{UpdateId: 59, Agents: []*leapmuxv1.WatchAgentEntry{replayOriginEntry("goal-publication-owner", 59)}}, replayWriter)
 	require.Eventually(t, func() bool { return countCatchUpCompletes(replayWriter.testResponseWriter) == 1 }, 30*time.Second, time.Millisecond)
-	var replayedGoal *leapmuxv1.AgentGoalChanged
+	var replayedGoal *leapmuxv1.AgentGoalSnapshot
 	for _, event := range decodeAgentEvents(replayWriter.testResponseWriter) {
 		if event.GetGoalChanged() != nil {
 			replayedGoal = event.GetGoalChanged()

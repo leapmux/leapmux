@@ -2,7 +2,9 @@ import type { Locator, Page } from '@playwright/test'
 import type { RpcMark } from './timingFixture'
 import { expect } from '@playwright/test'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
+import { procedureOf } from '../../../src/lib/rpcProcedure'
 import { captureClipboardText } from './clipboardCapture'
 import { installRpcListeners } from './timingFixture'
 
@@ -60,6 +62,6 @@ export async function copySettingsNotification(bubble: Locator, change: Settings
   const copied = await captureClipboardText(page, () => bubble.locator('..').getByTestId('message-copy-json').click())
   expectSettingsNotificationEnvelope(copied, change, requireThread)
   const sends = await sentRpcMethods(page)
-  for (const method of ['ListAgentMessages', 'GetAgentMessage', 'GetAgentSpanMessages'])
-    expect(sends).not.toContain(method)
+  for (const method of [WorkerAgentService.method.listAgentMessages, WorkerAgentService.method.getAgentMessage, WorkerAgentService.method.getAgentSpanMessages])
+    expect(sends).not.toContain(procedureOf(method))
 }

@@ -249,7 +249,7 @@ func TestFirstTimeExternalProviderSetupOrder(t *testing.T) {
 	t.Run("selection last succeeds", func(t *testing.T) {
 		m := crossRuleManager(t)
 		require.NoError(t, m.Update(ctx, TurnstileKey, json.RawMessage(`{"site_key":"1x000AA"}`)))
-		require.NoError(t, m.UpdateSecret(ctx, TurnstileKey, json.RawMessage(`{"secret_key":"1x000SS"}`)))
+		require.NoError(t, m.UpdateMany(ctx, []settings.KeyWrite{{Desc: TurnstileKey, Secret: json.RawMessage(`{"secret_key":"1x000SS"}`)}}))
 		require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"turnstile"`)))
 		assert.Equal(t, "turnstile", CaptchaSelectedKey.Of(m.Snapshot(ctx)))
 	})
@@ -279,7 +279,7 @@ func TestSwitchingBackKeepsTheStoredSettings(t *testing.T) {
 	m := crossRuleManager(t)
 
 	require.NoError(t, m.Update(ctx, TurnstileKey, json.RawMessage(`{"site_key":"1x000AA"}`)))
-	require.NoError(t, m.UpdateSecret(ctx, TurnstileKey, json.RawMessage(`{"secret_key":"1x000SS"}`)))
+	require.NoError(t, m.UpdateMany(ctx, []settings.KeyWrite{{Desc: TurnstileKey, Secret: json.RawMessage(`{"secret_key":"1x000SS"}`)}}))
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"turnstile"`)))
 
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"altcha"`)))

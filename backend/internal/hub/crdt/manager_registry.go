@@ -169,6 +169,33 @@ func (r *Registry) Get(ctx context.Context, userID string) (*Manager, error) {
 	return m, nil
 }
 
+// loaded returns the manager already loaded for userID. It never bootstraps
+// one and stamps no activity: a broadcast to a user's subscribers is not that
+// user's activity.
+func (r *Registry) loaded(userID string) (*Manager, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.managers[userID]
+	return m, ok
+}
+
+// BroadcastWorkersChanged tells every live /ws/userevents subscriber of userID
+// that the user's worker list changed.
+//
+// It uses only a manager that is already loaded and never bootstraps one: the
+// registry evicts only a manager with no subscriber (see SweepIdle), so a
+// loaded-only lookup reaches every live subscriber, and a user with no
+// manager has nobody to tell. A caller sends it after the change committed,
+// never inside a store transaction.
+func (r *Registry) BroadcastWorkersChanged(userID string) {
+	if r == nil {
+		return
+	}
+	if m, ok := r.loaded(userID); ok {
+		m.BroadcastWorkersChanged()
+	}
+}
+
 // Shutdown stops every running manager and waits for them.
 func (r *Registry) Shutdown(timeout time.Duration) {
 	// Stop the janitor first so it doesn't race the manager teardown.

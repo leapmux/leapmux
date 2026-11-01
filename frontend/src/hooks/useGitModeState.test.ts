@@ -4,10 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   CHANGE_BRANCH_MODES,
   changeBranchInitialIntent,
-  fieldsForCheckoutBranch,
-  fieldsForCreateBranch,
-  fieldsForCreateWorktree,
-  fieldsForUseWorktree,
   GIT_MODE_LABELS,
   GitMode,
   gitModeFromToken,
@@ -15,6 +11,10 @@ import {
   gitModeToken,
   initialIntentForMode,
   isChangeBranchMode,
+  setupForCheckoutBranch,
+  setupForCreateBranch,
+  setupForCreateWorktree,
+  setupForUseWorktree,
   useGitModeState,
 } from '~/hooks/useGitModeState'
 import { shallowEqual } from '~/lib/shallowEqual'
@@ -131,21 +131,21 @@ describe('useGitModeState', () => {
     expect(s.currentIntent()).toEqual(seed)
   })
 
-  it('seeded initial intent propagates through toGitFields', () => {
+  it('seeded initial intent propagates through toGitSetup', () => {
     // The RPC-payload projection must respect the seed too — a dialog
     // that submits before any user interaction (unlikely but possible)
-    // would otherwise ship blank fields despite the visible mode.
+    // would otherwise ship no setup despite the visible mode.
     const s = useGitModeState({
       mode: GitMode.CreateBranch,
       createBranch: 'feat',
       createBranchError: null,
       createBranchBase: 'main',
     })
-    expect(s.toGitFields()).toMatchObject({
-      createBranch: 'feat',
-      createBranchBase: 'main',
-      createWorktree: false,
-      checkoutBranch: '',
+    expect(s.toGitSetup()).toEqual({
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feat', baseBranch: 'main' },
+      },
     })
   })
 
@@ -158,7 +158,7 @@ describe('useGitModeState', () => {
     s.handleGitModeChange({ mode: GitMode.Current })
     expect(s.gitMode()).toBe(GitMode.Current)
     expect(s.currentIntent()).toEqual({ mode: GitMode.Current })
-    expect(s.toGitFields().checkoutBranch).toBe('')
+    expect(s.toGitSetup()).toBeUndefined()
   })
 
   it('handleGitModeChange swaps the active variant atomically', () => {
@@ -168,79 +168,20 @@ describe('useGitModeState', () => {
     expect(s.currentIntent()).toEqual({ mode: GitMode.SwitchBranch, checkoutBranch: 'main', checkoutBranchError: null })
   })
 
-  it('toGitFields(Current) blanks every field', () => {
+  it('toGitSetup(Current) leaves the setup absent', () => {
+    // Absent means "use the directory as it is" on the worker.
     const s = useGitModeState()
-    expect(s.toGitFields()).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
-    })
+    expect(s.toGitSetup()).toBeUndefined()
   })
 
-  it('toGitFields(SwitchBranch) only sets checkoutBranch', () => {
-    const s = useGitModeState()
-    s.handleGitModeChange(switchBranch('feature'))
-    expect(s.toGitFields()).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: 'feature',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
-    })
-  })
-
-  it('toGitFields(CreateBranch) sets the branch + base, leaves worktree fields blank', () => {
-    const s = useGitModeState()
-    s.handleGitModeChange(createBranch({ createBranch: 'feat', createBranchBase: 'main' }))
-    expect(s.toGitFields()).toMatchObject({
-      createWorktree: false,
-      createBranch: 'feat',
-      createBranchBase: 'main',
-      worktreeBranch: '',
-      checkoutBranch: '',
-    })
-  })
-
-  it('toGitFields(CreateWorktree) flips the createWorktree flag and forwards worktree fields', () => {
-    const s = useGitModeState()
-    s.handleGitModeChange(createWorktree({ worktreeBranch: 'feat-wt', worktreeBaseBranch: 'main' }))
-    expect(s.toGitFields()).toMatchObject({
-      createWorktree: true,
-      worktreeBranch: 'feat-wt',
-      worktreeBaseBranch: 'main',
-      checkoutBranch: '',
-      createBranch: '',
-    })
-  })
-
-  it('toGitFields(UseWorktree) only sets useWorktreePath', () => {
-    const s = useGitModeState()
-    s.handleGitModeChange({ mode: GitMode.UseWorktree, useWorktreePath: '/wt' })
-    expect(s.toGitFields()).toMatchObject({
-      useWorktreePath: '/wt',
-      createWorktree: false,
-      createBranch: '',
-      checkoutBranch: '',
-    })
-  })
-
-  it('does not leak fields from a previous variant when switching modes', () => {
-    // Regression guard: each variant's projection must clear the
-    // other variants' fields so a mode toggle doesn't accidentally
-    // submit stale values on the wire.
+  it('does not carry a previous variant into the setup when switching modes', () => {
+    // Regression guard: the setup holds one case, so a mode toggle can
+    // never submit a stale value from the previous mode on the wire.
     const s = useGitModeState()
     s.handleGitModeChange(createBranch({ createBranch: 'old', createBranchBase: 'main' }))
     s.handleGitModeChange(switchBranch('newBranch'))
-    expect(s.toGitFields()).toMatchObject({
-      checkoutBranch: 'newBranch',
-      createBranch: '',
-      createBranchBase: '',
+    expect(s.toGitSetup()).toEqual({
+      mode: { case: 'checkoutBranch', value: 'newBranch' },
     })
   })
 
@@ -356,212 +297,170 @@ describe('isChangeBranchMode', () => {
   })
 })
 
-// ----- Per-mode field projections -----
+// ----- Per-mode setup projections -----
 //
 // ChangeBranchDialog dispatches to a specific RPC inside a switch on
-// `intent.mode` and reads the narrowed intent directly. The fieldsFor*
-// helpers are the per-mode projection that fills the openAgent /
-// openTerminal field set without leaking the other modes' values. Each
-// test below pins exactly which fields the projection writes; missing
-// or extra fields would silently change the wire payload, so the
+// `intent.mode` and reads the narrowed intent directly. The setupFor*
+// helpers are the per-mode projection onto the `git_setup` of an openAgent /
+// openTerminal request. Each test below pins the exact case and value, so the
 // `toEqual` assertions are intentional (not `toMatchObject`).
 
-describe('fieldsForCheckoutBranch', () => {
-  it('only sets checkoutBranch; every other RPC field is blank', () => {
-    expect(fieldsForCheckoutBranch({
+describe('setupForCheckoutBranch', () => {
+  it('selects checkout_branch with the target', () => {
+    expect(setupForCheckoutBranch({
       mode: GitMode.SwitchBranch,
       checkoutBranch: 'origin/main',
       checkoutBranchError: null,
     })).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: 'origin/main',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
+      mode: { case: 'checkoutBranch', value: 'origin/main' },
     })
   })
 
   it('forwards an empty target verbatim — the dialog controls submit, not this projection', () => {
     // Defensive: the helper does not own validation. The submit rule lives
-    // in dialogValidation. An empty checkoutBranch must round-trip
-    // verbatim so the validating layer can refuse it without a magic
-    // sentinel.
-    expect(fieldsForCheckoutBranch({
+    // in dialogValidation, and the worker refuses an empty checkout_branch.
+    expect(setupForCheckoutBranch({
       mode: GitMode.SwitchBranch,
       checkoutBranch: '',
       checkoutBranchError: null,
-    }).checkoutBranch).toBe('')
+    })).toEqual({
+      mode: { case: 'checkoutBranch', value: '' },
+    })
   })
 })
 
-describe('fieldsForCreateBranch', () => {
-  it('sets branch + base; worktree flag stays false and all worktree fields blank', () => {
-    expect(fieldsForCreateBranch({
+describe('setupForCreateBranch', () => {
+  it('selects create_branch with the name and base', () => {
+    expect(setupForCreateBranch({
       mode: GitMode.CreateBranch,
       createBranch: 'feature/x',
       createBranchError: null,
       createBranchBase: 'main',
     })).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: 'feature/x',
-      createBranchBase: 'main',
-      useWorktreePath: '',
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feature/x', baseBranch: 'main' },
+      },
     })
   })
 
-  it('forwards an empty base; the worker treats "" as HEAD', () => {
+  it('forwards an empty base; the worker treats "" as the current branch', () => {
     // The base-branch picker can legitimately be left blank. The
     // projection must pass that through so the backend's
     // current-branch fallback fires.
-    const out = fieldsForCreateBranch({
+    expect(setupForCreateBranch({
       mode: GitMode.CreateBranch,
       createBranch: 'feat',
       createBranchError: null,
       createBranchBase: '',
+    })).toEqual({
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feat', baseBranch: '' },
+      },
     })
-    expect(out.createBranch).toBe('feat')
-    expect(out.createBranchBase).toBe('')
   })
 })
 
-describe('fieldsForCreateWorktree', () => {
-  it('flips createWorktree=true and forwards branch + base', () => {
-    expect(fieldsForCreateWorktree({
+describe('setupForCreateWorktree', () => {
+  it('selects create_worktree with the branch and base', () => {
+    expect(setupForCreateWorktree({
       mode: GitMode.CreateWorktree,
       worktreeBranch: 'feature/wt',
       worktreeBranchError: null,
       worktreeBaseBranch: 'main',
     })).toEqual({
-      createWorktree: true,
-      worktreeBranch: 'feature/wt',
-      worktreeBaseBranch: 'main',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
+      mode: {
+        case: 'createWorktree',
+        value: { branch: 'feature/wt', baseBranch: 'main' },
+      },
     })
   })
 
-  it('flips createWorktree=true even when fields are empty (validation is upstream)', () => {
-    // This is the discriminator: a CreateWorktree intent must surface
-    // createWorktree=true regardless of branch content, so the backend
-    // dispatches to the worktree path (the empty branch will then fail
-    // worker-side validation with a precise error).
-    const out = fieldsForCreateWorktree({
+  it('selects create_worktree even when the branch is empty (validation is upstream)', () => {
+    // The case is the discriminator: a CreateWorktree intent must select
+    // create_worktree regardless of the branch, so the worker refuses the
+    // empty branch with a precise error instead of using the directory.
+    expect(setupForCreateWorktree({
       mode: GitMode.CreateWorktree,
       worktreeBranch: '',
       worktreeBranchError: 'Branch name is required',
       worktreeBaseBranch: '',
+    })).toEqual({
+      mode: {
+        case: 'createWorktree',
+        value: { branch: '', baseBranch: '' },
+      },
     })
-    expect(out.createWorktree).toBe(true)
-    expect(out.worktreeBranch).toBe('')
   })
 })
 
-describe('fieldsForUseWorktree', () => {
-  it('only sets useWorktreePath; every other field is blank', () => {
-    expect(fieldsForUseWorktree({
+describe('setupForUseWorktree', () => {
+  it('selects use_worktree_path with the path', () => {
+    expect(setupForUseWorktree({
       mode: GitMode.UseWorktree,
       useWorktreePath: '/abs/path',
     })).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '/abs/path',
+      mode: { case: 'useWorktreePath', value: '/abs/path' },
     })
   })
 })
 
-describe('toGitFields projects every active mode onto the RPC field set', () => {
-  // toGitFields is what consumers actually call (NewAgentDialog,
-  // NewTerminalDialog). Asserting on the concrete payload shape — not
-  // on equality with the helper invocation we'd otherwise compare to —
-  // catches a refactor that swaps in the wrong helper or projects
-  // different fields per mode. Tautological equality with
-  // `fieldsForXxx(currentIntent())` would pass even after such a
-  // breakage because both sides would route through the same helper.
-  it('switchBranch produces only checkoutBranch alongside zeros', () => {
+describe('toGitSetup projects every active mode onto one setup case', () => {
+  // toGitSetup is what consumers actually call (NewAgentDialog,
+  // NewTerminalDialog, NewWorkspaceDialog). Asserting on the concrete
+  // payload — not on equality with the helper invocation we'd otherwise
+  // compare to — catches a refactor that swaps in the wrong helper.
+  it('switchBranch selects checkout_branch', () => {
     const s = useGitModeState()
     s.handleGitModeChange(switchBranch('main'))
-    expect(s.toGitFields()).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: 'main',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
+    expect(s.toGitSetup()).toEqual({
+      mode: { case: 'checkoutBranch', value: 'main' },
     })
   })
 
-  it('createBranch produces createBranch + createBranchBase alongside zeros', () => {
+  it('createBranch selects create_branch', () => {
     const s = useGitModeState()
     s.handleGitModeChange(createBranch({ createBranch: 'feat', createBranchBase: 'main' }))
-    expect(s.toGitFields()).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: 'feat',
-      createBranchBase: 'main',
-      useWorktreePath: '',
+    expect(s.toGitSetup()).toEqual({
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feat', baseBranch: 'main' },
+      },
     })
   })
 
-  it('createWorktree flips createWorktree=true with worktreeBranch + worktreeBaseBranch', () => {
+  it('createWorktree selects create_worktree', () => {
     const s = useGitModeState()
     s.handleGitModeChange(createWorktree({ worktreeBranch: 'feat-wt', worktreeBaseBranch: 'main' }))
-    expect(s.toGitFields()).toEqual({
-      createWorktree: true,
-      worktreeBranch: 'feat-wt',
-      worktreeBaseBranch: 'main',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
+    expect(s.toGitSetup()).toEqual({
+      mode: {
+        case: 'createWorktree',
+        value: { branch: 'feat-wt', baseBranch: 'main' },
+      },
     })
   })
 
-  it('useWorktree only sets useWorktreePath', () => {
+  it('useWorktree selects use_worktree_path', () => {
     const s = useGitModeState()
     s.handleGitModeChange({ mode: GitMode.UseWorktree, useWorktreePath: '/wt' })
-    expect(s.toGitFields()).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '/wt',
+    expect(s.toGitSetup()).toEqual({
+      mode: { case: 'useWorktreePath', value: '/wt' },
     })
   })
 
-  it('current mode returns a fresh empty object (not the shared singleton)', () => {
-    // Regression guard for the shared EMPTY_GIT_FIELDS reference.
-    // Mutating one returned object must NOT leak into the next call.
+  it('current leaves the setup absent', () => {
     const s = useGitModeState()
-    const first = s.toGitFields()
-    expect(first).toEqual({
-      createWorktree: false,
-      worktreeBranch: '',
-      worktreeBaseBranch: '',
-      checkoutBranch: '',
-      createBranch: '',
-      createBranchBase: '',
-      useWorktreePath: '',
-    })
-    first.checkoutBranch = 'mutated'
-    const second = s.toGitFields()
-    expect(second.checkoutBranch).toBe('')
-    expect(second).not.toBe(first)
+    s.handleGitModeChange(switchBranch('main'))
+    s.handleGitModeChange({ mode: GitMode.Current })
+    expect(s.toGitSetup()).toBeUndefined()
+  })
+
+  it('mints a fresh setup per call, so a mutation cannot leak', () => {
+    const s = useGitModeState()
+    s.handleGitModeChange(switchBranch('main'))
+    const first = s.toGitSetup()
+    expect(s.toGitSetup()).not.toBe(first)
   })
 })
 
@@ -595,16 +494,28 @@ describe('changeBranchInitialIntent', () => {
       expect(changeBranchInitialIntent(mode).mode).toBe(mode)
   })
 
-  // The seed feeds `useGitModeState`, whose `toGitFields` must not send a
-  // half-built payload if the dialog is submitted before GitOptions emits.
-  it('projects to blank git fields', () => {
-    for (const mode of CHANGE_BRANCH_MODES) {
-      const fields = useGitModeState(changeBranchInitialIntent(mode)).toGitFields()
-      expect(fields.checkoutBranch).toBe('')
-      expect(fields.createBranch).toBe('')
-      expect(fields.worktreeBranch).toBe('')
-      expect(fields.createWorktree).toBe(mode === GitMode.CreateWorktree)
-    }
+  // The seed feeds `useGitModeState`, whose `toGitSetup` must select the
+  // seeded mode with empty values if the dialog is submitted before GitOptions
+  // emits, so the worker refuses the empty value instead of guessing.
+  it('projects to the seeded case with empty values', () => {
+    expect(useGitModeState(changeBranchInitialIntent(GitMode.SwitchBranch)).toGitSetup())
+      .toEqual({
+        mode: { case: 'checkoutBranch', value: '' },
+      })
+    expect(useGitModeState(changeBranchInitialIntent(GitMode.CreateBranch)).toGitSetup())
+      .toEqual({
+        mode: {
+          case: 'createBranch',
+          value: { name: '', baseBranch: '' },
+        },
+      })
+    expect(useGitModeState(changeBranchInitialIntent(GitMode.CreateWorktree)).toGitSetup())
+      .toEqual({
+        mode: {
+          case: 'createWorktree',
+          value: { branch: '', baseBranch: '' },
+        },
+      })
   })
 
   it('mints a fresh object per call, so a mutation cannot leak', () => {

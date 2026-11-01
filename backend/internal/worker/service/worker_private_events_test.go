@@ -236,7 +236,7 @@ func TestPrivateEventsBus_StopClosesSubscribers(t *testing.T) {
 // bus fans out to every subscriber registered for an owner. Two browser tabs of
 // the same user each hold their own stream, so both must receive each
 // TabRenamed. The owner gate runs BEFORE Subscribe in the worker handler
-// (`requireWorkerOwner`); inside the bus every active subscriber for that owner
+// (`ownerOnlyRegistrar.gate`); inside the bus every active subscriber for that owner
 // is treated equally.
 func TestPrivateEventsBus_MultipleSubscribersOnSameOwnerAllReceive(t *testing.T) {
 	t.Parallel()

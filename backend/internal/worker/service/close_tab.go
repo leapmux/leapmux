@@ -1,15 +1,138 @@
 package service
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
+
+// registerCloseTabHandler registers CloseTab, the one close RPC for every tab
+// type.
+//
+// The dispatcher ctx is intentionally not threaded: the close flow (subprocess
+// stop, DB close, optional worktree removal) must survive a mid-RPC disconnect
+// from the client that started it, and the dispatcher ctx would cancel the
+// cleanup partway through if the user clicked away. The method is TRACKED, so a
+// concurrent Shutdown drains the close flow before it tears down the DB pool.
+// The frontend fires this RPC fire-and-forget after removing the tab from the
+// UI.
+func registerCloseTabHandler(r registrar, svc *Service) {
+	registerOwnerGuarded(r, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, dispatchTracked, svc.handleCloseTab)
+}
+
+// handleCloseTab closes one tab of any type.
+//
+// The method itself requires only worker:read, because the scope a close needs
+// depends on the tab type, which the method cannot state. Each case below
+// applies, in this order: the scopes (requireCloseScopes), the existence guard,
+// and (for AGENT and TERMINAL) the archived-workspace refusal.
+func (svc *Service) handleCloseTab(_ context.Context, caller channel.Caller, r *leapmuxv1.CloseTabRequest, sender channel.ResponseWriter) {
+	tabID := r.GetTab().GetTabId()
+	if tabID == "" {
+		sendInvalidArgument(sender, "tab.tab_id is required")
+		return
+	}
+	userID := caller.UserID.String()
+	action := r.GetWorktreeAction()
+	switch tabType := r.GetTab().GetTabType(); tabType {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT:
+		if !requireCloseScopes(sender, caller, leapmuxv1.Scope_SCOPE_AGENT_WRITE, action) {
+			return
+		}
+		archived, ok := svc.requireAgentID(sender, tabID)
+		if !ok || refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_AGENT_WRITE, archived, "agent") {
+			return
+		}
+		sendProtoResponse(sender, svc.closeAgentTabCommon(userID, tabID, action, dropWorktreeLink))
+	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+		if !requireCloseScopes(sender, caller, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, action) {
+			return
+		}
+		archived, ok := svc.requireTerminalID(sender, tabID)
+		if !ok || refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, archived, "terminal") {
+			return
+		}
+		sendProtoResponse(sender, svc.closeTerminalTabCommon(userID, tabID, action, dropWorktreeLink))
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		svc.closePayloadTab(caller, sender, tabID, tabType, action)
+	default:
+		sendInvalidArgument(sender, "tab.tab_type must be AGENT, TERMINAL, FILE or IMAGE")
+	}
+}
+
+// closePayloadTab is handleCloseTab's FILE and IMAGE case. file:read is the
+// scope because the payload row is tab bookkeeping.
+//
+// No existence guard runs: the close is idempotent. A tab already closed (or
+// one this caller never owned) drops through RevokeRow's ErrTabPayloadNotFound
+// branch and still clears any worktree link.
+func (svc *Service) closePayloadTab(caller channel.Caller, sender channel.ResponseWriter, tabID string, requested leapmuxv1.TabType, action leapmuxv1.WorktreeAction) {
+	if !requireCloseScopes(sender, caller, leapmuxv1.Scope_SCOPE_FILE_READ, action) {
+		return
+	}
+	// The STORED kind decides which worktree_tabs link to drop -- the link row
+	// carries the tab type, so closing an IMAGE tab as FILE would leave its link
+	// behind.
+	//
+	// Only an ABSENT row may fall back, to the kind the caller stated. Such a
+	// link is already dead to worktree_tab_liveness (no backing row means
+	// is_live = 0) and the worktree GC reaps it either way. A read that FAILED
+	// is different: the row may well be the other kind, and a wrong guess makes
+	// GetWorktreeForTab miss, so a requested REMOVE degrades to KEEP with
+	// nothing reported while the link outlives the payload row it described.
+	userID := caller.UserID.String()
+	tabType, err := svc.TabPayloads.TabTypeOf(bgCtx(), userID, tabID)
+	if err != nil {
+		if !errors.Is(err, ErrTabPayloadNotFound) {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		tabType = requested
+	}
+	sendProtoResponse(sender, svc.closePayloadTabCommon(userID, tabID, tabType, action, dropWorktreeLink))
+}
+
+// requireCloseScopes answers PermissionDenied unless the caller's grant holds
+// closeScope, the scope that closes a tab of the requested type, and reports
+// whether the caller passed.
+//
+// A WORKTREE_ACTION_REMOVE close also needs git:write, whatever the tab type.
+// The removal runs `git worktree remove --force` and `git branch -D` -- a
+// destructive write that scope.proto places under git:write ("manage a
+// worktree"). No closeScope carries git:write, so without this check a grant
+// that may only close agent tabs, or only read files, could delete a worktree
+// and its branch. The escalation happens here, at the action, so that a KEEP
+// close keeps needing only closeScope.
+func requireCloseScopes(sender channel.ResponseWriter, caller channel.Caller, closeScope leapmuxv1.Scope, action leapmuxv1.WorktreeAction) bool {
+	if !requireCallerScope(sender, caller, closeScope) {
+		return false
+	}
+	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE && !caller.Allows(leapmuxv1.Scope_SCOPE_GIT_WRITE) {
+		sendPermissionDenied(sender, "removing a worktree needs the git:write permission")
+		return false
+	}
+	return true
+}
+
+// requireCallerScope answers PermissionDenied unless the caller's grant holds
+// scope, in the words the registrar's method-level check uses, and reports
+// whether the caller passed.
+func requireCallerScope(sender channel.ResponseWriter, caller channel.Caller, scope leapmuxv1.Scope) bool {
+	if caller.Allows(scope) {
+		return true
+	}
+	sendPermissionDenied(sender, authscope.NotGrantedDenial(scope))
+	return false
+}
 
 // worktreeLinkPolicy decides what a non-REMOVE close does with the tab's
 // worktree_tabs row. The zero value is dropWorktreeLink, the historical
@@ -77,14 +200,14 @@ func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy wor
 // closePayloadTabCommon drives the shared closeTabCommon flow for a
 // payload-backed tab (FILE or IMAGE). It exists so their close path uses the
 // same worktree-tab link drop and conditional `git worktree remove` machinery
-// as CloseAgent / CloseTerminal — the only payload-specific work is dropping
+// as an agent or terminal close — the only payload-specific work is dropping
 // the worker_tab_payloads row (which doubles as the TabPayloadRevoked emit).
 // stopProcess is a noop because such tabs own no process on the worker.
 //
 // tabType is the tab's OWN kind, not a constant: the worktree_tabs link row
 // carries it, so closing an IMAGE tab as FILE would leave the link standing.
 //
-// Three entry points, each naming its own link policy: the RevokeTabPayload RPC
+// Three entry points, each naming its own link policy: the CloseTab RPC
 // (dropWorktreeLink), CloseTabForReconcile (dropWorktreeLink), and
 // closeTabForDeletedWorkspace (keepWorktreeLinkForReconciler). The last two
 // arrive through closeTabForConvergence.
@@ -92,7 +215,7 @@ func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy wor
 // The reconciler used to hand-roll its own teardown here to avoid the
 // worktree-removal branch. An UNSPECIFIED action never enters that branch
 // anyway, so the shared flow is correct for it.
-func (svc *Service) closePayloadTabCommon(userID, tabID string, tabType leapmuxv1.TabType, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+func (svc *Service) closePayloadTabCommon(userID, tabID string, tabType leapmuxv1.TabType, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
 	// Read BEFORE the teardown, because the reap below needs the row's
 	// working_dir and the revoke deletes the row on the way out.
 	//
@@ -156,9 +279,9 @@ func (svc *Service) payloadTabWorkingDir(userID, tabID string) string {
 	return row.WorkingDir
 }
 
-// closeTabCommon runs the shared tab-close flow for the CloseAgent /
-// CloseTerminal / RevokeTabPayload handlers. The handlers are
-// registered as tracked dispatcher methods (RegisterTracked) so the
+// closeTabCommon runs the shared tab-close flow for every tab type the CloseTab
+// handler closes. The handler is
+// registered as a tracked dispatcher method (RegisterTracked) so the
 // dispatcher's bound Cleanup WaitGroup is Add(1)'d synchronously
 // BEFORE the dispatched goroutine launches — Shutdown.Wait can't slip
 // past an in-flight close. closeTabCommon itself stays free of
@@ -174,7 +297,7 @@ func (svc *Service) payloadTabWorkingDir(userID, tabID string) string {
 // failure occurs (DB soft-delete, worktree remove) the returned
 // result populates failure_message / failure_detail / worktree_path /
 // worktree_id so the UI can toast a warning. The returned
-// *CloseTabResult is never nil.
+// *CloseTabResponse is never nil.
 //
 // userID is the authenticated caller. It scopes every worktree_tabs read and
 // delete below, because a FILE tab's id is unique only within a user -- an
@@ -189,7 +312,7 @@ func (svc *Service) closeTabCommon(
 	linkPolicy worktreeLinkPolicy,
 	stopProcess func(),
 	closeDB func() (retiredLiveRow bool, err error),
-) *leapmuxv1.CloseTabResult {
+) *leapmuxv1.CloseTabResponse {
 	// Capture the actual directory before payload revocation removes it.
 	var workingDir string
 	var rootEligible bool
@@ -204,7 +327,7 @@ func (svc *Service) closeTabCommon(
 	}
 	stopProcess()
 
-	result := &leapmuxv1.CloseTabResult{}
+	result := &leapmuxv1.CloseTabResponse{}
 
 	// When REMOVE is requested, look up the worktree BEFORE the
 	// tab-worktree association is dropped, so we still see the link.
@@ -301,7 +424,7 @@ func (svc *Service) closeTabCommon(
 // The removal lock serializes concurrent closes and database-link cleanup for this worktree.
 // Keep the lock through Git removal. Large worktrees can require a long removal operation.
 // A failed lookup or reference check preserves the directory and reports the failure.
-func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID, userID string, retiredLiveRow bool, workingDir string) {
+func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResponse, wt *db.Worktree, tabType leapmuxv1.TabType, tabID, userID string, retiredLiveRow bool, workingDir string) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -403,7 +526,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 
 // setWorktreeRemovalRefused reports a deliberate refusal through the existing failure format.
 // The tab closes, but the directory and branch remain.
-func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree, message, reason string) {
+func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResponse, wt *db.Worktree, message, reason string) {
 	result.FailureMessage = message
 	result.FailureDetail = reason
 	result.WorktreePath = wt.WorktreePath
@@ -415,7 +538,7 @@ func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree
 // stamping the path + id so the UI can point the user at the directory
 // for manual cleanup. Shared by the link-drop, count, and `git worktree
 // remove` failure paths, which all carry the same partial-failure shape.
-func setWorktreeRemovalFailed(result *leapmuxv1.CloseTabResult, wt *db.Worktree, err error) {
+func setWorktreeRemovalFailed(result *leapmuxv1.CloseTabResponse, wt *db.Worktree, err error) {
 	result.FailureMessage = "Failed to remove worktree"
 	result.FailureDetail = err.Error()
 	result.WorktreePath = wt.WorktreePath
@@ -457,7 +580,7 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 // in-flight startup, stop the subprocess, clear its runtime state, run its
 // registered cleanups, and close the DB row.
 //
-// Extracted so the ONLINE close (CloseAgent), the batch close
+// Extracted so the ONLINE close (CloseTab), the batch close
 // (handleCleanupWorkspace) and the OFFLINE convergence path
 // (OrphanReconciler.reconcileAgents) cannot diverge. They had: the reconciler
 // ran only the DB close plus StopAgent, omitting AgentStartup.cancelAndClear
@@ -467,12 +590,12 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 // delegation token stayed UNREVOKED for the life of the worker process. This
 // commit made that offline path the normal one, which is what turned a
 // discrepancy into a leak.
-// Returns the close result and the agent's DESCENDANT subagent ids, at any
-// depth and in no particular order (the query walks the tree breadth-first, so
-// a parent comes BEFORE its own children). An agent id is also its tab id, so
-// the caller retires those tabs alongside the one it closed -- see
-// CloseAgentResponse.descendant_agent_ids for why they cannot outlive it, and
-// for the filter every caller must apply.
+// Returns the close result, whose descendant_agent_ids holds the agent's
+// DESCENDANT subagent ids, at any depth and in no particular order (the query
+// walks the tree breadth-first, so a parent comes BEFORE its own children). An
+// agent id is also its tab id, so the caller retires those tabs alongside the
+// one it closed -- see CloseTabResponse.descendant_agent_ids for why they cannot
+// outlive it, and for the filter every caller must apply.
 //
 // For a ROOT the list is read AFTER the teardown, and that is the point. The
 // provider keeps creating child rows while it drains: `EnsureChildAgent` fires
@@ -485,7 +608,7 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 //
 // A child close reads its own list early: it runs no teardown at all. That
 // close is UI-only, but the child's own subagents still go with it.
-func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) (*leapmuxv1.CloseTabResult, []string) {
+func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
 	// Assigned by rootClose below for a root, and by the child branch for a
 	// child. Read in the return statement, which runs after closeTabCommon.
 	var descendants []string
@@ -511,7 +634,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 			slog.Warn("close agent: list descendants failed", "agent", agentID, "err", derr)
 			childDescendants = nil
 		}
-		return &leapmuxv1.CloseTabResult{}, childDescendants
+		return &leapmuxv1.CloseTabResponse{DescendantAgentIds: childDescendants}
 	}
 	// A cold start can hold the lifecycle lock while its provider handshake
 	// ignores cancellation. Close admission before the stop and database stamp,
@@ -529,7 +652,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// once this agent was the LAST tab working there -- the shell belongs
 		// to the directory, not to any one tab, so another agent or terminal
 		// tab in the same directory keeps it. Here rather than in the
-		// CloseAgent handler because rootTeardown is the one funnel every close
+		// CloseTab handler because rootTeardown is the one funnel every close
 		// passes through -- the online RPC, closeTabForConvergence (the orphan
 		// reap and the deleted-workspace sweep), and the workspace cleanup. In
 		// the handler the offline paths would be a weaker subset, which is the
@@ -613,7 +736,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		}
 		return rootRetired, firstErr
 	}
-	return svc.closeTabCommon(
+	result := svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,
 		userID,
@@ -621,14 +744,16 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		linkPolicy,
 		rootTeardown,
 		rootClose,
-	), descendants
+	)
+	result.DescendantAgentIds = descendants
+	return result
 }
 
 // closeTerminalTabCommon is the terminal mirror of closeAgentTabCommon. Note it
 // uses RemoveTerminal, not StopTerminal: the latter signals the process but
 // leaves the manager's terminals/meta/exitDone entries behind, which the
 // reconciler used to do and which leaked one entry per reaped terminal.
-func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResponse {
 	// Read BEFORE the teardown, because the reap below needs the row's
 	// working_dir and closeTabCommon stamps closed_at on the way out. A failed
 	// read leaves both zero, which the reap treats as "no directory", and the

@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -29,7 +30,7 @@ func lastWatchUpdateAck(t *testing.T, w *testResponseWriter) *leapmuxv1.WatchUpd
 	t.Helper()
 	var last *leapmuxv1.WatchUpdateAck
 	for _, s := range w.streamsSnapshot() {
-		if s.GetIsError() {
+		if s.GetError() != nil {
 			continue
 		}
 		var resp leapmuxv1.WatchEventsResponse
@@ -53,7 +54,7 @@ func TestMessageSupplementProjectionReplayRejectsShadowedPrivateState(t *testing
 	}
 	observed := make(chan failureObservation, 1)
 	writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
-		if !message.GetIsError() {
+		if message.GetError() == nil {
 			return
 		}
 		modes := svc.Watchers.AgentModesForChannel(base.ChannelID())
@@ -73,8 +74,8 @@ func TestMessageSupplementProjectionReplayRejectsShadowedPrivateState(t *testing
 	assert.True(t, streamEndedWithError(base))
 	assert.Zero(t, countCatchUpCompletes(base), "corruption cannot complete a successful replay")
 	for _, stream := range base.streamsSnapshot() {
-		if stream.IsError {
-			assert.Equal(t, int32(codes.Internal), stream.ErrorCode)
+		if stream.GetError() != nil {
+			assert.Equal(t, int32(codes.Internal), stream.GetError().GetCode())
 			continue
 		}
 		var response leapmuxv1.WatchEventsResponse
@@ -93,7 +94,7 @@ func TestMessageSupplementProjectionReplayRejectsShadowedPrivateState(t *testing
 
 func streamEndedWithError(w *testResponseWriter) bool {
 	for _, s := range w.streamsSnapshot() {
-		if s.GetIsError() {
+		if s.GetError() != nil {
 			return true
 		}
 	}
@@ -193,7 +194,7 @@ func TestWatchEvents_OpeningRequestRegistersAndAcks(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 
@@ -212,7 +213,7 @@ func TestWatchEvents_PartialRejectionAcksAndKeepsStream(t *testing.T) {
 		ID: "agent-good", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{
 			{AgentId: "agent-good", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1},
 			{AgentId: "agent-bad", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1},
@@ -243,7 +244,7 @@ func TestWatchEvents_AgentLookupFailureLeavesRegistrationsUntouched(t *testing.T
 		ID: "term-1", WorkingDir: "/tmp", Cols: 80, Rows: 24, Screen: []byte("s"),
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
@@ -281,7 +282,7 @@ func TestWatchEvents_EmptyRequestClearsAndAcks(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -311,7 +312,7 @@ func TestWatchEvents_CoalescedRevisionsApplyNewest(t *testing.T) {
 		ID: "agent-2", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -347,7 +348,7 @@ func TestWatchEvents_CancelFrameUnwatchesAndEnds(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -368,7 +369,7 @@ func TestWorkerPrivateEvents_CancelReleasesSubscriber(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		dispatch(d, "WatchWorkerPrivateEvents", &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w)
+		dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w)
 		close(done)
 	}()
 
@@ -389,7 +390,7 @@ func TestWorkerPrivateEvents_CancelReleasesSubscriber(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "cancel must release the subscriber")
 
 	w2 := newTestWriter()
-	go dispatch(d, "WatchWorkerPrivateEvents", &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w2)
+	go dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w2)
 
 	require.Eventually(t, func() bool {
 		svc.PrivateEvents.mu.Lock()
@@ -420,7 +421,7 @@ func TestWatchEvents_UndecodableRevisionSurvives(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -450,7 +451,7 @@ func TestWatchEvents_PromoteNotifyToFullReplaysOnce(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -542,7 +543,7 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				ClaimToken: "instance-token-1",
 			})
 
-			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+			dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 			}, w)
 			waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -606,7 +607,7 @@ func TestWatchEvents_DemoteThenRepromoteReplaysAgain(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	require.Eventually(t, func() bool {
@@ -649,7 +650,7 @@ func TestWatchEvents_DualPromote_TerminalCatchUpBeforeAgent(t *testing.T) {
 	startTestTerminal(t, svc, ctx, "term-dual")
 	require.True(t, svc.Terminals.AppendOutput("term-dual", []byte("screen")))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-dual", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-dual", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
@@ -713,7 +714,7 @@ func TestWatchEvents_DualPromote_GitBatchOverlapsTerminalCatchUp(t *testing.T) {
 		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	}
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-overlap", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-overlap", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
@@ -781,7 +782,7 @@ func TestWatchEvents_DualPromote_CancelsGitBatchWhenTransportDies(t *testing.T) 
 		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	}
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-git-cancel", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-git-cancel", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
@@ -823,7 +824,7 @@ func TestWatchEvents_LookupFailedRetryPerformsOwedReplay(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -869,7 +870,7 @@ func TestWatchEvents_ChannelCloseUnwatches(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -911,7 +912,7 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 	})
 	require.NoError(t, err)
 	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
-		Method: "WatchEvents", Payload: payload,
+		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload,
 	}, refusing)
 
 	// The handler must have surfaced a FailedPrecondition error and NOT left a
@@ -941,7 +942,7 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
@@ -964,9 +965,9 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 		"a promote racing a cancel must not ship a catch-up replay")
 }
 
-// TestReplayIncludesBackgroundTasksSnapshot pins the background-task leg of
-// replayAgentCatchUp: a tab that watches an agent in FULL mode must receive an
-// AgentBackgroundTasksChanged event carrying the registry snapshot for the
+// TestReplayIncludesBackgroundTasksSnapshot pins the background-task step of
+// replayAgentCatchUp: a tab that watches an agent in FULL mode must receive a
+// background_tasks_changed event carrying the registry snapshot for the
 // agent's root owner. The registry is keyed by root owner id (a child tab ships
 // its root's registry under the root id), so the replay's AgentId is the root
 // even when a child is watched -- but here a root is watched directly, so the
@@ -994,7 +995,7 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 
 	// Watch the root in FULL mode: this triggers replayAgentCatchUp, which must
 	// emit a BackgroundTasksChanged event alongside the message/todo/status legs.
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 
@@ -1004,17 +1005,19 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
 	assert.False(t, streamEndedWithError(w), "watch replay must not surface a stream error")
 
-	// Find the BackgroundTasksChanged event in the replay burst and assert it
+	// Find the background_tasks_changed event in the replay burst and assert it
 	// carries the seeded snapshot under the root's id.
-	var bgEvent *leapmuxv1.AgentBackgroundTasksChanged
+	var bgEvent *leapmuxv1.AgentBackgroundTaskSnapshot
+	var bgAgentID string
 	for _, e := range decodeAgentEvents(w) {
 		if changed := e.GetBackgroundTasksChanged(); changed != nil {
 			bgEvent = changed
+			bgAgentID = e.GetAgentId()
 			break
 		}
 	}
-	require.NotNil(t, bgEvent, "replay must include an AgentBackgroundTasksChanged event")
-	assert.Equal(t, "root-1", bgEvent.GetAgentId(),
+	require.NotNil(t, bgEvent, "replay must include a background_tasks_changed event")
+	assert.Equal(t, "root-1", bgAgentID,
 		"snapshot event must be keyed by the watched root's id")
 
 	keys := make(map[string]*leapmuxv1.BackgroundTaskItem, len(bgEvent.GetTasks()))
@@ -1060,7 +1063,7 @@ func TestReplayIncludesActivitySnapshot(t *testing.T) {
 		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
 	}))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 
@@ -1123,7 +1126,7 @@ func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 
@@ -1183,7 +1186,7 @@ func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
 	require.True(t, svc.Output.AgentActivitySnapshot("root-own", "root-own").Working(),
 		"the sibling keeps the root busy, or this case proves nothing")
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: childID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	require.Eventually(t, func() bool {
@@ -1244,7 +1247,7 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 	require.NoError(t, err)
 
 	// Watch the CHILD in FULL mode. The replay must succeed without a process.
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: childID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 
@@ -1299,7 +1302,7 @@ func TestListAgentsCarriesBothActivityAnswers(t *testing.T) {
 	svc.Output.setTurnActive("agent-1", "agent-1", false)
 	require.Len(t, settles.openWindows(), 1, "this case needs a settle in flight")
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-1"}}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-1"}}, w)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListAgentsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
@@ -1329,7 +1332,7 @@ func TestReplayFramesAreMarkedAndLiveOnesAreNot(t *testing.T) {
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	require.Eventually(t, func() bool {
@@ -1339,7 +1342,7 @@ func TestReplayFramesAreMarkedAndLiveOnesAreNot(t *testing.T) {
 	replayed := decodeAgentEvents(w)
 	require.NotEmpty(t, replayed, "this case needs a replay burst to inspect")
 	for _, e := range replayed {
-		assert.True(t, e.GetReplay(), "every replayed frame carries the mark: %T", e.GetEvent())
+		assert.NotNil(t, e.GetReplay(), "every replayed frame carries the mark: %T", e.GetEvent())
 	}
 
 	// A live transition afterwards must NOT carry it, or a client would suppress
@@ -1352,7 +1355,7 @@ func TestReplayFramesAreMarkedAndLiveOnesAreNot(t *testing.T) {
 
 	live := decodeAgentEvents(w)[before:]
 	for _, e := range live {
-		assert.False(t, e.GetReplay(), "a live frame is not a replay: %T", e.GetEvent())
+		assert.Nil(t, e.GetReplay(), "a live frame is not a replay: %T", e.GetEvent())
 	}
 }
 
@@ -1365,22 +1368,21 @@ func TestReplayFramesKeepTheExactAcceptedUpdateID(t *testing.T) {
 		ID: ownerID, WorkingDir: t.TempDir()}))
 	svc.Output.processRunning = func(string) bool { return true }
 	const firstID = uint64(1<<53 + 17)
-	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{UpdateId: firstID,
+	dispatch(dispatcher, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{UpdateId: firstID,
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: ownerID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: firstID}}}, writer)
 	require.Eventually(t, func() bool { return countCatchUpCompletes(writer) == 1 }, 30*time.Second, time.Millisecond)
 	first := decodeAgentEvents(writer)
 	require.NotEmpty(t, first)
 	for _, event := range first {
-		assert.True(t, event.Replay)
-		assert.Equal(t, firstID, event.ReplayId)
+		assert.NotNil(t, event.GetReplay())
+		assert.Equal(t, firstID, event.GetReplay().GetReplayId())
 	}
 	before := len(first)
 	svc.Output.setTurnActive(ownerID, ownerID, true)
 	live := decodeAgentEvents(writer)[before:]
 	require.NotEmpty(t, live)
 	for _, event := range live {
-		assert.False(t, event.Replay)
-		assert.Zero(t, event.ReplayId)
+		assert.Nil(t, event.GetReplay())
 	}
 	update := func(id uint64, mode leapmuxv1.WatchMode) {
 		t.Helper()
@@ -1406,8 +1408,8 @@ func TestReplayFramesKeepTheExactAcceptedUpdateID(t *testing.T) {
 	second := decodeAgentEvents(writer)[before:]
 	require.NotEmpty(t, second)
 	for _, event := range second {
-		assert.True(t, event.Replay)
-		assert.Equal(t, firstID+3, event.ReplayId)
+		assert.NotNil(t, event.GetReplay())
+		assert.Equal(t, firstID+3, event.GetReplay().GetReplayId())
 	}
 }
 
@@ -1431,7 +1433,7 @@ func TestReplayPageReadFailureFailsTheExactWatch(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	svc.Queries = db.New(&replayPageReadFailureDBTX{DBTX: svc.DB})
-	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		UpdateId: 17, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: ownerID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, writer)
 	defer writer.deliverStreamRequest(nil, true)
@@ -1441,14 +1443,14 @@ func TestReplayPageReadFailureFailsTheExactWatch(t *testing.T) {
 	assert.Zero(t, countCatchUpCompletes(writer), "a failed page cannot complete catch-up")
 	var failure *leapmuxv1.InnerStreamMessage
 	for _, stream := range writer.streamsSnapshot() {
-		if stream.GetIsError() {
+		if stream.GetError() != nil {
 			failure = stream
 			break
 		}
 	}
 	if assert.NotNil(t, failure, "a failed page must reach the stream's error handler") {
 		assert.True(t, failure.GetEnd())
-		assert.Equal(t, int32(codes.Internal), failure.GetErrorCode())
+		assert.Equal(t, int32(codes.Internal), failure.GetError().GetCode())
 	}
 	assert.Eventually(t, func() bool {
 		return len(svc.Watchers.AgentModesForChannel(writer.ChannelID())) == 0
@@ -1462,7 +1464,7 @@ type replayErrorReplacementWriter struct {
 }
 
 func (writer *replayErrorReplacementWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {
-	if message.GetIsError() {
+	if message.GetError() != nil {
 		writer.once.Do(writer.onError)
 	}
 	return writer.testResponseWriter.SendStream(message)

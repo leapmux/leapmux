@@ -19,7 +19,7 @@ func moveTabBatch(batchID, tabID, newTileID string) *leapmuxv1.OpBatch {
 	return &leapmuxv1.OpBatch{
 		BatchId: batchID,
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-" + batchID, Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: newTileID},
 		}}}},
 	}
@@ -189,7 +189,7 @@ func TestSubscribeWithACL_DeltaMaterializedFrameCarriesBatchEraRecord(t *testing
 	submitBatch(t, mgr, epoch, &leapmuxv1.OpBatch{
 		BatchId: "edit",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-edit", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
 		}}}},
 	})
@@ -277,15 +277,15 @@ func TestSubscribeWithACL_DeltaOrdering_MaterializedBeforeBatchBeforeRemoved(t *
 		BatchId: "both",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-move-a", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 			}}},
 			{OpId: "op-edit-c", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tC",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tC"},
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
 			}}},
 			{OpId: "op-move-b", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tB",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tB"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}}},
 		},

@@ -6,6 +6,8 @@ import {
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { StatFileRequestSchema, StatFileResponseSchema, WorkerFileService } from '~/generated/proto/leapmux/v1/file_pb'
+import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelManager } from './channel'
 import {
@@ -244,6 +246,65 @@ describe('ChannelManager call', () => {
   })
 })
 
+// callWorker takes the method descriptor, so the procedure on the wire and the
+// two message schemas come from one place and cannot be paired wrongly.
+describe('ChannelManager callWorker', () => {
+  const h = new ChannelManagerTestHarness()
+  beforeEach(() => h.setup())
+  afterEach(() => h.teardown())
+
+  it('sends the procedure of the descriptor and decodes the reply with its output schema', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const sentBefore = h.mockWs.sent.length
+
+    const callPromise = h.mgr.callWorker('w1', WorkerFileService.method.statFile, { path: '/repo/a.txt' })
+    await h.flushMicrotasks()
+
+    expect(h.mockWs.sent).toHaveLength(sentBefore + 1)
+    const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    expect(sentMsg.channelId).toBe(channelId)
+    const envelope = fromBinary(InnerMessageSchema, sessions.get(channelId)!.responder.receive.decrypt(sentMsg.ciphertext))
+    if (envelope.kind.case !== 'request')
+      throw new Error('callWorker must send an inner request')
+    // The worker registers each handler under this exact string.
+    expect(envelope.kind.value.method).toBe('/leapmux.v1.WorkerFileService/StatFile')
+    expect(fromBinary(StatFileRequestSchema, envelope.kind.value.payload).path).toBe('/repo/a.txt')
+
+    h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), toBinary(StatFileResponseSchema, create(StatFileResponseSchema, {
+      info: { name: 'a.txt', path: '/repo/a.txt', size: 42n },
+    })))
+    const resp = await callPromise
+    expect(resp.$typeName).toBe('leapmux.v1.StatFileResponse')
+    expect(resp.info).toMatchObject({ name: 'a.txt', path: '/repo/a.txt', size: 42n })
+  })
+
+  // A caller that aborted before the call opens no channel, and the error
+  // names the procedure it would have called.
+  it('rejects an aborted call before it opens a channel', async () => {
+    const controller = new AbortController()
+    controller.abort('dismissed')
+
+    const err = await h.mgr.callWorker('w-unopened', WorkerFileService.method.statFile, { path: '/x' }, { signal: controller.signal })
+      .catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ChannelError)
+    expect((err as ChannelError).message).toBe('RPC call \'/leapmux.v1.WorkerFileService/StatFile\' aborted')
+    expect(h.mockWs.sent).toHaveLength(0)
+  })
+
+  it('rejects with the worker\'s in-band error', async () => {
+    const channelId = await h.openTestChannel('w1')
+
+    const callPromise = h.mgr.callWorker('w1', WorkerFileService.method.statFile, { path: '/missing' })
+    await h.flushMicrotasks()
+    const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    sessions.get(channelId)!.responder.receive.decrypt(sentMsg.ciphertext)
+    h.sendErrorResponseFromWorker(channelId, Number(sentMsg.correlationId), 'no such file')
+
+    await expect(callPromise).rejects.toMatchObject({ source: 'rpc', code: 2, message: 'no such file' })
+  })
+})
+
 describe('ChannelManager stream', () => {
   const h = new ChannelManagerTestHarness()
   beforeEach(() => h.setup())
@@ -252,7 +313,7 @@ describe('ChannelManager stream', () => {
   it('should receive stream messages', async () => {
     const channelId = await h.openTestChannel('w1')
     const messages: Uint8Array[] = []
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onMessage((msg) => {
       messages.push(msg.payload)
     })
@@ -268,7 +329,7 @@ describe('ChannelManager stream', () => {
   it('should handle stream end', async () => {
     const channelId = await h.openTestChannel('w1')
     const endFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onEnd(endFn)
 
     h.sendStreamEndFromWorker(channelId, handle.requestId)
@@ -279,7 +340,7 @@ describe('ChannelManager stream', () => {
   it('should handle stream error', async () => {
     const channelId = await h.openTestChannel('w1')
     const errorFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
@@ -297,7 +358,7 @@ describe('ChannelManager stream', () => {
     // forever with nothing to retry from.
     const channelId = await h.openTestChannel('w1')
     const errorFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     h.sendErrorResponseFromWorker(channelId, handle.requestId, 'workspace not accessible')
@@ -314,7 +375,7 @@ describe('ChannelManager stream', () => {
     const channelId = await h.openTestChannel('w1')
     const errorFn = vi.fn()
     const endFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
     handle.onEnd(endFn)
 
@@ -326,7 +387,7 @@ describe('ChannelManager stream', () => {
   })
 
   it('should throw if channel is not open', async () => {
-    expect(() => h.mgr.stream('nonexistent', 'WatchEvents', new Uint8Array())).toThrow('channel not open')
+    expect(() => h.mgr.stream('nonexistent', WorkerWatchService.method.watchEvents, new Uint8Array())).toThrow('channel not open')
   })
 
   it('surfaces a send failure (throws + unregisters) when the socket is not OPEN', async () => {
@@ -340,14 +401,14 @@ describe('ChannelManager stream', () => {
     // throw rather than be silently dropped, or the stream listener stays
     // registered producing no data and no error until the channel is torn down.
     h.mockWs.readyState = MockWebSocket.CLOSED
-    expect(() => h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())).toThrow(/WebSocket not open/)
+    expect(() => h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())).toThrow(/WebSocket not open/)
     // The catch unregistered the listener rather than leaking it.
     expect(internals.streamListeners.size).toBe(0)
   })
 
   it('should unregister the stream even when onError throws', async () => {
     const channelId = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(() => {
       throw new Error('listener bug')
     })
@@ -363,7 +424,7 @@ describe('ChannelManager stream', () => {
 
   it('should unregister the stream even when onEnd throws', async () => {
     const channelId = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onEnd(() => {
       throw new Error('listener bug')
     })
@@ -375,7 +436,7 @@ describe('ChannelManager stream', () => {
   it('should keep the stream live and isolated when onMessage throws mid-stream', async () => {
     const channelId = await h.openTestChannel('w1')
     const received: Uint8Array[] = []
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     let calls = 0
     handle.onMessage((msg) => {
       calls++
@@ -397,7 +458,7 @@ describe('ChannelManager stream', () => {
 
   it('stream handle send and cancel route through sendOnStream', async () => {
     const channelId = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     const sentBefore = h.mockWs.sent.length
     handle.send(new Uint8Array([5, 6]))
     expect(h.mockWs.sent.length).toBeGreaterThan(sentBefore)
@@ -409,7 +470,7 @@ describe('ChannelManager stream', () => {
 
   it('cancel on a closed channel does not throw', async () => {
     const channelId = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     await h.mgr.closeChannel(channelId)
     expect(() => handle.cancel()).not.toThrow()
   })
@@ -480,7 +541,7 @@ describe('ChannelManager late frames', () => {
 
   it('logs the frames that answer a stream cancel at debug level instead of warning', async () => {
     const channelId = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     const onMessage = vi.fn()
     const onEnd = vi.fn()
     handle.onMessage(onMessage)
@@ -509,7 +570,6 @@ describe('ChannelManager late frames', () => {
 
     const resp = create(InnerRpcResponseSchema, {
       payload: new Uint8Array([9, 9]),
-      isError: false,
     })
     const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -632,7 +692,6 @@ describe('ChannelManager chunking', () => {
     // Build a response InnerMessage.
     const resp = create(InnerRpcResponseSchema, {
       payload: new Uint8Array([10, 20, 30, 40, 50]),
-      isError: false,
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -670,7 +729,6 @@ describe('ChannelManager chunking', () => {
 
     const resp = create(InnerRpcResponseSchema, {
       payload: new Uint8Array([9]),
-      isError: false,
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -855,7 +913,7 @@ describe('ChannelManager chunking', () => {
     const pair = sessions.get(channelId)!
 
     const errorFn = vi.fn()
-    const handle = smallMgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = smallMgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     // Send chunks that exceed the limit, targeted at the stream's requestId.
@@ -935,7 +993,7 @@ describe('ChannelManager chunking', () => {
     try {
       const channelId = await openOn(smallMgr)
 
-      expect(() => smallMgr.stream(channelId, 'WatchEvents', new Uint8Array(200))).toThrow('message too large')
+      expect(() => smallMgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array(200))).toThrow('message too large')
 
       expect(channelInternals(smallMgr, channelId).streamListeners.size).toBe(0)
     }
@@ -1004,7 +1062,7 @@ describe('ChannelManager chunking', () => {
       throw new Error('noise: nonce overflow (hard limit)')
     }
 
-    expect(() => h.mgr.stream(channelId, 'WatchEvents', new Uint8Array([1]))).toThrow('nonce overflow')
+    expect(() => h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array([1]))).toThrow('nonce overflow')
     expect(h.mgr.isOpen(channelId)).toBe(false)
   })
 })
@@ -1048,7 +1106,7 @@ describe('ChannelManager reassembly lifetime', () => {
     try {
       const pair = sessions.get(channelId)!
       const errorFn = vi.fn()
-      const handle = cm.stream(channelId, 'WatchEvents', new Uint8Array())
+      const handle = cm.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
       handle.onError(errorFn)
 
       // 30 + 30 > 50: the breach.
@@ -1094,7 +1152,7 @@ describe('ChannelManager reassembly lifetime', () => {
     try {
       const pair = sessions.get(channelId)!
       let errorCalls = 0
-      const handle = cm.stream(channelId, 'WatchEvents', new Uint8Array())
+      const handle = cm.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
       handle.onError(() => {
         errorCalls++
         throw new Error('listener boom')
@@ -1143,7 +1201,6 @@ describe('ChannelManager reassembly lifetime', () => {
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array())
     const resp = create(InnerRpcResponseSchema, {
       payload: new Uint8Array([9, 9]),
-      isError: false,
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -1184,7 +1241,7 @@ describe('ChannelManager reassembly lifetime', () => {
   it('reaps the reassembly buffer when a stream listener is removed', async () => {
     const channelId = await h.openTestChannel('w1')
     const pair = sessions.get(channelId)!
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
 
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
     const ch = channelInternals(h.mgr, channelId)
@@ -1221,7 +1278,7 @@ describe('ChannelManager observability hooks onChannelError', () => {
     h.mgr.onChannelError(cb)
 
     const errorFn = vi.fn()
-    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
 
     h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')

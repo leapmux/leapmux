@@ -1,6 +1,7 @@
 import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   DoubleListSchema,
   FloatingWindowRecordSchema,
@@ -21,7 +22,7 @@ import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
 /**
  * NewState returns an empty UserCrdtState seeded with the given user id.
  * Workspaces map is initialized empty; the lifecycle create/delete paths add
- * and remove entries via SetWorkspaceRegisterOp / TombstoneWorkspaceOp in the
+ * and remove entries via CreateWorkspaceOp / TombstoneWorkspaceOp in the
  * op log (the same serialized pipeline every other op flows through).
  */
 export function newState(userId: string): UserCrdtState {
@@ -62,10 +63,10 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
       applyTombstoneNode(state, body.value.nodeId, canon)
       break
     case 'setTabRegister':
-      applySetTabRegister(state, body.value, canon)
+      applySetTabRegister(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', body.value.field, canon)
       break
     case 'tombstoneTab':
-      applyTombstoneTab(state, body.value.tabType, body.value.tabId, canon)
+      applyTombstoneTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
       break
     case 'reviveTab':
       applyReviveTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
@@ -76,11 +77,8 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneFloatingWindow':
       applyTombstoneFloatingWindow(state, body.value.windowId, canon)
       break
-    case 'setWorkspaceRootNode':
-      applySetWorkspaceRootNode(state, body.value.workspaceId, body.value.rootNodeId)
-      break
-    case 'setWorkspaceRegister':
-      applySetWorkspaceRegister(state, body.value.workspaceId)
+    case 'createWorkspace':
+      applyCreateWorkspace(state, body.value.workspaceId, body.value.rootNodeId)
       break
     case 'tombstoneWorkspace':
       applyTombstoneWorkspace(state, body.value.workspaceId)
@@ -231,6 +229,10 @@ const nodeRegisterHandlers: Record<string, NodeFieldHandler> = {
 // The structural op shapes below model the GENERATED oneof `field`, whose
 // "no member selected" variant carries `case: undefined` explicitly.
 function applySetNodeRegister(state: UserCrdtState, op: { nodeId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
+  // An op that selects no register writes nothing, so it creates no record.
+  // The hub refuses one, but a replayed op skips that check.
+  if (op.field.case === undefined)
+    return
   const rec = ensureNode(state, op.nodeId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -278,17 +280,34 @@ const tabRegisterHandlers: Record<string, TabFieldHandler> = {
   },
 }
 
-function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
-  const rec = ensureTab(state, op.tabId, op.tabType)
-  if (rec.tabType !== op.tabType)
+/**
+ * Whether an op names a tab: a tab identity is a type AND an id. A replayed op,
+ * or one stored under an older numbering, can carry neither -- protobuf-es reads
+ * such an op as a tab id with no type -- and applying it would create a record
+ * of no type, or one under the empty key, that every reader treats as a real
+ * tab. Mirrors the hub's `tabIdentity` / `EntityRef.HasIdentity`.
+ */
+function hasTabIdentity(tabType: number, tabId: string): boolean {
+  return tabId !== '' && tabType !== TabType.UNSPECIFIED
+}
+
+function applySetTabRegister(state: UserCrdtState, tabType: number, tabId: string, field: { case?: string | undefined, value?: unknown }, hlc: HLC): void {
+  // This guard is the only way into ensureTab. An op that selects no register
+  // writes nothing, so it creates no record either.
+  if (!hasTabIdentity(tabType, tabId) || field.case === undefined)
+    return
+  const rec = ensureTab(state, tabId, tabType)
+  if (rec.tabType !== tabType)
     return
   if (!hlcIsZero(rec.tombstoneAt))
     return
-  const f = op.field as { case: string, value: unknown }
+  const f = field as { case: string, value: unknown }
   tabRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
 function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
+  if (!hasTabIdentity(tabType, tabId))
+    return
   const existing = state.tabs[tabId]
   // The tombstone is a true LWW register over both tombstone and revive
   // writes: a tombstone applies only when its HLC is newer than the current
@@ -317,7 +336,7 @@ function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string,
  * cannot re-close a tab the user reopened.
  */
 function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
-  if (!tabId)
+  if (!hasTabIdentity(tabType, tabId))
     return
   const existing = state.tabs[tabId]
   if (!existing) {
@@ -372,6 +391,11 @@ const floatingWindowRegisterHandlers: Record<string, FloatingWindowFieldHandler>
 }
 
 function applySetFloatingWindowRegister(state: UserCrdtState, op: { windowId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
+  // An op that selects no register writes nothing, so it creates no record. A
+  // stored op that wrote workspace_id under its old field number, 9, decodes
+  // that way.
+  if (op.field.case === undefined)
+    return
   const rec = ensureFloatingWindow(state, op.windowId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -416,19 +440,22 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
     map[id] = init(existing)
 }
 
-function applySetWorkspaceRootNode(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
-  // Lazy-create the `WorkspaceContentsRecord` if this client hasn't
-  // seen it yet. The hub's lifecycle create batch seeds the record via a
-  // `SetWorkspaceRegisterOp` in the SAME batch as this op, so a subscriber
-  // that admits the workspace receives both and the record is normally
-  // already present when this runs. This lazy-create is the bootstrap-replay
-  // safety net for op logs written before `SetWorkspaceRegisterOp` existed
-  // (a `SetWorkspaceRootNode` op with no companion register), or for a
-  // subscriber whose initial `UserMaterialized` predated the workspace and
-  // whose filter misses the seed batch. Either leaves the op with no record
-  // to land on — and `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap`
-  // would wait forever on `state.workspaces[wsID].rootNodeId`, leaving the
-  // newly-created workspace tile-less in the UI.
+/**
+ * applyCreateWorkspace creates a workspace's WorkspaceContentsRecord with its
+ * set-once root. The record is created when absent; an existing record keeps
+ * any root it already holds and takes this one only when its root is empty, so
+ * a re-drained create seed batch never clobbers a workspace the user has since
+ * rooted or populated. An empty workspace id is ignored. Mirrors backend
+ * `applyCreateWorkspace`.
+ *
+ * Creating the record here, rather than waiting for one, matters to a
+ * subscriber whose initial `UserMaterialized` predated the workspace:
+ * `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap` wait on
+ * `state.workspaces[wsID].rootNodeId`, and would wait forever otherwise.
+ */
+function applyCreateWorkspace(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
+  if (!workspaceId)
+    return
   let rec = state.workspaces[workspaceId]
   if (!rec) {
     rec = create(WorkspaceContentsRecordSchema, { workspaceId })
@@ -436,21 +463,6 @@ function applySetWorkspaceRootNode(state: UserCrdtState, workspaceId: string, ro
   }
   if (rec.rootNodeId === '')
     rec.rootNodeId = rootNodeId
-}
-
-/**
- * applySetWorkspaceRegister seeds the WorkspaceContentsRecord map entry for a
- * workspace (root_node_id empty). Idempotent: a workspace that already exists
- * is left untouched, so a re-drained create seed batch (after a transient
- * consume fault) never clobbers a workspace the user has since rooted or
- * populated. Mirrors backend `applySetWorkspaceRegister`.
- */
-function applySetWorkspaceRegister(state: UserCrdtState, workspaceId: string): void {
-  if (!workspaceId)
-    return
-  if (!state.workspaces[workspaceId]) {
-    state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId })
-  }
 }
 
 /**

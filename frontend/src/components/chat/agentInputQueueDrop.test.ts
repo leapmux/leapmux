@@ -37,7 +37,6 @@ describe('isLockedInputState', () => {
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
   return create(QueuedAgentInputSchema, {
     id,
-    agentId: 'agent-1',
     text: `text ${id}`,
     kind: AgentInputKind.USER_MESSAGE,
     state: AgentInputState.QUEUED,

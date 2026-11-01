@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { SessionReport } from '~/generated/proto/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
@@ -84,7 +85,11 @@ const OAuthCompleteSignupPage: Component = () => {
     }
     setSubmitting(true)
     setError(null)
+    let report: SessionReport | undefined
     try {
+      // ALONE in the try: a failed completion is the only failure that
+      // re-enables Submit. The pending signup token is single-use, so once
+      // the hub accepted it this page must never send it again.
       const resp = await authClient.completeOAuthSignup({
         signupToken: signupToken(),
         username: slug,
@@ -92,26 +97,28 @@ const OAuthCompleteSignupPage: Component = () => {
         email: email().trim(),
         ...captcha.fields(),
       })
-      await auth.setAuth(resp.user!)
-      // OAuth signup mirrors the SignUp flow: when the provider returned
-      // an unverified email and verification is enabled, send the user
-      // to /verify-email so they can paste the code (or click the emailed
-      // link). The hub created the session, so the authenticated
-      // VerifyEmail RPC is reachable from there.
-      if (resp.emailVerification?.verificationRequired) {
-        if (resp.emailVerification.nextResendAvailableAt)
-          auth.setVerificationResendAvailableAt(resp.emailVerification.nextResendAvailableAt)
-        navigate('/verify-email', { replace: true })
-      }
-      else {
-        navigate('/', { replace: true })
-      }
+      report = resp.sessionReport
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Sign up failed'))
       captcha.reset(e)
       setSubmitting(false)
+      return
     }
+    // The account exists now. An absent account in the report recovers,
+    // and recovery owns the navigation; only an adopted one is routed here.
+    if (await auth.setAuth(report) !== 'adopted')
+      return
+    // OAuth signup mirrors the SignUp flow: when the provider returned
+    // an unverified email and verification is enabled, send the user
+    // to /verify-email so they can paste the code (or click the emailed
+    // link). The hub created the session, so the authenticated
+    // VerifyEmail RPC is reachable from there. The adoption already seeded
+    // the resend cooldown from the report.
+    if (report?.emailVerification?.verificationRequired)
+      navigate('/verify-email', { replace: true })
+    else
+      navigate('/', { replace: true })
   }
 
   return (

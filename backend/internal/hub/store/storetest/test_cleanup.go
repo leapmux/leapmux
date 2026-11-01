@@ -544,7 +544,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 				workerID := id.Generate()
 				require.NoError(t, tx.Workers().Create(ctx, store.CreateWorkerParams{
 					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
-					PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 				}))
 				_, err := tx.Workers().ForceDeregister(ctx, workerID)
 				require.NoError(t, err)

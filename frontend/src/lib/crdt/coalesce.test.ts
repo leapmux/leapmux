@@ -60,8 +60,7 @@ function setTabTile(opId: string, tabId: string, tileId: string): CrdtOp {
     body: {
       case: 'setTabRegister',
       value: {
-        tabId,
-        tabType: 1,
+        tab: { tabType: 1, tabId },
         field: { case: 'tileId', value: tileId },
       },
     },

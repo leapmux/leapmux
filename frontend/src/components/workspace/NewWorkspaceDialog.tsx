@@ -18,7 +18,7 @@ import { ResumeSessionField } from '~/components/shell/ResumeSessionField'
 import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { WorkerSelector } from '~/components/shell/WorkerSelector'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { createTitleState } from '~/hooks/createTitleState'
@@ -140,10 +140,9 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       const agentResp = await workerRpc.openAgent(wid, {
         agentProvider: provider,
         // title omitted: worker picks "Agent <Name>" from the shared pool.
-        workerId: wid,
         workingDir: worker.workingDir(),
         ...openAgentRequestOptions(provider),
-        ...gitMode.toGitFields(),
+        gitSetup: gitMode.toGitSetup(),
         ...(sessionId.trimmed()
           ? {
               agentSessionId: sessionId.trimmed(),

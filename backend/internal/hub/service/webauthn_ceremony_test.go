@@ -62,7 +62,7 @@ func (c *passkeyCeremony) assertionResponse(optionsJSON string) (string, error) 
 }
 
 type passkeyAuthTestEnv struct {
-	client leapmuxv1connect.AuthServiceClient
+	client authTestClient
 	store  store.Store
 }
 
@@ -113,14 +113,14 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return passkeyAuthTestEnv{
-		client: leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		client: newAuthTestClient(server.Client(), server.URL),
 		store:  st,
 	}
 }
@@ -159,8 +159,7 @@ func beginPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient,
 func finishPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*leapmuxv1.FinishPasskeySignUpResponse, error) {
 	t.Helper()
 	return client.FinishPasskeySignUp(passkeyCtx(context.Background()), &leapmuxv1.FinishPasskeySignUpRequest{
-		SessionId:      sessionID,
-		CredentialJson: credentialJSON,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: sessionID, CredentialJson: credentialJSON},
 	})
 }
 
@@ -174,7 +173,56 @@ func beginPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, 
 func finishPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*leapmuxv1.FinishPasskeyLoginResponse, error) {
 	t.Helper()
 	return client.FinishPasskeyLogin(passkeyCtx(context.Background()), &leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      sessionID,
-		CredentialJson: credentialJSON,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: sessionID, CredentialJson: credentialJSON},
 	})
+}
+
+// TestFinishPasskeyLoginRefusesAnEmptyCredential pins the request check: a
+// Finish call that carries no ceremony session or no credential is the
+// caller's malformed request, answered InvalidArgument before the WebAuthn
+// library runs. Without the check the library's own error went through the
+// credential classifier and came back as another code.
+func TestFinishPasskeyLoginRefusesAnEmptyCredential(t *testing.T) {
+	t.Parallel()
+	env := setupPasskeyAuthTestServer(t, nil, nil)
+
+	for name, req := range map[string]*leapmuxv1.FinishPasskeyLoginRequest{
+		"an absent credential": {},
+		"no session id":        {Credential: &leapmuxv1.WebAuthnCredential{CredentialJson: `{"id":"x"}`}},
+		"no credential":        {Credential: &leapmuxv1.WebAuthnCredential{SessionId: "session"}},
+		"neither":              {Credential: &leapmuxv1.WebAuthnCredential{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := env.client.FinishPasskeyLogin(passkeyCtx(context.Background()), req)
+			require.Error(t, err)
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "got %v", err)
+		})
+	}
+}
+
+// TestAuthFinishHandlersRefuseAnEmptyCredential is the consistency half of
+// the request check: every anonymous Finish refuses an absent credential, an
+// empty session id and an empty credential with InvalidArgument, before any
+// ceremony runs.
+func TestAuthFinishHandlersRefuseAnEmptyCredential(t *testing.T) {
+	t.Parallel()
+	env := setupPasskeyAuthTestServer(t, nil, nil)
+
+	for name, cred := range map[string]*leapmuxv1.WebAuthnCredential{
+		"an absent credential": nil,
+		"no session id":        {CredentialJson: `{"id":"x"}`},
+		"no credential":        {SessionId: "session"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := passkeyCtx(context.Background())
+			_, err := env.client.FinishPasskeySignUp(ctx, &leapmuxv1.FinishPasskeySignUpRequest{Credential: cred})
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "FinishPasskeySignUp: %v", err)
+
+			// The recovery token is checked first, so the request carries one.
+			_, err = env.client.FinishAccountRecoveryPasskey(ctx, &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
+				Token: "recovery-token", Credential: cred,
+			})
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "FinishAccountRecoveryPasskey: %v", err)
+		})
+	}
 }

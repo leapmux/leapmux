@@ -6,9 +6,9 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 
@@ -465,7 +465,9 @@ describe('LastTabCloseDialog', () => {
       // the worker itself resolved and echoed back on this very inspect
       // response, not a tab id it would have to resolve again.
       expect(workerRpc.pushBranch).toHaveBeenCalledWith('w7', { workingDir: '/repo' })
-      expect(workerRpc.inspectLastTabClose).toHaveBeenCalledWith('w7', { tabType: TabType.AGENT, tabId: 't9' })
+      expect(workerRpc.inspectLastTabClose).toHaveBeenCalledWith('w7', {
+        tab: { tabType: TabType.AGENT, tabId: 't9' },
+      })
     })
   })
 

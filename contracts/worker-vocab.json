@@ -128,9 +128,6 @@
     "Provider": "provider",
     "Metadata": "metadata"
   },
-  "rpcMethods": {
-    "GetAgentSpanMessages": "GetAgentSpanMessages"
-  },
   "modelSentinels": {
     "accountDefaultModel": "default",
     "effortAuto": "auto"

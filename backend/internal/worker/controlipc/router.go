@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	"google.golang.org/grpc/codes"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -53,9 +53,13 @@ type LocalStreams interface {
 // Router dispatches local-IPC requests to the appropriate backend.
 //
 // Method names are namespaced:
-//   - "worker.<Name>": the local worker's inner-RPC dispatcher (or a
-//     cross-worker channel when target_worker_id ≠ this worker).
+//   - "worker.<procedure>", such as
+//     "worker./leapmux.v1.WorkerAgentService/OpenAgent": the local worker's
+//     inner-RPC dispatcher when target_worker_id is empty or this worker's id,
+//     and a cross-worker channel for any other id.
 //   - "hub.<Service>/<Method>": the hub-bound client.
+//
+// The router never reads a payload to choose the destination.
 type Router struct {
 	WorkerID        string
 	UserID          userid.UserID
@@ -64,35 +68,22 @@ type Router struct {
 	Hub             HubClient
 	HubStreams      HubStreamer
 	Streams         LocalStreams
-	// Now overrides time.Now for tests that want to advance the
-	// SweepStaleCancellers clock without sleeping. Defaults to
-	// time.Now when nil.
-	Now func() time.Time
 	// StreamCancellers maps the IPC stream's client_request_id to a
-	// streamCancelEntry. Entries are stored on stream registration
-	// and deleted via defer on stream exit — but a panicking handler
-	// or a partial teardown can leave an entry behind. The Server
-	// janitor calls SweepStaleCancellers periodically to limit the
-	// worst-case lifetime of an orphaned cancel function.
+	// streamCancelEntry. StreamInner stores the entry when its stream starts
+	// and removes it in a defer when the call returns, on every path, a
+	// panicking handler included. The map therefore holds exactly the live
+	// streams, and no entry needs a sweep: an old entry is a long stream.
 	StreamCancellers sync.Map // string → *streamCancelEntry
 }
 
 // streamCancelEntry retains frames before binding and cancels its stream context on retirement.
 type streamCancelEntry struct {
-	cancel       context.CancelFunc
-	registeredAt time.Time
-	inbox        channel.StreamInbox
-}
-
-func (r *Router) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
+	cancel context.CancelFunc
+	inbox  channel.StreamInbox
 }
 
 // CallInner executes a unary inner-RPC.
-func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID string) (*leapmuxv1.CallInnerResponse, error) {
+func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID string) (*leapmuxv1.InnerRpcResponse, error) {
 	switch ns := namespaceOf(method); ns {
 	case namespaceWorker:
 		bare := stripNamespace(method)
@@ -106,7 +97,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if err != nil {
 			return nil, relayError(err)
 		}
-		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
+		return &leapmuxv1.InnerRpcResponse{Payload: out}, nil
 	case namespaceHub:
 		if r.Hub == nil {
 			return nil, connect.Errorf(connect.CodeUnimplemented, "hub client not configured")
@@ -115,7 +106,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if err != nil {
 			return nil, relayError(err)
 		}
-		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
+		return &leapmuxv1.InnerRpcResponse{Payload: out}, nil
 	default:
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
@@ -123,7 +114,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 
 // relayError preserves Connect error codes from the hub or a sibling worker.
 // Callers use these codes to distinguish missing resources from unavailable workers.
-// These failures carry a nil response. They do not use dispatchLocal's gRPC ErrorCode field.
+// These failures carry a nil response. They do not use dispatchLocal's in-band error.
 func relayError(err error) error {
 	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
 	if code := connect.CodeOf(err); code != connect.CodeUnknown {
@@ -144,13 +135,9 @@ func (r *Router) withLocalStream(info TokenInfo, fn func(streamID string)) {
 
 // dispatchLocal collects a same-worker unary response synchronously.
 // The handler receives the caller's context, so cancellation stops subprocesses that use exec.CommandContext.
-func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method string, payload []byte) *leapmuxv1.CallInnerResponse {
+func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method string, payload []byte) *leapmuxv1.InnerRpcResponse {
 	if r.LocalDispatcher == nil {
-		return &leapmuxv1.CallInnerResponse{
-			IsError:      true,
-			ErrorCode:    int32(codes.Unimplemented),
-			ErrorMessage: "local dispatcher not configured",
-		}
+		return channelwire.NewErrorResponse(int32(codes.Unimplemented), "local dispatcher not configured")
 	}
 	collector := &responseCollector{}
 	r.withLocalStream(info, func(streamID string) {
@@ -161,12 +148,12 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 }
 
 // StreamInner runs a server-streaming inner RPC.
-func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
+func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var entry *streamCancelEntry
 	if clientReqID != "" {
-		entry = &streamCancelEntry{cancel: cancel, registeredAt: r.now()}
+		entry = &streamCancelEntry{cancel: cancel}
 		if previous, loaded := r.StreamCancellers.Swap(clientReqID, entry); loaded {
 			if old, ok := previous.(*streamCancelEntry); ok {
 				old.inbox.Cancel()
@@ -189,13 +176,7 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 			return connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
 		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, bare, payload, func(m *leapmuxv1.InnerStreamMessage) {
-			_ = onMsg(&leapmuxv1.StreamInnerEnvelope{
-				Payload:      m.GetPayload(),
-				End:          m.GetEnd(),
-				IsError:      m.GetIsError(),
-				ErrorMessage: m.GetErrorMessage(),
-				ErrorCode:    m.GetErrorCode(),
-			})
+			_ = onMsg(m)
 		}, func(ctrl channel.StreamController) {
 			if !entry.bind(ctrl) {
 				ctrl.OnCancel()
@@ -207,14 +188,14 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 		}
 		bare := stripNamespace(method)
 		return r.HubStreams.StreamHub(streamCtx, r.UserID, bare, payload, func(p []byte) error {
-			return onMsg(&leapmuxv1.StreamInnerEnvelope{Payload: p})
+			return onMsg(&leapmuxv1.InnerStreamMessage{Payload: p})
 		})
 	default:
 		return connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
 }
 
-func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, entry *streamCancelEntry, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
+func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, entry *streamCancelEntry, onMsg func(*leapmuxv1.InnerStreamMessage) error) error {
 	if r.LocalDispatcher == nil {
 		return connect.Errorf(connect.CodeUnimplemented, "local dispatcher not configured")
 	}
@@ -234,15 +215,27 @@ func (entry *streamCancelEntry) bind(ctrl channel.StreamController) bool {
 	return entry != nil && entry.inbox.Bind(ctrl)
 }
 
-// UpdateStream retains a revision until its controller is ready.
+// UpdateStream delivers a revision to the stream that clientReqID identifies,
+// or retires that stream when cancel is set. An unknown or empty id is a no-op:
+// the stream already ended, and its entry went with it.
 //
-// An inbox that overflows CANCELS the stream, and the caller reports
+// A revision waits in the stream's inbox until its controller is ready. An
+// inbox that overflows CANCELS the stream, and the caller reports
 // ResourceExhausted. Dropping the frame instead would leave the client believing
 // its revision landed, and reading the wrong events for as long as the stream
 // lives. The cancel is what makes the loss visible: the client's handle closes,
 // and its next update opens a fresh stream that carries the current interest.
-func (r *Router) UpdateStream(clientReqID string, payload []byte) error {
+func (r *Router) UpdateStream(clientReqID string, payload []byte, cancel bool) error {
 	if clientReqID == "" {
+		return nil
+	}
+	if cancel {
+		if value, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
+			if entry, ok := value.(*streamCancelEntry); ok {
+				entry.inbox.Cancel()
+				entry.cancel()
+			}
+		}
 		return nil
 	}
 	if value, ok := r.StreamCancellers.Load(clientReqID); ok {
@@ -255,35 +248,6 @@ func (r *Router) UpdateStream(clientReqID string, payload []byte) error {
 		}
 	}
 	return nil
-}
-
-// CancelStream cancels an active stream by client_request_id.
-func (r *Router) CancelStream(clientReqID string) {
-	if v, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
-		if entry, ok := v.(*streamCancelEntry); ok {
-			entry.inbox.Cancel()
-			entry.cancel()
-		}
-	}
-}
-
-// SweepStaleCancellers cancels entries that predate cutoff and still occupy the same map slot.
-// StreamInner uses Swap for registration and CompareAndDelete for cleanup. The sweep removes entries that survive abnormal cleanup.
-func (r *Router) SweepStaleCancellers(cutoff time.Time) int {
-	dropped := 0
-	r.StreamCancellers.Range(func(key, value any) bool {
-		entry, ok := value.(*streamCancelEntry)
-		if !ok {
-			return true
-		}
-		if entry.registeredAt.Before(cutoff) && r.StreamCancellers.CompareAndDelete(key, entry) {
-			entry.inbox.Cancel()
-			entry.cancel()
-			dropped++
-		}
-		return true
-	})
-	return dropped
 }
 
 // --- ResponseWriter implementations ---
@@ -326,25 +290,16 @@ func (*responseCollector) BindStream(channel.StreamController) (func(), bool) {
 	return func() {}, false
 }
 
-func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
+func (c *responseCollector) toResponse() *leapmuxv1.InnerRpcResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.errSent != nil {
-		return &leapmuxv1.CallInnerResponse{
-			IsError:      true,
-			ErrorCode:    c.errSent.code,
-			ErrorMessage: c.errSent.msg,
-		}
+		return channelwire.NewErrorResponse(c.errSent.code, c.errSent.msg)
 	}
 	if c.resp == nil {
-		return &leapmuxv1.CallInnerResponse{}
+		return &leapmuxv1.InnerRpcResponse{}
 	}
-	return &leapmuxv1.CallInnerResponse{
-		Payload:      c.resp.GetPayload(),
-		IsError:      c.resp.GetIsError(),
-		ErrorCode:    c.resp.GetErrorCode(),
-		ErrorMessage: c.resp.GetErrorMessage(),
-	}
+	return c.resp
 }
 
 // streamCollector forwards stream frames and waits for completion or context cancellation.
@@ -352,7 +307,7 @@ func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
 // The result mutex also protects readers that return through context cancellation before settle finishes.
 type streamCollector struct {
 	ctx      context.Context
-	onMsg    func(*leapmuxv1.StreamInnerEnvelope) error
+	onMsg    func(*leapmuxv1.InnerStreamMessage) error
 	streamID string
 	// Retain the original entry even if another stream reuses its request ID.
 	entry *streamCancelEntry
@@ -364,7 +319,7 @@ type streamCollector struct {
 	err error
 }
 
-func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) *streamCollector {
+func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) *streamCollector {
 	return &streamCollector{
 		ctx:      ctx,
 		streamID: streamID,
@@ -403,15 +358,15 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		c.settle(nil)
 		return nil
 	}
-	if resp.GetIsError() {
-		c.settle(fmt.Errorf("rpc error: %s", resp.GetErrorMessage()))
+	if rpcErr := resp.GetError(); rpcErr != nil {
+		c.settle(fmt.Errorf("rpc error: %s", rpcErr.GetMessage()))
 		return nil
 	}
 	// SendResponse can complete a stream with a final payload. Forward that payload before completion.
 	// An empty response carries only the completion signal.
 	var outcome error
 	if len(resp.GetPayload()) > 0 {
-		outcome = c.onMsg(&leapmuxv1.StreamInnerEnvelope{
+		outcome = c.onMsg(&leapmuxv1.InnerStreamMessage{
 			Payload: resp.GetPayload(),
 			End:     true,
 		})
@@ -432,21 +387,16 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	if c.ctx.Err() != nil {
 		return c.ctx.Err()
 	}
-	err := c.onMsg(&leapmuxv1.StreamInnerEnvelope{
-		Payload:      m.GetPayload(),
-		End:          m.GetEnd(),
-		IsError:      m.GetIsError(),
-		ErrorMessage: m.GetErrorMessage(),
-		ErrorCode:    m.GetErrorCode(),
-	})
+	err := c.onMsg(m)
 
 	// End and error frames complete the collector, as SendResponse and SendError do.
-	if m.GetEnd() || m.GetIsError() {
+	rpcErr := m.GetError()
+	if m.GetEnd() || rpcErr != nil {
 		if c.claim() {
 			// Preserve delivery failures on a clean End. An explicit provider error takes precedence.
 			outcome := err
-			if m.GetIsError() {
-				outcome = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
+			if rpcErr != nil {
+				outcome = fmt.Errorf("rpc error %d: %s", rpcErr.GetCode(), rpcErr.GetMessage())
 			}
 			c.settle(outcome)
 		}

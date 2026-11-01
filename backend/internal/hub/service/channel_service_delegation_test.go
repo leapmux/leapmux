@@ -109,12 +109,9 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, w
 
 	workerID = id.Generate()
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 
 	return userID, wsA, wsB, workerID
@@ -192,12 +189,9 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 	}))
 	attackerWorkerID := id.Generate()
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              attackerWorkerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(attackerID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           attackerWorkerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(attackerID),
 	}))
 
 	bearer, _ = e.mintDelegation(t, victimID, attackerWorkerID, victimWS)

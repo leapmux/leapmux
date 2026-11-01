@@ -12,7 +12,6 @@
 import type { FatalCloseInfo } from './wsCloseCodes'
 import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { fromBinary } from '@bufbuild/protobuf'
-import { HUB_CONTROL_CHANNEL_ID } from '~/generated/contracts/wire'
 import { ChannelMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { unframeBytes } from './channelFraming'
@@ -45,8 +44,6 @@ export interface ChannelRelayDeps {
   wsOpenTimeoutMs: number
   /** Decrypted ChannelMessage for a worker channel (after length-prefix strip). */
   onFrame: (channelId: string, msg: ChannelMessage) => void
-  /** Raw hub-control ChannelMessage (ciphertext still HubControlFrame bytes). */
-  onHubControl: (msg: ChannelMessage) => void
   /**
    * Tear down every live channel after the current socket closes.
    * `successorDialing` is true when a newer ensureWebSocket owns wsPromise —
@@ -304,14 +301,9 @@ export class ChannelRelay {
     // Zero-copy view past the 4-byte length prefix. fromBinary decodes
     // synchronously and protobuf-es aliases the `ciphertext` bytes field as a
     // subarray of this input; both are safe because each inbound WS frame owns a
-    // fresh, never-reused ArrayBuffer and ciphertext is consumed (decrypt /
-    // hub-control parse) before the frame is dropped -- so no copy is needed.
+    // fresh, never-reused ArrayBuffer and ciphertext is consumed (decrypted)
+    // before the frame is dropped -- so no copy is needed.
     const msg: ChannelMessage = fromBinary(ChannelMessageSchema, framed.payload)
-
-    if (msg.channelId === HUB_CONTROL_CHANNEL_ID) {
-      this.deps.onHubControl(msg)
-      return
-    }
 
     this.deps.onFrame(msg.channelId, msg)
   }

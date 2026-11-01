@@ -171,6 +171,23 @@ describe('useChangeBranchInspect', () => {
     })
   })
 
+  // The worker id routes the call and stays out of the request body.
+  it('sends the toplevel to the worker that owns it, and nothing else', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue(makeResp())
+    await createRoot(async (dispose) => {
+      useChangeBranchInspect({
+        workerId: 'w1',
+        gitToplevel: '/repo',
+        branchName: 'main',
+      })
+      await flushMicrotasks()
+      expect(workerRpc.inspectBranchChange).toHaveBeenCalledWith('w1', { path: '/repo' }, {
+        signal: expect.any(AbortSignal),
+      })
+      dispose()
+    })
+  })
+
   it('refresh() re-issues the RPC', async () => {
     vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue(makeResp())
     await createRoot(async (dispose) => {

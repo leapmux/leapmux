@@ -31,12 +31,17 @@ export interface AgentInfoCardProps {
   /**
    * The agent's worker home directory, for the tilde-compressed paths below.
    *
-   * A PROP, not `agent.homeDir`. `agentTabToInfo` builds the `AgentInfo` from a
-   * Tab row, which carries no home directory, so that field is always the empty
-   * string here and every path on the card rendered absolute. The panel above
-   * reads the worker store instead and passes the answer down.
+   * A PROP, because `AgentInfo` carries no home directory: a worker reports
+   * its own once, through GetWorkerSystemInfo, and the panel above reads the
+   * worker store and passes the answer down.
    */
   homeDir?: string
+  /**
+   * The name of the agent's worker, for the Worker row. The same source as
+   * `homeDir`: `AgentInfo` carries no worker name. Empty or absent hides the
+   * row, as the store holds no info for the worker yet.
+   */
+  workerName?: string
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -87,6 +92,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   const gitView = createMemo(() => props.gitView)
   const branchLabel = createMemo(() => props.branchName)
   const homeDir = createMemo(() => props.homeDir)
+  const workerName = createMemo(() => props.workerName)
   // One spelling of the kind for the whole card, read by the row's label and by
   // its glyph. A branch stamped onto a tab before its first status push has no
   // git view at all; "Branch" is the safe reading there, because it claims
@@ -165,7 +171,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           </div>
         )}
       </Show>
-      <Show when={agent()?.workerName} keyed>
+      <Show when={workerName()} keyed>
         {workerName => (
           <div class={styles.infoRow} data-testid="info-row-worker">
             <span class={styles.infoLabel}>Worker</span>

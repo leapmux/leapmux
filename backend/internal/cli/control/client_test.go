@@ -189,7 +189,7 @@ func (f *fakeChannelHub) GetWorkerHandshakeParams(
 	context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest,
 ) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
 	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
-		PublicKey:      f.staticPub,
+		Keys:           &leapmuxv1.WorkerPublicKeys{X25519: f.staticPub},
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}, nil
 }

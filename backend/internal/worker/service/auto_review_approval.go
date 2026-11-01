@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -26,7 +27,7 @@ func registerAutoReviewApprovalHandler(d registrar, svc *Service) {
 	//
 	// The handler refuses subagent approvals. A review belongs to the subagent's thread,
 	// so the approval must never reach its root instead.
-	registerAgentGuarded(d, "ApproveAutoReviewDenial", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
+	registerAgentGuarded(d, leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.ApproveAutoReviewDenialRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			if r.GetMessageId() == "" || r.GetReviewId() == "" {
 				sendInvalidArgument(sender, "an approval needs a message ID and a review ID")

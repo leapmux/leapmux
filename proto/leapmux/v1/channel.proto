@@ -1,20 +1,32 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 import "leapmux/v1/scope.proto";
 
 // ChannelService manages end-to-end encrypted channels between Frontend and Worker.
 // Hub acts purely as an authenticated relay -- it cannot read channel traffic.
+//
+// Opening the channel is worker:read for all three methods. What the app may
+// then CALL inside the Noise tunnel is enforced by the worker, from the grant
+// the hub puts in the handshake; see channel.Caller.
 service ChannelService {
-  // Get everything needed to start a Noise_NK handshake with a Worker:
-  // the persisted public key material and the live connection's encryption
-  // mode. The caller always needs both together, so bundling them avoids a
-  // back-to-back RPC pair before every OpenChannel.
-  rpc GetWorkerHandshakeParams(GetWorkerHandshakeParamsRequest) returns (GetWorkerHandshakeParamsResponse);
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
+  // Get everything needed to start a Noise_NK handshake with a Worker: the
+  // public keys and the encryption mode, both from the WorkerHello of the
+  // worker's live connection. The caller always needs both together, so
+  // bundling them avoids a back-to-back RPC pair before every OpenChannel.
+  rpc GetWorkerHandshakeParams(GetWorkerHandshakeParamsRequest) returns (GetWorkerHandshakeParamsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
   // Open an encrypted channel to a Worker (triggers Noise_NK handshake via relay).
-  rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse);
+  rpc OpenChannel(OpenChannelRequest) returns (OpenChannelResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
   // Close an encrypted channel.
-  rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse);
+  rpc CloseChannel(CloseChannelRequest) returns (CloseChannelResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
 }
 
 // --- ChannelService RPC messages ---
@@ -23,20 +35,28 @@ message GetWorkerHandshakeParamsRequest {
   string worker_id = 1;
 }
 
-// GetWorkerHandshakeParamsResponse bundles the persisted key material (which
-// only makes sense once the worker uploads its keys) with the live
-// encryption mode from the worker's current connection. A successful response
-// therefore guarantees the worker is online and ready for OpenChannel.
+// WorkerPublicKeys is the key material a client needs to open a Noise_NK
+// channel to a worker. The worker announces it in its WorkerHello
+// (worker.proto).
+message WorkerPublicKeys {
+  bytes x25519 = 1; // Static X25519 key for Noise_NK.
+  bytes mlkem = 2;  // ML-KEM-1024 key for post-quantum encapsulation.
+  bytes slhdsa = 3; // SLH-DSA-SHAKE-256f key for post-quantum authentication.
+}
+
+// GetWorkerHandshakeParamsResponse carries the keys and the encryption mode of
+// ONE worker connection: the one the hub holds when it answers. Both come from
+// that connection's WorkerHello, so they can never belong to two different
+// connections. A successful response therefore guarantees the worker is online
+// and ready for OpenChannel.
 message GetWorkerHandshakeParamsResponse {
-  bytes public_key = 1;
-  bytes mlkem_public_key = 2;
-  bytes slhdsa_public_key = 3;
-  EncryptionMode encryption_mode = 4;
+  WorkerPublicKeys keys = 1;
+  EncryptionMode encryption_mode = 2;
 }
 
 // EncryptionMode specifies which E2EE handshake protocol the Worker uses.
 enum EncryptionMode {
-  ENCRYPTION_MODE_UNSPECIFIED = 0;    // Treated as POST_QUANTUM
+  ENCRYPTION_MODE_UNSPECIFIED = 0;    // Never valid: the hub refuses a WorkerHello that carries it
   ENCRYPTION_MODE_CLASSIC = 1;        // Classical Noise_NK (X25519 only)
   ENCRYPTION_MODE_POST_QUANTUM = 2;   // Hybrid PQ Noise_NK (X25519 + ML-KEM + SLH-DSA)
 }
@@ -144,8 +164,7 @@ enum ChannelMessageFlags {
 // ChannelMessage is the outer envelope for all encrypted channel traffic.
 // Hub reads only the channel_id for routing; ciphertext is opaque.
 message ChannelMessage {
-  uint32 protocol_version = 1;
-  string channel_id = 2;
+  string channel_id = 1;
   // 64-bit so the id space cannot wrap. A correct client never reuses a live id,
   // but a 32-bit counter WOULD eventually wrap onto one: a tunnel burns an id per
   // 32 KiB write and per credit grant, and a desktop channel (whose cookie session
@@ -154,28 +173,9 @@ message ChannelMessage {
   // caller timed out and unregistered -- is delivered to whatever request now holds
   // that id, misrouted in a way the duplicate-response guard cannot detect. At 2^64
   // the wrap is unreachable rather than merely improbable.
-  uint64 correlation_id = 3;
-  ChannelMessageFlags flags = 4;
-  bytes ciphertext = 5;
-}
-
-// --- Hub control frames (sent via reserved channel ID "_hub") ---
-
-// HubControlFrame is a Hub-originated message sent to frontends over the
-// existing /ws/channel WebSocket using the reserved channel_id "_hub".
-// The serialized bytes are placed in the ChannelMessage.ciphertext field
-// (plaintext — not encrypted, since the Hub is the originator).
-// Multiple events may be batched into a single frame via debouncing.
-message HubControlFrame {
-  repeated HubControlEvent events = 1;
-}
-
-// HubControlEvent identifies a type of Hub-originated event.
-enum HubControlEvent {
-  HUB_CONTROL_EVENT_UNSPECIFIED = 0;
-  // The worker list changed (e.g. a worker was registered or
-  // deregistered). The frontend should re-fetch via ListWorkers.
-  HUB_CONTROL_EVENT_WORKERS_CHANGED = 1;
+  uint64 correlation_id = 2;
+  ChannelMessageFlags flags = 3;
+  bytes ciphertext = 4;
 }
 
 // --- Inner RPC protocol (serialized inside encrypted channel) ---
@@ -244,25 +244,30 @@ message RekeyReject {
 
 // Request from Frontend to Worker (encrypted).
 message InnerRpcRequest {
-  string method = 1;  // e.g. "ListWorkspaces", "EnqueueAgentInput"
+  string method = 1;  // The procedure path, e.g. "/leapmux.v1.WorkerAgentInputService/EnqueueAgentInput"
   bytes payload = 2;  // Serialized protobuf for the specific method
 }
 
-// Unary response from Worker to Frontend (encrypted).
-message InnerRpcResponse {
-  bytes payload = 1;       // Serialized protobuf response
-  bool is_error = 2;
-  string error_message = 3;
-  int32 error_code = 4;    // ConnectRPC-style error code
+// The error an inner RPC answered with. `code` is a google.rpc.Code value;
+// gRPC and ConnectRPC share that numbering.
+message RpcError {
+  int32 code = 1;
+  string message = 2;
 }
 
-// Streaming response from Worker to Frontend (agent output, terminal I/O, watch events).
+// Unary response from Worker to Frontend (encrypted). A present `error` means
+// the call failed, and `payload` is then empty.
+message InnerRpcResponse {
+  bytes payload = 1;  // Serialized protobuf response
+  RpcError error = 2;
+}
+
+// Streaming response from Worker to Frontend (agent output, terminal I/O, watch
+// events). A present `error` fails the stream and ends it.
 message InnerStreamMessage {
-  bytes payload = 1;       // Serialized protobuf for the specific event
-  bool end = 2;            // Marks end of stream
-  bool is_error = 3;
-  string error_message = 4;
-  int32 error_code = 5;
+  bytes payload = 1;  // Serialized protobuf for the specific event
+  bool end = 2;       // Marks end of stream
+  RpcError error = 3;
 }
 
 // InnerStreamRequest is a Client -> Worker frame addressed to an ALREADY-OPEN

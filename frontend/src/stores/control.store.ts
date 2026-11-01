@@ -240,10 +240,10 @@ export function createControlStore() {
       removeRequest(agentId, requestId, claimToken, ControlResponseState.COMPLETED)
     },
 
-    cancelRequest(event: Pick<AgentControlCancelRequest, 'agentId' | 'requestId' | 'claimToken' | 'responseState'>) {
+    cancelRequest(agentId: string, event: Pick<AgentControlCancelRequest, 'requestId' | 'claimToken' | 'responseState'>) {
       let retainForRecording = false
       setState(produce((s) => {
-        const request = s.pendingByAgent[event.agentId]?.find(request => request.requestId === event.requestId && request.claimToken === event.claimToken)
+        const request = s.pendingByAgent[agentId]?.find(request => request.requestId === event.requestId && request.claimToken === event.claimToken)
         retainForRecording = event.responseState !== ControlResponseState.COMPLETED
           && (event.responseState === ControlResponseState.DELIVERED || request?.responseState === ControlResponseState.DELIVERED)
         if (retainForRecording && request)
@@ -251,7 +251,7 @@ export function createControlStore() {
       }))
       if (retainForRecording)
         return
-      removeRequest(event.agentId, event.requestId, event.claimToken, event.responseState === ControlResponseState.COMPLETED
+      removeRequest(agentId, event.requestId, event.claimToken, event.responseState === ControlResponseState.COMPLETED
         ? ControlResponseState.COMPLETED
         : ControlResponseState.CANCELED)
     },

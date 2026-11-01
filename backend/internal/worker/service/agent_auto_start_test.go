@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
@@ -158,7 +159,7 @@ func TestEnqueueAgentInput_AutoStartBroadcastsStartingDuringEnsureRunning(t *tes
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
@@ -211,7 +212,7 @@ func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
@@ -363,7 +364,7 @@ func TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone(t *testing.T) {
 // TestEnsureAgentRunning_ACloseCancelsAMessageDrivenColdStart is the payoff for
 // moving the AgentStartup protocol into ensureAgentRunning.
 //
-// The three message-driven cold starts used to register nothing, so a CloseAgent
+// The three message-driven cold starts used to register nothing, so a tab close
 // could not reach one: the tab's teardown ran while the CLI was still in its
 // handshake, and the process it produced was one nothing would ever stop. Only
 // the boot-time resume sweep had this, because it hand-rolled the protocol at
@@ -511,7 +512,7 @@ func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 			InputId: newTestAgentInputID(),
 			Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 			AgentId: "agent-1",
@@ -570,7 +571,7 @@ func testEnqueueAgentInputWaitsPastTheAPITimeoutForAnOpenStartup(t *testing.T) {
 	openHandle := svc.AgentStartup.begin("agent-1", func() {})
 	require.NotNil(t, openHandle)
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
@@ -741,7 +742,7 @@ func TestSendAgentRawMessage_DoesNotStartAnAgentWhoseStartupFailed(t *testing.T)
 	svc.persistAgentStartupError("agent-1", "claude: command not found")
 
 	w := newTestWriter()
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"test-mcp-status","request":{"subtype":"mcp_status"}}`,
 	}, w)

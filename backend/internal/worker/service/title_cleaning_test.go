@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -24,7 +25,7 @@ import (
 )
 
 // The six writers of a `title` column in this package -- OpenAgent,
-// OpenTerminal, RenameAgent, UpdateTerminalTitle, EnsureChildAgent and
+// OpenTerminal, RenameAgent, RenameTerminal, EnsureChildAgent and
 // UpsertBackgroundTask -- clean the title they are given and never refuse it.
 // The table below drives all six, because one rule that six writers share is
 // the property these tests exist to hold: a case added here has to pass for
@@ -141,7 +142,7 @@ func openAgentWithTitle(t *testing.T, title string) string {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir: repoDir,
 		Title:      title,
 	}, w)
@@ -195,7 +196,7 @@ func openTerminalWithTitle(t *testing.T, title string) (stored, reported string)
 	defer drainAllInFlight(svc)
 
 	workingDir := t.TempDir()
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: workingDir,
 		// Wide, for the reason openTerminalViaRPC states: a wrapped line
@@ -317,7 +318,7 @@ func TestRenameAgent_CleansTitleInsteadOfRefusingIt(t *testing.T) {
 			seedAgent(t, svc, "agent-1")
 			renames := subscribeTabRenames(t, svc)
 
-			dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{
 				AgentId: "agent-1",
 				Title:   tc.title,
 			}, w)
@@ -364,7 +365,7 @@ func TestRenameAgent_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testing.T) {
 	require.NoError(t, err)
 	renames := subscribeTabRenames(t, svc)
 
-	dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{
 		AgentId: "agent-1",
 		Title:   emptyingTitle,
 	}, w)
@@ -389,7 +390,7 @@ func TestRenameAgent_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testing.T) {
 	// delivers in order, so seeing "Agent Second" FIRST proves the emptied
 	// rename published nothing. A sleep would pass just by not waiting long
 	// enough -- the same result a broken handler would produce.
-	dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{
 		AgentId: "agent-1",
 		Title:   "Agent Second",
 	}, w)
@@ -425,7 +426,7 @@ func renameAgentWithTitleReadFault(t *testing.T, substitute string) []testError 
 	}))
 	seedAgent(t, svc, "agent-1")
 
-	dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{
 		AgentId: "agent-1",
 		Title:   emptyingTitle,
 	}, w)
@@ -481,7 +482,7 @@ func TestRenameAgent_ReportsATitleReadFaultAsInternal(t *testing.T) {
 //
 // A live PTY is the only way to reach this branch: the manager creates the
 // meta entry at StartTerminal, and UpdateTitle refuses an id it does not hold.
-func TestUpdateTerminalTitle_AnEmptiedTitleReportsTheLiveTitleNotTheStoredOne(t *testing.T) {
+func TestRenameTerminal_AnEmptiedTitleReportsTheLiveTitleNotTheStoredOne(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -500,7 +501,7 @@ func TestUpdateTerminalTitle_AnEmptiedTitleReportsTheLiveTitleNotTheStoredOne(t 
 	require.True(t, svc.Terminals.UpdateTitle("term-1", "Terminal Live"),
 		"the manager must hold a meta entry for a live terminal")
 
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
 		TerminalId: "term-1",
 		Title:      emptyingTitle,
 	}, w)
@@ -508,7 +509,7 @@ func TestUpdateTerminalTitle_AnEmptiedTitleReportsTheLiveTitleNotTheStoredOne(t 
 	require.Empty(t, w.errors, "an emptied title is a no-op, not a failure")
 	require.Len(t, w.responses, 1)
 
-	var resp leapmuxv1.UpdateTerminalTitleResponse
+	var resp leapmuxv1.RenameTerminalResponse
 	lastResponse(t, w, &resp)
 	assert.Equal(t, "Terminal Live", resp.GetTitle(),
 		"the manager wins while the terminal is live")
@@ -534,7 +535,7 @@ func seedTerminalWithTitle(t *testing.T, svc *Service, terminalID, title string)
 	}))
 }
 
-func TestUpdateTerminalTitle_CleansTitleInsteadOfRefusingIt(t *testing.T) {
+func TestRenameTerminal_CleansTitleInsteadOfRefusingIt(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range titleCleaningCases {
@@ -545,7 +546,7 @@ func TestUpdateTerminalTitle_CleansTitleInsteadOfRefusingIt(t *testing.T) {
 			seedTerminalWithTitle(t, svc, "term-1", "Terminal Liam")
 			renames := subscribeTabRenames(t, svc)
 
-			dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+			dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
 				TerminalId: "term-1",
 				Title:      tc.title,
 			}, w)
@@ -557,7 +558,7 @@ func TestUpdateTerminalTitle_CleansTitleInsteadOfRefusingIt(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, row.Title, "the column holds the cleaned title")
 
-			var resp leapmuxv1.UpdateTerminalTitleResponse
+			var resp leapmuxv1.RenameTerminalResponse
 			lastResponse(t, w, &resp)
 			assert.Equal(t, tc.want, resp.GetTitle(), "the reply reports the cleaned title")
 
@@ -571,14 +572,14 @@ func TestUpdateTerminalTitle_CleansTitleInsteadOfRefusingIt(t *testing.T) {
 
 // The terminal mirror of the agent case: an emptied title leaves the row (and
 // the in-memory manager) holding the title they already have.
-func TestUpdateTerminalTitle_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testing.T) {
+func TestRenameTerminal_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t)
 	seedTerminalWithTitle(t, svc, "term-1", "Terminal Liam")
 	renames := subscribeTabRenames(t, svc)
 
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
 		TerminalId: "term-1",
 		Title:      emptyingTitle,
 	}, w)
@@ -590,14 +591,14 @@ func TestUpdateTerminalTitle_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, "Terminal Liam", row.Title, "the stored title must survive an emptied rename")
 
-	var resp leapmuxv1.UpdateTerminalTitleResponse
+	var resp leapmuxv1.RenameTerminalResponse
 	lastResponse(t, w, &resp)
 	assert.Equal(t, "Terminal Liam", resp.GetTitle(),
 		"the reply reports the title still in force, not the empty string it refused")
 
 	// Same ordering proof as the agent case: the second update's broadcast
 	// arriving first shows the emptied one published nothing.
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
 		TerminalId: "term-1",
 		Title:      "Terminal Second",
 	}, w)
@@ -672,7 +673,7 @@ func registryRow(t *testing.T, svc *Service) db.AgentBackgroundTask {
 	return rows[0]
 }
 
-// broadcastTask returns the row the newest AgentBackgroundTasksChanged event
+// broadcastTask returns the row the newest background_tasks_changed event
 // carries for rowKey. The whole item, not only its title: the title rule also
 // decides title_is_command, and the broadcast is what every watching client
 // renders from.

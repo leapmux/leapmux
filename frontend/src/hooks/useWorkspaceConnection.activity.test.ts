@@ -1,11 +1,12 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentStatus, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentActivityState, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { AgentEventSchema, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -149,9 +150,11 @@ function agentEvent(agentId: string, event: NonNullable<MessageInitShape<typeof 
       value: create(AgentEventSchema, {
         agentId,
         event,
-        replay,
-        replayId: replay ? 1n : 0n,
-        replayAgentId: replay ? agentId : '',
+        ...(replay
+          ? {
+              replay: { replayId: 1n, agentId },
+            }
+          : {}),
       }),
     },
   })
@@ -223,7 +226,6 @@ describe('useWorkspaceConnection replay marking', () => {
     streamOpts().onEvent(WORKER, agentEvent('a1', {
       case: 'controlRequest',
       value: {
-        agentId: 'a1',
         requestId: 'req-1',
         payload: controlPayload(),
       },
@@ -240,7 +242,6 @@ describe('useWorkspaceConnection replay marking', () => {
     streamOpts().onEvent(WORKER, agentEvent('a1', {
       case: 'controlRequest',
       value: {
-        agentId: 'a1',
         requestId: 'req-1',
         payload: controlPayload(),
       },

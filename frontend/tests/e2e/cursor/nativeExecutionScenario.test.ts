@@ -112,7 +112,7 @@ describe('cursorNativeToolOutput', () => {
       agentSessionId: 'current-session',
       content: encoder.encode('{}'),
     })
-    calls.worker.mockImplementation(async (_worker, _method, _requestSchema, _responseSchema, request) => {
+    calls.worker.mockImplementation(async (_worker, _method, request) => {
       return request.anchor === MessagePageAnchor.OLDEST
         ? create(ListAgentMessagesResponseSchema, {
             messages: [

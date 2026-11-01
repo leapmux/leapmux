@@ -15,7 +15,7 @@ const mockSignalPasskeyRemoved = vi.fn()
 const mockSignalAcceptedPasskeys = vi.fn()
 const mockBeginPasskeyRegistration = vi.fn()
 const mockFinishPasskeyRegistration = vi.fn()
-const mockStartRegistration = vi.fn()
+const mockRegisterForChallenge = vi.fn()
 const mockUser = vi.fn()
 const mockRefreshUser = vi.fn()
 
@@ -52,7 +52,7 @@ vi.mock('~/lib/systemInfo', async () => {
 // text a user reads.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
-  startRegistration: (...args: unknown[]) => mockStartRegistration(...args),
+  registerForChallenge: (...args: unknown[]) => mockRegisterForChallenge(...args),
   startAuthentication: vi.fn(),
   passkeyErrorMessage: (_e: unknown, fallback: string) => fallback,
   signalPasskeyRemoved: (...args: unknown[]) => mockSignalPasskeyRemoved(...args),
@@ -130,8 +130,10 @@ describe('AccountPasskeys', () => {
     mockDeactivatePasskeyAuth.mockResolvedValue({})
     mockRenamePasskey.mockResolvedValue({})
     mockChangePassword.mockResolvedValue({})
-    mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
-    mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
+    mockBeginPasskeyRegistration.mockResolvedValue({
+      challenge: { sessionId: 'sess-1', optionsJson: '{}' },
+    })
+    mockRegisterForChallenge.mockResolvedValue({ sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' })
     mockFinishPasskeyRegistration.mockResolvedValue({
       passkey: {
         id: 'pk-2',
@@ -154,15 +156,52 @@ describe('AccountPasskeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await vi.waitFor(() => {
       expect(mockFinishPasskeyRegistration).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: 'sess-1',
-        credentialJson: '{"id":"cred-new"}',
+        credential: { sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' },
       }))
     })
+    // The ceremony runs on the challenge that Begin returned.
+    expect(mockRegisterForChallenge).toHaveBeenCalledExactlyOnceWith({ sessionId: 'sess-1', optionsJson: '{}' })
     expect(mockSignalAcceptedPasskeys).toHaveBeenCalledWith(
       'localhost',
       'user-1',
       expect.arrayContaining(['cred-abc', 'cred-new']),
     )
+  })
+
+  // The Finish can echo no row. The id the browser minted, read from the
+  // registration JSON, still reaches the accepted-credential signal, so the
+  // authenticator keeps the new passkey.
+  it('signals the id from the registration JSON when the Finish echoes no passkey', async () => {
+    mockRegisterForChallenge.mockResolvedValueOnce({ sessionId: 'sess-1', credentialJson: '{"id":"cred-json"}' })
+    mockFinishPasskeyRegistration.mockResolvedValueOnce({})
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    await vi.waitFor(() => expect(mockSignalAcceptedPasskeys).toHaveBeenCalledOnce())
+    const [rpId, userId, ids] = mockSignalAcceptedPasskeys.mock.calls[0] ?? []
+    expect([rpId, userId]).toEqual(['localhost', 'user-1'])
+    expect([...ids].sort()).toEqual(['cred-abc', 'cred-json'])
+  })
+
+  // The credential's JSON is an optional field. Without it the signal still
+  // carries every id the page knows, and the add still succeeds.
+  it('signals the known ids for a credential that carries no JSON', async () => {
+    mockRegisterForChallenge.mockResolvedValueOnce({ sessionId: 'sess-1' })
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    await vi.waitFor(() => expect(mockSignalAcceptedPasskeys).toHaveBeenCalledOnce())
+    expect([
+      ...(mockSignalAcceptedPasskeys.mock.calls[0]?.[2] ?? []),
+    ].sort()).toEqual(['cred-abc', 'cred-new'])
+    expect(mockFinishPasskeyRegistration).toHaveBeenCalledWith(expect.objectContaining({
+      credential: { sessionId: 'sess-1' },
+    }))
+    expect(await screen.findByText('Passkey added.')).toBeInTheDocument()
   })
 
   it('renames a passkey without prompting again', async () => {
@@ -533,8 +572,10 @@ describe('AccountPasskeys opens its dialogs on the click', () => {
       ],
       rpId: 'localhost',
     })
-    mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
-    mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
+    mockBeginPasskeyRegistration.mockResolvedValue({
+      challenge: { sessionId: 'sess-1', optionsJson: '{}' },
+    })
+    mockRegisterForChallenge.mockResolvedValue({ sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' })
     mockFinishPasskeyRegistration.mockResolvedValue({
       passkey: {
         id: 'pk-2',

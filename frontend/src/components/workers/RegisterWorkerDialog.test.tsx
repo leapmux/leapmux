@@ -10,14 +10,14 @@ import { RegisterWorkerDialog } from './RegisterWorkerDialog'
 
 const mockCreate = vi.fn<() => Promise<{ registrationKey: string, expiresAt: Timestamp }>>()
 const mockExtend = vi.fn<(args: { registrationKey: string }) => Promise<{ expiresAt: Timestamp }>>()
-const mockDelete = vi.fn<(args: { registrationKey: string }) => Promise<unknown>>()
+const mockRevoke = vi.fn<(args: { registrationKey: string }) => Promise<unknown>>()
 const mockEmail = vi.fn<(args: { registrationKey: string, command: string }) => Promise<unknown>>()
 
 vi.mock('~/api/clients', () => ({
   workerClient: {
     createRegistrationKey: (...a: Parameters<typeof mockCreate>) => mockCreate(...a),
     extendRegistrationKey: (...a: Parameters<typeof mockExtend>) => mockExtend(...a),
-    deleteRegistrationKey: (...a: Parameters<typeof mockDelete>) => mockDelete(...a),
+    revokeRegistrationKey: (...a: Parameters<typeof mockRevoke>) => mockRevoke(...a),
     emailRegistrationInstructions: (...a: Parameters<typeof mockEmail>) => mockEmail(...a),
   },
 }))
@@ -86,7 +86,7 @@ beforeEach(() => {
   mockExtend.mockResolvedValue({
     expiresAt: timestampFromDate(new Date(Date.now() + 5 * 60_000)),
   })
-  mockDelete.mockResolvedValue({})
+  mockRevoke.mockResolvedValue({})
   mockEmail.mockResolvedValue({})
 })
 
@@ -133,7 +133,7 @@ describe('RegisterWorkerDialog', () => {
     unmount()
 
     await waitFor(() => {
-      expect(mockDelete).toHaveBeenCalledWith({ registrationKey: 'KEY-ABC' })
+      expect(mockRevoke).toHaveBeenCalledWith({ registrationKey: 'KEY-ABC' })
     })
   })
 

@@ -2,6 +2,7 @@ import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { NodeRegisterKey } from './project'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { SplitDirection, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   DoubleListSchema,
   HLCSchema,
@@ -10,17 +11,15 @@ import {
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
+  CreateWorkspaceOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
-  SetWorkspaceRegisterOpSchema,
-  SetWorkspaceRootNodeOpSchema,
   TombstoneFloatingWindowOpSchema,
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { SplitDirection, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 import { project, ProjectionCache } from './project'
 
@@ -52,7 +51,10 @@ function setTabOp(tabId: string, field: TabField, p: bigint, l: bigint, c: strin
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setTabRegister',
-      value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field }),
+      value: create(SetTabRegisterOpSchema, {
+        tab: { tabType: TabType.AGENT, tabId },
+        field,
+      }),
     },
   })
 }
@@ -125,7 +127,9 @@ function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'tombstoneTab',
-      value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }),
+      value: create(TombstoneTabOpSchema, {
+        tab: { tabType: TabType.AGENT, tabId },
+      }),
     },
   })
 }
@@ -451,8 +455,8 @@ describe('projection cache', () => {
     return create(CrdtOpSchema, {
       canonicalHlc: hlc(p, l, c),
       body: {
-        case: 'setWorkspaceRootNode',
-        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId, rootNodeId }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId, rootNodeId }),
       },
     })
   }
@@ -460,8 +464,8 @@ describe('projection cache', () => {
     return create(CrdtOpSchema, {
       canonicalHlc: hlc(p, l, c),
       body: {
-        case: 'setWorkspaceRegister',
-        value: create(SetWorkspaceRegisterOpSchema, { workspaceId }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId }),
       },
     })
   }
@@ -673,7 +677,7 @@ describe('projection cache', () => {
       const rand = makeRng(seed)
       const state = newState('user')
       // Two workspaces exist up front so the very first ops land somewhere; the
-      // third is only reachable through `setWorkspaceRegister`.
+      // third is only reachable through `createWorkspace`.
       for (const wsId of ['wA', 'wB']) {
         state.workspaces[wsId] = create(WorkspaceContentsRecordSchema, {
           workspaceId: wsId,

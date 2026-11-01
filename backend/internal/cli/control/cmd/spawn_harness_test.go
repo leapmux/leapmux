@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -58,6 +61,15 @@ type recordingHub struct {
 	// preflight's positive behaviour over the same harness.
 	listWorkers []string
 
+	// listWorkerPages, when non-nil, makes the stub answer ListWorkers one
+	// page at a time: the cursor "" reads the first page, and the cursor
+	// "page-N" reads page N. Each page but the last carries the next cursor.
+	listWorkerPages [][]string
+
+	// worker, when non-nil, answers GetWorker instead of the denial, the
+	// way a session bearer that holds worker:read sees it.
+	worker *leapmuxv1.Worker
+
 	// materialized, when non-nil, answers GetMaterialized with this
 	// snapshot. A command that bootstraps the CRDT (every `tab`
 	// mutation) needs one before it can preflight its target, so a
@@ -73,11 +85,20 @@ type recordingHub struct {
 	// never reads.
 	locateTab *leapmuxv1.WorkspaceTab
 
+	// relocatedTab, when non-nil, is what every LocateTab AFTER the first
+	// answers with: a tab that moved between the resolver's lookup and the
+	// command's own.
+	relocatedTab *leapmuxv1.WorkspaceTab
+
 	mu      sync.Mutex
 	methods []string
+	locates int
+	// workerPageLimits records the page limit of each ListWorkers request
+	// that listWorkerPages answers.
+	workerPageLimits []int32
 }
 
-func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method string, _ []byte) ([]byte, error) {
+func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method string, payload []byte) ([]byte, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
 	h.mu.Unlock()
@@ -95,11 +116,17 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 			Workspace: &leapmuxv1.Workspace{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"},
 		})
 	case method == "LocateTab" && (h.locateTab != nil || h.materialized != nil):
+		h.mu.Lock()
+		h.locates++
+		relocated := h.locates > 1 && h.relocatedTab != nil
+		h.mu.Unlock()
+		if relocated {
+			return proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: h.relocatedTab})
+		}
 		tab := h.locateTab
 		if tab == nil {
 			tab = &leapmuxv1.WorkspaceTab{
-				TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:       "agent-2",
+				Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"},
 				TileId:      "root-1",
 				WorkerId:    "worker-A",
 				WorkspaceId: "ws-1",
@@ -113,6 +140,10 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 		return proto.Marshal(&leapmuxv1.LocateTileResponse{WorkspaceId: "ws-1"})
 	case method == "GetMaterialized" && h.materialized != nil:
 		return proto.Marshal(&leapmuxv1.GetMaterializedResponse{State: h.materialized})
+	case method == "GetWorker" && h.worker != nil:
+		return proto.Marshal(&leapmuxv1.GetWorkerResponse{Worker: h.worker})
+	case method == "ListWorkers" && h.listWorkerPages != nil:
+		return h.answerWorkerPage(payload)
 	case method == "ListWorkers" && h.listWorkers != nil:
 		workers := make([]*leapmuxv1.Worker, 0, len(h.listWorkers))
 		for _, id := range h.listWorkers {
@@ -124,10 +155,45 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 	}
 }
 
+// answerWorkerPage serves one page of listWorkerPages, chosen by the
+// request's cursor.
+func (h *recordingHub) answerWorkerPage(payload []byte) ([]byte, error) {
+	var req leapmuxv1.ListWorkersRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
+	}
+	h.mu.Lock()
+	h.workerPageLimits = append(h.workerPageLimits, req.GetPage().GetLimit())
+	h.mu.Unlock()
+	index := 0
+	if cursor := req.GetPage().GetCursor(); cursor != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(cursor, "page-"))
+		if err != nil || n <= 0 || n >= len(h.listWorkerPages) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Sprintf("bad cursor %q", cursor))
+		}
+		index = n
+	}
+	workers := make([]*leapmuxv1.Worker, 0, len(h.listWorkerPages[index]))
+	for _, id := range h.listWorkerPages[index] {
+		workers = append(workers, &leapmuxv1.Worker{Id: id})
+	}
+	next := ""
+	if index+1 < len(h.listWorkerPages) {
+		next = "page-" + strconv.Itoa(index+1)
+	}
+	return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: workers, Page: &leapmuxv1.PageResponse{NextCursor: next}})
+}
+
 func (h *recordingHub) called() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.methods...)
+}
+
+func (h *recordingHub) requestedWorkerPageLimits() []int32 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]int32(nil), h.workerPageLimits...)
 }
 
 // startSpawnIPC stands up the per-agent local-IPC server a worker

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -41,7 +42,7 @@ func RunTabRename(rawCtx any, args []string) error {
 			// the name it already had. Echoing --title back therefore printed
 			// a name that the tab does not carry.
 			var resp leapmuxv1.RenameAgentResponse
-			if err := callInnerRPC(ctx, c, got.WorkerID, "RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: got.TabID, Title: title}, &resp); err != nil {
+			if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceRenameAgentProcedure, &leapmuxv1.RenameAgentRequest{AgentId: got.TabID, Title: title}, &resp); err != nil {
 				return err
 			}
 			return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "agent", "title": resp.GetTitle()})

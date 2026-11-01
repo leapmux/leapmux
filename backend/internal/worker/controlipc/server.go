@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -20,19 +19,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 )
-
-// StreamCancellerTTL is the inactivity threshold the per-server
-// janitor uses to drop StreamCancellers entries that survived an
-// abnormal stream teardown. Defense-in-depth: streams normally clean
-// up via defer Delete inside Router.StreamInner, so under healthy
-// operation the janitor finds nothing.
-const StreamCancellerTTL = 1 * time.Hour
-
-// streamCancellerSweepInterval drives StreamCancellerTTL. Cheap pass
-// (one sync.Map walk) so it can run frequently relative to the TTL.
-const streamCancellerSweepInterval = 10 * time.Minute
 
 // AuthHeader is the request header the per-agent socket expects to
 // carry the LEAPMUX_CONTROL_TOKEN.
@@ -43,15 +32,13 @@ const AuthHeader = "X-LeapMux-Token"
 // server is a thin wrapper that owns the listener lifetime and
 // dispatches authenticated requests to a Router.
 type Server struct {
-	url       string
-	listener  net.Listener
-	httpSrv   *http.Server
-	router    *Router
-	tokens    *TokenStore
-	wg        sync.WaitGroup
-	janitorWG sync.WaitGroup
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	url      string
+	listener net.Listener
+	httpSrv  *http.Server
+	router   *Router
+	tokens   *TokenStore
+	wg       sync.WaitGroup
+	stopOnce sync.Once
 }
 
 // Options configures a per-agent server.
@@ -64,6 +51,9 @@ type Options struct {
 	TokenInfo TokenInfo
 	// Router is the dispatch layer.
 	Router *Router
+	// OwnerUsername answers Whoami's username; see Factory.OwnerUsername.
+	// nil reports "".
+	OwnerUsername func(userid.UserID) string
 }
 
 // Listen starts a per-agent local-IPC server. Callers should call
@@ -86,7 +76,7 @@ func Listen(opts Options) (*Server, error) {
 	}
 
 	mux := http.NewServeMux()
-	svc := &handler{tokens: tokens, router: opts.Router}
+	svc := &handler{tokens: tokens, router: opts.Router, ownerUsername: opts.OwnerUsername}
 	connectServer := connect.NewServer()
 	leapmuxv1connect.RegisterControlIPCServiceHandler(connectServer, svc)
 	connectMux := http.NewServeMux()
@@ -108,7 +98,6 @@ func Listen(opts Options) (*Server, error) {
 		httpSrv:  srv,
 		router:   opts.Router,
 		tokens:   tokens,
-		stopCh:   make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go func() {
@@ -117,32 +106,7 @@ func Listen(opts Options) (*Server, error) {
 			slog.Warn("controlipc serve error", "url", opts.SocketURL, "error", err)
 		}
 	}()
-	s.janitorWG.Add(1)
-	go func() {
-		defer s.janitorWG.Done()
-		s.runStreamCancellerJanitor()
-	}()
 	return s, nil
-}
-
-// runStreamCancellerJanitor sweeps stale Router.StreamCancellers
-// entries on a fixed interval. Exits when stopCh closes (driven by
-// Close).
-func (s *Server) runStreamCancellerJanitor() {
-	ticker := time.NewTicker(streamCancellerSweepInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			cutoff := time.Now().Add(-StreamCancellerTTL)
-			if dropped := s.router.SweepStaleCancellers(cutoff); dropped > 0 {
-				slog.Warn("controlipc: swept stale stream cancellers",
-					"url", s.url, "dropped", dropped, "ttl", StreamCancellerTTL)
-			}
-		}
-	}
 }
 
 // URL returns the listener URL (unix:<path> / npipe:<name>).
@@ -156,7 +120,6 @@ func (s *Server) Close() error {
 		return nil
 	}
 	s.stopOnce.Do(func() {
-		close(s.stopCh)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_ = s.httpSrv.Shutdown(ctx)
@@ -165,7 +128,6 @@ func (s *Server) Close() error {
 			_ = os.Remove(target)
 		}
 		s.wg.Wait()
-		s.janitorWG.Wait()
 	})
 	return nil
 }
@@ -314,8 +276,9 @@ func tokenFromContext(ctx context.Context) (TokenInfo, string, bool) {
 
 type handler struct {
 	leapmuxv1connect.UnimplementedControlIPCServiceHandler
-	tokens *TokenStore
-	router *Router
+	tokens        *TokenStore
+	router        *Router
+	ownerUsername func(userid.UserID) string
 }
 
 func (h *handler) Whoami(ctx context.Context, req *leapmuxv1.WhoamiRequest) (*leapmuxv1.WhoamiResponse, error) {
@@ -323,15 +286,19 @@ func (h *handler) Whoami(ctx context.Context, req *leapmuxv1.WhoamiRequest) (*le
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, "no token")
 	}
-	return &leapmuxv1.WhoamiResponse{
+	resp := &leapmuxv1.WhoamiResponse{
 		UserId:   info.UserID.String(),
 		WorkerId: info.WorkerID,
 		TabId:    info.TabID,
 		TabType:  info.TabType,
-	}, nil
+	}
+	if h.ownerUsername != nil {
+		resp.Username = h.ownerUsername(info.UserID)
+	}
+	return resp, nil
 }
 
-func (h *handler) CallInner(ctx context.Context, req *leapmuxv1.CallInnerRequest) (*leapmuxv1.CallInnerResponse, error) {
+func (h *handler) CallInner(ctx context.Context, req *leapmuxv1.CallInnerRequest) (*leapmuxv1.InnerRpcResponse, error) {
 	info, _, ok := tokenFromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, "no token")
@@ -354,21 +321,14 @@ func (h *handler) StreamInner(ctx context.Context, req *leapmuxv1.StreamInnerReq
 		req.GetMethod(), req.GetPayload(),
 		req.GetTargetWorkerId(),
 		req.GetClientRequestId(),
-		func(env *leapmuxv1.StreamInnerEnvelope) error {
-			return stream.Send(env)
+		func(msg *leapmuxv1.InnerStreamMessage) error {
+			return stream.Send(msg)
 		})
-}
-
-func (h *handler) Cancel(ctx context.Context, req *leapmuxv1.CancelRequest) (*leapmuxv1.CancelResponse, error) {
-	if id := req.GetClientRequestId(); id != "" {
-		h.router.CancelStream(id)
-	}
-	return &leapmuxv1.CancelResponse{}, nil
 }
 
 func (h *handler) UpdateStream(ctx context.Context, req *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
 	if id := req.GetClientRequestId(); id != "" {
-		if err := h.router.UpdateStream(id, req.GetPayload()); err != nil {
+		if err := h.router.UpdateStream(id, req.GetPayload(), req.GetCancel()); err != nil {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
 		}
 	}

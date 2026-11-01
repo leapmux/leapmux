@@ -69,8 +69,7 @@ test.describe('Account recovery', () => {
       const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
       const passkeyBegin = await hubRequest(leapmuxServer.hubUrl, 'AuthService/BeginPasskeyLogin', {
         username,
-        captchaPayload: captcha.captchaPayload,
-        honeypot: captcha.honeypot,
+        captcha,
       })
       const passkeyRefusal = await hubRefusal(passkeyBegin)
       expect(`${passkeyRefusal.code}: ${passkeyRefusal.message}`).toMatch(/no passkeys|failed_precondition|not found/i)

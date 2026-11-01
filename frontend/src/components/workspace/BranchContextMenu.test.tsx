@@ -178,7 +178,7 @@ describe('BranchContextMenu', () => {
       await openMenu(trigger)
 
       expect(listProviders).toHaveBeenCalledWith('w-1', expect.anything())
-      expect(listShells).toHaveBeenCalledWith('w-1', { workerId: 'w-1' })
+      expect(listShells).toHaveBeenCalledWith('w-1', {})
       expect(screen.getByTestId(`menu-new-agent-${AgentProvider.CLAUDE_CODE}`)).toBeInTheDocument()
       expect(screen.getByText('/bin/zsh')).toBeInTheDocument()
       expect(screen.getByText('/bin/bash')).toBeInTheDocument()

@@ -122,7 +122,6 @@ const childBytes = Buffer.from([0x7B, 0x22, 0x78, 0x22, 0x3A, 0xFF])
 
 function queue(activeTurn: boolean, activeTurnSteerable: boolean, revision = 41n): AgentInputQueueSnapshot {
   return create(AgentInputQueueSnapshotSchema, {
-    agentId: 'child-agent',
     activeTurn,
     activeTurnSteerable,
     revision,
@@ -242,7 +241,7 @@ beforeEach(() => {
   probe.snapshot.mockImplementation(async (_context, id) => transcript(id))
   let childReads = 0
   probe.queue.mockImplementation(async (_server, id) => id === 'parent-agent'
-    ? create(AgentInputQueueSnapshotSchema, { agentId: id, activeTurn: true, revision: 40n })
+    ? create(AgentInputQueueSnapshotSchema, { activeTurn: true, revision: 40n })
     : childReads++ === 0
       ? probe.readiness!
       : probe.fresh!)

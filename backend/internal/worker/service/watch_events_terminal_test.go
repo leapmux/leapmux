@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -56,7 +58,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	// First subscribe: after_offset=0 delivers a cold-catch-up event with
 	// the current screen contents.
 	w1 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w1)
 
@@ -76,7 +78,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	require.Greater(t, currentOffset, int64(0))
 
 	w2 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
@@ -116,7 +118,7 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	// Resubscribe at firstOffset. Must receive an incremental delta with
 	// is_snapshot=false containing only the new bytes.
 	w2 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-delta", AfterOffset: firstOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
@@ -153,7 +155,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	wantEndOffset := freezeAndInjectAltScreenPastRing(t, svc, "t-altrecover")
 
 	w := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
@@ -244,7 +246,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	// Cold subscribe — after_offset=0 is now well below the retained
 	// window.
 	w := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-wrap", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
@@ -272,4 +274,40 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 		"end_offset is the cumulative counter, not truncated to the ring")
 	assert.Greater(t, snap.GetEndOffset(), int64(ringSize),
 		"end_offset reflects the cumulative counter, which is > ring size once the ring has wrapped")
+}
+
+// A replay of a terminal whose shell already exited states EXITED. The worker
+// reports the exit itself; a replay that said READY would offer input to a
+// shell that no longer runs.
+func TestWatchEvents_Terminal_ReplayOfAnExitedTerminalStatesExited(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	// A row with no live shell: the manager holds no terminal for it.
+	seedTerminal(t, svc, "exited-term")
+
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: "exited-term",
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, w)
+	waitWatchUpdateAck(t, w)
+
+	var status leapmuxv1.TerminalStatus
+	require.Eventually(t, func() bool {
+		for _, s := range w.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if sc := resp.GetTerminalEvent().GetStatusChange(); sc != nil {
+				status = sc.GetStatus()
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "the catch-up replay must state the terminal's status")
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
 }

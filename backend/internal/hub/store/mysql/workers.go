@@ -17,13 +17,10 @@ var _ store.WorkerStore = (*workerStore)(nil)
 
 func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) error {
 	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:              p.ID,
-		AuthToken:       p.AuthToken,
-		RegisteredBy:    p.RegisteredBy.String(),
-		PublicKey:       p.PublicKey,
-		MlkemPublicKey:  p.MlkemPublicKey,
-		SlhdsaPublicKey: p.SlhdsaPublicKey,
-		AutoRegistered:  p.AutoRegistered,
+		ID:             p.ID,
+		AuthToken:      p.AuthToken,
+		RegisteredBy:   p.RegisteredBy.String(),
+		AutoRegistered: p.AutoRegistered,
 	}))
 }
 
@@ -58,18 +55,6 @@ func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.
 		return nil, mapErr(err)
 	}
 	return fromDBWorker(row), nil
-}
-
-func (s *workerStore) GetPublicKey(ctx context.Context, id string) (*store.WorkerPublicKeys, error) {
-	row, err := s.conn.q.GetWorkerPublicKey(ctx, id)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &store.WorkerPublicKeys{
-		PublicKey:       row.PublicKey,
-		MlkemPublicKey:  row.MlkemPublicKey,
-		SlhdsaPublicKey: row.SlhdsaPublicKey,
-	}, nil
 }
 
 func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams) (*store.Worker, error) {
@@ -156,15 +141,6 @@ func (s *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.UpdateWorkerLastSeen(ctx, id))
 }
 
-func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerPublicKeyParams) error {
-	return mapErr(s.conn.q.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
-		PublicKey:       p.PublicKey,
-		MlkemPublicKey:  p.MlkemPublicKey,
-		SlhdsaPublicKey: p.SlhdsaPublicKey,
-		ID:              p.ID,
-	}))
-}
-
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
 	owner, ok := userid.OwnerFilter(p.RegisteredBy)
 	if !ok {
@@ -204,9 +180,6 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		Status:          store.WorkerStatusOf(w.DeregisteringAt.Ptr(), w.DeletedAt.Ptr()),
 		CreatedAt:       w.CreatedAt.Time,
 		LastSeenAt:      w.LastSeenAt.Ptr(),
-		PublicKey:       w.PublicKey,
-		MlkemPublicKey:  w.MlkemPublicKey,
-		SlhdsaPublicKey: w.SlhdsaPublicKey,
 		AutoRegistered:  w.AutoRegistered,
 		DeregisteringAt: w.DeregisteringAt.Ptr(),
 		DeletedAt:       w.DeletedAt.Ptr(),

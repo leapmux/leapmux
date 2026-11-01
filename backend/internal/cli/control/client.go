@@ -532,6 +532,12 @@ func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
 	return leapmuxv1connect.NewAuthServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
+// SystemService returns a ConnectRPC client for what the hub reports about
+// itself: the public system information and the timeout configuration.
+func (c *Client) SystemService() leapmuxv1connect.SystemServiceClient {
+	return leapmuxv1connect.NewSystemServiceClient(c.newConnectClient(c.HTTPClient))
+}
+
 // AdminSettingsService returns a ConnectRPC client for the hub's
 // AdminSettingsService. Admin commands deliberately build a hub client
 // directly rather than routing through the worker-IPC bridge: the

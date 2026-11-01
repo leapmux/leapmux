@@ -67,7 +67,6 @@ export function useResumableSessions(
 
   const fetcher = createGuardedFetch<UseResumableSessionsArgs, Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>({
     fetch: (args, signal) => workerRpc.listAgentSessions(args.workerId, {
-      workerId: args.workerId,
       workingDir: args.workingDir,
       agentProvider: args.agentProvider,
     }, { signal }),

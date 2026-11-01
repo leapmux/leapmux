@@ -169,6 +169,8 @@ func eventToJSON(evt *leapmuxv1.WatchUserEvent) map[string]any {
 			"kind":         "workspace_deleted",
 			"workspace_id": e.Deleted.GetWorkspaceId(),
 		}
+	case *leapmuxv1.WatchUserEvent_WorkersChanged:
+		return map[string]any{"kind": "workers_changed"}
 	}
 	return map[string]any{"kind": "unknown"}
 }
@@ -210,7 +212,13 @@ func opsToJSON(ops []*leapmuxv1.CrdtOp) []map[string]any {
 }
 
 func opTargetSummary(op *leapmuxv1.CrdtOp) map[string]any {
-	out := crdt.OpTarget(op).ToJSON()
+	target := crdt.OpTarget(op)
+	out := target.ToJSON()
+	if target.Kind == crdt.EntityKindTab {
+		// The token removedEntitySummary and entityKindSummary print, so one
+		// tab reads the same in every event of the stream.
+		out["tab_type"] = tabTypeName(target.TabType)
+	}
 	out["type"] = opKindName(op)
 	return out
 }
@@ -230,14 +238,14 @@ func opKindName(op *leapmuxv1.CrdtOp) string {
 		return "set_tab_register"
 	case *leapmuxv1.CrdtOp_TombstoneTab:
 		return "tombstone_tab"
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		return "revive_tab"
 	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		return "set_floating_window_register"
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		return "tombstone_floating_window"
-	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
-		return "set_workspace_root_node"
-	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
-		return "set_workspace_register"
+	case *leapmuxv1.CrdtOp_CreateWorkspace:
+		return "create_workspace"
 	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return "tombstone_workspace"
 	}

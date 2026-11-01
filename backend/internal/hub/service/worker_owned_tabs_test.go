@@ -2,12 +2,14 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,8 +20,15 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
+
+// newOwnedTabsService builds the connector service ListOwnedTabsForWorker
+// lives on, with only the store it reads.
+func newOwnedTabsService(st store.Store) *service.WorkerConnectorService {
+	return service.NewWorkerConnectorService(st, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+}
 
 // TestListOwnedTabsForWorker_ScopedToRegistrant pins both halves of the
 // worker-reconciliation contract.
@@ -66,16 +75,16 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 		info, _ := connect.CallInfoForServerContext(callCtx)
 		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
 		var err error
-		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
 	})
 	require.NoError(t, callErr)
 
 	require.Len(t, resp.GetTabStates(), 1, "a foreign owner's row must not be listed")
 	got := resp.GetTabStates()[0]
-	assert.Equal(t, userA.ID, got.GetUserId())
-	assert.Equal(t, sharedTabID, got.GetTabId())
-	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTabType(),
+	assert.Equal(t, userA.ID, got.GetTab().GetUserId())
+	assert.Equal(t, sharedTabID, got.GetTab().GetTab().GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTab().GetTab().GetTabType(),
 		"alice's row, not bob's identically-named one")
 	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, got.GetArchiveState())
 	assert.Equal(t, userA.ID, resp.GetOwnerUserId(),
@@ -128,7 +137,7 @@ func TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived(t *testing.T) {
 		info, _ := connect.CallInfoForServerContext(callCtx)
 		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
 		var err error
-		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
 	})
 	require.NoError(t, callErr)
@@ -166,7 +175,7 @@ func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 		info, _ := connect.CallInfoForServerContext(callCtx)
 		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
 		var err error
-		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
 	})
 	require.NoError(t, callErr)
@@ -188,7 +197,7 @@ func TestListOwnedTabsForWorker_RejectsUnauthenticated(t *testing.T) {
 	_, err := callUnderServerInfo(context.Background(), func(ctx context.Context) error {
 		info, _ := connect.CallInfoForServerContext(ctx)
 		info.RequestHeader().Set("Authorization", "Bearer nope")
-		_, callErr := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, &leapmuxv1.ListOwnedTabsForWorkerRequest{})
+		_, callErr := newOwnedTabsService(st).ListOwnedTabsForWorker(ctx, &leapmuxv1.ListOwnedTabsForWorkerRequest{})
 		return callErr
 	})
 	require.Error(t, err)
@@ -226,13 +235,13 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer,
-		service.NewWorkerReconcilerService(st))
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
+		newOwnedTabsService(st))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
 	ctx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
@@ -240,7 +249,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	resp, err := client.ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err, "a worker's own auth_token must reach the reconciler RPC")
 	require.Len(t, resp.GetTabStates(), 1)
-	assert.Equal(t, "agent-live", resp.GetTabStates()[0].GetTabId())
+	assert.Equal(t, "agent-live", resp.GetTabStates()[0].GetTab().GetTab().GetTabId())
 	assert.Equal(t, owner.ID, resp.GetOwnerUserId())
 }
 
@@ -257,15 +266,47 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer,
-		service.NewWorkerReconcilerService(st))
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
+		newOwnedTabsService(st))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	_, err := client.ListOwnedTabsForWorker(context.Background(),
 		&leapmuxv1.ListOwnedTabsForWorkerRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// faultingWorkerStore fails every auth-token lookup with a store fault, as an
+// unreachable or locked database would. It is not a missing row.
+type faultingWorkerStore struct{ store.WorkerStore }
+
+func (faultingWorkerStore) GetByAuthToken(context.Context, string) (*store.Worker, error) {
+	return nil, errors.New("database is locked")
+}
+
+// workerFaultStore swaps the Workers accessor and passes everything else
+// straight through.
+type workerFaultStore struct{ store.Store }
+
+func (s workerFaultStore) Workers() store.WorkerStore {
+	return faultingWorkerStore{WorkerStore: s.Store.Workers()}
+}
+
+// A store fault says nothing about the caller's credential, so it must not be
+// answered as `unauthenticated`: the worker would read that as a revoked token.
+func TestListOwnedTabsForWorkerAnswersInternalOnAStoreFault(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	_, err := callUnderServerInfo(context.Background(), func(ctx context.Context) error {
+		info, _ := connect.CallInfoForServerContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer some-worker-token")
+		_, callErr := newOwnedTabsService(workerFaultStore{Store: st}).ListOwnedTabsForWorker(ctx, &leapmuxv1.ListOwnedTabsForWorkerRequest{})
+		return callErr
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }

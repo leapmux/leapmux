@@ -2,7 +2,7 @@ import { createRoot } from 'solid-js'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerClient } from '~/api/clients'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
-import { flush } from '~/test-support/async'
+import { settle } from '~/test-support/async'
 
 vi.mock('~/api/clients', () => ({
   workerClient: {
@@ -65,10 +65,37 @@ beforeEach(() => {
 })
 
 // Worker auto-selection runs inside onMount → fetchWorkers, which
-// resolves a listWorkers RPC. These tests wait one extra microtask
-// after createRoot so the resolved-promise then-chain settles before
-// asserting `state.workerId()`.
+// reads every page of the listWorkers RPC. These tests `settle()` after
+// createRoot, so the whole resolved-promise chain runs before they assert
+// `state.workerId()`, however many awaits the page loop takes.
 describe('createWorkerDialogContext worker auto-selection', () => {
+  // The dialog reads every page. A single call hid each worker past the first
+  // page, so a preselected worker there fell back to the first online one.
+  it('offers and selects an online worker from a later page', async () => {
+    vi.mocked(workerClient.listWorkers)
+      .mockResolvedValueOnce({
+        workers: [
+          { id: 'w-1', online: true },
+          { id: 'w-2', online: false },
+        ],
+        page: { nextCursor: 'c1' },
+      } as never)
+      .mockResolvedValueOnce({
+        workers: [
+          { id: 'w-3', online: true },
+        ],
+        page: { nextCursor: '' },
+      } as never)
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext({ preselectedWorkerId: 'w-3' })
+      await settle()
+      expect(workerClient.listWorkers).toHaveBeenCalledTimes(2)
+      expect(state.workers().map(worker => worker.id)).toEqual(['w-1', 'w-3'])
+      expect(state.workerId()).toBe('w-3')
+      dispose()
+    })
+  })
+
   it('selects the preselected worker when it is online', async () => {
     mockWorkers([
       { id: 'w-1', online: true },
@@ -77,7 +104,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ preselectedWorkerId: 'w-2' })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-2')
       dispose()
     })
@@ -91,7 +118,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ preselectedWorkerId: 'w-2' })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-1')
       dispose()
     })
@@ -111,7 +138,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
         preselectedWorkerId: 'w-2',
         defaultWorkingDir: '/home/me/on-the-other-machine',
       })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-1')
       expect(state.workingDir()).toBe('')
       dispose()
@@ -130,7 +157,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
         preselectedWorkerId: 'w-2',
         defaultWorkingDir: '/home/me/repo',
       })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-2')
       expect(state.workingDir()).toBe('/home/me/repo')
       dispose()
@@ -145,7 +172,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ defaultWorkingDir: '/home/me/repo' })
-      await flush()
+      await settle()
       expect(state.workingDir()).toBe('/home/me/repo')
       dispose()
     })
@@ -158,7 +185,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-1')
       dispose()
     })
@@ -170,7 +197,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ preselectedWorkerId: 'w-1' })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('')
       dispose()
     })
@@ -187,7 +214,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ preselectedWorkerId: 'w-2' })
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('w-2')
 
       // User manually switches to w-1; then a refresh fires.
@@ -212,7 +239,7 @@ describe('createWorkerDialogContext onError', () => {
     const onError = vi.fn()
     await createRoot(async (dispose) => {
       createWorkerDialogContext({ onError })
-      await flush()
+      await settle()
       expect(onError).toHaveBeenCalledWith('rpc down')
       dispose()
     })
@@ -223,7 +250,7 @@ describe('createWorkerDialogContext onError', () => {
     const onError = vi.fn()
     await createRoot(async (dispose) => {
       createWorkerDialogContext({ onError })
-      await flush()
+      await settle()
       expect(onError).toHaveBeenCalledWith('Failed to load workers')
       dispose()
     })
@@ -235,7 +262,7 @@ describe('createWorkerDialogContext onError', () => {
       // No onError supplied — the hook must not throw or reject the
       // surrounding component during onMount.
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('')
       dispose()
     })
@@ -252,7 +279,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
       // Synchronous: workerId is seeded before onMount runs.
       expect(state.workerId()).toBe('w-fixed')
       // Let onMount drain — no listWorkers call must occur.
-      await flush()
+      await settle()
       expect(workerClient.listWorkers).not.toHaveBeenCalled()
       expect(state.workerId()).toBe('w-fixed')
       dispose()
@@ -284,7 +311,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
       // Drain the onMount fetch (resolve immediately so we observe the
       // refresh path in isolation).
       resolveFetch?.()
-      await flush()
+      await settle()
 
       // Now arm a pending fetch for the refresh call.
       let resolveRefresh: (() => void) | undefined
@@ -309,7 +336,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
     setFetchWorkerInfo(async () => null) // for onMount
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ singleWorkerId: 'w-fixed' })
-      await flush()
+      await settle()
 
       setFetchWorkerInfo(() => Promise.reject(new Error('boom')))
       await expect(state.refreshWorkers()).rejects.toThrow('boom')
@@ -344,7 +371,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-1'])
       dispose()
     })
@@ -358,7 +385,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       createWorkerDialogContext({ preselectedWorkerId: 'w-2' })
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-2'])
       dispose()
     })
@@ -373,11 +400,11 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-1'])
 
       state.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       // Selected (w-1) is skipped — it was already fetched on mount.
       expect(calls.slice(1).toSorted()).toEqual(['w-2', 'w-3'])
       dispose()
@@ -395,12 +422,12 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
 
       state.prefetchOnlineWorkerInfos()
       state.prefetchOnlineWorkerInfos()
       state.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       // One fetch on mount + one for the remaining online worker.
       expect(calls).toEqual(['w-1', 'w-2'])
       dispose()
@@ -422,9 +449,9 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose1) => {
       const state1 = createWorkerDialogContext()
-      await flush()
+      await settle()
       state1.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       // w-1 fetched on mount + w-2 / w-3 via the prefetch fan-out.
       expect(calls.slice().toSorted()).toEqual(['w-1', 'w-2', 'w-3'])
       dispose1()
@@ -440,9 +467,9 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose2) => {
       const state2 = createWorkerDialogContext()
-      await flush()
+      await settle()
       state2.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       const afterSecond = calls.slice(beforeSecond)
       expect(afterSecond).toEqual(['w-1'])
       dispose2()
@@ -460,10 +487,10 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
 
       state.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       const beforeRefresh = calls.length
 
       mockWorkers([
@@ -472,7 +499,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
       ])
       await state.refreshWorkers()
       state.prefetchOnlineWorkerInfos()
-      await flush()
+      await settle()
       expect(calls.length).toBeGreaterThan(beforeRefresh)
       dispose()
     })
@@ -489,11 +516,11 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-1'])
 
       state.setWorkerId('w-2')
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-1', 'w-2'])
       dispose()
     })
@@ -507,7 +534,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     const calls = withRecordedFetches()
     await createRoot(async (dispose) => {
       createWorkerDialogContext({ singleWorkerId: 'w-fixed' })
-      await flush()
+      await settle()
       expect(calls).toEqual(['w-fixed'])
       dispose()
     })
@@ -522,7 +549,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     setFetchWorkerInfo(async () => null)
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ singleWorkerId: 'w-fixed' })
-      await flush()
+      await settle()
       // Mock returns '/home/u' for any id.
       expect(state.getHomeDir()).toBe('/home/u')
       dispose()
@@ -537,7 +564,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       const beforeHome = state.getHomeDir()
       state.setWorkerId('w-2')
       const afterHome = state.getHomeDir()
@@ -560,7 +587,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     mockWorkers([])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
-      await flush()
+      await settle()
       expect(state.workerId()).toBe('')
       // The mocked store doesn't differentiate, but we at least pin
       // that the accessor doesn't throw on the empty selection.
@@ -594,7 +621,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
             ],
           })
           // Drain microtasks so the post-await writes (would) run.
-          await flush()
+          await settle()
           workerIdAfter = state.workerId()
         }
         catch {
@@ -638,17 +665,17 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
       // Let onMount fire — its fetchWorkers picks up slowP (pending).
-      await flush()
+      await settle()
       // Refresh — its fetchWorkers picks up fresh-1 (resolves now).
       await state.refreshWorkers()
-      await flush()
+      await settle()
       expect(state.workers().map(w => w.id)).toEqual(['fresh-1'])
       expect(state.workerId()).toBe('fresh-1')
 
       // Resolve the now-stale slowP with an OLDER (empty) list. The
       // generation guard must drop this write — workers stays fresh.
       slowResolve({ workers: [] })
-      await flush()
+      await settle()
       expect(state.workers().map(w => w.id)).toEqual(['fresh-1'])
       expect(state.workerId()).toBe('fresh-1')
       dispose()
@@ -692,23 +719,18 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
         { id: 'leaked', online: true } as never,
       ],
     } as never)
-    await new Promise<void>((done) => {
-      createRoot((dispose) => {
-        const state = createWorkerDialogContext({ singleWorkerId: '' })
-        // Initial state matches the seed — the empty string.
-        expect(state.workerId()).toBe('')
-        Promise.resolve().then(async () => {
-          // Flush onMount + the (un)expected listWorkers.
-          await new Promise(r => setTimeout(r, 0))
-          // listWorkers must NOT have been invoked: the lock is in
-          // effect even with the empty-string id.
-          expect(workerClient.listWorkers).not.toHaveBeenCalled()
-          // workerId did not drift to 'leaked'.
-          expect(state.workerId()).toBe('')
-          dispose()
-          done()
-        })
-      })
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext({ singleWorkerId: '' })
+      // Initial state matches the seed — the empty string.
+      expect(state.workerId()).toBe('')
+      // Run onMount and the (un)expected listWorkers.
+      await settle()
+      // listWorkers must NOT have been invoked: the lock is in
+      // effect even with the empty-string id.
+      expect(workerClient.listWorkers).not.toHaveBeenCalled()
+      // workerId did not drift to 'leaked'.
+      expect(state.workerId()).toBe('')
+      dispose()
     })
   })
 })

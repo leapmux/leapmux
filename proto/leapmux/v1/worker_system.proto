@@ -1,0 +1,33 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/access.proto";
+import "leapmux/v1/build_info.proto";
+
+// WorkerSystemService answers questions about the Worker itself. Served by the
+// Worker inside an E2EE channel.
+service WorkerSystemService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  // Liveness probe. A client opens every channel with it. It does no work and
+  // discloses nothing, so it is the one worker method with no owner gate.
+  rpc Ping(PingRequest) returns (PingResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  rpc GetWorkerSystemInfo(GetWorkerSystemInfoRequest) returns (GetWorkerSystemInfoResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+}
+
+message PingRequest {}
+
+message PingResponse {}
+
+message GetWorkerSystemInfoRequest {}
+
+message GetWorkerSystemInfoResponse {
+  string name = 1;     // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
+  string os = 2;
+  string arch = 3;
+  string home_dir = 4;
+  BuildInfo build = 5; // the worker's build
+}

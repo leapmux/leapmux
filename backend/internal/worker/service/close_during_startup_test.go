@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -78,7 +79,7 @@ func TestAgentResumeCloseBeforeRegistrationStopsLateProcess(t *testing.T) {
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	seedOpenAgent(t, svc, agentID, true)
 	watcher := newTestWriter()
-	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{
 			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
 			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
@@ -197,7 +198,7 @@ func TestCatchUpReplayDoesNotReportALateProcessOfAClosedTab(t *testing.T) {
 		return make([]*leapmuxv1.GitRepoStatus, len(dirs))
 	}
 	watcher := newTestWriter()
-	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{
 			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
 			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
@@ -406,7 +407,7 @@ func TestCloseAgentReleasesAdmissionAfterDatabaseFailure(t *testing.T) {
 	seedOpenAgent(t, svc, agentID, true)
 	original := svc.Queries
 	svc.Queries = db.New(closeAgentWriteFaultDB{DB: svc.DB})
-	result, _ := svc.closeAgentTabCommon("", agentID,
+	result := svc.closeAgentTabCommon("", agentID,
 		leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
 	svc.Queries = original
 	require.Contains(t, result.GetFailureDetail(), "the close write failed")
@@ -448,16 +449,16 @@ func TestCloseAgentReleasesAdmissionAfterPanic(t *testing.T) {
 // clicks close while the runAgentStartup goroutine is parked inside
 // phase 2 (subprocess startup handshake). Contract points verified:
 //
-//  1. CloseAgent cancels the startup context so a startAgentFn that
+//  1. CloseTab cancels the startup context so a startAgentFn that
 //     parks on `<-ctx.Done()` unblocks — no orphan goroutine.
 //  2. The post-spawn closed_at re-check suppresses ACTIVE: a client
 //     must never see ACTIVE for a tab the user already asked to close.
 //  3. DB row is soft-deleted; the agent manager has no subprocess
 //     registered; any git-mode mutation from phase 0 is rolled back.
 //
-// The test drives CloseAgent *synchronously from inside startAgentFn*.
+// The test drives CloseTab *synchronously from inside startAgentFn*.
 // That removes the in-production race between `cancelAndClear` and the
-// DB write to `closed_at`: by the time startAgentFn returns, CloseAgent
+// DB write to `closed_at`: by the time startAgentFn returns, CloseTab
 // has completed all five steps (cancel, stop, cleanup, CloseAgent DB
 // write, unregister-tab), so the goroutine's post-spawn re-read is
 // guaranteed to see `closed_at=true` and follow the close-detection
@@ -484,26 +485,26 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			startEntered <- opts.AgentID
 			// Subscribe here — by this point the DB row exists, so
 			// WatchEvents accepts the subscription.
-			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+			dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 			}, wWatch)
 			// The subscription lands on the session goroutine, after dispatch
-			// returns. Without this wait the CloseAgent below could broadcast to
+			// returns. Without this wait the CloseTab below could broadcast to
 			// nobody, and the "ACTIVE never arrived" assertion at the end would
 			// pass having observed nothing.
 			waitAgentWatchLive(t, svc, opts.AgentID)
 
-			// Drive CloseAgent synchronously. dispatch returns only
+			// Drive CloseTab synchronously. dispatch returns only
 			// after the full handler runs, so when control comes back
 			// here the ctx is cancelled and closed_at is set in the DB.
 			wClose := newTestWriter()
-			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: opts.AgentID}, wClose)
+			dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent(opts.AgentID)}, wClose)
 		})
 		<-sCtx.Done()
 		return nil, sCtx.Err()
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -522,7 +523,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 		t.Fatal("startAgentFn never invoked — runAgentStartup did not reach phase 2")
 	}
 
-	// Under Eventually: DB row is closed (synchronous CloseAgent write),
+	// Under Eventually: DB row is closed (synchronous CloseTab write),
 	// manager has no subprocess, and the startup registry has been
 	// cleared. The close-detection branch ends with AgentStartup.succeed
 	// which deletes the entry; it does NOT re-insert like the failure
@@ -551,13 +552,13 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			continue
 		}
 		assert.NotEqual(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sc.GetStatus(),
-			"CloseAgent during startup must suppress ACTIVE broadcast (got status=%s)", sc.GetStatus())
+			"CloseTab during startup must suppress ACTIVE broadcast (got status=%s)", sc.GetStatus())
 	}
 }
 
 // closeAgentDuringStartup drives the shared shape of the two tests below:
 // phase 0 creates a worktree and branch, phase 2 parks inside startAgentFn,
-// and a CloseAgent carrying `action` lands mid-phase-2 so the post-spawn
+// and a CloseTab carrying `action` lands mid-phase-2 so the post-spawn
 // close-detection branch runs deterministically. Returns the agent id once
 // the startup goroutine (and its trailing git work) has returned.
 func closeAgentDuringStartup(t *testing.T, repoDir, branchName, worktreePath string, action leapmuxv1.WorktreeAction) (*Service, string) {
@@ -575,8 +576,8 @@ func closeAgentDuringStartup(t *testing.T, repoDir, branchName, worktreePath str
 			require.True(t, localBranchExists(t, repoDir, branchName))
 
 			wClose := newTestWriter()
-			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-				AgentId:        opts.AgentID,
+			dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+				Tab:            agentTabIdent(opts.AgentID),
 				WorktreeAction: action,
 			}, wClose)
 		})
@@ -584,11 +585,10 @@ func closeAgentDuringStartup(t *testing.T, repoDir, branchName, worktreePath str
 		return nil, sCtx.Err()
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    repoDir,
+		GitSetup:      createWorktreeSetup(branchName, ""),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -637,8 +637,8 @@ func TestCloseAgent_DuringStartup_UnlinkedRemoveStillRollsBack(t *testing.T) {
 				UserID:  "",
 			}))
 			wClose := newTestWriter()
-			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
-				AgentId:        opts.AgentID,
+			dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+				Tab:            agentTabIdent(opts.AgentID),
 				WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 			}, wClose)
 		})
@@ -646,11 +646,10 @@ func TestCloseAgent_DuringStartup_UnlinkedRemoveStillRollsBack(t *testing.T) {
 		return nil, sCtx.Err()
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    repoDir,
+		GitSetup:      createWorktreeSetup(branchName, ""),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
 	svc.AgentStartup.WaitForInFlight()
@@ -665,7 +664,7 @@ func TestCloseAgent_DuringStartup_UnlinkedRemoveStillRollsBack(t *testing.T) {
 
 // TestCloseAgent_DuringStartup_RollsBackCreatedWorktree extends the
 // close-detection test to the git-mode path: phase 0 created a worktree
-// and branch before phase 2 parked; a REMOVE CloseAgent lands mid-phase-2.
+// and branch before phase 2 parked; a REMOVE CloseTab lands mid-phase-2.
 //
 // Here phase 0 already wrote the worktree_tabs link, so closeTabCommon itself
 // resolves the worktree and removes it; the assertions below are on the
@@ -744,12 +743,12 @@ func TestCloseAgent_DuringStartup_KeepPreservesCreatedWorktree(t *testing.T) {
 // TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp is the
 // terminal-side analog of the close-during-startup test. It pins the
 // post-spawn closed_at re-check in runTerminalStartup: when
-// CloseTerminal lands while startTerminalFn is still in flight, the
+// CloseTab lands while startTerminalFn is still in flight, the
 // goroutine must stop the PTY it just spawned, skip the READY
 // broadcast, roll back any phase-0 git mutation, and leave DB state
 // consistent (closed_at set, worktree DB row cleaned).
 //
-// As with the agent test, CloseTerminal is driven synchronously from
+// As with the agent test, CloseTab is driven synchronously from
 // inside startTerminalFn so the post-spawn re-read deterministically
 // sees closed_at=true — otherwise the goroutine would race with the
 // CloseTerminal DB write and land in failTerminalStartup, which is
@@ -779,7 +778,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 			require.DirExists(t, worktreePath)
 			require.True(t, localBranchExists(t, repoDir, branchName))
 
-			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+			dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 				Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: opts.ID}},
 			}, wWatch)
 			// See the agent-side test: the subscription is asynchronous, and a
@@ -788,8 +787,8 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 			waitTerminalWatchLive(t, svc, opts.ID)
 
 			wClose := newTestWriter()
-			dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-				TerminalId:     opts.ID,
+			dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+				Tab:            terminalTabIdent(opts.ID),
 				WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
 			}, wClose)
 		})
@@ -799,11 +798,10 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 		return sCtx.Err()
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		Shell:          "/bin/zsh",
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
+		Shell:      "/bin/zsh",
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -842,7 +840,7 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 			continue
 		}
 		assert.NotEqual(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus(),
-			"CloseTerminal during startup must suppress READY broadcast (got status=%s)", sc.GetStatus())
+			"CloseTab during startup must suppress READY broadcast (got status=%s)", sc.GetStatus())
 	}
 }
 
@@ -885,7 +883,7 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 
 			dbAgent := createAgentRowForTest(t, svc, gm.WorkingDir)
 
-			// Record the close the way a real CloseAgent does: cancelAndClear
+			// Record the close the way a real CloseTab does: cancelAndClear
 			// runs while the startup is still in flight, before closed_at.
 			h := svc.AgentStartup.begin(dbAgent.ID, func() {})
 			svc.AgentStartup.cancelAndClear(dbAgent.ID, tc.disposition)
@@ -980,10 +978,7 @@ func TestFailStartup_ArchiveRollsBackOnlyIncompleteGitMutation(t *testing.T) {
 // builds rather than a hand-assembled struct.
 func createWorktreeForTest(t *testing.T, svc *Service, repoDir, branchName string) gitModeResult {
 	t.Helper()
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, createWorktreeSetup(branchName, ""))
 	require.NoError(t, err)
 	gm, err := svc.executeGitMode(context.Background(), plan)
 	require.NoError(t, err)
@@ -1048,7 +1043,7 @@ func TestConfirmedCloseRollsBackNewWorktreeAfterTrackingFailure(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
 	repo := initRepo(t)
-	plan, err := svc.validateGitMode(ctx, repo, &leapmuxv1.OpenAgentRequest{CreateWorktree: true, WorktreeBranch: "tracking-failure"})
+	plan, err := svc.validateGitMode(ctx, repo, createWorktreeSetup("tracking-failure", ""))
 	require.NoError(t, err)
 	queries := svc.Queries
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM worktrees WHERE worktree_path"})

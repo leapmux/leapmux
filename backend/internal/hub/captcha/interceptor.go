@@ -11,13 +11,14 @@ import (
 )
 
 // captchaRequest is the field surface every protected request type must
-// carry. The generated getters plus the compile-time guards below keep
-// the contract checked at build time: renaming or dropping either proto
-// field fails the build here instead of silently reading as "" at
-// runtime, which would deny every login on the missing payload.
+// carry: one CaptchaProof. The generated getter plus the compile-time guards
+// below keep the contract checked at build time: renaming or dropping the
+// proto field fails the build here instead of silently reading as "" at
+// runtime, which would deny every login on the missing payload. An absent
+// proof reads as an empty payload and an empty honeypot, which Verify denies
+// whenever the captcha is on.
 type captchaRequest interface {
-	GetHoneypot() string
-	GetCaptchaPayload() string
+	GetCaptcha() *leapmuxv1.CaptchaProof
 }
 
 var (
@@ -148,7 +149,8 @@ func (s *captchaVerificationStream) Receive(msg any) error {
 	// the moment an admin runs `captcha disable`. The frontend
 	// renders the honeypot input independently of the captcha
 	// widget for the same reason.
-	if req.GetHoneypot() != "" {
+	proof := req.GetCaptcha()
+	if proof.GetHoneypot() != "" {
 		s.manager.NoteHoneypotDenial(s.ctx)
 		return connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed.Error()).WithCause(ErrVerificationFailed)
 	}
@@ -156,7 +158,7 @@ func (s *captchaVerificationStream) Receive(msg any) error {
 	// disabled and denies closed on a resolve failure, exactly as
 	// an Enabled pre-check would — without resolving the config a
 	// second time per protected request.
-	if err := s.manager.Verify(s.ctx, s.proc.action, req.GetCaptchaPayload()); err != nil {
+	if err := s.manager.Verify(s.ctx, s.proc.action, proof.GetPayload()); err != nil {
 		// Uniform denial: the manager already recorded the
 		// outcome (passed/failed/replayed) under the selected
 		// provider's metric label; clients see only this error.

@@ -1,0 +1,96 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/access.proto";
+import "leapmux/v1/common.proto";
+
+// WorkerTabService acts on tabs a Worker hosts. Served by the Worker inside an
+// E2EE channel.
+service WorkerTabService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  // Closes one tab of any type. The method requires worker:read; the handler
+  // then requires agent:write (AGENT), terminal:write (TERMINAL) or file:read
+  // (FILE, IMAGE). A WORKTREE_ACTION_REMOVE close of any tab type also requires
+  // git:write, because it deletes the worktree and its branch.
+  rpc CloseTab(CloseTabRequest) returns (CloseTabResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+  rpc CleanupWorkspace(CleanupWorkspaceRequest) returns (CleanupWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+}
+
+message CloseTabRequest {
+  // The tab to close. Required: an absent tab, an empty tab id or an
+  // UNSPECIFIED type is refused.
+  TabIdent tab = 1;
+  // Worktree disposition chosen by the user when this tab was the last tab on
+  // a tracked worktree. UNSPECIFIED / KEEP leaves the worktree in place;
+  // REMOVE asks the worker to `git worktree remove` once no other tabs
+  // reference it.
+  WorktreeAction worktree_action = 2;
+}
+
+// CloseTabResponse reports the outcome of CloseTab.
+//
+// Partial failures (DB close failed, worktree directory couldn't be
+// removed) are returned as success-plus-failure-fields rather than as
+// an RPC error. This is intentional: the close RPC is a fire-and-forget
+// dispatch issued *after* the frontend has already committed the UI
+// tab removal synchronously, so there is nothing to "roll back" if the
+// backend hits a hiccup. Structured failure fields let the UI surface a
+// warn toast (with the worktree path, if relevant) while still honoring
+// the already-visible close. An RPC error would collapse the structured
+// info into a single string and imply the close didn't happen, neither
+// of which matches the async-close contract.
+message CloseTabResponse {
+  string worktree_path = 1;   // Populated on worktree-remove failure so the user can clean up manually
+  string worktree_id = 2;     // Populated on worktree-remove failure alongside worktree_path
+  string failure_message = 3; // Short human title of a partial failure (empty = success)
+  string failure_detail = 4;  // Longer context (path, stderr, stack) for the failure
+  // What a REMOVE close did with the worktree. Lets the caller toast the
+  // real outcome (removed / still referenced elsewhere / failed) rather
+  // than optimistically assuming removal.
+  WorktreeRemovalOutcome worktree_removal = 5;
+  // AGENT tabs only: every subagent BELOW the closed agent, at any depth, in
+  // NO particular order. An agent id is also its tab id, so a client retires
+  // those tabs alongside the one it closed.
+  //
+  // The worker answers because only it holds the parent chain: a child agent is
+  // a transcript the parent's process feeds, so with the parent gone nothing can
+  // add to it and the tab claims a lineage the user can no longer see. Read
+  // BEFORE any teardown, and reported for a child close too -- that close is
+  // UI-only, but the child's own subagents still go with it.
+  //
+  // A client that needs a bottom-up order must sort for itself: the query walks
+  // the tree breadth-first and returns a parent BEFORE its own children. Order
+  // does not matter to a tombstone, which is last-writer-wins per tab id.
+  //
+  // These are agent ROWS, and a row exists for every subagent the provider ever
+  // spawned -- not only the ones someone opened a tab for. A client MUST retire
+  // only the ids it holds a live tab record for; tombstoning an id the CRDT has
+  // never seen is rejected, and it takes the whole batch with it.
+  repeated string descendant_agent_ids = 6;
+}
+
+// CleanupWorkspaceRequest names the tabs a just-deleted workspace held on
+// the receiving Worker, so it can stop their processes and release their
+// worktrees.
+//
+// The Worker cannot derive the set itself: it tracks no workspace id. The set
+// comes from DeleteWorkspaceResponse.worker_tabs, which the Hub reads INSIDE the
+// delete transaction -- see the note there for why a caller must not resolve its
+// own list from the rendered rows instead. The Worker's orphan reconciler
+// still converges anything left over against workspace_tab_owned on its next
+// pass, so a dropped RPC costs latency rather than correctness.
+message CleanupWorkspaceRequest {
+  repeated TabIdent tabs = 1;
+}
+
+message CleanupWorkspaceResponse {
+  // Deliberately empty. It carried a repeated WorktreeInfo that no worker ever
+  // populated -- handleCleanupWorkspace returns a zero-value response -- while
+  // the CLI read it and emitted a `worktrees` key that could never appear.
+  // Worktree reclamation happens through the orphan reconciler, which reports
+  // nothing back on this call.
+}

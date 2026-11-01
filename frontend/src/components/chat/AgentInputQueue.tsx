@@ -20,7 +20,7 @@ import { DragHandle } from '~/components/common/DragHandle'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GuardedPointerSensor } from '~/components/shell/guardedPointerSensor'
-import { AgentInputKind, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
@@ -32,9 +32,12 @@ export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
   clientId: string
   activeEditInputId?: string
-  supportsSteering: boolean
-  /** Preemption is offered only where steering is not: the provider can interrupt, not inject. */
-  supportsPreemption: boolean
+  /**
+   * How the head reaches the running turn. STEER offers Steer, PREEMPT offers
+   * Preempt (the provider can interrupt, not inject), and anything else offers
+   * neither.
+   */
+  queueHeadDispatch: QueueHeadDispatch
   onEdit: (item: QueuedAgentInput, takeover: boolean) => void
   onCancelEdit: (item: QueuedAgentInput) => void
   onDelete: (item: QueuedAgentInput) => void
@@ -447,10 +450,10 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             browser must never re-implement that precondition: a new input kind
             would then offer a button that the Worker refuses.
           */}
-          <Show when={isHead() && props.supportsSteering && item().canSteer}>
+          <Show when={isHead() && props.queueHeadDispatch === QueueHeadDispatch.STEER && item().canSteer}>
             <LabelledRowAction icon={SendHorizontal} label="Steer" tooltip="Steer" onClick={() => props.onSteer(item())} />
           </Show>
-          <Show when={isHead() && !props.supportsSteering && props.supportsPreemption && item().canPreempt}>
+          <Show when={isHead() && props.queueHeadDispatch === QueueHeadDispatch.PREEMPT && item().canPreempt}>
             <LabelledRowAction
               icon={Zap}
               label="Preempt"

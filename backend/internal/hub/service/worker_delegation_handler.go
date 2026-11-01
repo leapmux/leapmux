@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -25,8 +26,9 @@ import (
 // MintTabPropagationTimeout / MintTabPropagationStep govern the bounded
 // backoff used when the (user_id, tab_id, worker_id) row hasn't yet
 // appeared in workspace_tab_owned. Worker spawn-time minting can race
-// AddTab propagation; we retry the lookup until the deadline before
-// returning 403 so legitimate requests aren't rejected on cold races.
+// the SubmitOps batch that adds the tab; we retry the lookup until the
+// deadline before returning 403 so legitimate requests aren't rejected
+// on cold races.
 type WorkerDelegationHandler struct {
 	store                     store.Store
 	validator                 *auth.TokenValidator
@@ -37,9 +39,9 @@ type WorkerDelegationHandler struct {
 
 // DefaultMintTabPropagationTimeout caps how long handleMint will wait
 // for a freshly-added tab to become visible before giving up. Two
-// seconds is enough cushion for AddTab commit + replication on every
-// supported store backend, and short enough that a genuinely missing
-// tab still surfaces a 403 quickly.
+// seconds is enough cushion for the tab's SubmitOps commit + replication
+// on every supported store backend, and short enough that a genuinely
+// missing tab still surfaces a 403 quickly.
 const DefaultMintTabPropagationTimeout = 2 * time.Second
 
 // DefaultMintTabPropagationStep is the polling interval between tab
@@ -86,9 +88,8 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	worker, err := h.authenticateWorker(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	worker, ok := h.authenticateWorker(w, r)
+	if !ok {
 		return
 	}
 	var req mintRequest
@@ -142,11 +143,12 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// workspace_tab_owned. This is the authorization check: any worker can
 	// call mint, but only for tabs it actually hosts.
 	//
-	// Lazy-mint races AddTab: an agent may invoke `leapmux control ...`
-	// the moment its process starts, which can be before the worker's
-	// AddTab call has committed at the hub. Poll with bounded backoff
-	// instead of failing immediately so the common case ("agent acts
-	// before AddTab quiesces") doesn't surface as a hard 403.
+	// Lazy-mint races the tab's creation: an agent may invoke
+	// `leapmux control ...` the moment its process starts, which can be
+	// before the SubmitOps batch that adds its tab has committed at the
+	// hub. Poll with bounded backoff instead of failing immediately so
+	// the common case ("agent acts before its tab lands") doesn't
+	// surface as a hard 403.
 	tabFound, lookupErr := h.waitForTabOwnership(r.Context(), uid, req.IssuedForTabID, worker.ID)
 	if lookupErr != nil {
 		http.Error(w, "list tabs failed", http.StatusInternalServerError)
@@ -204,9 +206,8 @@ func (h *WorkerDelegationHandler) handleRevoke(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	worker, err := h.authenticateWorker(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	worker, ok := h.authenticateWorker(w, r)
+	if !ok {
 		return
 	}
 	var req revokeRequest
@@ -244,7 +245,7 @@ func (h *WorkerDelegationHandler) handleRevoke(w http.ResponseWriter, r *http.Re
 //
 // Polling uses exponential backoff (starting at `step`, capped at
 // `step*8`) so the typical race resolves in 1-3 queries while a slow
-// AddTab still gets a chance to land before the deadline.
+// tab-creation batch still gets a chance to land before the deadline.
 //
 // `userID` is the owner the mint claims to act for, and GetOwned binds it:
 // workspace_tab_owned is keyed by (user_id, tab_id) precisely because tab ids
@@ -305,7 +306,19 @@ func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, userI
 }
 
 // authenticateWorker resolves the Bearer-encoded worker auth_token to a
-// Worker row.
-func (h *WorkerDelegationHandler) authenticateWorker(r *http.Request) (*store.Worker, error) {
-	return auth.AuthenticateWorkerBearer(r.Context(), h.store, r.Header.Get("Authorization"))
+// Worker row, and reports whether it did. On failure it has already answered:
+// 401 for a rejected credential, 500 for a store failure, which says nothing
+// about the credential.
+func (h *WorkerDelegationHandler) authenticateWorker(w http.ResponseWriter, r *http.Request) (*store.Worker, bool) {
+	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.store, r.Header.Get("Authorization"))
+	if err == nil {
+		return worker, true
+	}
+	if auth.IsWorkerCredentialError(err) {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return nil, false
+	}
+	slog.Error("worker delegation: resolving the worker's auth token failed", "error", err)
+	http.Error(w, "internal error", http.StatusInternalServerError)
+	return nil, false
 }

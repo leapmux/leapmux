@@ -3,7 +3,7 @@ import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { ASSEMBLED_MESSAGE } from '../../../src/generated/contracts/worker-vocab'
-import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueuePauseReason, MessageSource, WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -121,14 +121,14 @@ export async function sendFastAgentCatalogCommand(server: ManagedNativeScenarioC
   if (!agentId.trim() || (command !== '/tools' && !command.startsWith('/tools ')) || /[\r\n]/.test(command))
     throw new Error('The Fast Agent native catalog requires an exact agent and single-line tools command.')
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const response = await channel.callWorker(server.workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, {
+  const response = await channel.callWorker(server.workerId, WorkerAgentInputService.method.enqueueAgentInput, {
     agentId,
     inputId: randomUUID(),
     text: command,
     attachments: [],
     kind: AgentInputKind.USER_MESSAGE,
   })
-  if (!response.snapshot || response.snapshot.agentId !== agentId || response.snapshot.paused)
+  if (!response.snapshot || response.snapshot.pauseReason !== AgentInputQueuePauseReason.UNSPECIFIED)
     throw new Error('The exact Fast Agent metadata command reached no active queue for its Worker agent.')
 }
 

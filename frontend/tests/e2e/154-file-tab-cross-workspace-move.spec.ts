@@ -1,6 +1,9 @@
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { fileTabPayload } from '~/lib/tabPayload'
+import { TabType } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { WorkerPrivateService } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
+import { WorkerTabService } from '../../src/generated/proto/leapmux/v1/worker_tab_pb'
 import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 
@@ -27,24 +30,13 @@ test.describe('file-tab E2EE worker round-trip', () => {
     // carries no workspace set.
     const channel = await getTestChannel(hubUrl, adminToken)
 
-    const {
-      RegisterTabPayloadRequestSchema,
-      RegisterTabPayloadResponseSchema,
-      GetTabPayloadRequestSchema,
-      GetTabPayloadResponseSchema,
-      RevokeTabPayloadRequestSchema,
-      RevokeTabPayloadResponseSchema,
-    } = await import('../../src/generated/proto/leapmux/v1/worker_private_pb')
-
     const tabId = `t-${Date.now()}`
     const filePath = '/repo/test-file.go'
 
     // 1. Register. No workspace is named -- the worker has nowhere to put one.
     await channel.callWorker(
       workerId,
-      'RegisterTabPayload',
-      RegisterTabPayloadRequestSchema,
-      RegisterTabPayloadResponseSchema,
+      WorkerPrivateService.method.registerTabPayload,
       {
         tabId,
         payload: fileTabPayload(filePath, ''),
@@ -54,28 +46,24 @@ test.describe('file-tab E2EE worker round-trip', () => {
     // 2. Get returns the path.
     const got = await channel.callWorker(
       workerId,
-      'GetTabPayload',
-      GetTabPayloadRequestSchema,
-      GetTabPayloadResponseSchema,
+      WorkerPrivateService.method.getTabPayload,
       { tabId },
     )
     expect(got.payload?.kind.case === 'file' && got.payload.kind.value.filePath).toBe(filePath)
 
-    // 3. Revoke removes the row, so a later Get is refused as NOT_FOUND. The
+    // 3. Closing the tab removes the row, so a later Get is refused as NOT_FOUND. The
     //    check requires that refusal, so another failure, such as a channel
     //    fault, cannot pass for a revoked row.
     await channel.callWorker(
       workerId,
-      'RevokeTabPayload',
-      RevokeTabPayloadRequestSchema,
-      RevokeTabPayloadResponseSchema,
-      { tabId },
+      WorkerTabService.method.closeTab,
+      {
+        tab: { tabType: TabType.FILE, tabId },
+      },
     )
     const afterRevoke = await channel.callWorker(
       workerId,
-      'GetTabPayload',
-      GetTabPayloadRequestSchema,
-      GetTabPayloadResponseSchema,
+      WorkerPrivateService.method.getTabPayload,
       { tabId },
     ).then(() => null, (error: unknown) => error)
     expect(afterRevoke, 'the Get after the revoke is refused as not found')

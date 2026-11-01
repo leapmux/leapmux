@@ -395,7 +395,7 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 	}
 
 	// ensureAgentRunning owns the rest: it registers the start with
-	// AgentStartup -- which is what lets a CloseAgent cancel a resume that is
+	// AgentStartup -- which is what lets a CloseTab cancel a resume that is
 	// still in its handshake, and what makes Shutdown's drain wait for it -- and
 	// it roots the agent process's own context at bgCtx() rather than at this
 	// sweep's, so a worker teardown stops a resumed agent through the same
@@ -488,7 +488,7 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and
 	// the sweep reaches a candidate at the back of a throttled queue much
 	// later -- minutes, on a machine with many tabs and a concurrency of 1. A
-	// CloseAgent in between already ran that tab's whole teardown, so a process
+	// CloseTab in between already ran that tab's whole teardown, so a process
 	// started for it now is one nothing will ever stop: it holds a CLI and its
 	// memory for the life of the worker, under a tab no client can see. This
 	// row was read AFTER the list, which is what makes the check worth having.

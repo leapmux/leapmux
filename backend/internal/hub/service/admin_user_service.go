@@ -106,48 +106,41 @@ func adminUserToProto(u *store.User) *leapmuxv1.AdminUser {
 	return out
 }
 
-// resolveAdminUser resolves an (id | username) selector to a live user
-// row, with the CLI verbs' refusal wording.
-func resolveAdminUser(ctx context.Context, st store.Store, id, username string) (*store.User, error) {
-	user, err := ResolveUserSelector(ctx, st, id, username)
-	switch {
-	case errors.Is(err, ErrNoUserSelector):
-		return nil, connect.NewError(connect.CodeInvalidArgument, "id or username is required")
-	case errors.Is(err, ErrAmbiguousUserSelector):
-		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
-	case err != nil && id != "":
-		return nil, storeConnectError(err, "get user by id")
-	case err != nil:
-		return nil, storeConnectError(err, "get user by username")
+// resolveAdminUser resolves the selector of a request that addresses one user
+// to a live user row, with the RPC surface's refusal wording.
+func resolveAdminUser(ctx context.Context, st store.Store, sel *leapmuxv1.UserSelector) (*store.User, error) {
+	user, err := ResolveUserSelector(ctx, st, sel)
+	if err != nil {
+		return nil, userSelectorConnectError(err, sel)
 	}
 	return user, nil
 }
 
-// resolveAdminUserFilter resolves an optional (user_id | username)
-// listing filter to a user-id pointer. The id path resolves through
-// GetByIDIncludeDeleted: admin listings deliberately surface
-// soft-deleted owners' still-live rows for audit. A username resolves
-// among live users only — usernames are freed on soft-delete, so a name
-// is not a stable handle for a deleted account.
-func resolveAdminUserFilter(ctx context.Context, st store.Store, uid, username string) (*string, error) {
-	if uid == "" && username == "" {
-		return nil, nil
-	}
-	if uid != "" && username != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "user_id and username are mutually exclusive")
-	}
-	if uid != "" {
-		user, err := st.Users().GetByIDIncludeDeleted(ctx, uid)
-		if err != nil {
-			return nil, storeConnectError(err, "get user by id")
-		}
-		return &user.ID, nil
-	}
-	user, err := st.Users().GetByUsername(ctx, username)
+// resolveAdminUserFilter resolves an optional listing filter to a user-id
+// pointer: nil for an absent selector, which lists every user. See
+// ResolveUserSelectorFilter for which users each case finds.
+func resolveAdminUserFilter(ctx context.Context, st store.Store, sel *leapmuxv1.UserSelector) (*string, error) {
+	id, err := ResolveUserSelectorFilter(ctx, st, sel)
 	if err != nil {
-		return nil, storeConnectError(err, "get user by username")
+		return nil, userSelectorConnectError(err, sel)
 	}
-	return &user.ID, nil
+	return id, nil
+}
+
+// userSelectorConnectError renders a selector failure for the RPC surface: a
+// missing or empty selector is the caller's malformed request, and a lookup
+// failure is classified by storeConnectError.
+func userSelectorConnectError(err error, sel *leapmuxv1.UserSelector) error {
+	switch {
+	case errors.Is(err, ErrNoUserSelector):
+		return connect.NewError(connect.CodeInvalidArgument, "user is required: select an id or a username")
+	case errors.Is(err, ErrEmptyUserSelector):
+		return wrappedConnectError(connect.CodeInvalidArgument, err)
+	case sel.GetId() != "":
+		return storeConnectError(err, "get user by id")
+	default:
+		return storeConnectError(err, "get user by username")
+	}
 }
 
 // storeConnectError maps a store error onto the Connect surface: not
@@ -160,14 +153,9 @@ func storeConnectError(err error, op string) error {
 	case errors.Is(err, store.ErrConflict):
 		return connect.Errorf(connect.CodeAlreadyExists, "%s: conflict", op)
 	case errors.Is(err, store.ErrInvalidCursor):
-		// A stale or truncated cursor is the caller's to fix, and the fix
-		// is not obvious from the parse error alone. ErrInvalidCursor is
-		// its own sentinel and does NOT wrap ErrInvalidArgument, so
-		// without this case it read as a hub fault — and WorkerManagement
-		// classifies the same sentinel as InvalidArgument, so the two
-		// admin surfaces disagreed.
-		return wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf(
-			"%s: %w (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", op, err))
+		// ErrInvalidCursor is its own sentinel and does NOT wrap
+		// ErrInvalidArgument, so without this case it read as a hub fault.
+		return invalidCursorError(err, op)
 	case errors.Is(err, store.ErrInvalidArgument):
 		return wrappedConnectError(connect.CodeInvalidArgument, err)
 	default:
@@ -224,23 +212,6 @@ func revokeByID(ctx context.Context, id, op, notFoundFormat string, verb func(co
 	return nil
 }
 
-// The page-size limits every paginated admin RPC applies.
-//
-// Exported because the CLI reads them: it refuses an out-of-range --limit
-// before the dial so the operator gets an answer that identifies the flag.
-// The two sides therefore state ONE range. They act on it differently -- the
-// hub caps an oversized limit and returns a page, the CLI refuses it -- and
-// that is deliberate: an operator who asks for 900 rows is better served by
-// the range than by 500 rows that look like the whole answer.
-const (
-	// DefaultPageLimit is what an omitted or non-positive limit
-	// resolves to.
-	DefaultPageLimit = 50
-	// MaxPageLimit caps what one page may return, so a caller cannot
-	// ask the hub for the whole table in one response.
-	MaxPageLimit = 500
-)
-
 // MaxAPITokenTTLSeconds caps an issued API token's lifetime at one year.
 //
 // The ceiling is what makes the mint safe: the handler multiplies the
@@ -257,28 +228,6 @@ const (
 // to either could leave a credential this verb mints living past the ceiling
 // every other one respects.
 const MaxAPITokenTTLSeconds = int64(auth.AbsoluteTokenLifetime / time.Second)
-
-// NormalizePageParams normalizes one paginated request's cursor and limit.
-//
-// The normalization belongs HERE, not in a client. `store.ClampListLimit`
-// preserves a limit of 0, and the paginated queries read 0 as "return no
-// rows" — so a caller that simply omits `limit` (the proto3 default) gets
-// an empty page it cannot tell apart from an empty table. Every paginated
-// handler builds its PageParams through this function, so the guarantee
-// holds for the CLI, the frontend, and any script alike.
-//
-// It is not admin-only, and its name no longer says it is: the worker
-// listing and the account's own CLI-credential listing use it too, and a
-// name that claims otherwise makes a reader check whether they may.
-func NormalizePageParams(cursor string, limit int64) store.PageParams {
-	switch {
-	case limit <= 0:
-		limit = DefaultPageLimit
-	case limit > MaxPageLimit:
-		limit = MaxPageLimit
-	}
-	return store.PageParams{Cursor: cursor, Limit: limit}
-}
 
 // requireField refuses an empty required request field, in one wording
 // across every admin handler.
@@ -314,7 +263,7 @@ func adminSessionToProto(s store.ActiveSession) *leapmuxv1.AdminSession {
 
 func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
 	params := store.ListAllUsersParams{
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	}
 	var page store.Page[store.User]
 	var err error
@@ -333,11 +282,11 @@ func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUse
 	for _, u := range page.Rows {
 		users = append(users, adminUserToProto(&u))
 	}
-	return &leapmuxv1.ListUsersResponse{Users: users, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListUsersResponse{Users: users, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func (s *AdminUserService) GetUser(ctx context.Context, req *leapmuxv1.GetUserRequest) (*leapmuxv1.GetUserResponse, error) {
-	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -512,7 +461,7 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // `leapmux control admin user update --display-name` for no gain.
 func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.UpdateUserRequest) (*leapmuxv1.UpdateUserResponse, error) {
 	msg := req
-	user, err := resolveAdminUser(ctx, s.store, msg.GetId(), msg.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -648,7 +597,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	if err != nil {
 		return nil, err
 	}
-	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +726,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 	if err != nil {
 		return nil, err
 	}
-	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -857,7 +806,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.Res
 		return nil, err
 	}
 	msg := req
-	user, err := resolveAdminUser(ctx, s.store, msg.GetId(), msg.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -921,7 +870,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.Res
 }
 
 func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.ListUserSessionsRequest) (*leapmuxv1.ListUserSessionsResponse, error) {
-	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -931,7 +880,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 	}
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list user sessions")
@@ -949,12 +898,12 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.
 			UserAgent:    sess.UserAgent,
 		}))
 	}
-	return &leapmuxv1.ListUserSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListUserSessionsResponse{Sessions: sessions, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func (s *AdminUserService) ListSessions(ctx context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	}, s.now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list sessions")
@@ -963,7 +912,7 @@ func (s *AdminUserService) ListSessions(ctx context.Context, req *leapmuxv1.List
 	for _, sess := range page.Rows {
 		sessions = append(sessions, adminSessionToProto(sess))
 	}
-	return &leapmuxv1.ListSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListSessionsResponse{Sessions: sessions, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func (s *AdminUserService) RevokeSession(ctx context.Context, req *leapmuxv1.RevokeSessionRequest) (*leapmuxv1.RevokeSessionResponse, error) {
@@ -979,7 +928,7 @@ func (s *AdminUserService) RevokeSession(ctx context.Context, req *leapmuxv1.Rev
 }
 
 func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *leapmuxv1.RevokeUserSessionsRequest) (*leapmuxv1.RevokeUserSessionsResponse, error) {
-	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -1014,14 +963,14 @@ func (s *AdminUserService) PurgeExpiredSessions(ctx context.Context, _ *leapmuxv
 }
 
 func (s *AdminUserService) ListAPITokens(ctx context.Context, req *leapmuxv1.ListAPITokensRequest) (*leapmuxv1.ListAPITokensResponse, error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
 	page, err := s.store.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         userFilter,
 		ClientID:       req.GetClientId(),
-		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})
 	if err != nil {
@@ -1031,7 +980,7 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *leapmuxv1.Lis
 	for _, t := range page.Rows {
 		tokens = append(tokens, apiTokenToProto(t))
 	}
-	return &leapmuxv1.ListAPITokensResponse{Tokens: tokens, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListAPITokensResponse{Tokens: tokens, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func apiTokenToProto(t store.APITokenWithOwner) *leapmuxv1.AdminAPIToken {
@@ -1064,7 +1013,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 	msg := req
 	// The SAME (id | username) selector every sibling verb takes. A third
 	// spelling of "which user" is one an operator has to remember per verb.
-	user, err := resolveAdminUser(ctx, s.store, msg.GetUserId(), msg.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, msg.GetUser())
 	if err != nil {
 		return nil, err
 	}
@@ -1229,13 +1178,13 @@ func (s *AdminUserService) RevokeAPIToken(ctx context.Context, req *leapmuxv1.Re
 }
 
 func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *leapmuxv1.ListDelegationTokensRequest) (*leapmuxv1.ListDelegationTokensResponse, error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
 	page, err := s.store.DelegationTokens().ListAll(ctx, store.ListAllDelegationTokensParams{
 		UserID:         userFilter,
-		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	})
 	if err != nil {
@@ -1245,7 +1194,7 @@ func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *leapmu
 	for _, t := range page.Rows {
 		tokens = append(tokens, delegationTokenToProto(t))
 	}
-	return &leapmuxv1.ListDelegationTokensResponse{Tokens: tokens, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListDelegationTokensResponse{Tokens: tokens, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func delegationTokenToProto(t store.DelegationTokenWithOwner) *leapmuxv1.AdminDelegationToken {

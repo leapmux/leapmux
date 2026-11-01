@@ -22,7 +22,7 @@ import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/comp
 import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { AGENT_SETTLED_EVENT } from '~/lib/agentSettledEvent'
 import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
@@ -331,7 +331,7 @@ export function handleAgentSessionInfo(
   }
   // Keep goal_progress beside the goal in the chat store.
   // Its ephemeral updates can occur after each tool call without a goal transition.
-  // AgentGoalChanged carries the goal and supported actions separately.
+  // AgentGoalSnapshot carries the goal and supported actions separately.
   const goalProgress = wireGoalProgressToUpdate(info?.[SESSION_INFO_KEY.GoalProgress])
   if (goalProgress) {
     const accepted: GoalProgress = {}
@@ -684,8 +684,10 @@ export function buildAgentStatusTabUpdate(
     ...(hasStatus
       ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId }
       : {}),
+    // A full status always states the queue-head dispatch. A sparse event
+    // leaves the field UNSPECIFIED, which means no update.
     ...(hasStatus
-      ? { supportsSteering: sc.supportsSteering, supportsPreemption: sc.supportsPreemption }
+      ? { queueHeadDispatch: sc.queueHeadDispatch }
       : {}),
     // Set the server's startup error on STARTUP_FAILED and clear it on ACTIVE.
     // Other status values retain the existing error.
@@ -728,8 +730,8 @@ export function handleAgentInactive(
 }
 
 /** Cancel the provider prompt without discarding a delivered response that still needs recording. */
-export function handleControlCancellation(request: AgentControlCancelRequest, controlStore: ReturnType<typeof createControlStore>): void {
-  controlStore.cancelRequest(request)
+export function handleControlCancellation(agentId: string, request: AgentControlCancelRequest, controlStore: ReturnType<typeof createControlStore>): void {
+  controlStore.cancelRequest(agentId, request)
 }
 
 /** Apply a request or response-state snapshot. Replay retains recoverable responses without a new notification. */
@@ -741,14 +743,14 @@ export function handleControlRequest(
 ): void {
   const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
   if (cr.responseState === ControlResponseState.COMPLETED || cr.responseState === ControlResponseState.CANCELED) {
-    controlStore.cancelRequest(cr)
+    controlStore.cancelRequest(agentId, cr)
     return
   }
   // A saved response can still need local recording after its provider stops,
   // and a non-blocking question belongs to the conversation: a reader who
   // returns later must still find it. A blocking request of an inactive agent
   // with no saved response is dropped: its provider no longer waits.
-  const agentEntry = view.getAgentTab(cr.agentId)
+  const agentEntry = view.getAgentTab(agentId)
   const hasSavedResponse = cr.responseState === ControlResponseState.DELIVERED
     || cr.responseState === ControlResponseState.PENDING || cr.responseState === ControlResponseState.UNCERTAIN
   if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse && !cr.nonBlocking)
@@ -764,7 +766,7 @@ export function handleControlRequest(
   try {
     const parsed = JSON.parse(TEXT_DECODER.decode(cr.payload)) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      log.warn('Keeping a control request whose payload is not an object', { agentId: cr.agentId, requestId: cr.requestId })
+      log.warn('Keeping a control request whose payload is not an object', { agentId, requestId: cr.requestId })
       payloadFault = 'not-an-object'
     }
     else {
@@ -772,12 +774,12 @@ export function handleControlRequest(
     }
   }
   catch (err) {
-    log.warn('Keeping a control request whose payload is malformed', { agentId: cr.agentId, requestId: cr.requestId, err })
+    log.warn('Keeping a control request whose payload is malformed', { agentId, requestId: cr.requestId, err })
     payloadFault = 'malformed'
   }
-  controlStore.addRequest(cr.agentId, {
+  controlStore.addRequest(agentId, {
     requestId: cr.requestId,
-    agentId: cr.agentId,
+    agentId,
     agentSessionId: cr.agentSessionId,
     payload,
     ...(payloadFault
@@ -795,8 +797,8 @@ export function handleControlRequest(
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.
-    if (!isAgentTabOnScreen(cr.agentId, view, selection, getActiveWorkspaceId))
-      metadata.patch(cr.agentId, { hasNotification: true })
+    if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
+      metadata.patch(agentId, { hasNotification: true })
     // A control request can change WORKING to WAITING_FOR_USER.
     // handleAgentSettled plays that alert once.
     // onTurnEndRefresh refreshes git and the directory tree after the turn ends.
@@ -882,7 +884,8 @@ export function handleAgentSettled(
  * - Stop the settings spinner when this agent has no pending change.
  * - Clear live turn state after INACTIVE status.
  *
- * Only an explicit status makes workerOnline authoritative.
+ * An explicit status reports the worker online, because only a live worker
+ * sends one.
  * Ignore an event that supplies none of these fields:
  * - An explicit status.
  * - Git data.
@@ -899,10 +902,11 @@ export function handleAgentStatusChange(
   streamWorkerId = '',
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-  // Only an explicit status makes workerOnline authoritative.
-  // A sparse event can contain protobuf's default false without a connectivity report.
+  // Only a live worker sends a status, so an explicit one reports it online.
+  // A sparse event (a git refresh, a catalog confirmation) leaves the online
+  // state alone, as it leaves the other fields it does not carry.
   if (hasStatus)
-    setWorkerOnline(sc.workerOnline)
+    setWorkerOnline(true)
 
   // Skip an event that supplies none of these fields:
   // - An explicit status.
@@ -916,8 +920,8 @@ export function handleAgentStatusChange(
 
   // Stop the aggregate settings spinner only when this agent has no pending change.
   // The separate pendingAxes set protects optimistic values for each axis.
-  const pendingSettings = settingsLoading.isPending(sc.agentId)
-  applyAgentStatusTabUpdate(sc, stores, settingsLoading, streamWorkerId)
+  const pendingSettings = settingsLoading.isPending(agentId)
+  applyAgentStatusTabUpdate(agentId, sc, stores, settingsLoading, streamWorkerId)
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)
@@ -929,13 +933,14 @@ export function handleAgentStatusChange(
  * Apply its tab fields in the same metadata update.
  */
 function applyAgentStatusTabUpdate(
+  agentId: string,
   sc: AgentStatusChange,
   stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   streamWorkerId = '',
 ): void {
   const { view, metadata, repoGitStore } = stores
-  const prev = view.getAgentTab(sc.agentId)
+  const prev = view.getAgentTab(agentId)
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
   const workerId = prev?.workerId || streamWorkerId || ''
@@ -945,7 +950,7 @@ function applyAgentStatusTabUpdate(
   upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, migrateHint !== undefined
     ? { migrateErrorHintFrom: migrateHint }
     : {})
-  const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
+  const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(agentId))
   // Write the consolidated tab update once.
   // Record live status and catalog writes in their respective epochs.
   // A pending ListAgents response then cannot replace the newer live fields.
@@ -958,5 +963,5 @@ function applyAgentStatusTabUpdate(
     writes.push('status')
   if (sc.optionGroups.length > 0)
     writes.push('catalog')
-  metadata.patchLive(sc.agentId, update, writes)
+  metadata.patchLive(agentId, update, writes)
 }

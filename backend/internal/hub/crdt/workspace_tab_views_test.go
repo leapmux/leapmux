@@ -22,15 +22,15 @@ func TestTabIndex_RebuildFromState(t *testing.T) {
 
 	// One live tab.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 	}, hlcAt(10, 2, "a")))
 
@@ -57,15 +57,15 @@ func TestTabIndex_SkipsTabsOnDeadTiles(t *testing.T) {
 
 	// Live tab on root1.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 	}, hlcAt(10, 2, "a")))
 
@@ -121,7 +121,7 @@ func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
 	tombstone := &leapmuxv1.OpBatch{
 		BatchId: "b2",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-tomb", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{

@@ -421,7 +421,6 @@ func TestControlPublicationStoresTheBroadcastPayloadAndClaim(t *testing.T) {
 		assert.Equal(t, stored.ClaimToken, request.ClaimToken)
 		assert.NotEqual(t, previousToken, request.ClaimToken)
 		assert.Equal(t, "7", request.RequestId)
-		assert.Equal(t, "agent-1", request.AgentId)
 		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, request.AgentProvider)
 		previousToken = request.ClaimToken
 	}

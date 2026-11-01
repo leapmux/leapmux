@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -51,10 +52,9 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		return nil, errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -90,9 +90,9 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 		return nil, errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:   repoDir,
-		CreateBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createBranchSetup(branchName, ""),
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -122,9 +122,9 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 		return nil, errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:   repoDir,
-		CreateBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createBranchSetup(branchName, ""),
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -152,11 +152,10 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 		return errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -185,10 +184,10 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 		return errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:   repoDir,
-		CreateBranch: branchName,
-		Shell:        testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createBranchSetup(branchName, ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -256,10 +255,9 @@ func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
 		return errors.New("forced create failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
 	}, w)
 
 	require.Len(t, w.errors, 1)
@@ -287,9 +285,9 @@ func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
 		return errors.New("forced create failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:   repoDir,
-		CreateBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createBranchSetup(branchName, ""),
 	}, w)
 
 	require.Len(t, w.errors, 1)
@@ -311,10 +309,10 @@ func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
 		return errors.New("forced start failure")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CheckoutBranch: "feature/existing",
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   checkoutBranchSetup("feature/existing"),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	require.Empty(t, w.errors)

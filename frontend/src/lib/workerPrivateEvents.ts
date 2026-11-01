@@ -6,14 +6,15 @@
 // `worker_tab_payloads` row the caller owns) so a late-joining client
 // receives the full payload cache before any live events.
 
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { channelManager } from '~/api/workerRpc'
 import {
   WatchWorkerPrivateEventsRequestSchema,
   WorkerPrivateEventSchema,
+  WorkerPrivateService,
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
@@ -109,7 +110,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
           return
         const req = create(WatchWorkerPrivateEventsRequestSchema, {})
         const payload = toBinary(WatchWorkerPrivateEventsRequestSchema, req)
-        const handle = channelManager.stream(channelId, 'WatchWorkerPrivateEvents', payload)
+        const handle = channelManager.stream(channelId, WorkerPrivateService.method.watchWorkerPrivateEvents, payload)
         currentClose = () => handle.cancel()
 
         await new Promise<void>((resolve) => {

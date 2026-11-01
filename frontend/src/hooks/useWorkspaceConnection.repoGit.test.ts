@@ -1,9 +1,10 @@
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -215,7 +216,7 @@ describe('useWorkspaceConnection worker-offline sweep', () => {
     try {
       streamOpts().onWorkerOnline(WORKER, false)
 
-      expect(view.getTerminalTab('t1')?.status).toBe(TerminalStatus.DISCONNECTED)
+      expect(view.getTerminalTab('t1')?.status).toBe(TERMINAL_DISCONNECTED)
     }
     finally {
       dispose()

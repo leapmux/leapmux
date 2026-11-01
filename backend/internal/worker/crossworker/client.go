@@ -319,12 +319,12 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 			if closed.Load() {
 				return
 			}
-			if m.GetIsError() {
+			if rpcErr := m.GetError(); rpcErr != nil {
 				// Assign streamErr inside the Once so it is written exactly once,
 				// happens-before close(done); a trailing error frame after the
 				// terminating one is a no-op and never races `return streamErr`.
 				doneOnce.Do(func() {
-					streamErr = fmt.Errorf("stream error (code %d): %s", m.GetErrorCode(), m.GetErrorMessage())
+					streamErr = fmt.Errorf("stream error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage())
 					close(done)
 				})
 				return
@@ -346,8 +346,8 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 	defer func() {
 		closed.Store(true)
 	}()
-	// Expose a controller so the local-IPC router can forward UpdateStream /
-	// CancelStream onto this dedicated channel's correlation id. Without it,
+	// Expose a controller so the local-IPC router can forward UpdateStream
+	// revisions and cancellations onto this dedicated channel's correlation id. Without it,
 	// a sibling-worker WatchEvents subscription can never revise its interest.
 	if bindCtrl != nil {
 		bindCtrl(newCrossWorkerStreamCtrl(ch, reqID))
@@ -362,8 +362,8 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 		// No nil arm: recvLoop never delivers nil and respCh is never closed, so a
 		// closed channel wakes the ch.Context().Done() arm below (see
 		// tunnel.Channel.Close), never this one.
-		if resp.GetIsError() {
-			return fmt.Errorf("rpc error (code %d): %s", resp.GetErrorCode(), resp.GetErrorMessage())
+		if rpcErr := resp.GetError(); rpcErr != nil {
+			return fmt.Errorf("rpc error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage())
 		}
 		return nil
 	case <-ctx.Done():

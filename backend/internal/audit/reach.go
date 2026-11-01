@@ -75,6 +75,12 @@ var workerReachSites = map[string]workerReachKind{
 	// than asserted, and a send failure is swallowed so the call discloses nothing
 	// about liveness either.
 	"internal/hub/service.(*ReconcileNudger).NudgeReconcile": reachServerInitiated,
+	// The identity re-delivery is a user-info observer: its owner id comes from
+	// the Hub's own user_info event -- a change the store committed for that
+	// user, in this process or another -- never from a user request. It sends
+	// the owner's own identity to the owner's own workers and returns nothing,
+	// so it discloses no worker's liveness to anyone.
+	"internal/hub/service.(*WorkerConnectorService).RedeliverWorkerIdentity": reachServerInitiated,
 }
 
 // registryMethodKind names WHY one exported *workermgr.Manager method that
@@ -111,13 +117,16 @@ const (
 // registryConnScoped that takes no *Conn, a registryBroadcast that takes a
 // worker id. So the kind is a claim about the code, not a comment with a type.
 var registryMethodKinds = map[string]registryMethodKind{
-	"ConnForTrustedPath":     registryUnguardedByID,
-	"OnlineForTrustedPath":   registryUnguardedByID,
-	"IsDeregistering":        registryUnguardedByID,
-	"MarkDeregistering":      registryUnguardedByID,
-	"ConnForUser":            registryGuarded,
-	"Register":               registryConnScoped,
-	"Unregister":             registryConnScoped,
-	"NotifyShutdownAndFence": registryBroadcast,
-	"FenceAll":               registryBroadcast,
+	"ConnForTrustedPath":   registryUnguardedByID,
+	"OnlineForTrustedPath": registryUnguardedByID,
+	// Keyed by OWNER id rather than worker id, but the same exposure: an
+	// arbitrary owner id would enumerate that owner's live workers.
+	"OwnerConnsForTrustedPath": registryUnguardedByID,
+	"IsDeregistering":          registryUnguardedByID,
+	"MarkDeregistering":        registryUnguardedByID,
+	"ConnForUser":              registryGuarded,
+	"Register":                 registryConnScoped,
+	"Unregister":               registryConnScoped,
+	"NotifyShutdownAndFence":   registryBroadcast,
+	"FenceAll":                 registryBroadcast,
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
@@ -59,7 +60,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 			// history, capped by contracts.MessagePageLimit. Keep it for the single-page
 			// show-history-first behaviour.
 			var resp leapmuxv1.ListAgentMessagesResponse
-			if err := callInnerRPC(ctx, c, workerID, "ListAgentMessages", req, &resp); err != nil {
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
 				return err
 			}
 			if !follow {
@@ -457,7 +458,7 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 			req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST
 		}
 		var resp leapmuxv1.ListAgentMessagesResponse
-		if err := callInnerRPC(ctx, c, workerID, "ListAgentMessages", req, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, &resp); err != nil {
 			return nil, false, err
 		}
 		return resp.GetMessages(), resp.GetHasMore(), nil

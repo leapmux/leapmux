@@ -8,13 +8,14 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
 // RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
-// worker-side teardown (CloseAgent / CloseTerminal / RevokeTabPayload).
+// worker-side teardown (CloseTab).
 // The hub's remove-wins semantics mean the tab id is dead afterward;
 // recreating at the UI level mints a fresh id. The resolver derives
 // workspace + tab-type from --tab-id when only the id is given.
@@ -79,7 +80,7 @@ func RunTabClose(rawCtx any, args []string) error {
 
 		// `tab close` issues up to three inner-RPCs against the SAME worker --
 		// InspectLastTabClose, an optional PushBranch, and the
-		// CloseAgent/CloseTerminal/RevokeTabPayload teardown -- with the CRDT
+		// CloseTab teardown -- with the CRDT
 		// tombstone in between. Hoisting one Noise_NK channel over the sequence
 		// pays the handshake once rather than per call.
 		//
@@ -152,7 +153,7 @@ func RunTabClose(rawCtx any, args []string) error {
 				if !inspected.GetGitState().GetCanPush() {
 					return control.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
 				}
-				if err := callWorker("PushBranch", &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
+				if err := callWorker(leapmuxv1connect.WorkerGitServicePushBranchProcedure, &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
 					return emitInnerRPCError(err)
 				}
 			}
@@ -278,7 +279,7 @@ type workerCaller func(method string, in proto.Message, out proto.Message) error
 // The context rides on the bound caller, so this takes none of its own.
 func inspectLastTabCloseBest(call workerCaller, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	resp := &leapmuxv1.InspectLastTabCloseResponse{}
-	if err := call("InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{TabType: tabType, TabId: tabID}, resp); err != nil {
+	if err := call(leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}}, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -363,7 +364,7 @@ func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {
 // with this one, then the tab itself.
 //
 // The ORDER is the point, and it is why the inspect reports the subtree at all.
-// A client that learned the ids only from the CloseAgent response would have to
+// A client that learned the ids only from the CloseTab response would have to
 // tombstone the parent first and the children a round trip later; every peer
 // would then promote the orphaned children to top-level rows claiming a lineage
 // the user can no longer see, for as long as the worker teardown takes -- which
@@ -381,7 +382,7 @@ func closeBatchOps(bs *CRDTBootstrap, tt leapmuxv1.TabType, tabID string, descen
 // hold, preserving order.
 //
 // A `tab close` learns the subtree twice: from the inspect, before the parent's
-// tombstone, and from CloseAgent, after the teardown. The second answer is a
+// tombstone, and from CloseTab, after the teardown. The second answer is a
 // superset -- it also holds anything the provider spawned while it drained --
 // so only the difference belongs in the second batch. Re-tombstoning an id the
 // first batch already retired would fail the whole batch, because the hub
@@ -443,41 +444,21 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 	if got.WorkerID == "" {
 		return nil, nil
 	}
-	switch tt {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		resp := &leapmuxv1.CloseAgentResponse{}
-		if err := call("CloseAgent",
-			&leapmuxv1.CloseAgentRequest{AgentId: got.TabID, WorktreeAction: action},
-			resp); err != nil {
-			return nil, err
-		}
-		return resp.GetDescendantAgentIds(), nil
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return nil, call("CloseTerminal",
-			&leapmuxv1.CloseTerminalRequest{
-				TerminalId:     got.TabID,
-				WorktreeAction: action,
-			},
-			&leapmuxv1.CloseTerminalResponse{})
-	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
-		// A payload-backed tab DOES have a worker-side row:
-		// worker_tab_payloads, plus the worktree_tabs link that ref-counts its
-		// worktree. Revoking is what drives the shared closeTabCommon flow --
-		// the same one CloseAgent and CloseTerminal drive -- so
-		// `--worktree=discard` actually removes the worktree and the link does
-		// not linger as a strand for the orphan reconciler to sweep later. This
-		// used to fall through to the default and dispatch nothing, on the
-		// belief that the CRDT tombstone was the whole teardown; it is not, and
-		// the frontend's own close has always called this RPC.
-		return nil, call("RevokeTabPayload",
-			&leapmuxv1.RevokeTabPayloadRequest{
-				TabId:          got.TabID,
-				WorktreeAction: action,
-			},
-			&leapmuxv1.RevokeTabPayloadResponse{})
-	default:
-		// UNSPECIFIED never reaches here -- the caller resolved a concrete tab
-		// before dispatching.
-		return nil, nil
+	// One RPC for every tab type. A FILE or IMAGE tab DOES have a worker-side
+	// row: worker_tab_payloads, plus the worktree_tabs link that ref-counts its
+	// worktree. Closing it drives the shared closeTabCommon flow, so
+	// `--worktree=discard` actually removes the worktree and the link does not
+	// linger as a strand for the orphan reconciler to sweep later. UNSPECIFIED
+	// never reaches here -- the caller resolved a concrete tab before
+	// dispatching -- and the worker refuses it.
+	resp := &leapmuxv1.CloseTabResponse{}
+	if err := call(leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
+		&leapmuxv1.CloseTabRequest{
+			Tab:            &leapmuxv1.TabIdent{TabType: tt, TabId: got.TabID},
+			WorktreeAction: action,
+		},
+		resp); err != nil {
+		return nil, err
 	}
+	return resp.GetDescendantAgentIds(), nil
 }

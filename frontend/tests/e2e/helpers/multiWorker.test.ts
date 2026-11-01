@@ -104,7 +104,9 @@ beforeEach(() => {
         headers: { 'Set-Cookie': 'leapmux-session=session; HttpOnly' },
       })
       case 'GetCurrentUser': return Response.json({
-        user: { id: 'user' },
+        sessionReport: {
+          user: { id: 'user' },
+        },
       })
       case 'CreateRegistrationKey': return Response.json({ registrationKey: 'registration' })
       case 'ListWorkers': return Response.json({

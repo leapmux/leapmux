@@ -157,7 +157,7 @@ describe('RepoContextMenu', () => {
 
     openMenu()
     expect(listProviders).toHaveBeenCalledWith('w1', expect.anything())
-    expect(listShells).toHaveBeenCalledWith('w1', { workerId: 'w1' })
+    expect(listShells).toHaveBeenCalledWith('w1', {})
   })
 
   // A repository can span two machines, so each checkout asks its OWN Worker
@@ -172,7 +172,7 @@ describe('RepoContextMenu', () => {
     openMenu()
     fireEvent.click(screen.getByTestId('repo-checkout-main-worker-b'))
 
-    expect(listShells).toHaveBeenCalledWith('w2', { workerId: 'w2' })
+    expect(listShells).toHaveBeenCalledWith('w2', {})
   })
 
   it('collapses every branch of the repository from its own item', () => {

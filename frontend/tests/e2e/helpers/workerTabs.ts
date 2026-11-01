@@ -1,26 +1,22 @@
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { AgentServer } from './api'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import { fromJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
 import {
   AgentStatus,
-  CloseAgentRequestSchema,
-  CloseAgentResponseSchema,
-  ListAgentsRequestSchema,
-  ListAgentsResponseSchema,
+  WorkerAgentService,
 } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import {
-  InspectLastTabCloseRequestSchema,
-  InspectLastTabCloseResponseSchema,
-  PushBranchRequestSchema,
-  PushBranchResponseSchema,
+  WorkerGitService,
 } from '../../../src/generated/proto/leapmux/v1/git_pb'
 import {
-  CloseTerminalRequestSchema,
-  CloseTerminalResponseSchema,
-  ListTerminalsRequestSchema,
-  ListTerminalsResponseSchema,
+  TerminalStatus,
+  WorkerTerminalService,
 } from '../../../src/generated/proto/leapmux/v1/terminal_pb'
+import { WorkerTabService } from '../../../src/generated/proto/leapmux/v1/worker_tab_pb'
+import { ListTabsResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { API_POLL_INTERVAL_MS, callHub, getTestChannel } from './api'
 import { nativeAgentById } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
@@ -80,66 +76,64 @@ export async function waitForAgentStartupViaAPI(
   }
 }
 
+/** The verdict of one CloseTab: empty strings for a clean close. */
+export interface CloseTabVerdict {
+  worktreePath: string
+  worktreeId: string
+  failureMessage: string
+  failureDetail: string
+}
+
 /**
- * Close a terminal via E2EE channel. Pass `worktreeAction` to atomically
- * remove the worktree after the PTY/DB cleanup (REMOVE) or keep it (KEEP).
+ * Close one tab via E2EE channel through the Worker's one close RPC. Pass
+ * `worktreeAction` to atomically remove the worktree after the teardown
+ * (REMOVE) or keep it (KEEP).
  */
-export async function closeTerminalViaAPI(
+async function closeTabViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  tabType: TabType,
+  tabId: string,
+  worktreeAction: WorktreeAction,
+): Promise<CloseTabVerdict> {
+  const channel = await getTestChannel(hubUrl, token)
+  const resp = await channel.callWorker(
+    workerId,
+    WorkerTabService.method.closeTab,
+    {
+      tab: { tabType, tabId },
+      worktreeAction,
+    },
+  )
+  return {
+    worktreePath: resp.worktreePath,
+    worktreeId: resp.worktreeId,
+    failureMessage: resp.failureMessage,
+    failureDetail: resp.failureDetail,
+  }
+}
+
+/** Close a terminal via E2EE channel. See {@link closeTabViaAPI}. */
+export function closeTerminalViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
   terminalId: string,
   worktreeAction: WorktreeAction = WorktreeAction.KEEP,
-): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
-  const channel = await getTestChannel(hubUrl, token)
-  const resp = await channel.callWorker(
-    workerId,
-    'CloseTerminal',
-    CloseTerminalRequestSchema,
-    CloseTerminalResponseSchema,
-    { terminalId, worktreeAction },
-  )
-  const result = resp.result
-  return {
-    worktreePath: result?.worktreePath ?? '',
-    worktreeId: result?.worktreeId ?? '',
-    failureMessage: result?.failureMessage ?? '',
-    failureDetail: result?.failureDetail ?? '',
-  }
+): Promise<CloseTabVerdict> {
+  return closeTabViaAPI(hubUrl, token, workerId, TabType.TERMINAL, terminalId, worktreeAction)
 }
 
-/**
- * Close an agent via E2EE channel. Pass `worktreeAction` to atomically
- * remove the worktree after the process/DB cleanup (REMOVE) or keep it
- * (KEEP).
- *
- * The Worker answers every close with a result, which is empty for a clean
- * close. A response without one throws, because it states no verdict.
- */
-export async function closeAgentViaAPI(
+/** Close an agent via E2EE channel. See {@link closeTabViaAPI}. */
+export function closeAgentViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
   agentId: string,
   worktreeAction: WorktreeAction = WorktreeAction.KEEP,
-): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
-  const channel = await getTestChannel(hubUrl, token)
-  const resp = await channel.callWorker(
-    workerId,
-    'CloseAgent',
-    CloseAgentRequestSchema,
-    CloseAgentResponseSchema,
-    { agentId, worktreeAction },
-  )
-  const result = resp.result
-  if (!result)
-    throw new Error(`The Worker sent no close verdict for agent ${agentId}.`)
-  return {
-    worktreePath: result.worktreePath,
-    worktreeId: result.worktreeId,
-    failureMessage: result.failureMessage,
-    failureDetail: result.failureDetail,
-  }
+): Promise<CloseTabVerdict> {
+  return closeTabViaAPI(hubUrl, token, workerId, TabType.AGENT, agentId, worktreeAction)
 }
 
 /**
@@ -253,17 +247,19 @@ async function workspaceTabIdsViaAPI(
   hubUrl: string,
   token: string,
   workspaceId: string,
-  tabType: 'TAB_TYPE_AGENT' | 'TAB_TYPE_TERMINAL',
+  tabType: TabType.AGENT | TabType.TERMINAL,
 ): Promise<string[]> {
-  const data = await callHub<{ tabs?: Array<{ tabType: string, tabId: string }> }>(
+  const data = fromJson(ListTabsResponseSchema, await callHub<JsonValue>(
     hubUrl,
     'WorkspaceService/ListTabs',
     {
       workspaceIds: [workspaceId],
     },
     { cookie: token, operation: `workspaceTabIdsViaAPI(${workspaceId})` },
-  )
-  return (data.tabs ?? []).filter(tab => tab.tabType === tabType).map(tab => tab.tabId)
+  ))
+  return data.tabs.flatMap(tab => tab.tab?.tabType === tabType
+    ? [tab.tab.tabId]
+    : [])
 }
 
 /**
@@ -284,7 +280,7 @@ export async function listAgentsViaAPI(
   workerId: string,
   workspaceId: string,
 ): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
-  const agentTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, 'TAB_TYPE_AGENT')
+  const agentTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, TabType.AGENT)
   if (agentTabIds.length === 0) {
     return []
   }
@@ -292,9 +288,7 @@ export async function listAgentsViaAPI(
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
-    'ListAgents',
-    ListAgentsRequestSchema,
-    ListAgentsResponseSchema,
+    WorkerAgentService.method.listAgents,
     { tabIds: agentTabIds },
   )
   return resp.agents.map(a => ({
@@ -382,7 +376,7 @@ export async function waitForWorkerTabTitle(
  * The worker's DB is the only durable home of a terminal's title, so this is
  * where a test asks whether a rename PERSISTED. The tab bar shows a rename
  * immediately -- the handler patches local metadata and fires
- * `UpdateTerminalTitle` without awaiting it -- so a reload or a worker restart
+ * `RenameTerminal` without awaiting it -- so a reload or a worker restart
  * begun in that window drops the write and the failure reads as a
  * persistence regression. Sibling of `listAgentsViaAPI`, same two-step shape.
  *
@@ -395,7 +389,7 @@ export async function listTerminalsViaAPI(
   workerId: string,
   workspaceId: string,
 ): Promise<Array<{ id: string, title: string, status: number, exited: boolean }>> {
-  const terminalTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, 'TAB_TYPE_TERMINAL')
+  const terminalTabIds = await workspaceTabIdsViaAPI(hubUrl, token, workspaceId, TabType.TERMINAL)
   if (terminalTabIds.length === 0) {
     return []
   }
@@ -403,16 +397,14 @@ export async function listTerminalsViaAPI(
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
-    'ListTerminals',
-    ListTerminalsRequestSchema,
-    ListTerminalsResponseSchema,
+    WorkerTerminalService.method.listTerminals,
     { tabIds: terminalTabIds },
   )
   return resp.terminals.map(t => ({
     id: t.terminalId,
     title: t.title,
     status: t.status,
-    exited: t.exited,
+    exited: t.status === TerminalStatus.EXITED,
   }))
 }
 
@@ -423,7 +415,7 @@ export async function inspectLastTabCloseViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
-  tabType: number,
+  tabType: TabType,
   tabId: string,
 ): Promise<{
   target: number
@@ -439,10 +431,10 @@ export async function inspectLastTabCloseViaAPI(
   const channel = await getTestChannel(hubUrl, token)
   const resp = await channel.callWorker(
     workerId,
-    'InspectLastTabClose',
-    InspectLastTabCloseRequestSchema,
-    InspectLastTabCloseResponseSchema,
-    { tabType, tabId },
+    WorkerGitService.method.inspectLastTabClose,
+    {
+      tab: { tabType, tabId },
+    },
   )
   const gs = resp.gitState
   return {
@@ -470,9 +462,7 @@ export async function pushBranchViaAPI(
   const channel = await getTestChannel(hubUrl, token)
   await channel.callWorker(
     workerId,
-    'PushBranch',
-    PushBranchRequestSchema,
-    PushBranchResponseSchema,
+    WorkerGitService.method.pushBranch,
     { workingDir },
   )
 }

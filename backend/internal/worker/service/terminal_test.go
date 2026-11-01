@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -34,7 +35,7 @@ func TestSucceedTerminalStartup_ListTerminalsReportsTheReadyThatTheClientReceive
 		return svc.Terminals.StartTerminal(startCtx, opts, outFn, exitFn)
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: workingDir,
 		Shell:      testutil.TestShell(),
 	}, w)
@@ -53,7 +54,7 @@ func TestSucceedTerminalStartup_ListTerminalsReportsTheReadyThatTheClientReceive
 		},
 		read: func() {
 			lw := newTestWriter()
-			dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, lw)
+			dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, lw)
 			listed <- lw
 		},
 	})

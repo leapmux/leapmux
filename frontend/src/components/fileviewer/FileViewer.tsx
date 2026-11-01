@@ -221,7 +221,6 @@ export const FileViewer: Component<{
   // effect's head-vs-working fallback, and "Show anyway".
   const fetchFirstChunk = (workerId: string, filePath: string) =>
     workerRpc.readFile(workerId, {
-      workerId,
       path: filePath,
       limit: BigInt(MAX_FILE_SIZE),
     })
@@ -269,7 +268,7 @@ export const FileViewer: Component<{
         // Known-binary: only need the size to populate the unsupported
         // card. Never read bytes.
         if (isLikelyBinaryExt(fileExt)) {
-          const statResp = await workerRpc.statFile(workerId, { workerId, path: filePath })
+          const statResp = await workerRpc.statFile(workerId, { path: filePath })
           if (!active)
             return
           batch(() => {
@@ -292,7 +291,6 @@ export const FileViewer: Component<{
               signal: controller.signal,
             })
           : await workerRpc.readFile(workerId, {
-              workerId,
               path: filePath,
               limit: BigInt(MAX_FILE_SIZE),
             })
@@ -370,7 +368,7 @@ export const FileViewer: Component<{
           const ref = mode === 'head'
             ? GitFileRef.HEAD
             : GitFileRef.STAGED
-          const resp = await workerRpc.readGitFile(workerId, { workerId, path: filePath, ref })
+          const resp = await workerRpc.readGitFile(workerId, { path: filePath, ref })
           if (resp.exists) {
             setDiffOldContent(new TextDecoder().decode(resp.content))
           }
@@ -394,7 +392,6 @@ export const FileViewer: Component<{
           // needs — they target the same worker but don't depend on
           // each other.
           const headPromise = workerRpc.readGitFile(workerId, {
-            workerId,
             path: filePath,
             ref: GitFileRef.HEAD,
           })
@@ -402,7 +399,6 @@ export const FileViewer: Component<{
           let newText: string
           if (mode === 'diff:head-vs-staged') {
             const stagedResp = await workerRpc.readGitFile(workerId, {
-              workerId,
               path: filePath,
               ref: GitFileRef.STAGED,
             })

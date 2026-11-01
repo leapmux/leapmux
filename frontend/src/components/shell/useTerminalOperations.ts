@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { InputQueueDrain } from '~/lib/inputQueue'
@@ -15,10 +15,10 @@ import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createSharedInputQueues } from '~/lib/inputQueue'
@@ -27,16 +27,6 @@ import { openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.help
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
-
-/**
- * The proto close responses carry `result` as present-but-undefined when the
- * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
- */
-function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined
-    ? {}
-    : { result: resp.result }
-}
 
 // xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
@@ -179,7 +169,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         rows: DEFAULT_TERMINAL_ROWS,
         workingDir: ctx.workingDir,
         shell: args.shell,
-        workerId: ctx.workerId,
         shellStartDir: args.shellStartDir ?? '',
       })
 
@@ -308,7 +297,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       // the backend broadcasts READY, and the backend stashes that
       // resize so the PTY spawns at the final size.
       if (tab.status === TerminalStatus.EXITED
-        || tab.status === TerminalStatus.DISCONNECTED
+        || tab.status === TERMINAL_DISCONNECTED
         || tab.status === TerminalStatus.STARTUP_FAILED) {
         return
       }
@@ -324,7 +313,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // Symmetric to handleAgentClose: store mutations run synchronously;
   // the worker close RPC and Hub unregister are fire-and-forget with
   // failure surfaced via toast.
-  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
+  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResponse | undefined> => {
     const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
     // Release the xterm instance (WebGL context, listeners) BEFORE the tab
     // disappears. TerminalView's per-view ownership tracking only releases
@@ -358,10 +347,10 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     // resolved result lets the delete-branch flow report the actual
     // worktree outcome.
     return awaitCloseResult(
-      workerRpc.closeTerminal(workerId, {
-        terminalId,
+      workerRpc.closeTab(workerId, {
+        tab: { tabType: TabType.TERMINAL, tabId: terminalId },
         worktreeAction,
-      }).then(closeResultView),
+      }),
       'Failed to close terminal',
     )
   }

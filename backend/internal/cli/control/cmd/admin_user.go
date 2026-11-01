@@ -7,6 +7,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -41,7 +42,7 @@ func RunAdminUserList(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListUsers(context.Background(), &leapmuxv1.ListUsersRequest{
-				Query: query, Limit: page.Limit, Cursor: page.Cursor,
+				Page: page.request(), Query: query,
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -50,7 +51,7 @@ func RunAdminUserList(rawCtx any, args []string) error {
 			for _, u := range resp.GetUsers() {
 				users = append(users, adminUserJSON(u))
 			}
-			return control.EmitData(map[string]any{"users": users, "next_cursor": resp.GetNextCursor()})
+			return control.EmitData(map[string]any{"users": users, "next_cursor": resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -93,6 +94,53 @@ func (s *userSelectorFlags) resolve(adminArgs) error {
 	return nil
 }
 
+// selector builds the UserSelector the hub reads. resolve already refused an
+// empty or ambiguous pair, so exactly one flag is set.
+func (s *userSelectorFlags) selector() *leapmuxv1.UserSelector {
+	return userSelectorOf(s.ID, s.Username)
+}
+
+// userFilterFlags binds the OPTIONAL (--user-id | --username) owner filter of
+// a listing, where neither flag means "every user". It refuses both flags
+// before the dial: the hub's selector holds one of the two, so a pair cannot
+// even be sent.
+type userFilterFlags struct {
+	ID       string
+	Username string
+}
+
+// bind declares the pair. idUsage states which users an id finds, which
+// differs between listings.
+func (f *userFilterFlags) bind(fs *flag.FlagSet, idUsage string) {
+	fs.StringVar(&f.ID, "user-id", "", idUsage)
+	fs.StringVar(&f.Username, "username", "", "filter by username")
+}
+
+// resolve matches adminVerbSpec.BeforeDial, so a verb assigns it directly.
+func (f *userFilterFlags) resolve(adminArgs) error {
+	if f.ID != "" && f.Username != "" {
+		return control.EmitError("invalid_request", "--user-id and --username are mutually exclusive")
+	}
+	return nil
+}
+
+// selector builds the optional UserSelector: nil when neither flag is set.
+func (f *userFilterFlags) selector() *leapmuxv1.UserSelector {
+	if f.ID == "" && f.Username == "" {
+		return nil
+	}
+	return userSelectorOf(f.ID, f.Username)
+}
+
+// userSelectorOf builds a selector over the one non-empty value. Both callers
+// refuse a pair before they get here, so an id wins only by convention.
+func userSelectorOf(id, username string) *leapmuxv1.UserSelector {
+	if id != "" {
+		return service.SelectUserByID(id)
+	}
+	return service.SelectUserByUsername(username)
+}
+
 // RunAdminUserGet implements `control admin user get`.
 func RunAdminUserGet(rawCtx any, args []string) error {
 	var sel userSelectorFlags
@@ -101,7 +149,7 @@ func RunAdminUserGet(rawCtx any, args []string) error {
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().GetUser(context.Background(), &leapmuxv1.GetUserRequest{
-				Id: sel.ID, Username: sel.Username,
+				User: sel.selector(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -175,7 +223,7 @@ func RunAdminUserUpdate(rawCtx any, args []string) error {
 			// username; a `!= ""` test made both indistinguishable from an
 			// absent flag, so the only way to clear an email became
 			// unreachable from the CLI.
-			req = &leapmuxv1.UpdateUserRequest{Id: sel.ID, Username: sel.Username, ClearPendingEmail: clearPendingEmail}
+			req = &leapmuxv1.UpdateUserRequest{User: sel.selector(), ClearPendingEmail: clearPendingEmail}
 			if a.Passed("display-name") {
 				req.DisplayName = &displayName
 			}
@@ -219,7 +267,7 @@ func RunAdminUserDelete(rawCtx any, args []string) error {
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AdminUserService().DeleteUser(context.Background(), &leapmuxv1.DeleteUserRequest{
-				Id: sel.ID, Username: sel.Username, Force: force,
+				User: sel.selector(), Force: force,
 			}); err != nil {
 				return control.EmitErrorWith("delete_failed", err)
 			}
@@ -245,7 +293,7 @@ func RunAdminUserSetAdmin(rawCtx any, args []string, admin bool) error {
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().SetUserAdmin(context.Background(), &leapmuxv1.SetUserAdminRequest{
-				Id: sel.ID, Username: sel.Username, IsAdmin: admin, Force: force,
+				User: sel.selector(), IsAdmin: admin, Force: force,
 			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
@@ -287,7 +335,7 @@ func RunAdminUserResetPassword(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ResetPassword(context.Background(), &leapmuxv1.ResetPasswordRequest{
-				Id: sel.ID, Username: sel.Username, Password: pw,
+				User: sel.selector(), Password: pw,
 			})
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
@@ -314,14 +362,14 @@ func RunAdminUserListSessions(rawCtx any, args []string) error {
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListUserSessions(context.Background(), &leapmuxv1.ListUserSessionsRequest{
-				Id: sel.ID, Username: sel.Username, Limit: page.Limit, Cursor: page.Cursor,
+				Page: page.request(), User: sel.selector(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetNextCursor(),
+				"next_cursor": resp.GetPage().GetNextCursor(),
 			})
 		},
 	})
@@ -413,14 +461,14 @@ func RunAdminSessionList(rawCtx any, args []string) error {
 		Page: &page,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListSessions(context.Background(), &leapmuxv1.ListSessionsRequest{
-				Limit: page.Limit, Cursor: page.Cursor,
+				Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"sessions":    adminSessionsJSON(resp.GetSessions()),
-				"next_cursor": resp.GetNextCursor(),
+				"next_cursor": resp.GetPage().GetNextCursor(),
 			})
 		},
 	})
@@ -451,7 +499,7 @@ func RunAdminSessionRevokeUser(rawCtx any, args []string) error {
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().RevokeUserSessions(context.Background(), &leapmuxv1.RevokeUserSessionsRequest{
-				Id: sel.ID, Username: sel.Username,
+				User: sel.selector(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
@@ -480,20 +528,21 @@ func RunAdminSessionPurgeExpired(rawCtx any, args []string) error {
 // RunAdminAPITokenList implements `control admin api-token list`.
 func RunAdminAPITokenList(rawCtx any, args []string) error {
 	var page adminPageFlags
-	var userID, username, clientID string
+	var owner userFilterFlags
+	var clientID string
 	var includeRevoked bool
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&userID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
-			fs.StringVar(&username, "username", "", "filter by username")
+			owner.bind(fs, "filter by user ID (soft-deleted users included; empty = all users)")
 			fs.StringVar(&clientID, "client-id", "", "filter by app (empty = all apps)")
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
 		},
+		BeforeDial: owner.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListAPITokens(context.Background(), &leapmuxv1.ListAPITokensRequest{
-				UserId: userID, Username: username, ClientId: clientID,
-				IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
+				User: owner.selector(), ClientId: clientID,
+				IncludeRevoked: includeRevoked, Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -502,7 +551,7 @@ func RunAdminAPITokenList(rawCtx any, args []string) error {
 			for _, t := range resp.GetTokens() {
 				rows = append(rows, adminAPITokenJSON(t))
 			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetNextCursor()})
+			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -557,7 +606,7 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), &leapmuxv1.IssueAPITokenRequest{
-				UserId: sel.ID, Username: sel.Username, ClientId: clientID,
+				User: sel.selector(), ClientId: clientID,
 				InstallationName: installationName,
 				TtlSeconds:       ttlSeconds, Scopes: scopeList,
 			})
@@ -596,18 +645,18 @@ func RunAdminAPITokenRevoke(rawCtx any, args []string) error {
 // RunAdminDelegationTokenList implements `control admin delegation-token list`.
 func RunAdminDelegationTokenList(rawCtx any, args []string) error {
 	var page adminPageFlags
-	var userID, username string
+	var owner userFilterFlags
 	var includeRevoked bool
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&userID, "user-id", "", "filter by user ID (soft-deleted users included; empty = all users)")
-			fs.StringVar(&username, "username", "", "filter by username")
+			owner.bind(fs, "filter by user ID (soft-deleted users included; empty = all users)")
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
 		},
+		BeforeDial: owner.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminUserService().ListDelegationTokens(context.Background(), &leapmuxv1.ListDelegationTokensRequest{
-				UserId: userID, Username: username, IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
+				User: owner.selector(), IncludeRevoked: includeRevoked, Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -616,7 +665,7 @@ func RunAdminDelegationTokenList(rawCtx any, args []string) error {
 			for _, t := range resp.GetTokens() {
 				rows = append(rows, adminDelegationTokenJSON(t))
 			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetNextCursor()})
+			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetPage().GetNextCursor()})
 		},
 	})
 }

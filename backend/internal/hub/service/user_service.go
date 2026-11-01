@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -18,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usersettings"
 	"github.com/leapmux/leapmux/util/validate"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
@@ -113,12 +113,9 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *leapmuxv1.UpdatePr
 		s.lifecycle.UserInfoInvalidated(user.ID)
 	}
 
-	return &leapmuxv1.UpdateProfileResponse{
-		Username:     newUsername,
-		DisplayName:  displayName,
-		Email:        user.Email,
-		PendingEmail: user.PendingEmail,
-	}, nil
+	// The STORED account, read back after the write, so the reply reports
+	// what the hub holds rather than what this request asked for.
+	return &leapmuxv1.UpdateProfileResponse{User: storedUserProto(ctx, s.store, user.ID)}, nil
 }
 
 func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.RequestEmailChangeRequest) (*leapmuxv1.RequestEmailChangeResponse, error) {
@@ -304,11 +301,14 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.
 	// and after a refused one from the failure stamp the clear writes -- a
 	// response that reports no cooldown would invite the retry the hub then
 	// refuses for the failure window.
-	resp := &leapmuxv1.ResendVerificationEmailResponse{EmailSent: sent}
-	if nextResend != nil {
-		resp.NextResendAvailableAt = timestamppb.New(*nextResend)
-	}
-	return resp, nil
+	// A resend runs only for a pending address, so verification is required.
+	return &leapmuxv1.ResendVerificationEmailResponse{
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              true,
+			EmailSent:             sent,
+			NextResendAvailableAt: nextResend,
+		}),
+	}, nil
 }
 
 // VerifyEmail handles both signup verification and email-change verification.
@@ -332,11 +332,20 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *leapmuxv1.VerifyEmai
 	// /verify-email.
 	s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 
-	userProto := userToProtoWithPasskeys(ctx, s.store, updatedUser)
-
-	return &leapmuxv1.VerifyEmailResponse{
-		User: userProto,
-	}, nil
+	// The verification committed, so a failed projection omits user rather
+	// than failing the RPC; the client then reads GetCurrentUser.
+	resp := &leapmuxv1.VerifyEmailResponse{
+		EmailVerification: emailVerificationToProto(reportedVerificationStatus(
+			updatedUser, settings.EmailVerificationEffective(s.set.Snapshot(ctx)), s.now())),
+	}
+	userProto, err := completeUserProto(ctx, s.store, updatedUser)
+	if err != nil {
+		slog.WarnContext(ctx, "the email verification succeeded, but its account projection could not be read",
+			"user_id", updatedUser.ID, "err", err)
+	} else {
+		resp.User = userProto
+	}
+	return resp, nil
 }
 
 // ChangePassword sets or replaces the caller's password.
@@ -751,21 +760,4 @@ func (s *UserService) ResetUserSetting(ctx context.Context, req *leapmuxv1.Reset
 		return nil, err
 	}
 	return &leapmuxv1.ResetUserSettingResponse{Value: value}, nil
-}
-
-func (s *UserService) GetTimeouts(ctx context.Context, req *leapmuxv1.GetTimeoutsRequest) (*leapmuxv1.GetTimeoutsResponse, error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
-		return nil, err
-	}
-
-	t := settings.KeyTimeouts.Of(s.set.Snapshot(ctx))
-	// The narrowing conversions are safe because validateTimeouts caps
-	// every budget at settings.MaxTimeoutSeconds, and the snapshot degrades
-	// a value that fails validation to the default. Widen that cap and the
-	// wire type has to widen with it.
-	return &leapmuxv1.GetTimeoutsResponse{
-		ApiTimeoutSeconds:            int32(t.APITimeoutSeconds),
-		AgentStartupTimeoutSeconds:   int32(t.AgentStartupTimeoutSeconds),
-		WorktreeCreateTimeoutSeconds: int32(t.WorktreeCreateSecs),
-	}, nil
 }

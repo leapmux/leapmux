@@ -8,8 +8,10 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
@@ -424,4 +426,53 @@ func TestIsWorkerUnreachable_MatchesLocalIPCShape(t *testing.T) {
 func TestIsWorkerUnreachable_NilSafe(t *testing.T) {
 	assert.False(t, isWorkerUnreachable(nil))
 	assert.False(t, isWorkerUnreachable(fmt.Errorf("bare error with no code")))
+}
+
+// TestPreflightFindsAWorkerOnALaterPage pins that the worker preflight reads
+// EVERY page of ListWorkers. The hub answers at most one page per call, so a
+// preflight that read only the first page refused a worker the caller owns
+// as `not_found` once the account held more workers than one page.
+func TestPreflightFindsAWorkerOnALaterPage(t *testing.T) {
+	disp := &shellsDispatcher{}
+	// worker-A is the spawn's own worker, so the command dispatches locally
+	// once the preflight finds it on the second page.
+	hub := &recordingHub{listWorkerPages: [][]string{{"worker-B"}, {"worker-A"}}}
+	startSpawnIPC(t, hub, disp)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
+	})
+
+	var env struct {
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.Nil(t, env.Error, "a worker on the second page must pass the preflight")
+	assert.Equal(t, []string{"ListWorkers", "ListWorkers"}, hub.called(),
+		"the preflight must read the second page through the first page's cursor")
+	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure}, disp.called())
+}
+
+// The other half of TestPreflightFindsAWorkerOnALaterPage: a worker that no
+// page holds is refused as not_found, and only after the preflight read every
+// page. A refusal after the first page would reject a worker that the caller
+// owns on a later page.
+func TestPreflightRefusesAWorkerThatNoPageHolds(t *testing.T) {
+	disp := &shellsDispatcher{}
+	hub := &recordingHub{listWorkerPages: [][]string{{"worker-B"}, {"worker-C"}}}
+	startSpawnIPC(t, hub, disp)
+
+	out := withCapturedStdout(t, func() {
+		require.Error(t, RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
+	})
+
+	var env struct {
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "not_found", env.Error["code"])
+	assert.Equal(t, "no such worker: worker-A", env.Error["message"])
+	assert.Equal(t, []string{"ListWorkers", "ListWorkers"}, hub.called(), "the preflight reads every page before it refuses")
+	assert.Empty(t, disp.called(), "a refused worker id must not reach the worker")
 }

@@ -67,7 +67,7 @@ func newOwnedTestConn(t *testing.T, workerID, owner string, write func(*leapmuxv
 	if write == nil {
 		write = func(*leapmuxv1.ConnectResponse) error { return nil }
 	}
-	conn, pump := NewConn(ctx, cancel, workerID, owner, sendq.NewMaxBytesPoolForTest(), write, greeting)
+	conn, pump := NewConn(ctx, cancel, workerID, owner, sendq.NewMaxBytesPoolForTest(), write, greeting, testHello())
 	t.Cleanup(conn.Fence)
 	return conn, pump
 }
@@ -401,6 +401,110 @@ func TestDenyAllReach_Denies(t *testing.T) {
 	require.ErrorIs(t, err, ErrReachDenied,
 		"a deny-all registry must refuse user-directed reach")
 	assert.Nil(t, got, "no connection may be returned by a deny-all registry")
+}
+
+// OwnerConnsForTrustedPath returns the connections of one owner's workers and
+// no other owner's, and nothing for an owner with none or a blank owner.
+func TestManager_OwnerConnsForTrustedPath(t *testing.T) {
+	m := New(&fakeReachAuthorizer{})
+	aliceOne, _ := newOwnedTestConn(t, "w1", "alice", nil, nil)
+	aliceTwo, _ := newOwnedTestConn(t, "w2", "alice", nil, nil)
+	bob, _ := newOwnedTestConn(t, "w3", "bob", nil, nil)
+	for _, conn := range []*Conn{aliceOne, aliceTwo, bob} {
+		_, err := m.Register(conn)
+		require.NoError(t, err)
+	}
+
+	assert.ElementsMatch(t, []*Conn{aliceOne, aliceTwo}, m.OwnerConnsForTrustedPath("alice"))
+	assert.Equal(t, []*Conn{bob}, m.OwnerConnsForTrustedPath("bob"))
+	assert.Empty(t, m.OwnerConnsForTrustedPath("carol"))
+	assert.Empty(t, m.OwnerConnsForTrustedPath(""))
+
+	require.True(t, m.Unregister("w1", aliceOne))
+	assert.Equal(t, []*Conn{aliceTwo}, m.OwnerConnsForTrustedPath("alice"), "an unregistered connection is gone")
+}
+
+// A reconnecting worker replaces its own connection, so the owner's list holds
+// the replacement and never the fenced predecessor. A worker id that comes
+// back under another owner moves to that owner's list.
+func TestManager_OwnerConnsForTrustedPathFollowsAReplacement(t *testing.T) {
+	m := New(&fakeReachAuthorizer{})
+	first, _ := newOwnedTestConn(t, "w1", "alice", nil, nil)
+	_, err := m.Register(first)
+	require.NoError(t, err)
+
+	reconnected, _ := newOwnedTestConn(t, "w1", "alice", nil, nil)
+	replaced, err := m.Register(reconnected)
+	require.NoError(t, err)
+	require.True(t, replaced)
+	assert.Equal(t, []*Conn{reconnected}, m.OwnerConnsForTrustedPath("alice"))
+
+	moved, _ := newOwnedTestConn(t, "w1", "bob", nil, nil)
+	replaced, err = m.Register(moved)
+	require.NoError(t, err)
+	require.True(t, replaced)
+	assert.Empty(t, m.OwnerConnsForTrustedPath("alice"), "the worker id left alice's list")
+	assert.Equal(t, []*Conn{moved}, m.OwnerConnsForTrustedPath("bob"))
+
+	// The predecessor's late cleanup removes nothing: the replacement stays.
+	assert.False(t, m.Unregister("w1", reconnected))
+	assert.Equal(t, []*Conn{moved}, m.OwnerConnsForTrustedPath("bob"))
+}
+
+// Each call returns its own slice, so a caller that changes it cannot change
+// the registry or the next caller's answer.
+func TestManager_OwnerConnsForTrustedPathReturnsAFreshSlice(t *testing.T) {
+	m := New(&fakeReachAuthorizer{})
+	alice, _ := newOwnedTestConn(t, "w1", "alice", nil, nil)
+	_, err := m.Register(alice)
+	require.NoError(t, err)
+
+	first := m.OwnerConnsForTrustedPath("alice")
+	require.Len(t, first, 1)
+	first[0] = nil
+
+	assert.Equal(t, []*Conn{alice}, m.OwnerConnsForTrustedPath("alice"))
+}
+
+// The fan-out reads the registry while connections come and go. Run under
+// -race, this fails on an unguarded read. Every answer holds only the
+// requested owner's connections.
+func TestManager_OwnerConnsForTrustedPathIsSafeDuringRegistration(t *testing.T) {
+	m := New(&fakeReachAuthorizer{})
+	const workers = 8
+	conns := make([]*Conn, workers)
+	for i := range conns {
+		owner := "alice"
+		if i%2 == 1 {
+			owner = "bob"
+		}
+		conns[i], _ = newOwnedTestConn(t, string(rune('a'+i)), owner, nil, nil)
+	}
+
+	var wg sync.WaitGroup
+	for _, conn := range conns {
+		wg.Go(func() {
+			for range 50 {
+				_, err := m.Register(conn)
+				if !assert.NoError(t, err) {
+					return
+				}
+				m.Unregister(conn.WorkerID, conn)
+			}
+		})
+	}
+	for range 4 {
+		wg.Go(func() {
+			for range 200 {
+				for _, conn := range m.OwnerConnsForTrustedPath("alice") {
+					assert.Equal(t, "alice", conn.Owner())
+				}
+			}
+		})
+	}
+	wg.Wait()
+	assert.Empty(t, m.OwnerConnsForTrustedPath("alice"), "every connection unregistered at the end")
+	assert.Empty(t, m.OwnerConnsForTrustedPath("bob"))
 }
 
 func TestManager_ConnForUser_NilUserDenies(t *testing.T) {

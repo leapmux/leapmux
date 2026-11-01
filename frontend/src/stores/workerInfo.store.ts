@@ -63,6 +63,8 @@ export interface WorkerInfoStore {
   workerInfo: (workerId: string) => WorkerInfo | null
   /** Force a refresh via E2EE; honors {@link FRESH_TTL_MS} and the in-flight cache. */
   fetchWorkerInfo: (workerId: string) => Promise<WorkerInfo | null>
+  /** Convenience: cached name, or empty string. */
+  getName: (workerId: string) => string
   /** Convenience: cached homeDir, or empty string. */
   getHomeDir: (workerId: string) => string
   /** Convenience: cached OS, or undefined. */
@@ -213,9 +215,9 @@ export function createWorkerInfoStore(): WorkerInfoStore {
           os: resp.os,
           arch: resp.arch,
           homeDir: resp.homeDir,
-          version: resp.version,
-          commitHash: resp.commitHash,
-          buildTime: resp.buildTime,
+          version: resp.build?.version ?? '',
+          commitHash: resp.build?.commitHash ?? '',
+          buildTime: resp.build?.buildTime ?? '',
           updatedAt: Date.now(),
         }
         setWorkerInfo(workerId, next)
@@ -236,6 +238,10 @@ export function createWorkerInfoStore(): WorkerInfoStore {
     return info
   }
 
+  function getName(workerId: string): string {
+    return workerInfo(workerId)?.name ?? ''
+  }
+
   function getHomeDir(workerId: string): string {
     return workerInfo(workerId)?.homeDir ?? ''
   }
@@ -247,6 +253,7 @@ export function createWorkerInfoStore(): WorkerInfoStore {
   return {
     workerInfo,
     fetchWorkerInfo,
+    getName,
     getHomeDir,
     getOs,
   }

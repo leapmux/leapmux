@@ -1,4 +1,3 @@
-import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component } from 'solid-js'
 
 import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
@@ -93,9 +92,9 @@ export const LoginPage: Component = () => {
     void loadOAuthProviders().then(setOAuthProviders)
   })
 
-  const navigateAfterAuth = (verificationRequired: boolean, nextResendAvailableAt?: Timestamp) => {
+  const navigateAfterAuth = (verificationRequired: boolean) => {
+    // The sign-in already seeded the resend cooldown from its report.
     if (verificationRequired) {
-      auth.setVerificationResendAvailableAt(nextResendAvailableAt)
       navigate('/verify-email', { replace: true })
       return
     }
@@ -110,14 +109,19 @@ export const LoginPage: Component = () => {
     e.preventDefault()
     setSubmitting(true)
     try {
+      // The redirect rides the sign-in, because a sign-in that could not
+      // report its account recovers, and recovery owns the navigation then.
+      const opts = {
+        redirect: stringParam(searchParams.redirect),
+      }
       const result = effectiveMethod() === 'passkey'
-        ? await auth.loginWithPasskey(username(), captcha.fields())
-        : await auth.login(username(), password(), captcha.fields())
-      if (auth.user())
-        navigateAfterAuth(result.verificationRequired, result.nextResendAvailableAt)
-      // A success without a user leaves nowhere to navigate; the finally
-      // below re-enables the form instead of leaving a spinner with no
-      // error and no way to resubmit.
+        ? await auth.loginWithPasskey(username(), captcha.fields(), opts)
+        : await auth.login(username(), password(), captcha.fields(), opts)
+      // Only an adopted account is this page's to route. A recovering one
+      // belongs to SignInRecoveryGate, which has replaced this page, and a
+      // superseded one to the newer operation.
+      if (result.outcome === 'adopted')
+        navigateAfterAuth(result.verificationRequired)
     }
     catch (err) {
       // The auth context captures the error. A rejected captcha (expired

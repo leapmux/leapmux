@@ -202,16 +202,10 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	svc := service.NewCRDTService(nil /* store unused for these tests */, registry, nil, nil)
 
 	// Seed a workspace + root so the tests can submit ops that pass
-	// validation. This mirrors what the lifecycle outbox would do in
-	// production after CreateWorkspace: SetWorkspaceRegister seeds the
-	// record in the same atomic batch as the root (no off-goroutine
-	// m.state write).
-	setRegister := &leapmuxv1.CrdtOp{
-		OpId: "seed-workspace-register",
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
-			WorkspaceId: "w1",
-		}},
-	}
+	// validation. This mirrors what the lifecycle outbox does in production
+	// after CreateWorkspace: the root node, then the CreateWorkspaceOp that
+	// creates the record with that root, in one atomic batch (no
+	// off-goroutine m.state write).
 	rootKind := &leapmuxv1.CrdtOp{
 		OpId: "seed-kind",
 		Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
@@ -221,12 +215,12 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 	}
 	rootRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-register",
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root1",
 		}},
 	}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.CrdtOp{setRegister, rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed", Ops: []*leapmuxv1.CrdtOp{rootKind, rootRegister}}},
 	})
 	require.NoError(t, err)
 
@@ -238,15 +232,15 @@ func setupCRDTService(t *testing.T) *crdtServiceEnv {
 func addTabOps(idPrefix, tabID, tileID, workerID, position string) []*leapmuxv1.CrdtOp {
 	return []*leapmuxv1.CrdtOp{
 		{OpId: idPrefix + "-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
 		}}},
 		{OpId: idPrefix + "-worker", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID},
 		}}},
 		{OpId: idPrefix + "-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: position},
 		}}},
 	}

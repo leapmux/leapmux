@@ -36,7 +36,6 @@ function makeOpen(opts?: {
       },
       wsOpenTimeoutMs: 1_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     }),
     pool: new ChannelPool(),

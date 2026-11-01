@@ -59,7 +59,7 @@ func movedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre, post *leapmuxv1.UserCrdtSt
 		alwaysNudge := false
 		switch body := op.GetBody().(type) {
 		case *leapmuxv1.CrdtOp_SetTabRegister:
-			tabID = body.SetTabRegister.GetTabId()
+			tabID = body.SetTabRegister.GetTab().GetTabId()
 		case *leapmuxv1.CrdtOp_ReviveTab:
 			tabID = body.ReviveTab.GetTab().GetTabId()
 			alwaysNudge = true
@@ -106,7 +106,7 @@ func tombstonedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre *leapmuxv1.UserCrdtSta
 		if !ok {
 			continue
 		}
-		tabID := body.TombstoneTab.GetTabId()
+		tabID := body.TombstoneTab.GetTab().GetTabId()
 		if tabID == "" {
 			continue
 		}
@@ -206,7 +206,7 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		if !ok {
 			continue
 		}
-		tabID := body.TombstoneTab.GetTabId()
+		tabID := body.TombstoneTab.GetTab().GetTabId()
 		// workerIDs was resolved from the PRE-commit state synchronously before
 		// the goroutine spawned (tombstonedTabWorkerIDs): applyTombstoneTab
 		// replaces the TabRecord with a stripped {tab_type, tab_id, tombstone_at}
@@ -225,14 +225,14 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 			// log focused on the fallback path.
 			continue
 		}
-		ref := EntityRef{Kind: EntityKindTab, TabType: body.TombstoneTab.GetTabType(), TabID: tabID}
+		ref := EntityRef{Kind: EntityKindTab, TabType: body.TombstoneTab.GetTab().GetTabType(), TabID: tabID}
 		workspaceID := res.AffectedEntities[ref].Pre
 		// user_id is already stamped on m.logger via NewManager's
 		// logger.With("user_id", userID); don't double-stamp.
 		m.logger.Warn("crdt: orphan tab tombstoned (worker inaccessible to principal)",
 			"workspace_id", workspaceID,
 			"tab_id", tabID,
-			"tab_type", body.TombstoneTab.GetTabType().String(),
+			"tab_type", body.TombstoneTab.GetTab().GetTabType().String(),
 			"worker_id", workerID,
 			"principal_id", in.PrincipalID,
 			"batch_id", batch.GetBatchId(),

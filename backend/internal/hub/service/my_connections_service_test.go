@@ -138,6 +138,56 @@ func TestListMyAPITokens_IsScopedToTheCaller(t *testing.T) {
 	assert.Equal(t, mine, resp.GetTokens()[0].GetId())
 }
 
+// TestListMyAPITokens_PagesThroughTheTokens pins the page wiring: a page limit
+// caps one reply, the reply states where the next page starts, and the final
+// page states that no rows remain. The two pages hold every token once.
+func TestListMyAPITokens_PagesThroughTheTokens(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	seeded := []string{
+		seedAPIToken(t, env, "first", "workspace:read"),
+		seedAPIToken(t, env, "second", "workspace:read"),
+		seedAPIToken(t, env, "third", "workspace:read"),
+	}
+	list := func(page *leapmuxv1.PageRequest) *leapmuxv1.ListMyAPITokensResponse {
+		t.Helper()
+		resp, err := env.client.ListMyAPITokens(authedReq(context.Background(),
+			&leapmuxv1.ListMyAPITokensRequest{Page: page}, env.token))
+		require.NoError(t, err)
+		return resp
+	}
+
+	first := list(&leapmuxv1.PageRequest{Limit: 2})
+	require.Len(t, first.GetTokens(), 2, "the limit caps one page")
+	require.NotEmpty(t, first.GetPage().GetNextCursor(), "a full page states where the next one starts")
+
+	last := list(&leapmuxv1.PageRequest{Limit: 2, Cursor: first.GetPage().GetNextCursor()})
+	require.Len(t, last.GetTokens(), 1)
+	require.NotNil(t, last.GetPage(), "the final page still carries its page message")
+	assert.Empty(t, last.GetPage().GetNextCursor(), "the final page states that no rows remain")
+
+	var listed []string
+	for _, tok := range append(first.GetTokens(), last.GetTokens()...) {
+		listed = append(listed, tok.GetId())
+	}
+	assert.ElementsMatch(t, seeded, listed, "the pages hold every token once")
+}
+
+// A cursor the store cannot parse is the caller's input, so the listing
+// answers InvalidArgument and states how to recover, never Internal.
+func TestListMyAPITokens_RefusesAMalformedCursor(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+	_, err := env.client.ListMyAPITokens(authedReq(context.Background(), &leapmuxv1.ListMyAPITokensRequest{
+		Page: &leapmuxv1.PageRequest{Cursor: "not-a-cursor"},
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "omit it to start from the first page")
+}
+
 // TestRevokeMyAPIToken_NeedsNoElevation is deliberate, and stated so it
 // cannot be "tightened" by accident: revoking only REDUCES access, and
 // demanding a fresh factor from somebody who believes a credential is stolen

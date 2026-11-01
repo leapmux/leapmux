@@ -297,7 +297,7 @@ func TestDeliverResponseDropsOrphanedPartial(t *testing.T) {
 // is one-shot and runAckLoop must not leave registrations behind.
 func TestChannelPendingEmptyAfterWritesAndAcks(t *testing.T) {
 	ch, _ := pairedSendChannel(t)
-	tc := newConn(ch, "conn-pending", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-pending", "example.test", 443)
 
 	const n = 8
 	for range n {

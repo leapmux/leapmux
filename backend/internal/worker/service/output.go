@@ -277,19 +277,14 @@ type OutputHandler struct {
 	cancelAutoRetry    func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission)
 	cancelAllAutoRetry func(agentID string)
 
-	// supportsSteering answers whether the running provider can add the queue
-	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
-	// nil in tests that build an OutputHandler directly, where the answer is
-	// false. buildStatusChange must carry it, because the frontend applies the
-	// field on EVERY status it receives -- a status built without it turns the
-	// tab's Steer action off for a provider that does support steering.
-	supportsSteering func(agentID string) bool
-
-	// supportsPreemption is steering's counterpart for the interrupt-only
-	// providers: whether the queue head may be sent by cancelling the active
-	// turn first. Same wiring rule and same every-status contract as
-	// supportsSteering above.
-	supportsPreemption func(agentID string) bool
+	// queueHeadDispatch answers how a queued head reaches the agent while its
+	// turn runs (see Service.queueHeadDispatch). Set via
+	// SetQueueHeadDispatchFunc in service.New; nil in tests that build an
+	// OutputHandler directly, where the answer is NONE. buildStatusChange must
+	// carry it, because the frontend applies the field on every full status it
+	// receives -- a status built without it turns the tab's Steer or Preempt
+	// action off for a provider that does support it.
+	queueHeadDispatch func(agentID string) leapmuxv1.QueueHeadDispatch
 
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
@@ -442,16 +437,10 @@ func (h *OutputHandler) cancelAllAutoRetries(agentID string) {
 	h.cancelAllAutoRetry(agentID)
 }
 
-// SetSupportsSteeringFunc wires the steering-capability answer that every
-// status change carries. Call before any agent output is processed.
-func (h *OutputHandler) SetSupportsSteeringFunc(fn func(agentID string) bool) {
-	h.supportsSteering = fn
-}
-
-// SetSupportsPreemptionFunc wires the preemption-capability answer that every
-// status change carries. Call before any agent output is processed.
-func (h *OutputHandler) SetSupportsPreemptionFunc(fn func(agentID string) bool) {
-	h.supportsPreemption = fn
+// SetQueueHeadDispatchFunc wires the queue-head dispatch answer that every
+// full status change carries. Call before any agent output is processed.
+func (h *OutputHandler) SetQueueHeadDispatchFunc(fn func(agentID string) leapmuxv1.QueueHeadDispatch) {
+	h.queueHeadDispatch = fn
 }
 
 // SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
@@ -696,7 +685,6 @@ func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken stri
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
 			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
-				AgentId:       agentID,
 				RequestId:     requestID,
 				ClaimToken:    claimToken,
 				ResponseState: state,
@@ -1147,7 +1135,7 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 			owner.activity.settledToolUses = nil
 		}
 		s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-			AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, countKnown)},
+			AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
 		})
 		published = true
 	}
@@ -1290,13 +1278,6 @@ func (s *agentOutputSink) turnPublisherSink() *agentOutputSink {
 		return s.root
 	}
 	return s
-}
-
-func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {
-	if !ok {
-		return &leapmuxv1.AgentTurnEnd{}
-	}
-	return &leapmuxv1.AgentTurnEnd{NumToolUses: &count}
 }
 
 func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
@@ -1680,9 +1661,8 @@ func (s *agentOutputSink) casPersistOptions(expected string, refresh map[string]
 // The frontend's statusChange handler treats events whose Status is
 // UNSPECIFIED as partial updates and applies only the populated fields,
 // so this avoids re-shipping the full catalog/settings payload that
-// BroadcastStatusActive carries. WorkerOnline is still set because only
-// a live worker can emit this event; leaving it as the proto default false
-// makes older clients interpret a git refresh as an offline transition.
+// BroadcastStatusActive carries. It also leaves queue_head_dispatch
+// UNSPECIFIED, which the frontend reads as "no update".
 func (s *agentOutputSink) BroadcastGitStatus() {
 	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
@@ -1691,9 +1671,7 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 		return
 	}
 	sc := &leapmuxv1.AgentStatusChange{
-		AgentId:      s.agentID,
-		WorkerOnline: true,
-		GitStatus:    gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		GitStatus: gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
 	}
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
@@ -2284,12 +2262,7 @@ func withTodoSnapshot(content agent.MessageContent, item todoevents.Item) (agent
 func (h *OutputHandler) enqueueTodoChange(agentID string, items []todoevents.Item) {
 	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_TodosChanged{
-			TodosChanged: &leapmuxv1.AgentTodosChanged{
-				AgentId: agentID,
-				Todos:   todoevents.ItemsToProto(items),
-			},
-		},
+		Event:   &leapmuxv1.AgentEvent_TodosChanged{TodosChanged: todoevents.SnapshotToProto(items)},
 	})
 }
 

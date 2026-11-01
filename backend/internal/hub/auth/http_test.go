@@ -2,15 +2,19 @@ package auth_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -163,4 +167,122 @@ func TestAuthenticateHTTPReportsAnInvalidPrefixedCookieRatherThanFallingBack(t *
 	require.Error(t, err)
 	assert.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
 	assert.Nil(t, user, "a dead prefixed cookie must not fall back to a plantable one")
+}
+
+// workerTokenStore replaces Workers().GetByAuthToken with a fixed answer and
+// leaves the rest of the store real.
+type workerTokenStore struct {
+	store.Store
+	worker *store.Worker
+	err    error
+}
+
+func (s workerTokenStore) Workers() store.WorkerStore {
+	return workerTokenLookup{WorkerStore: s.Store.Workers(), worker: s.worker, err: s.err}
+}
+
+type workerTokenLookup struct {
+	store.WorkerStore
+	worker *store.Worker
+	err    error
+}
+
+func (l workerTokenLookup) GetByAuthToken(context.Context, string) (*store.Worker, error) {
+	return l.worker, l.err
+}
+
+// AuthenticateWorkerBearer answers a rejected credential with one of its
+// sentinels, and a store failure with an error that is none of them. A worker
+// told "unauthenticated" treats its token as revoked, so a failed lookup must
+// never read as a rejected token.
+func TestAuthenticateWorkerBearer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := hubtestutil.OpenTestStore(t)
+	owner := storetest.SeedUser(t, st, "worker-bearer-owner")
+	worker := storetest.SeedWorker(t, st, owner.ID)
+
+	t.Run("resolves a live worker", func(t *testing.T) {
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+worker.AuthToken)
+		require.NoError(t, err)
+		assert.Equal(t, worker.ID, got.ID)
+		assert.Equal(t, owner.ID, got.RegisteredBy)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		header string
+	}{
+		{"no header", ""},
+		{"a token with no scheme", worker.AuthToken},
+		{"the scheme alone", "Bearer"},
+		{"the scheme and blanks", "Bearer   "},
+		{"another scheme", "Basic " + worker.AuthToken},
+	} {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			got, err := auth.AuthenticateWorkerBearer(ctx, st, tc.header)
+			assert.ErrorIs(t, err, auth.ErrMissingBearer)
+			assert.Nil(t, got)
+			assert.True(t, auth.IsWorkerCredentialError(err))
+		})
+	}
+
+	t.Run("refuses an unknown token", func(t *testing.T) {
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer no-such-token")
+		assert.ErrorIs(t, err, auth.ErrInvalidWorkerToken)
+		assert.Nil(t, got)
+		assert.True(t, auth.IsWorkerCredentialError(err))
+	})
+
+	t.Run("reports a store failure as no verdict on the credential", func(t *testing.T) {
+		boom := errors.New("database is locked")
+		got, err := auth.AuthenticateWorkerBearer(ctx, workerTokenStore{Store: st, err: boom}, "Bearer "+worker.AuthToken)
+		require.Error(t, err)
+		assert.Nil(t, got)
+		assert.ErrorIs(t, err, boom, "the store's error stays reachable for the log")
+		assert.NotErrorIs(t, err, auth.ErrInvalidWorkerToken)
+		assert.False(t, auth.IsWorkerCredentialError(err), "a store failure must not read as a rejected token")
+	})
+
+	t.Run("refuses a worker the lookup returns deleted", func(t *testing.T) {
+		deletedAt := time.Now()
+		deleted := &store.Worker{ID: worker.ID, RegisteredBy: owner.ID, DeletedAt: &deletedAt}
+		got, err := auth.AuthenticateWorkerBearer(ctx, workerTokenStore{Store: st, worker: deleted}, "Bearer "+worker.AuthToken)
+		assert.ErrorIs(t, err, auth.ErrWorkerDeleted)
+		assert.Nil(t, got)
+		assert.True(t, auth.IsWorkerCredentialError(err))
+	})
+
+	t.Run("still resolves a deregistering worker", func(t *testing.T) {
+		leaving := storetest.SeedWorker(t, st, owner.ID)
+		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: leaving.ID, RegisteredBy: userid.MustNew(owner.ID)})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+leaving.AuthToken)
+		require.NoError(t, err, "a deregistering worker connects to learn that it must stop")
+		assert.Equal(t, leaving.ID, got.ID)
+	})
+
+	t.Run("refuses a deleted worker as an unknown token", func(t *testing.T) {
+		gone := storetest.SeedWorker(t, st, owner.ID)
+		require.NoError(t, st.Workers().MarkDeleted(ctx, gone.ID))
+
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+gone.AuthToken)
+		assert.ErrorIs(t, err, auth.ErrInvalidWorkerToken)
+		assert.Nil(t, got)
+	})
+}
+
+func TestIsWorkerCredentialError(t *testing.T) {
+	t.Parallel()
+	for _, sentinel := range []error{auth.ErrMissingBearer, auth.ErrInvalidWorkerToken, auth.ErrWorkerDeleted} {
+		assert.Truef(t, auth.IsWorkerCredentialError(sentinel), "%v", sentinel)
+		assert.Truef(t, auth.IsWorkerCredentialError(fmt.Errorf("connect: %w", sentinel)), "a wrapped %v", sentinel)
+	}
+	assert.False(t, auth.IsWorkerCredentialError(nil))
+	assert.False(t, auth.IsWorkerCredentialError(errors.New("invalid worker auth token")),
+		"an unrelated error with the same words is not the sentinel")
+	assert.False(t, auth.IsWorkerCredentialError(auth.ErrHTTPUnauthenticated),
+		"the HTTP sentinels belong to another helper")
 }

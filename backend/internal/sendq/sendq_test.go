@@ -32,19 +32,17 @@ const (
 
 func testFrame(correlationID uint64) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-1",
-		CorrelationId:   correlationID,
-		Ciphertext:      []byte("payload"),
+		ChannelId:     "ch-1",
+		CorrelationId: correlationID,
+		Ciphertext:    []byte("payload"),
 	}
 }
 
 func testFrameOfSize(correlationID uint64, n int) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-1",
-		CorrelationId:   correlationID,
-		Ciphertext:      make([]byte, n),
+		ChannelId:     "ch-1",
+		CorrelationId: correlationID,
+		Ciphertext:    make([]byte, n),
 	}
 }
 

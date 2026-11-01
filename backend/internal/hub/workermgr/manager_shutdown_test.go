@@ -221,7 +221,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
 			assert.Zero(t, cancelled.Load(), "connection fenced before its notification was sent")
 			delivered.Add(1)
 			return nil
-		}, nil)
+		}, nil, testHello())
 		t.Cleanup(conn.Fence)
 		go func() {
 			for {
@@ -264,7 +264,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T
 		close(started)
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 	go func() {
 		for {
@@ -328,7 +328,7 @@ func TestFenceAll_DoesNotHoldManagerLockDuringCancel(t *testing.T) {
 		case <-time.After(time.Second):
 			assert.Fail(t, "Register blocked behind FenceAll's registry lock")
 		}
-	}, "fenced", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	}, "fenced", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 	t.Cleanup(conn.Fence)
 	_, _ = m.Register(conn)
 
@@ -353,7 +353,7 @@ func TestRegister_RefusedOnceFenced(t *testing.T) {
 		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
 			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "someone"},
 		},
-	})
+	}, testHello())
 	t.Cleanup(late.Fence)
 	go func() {
 		for {
@@ -407,7 +407,7 @@ func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testi
 		close(started)
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 	go func() {
 		for {
@@ -463,7 +463,7 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 		close(started)
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 	go func() {
 		for {
