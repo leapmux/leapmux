@@ -112,8 +112,11 @@ describe('PasswordSetupGate', () => {
   })
 
   // The password is stored, but the reply could not report the account. The
-  // adoption starts sign-in recovery, which replaces this screen and owns what
-  // follows, so the gate reports no failure and runs no re-read of its own.
+  // adoption starts sign-in recovery, which replaces this screen and owns the
+  // account, so the gate reports no failure and does not re-read the account.
+  // It still re-reads the hub: recovery ends on a route this gate guards, and a
+  // snapshot that still asks for the password would show this screen again for
+  // a password the hub refuses to set twice.
   it('leaves a recovering adoption to sign-in recovery', async () => {
     mockSetInitialSoloPassword.mockResolvedValue({
       sessionReport: { elevationExpiresAt: soloElevation },
@@ -125,15 +128,15 @@ describe('PasswordSetupGate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
 
     await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledWith({ elevationExpiresAt: soloElevation }))
-    await Promise.resolve()
+    await vi.waitFor(() => expect(mockLoadSystemInfo).toHaveBeenCalledWith(true))
     expect(mockRefreshUser).not.toHaveBeenCalled()
-    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
     expect(screen.queryByText(/Failed to set the password/)).toBeNull()
   })
 
-  // A newer auth operation replaced this adoption, so what follows belongs to
-  // it. The gate re-reads nothing for an account it did not adopt, and it
-  // reports no failure for a password the hub stored.
+  // A newer auth operation replaced this adoption, so the account belongs to
+  // it. The gate does not re-read an account it did not adopt, and it reports
+  // no failure for a password the hub stored. It still re-reads the hub, so
+  // that the stored password takes this screen down.
   it('leaves a superseded adoption to the newer operation', async () => {
     mockSetAuth.mockResolvedValue('superseded')
     render(() => <PasswordSetupGate />)
@@ -144,7 +147,7 @@ describe('PasswordSetupGate', () => {
     await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledOnce())
     await settle()
     expect(mockRefreshUser).not.toHaveBeenCalled()
-    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
     expect(screen.queryByText(/Failed to set the password/)).toBeNull()
     expect(screen.queryByText(/The password is set/)).toBeNull()
     // The gate can stay on screen, so the form must be usable again rather
@@ -177,6 +180,22 @@ describe('PasswordSetupGate', () => {
     expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
     expect(screen.queryByText(/Failed to set the password/)).toBeNull()
     expect(mockSetInitialSoloPassword).toHaveBeenCalledTimes(1)
+  })
+
+  // A superseded adoption can leave this gate on screen, so a failed re-read
+  // there must say the same thing, and give the form back.
+  it('says the password landed when the re-read after a superseded adoption failed', async () => {
+    mockSetAuth.mockResolvedValue('superseded')
+    mockLoadSystemInfo.mockRejectedValue(new Error('connection reset'))
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Set Password' })).toBeEnabled()
   })
 
   it('explains the restricted TCP setup state', () => {

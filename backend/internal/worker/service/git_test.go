@@ -5783,7 +5783,7 @@ func TestSnapshotStatsPath_WorktreeUsesTopLevel(t *testing.T) {
 // TestExecuteCreateBranch_InsideWorktreeTracksAssociation pins the
 // regression where executeCreateBranch left WorktreeID empty when the
 // working dir lived in a linked worktree. Mirror of the executeCheckoutBranch
-// case: a later CloseAgent(REMOVE) used to silently degrade to KEEP
+// case: a later agent-tab CloseTab(REMOVE) used to silently degrade to KEEP
 // because GetWorktreeForTab returned sql.ErrNoRows.
 func TestExecuteCreateBranch_InsideWorktreeTracksAssociation(t *testing.T) {
 	t.Parallel()

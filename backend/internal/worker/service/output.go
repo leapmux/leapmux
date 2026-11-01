@@ -1653,9 +1653,9 @@ func (s *agentOutputSink) casPersistOptions(expected string, refresh map[string]
 	return casPersistAgentOptions(bgCtx(), s.h.queries, s.agentID, expected, refresh)
 }
 
-// BroadcastGitStatus emits a partial AgentStatusChange carrying the
-// agent id, worker liveness, and a freshly-computed git status. Auto-fired by
-// PersistTurnEnd so the working-tree view stays in sync without
+// BroadcastGitStatus emits a partial AgentStatusChange that carries only a
+// freshly-computed git status; the AgentEvent envelope carries the agent id.
+// Auto-fired by PersistTurnEnd so the working-tree view stays in sync without
 // provider involvement; providers do not call this directly.
 //
 // The frontend's statusChange handler treats events whose Status is

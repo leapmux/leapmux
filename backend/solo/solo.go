@@ -940,7 +940,7 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 		if unmarshalErr == nil && s.WorkerID != "" && s.AuthToken != "" {
 			// Take the owner from the DB, which is the authority: workers.registered_by
 			// is NOT NULL and set at registration, and it is the fact that
-			// requireWorkerOwner uses to control the whole machine. The state
+			// the worker's owner gate uses to control the whole machine. The state
 			// file's copy is a cache that can lag
 			// it, and an empty one is not something to paper over -- a worker launched
 			// with no owner has every machine-scoped family (file, git, sysinfo, tunnel)

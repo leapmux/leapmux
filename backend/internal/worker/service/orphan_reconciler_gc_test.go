@@ -495,8 +495,9 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 }
 
 // TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass is the
-// regression for the production failure: an in-flight CloseAgent(REMOVE) whose
-// CRDT tombstone already reached the hub must still find its worktree link.
+// regression for the production failure: an in-flight CloseTab(REMOVE) of an
+// agent tab whose CRDT tombstone already reached the hub must still find its
+// worktree link.
 func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testing.T) {
 	t.Parallel()
 

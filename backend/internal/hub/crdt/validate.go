@@ -431,7 +431,6 @@ func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, interna
 	return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, ""
 }
 
-// valueDomainCheck rejects NaN/±∞/out-of-range values.
 // selectsNoRegister reports whether op is a register op whose field oneof
 // selects no register.
 func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
@@ -446,6 +445,7 @@ func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
 	return false
 }
 
+// valueDomainCheck rejects NaN/±∞/out-of-range values.
 func valueDomainCheck(op *leapmuxv1.CrdtOp) (leapmuxv1.BatchRejectionReason, string) {
 	switch body := op.GetBody().(type) {
 	case *leapmuxv1.CrdtOp_SetNodeRegister:

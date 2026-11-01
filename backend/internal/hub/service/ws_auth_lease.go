@@ -56,8 +56,7 @@ const (
 // the keepalive field needed the identical hunk in both. A constructor makes
 // the next field an edit neither endpoint can miss.
 //
-// requiredScope is a PARAMETER rather than a field a handler may fill later,
-// for the reason the scope argument on the Worker's registrar.register gives:
+// requiredScope is a PARAMETER rather than a field a handler may fill later:
 // a value nobody stated is the proto zero, and a new WebSocket endpoint must
 // not be CONSTRUCTIBLE without stating what its caller has to hold. These two
 // sockets carry the account's whole event feed and its channels to every

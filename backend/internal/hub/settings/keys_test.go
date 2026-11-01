@@ -248,7 +248,7 @@ func TestValidateMaxMessageSizeDelegates(t *testing.T) {
 }
 
 // TestTimeoutsRefuseAValueTheWireCannotCarry pins the ceiling that makes
-// UserService.GetTimeouts safe. Without it a stored int64 wrapped on the
+// SystemService.GetTimeouts safe. Without it a stored int64 wrapped on the
 // int32 narrowing and handed the client an arbitrary — often negative —
 // timeout, which every request budget derives from.
 func TestTimeoutsRefuseAValueTheWireCannotCarry(t *testing.T) {

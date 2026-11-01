@@ -150,9 +150,9 @@ service UserService {
   rpc ListMyAPITokens(ListMyAPITokensRequest) returns (ListMyAPITokensResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_ACCOUNT_READ };
   }
-  // The same refusal one level up: DisconnectApp ends EVERY credential the
-  // account holds for one app, so an app that reached it could retire a
-  // rival on its owner's behalf.
+  // Refused for the reason RevokeMyAPIToken (below) is, one level up:
+  // DisconnectApp ends EVERY credential the account holds for one app, so an
+  // app that reached it could retire a rival on its owner's behalf.
   rpc DisconnectApp(DisconnectAppRequest) returns (DisconnectAppResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_NEVER };
   }

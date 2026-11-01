@@ -20,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // TestWriteFailure_DeadlineRemap pins writeFailure's contract, including the nil
@@ -565,6 +566,9 @@ type scriptedOpenChannel struct {
 	mu           sync.Mutex
 	unregistered bool
 	other        []string
+	// sent receives each other request's method too, so a test can wait for a
+	// request that the conn sends from a goroutine of its own.
+	sent chan string
 }
 
 func (c *scriptedOpenChannel) Context() context.Context { return c.ctx }
@@ -580,6 +584,10 @@ func (c *scriptedOpenChannel) SendRPCNoWait(_ context.Context, method string, _ 
 		c.mu.Lock()
 		c.other = append(c.other, method)
 		c.mu.Unlock()
+		select {
+		case c.sent <- method:
+		default:
+		}
 		return 2, nil
 	}
 	if handlers.Response != nil {
@@ -614,7 +622,7 @@ func dialScripted(t *testing.T, frames ...*leapmuxv1.InnerStreamMessage) (*Conn,
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	ch := &scriptedOpenChannel{ctx: ctx, frames: frames}
+	ch := &scriptedOpenChannel{ctx: ctx, frames: frames, sent: make(chan string, 8)}
 	conn, err := dialTunnelContext(ctx, ch, "example.test", 443)
 	if conn != nil {
 		t.Cleanup(func() { _ = conn.Close() })
@@ -651,8 +659,9 @@ func TestDialTunnelFailsOnAStreamErrorBeforeTheOpenedEvent(t *testing.T) {
 }
 
 // Each frame that cannot precede `opened` fails the dial with an error that
-// states the reason. The worker holds no conn for a dial that did not open, so
-// the failed dial releases its stream and sends no close.
+// states the reason. The worker stores its conn before it sends `opened`, so a
+// worker that broke the protocol may hold one: the failed dial releases its
+// stream and tells the worker to close the conn.
 func TestDialTunnelFailsOnAProtocolViolationBeforeTheOpenedEvent(t *testing.T) {
 	cases := map[string]struct {
 		frame   *leapmuxv1.InnerStreamMessage
@@ -680,9 +689,15 @@ func TestDialTunnelFailsOnAProtocolViolationBeforeTheOpenedEvent(t *testing.T) {
 			assert.Nil(t, conn)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			ch.mu.Lock()
-			defer ch.mu.Unlock()
 			assert.True(t, ch.unregistered, "a failed dial releases its stream registration")
-			assert.Empty(t, ch.other, "the worker holds no conn after a failed open, so the dial sends no close")
+			ch.mu.Unlock()
+			select {
+			case method := <-ch.sent:
+				assert.Equal(t, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, method,
+					"the failed dial tells the worker to close the conn it may hold")
+			case <-testutil.DeadlineContext(t).Done():
+				t.Fatal("the failed dial sent no CloseTunnelConn, so the worker would keep its conn until the channel dies")
+			}
 		})
 	}
 }

@@ -15,11 +15,6 @@ import "leapmux/v1/scope.proto";
 // endpoints under /oauth/ and the UserService's ListMyAPITokens and DisconnectApp RPCs -- this service is where an
 // app comes from.
 //
-// Every verb is SCOPE_NEVER. An app that could register an app would name its
-// own redirect address and its own scope ceiling, which is not a wide grant but
-// a way out of the model: the next consent screen would be the attacker's. So
-// the whole service answers a session and nothing else.
-//
 // Ownership, not a role, decides what a caller sees. A user's app is visible
 // and authorizable to that user alone; an administrator's app is hub-wide. One
 // column carries that rule (oauth_clients.owner_user_id), so no second flag can

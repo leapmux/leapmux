@@ -112,7 +112,7 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 	require.NoError(t, err)
 
 	fset := token.NewFileSet()
-	called := map[string]bool{}
+	var files []*ast.File
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -120,6 +120,14 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 		}
 		f, perr := parser.ParseFile(fset, filepath.Join(workerHubDir, name), nil, 0)
 		require.NoError(t, perr, "parsing %s", name)
+		files = append(files, f)
+	}
+	fields, locals := hubClientHolders(files)
+	require.NotEmpty(t, fields,
+		"found no struct field that holds a generated hub client; the scan is broken, not the code")
+
+	called := map[string]bool{}
+	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -129,12 +137,13 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 			if !ok {
 				return true
 			}
-			// A method invoked on one of the client fields, e.g.
-			// c.reconciler.ListOwnedTabsForWorker(...) / client.Register(...).
-			if recv, ok := sel.X.(*ast.SelectorExpr); ok && workerHubClientFields[recv.Sel.Name] {
+			// A method invoked on a client field, e.g.
+			// c.connectorUnary.ListOwnedTabsForWorker(...).
+			if recv, ok := sel.X.(*ast.SelectorExpr); ok && fields[recv.Sel.Name] {
 				called[sel.Sel.Name] = true
 			}
-			if id, ok := sel.X.(*ast.Ident); ok && workerHubClientLocals[id.Name] {
+			// A method invoked on a client variable, e.g. client.Register(...).
+			if id, ok := sel.X.(*ast.Ident); ok && locals[id.Name] {
 				called[sel.Sel.Name] = true
 			}
 			return true
@@ -142,6 +151,8 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 	}
 	require.NotEmpty(t, called,
 		"scanned no worker->hub calls; the scan is broken, not the code")
+	require.True(t, called["ListOwnedTabsForWorker"],
+		"the scan missed the orphan reconciler's ListOwnedTabsForWorker call, the one this test exists for; the scan is broken, not the code")
 
 	var missing []string
 	for method := range called {
@@ -157,18 +168,95 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 	}
 }
 
-// workerHubClientFields / workerHubClientLocals name the Client fields and local
-// variables that hold generated Connect clients for the hub. Listed rather than
-// type-resolved so the scan needs no type checker; a field added here without a
-// matching entry simply is not scanned, which the NotEmpty guard above keeps from
-// silently emptying the whole set.
-var workerHubClientFields = map[string]bool{
-	"connector":  true,
-	"reconciler": true,
+// hubClientHolders finds the names that hold a generated Connect client in the
+// parsed files:
+//   - fields: struct fields typed leapmuxv1connect.<Service>Client
+//   - locals: parameters and results of that type, and variables assigned from a
+//     leapmuxv1connect.New<Service>Client call
+//
+// The names come from the types, not from a hand-kept list, because a renamed
+// field drops out of a list with no failure: that is how the orphan
+// reconciler's ListOwnedTabsForWorker call left this scan once. The scan stays
+// syntactic, so it needs no type checker; a local of another type that shares
+// a holder's name only adds methods to check, never hides one.
+func hubClientHolders(files []*ast.File) (fields, locals map[string]bool) {
+	fields, locals = map[string]bool{}, map[string]bool{}
+	addNames := func(into map[string]bool, names []*ast.Ident) {
+		for _, name := range names {
+			into[name.Name] = true
+		}
+	}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.StructType:
+				for _, field := range n.Fields.List {
+					if isGeneratedClientType(field.Type) {
+						addNames(fields, field.Names)
+					}
+				}
+			case *ast.FuncType:
+				for _, list := range []*ast.FieldList{n.Params, n.Results} {
+					if list == nil {
+						continue
+					}
+					for _, field := range list.List {
+						if isGeneratedClientType(field.Type) {
+							addNames(locals, field.Names)
+						}
+					}
+				}
+			case *ast.ValueSpec:
+				if isGeneratedClientType(n.Type) {
+					addNames(locals, n.Names)
+				}
+				for i, value := range n.Values {
+					if i < len(n.Names) && isGeneratedClientConstructor(value) {
+						locals[n.Names[i].Name] = true
+					}
+				}
+			case *ast.AssignStmt:
+				for i, rhs := range n.Rhs {
+					if i >= len(n.Lhs) || !isGeneratedClientConstructor(rhs) {
+						continue
+					}
+					if id, ok := n.Lhs[i].(*ast.Ident); ok {
+						locals[id.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return fields, locals
 }
 
-var workerHubClientLocals = map[string]bool{
-	"client": true,
+// isGeneratedClientType reports whether expr spells leapmuxv1connect.<X>Client.
+// A stream type such as <X>ConnectClientStream does not match: its Send and
+// Receive are not RPCs.
+func isGeneratedClientType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "leapmuxv1connect" && strings.HasSuffix(sel.Sel.Name, "Client")
+}
+
+// isGeneratedClientConstructor reports whether expr calls
+// leapmuxv1connect.New<X>Client.
+func isGeneratedClientConstructor(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "leapmuxv1connect" &&
+		strings.HasPrefix(sel.Sel.Name, "New") && strings.HasSuffix(sel.Sel.Name, "Client")
 }
 
 // anyPublicProcedureEndsWith reports whether an exempt procedure exists whose

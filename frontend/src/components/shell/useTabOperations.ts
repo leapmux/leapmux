@@ -457,7 +457,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * that can add to it, and the sidebar promotes it to a top-level row claiming
    * a lineage the user can no longer see.
    *
-   * LOCAL ONLY: no per-child CloseAgent RPC. A child close is UI-only on the
+   * LOCAL ONLY: no per-child CloseTab RPC. A child close is UI-only on the
    * worker (`closeAgentTabCommon` returns before any teardown for a row with a
    * parent), and the ONE RPC the clicked tab fires already stamps `closed_at`
    * over the whole subtree, so a call per child would cost one round trip each
@@ -510,8 +510,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     const key = tabKey(tab)
     if (closingTabKeys().has(key))
       return false
-    // A subagent (child) tab close is UI-only: the worker treats CloseAgent on
-    // a child as tab-close-only (no teardown, no closed_at), so skip the
+    // A subagent (child) tab close is UI-only: the worker treats CloseTab of
+    // a child agent as tab-close-only (no teardown, no closed_at), so skip the
     // inspect/worktree prompt entirely and commit KEEP. Transcript + registry
     // survive; the tab can be revived (Part 5b).
     if (isSubagentTab(tab)) {

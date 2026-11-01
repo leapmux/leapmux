@@ -638,7 +638,7 @@ func f(m *workermgr.Manager, id string) { m.ConnForTrustedPath(id) }`, 0)
 // userid.UserID's comparison surface. While it was named Equal it was
 // unscannable -- `Equal` is Go's most overloaded method name, so no
 // syntax-level rule can tell an identity comparison from a timestamp one -- and
-// worker/service.requireWorkerOwner, the worker-side ownership gate, decided
+// worker/service.callerIsWorkerOwner, the worker-side ownership check, decided
 // ownership through exactly that call while sitting outside the net.
 func TestIsIdentityComparison_CoversBothComparisonMethods(t *testing.T) {
 	for src, want := range map[string]bool{

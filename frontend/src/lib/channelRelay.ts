@@ -4,8 +4,8 @@
  * Owns the single browser↔Hub socket (`ws` / `wsPromise`), open/close lifecycle,
  * length-prefixed frame decode, and the successor-dial close guard. Extracted
  * from ChannelManager so the transport state machine is unit-testable without
- * Noise / RPC harness. Channel routing and Hub-control parse stay with the
- * coordinator via injected callbacks.
+ * Noise / RPC harness. Channel routing stays with the coordinator via injected
+ * callbacks.
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */

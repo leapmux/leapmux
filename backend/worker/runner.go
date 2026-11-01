@@ -45,7 +45,7 @@ type RunConfig struct {
 	EncryptionMode          leapmuxv1.EncryptionMode // Encryption mode (classic, post-quantum)
 	UseLoginShell           bool                     // Wrap claude invocation in user's login shell
 	// RegisteredBy seeds the worker's owner, which gates every machine-scoped RPC
-	// family (tunnels, file, git, sysinfo) -- see service.requireWorkerOwner. It is a
+	// family (tunnels, file, git, sysinfo) -- see service.ownerOnlyRegistrar. It is a
 	// DB-sourced seed for the in-process launchers (solo reads it from
 	// workers.registered_by); the Hub's connect-time WorkerIdentity overrides it, and
 	// is the authority. Leave it empty and the Hub still establishes it.

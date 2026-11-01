@@ -603,12 +603,13 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 | `workspace_renamed` | A workspace title changed |
 | `workspace_created` | A workspace was created |
 | `workspace_deleted` | A workspace was deleted |
+| `workers_changed` | Your Worker list changed: a Worker registered, deregistered, came online, or went offline. It arrives whatever `--workspace-id` you pass |
 | `unknown` | An event the CLI doesn't project |
 
 The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
 
 {{< callout type="info" >}}
-`events watch` streams **workspace/layout** events only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
+`events watch` streams **workspace/layout** events and Worker list changes only (the CRDT user event stream). It has no `--include` source filter, no `--follow`, and no per-line `source` key. To tail an agent's chat, use `agent messages --follow` instead.
 {{< /callout >}}
 
 ```bash

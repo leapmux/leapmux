@@ -435,7 +435,8 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		reconciler.Stop()
 	})
 
-	// Nudge the reconciler the moment the Hub names this worker's owner.
+	// Nudge the reconciler the moment the Hub names this worker's owner, and
+	// only then (see nudgeOnNewOwner).
 	//
 	// Without it the sweep's own precondition can outlive its retry. A converged
 	// pass is reachable before the owner arrives (the hub branch needs only the auth
@@ -444,11 +445,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// sweep refuses for a zero owner, the reconciler stops retrying, and the next
 	// pass is the hourly tick -- an hour with every agent cold on a worker that
 	// is otherwise healthy.
-	deliverIdentity := svc.ApplyWorkerIdentity
-	p.Client.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) {
-		deliverIdentity(identity)
-		reconciler.Trigger()
-	}
+	p.Client.OnWorkerIdentity = nudgeOnNewOwner(svc, reconciler.Trigger)
 
 	// The Hub's connect-time WorkerTabInventory reply only signals that the
 	// hub has finished its side of the reconciliation; trigger the
@@ -473,6 +470,28 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	StartRetentionLoops(p.Ctx, p.DB, p.DataDir)
 
 	return resumer
+}
+
+// nudgeOnNewOwner returns the WorkerIdentity handler that applies each identity
+// the Hub delivers, and runs nudge only when the delivery changed the owner.
+//
+// An owner that arrives, or that changes, is what the resume sweep waits for.
+// The Hub also re-delivers the identity on every account change of the owner,
+// such as a rename or an elevation, and a re-delivery for the same owner
+// unblocks nothing, so it starts no pass. A zero owner matches nothing, so the
+// first owner always counts as a change.
+//
+// The client calls the handler from its one receive goroutine, and nothing else
+// changes the owner after startup, so the owner read before the delivery is the
+// one the delivery replaced.
+func nudgeOnNewOwner(svc *service.Service, nudge func()) func(*leapmuxv1.WorkerIdentity) {
+	return func(identity *leapmuxv1.WorkerIdentity) {
+		before := svc.RegisteredBy()
+		svc.ApplyWorkerIdentity(identity)
+		if !svc.RegisteredBy().MatchesUser(before) {
+			nudge()
+		}
+	}
 }
 
 // StartRetentionLoops starts the two data-retention loops. It is exported

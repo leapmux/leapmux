@@ -1,6 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +18,11 @@ vi.mock('~/api/clients', () => ({
   workerClient: {
     createRegistrationKey: (...a: Parameters<typeof mockCreate>) => mockCreate(...a),
     extendRegistrationKey: (...a: Parameters<typeof mockExtend>) => mockExtend(...a),
-    revokeRegistrationKey: (...a: Parameters<typeof mockRevoke>) => mockRevoke(...a),
+    // A vitest spy attaches its own handlers to each promise it returns (to
+    // record `settledResults`), so a rejection straight from `mockRevoke`
+    // never counts as unhandled. `.then` gives the dialog a derived promise
+    // that only the dialog can handle.
+    revokeRegistrationKey: (...a: Parameters<typeof mockRevoke>) => mockRevoke(...a).then(r => r),
     emailRegistrationInstructions: (...a: Parameters<typeof mockEmail>) => mockEmail(...a),
   },
 }))
@@ -135,6 +140,30 @@ describe('RegisterWorkerDialog', () => {
     await waitFor(() => {
       expect(mockRevoke).toHaveBeenCalledWith({ registrationKey: 'KEY-ABC' })
     })
+  })
+
+  it('swallows the not-found answer for a key that a registration already consumed', async () => {
+    // The hub answers NotFound once a worker registered with the key, so this
+    // is the normal answer on close, and it must not surface as an unhandled
+    // rejection.
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      mockRevoke.mockRejectedValue(new ConnectError('registration key not found', Code.NotFound))
+      const { unmount } = renderDialog()
+      await screen.findByTestId('registration-command')
+
+      unmount()
+
+      expect(mockRevoke).toHaveBeenCalledExactlyOnceWith({ registrationKey: 'KEY-ABC' })
+      // One macrotask lets the rejection reach a listener if nothing caught it.
+      await new Promise(resolve => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    }
+    finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('does NOT extend while plenty of time remains', async () => {

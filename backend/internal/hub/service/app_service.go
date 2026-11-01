@@ -23,9 +23,10 @@ import (
 // AppService is the app REGISTRATION surface: where an app comes from, as
 // opposed to what one account authorized.
 //
-// Every verb answers a SESSION and nothing else -- procedure_scopes.go records
-// the whole service as ScopeNever -- so this file never asks what an app was
-// granted. What it does ask, on every write, is who owns the registration.
+// Every verb requires admin:apps, which each AppService method in app.proto
+// declares and the auth interceptor enforces, so this file never asks what an
+// app was granted. What it does ask, on every write, is who owns the
+// registration.
 //
 // Ownership travels INTO the statement rather than being checked here and
 // applied there. store.UpdateOAuthClientParams carries CallerUserID and

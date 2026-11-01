@@ -166,7 +166,7 @@ func (e *bearerChannelEnv) captureWorker(t *testing.T, workerID string) (chan *l
 // workspace with a victim (sharing needs no consent) gets their worker to mint a
 // bearer authenticating as the VICTIM. WorkerCanUse then waves it through to the
 // victim's own worker -- the victim registered it -- and the worker sees
-// sess.UserID == victim, so requireWorkerOwner passes and hands the attacker
+// sess.UserID == victim, so the worker's owner gate passes and hands the attacker
 // tunnels and files on the victim's machine.
 // seedCrossTenantDelegation builds the cross-tenant chain the worker-scope check
 // closes and returns the victim's worker id, a workspace of the victim's, plus a

@@ -54,7 +54,7 @@ The table below states the threat model. Treat what the Hub **can** see as data 
 | Account metadata: user names, emails, password hashes, OAuth tokens, session tokens, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
 | Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents, diffs, or git status |
-| Worker registration data: Worker ID, composite public keys, online status, last-seen time | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
+| Worker registration data (Worker ID, online status, last-seen time) and each connected Worker's composite public keys | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
 | Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing | Any plaintext of Frontend↔Worker traffic |
 
 {{< callout type="warning" >}}
@@ -64,7 +64,7 @@ The table below states the threat model. Treat what the Hub **can** see as data 
 Four specifics matter:
 
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
-- **Worker public keys are visible; private keys never leave the Worker.** The Worker registers only its public composite key with the Hub. Its private halves stay in the Worker's local state.
+- **Worker public keys are visible; private keys never leave the Worker.** The Worker sends only its public composite key to the Hub, each time it connects. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
 - **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
@@ -174,7 +174,7 @@ The Worker's check is defence in depth. The Hub already authorizes a channel to 
 
 ## Worker identity and TOFU pinning
 
-Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated on first run and stored in the Worker's local state. The Hub stores only the public halves.
+Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated on first run and stored in the Worker's local state. The Hub receives only the public halves, each time the Worker connects, and keeps them in memory for that connection.
 
 The Frontend pins this identity **TOFU** ("trust on first use"). On the first connection to a Worker, the browser records the Worker's composite public key. On every later connection it compares the key the Hub hands over against the pinned one:
 

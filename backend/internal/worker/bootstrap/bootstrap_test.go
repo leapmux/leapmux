@@ -547,6 +547,44 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 		"the delivery carries the owner's username to the service")
 }
 
+// The Hub re-delivers the identity on every account change of the owner, such
+// as a rename or an elevation, and a re-delivery for the same owner cannot
+// unblock the resume sweep. So only a delivery that changes the owner starts a
+// reconcile pass; each pass costs a ListOwnedTabsForWorker round trip.
+func TestNudgeOnNewOwner_NudgesOnlyWhenTheOwnerChanges(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+	var nudges int
+	deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+	assert.Equal(t, 1, nudges, "the first owner unblocks the resume sweep")
+
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	assert.Equal(t, "alice2", w.Service.OwnerUsername(userid.MustNew("user-1")), "a rename still reaches the service")
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "nobody"})
+	assert.Equal(t, 1, nudges, "a rename, an unchanged identity and a refused empty owner keep the owner")
+
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2", RegisteredByUsername: "bob"})
+	assert.Equal(t, 2, nudges, "a different owner starts a pass")
+}
+
+// A worker seeded with its owner already passes the sweep's owner check, so the
+// first greeting, which names the same owner, starts no pass of its own. The
+// connect-time WorkerTabInventory reply still starts one on every connect.
+func TestNudgeOnNewOwner_SkipsAGreetingThatNamesTheSeededOwner(t *testing.T) {
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) {
+		p.SeedRegisteredBy = "user-1"
+	})
+	var nudges int
+	deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+	deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+
+	assert.Zero(t, nudges)
+	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")))
+}
+
 // The control IPC factory answers Whoami's username from the live service, so
 // each spawned process reports the owner the Hub delivered last, and only to
 // the owner.
