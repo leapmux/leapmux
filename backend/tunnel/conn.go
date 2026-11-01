@@ -230,9 +230,17 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 	select {
 	case openErr := <-tc.openResult:
 		if openErr != nil {
-			// The stream ended before `opened`: the worker refused, could not
-			// connect, or broke the protocol. It holds no conn to close.
-			tc.unregister()
+			var refused *openRefusedError
+			if errors.As(openErr, &refused) {
+				// The worker refused the open or could not reach the target. It
+				// answers both before it stores a conn, so it holds none to close.
+				tc.unregister()
+			} else {
+				// The worker broke the protocol before `opened`. It stores the
+				// conn before it sends `opened`, so it may hold one: tell it to
+				// close, or the conn stays until the channel dies.
+				tc.cancelRemoteOpen()
+			}
 			return nil, openErr
 		}
 		if err := ctx.Err(); err != nil {
@@ -464,7 +472,7 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 		if tc.openSettled {
 			tc.terminal.Set(fmt.Errorf("tunnel stream: %s", rpcErr.GetMessage()))
 		} else {
-			tc.endStream(fmt.Errorf("rpc error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage()))
+			tc.endStream(&openRefusedError{code: rpcErr.GetCode(), message: rpcErr.GetMessage()})
 		}
 		return
 	}
@@ -540,8 +548,21 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 	}
 }
 
+// openRefusedError is the error of an open that the worker answered with a
+// stream error frame: it refused the request or could not reach the target.
+// Any other end of the stream before `opened` is a protocol violation.
+type openRefusedError struct {
+	code    int32
+	message string
+}
+
+func (e *openRefusedError) Error() string {
+	return fmt.Sprintf("rpc error (code %d): %s", e.code, e.message)
+}
+
 // endStream ends the inbound stream with err. Before the `opened` event it
-// fails the pending dial instead, which then unregisters the conn; after it, it
+// fails the pending dial instead, which then unregisters the conn, and also
+// tells the worker to close it unless err is an openRefusedError; after it, it
 // latches err as the conn's terminal condition, which Read returns.
 func (tc *Conn) endStream(err error) {
 	if !tc.openSettled {

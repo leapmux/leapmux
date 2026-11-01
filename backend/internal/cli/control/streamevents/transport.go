@@ -318,8 +318,9 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		return nil, err
 	}
 	// Unique across processes, not only within this one: every CLI process that
-	// a worker spawned shares that worker's router, which keys a stream by this
-	// id, and a reused id would retire another process's stream.
+	// runs under one agent or terminal shares the router of that tab's control
+	// socket, which keys a stream by this id, and a reused id would retire
+	// another process's stream.
 	clientReqID := id.Generate()
 	ctx, cancel := context.WithCancel(parentCtx)
 	stream, err := t.client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{

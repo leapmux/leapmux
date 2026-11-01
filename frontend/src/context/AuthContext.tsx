@@ -59,6 +59,12 @@ export interface SignInRecovery {
   completed: boolean
 }
 
+/**
+ * The recovery error when the account read succeeded, but a local write moved
+ * the account state while its rows loaded, so the read could not be adopted.
+ */
+const RECOVERY_ADOPTION_DISPLACED = 'Your account changed while it was loading. Retry to load it again.'
+
 export interface AuthLoginResult {
   outcome: SignInOutcome
   verificationRequired: boolean
@@ -489,9 +495,10 @@ export const AuthProvider: ParentComponent = (props) => {
    * Read the account for sign-in recovery, under the operation `op`.
    *
    * The OPERATION decides staleness here, not `authGeneration`: that count
-   * moves on any local write, such as a late slide report from a request the
-   * previous identity sent, and a recovery read discarded for one would leave
-   * the gate waiting with no read in flight. A newer operation supersedes it.
+   * moves on any local write, such as a concurrent `refreshUser` or the slide
+   * report of a request sent after the sign-in, and a recovery read discarded
+   * for one would leave the gate waiting with no read in flight. A newer
+   * operation supersedes it.
    *
    * A success adopts the account and marks recovery completed; the gate then
    * navigates and calls `finishSignInRecovery`. A failure records its message
@@ -500,8 +507,18 @@ export const AuthProvider: ParentComponent = (props) => {
   const readForRecovery = async (op: number) => {
     try {
       const resp = await authClient.getCurrentUser({})
-      if (!isCurrent(op) || !await adoptCurrentUser(resp) || !isCurrent(op))
+      if (!isCurrent(op))
         return
+      const adopted = await adoptCurrentUser(resp)
+      if (!isCurrent(op))
+        return
+      if (!adopted) {
+        // `setUser` refused the account because a local write landed while
+        // its rows loaded, yet no newer operation owns the state. Nothing
+        // else will finish this recovery, so the gate offers Retry.
+        setSignInRecovery(prev => prev && { ...prev, error: RECOVERY_ADOPTION_DISPLACED })
+        return
+      }
       setBootShell(true)
       setBootPhase('workspaces')
       loadTimeouts().catch(() => {})
@@ -541,19 +558,27 @@ export const AuthProvider: ParentComponent = (props) => {
       return 'superseded'
     const verification = report?.emailVerification
     if (report?.user) {
-      if (!await adoptSignedInUser(report.user) || !isCurrent(op))
+      const adopted = await adoptSignedInUser(report.user)
+      if (!isCurrent(op))
         return 'superseded'
-      setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
-      // AFTER the adopt, which cleared it: this restores a window this
-      // document owns rather than one it inherited.
-      if (report.elevationExpiresAt)
-        setElevationExpiresAt(report.elevationExpiresAt)
-      // A newer sign-in that adopts its account ends whatever an older one
-      // left behind.
-      setSignInRecovery(null)
-      setBootstrapError(null)
-      loadTimeouts().catch(() => {})
-      return 'adopted'
+      if (adopted) {
+        setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
+        // AFTER the adopt, which cleared it: this restores a window this
+        // document owns rather than one it inherited.
+        if (report.elevationExpiresAt)
+          setElevationExpiresAt(report.elevationExpiresAt)
+        // A newer sign-in that adopts its account ends whatever an older one
+        // left behind.
+        setSignInRecovery(null)
+        setBootstrapError(null)
+        loadTimeouts().catch(() => {})
+        return 'adopted'
+      }
+      // `setUser` refused the account because a local write landed while its
+      // rows loaded, such as a slide report from a request the previous
+      // identity sent, yet no newer operation owns the state. The sign-in
+      // succeeded and nobody else will finish it, so it recovers the account
+      // below, as a report without one does.
     }
     setElevationExpiresAt(undefined)
     void setUser(null)

@@ -29,8 +29,9 @@ const payloadOneofStart = 10
 //
 //   - No `reserved` range or name.
 //   - Enum values run contiguously from 0.
-//   - Message fields run contiguously from 1, or as a contiguous header from 1
-//     followed by ONE payload oneof that runs contiguously from 10.
+//   - Message fields run contiguously from 1, oneof fields included, or as a
+//     contiguous header from 1 followed by ONE payload oneof that runs
+//     contiguously from 10.
 func TestProtoNumberingHasNoHoleAndNoReservation(t *testing.T) {
 	var checked int
 	protoregistry.GlobalFiles.RangeFilesByPackage("leapmux.v1", func(file protoreflect.FileDescriptor) bool {
@@ -104,6 +105,7 @@ func messageNumberingProblem(message protoreflect.MessageDescriptor) string {
 	}
 	var header, payload []int
 	var payloadOneof protoreflect.OneofDescriptor
+	payloadOneofs := 0
 	for i := range fields.Len() {
 		field := fields.Get(i)
 		number := int(field.Number())
@@ -118,22 +120,31 @@ func messageNumberingProblem(message protoreflect.MessageDescriptor) string {
 			header = append(header, number)
 			continue
 		}
-		if payloadOneof != nil && payloadOneof != oneof {
-			return "two oneofs number fields from 10; one payload oneof may start there"
+		if payloadOneof != oneof {
+			payloadOneofs++
 		}
 		payloadOneof = oneof
 		payload = append(payload, number)
 	}
-	slices.Sort(header)
-	slices.Sort(payload)
+	// A run from 1 has no hole, whichever fields its oneofs hold. Only a
+	// message that is not one needs the header-and-payload exemption.
 	all := slices.Concat(header, payload)
+	slices.Sort(all)
 	if isRun(all, 1) {
 		return ""
 	}
 	if payloadOneof == nil {
 		return "fields " + numbersText(all) + " must run from 1 with no hole"
 	}
-	if len(header) > 0 && !isRun(header, 1) {
+	if payloadOneofs > 1 {
+		return "two oneofs number fields from 10; one payload oneof may start there"
+	}
+	slices.Sort(header)
+	slices.Sort(payload)
+	if len(header) == 0 {
+		return "oneof " + string(payloadOneof.Name()) + " starts at 10 with no header; a payload oneof from 10 must follow header fields from 1"
+	}
+	if !isRun(header, 1) {
 		return "header fields " + numbersText(header) + " must run from 1 with no hole"
 	}
 	if !isRun(payload, payloadOneofStart) {
@@ -180,8 +191,12 @@ func TestMessageNumberingProblem(t *testing.T) {
 		{name: "fields from 1", plain: []int32{1, 2, 3}, ok: true},
 		{name: "one oneof from 1", oneofs: [][]int32{{1, 2}}, ok: true},
 		{name: "a header and a payload oneof from 10", plain: []int32{1, 2}, oneofs: [][]int32{{10, 11, 12}}, ok: true},
-		{name: "a payload oneof from 10 alone", oneofs: [][]int32{{10, 11}}, ok: true},
+		// AGENTS.md exempts a payload oneof from 10 only after a header from 1.
+		{name: "a payload oneof from 10 alone", oneofs: [][]int32{{10, 11}}},
 		{name: "plain fields past 9 from 1", plain: []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, ok: true},
+		// A run from 1 has no hole, whichever fields a oneof holds.
+		{name: "a oneof inside a run from 1", plain: []int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13}, oneofs: [][]int32{{10, 11}}, ok: true},
+		{name: "two oneofs inside a run from 1", plain: []int32{1, 2, 3, 4, 5, 6, 7, 8, 9}, oneofs: [][]int32{{10, 11}, {12, 13}}, ok: true},
 		{name: "a hole in the fields", plain: []int32{1, 3}},
 		{name: "fields not from 1", plain: []int32{2, 3}},
 		{name: "a hole in the header", plain: []int32{1, 3}, oneofs: [][]int32{{10}}},

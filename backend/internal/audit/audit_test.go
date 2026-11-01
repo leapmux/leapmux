@@ -942,8 +942,8 @@ func carriesPrincipalWithAlias(authAlias, useridAlias string, fn *ast.FuncDecl) 
 // was unscannable: `Equal` is Go's most overloaded method name (time.Time,
 // big.Int, netip.Addr, every proto message), so a syntax-level rule could not
 // tell an identity comparison from a timestamp one, and the net simply did not
-// look at it -- while worker/service.requireWorkerOwner, the worker-side
-// ownership gate, decided ownership through exactly that call. Renaming the
+// look at it -- while worker/service.callerIsWorkerOwner, the worker-side
+// ownership check, decided ownership through exactly that call. Renaming the
 // method so both identity comparisons share the Matches prefix is what makes
 // this set exact instead of a guess.
 var identityCompareMethods = map[string]bool{"Matches": true, "MatchesUser": true}

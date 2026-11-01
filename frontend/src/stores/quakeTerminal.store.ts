@@ -308,7 +308,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    * The shell the worker may have spawned in that window is left to the WORKER,
    * for the reason `retireStaleKeys` gives: the close of the last tab in a
    * directory closes its quake terminal on every close path, and the orphan
-   * reconciler reaps one whose directory has no tabs left. A CloseTerminal from
+   * reconciler reaps one whose directory has no tabs left. A CloseTab call from
    * here would be a second teardown racing those.
    */
   function recordResolvedTerminal(keyId: string, terminalId: string, applyMetadata: () => void) {
@@ -442,7 +442,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    * The panel RETRACTS with its usual slide before the instance is disposed, so
    * the user watches it leave instead of the content blanking underneath them.
    *
-   * No CloseTerminal RPC: the worker closes a quake terminal's row itself when
+   * No CloseTab RPC: the worker closes a quake terminal's row itself when
    * its shell exits, because it has no restart contract. The next open
    * therefore misses the directory lookup and spawns a fresh shell --
    * deliberately NOT the "press Enter to restart" a terminal TAB offers, since a
@@ -488,7 +488,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    *
    * Emits NO CRDT op: a quake terminal has no record, and `applyTombstoneTab`
    * MATERIALIZES a record for an id it does not know -- so a tombstone here
-   * would inject a phantom tab into the account. Issues no CloseTerminal
+   * would inject a phantom tab into the account. Issues no CloseTab call
    * either: the worker's own close path already closed the shell
    * authoritatively, from whichever device ran it, and a second call from here
    * would race that teardown.

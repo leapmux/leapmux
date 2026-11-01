@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +54,9 @@ type WorkerConnectorService struct {
 	// clock drives the hello deadline and the receive-idle timer of every
 	// Connect stream, so a test can move both deadlines instead of waiting.
 	clock quartz.Clock
+	// identityDeliveries orders the WorkerIdentity frames that follow a
+	// greeting; see ownerDeliveryLocks.
+	identityDeliveries ownerDeliveryLocks
 	// queuePool is the WORKER outbound queue budget every Connect stream's
 	// writer draws from. Deliberately not shared with the frontend relays:
 	// reclaiming can only ever cost a member of the same pool, and dropping a
@@ -286,6 +291,37 @@ func (s *WorkerConnectorService) Register(
 // which runs inside a user-info observer and has no request context of its own.
 const workerIdentityReadTimeout = 5 * time.Second
 
+// ownerDeliveryLocks serializes, per owner, the username read of an identity
+// delivery and the enqueue of the frame that carries it. Frames then reach a
+// worker in the order of their reads. A rename's re-delivery starts after the
+// rename commits, so its read sees the new name, and a delivery whose read
+// started earlier enqueues before it. The last frame a worker receives
+// therefore never holds a name older than the newest rename.
+//
+// Without it, a read that returned the old name could enqueue after the
+// re-delivery of the new one, and the worker would keep the old name until the
+// next account change.
+//
+// The locks are striped by a hash of the owner id, so memory stays fixed
+// however many accounts exist. Two owners on one stripe only wait for each
+// other. The zero value is ready to use.
+type ownerDeliveryLocks struct {
+	stripes [64]sync.Mutex
+}
+
+// lock takes owner's stripe and returns the function that releases it.
+func (l *ownerDeliveryLocks) lock(owner string) (unlock func()) {
+	mu := l.forOwner(owner)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (l *ownerDeliveryLocks) forOwner(owner string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(owner))
+	return &l.stripes[h.Sum32()%uint32(len(l.stripes))]
+}
+
 // workerIdentityFrame is the WorkerIdentity message for a worker that owner
 // registered. ownerUsername is empty when the username is unknown.
 func workerIdentityFrame(owner, ownerUsername string) *leapmuxv1.ConnectResponse {
@@ -329,6 +365,8 @@ func (s *WorkerConnectorService) RedeliverWorkerIdentity(owner string) {
 	if len(conns) == 0 {
 		return
 	}
+	unlock := s.identityDeliveries.lock(owner)
+	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), workerIdentityReadTimeout)
 	defer cancel()
 	username, ok := s.ownerUsername(ctx, owner)
@@ -444,12 +482,15 @@ func (s *WorkerConnectorService) Connect(
 	// misses this connection: its re-delivery (RedeliverWorkerIdentity) ran
 	// before the registry held the conn. Reading again now that the conn is
 	// reachable closes that window, because any later rename finds the conn.
-	// A changed answer goes out as a second identity frame.
+	// A changed answer goes out as a second identity frame, under the owner's
+	// delivery lock, so it cannot land after a newer re-delivery.
+	unlockIdentity := s.identityDeliveries.lock(worker.RegisteredBy)
 	if current, ok := s.ownerUsername(ctx, worker.RegisteredBy); ok && current != greetedUsername {
 		if err := conn.SendControl(workerIdentityFrame(worker.RegisteredBy, current)); err != nil {
 			slog.Debug("re-deliver the worker identity after registration", "worker_id", worker.ID, "error", err)
 		}
 	}
+	unlockIdentity()
 	if replaced {
 		// A new worker process replaced an older connection. The old
 		// connection's Unregister will return false (it's no longer the

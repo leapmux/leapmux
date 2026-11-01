@@ -66,8 +66,8 @@ export interface TabBusyProbeDeps {
  */
 export function createTabBusyProbe(deps: TabBusyProbeDeps) {
   /**
-   * A subagent tab closes in the UI only: the worker treats CloseAgent on a
-   * child as tab-close-only, the transcript survives and the tab can be
+   * A subagent tab closes in the UI only: the worker treats CloseTab of a
+   * child agent as tab-close-only, the transcript survives and the tab can be
    * revived. Nothing stops, so there is nothing to warn about.
    */
   const guardedAgentTab = (tab: Tab): boolean => tab.type === TabType.AGENT && !isSubagentTab(tab)

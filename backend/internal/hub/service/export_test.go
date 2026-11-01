@@ -57,3 +57,16 @@ func (h *UserEventsHandler) FillBootstrapGateForTest() (held int, release func()
 // cannot provoke through the RPC surface -- the pre-checks answer first --
 // so the seam is what lets its four arms be pinned at all.
 var UserConflictErrorForTest = userConflictError
+
+// IdentityDeliveryLockHeldForTest reports whether some goroutine holds the
+// delivery lock of owner's stripe. A test reads it from inside a store read to
+// prove that the read runs under the lock, which is what orders the identity
+// frames; no observable outcome can show that ordering without a race.
+func (s *WorkerConnectorService) IdentityDeliveryLockHeldForTest(owner string) bool {
+	mu := s.identityDeliveries.forOwner(owner)
+	if mu.TryLock() {
+		mu.Unlock()
+		return false
+	}
+	return true
+}

@@ -66,15 +66,11 @@ export const PasswordSetupGate: Component = () => {
       setBusy(false)
       return
     }
-    // The password is stored either way. A report with no account recovers,
-    // and SignInRecoveryGate has replaced this screen; a superseded adoption
-    // belongs to the newer operation. Only an adopted account continues here.
-    // The form becomes usable again, because a superseded adoption can leave
-    // this gate on screen, and the finally below is not reached from here.
-    if (outcome !== 'adopted') {
-      setBusy(false)
-      return
-    }
+    // The password is stored whatever the outcome, but only an adopted account
+    // is this gate's to re-read. A report with no account recovers, and
+    // SignInRecoveryGate owns the account read; a superseded adoption belongs
+    // to the newer operation.
+    //
     // The ACCOUNT is the other copy of this fact, and it does not follow the
     // snapshot. `auth.user().passwordSet` is what Preferences -> Account renders
     // its button and its solo warning from, and nothing re-reads it for the life
@@ -84,10 +80,14 @@ export const PasswordSetupGate: Component = () => {
     // this screen down. `refreshUser` swallows its own failure, so it can never
     // report a stored password as a failed write. The two other surfaces that
     // offer this same password already refresh both copies.
-    await auth.refreshUser()
+    if (outcome === 'adopted')
+      await auth.refreshUser()
     // OUTSIDE the catch above, because the password is stored by now. Forced,
     // because this snapshot is exactly what the gate reads: without it the
-    // screen stays up over a hub that no longer needs it. But `loadSystemInfo`
+    // screen stays up over a hub that no longer needs it. That holds for every
+    // outcome: recovery ends on a route this gate guards, and a superseded
+    // adoption can leave this screen up, so a stale snapshot would offer again
+    // a password the hub refuses to set twice. But `loadSystemInfo`
     // rejects by design, and a refresh over a connection whose authentication
     // rule just changed is exactly where a transient failure lands -- reported
     // as "Failed to set the password" it told the operator to retry a write

@@ -586,6 +586,19 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resp.GetSessionReport().GetUser().GetId(), link.UserID)
 
+	// The report carries the COMPLETE projection. The account holds no password
+	// and no passkey, so its provider is its only sign-in credential: the reply
+	// must list that link and allow a step-up through it, or the client offers
+	// this account no way to elevate until it reads the account again.
+	user := resp.GetSessionReport().GetUser()
+	require.Len(t, user.GetOauthProviders(), 1)
+	assert.Equal(t, providerID, user.GetOauthProviders()[0].GetId())
+	assert.Equal(t, "Test GitHub", user.GetOauthProviders()[0].GetName())
+	assert.True(t, user.GetOauthProviders()[0].GetEnabled())
+	assert.False(t, user.GetPasswordSet())
+	assert.Zero(t, user.GetPasskeyCount())
+	assert.True(t, user.GetMayElevateThroughAProvider())
+
 	// Verify that the flow consumed the pending signup.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.Error(t, err)

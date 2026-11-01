@@ -608,7 +608,7 @@ describe('createQuakeTerminalStore', () => {
     expect(warnToast, 'closing a tab is not an open failure').not.toHaveBeenCalled()
     expect(store.entryFor(KEY)).toBeUndefined()
     // The shell the worker may have spawned in that window is the WORKER's to
-    // reclaim -- see `retireStaleKeys`. A CloseTerminal from here would race
+    // reclaim -- see `retireStaleKeys`. A CloseTab call from here would race
     // closeQuakeTerminalIfUnused and the orphan reconciler.
     expect(closeTab).not.toHaveBeenCalled()
     dispose()

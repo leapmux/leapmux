@@ -223,8 +223,8 @@ describe('createTabBusyProbe', () => {
       ])
       agentIs('child-1', AgentActivityState.WORKING)
 
-      // A child tab closes in the UI only: the worker treats CloseAgent on a
-      // child as tab-close-only, the transcript survives and the tab can be
+      // A child tab closes in the UI only: the worker treats CloseTab of a
+      // child agent as tab-close-only, the transcript survives and the tab can be
       // revived. Nothing stops, so there is nothing to warn about.
       expect(await probe.probe(agentTab('child-1', { parentAgentId: 'a1' }))).toBeNull()
       expect(mockListAgents, 'and it is not even asked about').not.toHaveBeenCalled()

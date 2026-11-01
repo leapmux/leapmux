@@ -305,7 +305,7 @@ message ReconcileNudge {}
 // no copy of its own, because a second source of truth is what let this value go
 // missing: it used to be handed over once in RegisterResponse and cached in a local
 // state file, so a file that predated the field, or was hand-edited or truncated,
-// left the worker running with no owner -- and requireWorkerOwner gates every
+// left the worker running with no owner -- and the worker's owner gate guards every
 // machine-scoped family (file, git, sysinfo, tunnel) on it, permanently denying the
 // worker's own legitimate owner in a way that reads exactly like a genuine
 // cross-tenant refusal.

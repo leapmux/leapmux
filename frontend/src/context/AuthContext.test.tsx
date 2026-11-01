@@ -82,6 +82,54 @@ vi.mock('~/lib/systemInfo', () => ({
   getCaptchaSiteKey: () => '',
 }))
 
+/**
+ * While set, holds each `hydrateStorageAccount` open after its real work, so a
+ * test can land a write inside the window in which `setUser` loads an
+ * account's rows. Unset, the hydration passes straight through.
+ */
+let hydrationHold: { entered: () => void, release: Promise<void> } | null = null
+vi.mock('~/lib/browserStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/lib/browserStorage')>()
+  return {
+    ...actual,
+    hydrateStorageAccount: async (userId: string) => {
+      await actual.hydrateStorageAccount(userId)
+      const hold = hydrationHold
+      if (hold) {
+        hold.entered()
+        await hold.release
+      }
+    },
+  }
+})
+
+/**
+ * Holds the next account hydration open, and returns the moment it is held and
+ * the function that lets it finish. Only the first hydration is held.
+ */
+function holdNextHydration() {
+  const entered = deferred<void>()
+  const release = deferred<void>()
+  hydrationHold = {
+    entered: () => {
+      hydrationHold = null
+      entered.resolve()
+    },
+    release: release.promise,
+  }
+  return {
+    entered: entered.promise,
+    release: () => release.resolve(),
+  }
+}
+
+/** A response that reports a slid elevation deadline, as the hub sends one. */
+function reportingSlide(until: Date) {
+  const header = new Headers()
+  header.set('leapmux-elevation-expires-at', until.toISOString())
+  return { header } as never
+}
+
 /** A sign-in's SessionReport, for the adoption paths that take one. */
 function reportFor(user: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}): SessionReport {
   return {
@@ -1164,6 +1212,102 @@ describe('AuthContext sign-in recovery', () => {
     expect(auth().signInRecovery()).toBeNull()
   })
 
+  // `setUser` refuses to publish an account when any local write lands while
+  // the account's rows load. Here a slide report from a request that left
+  // before the sign-in lands in that window. No newer operation owns the state,
+  // so the sign-in, which succeeded, recovers the account instead of reporting
+  // itself superseded with nobody left to finish it.
+  it('recovers a sign-in whose account a local write displaced mid-hydration', async () => {
+    const auth = await bootSignedOut()
+    const alice = { id: 'u1', username: 'alice', isAdmin: false }
+    mockLogin.mockResolvedValue({
+      sessionReport: { user: alice },
+    })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: { user: alice },
+    })
+    const landing = deferred<never>()
+    const sliding = elevationDeadlineInterceptor(() => landing.promise)({ stream: false } as never)
+    const hydration = holdNextHydration()
+
+    const login = auth().login('alice', 'pw')
+    await hydration.entered
+    landing.resolve(reportingSlide(new Date(Date.now() + 60 * 60 * 1000)))
+    await sliding
+    hydration.release()
+
+    expect((await login).outcome).toBe('recovering')
+    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    expect(auth().user()?.username).toBe('alice')
+    expect(auth().signInRecovery()?.error).toBeNull()
+  })
+
+  // The same refusal can meet the recovery read itself. Its operation is still
+  // current, so the gate must offer Retry rather than wait for a read that
+  // already ended.
+  it('offers Retry when a local write displaced the recovered account', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    const hydration = holdNextHydration()
+
+    expect((await auth().login('alice', 'pw')).outcome).toBe('recovering')
+    await hydration.entered
+    // Opened after the sign-in dropped the previous window, so the adoption
+    // stands and moves the read's generation.
+    await elevationDeadlineInterceptor(async () => reportingSlide(new Date(Date.now() + 60 * 60 * 1000)))({ stream: false } as never)
+    hydration.release()
+
+    await untilTrue(() => auth().signInRecovery()?.error != null)
+    expect(auth().signInRecovery()?.error).toContain('changed while it was loading')
+    expect(auth().user()).toBeNull()
+
+    await auth().retrySignInRecovery()
+    expect(auth().user()?.username).toBe('alice')
+    expect(auth().signInRecovery()?.completed).toBe(true)
+  })
+
+  // The recovery read's adoption can also lose to a NEWER sign-in, which moves
+  // the generation while the recovered account's rows load. That newer sign-in
+  // owns the state, and here it is recovering too, so an error the older read
+  // wrote would land on the newer recovery and show Retry over a read that is
+  // still running.
+  it('writes nothing when a newer sign-in displaced the recovered account', async () => {
+    const auth = await bootSignedOut()
+    const bobRead = deferred<unknown>()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser
+      .mockResolvedValueOnce({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+      .mockReturnValueOnce(bobRead.promise)
+    const hydration = holdNextHydration()
+    expect((await auth().login('alice', 'pw')).outcome).toBe('recovering')
+    await hydration.entered
+
+    expect((await auth().login('bob', 'pw')).outcome).toBe('recovering')
+    hydration.release()
+    await settle()
+
+    expect(auth().user()).toBeNull()
+    expect(auth().signInRecovery()?.error).toBeNull()
+    expect(auth().signInRecovery()?.completed).toBe(false)
+
+    bobRead.resolve({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    expect(auth().user()?.username).toBe('bob')
+  })
+
   // A sign-out ends the session that the recovery reads. A late answer of that
   // read must neither adopt the account nor start the recovery again.
   it.each(['succeeds', 'fails'] as const)('stays signed out when the recovery read %s after a sign-out', async (answer) => {
@@ -1681,9 +1825,13 @@ describe('AuthContext storage namespace', () => {
     // so the second one owns the identity from that moment on.
     const first = auth().setAuth(reportFor({ id: 'bob', username: 'bob' }))
     const second = auth().setAuth(reportFor({ id: 'carol', username: 'carol' }))
-    await Promise.all([first, second])
+    expect(await first).toBe('superseded')
+    expect(await second).toBe('adopted')
     await vi.waitFor(() => expect(auth().user()?.id).toBe('carol'))
 
+    // The refused adoption belongs to an operation the newer one replaced, so
+    // it must not fall through into recovering an account of its own.
+    expect(auth().signInRecovery()).toBeNull()
     expect(published).not.toContain('bob')
     expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:carol:browser-prefs')
     stop()

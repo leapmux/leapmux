@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -835,13 +836,13 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 
 // The Hub must send WorkerIdentity as the FIRST message on every Connect stream.
 //
-// It is the worker's only source for its own owner: requireWorkerOwner gates every
-// machine-scoped family (file, git, sysinfo, tunnel) on it, and the worker keeps no
-// local copy -- a cached copy is what previously went missing and left the worker
-// permanently denying its own legitimate user. Identity must also PRECEDE the
-// connection being published to the worker manager, so it cannot be overtaken by a
-// frontend-driven ChannelOpen on the same stream; asserting it is the first frame the
-// worker receives is how that ordering stays true.
+// It is the worker's only source for its own owner: the worker's owner gate
+// guards every machine-scoped family (file, git, sysinfo, tunnel) on it, and the
+// worker keeps no local copy -- a cached copy is what previously went missing and
+// left the worker permanently denying its own legitimate user. Identity must also
+// PRECEDE the connection being published to the worker manager, so it cannot be
+// overtaken by a frontend-driven ChannelOpen on the same stream; asserting it is
+// the first frame the worker receives is how that ordering stays true.
 func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 	t.Parallel()
 
@@ -1072,6 +1073,78 @@ func TestRedeliverWorkerIdentity_ReadsNothingForAnOwnerWithNoConnectedWorker(t *
 	env.connector.RedeliverWorkerIdentity(owner)
 	assert.Equal(t, int64(1), reads.Load(), "an owner with a connected worker costs one read")
 	assert.Equal(t, "admin-counted", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
+}
+
+// Every username read that a later identity frame carries runs under the
+// owner's delivery lock: Connect's read after the registration and each
+// re-delivery's read. The lock is what keeps a read that started before a
+// rename from enqueuing after the rename's own re-delivery, so the worker can
+// never end up with the older name. The greeting read needs no lock, because
+// the greeting enqueues before any re-delivery can reach the connection.
+func TestWorkerIdentityReadsHoldTheOwnersDeliveryLock(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var connector atomic.Pointer[service.WorkerConnectorService]
+	var held lockObservations
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return lockObservingStore{Store: st, connector: &connector, held: &held}
+	})
+	connector.Store(env.connector)
+	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-lock")
+
+	renameUser(t, env.store, owner, "admin-locked")
+	env.connector.RedeliverWorkerIdentity(owner)
+	require.Equal(t, "admin-locked", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
+
+	assert.Equal(t, []bool{false, true, true}, held.snapshot(),
+		"the greeting read, Connect's read after the registration, then the re-delivery's read")
+}
+
+// lockObservations records, for each user read, whether the reader held the
+// owner's identity delivery lock.
+type lockObservations struct {
+	mu   sync.Mutex
+	held []bool
+}
+
+func (o *lockObservations) record(held bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.held = append(o.held, held)
+}
+
+func (o *lockObservations) snapshot() []bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.held)
+}
+
+// lockObservingStore records, on each user read by id, whether the
+// connector's identity delivery lock for that user is held.
+type lockObservingStore struct {
+	store.Store
+	connector *atomic.Pointer[service.WorkerConnectorService]
+	held      *lockObservations
+}
+
+func (s lockObservingStore) Users() store.UserStore {
+	return lockObservingUsers{UserStore: s.Store.Users(), connector: s.connector, held: s.held}
+}
+
+type lockObservingUsers struct {
+	store.UserStore
+	connector *atomic.Pointer[service.WorkerConnectorService]
+	held      *lockObservations
+}
+
+func (u lockObservingUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	if c := u.connector.Load(); c != nil {
+		u.held.record(c.IdentityDeliveryLockHeldForTest(id))
+	}
+	return u.UserStore.GetByID(ctx, id)
 }
 
 // userReadCountingStore counts the connector's user reads by id.

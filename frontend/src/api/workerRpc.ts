@@ -257,7 +257,7 @@ export const UNAVAILABLE_RETRY_BASE_MS = 200
 /** Whether an error is the worker saying "I could not answer; ask again". */
 function isWorkerUnavailable(err: unknown): err is ChannelError {
   // `source === 'rpc'` is the load-bearing half. It is set only from a
-  // DECRYPTED InnerRpcResponse.errorCode, so the hub cannot forge it, and
+  // DECRYPTED InnerRpcResponse.error.code, so the hub cannot forge it, and
   // it separates the worker's own refusal from a transport failure that
   // happens to carry the same numeric code.
   return err instanceof ChannelError && err.source === 'rpc' && err.code === Code.Unavailable

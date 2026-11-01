@@ -784,8 +784,8 @@ func (echoStreamDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, 
 	}
 }
 
-// Two CLI processes that share one worker each open a subscription through
-// their own transport. The router keys a stream by its client request id, so
+// Two CLI processes that share one control socket, and so one router, each
+// open a subscription through their own transport. The router keys a stream by its client request id, so
 // the two ids must differ, or the second stream replaces the first.
 func TestTwoTransportsOnOneRouterKeepTheirStreams(t *testing.T) {
 	socketURL := locallistentest.UniqueListenURL(t, "twotransports")

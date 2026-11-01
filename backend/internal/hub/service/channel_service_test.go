@@ -543,13 +543,18 @@ func TestConnectHeartbeatRearmsTheIdleDeadline(t *testing.T) {
 // An empty heartbeat keeps the stream alive and updates last_seen.
 func TestConnectHeartbeatUpdatesLastSeen(t *testing.T) {
 	t.Parallel()
-	env, ctx, _, workerID, authToken, client := workerStreams(t, "hub-heartbeat")
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	// Connect itself stamps last_seen, so comparing timestamps cannot tell a
+	// heartbeat that writes from one that does not. Count the writes instead.
+	var writes atomic.Int64
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return lastSeenCountingStore{Store: st, writes: &writes}
+	})
+	stream, _, _ := connectAdminWorker(t, env, "hub-heartbeat")
 
-	stream := connectWorker(t, ctx, client, authToken, classicHello(0x11))
-	before, err := env.store.Workers().GetByID(ctx, workerID)
-	require.NoError(t, err)
-	require.NotNil(t, before.LastSeenAt)
-
+	writes.Store(0)
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}))
 	for {
 		frame, err := stream.Receive()
@@ -558,10 +563,28 @@ func TestConnectHeartbeatUpdatesLastSeen(t *testing.T) {
 			break
 		}
 	}
-	after, err := env.store.Workers().GetByID(ctx, workerID)
-	require.NoError(t, err)
-	require.NotNil(t, after.LastSeenAt)
-	assert.False(t, after.LastSeenAt.Before(*before.LastSeenAt), "a heartbeat moves last_seen forward or keeps it")
+	// The Hub writes last_seen before it answers, so the reply orders the write.
+	assert.Equal(t, int64(1), writes.Load(), "one heartbeat writes last_seen once")
+}
+
+// lastSeenCountingStore counts the connector's last_seen writes.
+type lastSeenCountingStore struct {
+	store.Store
+	writes *atomic.Int64
+}
+
+func (s lastSeenCountingStore) Workers() store.WorkerStore {
+	return lastSeenCountingWorkers{WorkerStore: s.Store.Workers(), writes: s.writes}
+}
+
+type lastSeenCountingWorkers struct {
+	store.WorkerStore
+	writes *atomic.Int64
+}
+
+func (w lastSeenCountingWorkers) UpdateLastSeen(ctx context.Context, id string) error {
+	w.writes.Add(1)
+	return w.WorkerStore.UpdateLastSeen(ctx, id)
 }
 
 // A second hello on one stream is a protocol error.
