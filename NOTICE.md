@@ -347,7 +347,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [keyboard-types 0.7.0 (MIT OR Apache-2.0)](#keyboard-types-070-mit-or-apache-20)
 - [libappindicator 0.9.0 (Apache-2.0 OR MIT)](#libappindicator-090-apache-20-or-mit)
 - [libappindicator-sys 0.9.0 (Apache-2.0 OR MIT)](#libappindicator-sys-090-apache-20-or-mit)
-- [libc 0.2.189 (MIT OR Apache-2.0)](#libc-02189-mit-or-apache-20)
+- [libc 0.2.191 (MIT OR Apache-2.0)](#libc-02191-mit-or-apache-20)
 - [libdbus-sys 0.2.7 (Apache-2.0/MIT)](#libdbus-sys-027-apache-20mit)
 - [libloading 0.7.4 (ISC)](#libloading-074-isc)
 - [libredox 0.1.23 (MIT)](#libredox-0123-mit)
@@ -375,7 +375,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [num_enum_derive 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0)](#num_enum_derive-076-bsd-3-clause-or-mit-or-apache-20)
 - [num-conv 0.2.2 (MIT OR Apache-2.0)](#num-conv-022-mit-or-apache-20)
 - [num-traits 0.2.19 (MIT OR Apache-2.0)](#num-traits-0219-mit-or-apache-20)
-- [objc2 0.6.4 (MIT)](#objc2-064-mit)
+- [objc2 0.6.5 (MIT)](#objc2-065-mit)
 - [objc2-app-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)](#objc2-app-kit-032-zlib-or-apache-20-or-mit)
 - [objc2-cloud-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)](#objc2-cloud-kit-032-zlib-or-apache-20-or-mit)
 - [objc2-core-data 0.3.2 (Zlib OR Apache-2.0 OR MIT)](#objc2-core-data-032-zlib-or-apache-20-or-mit)
@@ -469,7 +469,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [serde_core 1.0.229 (MIT OR Apache-2.0)](#serde_core-10229-mit-or-apache-20)
 - [serde_derive 1.0.229 (MIT OR Apache-2.0)](#serde_derive-10229-mit-or-apache-20)
 - [serde_derive_internals 0.29.1 (MIT OR Apache-2.0)](#serde_derive_internals-0291-mit-or-apache-20)
-- [serde_json 1.0.151 (MIT OR Apache-2.0)](#serde_json-10151-mit-or-apache-20)
+- [serde_json 1.0.154 (MIT OR Apache-2.0)](#serde_json-10154-mit-or-apache-20)
 - [serde_repr 0.1.21 (MIT OR Apache-2.0)](#serde_repr-0121-mit-or-apache-20)
 - [serde_spanned 0.6.9 (MIT OR Apache-2.0)](#serde_spanned-069-mit-or-apache-20)
 - [serde_spanned 1.1.1 (MIT OR Apache-2.0)](#serde_spanned-111-mit-or-apache-20)
@@ -480,7 +480,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [serialize-to-javascript-impl 0.1.2 (MIT OR Apache-2.0)](#serialize-to-javascript-impl-012-mit-or-apache-20)
 - [servo_arc 0.4.3 (MIT OR Apache-2.0)](#servo_arc-043-mit-or-apache-20)
 - [sha2 0.10.9 (MIT OR Apache-2.0)](#sha2-0109-mit-or-apache-20)
-- [sha2 0.11.0 (MIT OR Apache-2.0)](#sha2-0110-mit-or-apache-20)
+- [sha2 0.11.1 (MIT OR Apache-2.0)](#sha2-0111-mit-or-apache-20)
 - [shlex 2.0.1 (MIT OR Apache-2.0)](#shlex-201-mit-or-apache-20)
 - [signal-hook-registry 1.4.8 (MIT OR Apache-2.0)](#signal-hook-registry-148-mit-or-apache-20)
 - [simd-adler32 0.3.10 (MIT)](#simd-adler32-0310-mit)
@@ -535,7 +535,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [tinystr 0.8.4 (Unicode-3.0)](#tinystr-084-unicode-30)
 - [tinyvec 1.12.0 (Zlib OR Apache-2.0 OR MIT)](#tinyvec-1120-zlib-or-apache-20-or-mit)
 - [tinyvec_macros 0.1.1 (MIT OR Apache-2.0 OR Zlib)](#tinyvec_macros-011-mit-or-apache-20-or-zlib)
-- [tokio 1.53.1 (MIT)](#tokio-1531-mit)
+- [tokio 1.54.1 (MIT)](#tokio-1541-mit)
 - [tokio-macros 2.7.2 (MIT)](#tokio-macros-272-mit)
 - [tokio-util 0.7.19 (MIT)](#tokio-util-0719-mit)
 - [toml 0.8.2 (MIT OR Apache-2.0)](#toml-082-mit-or-apache-20)
@@ -46908,7 +46908,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### libc 0.2.189 (MIT OR Apache-2.0)
+### libc 0.2.191 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -51973,7 +51973,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### objc2 0.6.4 (MIT)
+### objc2 0.6.5 (MIT)
 
 ```
 Permission is hereby granted, free of charge, to any
@@ -68500,7 +68500,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### serde_json 1.0.151 (MIT OR Apache-2.0)
+### serde_json 1.0.154 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -70973,7 +70973,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### sha2 0.11.0 (MIT OR Apache-2.0)
+### sha2 0.11.1 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -80993,7 +80993,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### tokio 1.53.1 (MIT)
+### tokio 1.54.1 (MIT)
 
 ```
 MIT License
