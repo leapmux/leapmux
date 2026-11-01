@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { AgentChatMessageSchema, AgentStatusChangeSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { liveToolReturnRow, toolReturnRow } from './toolReturnRows'
 
 const TOOL_RETURN = JSON.stringify({ message_type: 'tool_return_message', tool_call_id: 'view-image', tool_return: 'Viewed the image.' })
@@ -19,7 +19,11 @@ function row(text: string) {
 function messageEvent(text: string, replay: boolean) {
   return create(AgentEventSchema, {
     agentId: 'letta-agent',
-    replay,
+    ...(replay
+      ? {
+          replay: { replayId: 1n, agentId: 'letta-agent' },
+        }
+      : {}),
     event: {
       case: 'agentMessage',
       value: row(text),

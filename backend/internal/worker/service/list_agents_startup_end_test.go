@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -35,7 +36,7 @@ func listAgentsDuringGit(t *testing.T, d *channel.Dispatcher, agentID string, ch
 	listed := make(chan struct{})
 	go func() {
 		defer close(listed)
-		dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
 	}()
 	require.Eventually(t, func() bool { _, err := os.Stat(gitStarted); return err == nil }, inputQueueWait, 10*time.Millisecond,
 		"ListAgents must reach the git status of its row")

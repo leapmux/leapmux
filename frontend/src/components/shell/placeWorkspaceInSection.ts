@@ -1,4 +1,4 @@
-import { sectionClient } from '~/api/clients'
+import { workspaceClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
 import { appendPosition } from '~/lib/lexorank'
 
@@ -49,7 +49,7 @@ export function placeWorkspaceInSection(
   // unique lexorank rather than colliding with whichever item already sits
   // at the head.
   const position = appendPosition(deps.sectionStore.getItemsForSection(targetSectionId))
-  sectionClient.moveWorkspace({ workspaceId, sectionId: targetSectionId, position })
+  workspaceClient.moveWorkspace({ workspaceId, sectionId: targetSectionId, position })
     .catch((err) => {
       showWarnToast('Failed to move the workspace into its section', err)
     })

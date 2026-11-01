@@ -333,7 +333,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // flip together. Skipped entirely when the parent supplies
   // `preloadedBranches`.
   const branchFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitBranches>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { workerId: wid, path }),
+    fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { path }),
     applySuccess: (resp) => {
       setInternalBranches(resp.branches)
       const cur = resp.currentBranch || props.gitInfo.info().currentBranch
@@ -370,7 +370,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   })
 
   const worktreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitWorktrees>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitWorktrees(wid, { workerId: wid, path }),
+    fetch: ({ wid, path }) => workerRpc.listGitWorktrees(wid, { path }),
     applySuccess: (resp) => {
       // Only show actual worktrees (exclude the main working tree).
       setWorktrees(resp.worktrees.filter(wt => !wt.isMain).map(wt => ({ path: wt.path, branch: wt.branch })))

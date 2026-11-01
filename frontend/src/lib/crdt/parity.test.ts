@@ -2,6 +2,7 @@ import type { UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   FloatingWindowRecordSchema,
 
@@ -14,14 +15,13 @@ import {
 import {
 
   CrdtOpSchema,
+  CreateWorkspaceOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
-  SetWorkspaceRegisterOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
 /**
@@ -31,7 +31,7 @@ import { applyOp, newState } from './apply'
  * suitable for byte-equal comparison between independent runs.
  *
  * Covers the workspaces map (section 04) just like the backend helper, so
- * SetWorkspaceRegister / TombstoneWorkspace convergence is observable.
+ * CreateWorkspace / TombstoneWorkspace convergence is observable.
  */
 function canonicalize(state: UserCrdtState): string {
   const parts: string[] = []
@@ -122,8 +122,7 @@ describe('parity', () => {
         body: {
           case: 'setTabRegister',
           value: create(SetTabRegisterOpSchema, {
-            tabType: TabType.AGENT,
-            tabId: 'tA',
+            tab: { tabType: TabType.AGENT, tabId: 'tA' },
             field: { case: 'tileId', value: 'root' },
           }),
         },
@@ -133,8 +132,7 @@ describe('parity', () => {
         body: {
           case: 'setTabRegister',
           value: create(SetTabRegisterOpSchema, {
-            tabType: TabType.AGENT,
-            tabId: 'tA',
+            tab: { tabType: TabType.AGENT, tabId: 'tA' },
             field: { case: 'workerId', value: 'w1' },
           }),
         },
@@ -144,8 +142,7 @@ describe('parity', () => {
         body: {
           case: 'setTabRegister',
           value: create(SetTabRegisterOpSchema, {
-            tabType: TabType.TERMINAL,
-            tabId: 'tB',
+            tab: { tabType: TabType.TERMINAL, tabId: 'tB' },
             field: { case: 'tileId', value: 'root' },
           }),
         },
@@ -155,7 +152,9 @@ describe('parity', () => {
         canonicalHlc: hlc(50n, 0n, 'a'),
         body: {
           case: 'tombstoneTab',
-          value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId: 'tA' }),
+          value: create(TombstoneTabOpSchema, {
+            tab: { tabType: TabType.AGENT, tabId: 'tA' },
+          }),
         },
       }),
       // Late SetTab on tA — must drop (remove-wins).
@@ -164,8 +163,7 @@ describe('parity', () => {
         body: {
           case: 'setTabRegister',
           value: create(SetTabRegisterOpSchema, {
-            tabType: TabType.AGENT,
-            tabId: 'tA',
+            tab: { tabType: TabType.AGENT, tabId: 'tA' },
             field: { case: 'tileId', value: 'late' },
           }),
         },
@@ -247,9 +245,9 @@ describe('parity', () => {
   })
 
   // Workspace lifecycle create/delete now flow through the op log as
-  // SetWorkspaceRegister / TombstoneWorkspace. Workspace IDs are fresh
+  // CreateWorkspace / TombstoneWorkspace. Workspace IDs are fresh
   // nanoids per CreateWorkspace and soft-deleted IDs are never recycled,
-  // so a register and a tombstone for the SAME workspace id never co-occur
+  // so a create and a tombstone for the SAME workspace id never co-occur
   // in a real op log — the commuting case is independent workspaces, which
   // this pins: permuting creates/deletes of distinct workspaces converges.
   it('workspace register/tombstone ops on distinct ids converge under any permutation', () => {
@@ -257,8 +255,8 @@ describe('parity', () => {
       create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 0n, 'hub'),
         body: {
-          case: 'setWorkspaceRegister',
-          value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+          case: 'createWorkspace',
+          value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1' }),
         },
       }),
       create(CrdtOpSchema, {
@@ -271,8 +269,8 @@ describe('parity', () => {
       create(CrdtOpSchema, {
         canonicalHlc: hlc(30n, 0n, 'hub'),
         body: {
-          case: 'setWorkspaceRegister',
-          value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w3' }),
+          case: 'createWorkspace',
+          value: create(CreateWorkspaceOpSchema, { workspaceId: 'w3' }),
         },
       }),
     ]

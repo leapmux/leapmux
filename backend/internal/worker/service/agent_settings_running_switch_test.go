@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -206,7 +207,7 @@ func runningSwitchFixture(t *testing.T, provider leapmuxv1.AgentProvider, relaun
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	switchTo := func(model string) {
-		dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 			AgentId:  "agent-1",
 			Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: model}},
 		}, w)

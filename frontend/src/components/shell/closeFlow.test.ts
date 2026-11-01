@@ -3,7 +3,7 @@ import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createCloseFlow } from '~/components/shell/closeFlow'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 interface TestCtx {
   tileId: string

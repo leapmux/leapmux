@@ -556,6 +556,31 @@ describe('createControlStore', () => {
   })
 })
 
+// A cancel names its agent through the event that carries it, not through
+// the payload. Two agents can hold requests with the same id and token.
+describe('createControlStore cancelRequest', () => {
+  it('cancels the request of the agent the carrier states, and leaves a sibling agent alone', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', makeRequest('request', 'agent-1'))
+    store.addRequest('agent-2', makeRequest('request', 'agent-2'))
+
+    store.cancelRequest('agent-1', { requestId: 'request', claimToken: 'tok-request', responseState: ControlResponseState.CANCELED })
+
+    expect(store.getRequests('agent-1')).toEqual([])
+    expect(store.getRequests('agent-2').map(request => request.requestId)).toEqual(['request'])
+  })
+
+  it('ignores a cancel for an agent that holds no request', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', makeRequest('request', 'agent-1'))
+
+    store.cancelRequest('agent-unknown', { requestId: 'request', claimToken: 'tok-request', responseState: ControlResponseState.CANCELED })
+
+    expect(store.getRequests('agent-1')).toHaveLength(1)
+    expect(store.getRequests('agent-unknown')).toEqual([])
+  })
+})
+
 describe('shownControlRequest', () => {
   it('returns null for an empty list', () => {
     expect(shownControlRequest([], false)).toBeNull()

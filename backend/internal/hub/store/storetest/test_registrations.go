@@ -155,6 +155,104 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		assert.True(t, got.ExpiresAt.Before(time.Now()), "expires_at not in past after SoftDelete: %s", got.ExpiresAt)
 	})
 
+	// A dead key -- expired, consumed or revoked -- has nothing left to
+	// revoke. Rewriting its expiry would move a long-dead expires_at forward
+	// to now, and the purge, which deletes by age, would keep the row longer.
+	t.Run("soft delete refuses a dead row", func(t *testing.T) {
+		expired := time.Now().Add(-time.Hour).UTC()
+		regID := SeedRegistrationKey(t, st, user.ID, expired)
+
+		rows, err := st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
+			ID:        regID,
+			CreatedBy: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		assert.Zero(t, rows, "an expired key is not revoked again")
+
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+		assert.WithinDuration(t, expired, got.ExpiresAt, time.Second, "the expired key keeps its expiry")
+	})
+
+	t.Run("soft delete revokes a key once", func(t *testing.T) {
+		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+		params := store.SoftDeleteRegistrationKeyParams{ID: regID, CreatedBy: userid.MustNew(user.ID)}
+
+		rows, err := st.RegistrationKeys().SoftDelete(ctx, params)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+		revoked, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+
+		rows, err = st.RegistrationKeys().SoftDelete(ctx, params)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "a revoked key is not revoked again")
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+		assert.True(t, revoked.ExpiresAt.Equal(got.ExpiresAt),
+			"the second revoke leaves the expiry of the first: %s, then %s", revoked.ExpiresAt, got.ExpiresAt)
+	})
+
+	// Consume burns a key by pushing its expiry into the past, so a consumed
+	// key is dead to both revoke paths, and neither moves its expiry.
+	t.Run("revoke refuses a consumed key", func(t *testing.T) {
+		regID := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+		_, err := st.RegistrationKeys().Consume(ctx, regID)
+		require.NoError(t, err)
+		consumed, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+
+		rows, err := st.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
+			ID: regID, CreatedBy: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		assert.Zero(t, rows, "the owner cannot revoke a consumed key")
+
+		rows, err = st.RegistrationKeys().AdminSoftDelete(ctx, regID)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "an operator cannot revoke a consumed key")
+
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+		assert.True(t, consumed.ExpiresAt.Equal(got.ExpiresAt),
+			"the consumed key keeps the expiry Consume gave it: %s, then %s", consumed.ExpiresAt, got.ExpiresAt)
+	})
+
+	// The two revoke paths share one liveness guard, so a key one path
+	// revoked is dead to the other.
+	t.Run("revoke paths refuse a key the other path revoked", func(t *testing.T) {
+		owned := store.SoftDeleteRegistrationKeyParams{CreatedBy: userid.MustNew(user.ID)}
+
+		ownerRevoked := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+		owned.ID = ownerRevoked
+		rows, err := st.RegistrationKeys().SoftDelete(ctx, owned)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+		rows, err = st.RegistrationKeys().AdminSoftDelete(ctx, ownerRevoked)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "an operator cannot revoke a key its owner revoked")
+
+		adminRevoked := SeedRegistrationKey(t, st, user.ID, time.Now().Add(5*time.Minute).UTC())
+		rows, err = st.RegistrationKeys().AdminSoftDelete(ctx, adminRevoked)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+		revoked, err := st.RegistrationKeys().GetByID(ctx, adminRevoked)
+		require.NoError(t, err)
+
+		rows, err = st.RegistrationKeys().AdminSoftDelete(ctx, adminRevoked)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "an operator cannot revoke a key twice")
+		owned.ID = adminRevoked
+		rows, err = st.RegistrationKeys().SoftDelete(ctx, owned)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "the owner cannot revoke a key an operator revoked")
+
+		got, err := st.RegistrationKeys().GetByID(ctx, adminRevoked)
+		require.NoError(t, err)
+		assert.True(t, revoked.ExpiresAt.Equal(got.ExpiresAt),
+			"the refused revokes leave the first expiry: %s, then %s", revoked.ExpiresAt, got.ExpiresAt)
+	})
+
 	t.Run("soft delete refuses other user's row", func(t *testing.T) {
 		intruder := SeedUser(t, st, "regkey-softdel-intruder")
 		expires := time.Now().Add(5 * time.Minute).UTC()
@@ -217,6 +315,19 @@ func (s *Suite) testRegistrations(t *testing.T) {
 
 		_, err = st.RegistrationKeys().Consume(ctx, regID)
 		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("admin soft delete refuses a dead row", func(t *testing.T) {
+		expired := time.Now().Add(-time.Hour).UTC()
+		regID := SeedRegistrationKey(t, st, user.ID, expired)
+
+		rows, err := st.RegistrationKeys().AdminSoftDelete(ctx, regID)
+		require.NoError(t, err)
+		assert.Zero(t, rows, "an expired key is not revoked again")
+
+		got, err := st.RegistrationKeys().GetByID(ctx, regID)
+		require.NoError(t, err)
+		assert.WithinDuration(t, expired, got.ExpiresAt, time.Second, "the expired key keeps its expiry")
 	})
 
 	t.Run("admin soft delete missing returns zero rows", func(t *testing.T) {

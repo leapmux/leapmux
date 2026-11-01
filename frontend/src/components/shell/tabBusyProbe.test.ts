@@ -3,7 +3,7 @@ import type { Tab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTabBusyProbe } from '~/components/shell/tabBusyProbe'
 import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 const mockInspect = vi.fn()
 const mockListAgents = vi.fn()

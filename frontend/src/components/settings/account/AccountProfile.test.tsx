@@ -6,6 +6,14 @@ import { AccountProfile } from './AccountProfile'
 const mockUpdateProfile = vi.fn()
 const mockUser = vi.fn()
 const mockRefreshUser = vi.fn()
+// The adoption the page opens before the write leaves. The order records when
+// it opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -17,6 +25,7 @@ vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
     refreshUser: mockRefreshUser,
+    openUserAdoption: mockOpenUserAdoption,
   }),
 }))
 
@@ -37,6 +46,7 @@ describe('AccountProfile', () => {
     mockUser.mockReturnValue(alice)
     mockRefreshUser.mockResolvedValue(undefined)
     mockUpdateProfile.mockResolvedValue({})
+    callOrder.length = 0
   })
 
   // Save is the only thing that writes, and nothing is dirty on mount, so a
@@ -63,6 +73,59 @@ describe('AccountProfile', () => {
       expect(mockUpdateProfile).toHaveBeenCalledWith({ username: 'alice', displayName: 'Alice B' })
     })
     expect(await screen.findByText('Profile updated.')).toBeInTheDocument()
+  })
+
+  // The hub sanitizes both fields again, so the page adopts the account it
+  // STORED, as the reply reports it. The adoption opens BEFORE the write
+  // leaves, so a reply that lands after an identity change re-reads instead.
+  it('adopts the stored account the reply reports, through an adoption opened first', async () => {
+    const stored = { ...alice, displayName: 'Alice B (stored)' }
+    mockUpdateProfile.mockImplementation(async () => {
+      callOrder.push('update')
+      return { user: stored }
+    })
+    render(() => <AccountProfile />)
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: { value: 'Alice B' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledWith(stored))
+    expect(callOrder).toEqual(['open', 'update'])
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+  })
+
+  // The form shows what the adoption left on the account, which is what the
+  // hub stored, and not the text the user typed.
+  it('shows the stored values after the adoption', async () => {
+    const stored = { ...alice, displayName: 'Alice B (stored)' }
+    mockUpdateProfile.mockResolvedValue({ user: stored })
+    mockAdopt.mockImplementationOnce(async (user) => {
+      mockUser.mockReturnValue(user)
+    })
+    render(() => <AccountProfile />)
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: { value: 'Alice B' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
+
+    expect(await screen.findByText('Profile updated.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Display Name')).toHaveValue('Alice B (stored)')
+    expect(screen.getByLabelText('Username')).toHaveValue('alice')
+  })
+
+  // A reply with no account hands the adoption nothing to adopt, so the
+  // adoption re-reads the account. The write itself still succeeded.
+  it('hands an absent user to the adoption and reports the update', async () => {
+    mockUpdateProfile.mockResolvedValue({})
+    render(() => <AccountProfile />)
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: { value: 'Alice B' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
+
+    expect(await screen.findByText('Profile updated.')).toBeInTheDocument()
+    expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(undefined)
   })
 
   it('refuses a display name the validator rejects, and says so', async () => {
@@ -107,6 +170,8 @@ describe('AccountProfile', () => {
 
     expect(await screen.findByText(/username is taken/)).toBeInTheDocument()
     expect(screen.queryByText('Profile updated.')).not.toBeInTheDocument()
+    // A refused write stored nothing, so the page adopts nothing.
+    expect(mockAdopt).not.toHaveBeenCalled()
   })
 
   // An account that did not load yet renders empty fields rather than

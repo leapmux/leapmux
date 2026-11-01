@@ -32,7 +32,7 @@ func opCase(op *leapmuxv1.CrdtOp) string {
 	case *leapmuxv1.CrdtOp_TombstoneNode:
 		return "tombstoneNode:" + v.TombstoneNode.GetNodeId()
 	case *leapmuxv1.CrdtOp_TombstoneTab:
-		return "tombstoneTab:" + v.TombstoneTab.GetTabId()
+		return "tombstoneTab:" + v.TombstoneTab.GetTab().GetTabId()
 	case *leapmuxv1.CrdtOp_SetNodeRegister:
 		r := v.SetNodeRegister
 		nodeID := r.GetNodeId()
@@ -44,7 +44,7 @@ func opCase(op *leapmuxv1.CrdtOp) string {
 		}
 	case *leapmuxv1.CrdtOp_SetTabRegister:
 		r := v.SetTabRegister
-		tabID := r.GetTabId()
+		tabID := r.GetTab().GetTabId()
 		switch f := r.GetField().(type) {
 		case *leapmuxv1.SetTabRegisterOp_TileId:
 			return "setTabTileId:" + tabID + "=" + f.TileId

@@ -59,12 +59,11 @@
                 "setTabRegister": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["tabType", "tabId"],
-                  "minProperties": 3,
-                  "maxProperties": 3,
+                  "required": ["tab"],
+                  "minProperties": 2,
+                  "maxProperties": 2,
                   "properties": {
-                    "tabType": { "$ref": "#/$defs/tabType" },
-                    "tabId": { "type": "string" },
+                    "tab": { "$ref": "#/$defs/tabIdent" },
                     "tileId": { "type": "string" },
                     "position": { "type": "string" },
                     "workerId": { "type": "string" },
@@ -76,11 +75,10 @@
                 "tombstoneTab": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["tabType", "tabId"],
-                  "maxProperties": 2,
+                  "required": ["tab"],
+                  "maxProperties": 1,
                   "properties": {
-                    "tabType": { "$ref": "#/$defs/tabType" },
-                    "tabId": { "type": "string" }
+                    "tab": { "$ref": "#/$defs/tabIdent" }
                   }
                 },
                 "setFloatingWindowRegister": {
@@ -107,22 +105,15 @@
                   "maxProperties": 1,
                   "properties": { "windowId": { "type": "string" } }
                 },
-                "setWorkspaceRootNode": {
+                "createWorkspace": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["workspaceId", "rootNodeId"],
+                  "required": ["workspaceId"],
                   "maxProperties": 2,
                   "properties": {
                     "workspaceId": { "type": "string" },
                     "rootNodeId": { "type": "string" }
                   }
-                },
-                "setWorkspaceRegister": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["workspaceId"],
-                  "maxProperties": 1,
-                  "properties": { "workspaceId": { "type": "string" } }
                 },
                 "tombstoneWorkspace": {
                   "type": "object",
@@ -166,6 +157,15 @@
     },
     "tabType": {
       "enum": ["TAB_TYPE_AGENT", "TAB_TYPE_TERMINAL", "TAB_TYPE_FILE"]
+    },
+    "tabIdent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tabType", "tabId"],
+      "properties": {
+        "tabType": { "$ref": "#/$defs/tabType" },
+        "tabId": { "type": "string" }
+      }
     },
     "nodeKind": {
       "enum": ["NODE_KIND_LEAF", "NODE_KIND_SPLIT", "NODE_KIND_GRID"]

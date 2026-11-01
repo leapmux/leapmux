@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/util/pathutil"
@@ -53,7 +54,7 @@ func TestWorktreeCloseIgnoresUnrelatedMissingDirectory(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, inspection.ShouldPrompt)
 	require.Empty(t, inspection.ErrorHint)
-	result, _ := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.WorktreeRemoval)
 	assert.NoDirExists(t, fx.wtDir)
 }
@@ -75,9 +76,9 @@ func TestWorktreeRemovalSerializesTabAdmission(t *testing.T) {
 				}
 			}
 			fx.svc.worktreeLifecycle.beforeAdmissionFn = func() { close(admissionReady) }
-			closed := make(chan *leapmuxv1.CloseTabResult, 1)
+			closed := make(chan *leapmuxv1.CloseTabResponse, 1)
 			go func() {
-				result, _ := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+				result := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 				closed <- result
 			}()
 			select {
@@ -89,14 +90,14 @@ func TestWorktreeRemovalSerializesTabAdmission(t *testing.T) {
 			go func() {
 				switch kind {
 				case leapmuxv1.TabType_TAB_TYPE_AGENT:
-					dispatch(fx.d, "OpenAgent", &leapmuxv1.OpenAgentRequest{WorkingDir: fx.wtDir, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}, fx.w)
+					dispatch(fx.d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{WorkingDir: fx.wtDir, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}, fx.w)
 					if len(fx.w.errors) == 0 {
 						admitted <- nil
 					} else {
 						admitted <- errors.New(fx.w.errors[0].message)
 					}
 				case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-					dispatch(fx.d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{WorkingDir: fx.wtDir}, fx.w)
+					dispatch(fx.d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{WorkingDir: fx.wtDir}, fx.w)
 					if len(fx.w.errors) == 0 {
 						admitted <- nil
 					} else {
@@ -141,7 +142,7 @@ func TestWorktreeCloseIgnoresDeadLinks(t *testing.T) {
 	t.Parallel()
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "dead-links")
 	fx.svc.registerTabForWorktree(fx.wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "absent")
-	result, _ := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.WorktreeRemoval)
 	assert.NoDirExists(t, fx.wtDir)
 }
@@ -150,7 +151,7 @@ func TestWorktreeCloseResolvesMissingRootLink(t *testing.T) {
 	t.Parallel()
 	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "missing-link")
 	require.NoError(t, fx.svc.Queries.DeleteWorktreeTabsByWorktreeID(context.Background(), fx.wtID))
-	result, _ := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := fx.svc.closeAgentTabCommon("user-1", fx.tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED, result.WorktreeRemoval)
 	assert.NoDirExists(t, fx.wtDir)
 }
@@ -180,7 +181,7 @@ func TestWorktreeTrackingKeepsItsIDAfterBackfillQueryFailure(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
 	repo := initRepo(t)
-	plan, err := svc.validateGitMode(ctx, repo, &leapmuxv1.OpenAgentRequest{CreateWorktree: true, WorktreeBranch: "backfill-fault"})
+	plan, err := svc.validateGitMode(ctx, repo, createWorktreeSetup("backfill-fault", ""))
 	require.NoError(t, err)
 	queries := svc.Queries
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM tab_locations"})
@@ -218,7 +219,7 @@ func TestNestedReferencesBeforeRootTracking(t *testing.T) {
 			// Remove the backfill to prove that removal checks live directories too.
 			require.NoError(t, svc.Queries.DeleteWorktreeTabsByWorktreeID(context.Background(), result.WorktreeID))
 			svc.registerTabForWorktree(result.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, "root")
-			closed, _ := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+			closed := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, closed.WorktreeRemoval)
 			checkout.assertPreserved(t)
 		})
@@ -244,7 +245,7 @@ func TestNestedRepositoryUsesItsOwnTopLevel(t *testing.T) {
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 	require.NoError(t, err)
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "outer")
-	result, _ := svc.closeAgentTabCommon("user-1", "outer", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := svc.closeAgentTabCommon("user-1", "outer", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, result.WorktreeRemoval)
 	assert.DirExists(t, inner)
 	assert.DirExists(t, filepath.Join(inner, ".git"))
@@ -264,7 +265,7 @@ func TestNestedUnreadableReferencePreservesCheckout(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, inspection.ShouldPrompt)
 	assert.NotEmpty(t, inspection.ErrorHint)
-	closed, _ := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	closed := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, closed.WorktreeRemoval)
 	checkout.assertPreserved(t)
 }
@@ -289,7 +290,7 @@ func TestNestedRepositoryPayloadAndTerminalPreserveCheckout(t *testing.T) {
 			wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 			require.NoError(t, err)
 			svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "outer")
-			result, _ := svc.closeAgentTabCommon("user-1", "outer", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+			result := svc.closeAgentTabCommon("user-1", "outer", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, result.WorktreeRemoval)
 			assert.DirExists(t, filepath.Join(inner, ".git"))
 			checkout.assertPreserved(t)

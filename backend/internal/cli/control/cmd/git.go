@@ -5,6 +5,7 @@ import (
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -69,15 +70,13 @@ func RunGitStatus(rawCtx any, args []string) error {
 		var infoResp leapmuxv1.GetGitInfoResponse
 		var fileResp leapmuxv1.GetGitFileStatusResponse
 		if err := withWorkerChannel(ctx, c, got.WorkerID, func(w workerCall) error {
-			if err := w.Call(ctx, "GetGitInfo", &leapmuxv1.GetGitInfoRequest{
-				WorkerId: got.WorkerID,
-				Path:     f.Path,
+			if err := w.Call(ctx, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, &leapmuxv1.GetGitInfoRequest{
+				Path: f.Path,
 			}, &infoResp); err != nil {
 				return err
 			}
-			return w.Call(ctx, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
-				WorkerId: got.WorkerID,
-				Path:     f.Path,
+			return w.Call(ctx, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
+				Path: f.Path,
 			}, &fileResp)
 		}); err != nil {
 			return emitInnerRPCError(err)
@@ -103,8 +102,8 @@ func RunGitBranches(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ListGitBranchesResponse
-	return workerUnaryEmitOn(c, workerID, "ListGitBranches",
-		&leapmuxv1.ListGitBranchesRequest{WorkerId: workerID, Path: f.Path}, &resp,
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure,
+		&leapmuxv1.ListGitBranchesRequest{Path: f.Path}, &resp,
 		func() any { return resp.GetBranches() })
 }
 
@@ -122,8 +121,8 @@ func RunGitWorktrees(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ListGitWorktreesResponse
-	return workerUnaryEmitOn(c, workerID, "ListGitWorktrees",
-		&leapmuxv1.ListGitWorktreesRequest{WorkerId: workerID, Path: f.Path}, &resp,
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure,
+		&leapmuxv1.ListGitWorktreesRequest{Path: f.Path}, &resp,
 		func() any { return resp.GetWorktrees() })
 }
 
@@ -155,8 +154,8 @@ func RunGitRead(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ReadGitFileResponse
-	return workerUnaryEmitOn(c, workerID, "ReadGitFile",
-		&leapmuxv1.ReadGitFileRequest{WorkerId: workerID, Path: f.Path, Ref: ref}, &resp,
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure,
+		&leapmuxv1.ReadGitFileRequest{Path: f.Path, Ref: ref}, &resp,
 		func() any {
 			return map[string]any{
 				"ref":     refStr,

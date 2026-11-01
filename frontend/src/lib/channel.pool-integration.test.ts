@@ -2,6 +2,7 @@ import type { ChannelTransport } from './channel'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE } from '~/generated/contracts/wire'
 import { makeIdentitySession } from '~/test-support/identitySession'
+import { WorkerWatchService } from '../generated/proto/leapmux/v1/watch_pb'
 import { ChannelManager } from './channel'
 import {
   acceptingKeyPins,
@@ -255,7 +256,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     agePastHardCeiling((h.mgr as any).channels.get(ch1))
     const errorFn = vi.fn()
     const endFn = vi.fn()
-    const handle = h.mgr.stream(ch1, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, new Uint8Array())
     handle.onError(errorFn)
     handle.onEnd(endFn)
     expect(errorFn).not.toHaveBeenCalled()
@@ -268,7 +269,7 @@ describe('ChannelManager getOrOpenChannel', () => {
 
   it('rekeys before a stream send when the pooled channel has aged', async () => {
     const ch1 = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(ch1, 'WatchEvents', new Uint8Array())
+    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, new Uint8Array())
     // StreamOpen advanced the initiator send nonce; consume it on the
     // responder so simulateRekeyAck can decrypt the subsequent RekeyRequest.
     {

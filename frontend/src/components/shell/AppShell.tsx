@@ -31,8 +31,8 @@ import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createDialogState } from '~/hooks/createDialogState'
 import { createLinkConfirm } from '~/hooks/createLinkConfirm'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -143,6 +143,9 @@ export const AppShell: Component = () => {
   // event is a no-op, which is safe because the loader's own `onMount` seeds
   // the initial `listWorkspaces`.
   let reloadWorkspacesOnLifecycle: () => void = () => {}
+  // Late-bound the same way: the worker section is built further down, and its
+  // own effect seeds the first `listWorkers`.
+  let refetchWorkersOnChange: () => void = () => {}
 
   const {
     crdtState,
@@ -155,6 +158,7 @@ export const AppShell: Component = () => {
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,
     onWorkspaceLifecycleChanged: () => reloadWorkspacesOnLifecycle(),
+    onWorkersChanged: () => refetchWorkersOnChange(),
   })
 
   // Stores for what the CRDT does NOT carry. Tab metadata is keyed by tab id —
@@ -297,6 +301,7 @@ export const AppShell: Component = () => {
     getUserId: () => userId(),
     keyPinConfirmDialog,
   })
+  refetchWorkersOnChange = workerSection.refetchWorkers
 
   // Tell the channel manager who this page thinks it is, so an open the Hub
   // authenticates as someone else fails instead of silently driving that user's
@@ -1598,8 +1603,8 @@ export const AppShell: Component = () => {
     preferredExternalAppId: preferences.preferredExternalAppId,
     setPreferredExternalAppId: preferences.setPreferredExternalAppId,
     getAgentInputQueue: agentId => agentInputQueueStore.get(agentId),
-    steerQueueItem: item => tileRenderer.queueOps.steerQueueItem(item),
-    preemptQueueItem: item => tileRenderer.queueOps.preemptQueueItem(item),
+    steerQueueItem: (agentId, item) => tileRenderer.queueOps.steerQueueItem(agentId, item),
+    preemptQueueItem: (agentId, item) => tileRenderer.queueOps.preemptQueueItem(agentId, item),
     quakePanel: {
       open: tab => void quakeStore.open(tab),
       close: key => quakeStore.close(key),

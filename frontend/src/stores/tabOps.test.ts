@@ -3,6 +3,7 @@ import type { Tab } from './tab.types'
 import type { installTestBridge } from '~/test-support/crdtBridge'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   HLCSchema,
   LWWNodeKindSchema,
@@ -10,7 +11,6 @@ import {
   NodeKind,
   NodeRecordSchema,
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { withTestBridge } from '~/test-support/crdtBridge'
 import { tabKey } from './tab.helpers'
 import {

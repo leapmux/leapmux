@@ -43,7 +43,7 @@ func TestShutdownInterceptor_AllowsBeforeShutdown(t *testing.T) {
 	client := setupShutdownTestServer(t, shutdownCh)
 
 	// Before shutdown, RPCs should succeed normally.
-	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	resp, err := client.GetOAuthProviders(context.Background(), &leapmuxv1.GetOAuthProvidersRequest{})
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
 }
@@ -56,7 +56,7 @@ func TestShutdownInterceptor_RejectsAfterShutdown(t *testing.T) {
 	close(shutdownCh)
 
 	// After shutdown, RPCs should be rejected with CodeUnavailable.
-	_, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	_, err := client.GetOAuthProviders(context.Background(), &leapmuxv1.GetOAuthProvidersRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }
@@ -66,14 +66,14 @@ func TestShutdownInterceptor_TransitionDuringOperation(t *testing.T) {
 	client := setupShutdownTestServer(t, shutdownCh)
 
 	// First call succeeds.
-	_, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	_, err := client.GetOAuthProviders(context.Background(), &leapmuxv1.GetOAuthProvidersRequest{})
 	require.NoError(t, err)
 
 	// Trigger shutdown.
 	close(shutdownCh)
 
 	// Subsequent call is rejected.
-	_, err = client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	_, err = client.GetOAuthProviders(context.Background(), &leapmuxv1.GetOAuthProvidersRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }

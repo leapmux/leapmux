@@ -1,7 +1,7 @@
 import type { AgentChatMessage, AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
-import { AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, MessagePageAnchor } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, MessagePageAnchor, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
@@ -86,7 +86,7 @@ export async function readAllAgentMessages(
   const seen = new Set<string>()
   let cursor: bigint | undefined
   for (;;) {
-    const response = await channel.callWorker(server.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, {
+    const response = await channel.callWorker(server.workerId, WorkerAgentService.method.listAgentMessages, {
       agentId,
       anchor: cursor === undefined
         ? MessagePageAnchor.OLDEST

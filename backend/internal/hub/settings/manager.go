@@ -612,36 +612,6 @@ func (m *Manager) Update(ctx context.Context, desc Descriptor, partial json.RawM
 	return m.UpdateMany(ctx, []KeyWrite{{Desc: desc, Public: partial}})
 }
 
-// UpdateSecret merges a partial JSON document onto the key's secret half.
-// Mechanically identical to Update — the fields the document specifies
-// simply belong to the encrypted half — but a separate verb keeps the
-// admin CLI's intent explicit and lets the write path require the key to
-// be secret-bearing.
-//
-// The three refusals below are this verb's own, and their ORDER is part of
-// the contract. UpdateMany repeats the first two over every KeyWrite, but a
-// caller that reaches this verb must get this verb's answer.
-func (m *Manager) UpdateSecret(ctx context.Context, desc Descriptor, partial json.RawMessage) error {
-	if !desc.HasSecret() {
-		return Invalidf("settings key %q has no secret fields", desc.Name())
-	}
-	// Ordered BEFORE the secret-field check below: partialNamesSecret finds
-	// no secret field in an empty document, so the reverse order would
-	// answer an omitted document with the secret-field message.
-	if err := RequireNonEmptyPartial(desc.Name(), partial); err != nil {
-		return err
-	}
-	// The document must specify at least one SECRET field. Without this,
-	// the secret verb merges any declared field, so a caller could rewrite
-	// the SMTP host or the ALTCHA cost through the verb whose whole purpose
-	// is the encrypted half -- and the admin surface documents the opposite.
-	if !partialNamesSecret(desc, partial) {
-		return Invalidf("settings key %q: the secret document must specify at least one of %v",
-			desc.Name(), desc.SecretFieldNames())
-	}
-	return m.UpdateMany(ctx, []KeyWrite{{Desc: desc, Secret: partial}})
-}
-
 // SetValue writes a fully-merged typed value (wrapper helpers and the
 // captcha provisioning use this when they hold the complete value).
 //
@@ -840,20 +810,17 @@ func (m *Manager) UpdateMany(ctx context.Context, writes []KeyWrite) error {
 			return Invalidf("settings key %q appears twice in one write", name)
 		}
 		seen[name] = true
-		// A secret half for a key that declares no secret field. UpdateSecret
-		// refuses exactly this, in exactly these words; without the same
-		// refusal here the multi-key verb accepts a document the single-key
-		// verb rejects, and mergeForUpdate then overlays it as if it were the
-		// public half.
+		// A secret half for a key that declares no secret field. Without this
+		// refusal mergeForUpdate overlays it as if it were the public half.
 		if len(w.Secret) > 0 && !w.Desc.HasSecret() {
 			return Invalidf("settings key %q has no secret fields", name)
 		}
 		// Each half this write carries must be able to change something, and
-		// a write that carries neither half is the same refusal. Update and
-		// UpdateSecret get it HERE too, because both route through this verb.
-		// Without it an inert document reaches the merge, changes nothing,
-		// and still upserts the row -- which reports the key as customized
-		// for a change that never happened.
+		// a write that carries neither half is the same refusal. Update gets
+		// it HERE too, because it routes through this verb. Without it an
+		// inert document reaches the merge, changes nothing, and still upserts
+		// the row -- which reports the key as customized for a change that
+		// never happened.
 		if len(w.Public) == 0 && len(w.Secret) == 0 {
 			// An absent document always refuses; the helper owns the message.
 			return RequireNonEmptyPartial(name, nil)
@@ -865,6 +832,17 @@ func (m *Manager) UpdateMany(ctx context.Context, writes []KeyWrite) error {
 			if err := RequireNonEmptyPartial(name, partial); err != nil {
 				return err
 			}
+		}
+		// The secret half must specify at least one SECRET field. Without
+		// this, a secret half merges any declared field, so a caller could
+		// rewrite the SMTP host or the ALTCHA cost through the half whose whole
+		// purpose is the encrypted fields. It runs AFTER the empty-document
+		// check: partialNamesSecret finds no secret field in an empty document,
+		// so the reverse order would answer an omitted document with this
+		// message.
+		if len(w.Secret) > 0 && !partialNamesSecret(w.Desc, w.Secret) {
+			return Invalidf("settings key %q: the secret document must specify at least one of %v",
+				name, w.Desc.SecretFieldNames())
 		}
 	}
 	// Upsert the rows in one canonical order, whatever order the caller

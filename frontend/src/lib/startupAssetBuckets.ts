@@ -38,7 +38,7 @@ export function classifyStartupUrl(url: string): StartupBucket {
   if (path.includes('/fonts/'))
     return 'fonts'
 
-  // Connect-RPC unary paths: /leapmux.v1.AuthService/GetSystemInfo, …
+  // Connect-RPC unary paths: /leapmux.v1.SystemService/GetSystemInfo, …
   if (path.includes('/leapmux.v1.'))
     return 'rpc'
 

@@ -58,81 +58,18 @@ func renderedTabCollision(t *testing.T, st store.Store) (ownerID, strangerID, ow
 	return owner.ID, stranger.ID, ownerWS, strangerWS, "tile-owner", "tile-stranger"
 }
 
-// TestWorkspaceService_GetTab_BindsTheCallerAsOwner pins the service half of
+// TestWorkspaceService_LocateTab_BindsTheCallerAsOwner pins the service half of
 // the rendered-tab tenancy rule. The store query is owner-scoped, so a
-// storetest passes no matter WHICH owner the service binds; only a test at
-// this layer catches GetTab binding the wrong id -- or dropping the binding
-// when the params struct next changes shape.
-func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
+// storetest passes no matter WHICH owner the service binds; only a test at this
+// layer catches LocateTab binding the wrong id. LocateTab searches by
+// (tab_type, tab_id) alone, so the owner binding is the ONLY thing separating
+// the two colliding rows here -- and this is the path `leapmux control` uses to
+// expand an env-injected tab id.
+func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
 	ownerID, strangerID, ownerWS, strangerWS, ownerTile, strangerTile := renderedTabCollision(t, st)
-
-	svc := service.NewWorkspaceService(st, nil, nil)
-	getTab := func(userID, workspaceID string) (*leapmuxv1.GetTabResponse, error) {
-		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(userID)})
-		return svc.GetTab(ctx, &leapmuxv1.GetTabRequest{
-			WorkspaceId: workspaceID,
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabId:       "shared-tab-id",
-		})
-	}
-
-	resp, err := getTab(ownerID, ownerWS)
-	require.NoError(t, err)
-	assert.Equal(t, ownerTile, resp.GetTab().GetTileId(),
-		"GetTab must answer from the caller's own row")
-
-	resp, err = getTab(strangerID, strangerWS)
-	require.NoError(t, err)
-	assert.Equal(t, strangerTile, resp.GetTab().GetTileId(),
-		"control: the stranger reaches their own row in their own workspace")
-
-	_, err = getTab(strangerID, ownerWS)
-	require.Error(t, err, "a caller who does not own the workspace must not read its tabs")
-}
-
-// TestWorkspaceService_LocateTab_BindsTheCallerAsOwner is the same pin for the
-// workspace-less lookup. LocateTab searches by (tab_type, tab_id) alone, so the
-// owner binding is the ONLY thing separating the two colliding rows here -- and
-// this is the path `leapmux control` uses to expand an env-injected tab id.
-func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	st := hubtestutil.OpenTestStore(t)
-
-	// Each user owns their own workspace and both hold a row under the SAME tab
-	// id -- the collision LocateTab must resolve by owner. They cannot share one
-	// workspace: the composite workspace key ties each row to a workspace its
-	// own user owns, and one user cannot hold two rows under one tab id because
-	// (user_id, tab_id) is the primary key.
-	owner := storetest.SeedUser(t, st, "locate-owner")
-	stranger := storetest.SeedUser(t, st, "locate-stranger")
-	ownerWS := storetest.SeedWorkspace(t, st, owner.ID, "Owner WS")
-	strangerWS := storetest.SeedWorkspace(t, st, stranger.ID, "Stranger WS")
-	ownerWorker := storetest.SeedWorker(t, st, owner.ID)
-	strangerWorker := storetest.SeedWorker(t, st, stranger.ID)
-
-	ownerID, strangerID := owner.ID, stranger.ID
-	ownerTile, strangerTile := "tile-owner", "tile-stranger"
-	for _, row := range []store.UpsertTabParams{
-		{
-			UserID: userid.MustNew(strangerID), WorkspaceID: strangerWS,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "shared-tab-id",
-			WorkerID: strangerWorker.ID, TileID: strangerTile, Position: "a0",
-			Rendered: true,
-		},
-		{
-			UserID: userid.MustNew(ownerID), WorkspaceID: ownerWS,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "shared-tab-id",
-			WorkerID: ownerWorker.ID, TileID: ownerTile, Position: "a1",
-			Rendered: true,
-		},
-	} {
-		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, row))
-	}
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	locate := func(userID string) *leapmuxv1.LocateTabResponse {
@@ -146,12 +83,70 @@ func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 		return resp
 	}
 
-	assert.Equal(t, ownerTile, locate(ownerID).GetTab().GetTileId(),
-		"the owner must locate their own row")
+	located := locate(ownerID).GetTab()
+	assert.Equal(t, ownerTile, located.GetTileId(), "the owner must locate their own row")
+	assert.Equal(t, ownerWS, located.GetWorkspaceId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, located.GetTab().GetTabType(), "the reply identifies the tab")
+	assert.Equal(t, "shared-tab-id", located.GetTab().GetTabId())
 
 	// The control that stops this being a one-sided assertion: the stranger
 	// reaches THEIR row, not an error and not the owner's. Both rows are live
 	// and share a key, so each side must be resolved by owner alone.
-	assert.Equal(t, strangerTile, locate(strangerID).GetTab().GetTileId(),
-		"the stranger must locate their own row, not the owner's")
+	located = locate(strangerID).GetTab()
+	assert.Equal(t, strangerTile, located.GetTileId(), "the stranger must locate their own row, not the owner's")
+	assert.Equal(t, strangerWS, located.GetWorkspaceId())
+}
+
+// TestWorkspaceService_ListTabs_ListsOnlyTheCallersRows pins the tenancy of the
+// listing that replaced GetTab. Both users hold a rendered row under the same
+// (tab_type, tab_id), so only the owner binding separates them. A workspace the
+// caller does not own is dropped from the request rather than read.
+func TestWorkspaceService_ListTabs_ListsOnlyTheCallersRows(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ownerID, strangerID, ownerWS, strangerWS, ownerTile, strangerTile := renderedTabCollision(t, st)
+	svc := service.NewWorkspaceService(st, nil, nil)
+	list := func(userID string, workspaceIDs ...string) []*leapmuxv1.WorkspaceTab {
+		t.Helper()
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(userID)})
+		resp, err := svc.ListTabs(ctx, &leapmuxv1.ListTabsRequest{WorkspaceIds: workspaceIDs})
+		require.NoError(t, err)
+		return resp.GetTabs()
+	}
+
+	for name, workspaceIDs := range map[string][]string{
+		"the owner's workspace":          {ownerWS},
+		"every workspace":                nil,
+		"the owner's and another user's": {ownerWS, strangerWS},
+	} {
+		t.Run("the owner lists "+name, func(t *testing.T) {
+			tabs := list(ownerID, workspaceIDs...)
+			require.Len(t, tabs, 1, "another user's row with the same tab id must not be listed")
+			assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, tabs[0].GetTab().GetTabType())
+			assert.Equal(t, "shared-tab-id", tabs[0].GetTab().GetTabId())
+			assert.Equal(t, ownerTile, tabs[0].GetTileId())
+			assert.Equal(t, ownerWS, tabs[0].GetWorkspaceId())
+		})
+	}
+
+	assert.Empty(t, list(strangerID, ownerWS), "a workspace the caller does not own lists nothing")
+	strangers := list(strangerID)
+	require.Len(t, strangers, 1)
+	assert.Equal(t, strangerTile, strangers[0].GetTileId(), "the stranger lists their own row, not the owner's")
+}
+
+// A caller with no workspace has no tab to list, and the reply says so with
+// an empty list rather than an error.
+func TestWorkspaceService_ListTabs_ListsNothingForACallerWithNoWorkspace(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "tabs-nobody")
+	svc := service.NewWorkspaceService(st, nil, nil)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
+
+	resp, err := svc.ListTabs(ctx, &leapmuxv1.ListTabsRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetTabs())
 }

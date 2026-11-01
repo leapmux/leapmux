@@ -4,9 +4,20 @@
 compile_error!("LeapMux Desktop only supports macOS, Linux, and Windows");
 
 mod frame;
-pub(crate) mod proto {
-    include!(concat!(env!("OUT_DIR"), "/leapmux.desktop.v1.rs"));
+// The generated modules mirror the proto packages, because prost refers from
+// `leapmux.desktop.v1` to the shared build message as
+// `super::super::v1::BuildInfo`.
+pub(crate) mod leapmux {
+    pub(crate) mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/leapmux.v1.rs"));
+    }
+    pub(crate) mod desktop {
+        pub(crate) mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/leapmux.desktop.v1.rs"));
+        }
+    }
 }
+pub(crate) use leapmux::desktop::v1 as proto;
 
 // Test-only peak-allocation tracker; `#[global_allocator]` is wired below.
 #[cfg(test)]
@@ -849,28 +860,39 @@ async fn get_startup_info(
             .await?,
     )?;
     match resp.result {
-        Some(proto::response::Result::StartupInfo(info)) => {
-            let cfg = info.config.unwrap_or_default();
-            let build = info.build_info.unwrap_or_default();
-            Ok(StartupInfoResponse {
-                config: DesktopConfigResponse {
-                    window_mode: cfg.window_mode,
-                    mode: cfg.mode,
-                    hub_url: cfg.hub_url,
-                    window_width: cfg.window_width,
-                    window_height: cfg.window_height,
-                },
-                build_info: BuildInfoResponse {
-                    version: build.version,
-                    commit_hash: build.commit_hash,
-                    commit_time: build.commit_time,
-                    build_time: build.build_time,
-                    branch: build.branch,
-                },
-                launch_visibility: launch.take().as_str().to_string(),
-            })
-        }
+        Some(proto::response::Result::StartupInfo(info)) => Ok(startup_info_response(
+            info,
+            launch.take().as_str().to_string(),
+        )),
         _ => Err("unexpected response for get_startup_info".to_string()),
+    }
+}
+
+/// Converts the sidecar's startup information to the JSON the webview reads.
+/// An absent config or build reads as its defaults, so the webview always
+/// receives every field.
+fn startup_info_response(
+    info: proto::StartupInfo,
+    launch_visibility: String,
+) -> StartupInfoResponse {
+    let cfg = info.config.unwrap_or_default();
+    let build = info.build_info.unwrap_or_default();
+    StartupInfoResponse {
+        config: DesktopConfigResponse {
+            window_mode: cfg.window_mode,
+            mode: cfg.mode,
+            hub_url: cfg.hub_url,
+            window_width: cfg.window_width,
+            window_height: cfg.window_height,
+        },
+        build_info: BuildInfoResponse {
+            version: build.version,
+            commit_hash: build.commit_hash,
+            commit_time: build.commit_time,
+            build_time: build.build_time,
+            branch: build.branch,
+        },
+        launch_visibility,
     }
 }
 
@@ -2100,6 +2122,99 @@ mod tests {
     use std::time::SystemTime;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // The sidecar sends its build in the shared leapmux.v1.BuildInfo message;
+    // the webview still reads the snake_case `build_info` object.
+    #[test]
+    fn startup_info_response_reports_the_shared_build_message() {
+        use prost::Message;
+
+        let sent = proto::StartupInfo {
+            config: None,
+            build_info: Some(leapmux::v1::BuildInfo {
+                version: "1.2.3".to_string(),
+                commit_hash: "abc1234".to_string(),
+                commit_time: "2026-10-01T00:00:00Z".to_string(),
+                build_time: "2026-10-02T00:00:00Z".to_string(),
+                branch: "main".to_string(),
+            }),
+        };
+        // Through the wire, as the sidecar's frame arrives.
+        let received = proto::StartupInfo::decode(sent.encode_to_vec().as_slice())
+            .expect("decode the startup information");
+
+        let json = serde_json::to_value(startup_info_response(received, "shown".to_string()))
+            .expect("serialize the startup information");
+        assert_eq!(
+            json["build_info"],
+            serde_json::json!({
+                "version": "1.2.3",
+                "commit_hash": "abc1234",
+                "commit_time": "2026-10-01T00:00:00Z",
+                "build_time": "2026-10-02T00:00:00Z",
+                "branch": "main",
+            })
+        );
+        assert_eq!(json["launch_visibility"], "shown");
+    }
+
+    #[test]
+    fn startup_info_response_reports_an_empty_build_when_the_sidecar_sends_none() {
+        let json = serde_json::to_value(startup_info_response(
+            proto::StartupInfo::default(),
+            "hidden".to_string(),
+        ))
+        .expect("serialize the startup information");
+        // Every field is present, so the webview never reads an undefined one.
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "config": {
+                    "mode": "",
+                    "hub_url": "",
+                    "window_width": 0,
+                    "window_height": 0,
+                    "window_mode": "",
+                },
+                "build_info": {
+                    "version": "",
+                    "commit_hash": "",
+                    "commit_time": "",
+                    "build_time": "",
+                    "branch": "",
+                },
+                "launch_visibility": "hidden",
+            })
+        );
+    }
+
+    #[test]
+    fn startup_info_response_reports_the_config_the_sidecar_sends() {
+        let info = proto::StartupInfo {
+            config: Some(proto::DesktopConfig {
+                mode: "distributed".to_string(),
+                hub_url: "https://hub.example.com".to_string(),
+                window_width: 1280,
+                window_height: 800,
+                window_mode: "maximized".to_string(),
+                ..Default::default()
+            }),
+            build_info: None,
+        };
+        let json = serde_json::to_value(startup_info_response(info, "shown".to_string()))
+            .expect("serialize the startup information");
+        assert_eq!(
+            json["config"],
+            serde_json::json!({
+                "mode": "distributed",
+                "hub_url": "https://hub.example.com",
+                "window_width": 1280,
+                "window_height": 800,
+                "window_mode": "maximized",
+            })
+        );
+        assert_eq!(json["build_info"]["version"], "");
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

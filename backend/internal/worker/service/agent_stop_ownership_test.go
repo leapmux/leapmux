@@ -9,6 +9,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -89,12 +90,12 @@ func dispatchHeldStop(dispatcher *channel.Dispatcher, raw bool) (*testResponseWr
 	go func() {
 		defer close(done)
 		if raw {
-			dispatch(dispatcher, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 				AgentId: "agent-1", Content: `{"type":"control_request","request_id":"stop-1","request":{"subtype":"interrupt"}}`,
 			}, writer)
 			return
 		}
-		dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: "agent-1"}, writer)
 	}()
 	return writer, done
 }
@@ -275,7 +276,7 @@ func TestInterruptChildKeepsTheReplacementTurnControl(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		dispatch(dispatcher, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: childID}, writer)
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: childID}, writer)
 	}()
 	call := receiveHeldStop(t, provider)
 	assert.Equal(t, "row-key-1", string(call.input))

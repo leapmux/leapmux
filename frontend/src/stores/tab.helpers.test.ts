@@ -6,10 +6,9 @@ import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
 import { resolvedCurrent } from '~/components/chat/settingsGroups'
-import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { GitRepoStatusSchema } from '~/generated/proto/leapmux/v1/common_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { GitRepoStatusSchema, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
 import { repoKey } from './repoGit'
 // Static, not `await import(...)` inside a test body. The dynamic form put the
@@ -491,6 +490,33 @@ describe('agentTabToInfo subagent linkage', () => {
   })
 })
 
+// One enum replaces the two steering flags. The tab keeps the worker's answer,
+// and the AgentInfo a tab rebuilds states NONE where the tab knows none.
+describe('queue-head dispatch on the agent tab', () => {
+  it('carries the worker\'s dispatch onto the tab', () => {
+    for (const queueHeadDispatch of [
+      QueueHeadDispatch.NONE,
+      QueueHeadDispatch.STEER,
+      QueueHeadDispatch.PREEMPT,
+    ]) {
+      const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', create(AgentInfoSchema, {
+        id: 'a1',
+        agentProvider: AgentProvider.CLAUDE_CODE,
+        queueHeadDispatch,
+      }))
+      expect(fields.queueHeadDispatch, QueueHeadDispatch[queueHeadDispatch]).toBe(queueHeadDispatch)
+    }
+  })
+
+  it('passes the dispatch through to the AgentInfo it rebuilds', () => {
+    expect(agentTabToInfo(agent({ queueHeadDispatch: QueueHeadDispatch.PREEMPT }))?.queueHeadDispatch).toBe(QueueHeadDispatch.PREEMPT)
+  })
+
+  it('states NONE when the tab knows no dispatch', () => {
+    expect(agentTabToInfo(agent())?.queueHeadDispatch).toBe(QueueHeadDispatch.NONE)
+  })
+})
+
 describe('deriveOptionGroupTabFields', () => {
   function group(id: string, currentValue: string): AvailableOptionGroup {
     return create(AvailableOptionGroupSchema, {
@@ -739,6 +765,31 @@ describe('terminalMetadata convergence', () => {
     })))
 
     expect(metadata.get('t1')?.gitToplevel, 'a failed probe must not erase repo identity').toBe('/repo')
+  })
+})
+
+// The worker reports EXITED itself, so the reply's status is the tab's status.
+describe('terminalMetadata', () => {
+  it('passes the worker-reported status through', () => {
+    for (const status of [
+      TerminalStatus.STARTING,
+      TerminalStatus.READY,
+      TerminalStatus.STARTUP_FAILED,
+      TerminalStatus.EXITED,
+    ]) {
+      const fields = terminalMetadata('w1', create(TerminalInfoSchema, { terminalId: 't1', status }))
+      expect(fields.terminalStatus, TerminalStatus[status]).toBe(status)
+    }
+  })
+
+  // An exited shell has no future data source, so its tab must not stay under
+  // the startup overlay even when its screen is empty.
+  it('marks an exited terminal ready to show, and leaves a running one with no screen alone', () => {
+    const exited = terminalMetadata('w1', create(TerminalInfoSchema, { terminalId: 't1', status: TerminalStatus.EXITED }))
+    expect(exited.contentReady).toBe(true)
+
+    const running = terminalMetadata('w1', create(TerminalInfoSchema, { terminalId: 't1', status: TerminalStatus.READY }))
+    expect('contentReady' in running).toBe(false)
   })
 })
 
@@ -1453,8 +1504,7 @@ describe('withoutLiveStatusFields', () => {
     title: 'Agent Liz',
     agentStatus: AgentStatus.STARTING,
     agentSessionId: 's1',
-    supportsSteering: true,
-    supportsPreemption: true,
+    queueHeadDispatch: QueueHeadDispatch.STEER,
     startupError: 'e',
     startupMessage: 'Starting Claude Code…',
     optionValues: { model: 'opus' },
@@ -1491,8 +1541,7 @@ describe('withoutLiveStatusFields', () => {
       status: AgentStatus.STARTING,
       agentSessionId: 's1',
       startupMessage: 'Starting Claude Code…',
-      supportsSteering: true,
-      supportsPreemption: true,
+      queueHeadDispatch: QueueHeadDispatch.STEER,
       title: 'Agent Liz',
     }))
     expect(Object.keys(fields)).toEqual(expect.arrayContaining([
@@ -1625,11 +1674,10 @@ describe('keepLiveTerminalStatus', () => {
       expect(key in kept, `${key} stays out`).toBe(false)
   })
 
-  // A live event cannot say that a shell is gone: the catch-up marker reads READY
-  // for a shell that exited before the subscription, and only the reply carries
-  // the exit. A dead shell stays dead until a restart.
+  // A dead shell stays dead until a restart, so a reply that says EXITED wins
+  // over a newer live status.
   it('keeps the whole reply when it says that the shell exited', () => {
-    const fields = reply({ status: TerminalStatus.READY, exited: true, startupMessage: '' })
+    const fields = reply({ status: TerminalStatus.EXITED, startupMessage: '' })
     expect(fields.terminalStatus).toBe(TerminalStatus.EXITED)
 
     expect(keepLiveTerminalStatus(fields)).toEqual(fields)

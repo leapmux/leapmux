@@ -122,13 +122,14 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
       const resp = await userClient.resendVerificationEmail({
         ...captcha.fields(),
       })
+      const status = resp.emailVerification
       setStatus(
-        resp.emailSent
+        status?.verificationEmailSent
           ? 'We sent a fresh code to your inbox.'
           : 'We couldn\'t send the email — please try again shortly.',
       )
-      if (resp.nextResendAvailableAt) {
-        setCooldownUntil(timestampDate(resp.nextResendAvailableAt).getTime())
+      if (status?.nextResendAvailableAt) {
+        setCooldownUntil(timestampDate(status.nextResendAvailableAt).getTime())
       }
     }
     catch (e) {

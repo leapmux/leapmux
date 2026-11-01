@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -124,19 +126,18 @@ func TestApply_ReviveTabClearsTombstone(t *testing.T) {
 	state := crdt.NewState("user-1")
 	// Place a tab then tombstone it.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabId:   "tab-1",
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-1"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-1"},
 	}, hlcAt(10, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(20, 0, "a")))
 	require.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()))
 
 	// A revive newer than the tombstone clears it. The record stays (a same-
 	// batch Set repopulates the registers).
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(30, 0, "a")))
 	rec := state.Tabs["tab-1"]
 	require.NotNil(t, rec)
@@ -146,9 +147,8 @@ func TestApply_ReviveTabClearsTombstone(t *testing.T) {
 
 	// A later Set now lands (the tab is live again).
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabId:   "tab-1",
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-2"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-2"},
 	}, hlcAt(40, 0, "a")))
 	assert.Equal(t, "tile-2", state.Tabs["tab-1"].GetTileId().GetValue())
 }
@@ -156,11 +156,11 @@ func TestApply_ReviveTabClearsTombstone(t *testing.T) {
 func TestApply_ReviveTabOlderThanTombstoneIsNoOp(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(50, 0, "a")))
 	// Revive at an older HLC: remove-wins for concurrent, older-revive no-op.
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(40, 0, "a")))
 	assert.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "older revive does not clear tombstone")
 }
@@ -173,18 +173,18 @@ func TestApply_ReviveTabOlderThanTombstoneIsNoOp(t *testing.T) {
 func TestApply_TombstoneOlderThanReviveIsNoOp(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(10, 0, "a")))
 	// Revive at HLC 30 clears the tombstone and records revived_at = 30.
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(30, 0, "a")))
 	assert.True(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "revive cleared the tombstone")
 
 	// A tombstone at HLC 20 (older than the revive at 30, newer than the
 	// original tombstone at 10) must NOT re-tombstone -- the revive won.
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(20, 0, "a")))
 	rec := state.Tabs["tab-1"]
 	require.NotNil(t, rec)
@@ -192,7 +192,7 @@ func TestApply_TombstoneOlderThanReviveIsNoOp(t *testing.T) {
 
 	// A tombstone strictly newer than the revive still wins (genuine close).
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(40, 0, "a")))
 	assert.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "tombstone newer than the revive re-closes")
 }
@@ -206,11 +206,11 @@ func TestApply_TombstoneOlderThanReviveIsNoOp(t *testing.T) {
 func TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(10, 0, "a")))
 	// Successful revive at HLC 30 clears the tombstone and sets revived_at = 30.
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(30, 0, "a")))
 	wantRevived := hlcAt(30, 0, "a")
 	assert.Equal(t, wantRevived, state.Tabs["tab-1"].GetRevivedAt(), "revived_at recorded as the winning revive HLC")
@@ -218,7 +218,7 @@ func TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt(t *testing.T) {
 	// A redelivered revive at HLC 25 (older than 30, newer than the cleared
 	// tombstone) must NOT regress revived_at to 25.
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(25, 0, "a")))
 	assert.Equal(t, wantRevived, state.Tabs["tab-1"].GetRevivedAt(), "older redelivered revive does not regress revived_at")
 
@@ -226,7 +226,7 @@ func TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt(t *testing.T) {
 	// real revive at 30) must NOT re-close the tab. If revived_at had regressed
 	// to 25, this tombstone would wrongly pass the revived_at gate.
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 	}, hlcAt(27, 0, "a")))
 	assert.True(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "tombstone older than the real revive does not re-close")
 }
@@ -234,7 +234,7 @@ func TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt(t *testing.T) {
 func TestApply_ReviveTabAbsentMaterializesLive(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabId: "tab-new", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-new"},
 	}, hlcAt(10, 0, "a")))
 	rec := state.Tabs["tab-new"]
 	require.NotNil(t, rec)
@@ -261,36 +261,48 @@ func TestApply_ParentIdSetOnce(t *testing.T) {
 	assert.Equal(t, "P1", state.Nodes["n1"].GetParentId())
 }
 
-func TestApply_SetWorkspaceRegister_SeedsEmptyRecord(t *testing.T) {
-	state := crdt.NewState("user-1")
-	crdt.Apply(state, &leapmuxv1.CrdtOp{
-		OpId: "seed-w1", CanonicalHlc: hlcAt(1, 0, "hub"),
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+// createWorkspace builds a hub-stamped CreateWorkspaceOp.
+func createWorkspace(opID, workspaceID, rootNodeID string, hlc *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
+		OpId: opID, CanonicalHlc: hlc,
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: workspaceID, RootNodeId: rootNodeID},
 		},
-	})
-	rec, ok := state.Workspaces["w1"]
-	require.True(t, ok, "workspace record should be seeded")
-	assert.Equal(t, "w1", rec.GetWorkspaceId())
-	assert.Empty(t, rec.GetRootNodeId(), "root_node_id should start empty")
+	}
 }
 
-func TestApply_SetWorkspaceRegister_IdempotentDoesNotClobberRootedRecord(t *testing.T) {
-	// A rooted workspace (root_node_id already set by SetWorkspaceRootNodeOp
-	// or seeded directly) must NOT be clobbered by a re-drained create seed
-	// whose SetWorkspaceRegisterOp re-applies after a transient consume fault.
+func TestApply_CreateWorkspace_CreatesTheRecordWithItsRoot(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, createWorkspace("seed-w1", "w1", "root1", hlcAt(1, 0, "hub")))
+	rec, ok := state.Workspaces["w1"]
+	require.True(t, ok, "workspace record should be created")
+	assert.Equal(t, "w1", rec.GetWorkspaceId())
+	assert.Equal(t, "root1", rec.GetRootNodeId())
+}
+
+func TestApply_CreateWorkspace_SetsTheRootOfARecordWithNone(t *testing.T) {
+	state := crdt.NewState("user-1")
+	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1"}
+	crdt.Apply(state, createWorkspace("seed-w1", "w1", "root1", hlcAt(1, 0, "hub")))
+	assert.Equal(t, "root1", state.Workspaces["w1"].GetRootNodeId())
+}
+
+func TestApply_CreateWorkspace_DoesNotReplaceAnExistingRoot(t *testing.T) {
+	// A rooted workspace must NOT be clobbered by a re-drained create seed that
+	// re-applies after a transient consume fault: the root is set-once.
 	state := crdt.NewState("user-1")
 	state.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{
 		WorkspaceId: "w1", RootNodeId: "root1",
 	}
-	crdt.Apply(state, &leapmuxv1.CrdtOp{
-		OpId: "reseed-w1", CanonicalHlc: hlcAt(2, 0, "hub"),
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
-		},
-	})
+	crdt.Apply(state, createWorkspace("reseed-w1", "w1", "root2", hlcAt(2, 0, "hub")))
 	assert.Equal(t, "root1", state.Workspaces["w1"].GetRootNodeId(),
-		"a re-applied SetWorkspaceRegisterOp must not clear an existing root_node_id")
+		"a re-applied CreateWorkspaceOp must not replace an existing root_node_id")
+}
+
+func TestApply_CreateWorkspace_IgnoresAnEmptyWorkspaceID(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, createWorkspace("seed-empty", "", "root1", hlcAt(1, 0, "hub")))
+	assert.Empty(t, state.Workspaces, "no record may appear under the empty workspace id")
 }
 
 func TestApply_TombstoneWorkspace_RemovesRecord(t *testing.T) {
@@ -349,14 +361,12 @@ func signBit(v float64) bool {
 func TestApply_TabRegisterTileIDLWW(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t1",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-A"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-A"},
 	}, hlcAt(10, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t1",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-B"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-B"},
 	}, hlcAt(20, 0, "b")))
 	assert.Equal(t, "tile-B", state.Tabs["t1"].GetTileId().GetValue())
 }
@@ -364,17 +374,15 @@ func TestApply_TabRegisterTileIDLWW(t *testing.T) {
 func TestApply_TabTypeMismatchDropsSilently(t *testing.T) {
 	state := crdt.NewState("user-1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t1",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-A"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-A"},
 	}, hlcAt(10, 0, "a")))
 	// A Set with the wrong TabType must drop. The validator rejects
 	// such ops upstream; Apply's defense-in-depth behavior is silent
 	// drop so byte-equal parity holds even on malformed inputs.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabId:   "t1",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-B"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-B"},
 	}, hlcAt(20, 0, "b")))
 	assert.Equal(t, "tile-A", state.Tabs["t1"].GetTileId().GetValue())
 }
@@ -411,4 +419,94 @@ func TestClock_ObserveAdvancesPast(t *testing.T) {
 	// strictly-greater HLC.
 	assert.Equal(t, int64(500), next.GetPhysical())
 	assert.Equal(t, int64(8), next.GetLogical())
+}
+
+// A register op that selects no register writes nothing, so it must not create
+// a record either: the record would be an empty entity that no op completed.
+// The validator refuses such an op from a client, but a replayed journal op
+// skips the validator, so apply must hold the rule itself.
+func TestApplyIgnoresARegisterOpWithNoField(t *testing.T) {
+	state := crdt.NewState("user-1")
+
+	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "n1"}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+	}, hlcAt(11, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.SetFloatingWindowRegisterOp{WindowId: "fw1"}, hlcAt(12, 0, "a")))
+
+	assert.Empty(t, state.Nodes, "a node op with no field creates no node")
+	assert.Empty(t, state.Tabs, "a tab op with no field creates no tab")
+	assert.Empty(t, state.FloatingWindows, "a window op with no field creates no window")
+}
+
+// SetFloatingWindowRegisterOp.workspace_id moved from field 9 to field 16, so
+// its payload oneof runs from 10 with no hole and fields 10-15 keep their
+// meaning. A stored op that wrote field 9 now decodes with no field selected,
+// and applying it changes nothing.
+func TestApplyIgnoresAStoredFloatingWindowOpOfTheOldNumbering(t *testing.T) {
+	var stored []byte
+	stored = protowire.AppendTag(stored, 1, protowire.BytesType)
+	stored = protowire.AppendString(stored, "fw1")
+	stored = protowire.AppendTag(stored, 9, protowire.BytesType)
+	stored = protowire.AppendString(stored, "w1")
+
+	var op leapmuxv1.SetFloatingWindowRegisterOp
+	require.NoError(t, proto.Unmarshal(stored, &op))
+	assert.Equal(t, "fw1", op.GetWindowId())
+	assert.Nil(t, op.GetField(), "the old field 9 is no field of the new numbering")
+
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&op, hlcAt(10, 0, "a")))
+	assert.Empty(t, state.FloatingWindows)
+}
+
+// A replayed journal op bypasses the validator, and an old stored op can decode
+// with no tab id at all. Apply must not create a record under the empty key,
+// which every reader would then treat as a real tab. An op whose tab identity
+// is absent altogether is the same case.
+func TestApplyIgnoresATabOpWithNoTabID(t *testing.T) {
+	state := crdt.NewState("user-1")
+	typedOnly := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
+
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		Tab:   typedOnly,
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile"},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{Tab: typedOnly}, hlcAt(11, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{Tab: typedOnly}, hlcAt(12, 0, "a")))
+	// No TabIdent at all.
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile"},
+	}, hlcAt(13, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{}, hlcAt(14, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{}, hlcAt(15, 0, "a")))
+
+	assert.NotContains(t, state.Tabs, "")
+	assert.Empty(t, state.Tabs)
+}
+
+// A tab identity is a type and an id. A tab op that carries an id but no type
+// is not one this build wrote -- protobuf-es decodes an op stored under the
+// older numbering that way -- so apply ignores it instead of creating a tab of
+// no type, or tombstoning one it cannot type.
+func TestApplyIgnoresATabOpWithNoTabType(t *testing.T) {
+	state := crdt.NewState("user-1")
+	state.Tabs["t1"] = &leapmuxv1.TabRecord{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:   "t1",
+		TileId:  &leapmuxv1.LWWString{Value: "root", Hlc: hlcAt(1, 0, "a")},
+	}
+	untyped := &leapmuxv1.TabIdent{TabId: "t1"}
+	fresh := &leapmuxv1.TabIdent{TabId: "fresh"}
+
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		Tab: fresh, Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile"},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{Tab: untyped}, hlcAt(11, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{Tab: fresh}, hlcAt(12, 0, "a")))
+
+	assert.NotContains(t, state.Tabs, "fresh", "no tab of no type may be created")
+	require.Contains(t, state.Tabs, "t1")
+	assert.True(t, crdt.HLCIsZero(state.Tabs["t1"].GetTombstoneAt()), "an untyped tombstone must not close the tab")
+	assert.Equal(t, "root", state.Tabs["t1"].GetTileId().GetValue())
 }

@@ -63,12 +63,9 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 	t.Helper()
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))

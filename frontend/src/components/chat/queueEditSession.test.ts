@@ -2,7 +2,7 @@ import type { BeginQueueEdit, QueueEditSession } from './queueEditSession'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { queueEditDraftKey } from './composer/draftIdentity'
@@ -26,12 +26,10 @@ async function flushMicrotasks(): Promise<void> {
 
 function snapshotOwnedBy(owner: string) {
   return create(AgentInputQueueSnapshotSchema, {
-    agentId: AGENT_ID,
-    paused: true,
+    pauseReason: AgentInputQueuePauseReason.MANUAL,
     items: [
       {
         id: INPUT_ID,
-        agentId: AGENT_ID,
         text: 'queued preview',
         kind: AgentInputKind.USER_MESSAGE,
         state: AgentInputState.QUEUED,
@@ -42,7 +40,7 @@ function snapshotOwnedBy(owner: string) {
 }
 
 /** Answers the begin-edit RPC with the queue's own item and its full text. */
-const beginQueueEdit: BeginQueueEdit = item => Promise.resolve({
+const beginQueueEdit: BeginQueueEdit = (_agentId, item) => Promise.resolve({
   snapshot: snapshotOwnedBy(CLIENT_ID),
   attachments: [],
   text: `full ${item.id}`,
@@ -125,13 +123,12 @@ describe('createQueueEditSession ownership loss', () => {
     const SECOND_INPUT_ID = 'queued-2'
     const rows = [INPUT_ID, SECOND_INPUT_ID].map(id => ({
       id,
-      agentId: AGENT_ID,
       text: `queued ${id}`,
       kind: AgentInputKind.USER_MESSAGE,
       state: AgentInputState.QUEUED,
       editOwnerClientId: CLIENT_ID,
     }))
-    const bothRows = create(AgentInputQueueSnapshotSchema, { agentId: AGENT_ID, paused: true, items: rows })
+    const bothRows = create(AgentInputQueueSnapshotSchema, { pauseReason: AgentInputQueuePauseReason.MANUAL, items: rows })
     // Take the ITEMS BACK OFF the built snapshot, so each one is a real message
     // rather than the plain object the builder accepts.
     const [firstRow, secondRow] = bothRows.items
@@ -146,7 +143,7 @@ describe('createQueueEditSession ownership loss', () => {
         agentId: () => AGENT_ID,
         inputQueue: snapshot,
         clientId: () => CLIENT_ID,
-        onBeginQueueEdit: () => async (item) => {
+        onBeginQueueEdit: () => async (_agentId, item) => {
           await new Promise<void>(resolve => resolvers.set(item.id, resolve))
           return { snapshot: bothRows, attachments: [], text: `full ${item.id}` }
         },
@@ -236,7 +233,7 @@ describe('createQueueEditSession ownership loss', () => {
   // survives an update in flight, and it goes when no update runs.
   it('keeps the open edit when the input leaves the queue while an update runs', async () => {
     const { session, setSnapshot, clearAllAttachments } = await openOwnedEdit()
-    const empty = create(AgentInputQueueSnapshotSchema, { agentId: AGENT_ID, paused: true, items: [] })
+    const empty = create(AgentInputQueueSnapshotSchema, { pauseReason: AgentInputQueuePauseReason.MANUAL, items: [] })
 
     session.markUpdateStarted()
     setSnapshot(empty)
@@ -300,5 +297,116 @@ describe('createQueueEditSession schedule drafts', () => {
 
     expect(harness.session.activeEditingInput()).toBeUndefined()
     expect(getScheduleDraft(EDIT_DRAFT_KEY)).toBeUndefined()
+  })
+})
+
+// A queued input states no agent, so the session records the agent it loaded
+// the edit for, and hands that agent to the begin-edit RPC.
+describe('createQueueEditSession edit agent', () => {
+  let harness: ReturnType<typeof createHarness> | undefined
+  let disposeAgentHarness: (() => void) | undefined
+
+  afterEach(() => {
+    harness?.dispose()
+    harness = undefined
+    disposeAgentHarness?.()
+    disposeAgentHarness = undefined
+    clearDraft(EDIT_DRAFT_KEY)
+  })
+
+  /**
+   * A session whose panel can move between `a1` and `a2`. Only `a1`'s queue
+   * holds an input that this client edits.
+   */
+  function createAgentHarness() {
+    const [agentId, setAgentId] = createSignal(AGENT_ID)
+    const emptyQueue = create(AgentInputQueueSnapshotSchema, { pauseReason: AgentInputQueuePauseReason.MANUAL, items: [] })
+    const beginEdit = vi.fn<BeginQueueEdit>(beginQueueEdit)
+    let session!: QueueEditSession
+    disposeAgentHarness = createRoot((disposeRoot) => {
+      session = createQueueEditSession({
+        agentId,
+        inputQueue: () => (agentId() === AGENT_ID
+          ? snapshotOwnedBy(CLIENT_ID)
+          : emptyQueue),
+        clientId: () => CLIENT_ID,
+        onBeginQueueEdit: () => beginEdit,
+      })
+      session.bindAttachments({
+        attachments: () => [],
+        activeDraftKey: () => session.attachmentDraftKey(),
+        replaceAttachments: vi.fn(),
+        clearAllAttachments: vi.fn(),
+      })
+      return disposeRoot
+    })
+    return { session, setAgentId, beginEdit }
+  }
+
+  it('passes the agent that the edit loads for to the begin-edit RPC', async () => {
+    const { session, beginEdit } = createAgentHarness()
+
+    await vi.waitFor(() => expect(session.activeEditingInput()).toBeDefined())
+
+    expect(beginEdit).toHaveBeenCalledExactlyOnceWith(AGENT_ID, expect.objectContaining({ id: INPUT_ID }), false)
+  })
+
+  it('hides the edit while the panel shows another agent, and shows it again on return', async () => {
+    const { session, setAgentId, beginEdit } = createAgentHarness()
+    await vi.waitFor(() => expect(session.activeEditingInput()).toBeDefined())
+
+    setAgentId('a2')
+    await flushMicrotasks()
+    expect(session.activeEditingInput()).toBeUndefined()
+    expect(session.attachmentDraftKey()).toBe('a2')
+
+    setAgentId(AGENT_ID)
+    await flushMicrotasks()
+    expect(session.activeEditingInput()?.id).toBe(INPUT_ID)
+    expect(session.attachmentDraftKey()).toBe(EDIT_DRAFT_KEY)
+    // The edit came back from the session's own record, with no second load.
+    expect(beginEdit).toHaveBeenCalledOnce()
+  })
+
+  it('closes the edit after the send that carried its update', async () => {
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    const { session } = harness
+
+    session.markUpdateStarted()
+    session.markUpdateCompleted(AGENT_ID, session.activeEditingInput()!)
+    session.handleAfterSend()
+
+    expect(session.activeEditingInput()).toBeUndefined()
+    expect(session.attachmentDraftKey()).toBe(AGENT_ID)
+  })
+
+  it('leaves the edit open after a send that completed no update', async () => {
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+
+    harness.session.handleAfterSend()
+
+    expect(harness.session.activeEditingInput()?.id).toBe(INPUT_ID)
+  })
+
+  // The panel can move to another agent while the update runs. The completed
+  // update then identifies the agent it was sent for, and the edit that the
+  // panel shows now stays open even when its input id is the same.
+  it('keeps the open edit when the completed update belongs to another agent', async () => {
+    harness = createHarness()
+    await vi.waitFor(() => expect(harness!.session.activeEditingInput()).toBeDefined())
+    const { session, setSnapshot, clearAllAttachments } = harness
+
+    session.markUpdateStarted()
+    session.markUpdateCompleted('a2', session.activeEditingInput()!)
+    session.handleAfterSend()
+
+    expect(session.activeEditingInput()?.id).toBe(INPUT_ID)
+    // The send still ended the update, so a lost lock drops the edit again.
+    setSnapshot(snapshotOwnedBy(''))
+    await flushMicrotasks()
+    expect(session.activeEditingInput()).toBeUndefined()
+    expect(clearAllAttachments).toHaveBeenCalledTimes(1)
   })
 })

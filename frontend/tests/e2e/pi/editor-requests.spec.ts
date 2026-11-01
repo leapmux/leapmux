@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
@@ -123,7 +123,7 @@ export default function (pi) {
       await expect(composerEditor(page)).toHaveAttribute('contenteditable', 'true')
       if ('interrupt' in scenario) {
         const queue = await waitForNativeInputQueueIdle(leapmuxServer, agentId, modelScript.testDeadline)
-        expect(queue.paused).toBe(true)
+        expect(queue.pauseReason).not.toBe(AgentInputQueuePauseReason.UNSPECIFIED)
         await resumePausedQueue(page)
         const next = await modelScript.queue({ text: 'The editor interrupt ended. The next turn works.' })
         await sendMessage(page, modelScript.prompt('Reply after the editor interrupt.'))

@@ -1,6 +1,6 @@
 import type { TestInfo } from '@playwright/test'
 import { writeFileSync } from 'node:fs'
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { getTestChannel } from '../helpers/api'
 
@@ -20,9 +20,7 @@ export async function attachQoderWorkerFrames(
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const response = await channel.callWorker(
     server.workerId,
-    'ListAgentMessages',
-    ListAgentMessagesRequestSchema,
-    ListAgentMessagesResponseSchema,
+    WorkerAgentService.method.listAgentMessages,
     { agentId, limit: 200 },
   )
   const markers = [

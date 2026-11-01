@@ -6,8 +6,10 @@ import (
 	"runtime/debug"
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"google.golang.org/grpc/codes"
+
+	"github.com/leapmux/leapmux/channelwire"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // ResponseWriter sends inner RPC responses back through the transport layer.
@@ -96,6 +98,11 @@ type registered struct {
 }
 
 // Dispatcher routes inner RPC method calls to registered handlers.
+//
+// Handlers are keyed by the method string a request carries. The worker's
+// registrar registers each method under its full Connect procedure path
+// (/leapmux.v1.<Service>/<Method>), taken from the generated
+// leapmuxv1connect constants.
 type Dispatcher struct {
 	handlers map[string]registered
 	// cleanup, when non-nil, is incremented before every tracked
@@ -112,42 +119,60 @@ func NewDispatcher() *Dispatcher {
 	}
 }
 
-// Register adds a handler for the given method name. The method runs
-// fire-and-forget on Shutdown: in-flight calls are NOT awaited. Use
-// this for read-only probes whose results are safe to drop on
-// teardown (GetGitInfo, ListWorkers, dialog-open probes, etc.).
+// Registration states how the dispatcher runs one method.
+type Registration struct {
+	// Tracked makes in-flight invocations gate Shutdown via the WaitGroup
+	// bound by BindCleanup. Use it for any destructive mutation whose
+	// half-applied state would leak if Shutdown returned mid-flight -- e.g. a
+	// multi-step git mutation that has run the first command but not the
+	// second, or a worktree teardown that has removed the directory but not
+	// yet written the DB soft-delete. (Grep for Tracked registrations to see
+	// the current set rather than maintaining a list here, which drifts as
+	// handlers are added or removed.)
+	//
+	// The Add(1) for tracked methods happens SYNCHRONOUSLY in DispatchAsync
+	// (before the goroutine launches) and at the top of DispatchWith (the
+	// synchronous local-IPC path), so Shutdown.Wait observes the
+	// increment regardless of how the dispatch was initiated. Putting the
+	// Add(1) inside the handler body -- as an earlier revision did -- races
+	// `go DispatchWith(...)` against Shutdown.Wait, which can return
+	// before the goroutine even reaches Add(1).
+	Tracked bool
+	// Streaming marks a server-streaming method, whose replies are
+	// InnerStreamMessage frames rather than one InnerRpcResponse. The
+	// dispatcher prepares the stream before the handler runs, and reports a
+	// panic as a stream frame; a unary InnerRpcResponse on a stream id would be
+	// dropped, leaving the caller waiting with no events and no error.
+	Streaming bool
+}
+
+// Handle adds a handler for the given method. It panics when the method
+// already has one: a silent overwrite would replace a handler with no sign
+// that anything happened.
+func (d *Dispatcher) Handle(method string, reg Registration, handler HandlerFunc) {
+	if _, exists := d.handlers[method]; exists {
+		panic("duplicate inner RPC handler: " + method)
+	}
+	d.handlers[method] = registered{fn: handler, tracked: reg.Tracked, streaming: reg.Streaming}
+}
+
+// Register adds a plain handler. The method runs fire-and-forget on
+// Shutdown: in-flight calls are NOT awaited. Use this for read-only probes
+// whose results are safe to drop on teardown.
 func (d *Dispatcher) Register(method string, handler HandlerFunc) {
-	d.handlers[method] = registered{fn: handler}
+	d.Handle(method, Registration{}, handler)
 }
 
-// RegisterTracked adds a handler whose in-flight invocations gate
-// Shutdown via the WaitGroup bound by BindCleanup. Use it for any
-// destructive mutation whose half-applied state would leak if Shutdown
-// returned mid-flight — e.g. a multi-step git mutation that has run the
-// first command but not the second, or a worktree teardown that has
-// removed the directory but not yet written the DB soft-delete. (Grep
-// for RegisterTracked to see the current set rather than maintaining a
-// list here, which drifts as handlers are added or removed.)
-//
-// The Add(1) for tracked methods happens SYNCHRONOUSLY in DispatchAsync
-// (before the goroutine launches) and at the top of DispatchWith (the
-// synchronous local-IPC path), so Shutdown.Wait observes the
-// increment regardless of how the dispatch was initiated. Putting the
-// Add(1) inside the handler body — as an earlier revision did — races
-// `go DispatchWith(...)` against Shutdown.Wait, which can return
-// before the goroutine even reaches Add(1).
+// RegisterTracked adds a handler whose in-flight invocations gate Shutdown.
+// See Registration.Tracked.
 func (d *Dispatcher) RegisterTracked(method string, handler HandlerFunc) {
-	d.handlers[method] = registered{fn: handler, tracked: true}
+	d.Handle(method, Registration{Tracked: true}, handler)
 }
 
-// RegisterStream adds a handler for a server-streaming method, whose
-// replies are InnerStreamMessage frames rather than one
-// InnerRpcResponse. Registering with Register instead still works for
-// the happy path -- the handler chooses its own reply shape -- but a
-// panic would then be reported as an InnerRpcResponse the client drops,
-// leaving the tab waiting with no events and no error.
+// RegisterStream adds a handler for a server-streaming method. See
+// Registration.Streaming.
 func (d *Dispatcher) RegisterStream(method string, handler HandlerFunc) {
-	d.handlers[method] = registered{fn: handler, streaming: true}
+	d.Handle(method, Registration{Streaming: true}, handler)
 }
 
 // Methods returns every registered method name, unordered.
@@ -290,11 +315,7 @@ func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.I
 			)
 			if h.streaming {
 				// Report handler failures with the stream's normal response envelope.
-				_ = w.SendStream(&leapmuxv1.InnerStreamMessage{
-					IsError:      true,
-					ErrorCode:    int32(codes.Internal),
-					ErrorMessage: "internal error",
-				})
+				_ = w.SendStream(channelwire.NewStreamError(int32(codes.Internal), "internal error"))
 				return
 			}
 			_ = w.SendError(int32(codes.Internal), "internal error")

@@ -137,9 +137,57 @@ func TestSendChannelFrames(t *testing.T) {
 	})
 }
 
+func TestNewErrorResponse(t *testing.T) {
+	resp := NewErrorResponse(5, "not found")
+	require.NotNil(t, resp.GetError(), "a present error is what marks the response a failure")
+	assert.Equal(t, int32(5), resp.GetError().GetCode())
+	assert.Equal(t, "not found", resp.GetError().GetMessage())
+	assert.Empty(t, resp.GetPayload())
+}
+
+func TestNewStreamError(t *testing.T) {
+	msg := NewStreamError(13, "internal error")
+	require.NotNil(t, msg.GetError(), "a present error is what marks the frame a failure")
+	assert.Equal(t, int32(13), msg.GetError().GetCode())
+	assert.Equal(t, "internal error", msg.GetError().GetMessage())
+	assert.True(t, msg.GetEnd(), "the frame ends the stream, so a reader that checks only End stops too")
+	assert.Empty(t, msg.GetPayload())
+}
+
+// A reader decides failure by the presence of the error, not by its code. A
+// zero code and an empty message are still a failure, and that presence must
+// survive the wire, where every field of the error has its default value.
+func TestErrorConstructorsKeepAZeroErrorPresentOnTheWire(t *testing.T) {
+	t.Run("a response", func(t *testing.T) {
+		encoded, err := proto.Marshal(&leapmuxv1.InnerMessage{
+			Kind: &leapmuxv1.InnerMessage_Response{Response: NewErrorResponse(0, "")},
+		})
+		require.NoError(t, err)
+		var decoded leapmuxv1.InnerMessage
+		require.NoError(t, proto.Unmarshal(encoded, &decoded))
+
+		require.NotNil(t, decoded.GetResponse())
+		require.NotNil(t, decoded.GetResponse().GetError(), "an empty error still marks the response a failure")
+		assert.Zero(t, decoded.GetResponse().GetError().GetCode())
+		assert.Empty(t, decoded.GetResponse().GetError().GetMessage())
+	})
+
+	t.Run("a stream frame", func(t *testing.T) {
+		encoded, err := proto.Marshal(&leapmuxv1.InnerMessage{
+			Kind: &leapmuxv1.InnerMessage_Stream{Stream: NewStreamError(0, "")},
+		})
+		require.NoError(t, err)
+		var decoded leapmuxv1.InnerMessage
+		require.NoError(t, proto.Unmarshal(encoded, &decoded))
+
+		require.NotNil(t, decoded.GetStream())
+		require.NotNil(t, decoded.GetStream().GetError(), "an empty error still marks the frame a failure")
+		assert.True(t, decoded.GetStream().GetEnd(), "the frame still ends the stream")
+	})
+}
+
 func TestNewChannelMessage(t *testing.T) {
 	msg := NewChannelMessage("ch", 42, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte("ct"))
-	assert.Equal(t, uint32(1), msg.GetProtocolVersion())
 	assert.Equal(t, "ch", msg.GetChannelId())
 	assert.Equal(t, uint64(42), msg.GetCorrelationId())
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, msg.GetFlags())
@@ -356,11 +404,9 @@ func widestWatchEventsEnvelope(t *testing.T, payloadSize int) []byte {
 	envelope := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Stream{
 			Stream: &leapmuxv1.InnerStreamMessage{
-				Payload:      watchBytes,
-				End:          true,
-				IsError:      true,
-				ErrorCode:    int32(^uint32(0) >> 1),
-				ErrorMessage: strings.Repeat("e", 4096),
+				Payload: watchBytes,
+				End:     true,
+				Error:   &leapmuxv1.RpcError{Code: int32(^uint32(0) >> 1), Message: strings.Repeat("e", 4096)},
 			},
 		},
 	}
@@ -374,10 +420,8 @@ func widestInnerRpcEnvelope(t *testing.T, payloadSize int) []byte {
 	envelope := &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_Response{
 			Response: &leapmuxv1.InnerRpcResponse{
-				Payload:      make([]byte, payloadSize),
-				IsError:      true,
-				ErrorMessage: strings.Repeat("e", 4096),
-				ErrorCode:    int32(^uint32(0) >> 1),
+				Payload: make([]byte, payloadSize),
+				Error:   &leapmuxv1.RpcError{Code: int32(^uint32(0) >> 1), Message: strings.Repeat("e", 4096)},
 			},
 		},
 	}

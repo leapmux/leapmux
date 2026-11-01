@@ -100,7 +100,7 @@ func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTrans
 	require.NoError(t, err)
 	ciphertext, err := initiator.Encrypt(encoded)
 	require.NoError(t, err)
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: "notification-transport", CorrelationId: 1, Ciphertext: ciphertext})
+	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "notification-transport", CorrelationId: 1, Ciphertext: ciphertext})
 	select {
 	case transport.writer = <-ready:
 	case <-time.After(30 * time.Second):
@@ -170,8 +170,8 @@ func TestNotificationJournalTransportMeasuresCompactGrowthAndContinuesReplay(t *
 	events := transport.snapshot()
 	require.Len(t, events, 4)
 	assert.NotNil(t, events[3].GetTurnEnd())
-	assert.Equal(t, uint64(9007199254740993), events[2].GetReplayId())
-	assert.Equal(t, uint64(9007199254740993), events[3].GetReplayId())
+	assert.Equal(t, uint64(9007199254740993), events[2].GetReplay().GetReplayId())
+	assert.Equal(t, uint64(9007199254740993), events[3].GetReplay().GetReplayId())
 	assert.Equal(t, events[1].GetAgentMessage(), events[2].GetAgentMessage())
 	for _, event := range events[:3] {
 		rendering, err := msgcodec.Decompress(event.GetAgentMessage().SupplementalContent, event.GetAgentMessage().SupplementalContentCompression)
@@ -204,8 +204,7 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	events := live.snapshot()
 	messages := make([]*leapmuxv1.AgentChatMessage, 0, len(events))
 	for _, event := range events {
-		assert.False(t, event.Replay)
-		assert.Zero(t, event.ReplayId)
+		assert.Nil(t, event.GetReplay())
 		if message := event.GetAgentMessage(); message != nil && message.Seq > 0 {
 			messages = append(messages, message)
 		}
@@ -302,8 +301,8 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	svc.replayAgentCatchUp(newReplaySink(replayed.writer, replayID, nil), &leapmuxv1.WatchAgentEntry{AgentId: ownerID}, row, nil)
 	replayMessages := 0
 	for _, event := range replayed.snapshot() {
-		assert.True(t, event.Replay)
-		assert.Equal(t, replayID, event.ReplayId)
+		assert.NotNil(t, event.GetReplay())
+		assert.Equal(t, replayID, event.GetReplay().GetReplayId())
 		if message := event.GetAgentMessage(); message != nil && message.Seq > 0 {
 			replayMessages++
 			if replayMessages == 1 {
@@ -351,7 +350,7 @@ func TestNotificationJournalTransportRejectsOversizedVisiblePayloadAndContinuesR
 	events := transport.snapshot()
 	require.Len(t, events, 1)
 	assert.NotNil(t, events[0].GetTurnEnd())
-	assert.Equal(t, uint64(23), events[0].ReplayId)
+	assert.Equal(t, uint64(23), events[0].GetReplay().GetReplayId())
 }
 
 // notificationTransportByteMetrics measures the exact stored sources and serialized envelopes.

@@ -49,7 +49,7 @@ function copy(name, source, destination) {
 
 async function ready(name) {
   const address = docker(['port', name, '4327/tcp'])
-  const url = `http://${address}/leapmux.v1.AuthService/GetSystemInfo`
+  const url = `http://${address}/leapmux.v1.SystemService/GetSystemInfo`
   const deadline = Date.now() + deadlineMs
   let lastError
   while (Date.now() < deadline) {

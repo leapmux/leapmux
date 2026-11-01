@@ -6,6 +6,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -64,7 +65,9 @@ type openAgentResult struct {
 // on the channel the spawn already holds. Best-effort: the caller is already
 // returning the failure that caused the unwind.
 func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
-	_ = w.CallEmit(ctx, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}, nil)
+	_ = w.CallEmit(ctx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
+	}, nil)
 }
 
 // openAgentAndAddTab opens an agent on the worker, defaults its tile
@@ -82,7 +85,7 @@ func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
 //
 // `ch` is a channel the CALLER opened to args.WorkerID and keeps open for
 // the whole sequence, so OpenAgent, the optional EnqueueAgentInput, and any
-// rollback CloseAgent share one Noise_NK handshake instead of one apiece.
+// rollback CloseTab share one Noise_NK handshake instead of one apiece.
 // Pass nil on local-IPC clients, where there is no channel and each call
 // routes through the per-agent socket.
 //
@@ -95,7 +98,6 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	// Initial option selections (model / effort / permission mode), built once.
 	options := spawnOptions(args.Model, args.Effort, args.PermissionMode)
 	req := &leapmuxv1.OpenAgentRequest{
-		WorkerId:      args.WorkerID,
 		AgentProvider: args.Provider,
 		Options:       options,
 		Title:         args.Title,
@@ -113,7 +115,7 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	var bs *CRDTBootstrap
 
 	g.Go(func() error {
-		return w.CallEmit(gctx, "OpenAgent", req, &resp)
+		return w.CallEmit(gctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, req, &resp)
 	})
 	g.Go(func() error {
 		var err error
@@ -152,7 +154,7 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	// post-spawn follow-up is the optional initial message -- an inner-RPC against the same
 	// worker that just received OpenAgent, on the same channel it arrived over.
 	if args.InitialMessage != "" {
-		if err := w.Call(ctx, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 			AgentId: agentID, InputId: id.Generate(), Text: args.InitialMessage,
 			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		}, nil); err != nil {
@@ -275,7 +277,6 @@ type openTerminalArgs struct {
 // (terminal.Open); the frontend resizes the PTY as soon as the user attaches.
 func terminalOpenRequest(args openTerminalArgs) *leapmuxv1.OpenTerminalRequest {
 	return &leapmuxv1.OpenTerminalRequest{
-		WorkerId:      args.WorkerID,
 		WorkingDir:    args.WorkingDir,
 		Shell:         args.Shell,
 		ShellStartDir: args.ShellStartDir,
@@ -299,7 +300,7 @@ func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall,
 	}
 	req := terminalOpenRequest(args)
 	var resp leapmuxv1.OpenTerminalResponse
-	if err := w.CallEmit(ctx, "OpenTerminal", req, &resp); err != nil {
+	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, req, &resp); err != nil {
 		return nil, err
 	}
 	terminalID := resp.GetTerminalId()
@@ -307,8 +308,8 @@ func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall,
 	// is the likelier of this function's two worker calls to actually run, and
 	// paying a second Noise_NK handshake for it defeats the hoist.
 	rollback := func() {
-		_ = w.CallEmit(ctx, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-			TerminalId: terminalID,
+		_ = w.CallEmit(ctx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
 		}, nil)
 	}
 	resolvedTileID, position, err := addTabToCRDT(ctx, c, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)

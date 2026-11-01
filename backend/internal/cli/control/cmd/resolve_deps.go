@@ -45,7 +45,7 @@ func resolveDeps(c *control.Client) resolve.Deps {
 				return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", err
 			}
 			t := resp.GetTab()
-			return t.GetTabType(), t.GetWorkspaceId(), t.GetTileId(), t.GetWorkerId(), nil
+			return t.GetTab().GetTabType(), t.GetWorkspaceId(), t.GetTileId(), t.GetWorkerId(), nil
 		},
 		GetWorkspace: func(ctx context.Context, workspaceID string) error {
 			var resp leapmuxv1.GetWorkspaceResponse

@@ -1,19 +1,37 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
+
+// WorkerTunnelService carries TCP connections from a client through the Worker
+// to a target. Served by the Worker inside an E2EE channel.
+service WorkerTunnelService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc OpenTunnelConn(OpenTunnelConnRequest) returns (stream TunnelConnEvent) {
+    option (leapmux.v1.access) = { scope: SCOPE_TUNNEL_OPEN };
+  }
+  rpc SendTunnelData(SendTunnelDataRequest) returns (SendTunnelDataResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TUNNEL_OPEN };
+  }
+  rpc CloseTunnelConn(CloseTunnelConnRequest) returns (CloseTunnelConnResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TUNNEL_OPEN };
+  }
+  rpc GrantTunnelReadCredit(GrantTunnelReadCreditRequest) returns (GrantTunnelReadCreditResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TUNNEL_OPEN };
+  }
+}
+
 // --- Tunnel inner RPC messages (E2EE channel, Desktop ↔ Worker) ---
 
 // Request to open a tunnel connection to a target. The client chooses conn_id
 // before sending so cancellation can close an open that completes after the
-// local deadline.
+// local deadline. The worker answers on the OpenTunnelConn stream: an `opened`
+// event first, then the target's data, or a stream error frame when it refuses
+// or cannot connect.
 message OpenTunnelConnRequest {
   string conn_id = 1;
   string target_addr = 2; // Hostname or IP (DNS resolved at Worker)
   uint32 target_port = 3; // Target port (1-65535)
-}
-
-message OpenTunnelConnResponse {
-  string conn_id = 1;
 }
 
 // Send data from local client to remote target. close_write half-closes the
@@ -65,10 +83,18 @@ message GrantTunnelReadCreditRequest {
 
 message GrantTunnelReadCreditResponse {}
 
-// Streamed Worker → Desktop: data from remote target.
+// Streamed on the OpenTunnelConn stream; the stream identifies the conn.
 message TunnelConnEvent {
-  string conn_id = 1; // Connection this event belongs to
-  bytes data = 2;     // Data from target (empty when eof/error)
-  bool eof = 3;       // Target closed connection
-  string error = 4;   // Error message (non-empty = error)
+  oneof event {
+    TunnelConnOpened opened = 1; // First frame: the worker connected to the target.
+    bytes data = 2;              // Bytes the target sent.
+    TunnelConnEof eof = 3;       // The target closed its write side.
+    string error = 4;            // The target connection failed.
+  }
 }
+
+// TunnelConnOpened selects TunnelConnEvent.opened. It carries no value.
+message TunnelConnOpened {}
+
+// TunnelConnEof selects TunnelConnEvent.eof. It carries no value.
+message TunnelConnEof {}

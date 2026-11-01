@@ -158,18 +158,22 @@ var identityComparisonSites = map[string]string{
 	// because an unpopulated RegisteredBy and an unnamed caller are the same
 	// empty string.
 	//
-	// One entry, not two: the unary and streaming gates (requireWorkerOwner /
-	// requireWorkerOwnerStream) both delegate the comparison here and differ only
-	// in how they encode the refusal, so this is the single place that makes the
-	// decision. Keeping the predicate in one function is also what stops a change to
-	// it landing in one gate and missing the other.
-	"internal/worker/service.callerIsWorkerOwner": "TestRequireWorkerOwnerRefusesEmptyIdentities",
+	// One entry: the owner gate (ownerOnlyRegistrar.gate) delegates the
+	// comparison here for unary and streaming methods alike, and differs between
+	// them only in how it encodes the refusal, so this is the single place that
+	// makes the decision.
+	"internal/worker/service.callerIsWorkerOwner": "TestOwnerGateRefusesEmptyIdentities",
 	// Not a grant: it decides whether the Hub pushed a DIFFERENT owner than the
 	// one already recorded, and only logs. It appears here because the comparison
 	// is the same one, and because the guard that keeps it correct -- refusing an
 	// empty push rather than storing it -- is what stops the gate above from
 	// ever comparing against a blank owner.
-	"internal/worker/service.(*Service).UpdateRegisteredBy": "TestUpdateRegisteredByIgnoresEmptyOwner",
+	"internal/worker/service.(*Service).ApplyWorkerIdentity": "TestApplyWorkerIdentityIgnoresEmptyOwner",
+	// Not a grant: it decides whether to report the owner's username for the
+	// token's user, and a false positive would only print another account's
+	// name. The zero-refusing comparison keeps an undelivered owner from
+	// matching an unnamed caller.
+	"internal/worker/service.(*Service).OwnerUsername": "TestOwnerUsernameAnswersOnlyTheOwner",
 	// The reap gate, and the most destructive comparison in either process: a
 	// false negative here closes a live agent/terminal and drops a worktree
 	// link. It decides whether an ABSENCE from the hub's owner-scoped response

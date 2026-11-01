@@ -99,14 +99,14 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// keeps the assertion about the committed rows rather than about a cache
 	// entry minted before the change.
 	env.contexts.EvictByUserID(env.userID)
-	_, err = env.client.GetTimeouts(bearerReq(ctx, &leapmuxv1.GetTimeoutsRequest{}, bearer))
+	_, err = env.client.ListUserSettings(bearerReq(ctx, &leapmuxv1.ListUserSettingsRequest{}, bearer))
 	require.NoError(t, err, "the acting credential must still authenticate after the change it made")
 
 	// The exclusion is NARROW: it spares one row and nothing else.
 	otherRow, err := env.store.APITokens().GetByID(ctx, otherTokenID)
 	require.NoError(t, err)
 	assert.NotNil(t, otherRow.RevokedAt, "every other command-line credential is revoked")
-	_, err = env.client.GetTimeouts(bearerReq(ctx, &leapmuxv1.GetTimeoutsRequest{}, otherBearer))
+	_, err = env.client.ListUserSettings(bearerReq(ctx, &leapmuxv1.ListUserSettingsRequest{}, otherBearer))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -31,7 +32,7 @@ func openAgentAndCapture(t *testing.T, req *leapmuxv1.OpenAgentRequest) (*Servic
 		return opts.Options, nil
 	}
 
-	dispatch(d, "OpenAgent", req, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, req, w)
 	require.Empty(t, w.errors, "OpenAgent should succeed")
 
 	select {

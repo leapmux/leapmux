@@ -15,16 +15,19 @@ import (
 
 func RunAdminWorkerList(rawCtx any, args []string) error {
 	var page adminPageFlags
-	var userID, username, status string
+	var owner userFilterFlags
+	var status string
 	var statusEnum leapmuxv1.WorkerStatus
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Flags: func(fs *flag.FlagSet) {
-			fs.StringVar(&userID, "user-id", "", "filter by user ID")
-			fs.StringVar(&username, "username", "", "filter by username")
+			owner.bind(fs, "filter by user ID (soft-deleted users included; empty = all users)")
 			fs.StringVar(&status, "status", "active", "worker status filter (active, deregistering, deleted, all)")
 		},
-		BeforeDial: func(adminArgs) error {
+		BeforeDial: func(a adminArgs) error {
+			if err := owner.resolve(a); err != nil {
+				return err
+			}
 			switch status {
 			case "active":
 				statusEnum = leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
@@ -41,7 +44,7 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-				UserId: userID, Username: username, Status: statusEnum, Limit: page.Limit, Cursor: page.Cursor,
+				User: owner.selector(), Status: statusEnum, Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -50,7 +53,7 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 			for _, w := range resp.GetWorkers() {
 				rows = append(rows, adminWorkerJSON(w))
 			}
-			return control.EmitData(map[string]any{"workers": rows, "next_cursor": resp.GetNextCursor()})
+			return control.EmitData(map[string]any{"workers": rows, "next_cursor": resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -118,7 +121,7 @@ func RunAdminWorkerRegKeyList(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminWorkerService().ListRegistrationKeys(context.Background(), &leapmuxv1.ListRegistrationKeysRequest{
-				IncludeExpired: includeExpired, Limit: page.Limit, Cursor: page.Cursor,
+				IncludeExpired: includeExpired, Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -127,7 +130,7 @@ func RunAdminWorkerRegKeyList(rawCtx any, args []string) error {
 			for _, k := range resp.GetKeys() {
 				rows = append(rows, adminRegistrationKeyJSON(k))
 			}
-			return control.EmitData(map[string]any{"keys": rows, "next_cursor": resp.GetNextCursor()})
+			return control.EmitData(map[string]any{"keys": rows, "next_cursor": resp.GetPage().GetNextCursor()})
 		},
 	})
 }
@@ -159,7 +162,7 @@ func RunAdminWorkerRegKeyRevoke(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), &leapmuxv1.RevokeRegistrationKeyRequest{Id: id}); err != nil {
+			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})

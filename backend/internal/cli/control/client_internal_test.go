@@ -46,11 +46,11 @@ func TestClientServiceAccessors_KeepAuthenticationAndLargeResponses(t *testing.T
 		{procedure: leapmuxv1connect.ChannelServiceGetWorkerHandshakeParamsProcedure, call: func(ctx context.Context) (proto.Message, error) {
 			return c.ChannelService().GetWorkerHandshakeParams(ctx, &leapmuxv1.GetWorkerHandshakeParamsRequest{})
 		}},
-		{procedure: leapmuxv1connect.UserServiceGetTimeoutsProcedure, call: func(ctx context.Context) (proto.Message, error) {
-			return c.UserService().GetTimeouts(ctx, &leapmuxv1.GetTimeoutsRequest{})
+		{procedure: leapmuxv1connect.SystemServiceGetTimeoutsProcedure, call: func(ctx context.Context) (proto.Message, error) {
+			return c.SystemService().GetTimeouts(ctx, &leapmuxv1.GetTimeoutsRequest{})
 		}},
-		{procedure: leapmuxv1connect.AuthServiceGetSystemInfoProcedure, call: func(ctx context.Context) (proto.Message, error) {
-			return c.AuthService().GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
+		{procedure: leapmuxv1connect.SystemServiceGetSystemInfoProcedure, call: func(ctx context.Context) (proto.Message, error) {
+			return c.SystemService().GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
 		}},
 		{procedure: leapmuxv1connect.AdminSettingsServiceListSettingsProcedure, call: func(ctx context.Context) (proto.Message, error) {
 			return c.AdminSettingsService().ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})

@@ -4,7 +4,8 @@ import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
+import { registerForChallenge } from '~/lib/webauthn'
 import { setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
@@ -24,7 +25,7 @@ vi.mock('~/api/clients', () => ({
 
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
-  startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
+  registerForChallenge: vi.fn().mockResolvedValue({ sessionId: 's1', credentialJson: '{"id":"cred"}' }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -54,9 +55,7 @@ describe('recover complete page', () => {
     setMockCaptchaPayload(null)
     mockCompleteAccountRecoveryPassword.mockResolvedValue({})
     mockBeginAccountRecoveryPasskey.mockResolvedValue({
-      sessionId: 'session-1',
-      optionsJson: '{}',
-      rpId: 'localhost',
+      challenge: { sessionId: 's1', optionsJson: '{}' },
     })
     mockFinishAccountRecoveryPasskey.mockResolvedValue({})
   })
@@ -100,8 +99,7 @@ describe('recover complete page', () => {
     expect(mockCompleteAccountRecoveryPassword).toHaveBeenCalledWith({
       token: 'recovery-token',
       newPassword: 'newpass123',
-      captchaPayload: '',
-      honeypot: '',
+      captcha: { payload: '', honeypot: '' },
     })
     resolveReset({})
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
@@ -120,8 +118,13 @@ describe('recover complete page', () => {
     })
     expect(mockBeginAccountRecoveryPasskey).toHaveBeenCalledWith({
       token: 'recovery-token',
-      captchaPayload: '',
-      honeypot: '',
+      captcha: { payload: '', honeypot: '' },
+    })
+    // The ceremony runs on the challenge that Begin returned.
+    expect(registerForChallenge).toHaveBeenCalledExactlyOnceWith({ sessionId: 's1', optionsJson: '{}' })
+    expect(mockFinishAccountRecoveryPasskey).toHaveBeenCalledWith({
+      token: 'recovery-token',
+      credential: { sessionId: 's1', credentialJson: '{"id":"cred"}' },
     })
     expect(mockCompleteAccountRecoveryPassword).not.toHaveBeenCalled()
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
@@ -148,6 +151,21 @@ describe('recover complete page', () => {
     await vi.waitFor(() => {
       expect(mockBeginAccountRecoveryPasskey).toHaveBeenCalledOnce()
     })
+    expect(screen.getByRole('button', { name: 'Recover with passkey' })).toBeEnabled()
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument()
+  })
+
+  // Begin already spent one attempt, so a ceremony that fails sends no
+  // Finish, says why, and leaves the link usable for another try.
+  it('reports a failed passkey ceremony and sends no finish', async () => {
+    vi.mocked(registerForChallenge).mockRejectedValueOnce(new Error('authenticator broke'))
+    renderRecoverCompletePage('/recover-account/complete?token=recovery-token')
+    await screen.findByRole('radiogroup', { name: 'Recovery method' })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recover with passkey' }))
+
+    expect(await screen.findByText(/authenticator broke/)).toBeInTheDocument()
+    expect(mockFinishAccountRecoveryPasskey).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Recover with passkey' })).toBeEnabled()
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument()
   })

@@ -1,12 +1,15 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TerminalDisplayStatus } from '~/components/shell/terminalStatus'
+import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentStatus, AvailableOptionGroupSchema, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
+import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -121,9 +124,11 @@ function agentEvent(event: NonNullable<MessageInitShape<typeof AgentEventSchema>
       value: create(AgentEventSchema, {
         agentId: 'a1',
         event,
-        replay,
-        replayId: replay ? 1n : 0n,
-        replayAgentId: replay ? 'a1' : '',
+        ...(replay
+          ? {
+              replay: { replayId: 1n, agentId: 'a1' },
+            }
+          : {}),
       }),
     },
   })
@@ -133,7 +138,6 @@ function controlRequest(): NonNullable<MessageInitShape<typeof AgentEventSchema>
   return {
     case: 'controlRequest',
     value: {
-      agentId: 'a1',
       requestId: 'req-1',
       payload: new TextEncoder().encode(JSON.stringify({ tool_name: 'Bash' })),
     },
@@ -153,9 +157,7 @@ describe('useWorkspaceConnection live status writers', () => {
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
       value: {
-        agentId: 'a1',
         status: AgentStatus.ACTIVE,
-        workerOnline: true,
         optionGroups: [],
       },
     }))
@@ -213,9 +215,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
       value: {
-        agentId: 'a1',
         status: AgentStatus.ACTIVE,
-        workerOnline: true,
         optionGroups: catalog(),
       },
     }))
@@ -232,9 +232,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
       value: {
-        agentId: 'a1',
         status: AgentStatus.UNSPECIFIED,
-        workerOnline: true,
         optionGroups: catalog(),
       },
     }))
@@ -251,9 +249,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
       value: {
-        agentId: 'a1',
         status: AgentStatus.INACTIVE,
-        workerOnline: true,
         optionGroups: [],
       },
     }))
@@ -269,9 +265,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
       value: {
-        agentId: 'a1',
         status: AgentStatus.UNSPECIFIED,
-        workerOnline: true,
         optionGroups: [],
         gitStatus: { toplevel: '/repo', branch: 'main' },
       },
@@ -283,7 +277,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   })
 })
 
-function mountTerminalConnection(initial: TerminalStatus | undefined) {
+function mountTerminalConnection(initial: TerminalDisplayStatus | undefined) {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
   emitAddTab({
@@ -343,7 +337,7 @@ describe('useWorkspaceConnection live terminal status writers', () => {
 
     streamOpts().onEvent(WORKER, terminalEvent({
       case: 'statusChange',
-      value: { terminalId: 't1', status: TerminalStatus.READY },
+      value: { status: TerminalStatus.READY },
     }))
 
     expect(status()).toBe(TerminalStatus.READY)
@@ -365,14 +359,14 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   })
 
   it('does not count a statusChange event that the tab refuses', () => {
-    const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.DISCONNECTED)
+    const { dispose, status, epoch } = mountTerminalConnection(TERMINAL_DISCONNECTED)
 
     streamOpts().onEvent(WORKER, terminalEvent({
       case: 'statusChange',
-      value: { terminalId: 't1', status: TerminalStatus.READY },
+      value: { status: TerminalStatus.READY },
     }))
 
-    expect(status()).toBe(TerminalStatus.DISCONNECTED)
+    expect(status()).toBe(TERMINAL_DISCONNECTED)
     expect(epoch()).toBe(0)
     dispose()
   })

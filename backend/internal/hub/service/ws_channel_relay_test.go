@@ -475,12 +475,9 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 
 	tokenID := id.Generate()
@@ -556,8 +553,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 // channel opened just before its worker went away closed with no connection to
 // tell. When the tab's relay connected, its frames for that dead channel went
 // nowhere, and every request on it waited out the 15-second RPC timeout instead
-// of reopening and hearing "worker is offline". The reserved Hub control channel
-// is no frontend channel, so a frame for it gets no reply.
+// of reopening and hearing "worker is offline".
 func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T) {
 	t.Parallel()
 
@@ -580,17 +576,10 @@ func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T)
 	require.NoError(t, err)
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
-	// The read loop handles frames in order, so the first reply belongs to the
-	// first frame that earns one.
-	require.NoError(t, channelwire.WriteChannelMessage(ctx, conn, &leapmuxv1.ChannelMessage{
-		ChannelId:     contracts.HubControlChannelID,
-		CorrelationId: 1,
-		Ciphertext:    []byte("not a frontend channel"),
-	}))
 	deadChannelID := id.Generate()
 	require.NoError(t, channelwire.WriteChannelMessage(ctx, conn, &leapmuxv1.ChannelMessage{
 		ChannelId:     deadChannelID,
-		CorrelationId: 2,
+		CorrelationId: 1,
 		Ciphertext:    []byte("ping on a channel the Hub already closed"),
 	}))
 
@@ -599,7 +588,6 @@ func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T)
 	assert.Equal(t, deadChannelID, reply.GetChannelId())
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, reply.GetFlags())
 	assert.Empty(t, reply.GetCiphertext())
-	assert.EqualValues(t, contracts.ProtocolVersion, reply.GetProtocolVersion())
 }
 
 // relayFrontendMessageToWorker owns the four teardown/forward decisions the read

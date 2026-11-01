@@ -7,9 +7,8 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { menuOptionValues, pickMenuValue } from '~/test-support/menu'
 import { DeleteBranchDialog } from './DeleteBranchDialog'
@@ -352,7 +351,6 @@ describe('DeleteBranchDialog', () => {
     // answers for a repository nobody deletes, and reads as a clean "no
     // refusal" every time.
     expect(workerRpc.inspectWorktreeRemoval).toHaveBeenCalledWith('w1', {
-      workerId: 'w1',
       path: '/repo',
     })
   })

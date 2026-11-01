@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 )
@@ -546,13 +546,28 @@ func TestUnregister_SendsCloseNotification(t *testing.T) {
 	m.RegisterWithAuthInfo("ch1", "w1", "u1", AuthInfo{}, nil)
 	bindChannelConn(t, m, "ch1", "conn1")
 
-	// Unregister should send a close notification (empty ciphertext) to conn1.
+	// Unregister sends conn1 a close notification: the CLOSE flag marks it,
+	// and it carries no ciphertext.
 	m.CloseByID("ch1")
 
 	if assert.Len(t, received, 1) {
 		assert.Equal(t, "ch1", received[0].GetChannelId())
-		assert.Empty(t, received[0].GetCiphertext()) // Empty = close notification.
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE, received[0].GetFlags())
+		assert.Empty(t, received[0].GetCiphertext())
 	}
+}
+
+// The close notification is the channel id and the CLOSE flag, and nothing
+// else: a field the relay does not need would be one more value both sides
+// must agree on.
+func TestCloseNotification(t *testing.T) {
+	got := CloseNotification("ch1")
+	want := &leapmuxv1.ChannelMessage{
+		ChannelId: "ch1",
+		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+	}
+	assert.True(t, proto.Equal(want, got), "got %v", got)
+	assert.NotSame(t, got, CloseNotification("ch1"), "each call builds its own message")
 }
 
 func TestUnregister_CloseNotification_NoConnID(t *testing.T) {
@@ -781,71 +796,6 @@ func TestUnregisterByWorker_SendsCloseNotifications(t *testing.T) {
 	}
 	assert.True(t, closedIDs["ch1"])
 	assert.True(t, closedIDs["ch2"])
-}
-
-func TestSendToUser_SingleConnection(t *testing.T) {
-	m := New(0)
-
-	var received []*leapmuxv1.ChannelMessage
-	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
-		received = append(received, msg)
-		return nil
-	}, nil)
-
-	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
-	m.SendToUser("u1", msg)
-
-	assert.Len(t, received, 1)
-	assert.Equal(t, contracts.HubControlChannelID, received[0].GetChannelId())
-	assert.Equal(t, []byte("ctrl"), received[0].GetCiphertext())
-}
-
-func TestSendToUser_MultipleConnections(t *testing.T) {
-	m := New(0)
-
-	var received1, received2 []*leapmuxv1.ChannelMessage
-	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
-		received1 = append(received1, msg)
-		return nil
-	}, nil)
-	m.BindUser("u1", "conn2", func(msg *leapmuxv1.ChannelMessage) error {
-		received2 = append(received2, msg)
-		return nil
-	}, nil)
-
-	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
-	m.SendToUser("u1", msg)
-
-	// Both connections should receive the message.
-	assert.Len(t, received1, 1)
-	assert.Len(t, received2, 1)
-}
-
-func TestSendToUser_OtherUserNotAffected(t *testing.T) {
-	m := New(0)
-
-	var receivedU1, receivedU2 []*leapmuxv1.ChannelMessage
-	m.BindUser("u1", "conn1", func(msg *leapmuxv1.ChannelMessage) error {
-		receivedU1 = append(receivedU1, msg)
-		return nil
-	}, nil)
-	m.BindUser("u2", "conn2", func(msg *leapmuxv1.ChannelMessage) error {
-		receivedU2 = append(receivedU2, msg)
-		return nil
-	}, nil)
-
-	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
-	m.SendToUser("u1", msg)
-
-	assert.Len(t, receivedU1, 1)
-	assert.Len(t, receivedU2, 0, "other user should not receive the message")
-}
-
-func TestSendToUser_UnknownUser(t *testing.T) {
-	m := New(0)
-	// Should not panic on unknown user.
-	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
-	m.SendToUser("nonexistent", msg)
 }
 
 // --- Credential- and ACL-scoped close tests ---

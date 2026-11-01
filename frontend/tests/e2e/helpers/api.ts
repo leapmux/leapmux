@@ -2,6 +2,8 @@
 // API helpers for setting up test prerequisites
 // ──────────────────────────────────────────────
 
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { GitSetupSchema } from '../../../src/generated/proto/leapmux/v1/git_pb'
 import type { ChannelManager } from '../../../src/lib/channel'
 import type { ProviderWorkingDir } from './providerWorkingDir'
 import { execFile } from 'node:child_process'
@@ -9,8 +11,12 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { fromJson } from '@bufbuild/protobuf'
 import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
-import { AgentProvider, OpenAgentRequestSchema, OpenAgentResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import {
+  WorkerTabService,
+} from '../../../src/generated/proto/leapmux/v1/worker_tab_pb'
+import { DeleteWorkspaceResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { sleep } from '../../../src/lib/sleep'
 import { solveCaptchaViaAPI } from './altcha'
@@ -297,8 +303,7 @@ export async function attemptLoginViaAPI(hubUrl: string, username: string, passw
   return hubRequest(hubUrl, 'AuthService/Login', {
     username,
     password,
-    captchaPayload: captcha.captchaPayload,
-    honeypot: captcha.honeypot,
+    captcha,
   }, { redirect: 'manual' })
 }
 
@@ -346,8 +351,11 @@ export interface ApiUser {
  * Get the full current-user payload via the Connect API.
  */
 export async function getCurrentUser(hubUrl: string, cookie: string): Promise<ApiUser> {
-  const data = await callHub<{ user: ApiUser }>(hubUrl, 'AuthService/GetCurrentUser', {}, { cookie, operation: 'getCurrentUser' })
-  return data.user
+  const data = await callHub<{ sessionReport?: { user?: ApiUser } }>(hubUrl, 'AuthService/GetCurrentUser', {}, { cookie, operation: 'getCurrentUser' })
+  const user = data.sessionReport?.user
+  if (!user)
+    throw new Error('getCurrentUser: the GetCurrentUser reply carries no user')
+  return user
 }
 
 /**
@@ -378,8 +386,7 @@ export async function signUpViaAPI(
     password,
     displayName,
     email,
-    captchaPayload: captcha.captchaPayload,
-    honeypot: captcha.honeypot,
+    captcha,
   }, { redirect: 'manual' })
   await requireHubOk(res, 'AuthService/SignUp', 'signUpViaAPI')
   return extractSessionCookie(res.headers.get('set-cookie'))
@@ -391,22 +398,44 @@ export interface WorkerSummary {
   online: boolean
 }
 
+/** The largest page ListWorkers answers, so a listing of a few workers is one round trip. */
+const WORKER_PAGE_LIMIT = 500
+
 /**
- * List the workers that `cookie` can see, in the hub's order. The one reader of ListWorkers: a worker with no ID
- * throws, and an absent `workers` field reads as no worker.
+ * The pages one listing reads before it fails. A cursor that never ends is a hub fault, and a helper that followed it
+ * would hang the spec instead of failing it.
+ */
+const WORKER_MAX_PAGES = 100
+
+/**
+ * List the workers that `cookie` can see, in the hub's order, across every page. The one reader of ListWorkers: a
+ * worker with no ID throws, an absent `workers` field reads as no worker, and an absent `page` ends the listing.
  */
 export async function listWorkersViaAPI(hubUrl: string, cookie: string, signal?: AbortSignal): Promise<WorkerSummary[]> {
-  const data = await callHub<{ workers?: Array<{ id?: string, online?: boolean }> }>(
-    hubUrl,
-    'WorkerManagementService/ListWorkers',
-    {},
-    { cookie, signal, operation: 'listWorkersViaAPI' },
-  )
-  return (data.workers ?? []).map((worker) => {
-    if (!worker.id)
-      throw new Error('listWorkersViaAPI received a worker with no ID.')
-    return { id: worker.id, online: worker.online === true }
-  })
+  const workers: WorkerSummary[] = []
+  let cursor = ''
+  for (let read = 0; read < WORKER_MAX_PAGES; read++) {
+    const data = await callHub<{ workers?: Array<{ id?: string, online?: boolean }>, page?: { nextCursor?: string } }>(
+      hubUrl,
+      'WorkerManagementService/ListWorkers',
+      {
+        page: { limit: WORKER_PAGE_LIMIT, cursor },
+      },
+      { cookie, signal, operation: 'listWorkersViaAPI' },
+    )
+    for (const worker of data.workers ?? []) {
+      if (!worker.id)
+        throw new Error('listWorkersViaAPI received a worker with no ID.')
+      workers.push({ id: worker.id, online: worker.online === true })
+    }
+    const next = data.page?.nextCursor ?? ''
+    if (next === '')
+      return workers
+    if (next === cursor)
+      throw new Error(`listWorkersViaAPI received the same cursor twice: ${next}`)
+    cursor = next
+  }
+  throw new Error(`listWorkersViaAPI read ${WORKER_MAX_PAGES} pages and the hub still reported more.`)
 }
 
 /**
@@ -448,7 +477,8 @@ export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promis
 
 /**
  * Write one hub setting through an elevated administrator session. Elevate the session before this call.
- * partialJson follows UpdateSetting. A scalar uses a JSON value. A structured setting uses an object with only the changed fields.
+ * partialJson is the public half of one UpdateSettings write. A scalar uses a JSON value. A structured setting uses an object
+ * with only the changed fields.
  */
 export async function updateSettingViaAPI(
   hubUrl: string,
@@ -456,7 +486,11 @@ export async function updateSettingViaAPI(
   key: string,
   partialJson: string,
 ): Promise<void> {
-  await callHub(hubUrl, 'AdminSettingsService/UpdateSetting', { key, partialJson }, { cookie, operation: `updateSettingViaAPI(${key})` })
+  await callHub(hubUrl, 'AdminSettingsService/UpdateSettings', {
+    writes: [
+      { key, partialJson },
+    ],
+  }, { cookie, operation: `updateSettingViaAPI(${key})` })
 }
 
 export interface SmtpCaptureTarget {
@@ -488,7 +522,7 @@ export async function configureCaptureSmtpViaAPI(
  */
 export async function waitForEmailEnabled(hubUrl: string, timeoutMs = 30_000): Promise<void> {
   await pollHub(
-    () => callHub<{ emailEnabled?: boolean }>(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'waitForEmailEnabled' }),
+    () => callHub<{ emailEnabled?: boolean }>(hubUrl, 'SystemService/GetSystemInfo', {}, { operation: 'waitForEmailEnabled' }),
     data => data.emailEnabled === true
       ? true
       : undefined,
@@ -643,8 +677,7 @@ export async function verifyEmailViaAPI(hubUrl: string, cookie: string, verifica
   const captcha = await solveCaptchaViaAPI(hubUrl)
   await callHub(hubUrl, 'UserService/VerifyEmail', {
     verificationToken,
-    captchaPayload: captcha.captchaPayload,
-    honeypot: captcha.honeypot,
+    captcha,
   }, { cookie, operation: 'verifyEmailViaAPI' })
 }
 
@@ -721,11 +754,8 @@ export interface OpenAgentOptions {
   agentSessionId?: string
   /** Initial values for any provider option group. A model here fails: give it as `model`. */
   optionValues?: Record<string, string>
-  createWorktree?: boolean
-  worktreeBranch?: string
-  worktreeBaseBranch?: string
-  checkoutBranch?: string
-  useWorktreePath?: string
+  /** The git setup that the Worker applies before the agent starts. Absent uses the directory as it is. */
+  gitSetup?: MessageInitShape<typeof GitSetupSchema>
   /** The provider. Omit it for the Worker default, because an explicit `UNSPECIFIED` fails. */
   agentProvider?: AgentProvider
   /**
@@ -785,11 +815,8 @@ export async function openAgentViaAPI(
   // Channels hold no workspace set. A workspace created after the handshake needs no announcement before a worker serves its tabs.
   const resp = await channel.callWorker(
     workerId,
-    'OpenAgent',
-    OpenAgentRequestSchema,
-    OpenAgentResponseSchema,
+    WorkerAgentService.method.openAgent,
     {
-      workerId,
       workingDir: workingDir ?? '',
       ...(options.agentSessionId !== undefined
         ? { agentSessionId: options.agentSessionId }
@@ -803,18 +830,9 @@ export async function openAgentViaAPI(
       ...(options.agentProvider === undefined
         ? {}
         : { agentProvider: options.agentProvider }),
-      ...(options.createWorktree
-        ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' }
-        : {}),
-      ...(options.worktreeBaseBranch
-        ? { worktreeBaseBranch: options.worktreeBaseBranch }
-        : {}),
-      ...(options.checkoutBranch
-        ? { checkoutBranch: options.checkoutBranch }
-        : {}),
-      ...(options.useWorktreePath
-        ? { useWorktreePath: options.useWorktreePath }
-        : {}),
+      ...(options.gitSetup === undefined
+        ? {}
+        : { gitSetup: options.gitSetup }),
     },
   )
   if (!resp.agent) {
@@ -930,9 +948,7 @@ export async function deleteWorkspaceViaAPI(
   const channel = await getTestChannel(hubUrl, cookie)
   await finishCleanup(reachable.map(worker => channel.callWorker(
     worker.workerId,
-    'CleanupWorkspace',
-    CleanupWorkspaceRequestSchema,
-    CleanupWorkspaceResponseSchema,
+    WorkerTabService.method.cleanupWorkspace,
     { tabs: worker.tabs },
   )))
 }
@@ -1062,7 +1078,9 @@ export async function resetAllUserSettingsViaAPI(
 
 /** Clear SMTP so EmailVerificationEffective turns off. */
 export async function clearSmtpViaAPI(hubUrl: string, adminCookie: string): Promise<void> {
-  await callHub(hubUrl, 'AdminSettingsService/ResetSetting', { key: 'smtp' }, { cookie: adminCookie, operation: 'clearSmtpViaAPI' })
+  await callHub(hubUrl, 'AdminSettingsService/ResetSettings', {
+    keys: ['smtp'],
+  }, { cookie: adminCookie, operation: 'clearSmtpViaAPI' })
 }
 
 /**

@@ -16,11 +16,11 @@ func validateTabIDCrossTabTypes(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1
 		var tabType leapmuxv1.TabType
 		switch body := op.GetBody().(type) {
 		case *leapmuxv1.CrdtOp_SetTabRegister:
-			tabID = body.SetTabRegister.GetTabId()
-			tabType = body.SetTabRegister.GetTabType()
+			tabID = body.SetTabRegister.GetTab().GetTabId()
+			tabType = body.SetTabRegister.GetTab().GetTabType()
 		case *leapmuxv1.CrdtOp_TombstoneTab:
-			tabID = body.TombstoneTab.GetTabId()
-			tabType = body.TombstoneTab.GetTabType()
+			tabID = body.TombstoneTab.GetTab().GetTabId()
+			tabType = body.TombstoneTab.GetTab().GetTabType()
 		case *leapmuxv1.CrdtOp_ReviveTab:
 			tabID = body.ReviveTab.GetTab().GetTabId()
 			tabType = body.ReviveTab.GetTab().GetTabType()
@@ -112,7 +112,7 @@ func batchHasStructuralOp(batch []*leapmuxv1.CrdtOp) bool {
 		switch body := op.GetBody().(type) {
 		case *leapmuxv1.CrdtOp_TombstoneNode,
 			*leapmuxv1.CrdtOp_TombstoneFloatingWindow,
-			*leapmuxv1.CrdtOp_SetWorkspaceRootNode:
+			*leapmuxv1.CrdtOp_CreateWorkspace:
 			return true
 		case *leapmuxv1.CrdtOp_SetNodeRegister:
 			// Only Kind flips can transition a leaf into a non-leaf.

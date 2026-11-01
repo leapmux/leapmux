@@ -112,10 +112,6 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 		"cleanup must drop this spawn's reference; the mint's tab comes from the live inventory, not from here")
 }
 
-// TestFactory_TerminalSpawnAcquiresAndCleanupReleases pins the lifecycle
-// contract for terminal spawns: every terminal Acquires the user's
-// delegation slot on construction and Releases it on cleanup. Mirrors the
-// agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
 // envValue reads one LEAPMUX_CONTROL_* value out of a spawn's env slice.
 func envValue(t *testing.T, envs []string, key string) string {
 	t.Helper()
@@ -228,6 +224,10 @@ func TestFactory_AgentSpawnNamesNoTerminal(t *testing.T) {
 	assert.Empty(t, envValue(t, envs, "LEAPMUX_CONTROL_TERMINAL_ID"))
 }
 
+// TestFactory_TerminalSpawnAcquiresAndCleanupReleases pins the lifecycle
+// contract for terminal spawns: every terminal Acquires the user's
+// delegation slot on construction and Releases it on cleanup. Mirrors the
+// agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
 func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}
@@ -278,6 +278,48 @@ func TestFactory_AgentSpawnAdvertisesItsTabContext(t *testing.T) {
 	assert.Equal(t, "worker-A", who.GetWorkerId())
 	assert.Equal(t, "agent-1", who.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, who.GetTabType())
+	assert.Empty(t, who.GetUsername(), "a factory with no username lookup reports none")
+}
+
+// Every socket the factory spawns answers Whoami with the username that the
+// factory's lookup gives for the spawn's user. The lookup runs at each call,
+// so a rename of the owner reaches a process that is already running.
+func TestFactory_SpawnReportsTheOwnerUsernameThroughWhoami(t *testing.T) {
+	withTempSocketRoot(t)
+	var username atomic.Pointer[string]
+	alice := "alice"
+	username.Store(&alice)
+	f := &controlipc.Factory{
+		WorkerID: "worker-A",
+		OwnerUsername: func(user userid.UserID) string {
+			if !user.Matches("user-1") {
+				return ""
+			}
+			return *username.Load()
+		},
+	}
+
+	agentEnvs, agentCleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(agentCleanup)
+	terminalEnvs, terminalCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
+		UserID:   userid.MustNew("user-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+	})
+	require.NoError(t, err)
+	t.Cleanup(terminalCleanup)
+
+	assert.Equal(t, "alice", dialAndWhoami(t, agentEnvs).GetUsername(), "an agent's socket reports the owner")
+	assert.Equal(t, "alice", dialAndWhoami(t, terminalEnvs).GetUsername(), "a terminal's socket reports the owner")
+
+	renamed := "alice2"
+	username.Store(&renamed)
+	assert.Equal(t, "alice2", dialAndWhoami(t, agentEnvs).GetUsername(), "a running process sees the rename")
 }
 
 // TestFactory_NilDelegationIsTolerated documents that the Delegation

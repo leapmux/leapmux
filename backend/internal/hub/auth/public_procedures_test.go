@@ -40,7 +40,7 @@ var publicProcedureRationale = map[string]string{
 	leapmuxv1connect.AuthServiceLoginProcedure:                           "credential-acquiring: verifies username/password itself",
 	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:          "credential-acquiring: atomically claims a passwordless solo account and creates a session",
 	leapmuxv1connect.AuthServiceSignUpProcedure:                          "credential-acquiring: requires the signup-enabled config and the first-admin rules",
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                   "discloses only pre-login system facts (auth modes, setup state)",
+	leapmuxv1connect.SystemServiceGetSystemInfoProcedure:                 "discloses only pre-login system facts (auth modes, setup state)",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:               "discloses only which OAuth providers are configured, pre-login",
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:           "keyed by the single-use pending-signup id issued by the OAuth callback",
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:             "keyed by the single-use pending-signup id issued by the OAuth callback",
@@ -56,9 +56,9 @@ var publicProcedureRationale = map[string]string{
 
 	// Self-authenticating against a worker credential the interceptor cannot
 	// parse. Each handler resolves the caller itself and refuses without it.
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                "handler validates the registration key in its own Authorization header",
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                 "handler validates the worker auth_token in the stream's Authorization header",
-	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: "AuthenticateWorkerBearer resolves the worker and its registrant from the auth_token, and scopes the response to that owner",
+	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:               "handler validates the registration key in its own Authorization header",
+	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                "handler validates the worker auth_token in the stream's Authorization header",
+	leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure: "AuthenticateWorkerBearer resolves the worker and its registrant from the auth_token, and scopes the response to that owner",
 }
 
 // TestPublicProceduresAreRationaleClassified is a tripwire coupling the
@@ -81,33 +81,6 @@ func TestPublicProceduresAreRationaleClassified(t *testing.T) {
 		assert.Truef(t, publicProcedures[procedure],
 			"%q has a public-procedure rationale but is no longer public; drop the entry so the list keeps meaning what it says",
 			procedure)
-	}
-}
-
-// TestPublicAndDelegationListsAreDisjoint pins that the two allowlists never
-// name the same procedure.
-//
-// They answer different questions -- "may an unauthenticated request through?"
-// versus "what does a scoped credential need to call this?" -- and the scope
-// rung runs only for an AUTHENTICATED caller, which a public procedure
-// short-circuits before reaching. An entry in both would therefore read as a
-// reviewed scope requirement while the interceptor was already waving every
-// caller through.
-//
-// ScopePublic is exactly that record, and this asserts the two sets are the
-// SAME set rather than merely disjoint: a public procedure with a named scope
-// would document a bound nothing enforces, and a ScopePublic record for a
-// procedure that is not public would document a waiver that does not exist.
-func TestPublicProceduresAreRecordedAsScopePublic(t *testing.T) {
-	for procedure := range publicProcedures {
-		assert.Truef(t, ScopeRequirementFor(procedure).IsPublic(),
-			"%q is public but not recorded as ScopePublic in procedureScopes", procedure)
-	}
-	for procedure, requirement := range procedureScopes {
-		if requirement.IsPublic() {
-			assert.Truef(t, publicProcedures[procedure],
-				"%q is recorded as ScopePublic but the interceptor does not waive it", procedure)
-		}
 	}
 }
 
@@ -203,7 +176,7 @@ var workerHubClientLocals = map[string]bool{
 //
 // Suffix rather than exact match because a call site knows only the METHOD
 // (ListOwnedTabsForWorker) while the constant carries its service
-// (WorkerReconcilerServiceListOwnedTabsForWorkerProcedure). Membership still
+// (WorkerConnectorServiceListOwnedTabsForWorkerProcedure). Membership still
 // resolves through knownProcedurePaths to the generated PATH, so a proto rename
 // cannot make this pass vacuously.
 func anyPublicProcedureEndsWith(suffix string) bool {
@@ -234,7 +207,7 @@ func publicProceduresContainsConstant(constant string) bool {
 // constants; a service added here without an entry fails the test above, which
 // is the intended nudge.
 var knownProcedurePaths = map[string]string{
-	"WorkerReconcilerServiceListOwnedTabsForWorkerProcedure": leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure,
-	"WorkerConnectorServiceRegisterProcedure":                leapmuxv1connect.WorkerConnectorServiceRegisterProcedure,
-	"WorkerConnectorServiceConnectProcedure":                 leapmuxv1connect.WorkerConnectorServiceConnectProcedure,
+	"WorkerConnectorServiceListOwnedTabsForWorkerProcedure": leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure,
+	"WorkerConnectorServiceRegisterProcedure":               leapmuxv1connect.WorkerConnectorServiceRegisterProcedure,
+	"WorkerConnectorServiceConnectProcedure":                leapmuxv1connect.WorkerConnectorServiceConnectProcedure,
 }

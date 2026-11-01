@@ -66,7 +66,7 @@ func (f *fakeWorkspaceService) ListTabs(ctx context.Context, req *leapmuxv1.List
 		f.gotProto = proto
 	}
 	return &leapmuxv1.ListTabsResponse{
-		Tabs: []*leapmuxv1.WorkspaceTab{{TabId: "t-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		Tabs: []*leapmuxv1.WorkspaceTab{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-1"}}},
 	}, nil
 }
 
@@ -164,7 +164,7 @@ func TestHubUnaryBridge_ReachesAPlaintextHub(t *testing.T) {
 	var resp leapmuxv1.ListTabsResponse
 	require.NoError(t, proto.Unmarshal(out, &resp))
 	require.Len(t, resp.GetTabs(), 1)
-	assert.Equal(t, "t-1", resp.GetTabs()[0].GetTabId())
+	assert.Equal(t, "t-1", resp.GetTabs()[0].GetTab().GetTabId())
 	assert.Equal(t, "Bearer "+testBearer, workspaces.gotAuth, "the delegation bearer must reach the hub")
 	// The h2c PREFERENCE, which is the whole reason this lane exists: against a
 	// hub that speaks it, the unary call must arrive over HTTP/2 and not fall

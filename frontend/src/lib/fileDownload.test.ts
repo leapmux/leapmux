@@ -130,10 +130,11 @@ describe('downloadFileFromWorker', () => {
 
     expect(readFileImpl).toHaveBeenCalledTimes(1)
     expect(readFileImpl).toHaveBeenCalledWith('w1', expect.objectContaining({
-      workerId: 'w1',
       path: '/repo/hello.txt',
       offset: 0n,
     }))
+    // The worker id routes the read and stays out of the request body.
+    expect(readFileImpl.mock.calls[0]?.[1]).not.toHaveProperty('workerId')
     expect(anchor.clickSpy).toHaveBeenCalledTimes(1)
     expect(createUrlSpy).toHaveBeenCalledTimes(1)
 

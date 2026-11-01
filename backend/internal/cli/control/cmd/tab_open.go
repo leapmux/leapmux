@@ -6,6 +6,7 @@ import (
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -112,7 +113,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		// `tab open --type=agent` issues up to four inner-RPCs against the SAME
 		// worker: ListAvailableProviders (only when --provider is omitted),
 		// OpenAgent, the optional initial EnqueueAgentInput, and a rollback
-		// CloseAgent on CRDT failure. Hoisting one Noise_NK channel over the
+		// CloseTab on CRDT failure. Hoisting one Noise_NK channel over the
 		// whole sequence pays the handshake once instead of per call.
 		var result *openAgentResult
 		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
@@ -158,7 +159,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 			return err
 		}
 		// Same hoist as the agent branch: OpenTerminal and its rollback
-		// CloseTerminal target one worker, so one handshake covers both.
+		// CloseTab target one worker, so one handshake covers both.
 		var result *openTerminalResult
 		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
 			var err error
@@ -282,7 +283,7 @@ func registerFileTabPayload(ctx context.Context, c *control.Client, workerID, ta
 		},
 	}
 	var resp leapmuxv1.RegisterTabPayloadResponse
-	return callInnerRPCBest(ctx, c, workerID, "RegisterTabPayload", req, &resp)
+	return callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, req, &resp)
 }
 
 // findWorkerForWorkspaceInState returns the first worker_id hosting a

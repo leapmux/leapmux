@@ -3,13 +3,20 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { gitRepositoryWorkingDir } from './providerWorkingDir'
-import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, ensureGitRepositoryRoot, gitTopLevel, initGitRepo, managedWorktreePath } from './worktree'
+import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, createWorkspaceWithWorktreeViaAPI, ensureGitRepositoryRoot, gitTopLevel, initGitRepo, managedWorktreePath } from './worktree'
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
 vi.mock('./runDirectory', () => ({
   createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)),
 }))
+
+// The hub and the Worker that the API helpers reach.
+const api = vi.hoisted(() => ({
+  createWorkspaceViaAPI: vi.fn<(...args: unknown[]) => Promise<string>>(),
+  openAgentViaAPI: vi.fn<(...args: unknown[]) => Promise<string>>(),
+}))
+vi.mock('./api', () => api)
 
 /** Run git in `cwd` and return its trimmed output. */
 function gitOutput(cwd: string, args: string[]): string {
@@ -131,5 +138,28 @@ describe('git repository helpers', () => {
     const linked = addWorktree(dir, root, 'elsewhere/linked', 'linked-branch')
     expect(managedWorktreePath(linked, 'feature')).toBe(expected)
     expect(existsSync(expected)).toBe(false)
+  })
+
+  it('createWorkspaceWithWorktreeViaAPI opens the agent with a git setup that creates the branch, and returns the managed worktree', async () => {
+    const repo = createGitRepo(root, 'repo')
+    const expected = managedWorktreePath(repo, 'feature/new')
+    api.createWorkspaceViaAPI.mockReset().mockResolvedValue('ws-1')
+    // The Worker creates the managed worktree while the agent starts.
+    api.openAgentViaAPI.mockReset().mockImplementation(async () => {
+      mkdirSync(expected, { recursive: true })
+      return 'agent-1'
+    })
+    await expect(createWorkspaceWithWorktreeViaAPI('http://hub.test', 'session', 'worker-1', 'Docs', repo, 'feature/new'))
+      .resolves
+      .toEqual({ workspaceId: 'ws-1', worktreeDir: expected })
+    expect(api.createWorkspaceViaAPI).toHaveBeenCalledExactlyOnceWith('http://hub.test', 'session', 'Docs')
+    expect(api.openAgentViaAPI).toHaveBeenCalledExactlyOnceWith({ hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker-1' }, 'ws-1', repo, {
+      gitSetup: {
+        mode: {
+          case: 'createWorktree',
+          value: { branch: 'feature/new' },
+        },
+      },
+    })
   })
 })

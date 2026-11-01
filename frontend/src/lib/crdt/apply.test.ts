@@ -1,19 +1,19 @@
-import { create } from '@bufbuild/protobuf'
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { create, fromBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { HLCSchema, NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { HLCSchema, NodeKind, WorkspaceContentsRecordSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
+  CreateWorkspaceOpSchema,
   ReviveTabOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
-  SetWorkspaceRegisterOpSchema,
-  SetWorkspaceRootNodeOpSchema,
   TombstoneNodeOpSchema,
   TombstoneTabOpSchema,
   TombstoneWorkspaceOpSchema,
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
 
 function hlc(physical: bigint, logical: bigint, clientId: string) {
@@ -75,8 +75,7 @@ function setTabTileIdOp(tabId: string, tileId: string, p: bigint, l: bigint, c: 
     body: {
       case: 'setTabRegister',
       value: create(SetTabRegisterOpSchema, {
-        tabType: TabType.AGENT,
-        tabId,
+        tab: { tabType: TabType.AGENT, tabId },
         field: { case: 'tileId', value: tileId },
       }),
     },
@@ -88,7 +87,9 @@ function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'tombstoneTab',
-      value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }),
+      value: create(TombstoneTabOpSchema, {
+        tab: { tabType: TabType.AGENT, tabId },
+      }),
     },
   })
 }
@@ -253,26 +254,20 @@ describe('applyOp', () => {
     expect(x).toBe(0)
   })
 
-  // Regression pin: when the seed-batch `SetWorkspaceRootNode` op
-  // arrives on a subscriber whose `UserMaterialized` predated the
-  // workspace, `state.workspaces[wsID]` is absent. The hub's lifecycle
-  // create batch seeds the record via a `SetWorkspaceRegisterOp` in the
-  // same batch, but a subscriber whose filter drops that seed batch (or
-  // a replay where the companion op was compacted away) reaches this op
-  // with no record. The apply layer must lazy-create the record;
-  // without this the op was a silent no-op,
-  // `state.workspaces[wsID].rootNodeId` stayed empty,
-  // `seedTabIntoNewWorkspace` timed out, and the new workspace rendered
-  // an empty tile via the layout store's FALLBACK_LEAF instead of the
-  // real root.
-  it('setWorkspaceRootNode lazy-creates the workspace record when absent', () => {
+  // Regression pin: a create op arriving on a subscriber whose
+  // `UserMaterialized` predated the workspace finds `state.workspaces[wsID]`
+  // absent. The apply layer must create the record; without it
+  // `state.workspaces[wsID].rootNodeId` stayed empty, `seedTabIntoNewWorkspace`
+  // timed out, and the new workspace rendered an empty tile via the layout
+  // store's FALLBACK_LEAF instead of the real root.
+  it('createWorkspace creates the workspace record with its root when absent', () => {
     const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
     const op = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRootNode',
-        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
       },
     })
     applyOp(state, op)
@@ -281,38 +276,38 @@ describe('applyOp', () => {
     expect(state.workspaces.w1?.rootNodeId).toBe('root-w1')
   })
 
-  it('setWorkspaceRootNode preserves an already-set rootNodeId (set-once)', () => {
+  it('createWorkspace preserves an already-set rootNodeId (set-once)', () => {
     const state = newState('user')
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRootNode',
-        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'first-root' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1', rootNodeId: 'first-root' }),
       },
     }))
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(20n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRootNode',
-        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'second-root' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1', rootNodeId: 'second-root' }),
       },
     }))
     // Set-once semantics: the second register must not overwrite.
     expect(state.workspaces.w1?.rootNodeId).toBe('first-root')
   })
 
-  // setWorkspaceRegister seeds the WorkspaceContentsRecord map entry. It is
-  // the lifecycle create op that now carries workspace-map membership through
-  // the serialized submit pipeline (replacing the old out-of-band
-  // MutateInternal). Mirrors backend `applySetWorkspaceRegister`.
-  it('setWorkspaceRegister seeds an empty workspace record', () => {
+  // createWorkspace is the lifecycle create op that carries workspace-map
+  // membership through the serialized submit pipeline (replacing the old
+  // out-of-band MutateInternal). A create with no root still creates the
+  // record. Mirrors backend `applyCreateWorkspace`.
+  it('createWorkspace with no root creates an empty workspace record', () => {
     const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRegister',
-        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1' }),
       },
     }))
     expect(state.workspaces.w1).toBeDefined()
@@ -320,22 +315,22 @@ describe('applyOp', () => {
     expect(state.workspaces.w1?.rootNodeId).toBe('')
   })
 
-  it('setWorkspaceRegister is idempotent and does not clobber a rooted record', () => {
+  it('createWorkspace with no root does not clear a rooted record', () => {
     // A re-drained create seed batch (after a transient consume fault) must
     // not clear an existing root_node_id the user has since populated.
     const state = newState('user')
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRootNode',
-        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
       },
     }))
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(20n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRegister',
-        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1' }),
       },
     }))
     expect(state.workspaces.w1?.rootNodeId).toBe('root-w1')
@@ -349,8 +344,8 @@ describe('applyOp', () => {
     applyOp(state, create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'hub'),
       body: {
-        case: 'setWorkspaceRegister',
-        value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1' }),
       },
     }))
     applyOp(state, create(CrdtOpSchema, {
@@ -375,5 +370,149 @@ describe('applyOp', () => {
       },
     }))).not.toThrow()
     expect(state.workspaces.w1).toBeUndefined()
+  })
+})
+
+describe('applyOp with an untyped tab', () => {
+  // A tab identity is a type and an id. protobuf-es decodes an op stored under
+  // the older numbering as a tab id with no type; applying it must neither
+  // create a tab of no type nor close a tab it cannot type.
+  it('ignores a tab op with no tab type', () => {
+    const state = newState('user')
+    applyOp(state, setTabTileIdOp('t1', 'root', 5n, 0n, 'a'))
+    const untyped = (body: CrdtOp['body']) => create(CrdtOpSchema, {
+      canonicalHlc: hlc(20n, 0n, 'a'),
+      body,
+    })
+
+    applyOp(state, untyped({
+      case: 'setTabRegister',
+      value: create(SetTabRegisterOpSchema, {
+        tab: { tabId: 'fresh' },
+        field: { case: 'tileId', value: 'x' },
+      }),
+    }))
+    applyOp(state, untyped({
+      case: 'tombstoneTab',
+      value: create(TombstoneTabOpSchema, {
+        tab: { tabId: 't1' },
+      }),
+    }))
+    applyOp(state, untyped({
+      case: 'reviveTab',
+      value: create(ReviveTabOpSchema, {
+        tab: { tabId: 'fresh' },
+      }),
+    }))
+
+    expect(state.tabs.fresh).toBeUndefined()
+    expect(state.tabs.t1?.tombstoneAt).toBeUndefined()
+    expect(state.tabs.t1?.tileId?.value).toBe('root')
+  })
+})
+
+describe('applyOp with an empty tab id', () => {
+  // A replayed or misdecoded op can carry no tab id. Applying it must not
+  // create a record under the empty key, which every reader would then treat as
+  // a real tab.
+  it('ignores a tab op with no tab id', () => {
+    const state = newState('user')
+
+    applyOp(state, setTabTileIdOp('', 'tile', 10n, 0n, 'a'))
+    applyOp(state, tombstoneTabOp('', 11n, 0n, 'a'))
+
+    expect(state.tabs['']).toBeUndefined()
+    expect(Object.keys(state.tabs)).toHaveLength(0)
+  })
+})
+
+// A register op that selects no register writes nothing, so it must not create
+// a record either. The hub refuses such an op from a client, but a replayed
+// journal op or a stored checkpoint skips that check.
+describe('applyOp register ops with no field', () => {
+  it('creates no record for a register op with no field', () => {
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'a'),
+      body: {
+        case: 'setNodeRegister',
+        value: create(SetNodeRegisterOpSchema, { nodeId: 'n1' }),
+      },
+    }))
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(11n, 0n, 'a'),
+      body: {
+        case: 'setTabRegister',
+        value: create(SetTabRegisterOpSchema, {
+          tab: { tabType: TabType.AGENT, tabId: 't1' },
+        }),
+      },
+    }))
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(12n, 0n, 'a'),
+      body: {
+        case: 'setFloatingWindowRegister',
+        value: create(SetFloatingWindowRegisterOpSchema, { windowId: 'fw1' }),
+      },
+    }))
+
+    expect(Object.keys(state.nodes)).toHaveLength(0)
+    expect(Object.keys(state.tabs)).toHaveLength(0)
+    expect(Object.keys(state.floatingWindows)).toHaveLength(0)
+  })
+
+  // workspace_id moved from field 9 to field 16, so the payload oneof runs
+  // from 10 with no hole and fields 10-15 keep their meaning. A stored op that
+  // wrote field 9 now decodes with no field selected.
+  it('ignores a stored floating window op of the old numbering', () => {
+    // window_id = "fw1" (field 1), then the old workspace_id = "w1" (field 9).
+    const stored = new Uint8Array([
+      0x0A,
+      0x03,
+      0x66,
+      0x77,
+      0x31,
+      0x4A,
+      0x02,
+      0x77,
+      0x31,
+    ])
+    const op = fromBinary(SetFloatingWindowRegisterOpSchema, stored)
+    expect(op.windowId).toBe('fw1')
+    expect(op.field.case).toBeUndefined()
+
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'a'),
+      body: { case: 'setFloatingWindowRegister', value: op },
+    }))
+    expect(Object.keys(state.floatingWindows)).toHaveLength(0)
+  })
+})
+
+describe('applyOp createWorkspace edge cases', () => {
+  it('sets the root of a record that has none', () => {
+    const state = newState('user')
+    state.workspaces.w1 = create(WorkspaceContentsRecordSchema, { workspaceId: 'w1' })
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: 'w1', rootNodeId: 'root-w1' }),
+      },
+    }))
+    expect(state.workspaces.w1?.rootNodeId).toBe('root-w1')
+  })
+
+  it('ignores an empty workspace id', () => {
+    const state = newState('user')
+    applyOp(state, create(CrdtOpSchema, {
+      canonicalHlc: hlc(10n, 0n, 'hub'),
+      body: {
+        case: 'createWorkspace',
+        value: create(CreateWorkspaceOpSchema, { workspaceId: '', rootNodeId: 'root' }),
+      },
+    }))
+    expect(Object.keys(state.workspaces)).toHaveLength(0)
   })
 })

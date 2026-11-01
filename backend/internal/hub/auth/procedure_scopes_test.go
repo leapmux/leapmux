@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -45,40 +46,59 @@ func declaredProcedurePaths(t *testing.T) []string {
 
 // TestEveryDeclaredProcedureIsScopeClassified is THE tripwire.
 //
-// A miss in procedureScopes denies every scoped credential, so an unclassified
-// procedure is fail-closed rather than an auth bypass -- which is the whole
-// reason the map states a REQUIREMENT rather than an allowance. What a miss
-// still costs is a working app: the procedure is unreachable and nobody wrote
-// down whether it should be. This turns that into a build failure at the moment
-// the method is declared.
+// A HUB method with no (leapmux.v1.access) option derives as unassigned, which
+// denies every scoped credential, so an unclassified procedure is fail-closed
+// rather than an auth bypass -- which is the whole reason the option states a
+// REQUIREMENT rather than an allowance. What a miss still costs is a working
+// app: the procedure is unreachable and nobody wrote down whether it should
+// be. This turns that into a test failure at the moment the method is
+// declared.
 func TestEveryDeclaredProcedureIsScopeClassified(t *testing.T) {
 	for _, path := range declaredProcedurePaths(t) {
 		assert.Truef(t, ScopeRequirementFor(path).IsAssigned(),
-			"procedure %q has no procedureScopes entry; it is refused to every scoped credential until one exists -- "+
-				"assign Requires(<scope>), ScopePublic, ScopeNever or ScopeNotHubServed", path)
+			"procedure %q derives no requirement; it is refused to every scoped credential until its method "+
+				"declares a (leapmux.v1.access) option or its service a non-HUB (leapmux.v1.host)", path)
 	}
 }
 
-// TestNoStaleProcedureScopeEntries is the other direction: an entry that
-// matches no declared method is a dead record, and a dead record is how a map
-// starts describing a different set from the one that exists.
-func TestNoStaleProcedureScopeEntries(t *testing.T) {
-	declared := make(map[string]bool)
-	for _, path := range declaredProcedurePaths(t) {
-		declared[path] = true
+// TestRequirementOfMapsEachDeclaration pins the derivation from the proto
+// options, including the two inputs that must stay unassigned: a HUB method
+// with no option, and one whose option selects no requirement.
+func TestRequirementOfMapsEachDeclaration(t *testing.T) {
+	hub := leapmuxv1.ServiceHost_SERVICE_HOST_HUB
+	scope := func(s leapmuxv1.Scope) *leapmuxv1.MethodAccess {
+		return &leapmuxv1.MethodAccess{Requirement: &leapmuxv1.MethodAccess_Scope{Scope: s}}
 	}
-	for procedure := range procedureScopes {
-		assert.Truef(t, declared[procedure],
-			"procedureScopes entry %q matches no declared method; remove it", procedure)
+	public := &leapmuxv1.MethodAccess{Requirement: &leapmuxv1.MethodAccess_Public{Public: &leapmuxv1.PublicAccess{}}}
+
+	assert.False(t, requirementOf(rpcaccess.Method{Host: hub}).IsAssigned(), "absent option")
+	assert.False(t, requirementOf(rpcaccess.Method{Host: hub, Access: &leapmuxv1.MethodAccess{}}).IsAssigned(),
+		"present option with no requirement selected")
+	assert.True(t, requirementOf(rpcaccess.Method{Host: hub, Access: public}).IsPublic())
+	assert.True(t, requirementOf(rpcaccess.Method{Host: hub, Access: scope(leapmuxv1.Scope_SCOPE_NEVER)}).IsNever())
+	assert.Equal(t, Requires(leapmuxv1.Scope_SCOPE_AGENT_READ),
+		requirementOf(rpcaccess.Method{Host: hub, Access: scope(leapmuxv1.Scope_SCOPE_AGENT_READ)}))
+	for _, host := range []leapmuxv1.ServiceHost{
+		leapmuxv1.ServiceHost_SERVICE_HOST_UNSPECIFIED,
+		leapmuxv1.ServiceHost_SERVICE_HOST_WORKER,
+		leapmuxv1.ServiceHost_SERVICE_HOST_WORKER_IPC,
+	} {
+		assert.Equalf(t, ScopeNotHubServed, requirementOf(rpcaccess.Method{Host: host, Access: public}),
+			"a %s method is never hub-served, whatever its option says", host)
 	}
+	assert.Panics(t, func() {
+		requirementOf(rpcaccess.Method{Host: hub, Access: scope(leapmuxv1.Scope_SCOPE_ALL)})
+	}, "an ungrantable scope must fail boot")
 }
 
 // scopeRequirementRationale records WHY each non-scope classification is what
 // it is.
 //
-// The three non-scope answers all DENY, so none of them can be wrong in a way a
+// The non-scope answers all DENY, so none of them can be wrong in a way a
 // request reveals -- which is exactly why each one needs a stated reason. A
 // reader must be able to tell "considered and refused" from "nobody looked".
+// ScopeNotHubServed needs none here: the service's (leapmux.v1.host) option
+// states it for every method at once.
 var scopeRequirementRationale = map[string]string{
 	// --- ScopeNever: the account's authenticators and credentials ----------
 	leapmuxv1connect.AuthServiceLogoutProcedure:                    "a bearer holds no session; an app ends its own credential through /oauth/revoke",
@@ -101,28 +121,17 @@ var scopeRequirementRationale = map[string]string{
 
 	// --- ScopeNever: the app registry itself ------------------------------
 
-	// --- ScopeNotHubServed: not on the Hub's Connect mux -------------------
-	leapmuxv1connect.ControlIPCServiceCallInnerProcedure:                   "the Worker's local unix socket, not a Hub procedure",
-	leapmuxv1connect.ControlIPCServiceStreamInnerProcedure:                 "the Worker's local unix socket, not a Hub procedure",
-	leapmuxv1connect.ControlIPCServiceUpdateStreamProcedure:                "the Worker's local unix socket, not a Hub procedure",
-	leapmuxv1connect.ControlIPCServiceCancelProcedure:                      "the Worker's local unix socket, not a Hub procedure",
-	leapmuxv1connect.ControlIPCServiceWhoamiProcedure:                      "the Worker's local unix socket, not a Hub procedure",
-	leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure: "dispatched by method name inside a Noise channel, not a Hub procedure",
-	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:       "dispatched by method name inside a Noise channel, not a Hub procedure",
-	leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure:            "dispatched by method name inside a Noise channel, not a Hub procedure",
-	leapmuxv1connect.WorkerPrivateServiceRevokeTabPayloadProcedure:         "dispatched by method name inside a Noise channel, not a Hub procedure",
-	leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure:            "dispatched by method name inside a Noise channel, not a Hub procedure",
 }
 
 // TestNonScopeClassificationsAreRationaleClassified is the bidirectional
 // tripwire, in the house shape of adminProcedureRationale.
 //
-// ScopePublic is excluded: TestPublicProceduresAreRecordedAsScopePublic already
-// pins that set against publicProcedures itself, which is a stronger check than
-// a prose note.
+// ScopePublic is excluded: publicProcedureRationale already records what
+// authenticates each public procedure instead, which is a stronger check than a
+// prose note here.
 func TestNonScopeClassificationsAreRationaleClassified(t *testing.T) {
 	for procedure, requirement := range procedureScopes {
-		if _, named := requirement.Scope(); named || requirement.IsPublic() {
+		if _, named := requirement.Scope(); named || requirement.IsPublic() || !requirement.IsHubServed() {
 			continue
 		}
 		note, ok := scopeRequirementRationale[procedure]
@@ -247,12 +256,12 @@ func TestEachScopeAdmitsItsProceduresAndRefusesANamedNeighbour(t *testing.T) {
 	}, {
 		scope:    leapmuxv1.Scope_SCOPE_ADMIN_READ,
 		admits:   []string{leapmuxv1connect.AdminSettingsServiceListSettingsProcedure, leapmuxv1connect.AdminUserServiceListUsersProcedure},
-		refuses:  leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure,
+		refuses:  leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure,
 		refusing: "reading the hub's administration must not rewrite its security policy",
 	}, {
 		scope:    leapmuxv1.Scope_SCOPE_ADMIN_USERS,
 		admits:   []string{leapmuxv1connect.AdminUserServiceCreateUserProcedure},
-		refuses:  leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure,
+		refuses:  leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure,
 		refusing: "this is the gap the four admin scopes exist to close: user administration is not settings administration",
 	}, {
 		scope:    leapmuxv1.Scope_SCOPE_ACCOUNT_READ,

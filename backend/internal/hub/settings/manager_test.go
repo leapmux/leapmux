@@ -56,16 +56,17 @@ func newSettingsTestStore(t *testing.T) store.Store {
 	return st
 }
 
-func newTestManager(t *testing.T) (*Manager, *Key[testValue]) {
+func newTestManager(t *testing.T, extra ...Descriptor) (*Manager, *Key[testValue]) {
 	t.Helper()
-	m, k, _ := newTestManagerWithStore(t)
+	m, k, _ := newTestManagerWithStore(t, extra...)
 	return m, k
 }
 
 // newTestManagerWithStore also hands back the store, for a test that must
 // read the stored ROW rather than the manager's snapshot. The snapshot is
-// cached, so it can agree with the expectation for the wrong reason.
-func newTestManagerWithStore(t *testing.T) (*Manager, *Key[testValue], store.Store) {
+// cached, so it can agree with the expectation for the wrong reason. extra
+// registers more keys beside the test key and SMTP.
+func newTestManagerWithStore(t *testing.T, extra ...Descriptor) (*Manager, *Key[testValue], store.Store) {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -77,7 +78,7 @@ func newTestManagerWithStore(t *testing.T) (*Manager, *Key[testValue], store.Sto
 	require.NoError(t, err)
 
 	k := testKey()
-	m := NewManager(st, ks, []Descriptor{k, KeySMTP})
+	m := NewManager(st, ks, append([]Descriptor{k, KeySMTP}, extra...))
 	require.NoError(t, m.Load(context.Background()))
 	return m, k, st
 }
@@ -138,7 +139,7 @@ func TestSecretRoundTripAndRedaction(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"smtp.example.com"}`)))
-	require.NoError(t, m.UpdateSecret(ctx, k, json.RawMessage(`{"pass":"hunter2"}`)))
+	require.NoError(t, m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"pass":"hunter2"}`)}}))
 
 	// The decrypted value reaches readers through the snapshot.
 	v := k.Of(m.Snapshot(ctx))
@@ -166,7 +167,7 @@ func TestSecretRoundTripAndRedaction(t *testing.T) {
 func TestPublicWriteNeverLosesSecret(t *testing.T) {
 	m, k := newTestManager(t)
 	ctx := context.Background()
-	require.NoError(t, m.UpdateSecret(ctx, k, json.RawMessage(`{"pass":"hunter2"}`)))
+	require.NoError(t, m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"pass":"hunter2"}`)}}))
 	// A public-half write must merge with (not wipe) the secret half.
 	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"smtp.example.com","port":25}`)))
 	v := k.Of(m.Snapshot(ctx))
@@ -333,10 +334,10 @@ func TestSnapshotServesLastGoodOnStoreFailure(t *testing.T) {
 	assert.Equal(t, "smtp2.example.com", k.Of(m.Snapshot(ctx)).Host)
 }
 
-func TestUpdateSecretRefusesNonSecretKey(t *testing.T) {
-	m, _ := newTestManager(t)
+func TestUpdateManyRefusesASecretHalfForANonSecretKey(t *testing.T) {
 	k := NewKey[bool]("plain.bool")
-	err := m.UpdateSecret(context.Background(), k, json.RawMessage(`true`))
+	m, _ := newTestManager(t, k)
+	err := m.UpdateMany(context.Background(), []KeyWrite{{Desc: k, Secret: json.RawMessage(`true`)}})
 	require.ErrorContains(t, err, "has no secret fields")
 }
 
@@ -497,10 +498,10 @@ func undecryptableSMTPManager(t *testing.T) (*Manager, context.Context) {
 // TestSecretRotationIsAcceptedThroughEitherHalf pins the rotation test in
 // mergeForUpdate, which reads BOTH halves of a KeyWrite.
 //
-// Which half a rotation arrives in is the VERB's choice, not the operator's:
-// Update sends its whole document in KeyWrite.Public and UpdateSecret sends
+// Which half a rotation arrives in is the CALLER's choice, not the operator's:
+// Update sends its whole document in KeyWrite.Public, and a secret write sends
 // its own in KeyWrite.Secret. A test that reads one half therefore refuses
-// every rotation that arrives through the other verb -- the operator is told
+// every rotation that arrives through the other half -- the operator is told
 // to restore the key version or run the reencrypt command although the
 // document already carries the replacement secret.
 //
@@ -513,9 +514,6 @@ func TestSecretRotationIsAcceptedThroughEitherHalf(t *testing.T) {
 	}{
 		{"Update carries it in the public half", func(m *Manager, ctx context.Context, doc json.RawMessage) error {
 			return m.Update(ctx, KeySMTP, doc)
-		}},
-		{"UpdateSecret carries it in the secret half", func(m *Manager, ctx context.Context, doc json.RawMessage) error {
-			return m.UpdateSecret(ctx, KeySMTP, doc)
 		}},
 		{"UpdateMany carries it in the public half", func(m *Manager, ctx context.Context, doc json.RawMessage) error {
 			return m.UpdateMany(ctx, []KeyWrite{{Desc: KeySMTP, Public: doc}})
@@ -674,7 +672,8 @@ func TestSignupEnabledEffectiveDevDefaultNotCustomized(t *testing.T) {
 // signal at the edit site.
 func TestManagerWriteErrorsAreTyped(t *testing.T) {
 	ctx := context.Background()
-	m, k := newTestManager(t)
+	plain := NewKey[bool]("test.plain").WithDefault(false)
+	m, k := newTestManager(t, plain)
 
 	t.Run("an unregistered key", func(t *testing.T) {
 		unknown := NewKey[testValue]("never.registered").WithDefault(testValue{Port: 1})
@@ -697,9 +696,12 @@ func TestManagerWriteErrorsAreTyped(t *testing.T) {
 	})
 
 	t.Run("a secret write to a key with no secret half", func(t *testing.T) {
-		plain := NewKey[bool]("test.plain").WithDefault(false)
+		// The key is registered, so the refusal is the secret rule's and not
+		// the registration check's.
+		err := m.UpdateMany(ctx, []KeyWrite{{Desc: plain, Secret: json.RawMessage(`{"x":"y"}`)}})
 		var invalid *InvalidError
-		assert.ErrorAs(t, m.UpdateSecret(ctx, plain, json.RawMessage(`{"x":"y"}`)), &invalid)
+		assert.ErrorAs(t, err, &invalid)
+		assert.ErrorContains(t, err, "has no secret fields")
 	})
 }
 
@@ -791,8 +793,8 @@ func TestUpdateManyValidatesEveryKeyBeforeWritingAny(t *testing.T) {
 	assert.ErrorIs(t, getErr, store.ErrNotFound, "the first write must leave no stored row behind")
 }
 
-// TestUpdateManyRefusesASecretHalfForAKeyWithNoSecretFields keeps the
-// atomic verb's secret rule identical to UpdateSecret's.
+// TestUpdateManyRefusesASecretHalfForAKeyWithNoSecretFields pins the secret
+// rule on the one verb that writes a secret half.
 //
 // mergeForUpdate overlays Secret through the same loop it overlays Public
 // with, so a secret half sent to a key that declares no secret field was
@@ -820,11 +822,6 @@ func TestUpdateManyRefusesASecretHalfForAKeyWithNoSecretFields(t *testing.T) {
 	require.Error(t, err)
 	var invalid *InvalidError
 	require.ErrorAs(t, err, &invalid, "a caller-supplied shape is InvalidArgument, not a store fault")
-
-	single := m.UpdateSecret(ctx, KeySignupEnabled, partial)
-	require.Error(t, single)
-	assert.Equal(t, single.Error(), err.Error(),
-		"the two verbs must refuse the same input with the same words")
 
 	assert.False(t, m.Snapshot(ctx).Customized(KeySignupEnabled),
 		"the refused write must store nothing")
@@ -858,10 +855,10 @@ func TestUpdateManyRefusesAnUnregisteredKey(t *testing.T) {
 // for "leave it alone".
 //
 // The table crosses every verb with every shape, so one message and one
-// classification cover the surface. Update and UpdateSecret reach the rule
-// through UpdateMany, and UpdateSecret ALSO calls it itself: its own
-// secret-field check finds no secret field in an empty document, so it must
-// answer the empty-document message rather than the secret-field one.
+// classification cover the surface. Update reaches the rule through
+// UpdateMany. The secret half's own secret-field check finds no secret field
+// in an empty document, so the secret half must answer the empty-document
+// message rather than the secret-field one.
 //
 // SetValue and SetIfAbsent are deliberately absent. They take a COMPLETE
 // value, so they carry no partial document that can be empty; their
@@ -875,7 +872,6 @@ func TestEveryWriteVerbRefusesAnInertPartialDocument(t *testing.T) {
 		write func(json.RawMessage) error
 	}{
 		{"Update", func(p json.RawMessage) error { return m.Update(ctx, k, p) }},
-		{"UpdateSecret", func(p json.RawMessage) error { return m.UpdateSecret(ctx, k, p) }},
 		{"UpdateMany public half", func(p json.RawMessage) error {
 			return m.UpdateMany(ctx, []KeyWrite{{Desc: k, Public: p}})
 		}},
@@ -928,15 +924,15 @@ func TestEveryWriteVerbRefusesAnInertPartialDocument(t *testing.T) {
 	assert.Equal(t, 2525, k.Of(m.Snapshot(ctx)).Port)
 }
 
-// TestUpdateSecretRefusesADocumentWithNoSecretField pins the secret verb's
-// own rule: the surface documents it as writing the ENCRYPTED half, and a
-// document that specifies only public fields would rewrite them through
-// the verb whose whole purpose is the secret.
-func TestUpdateSecretRefusesADocumentWithNoSecretField(t *testing.T) {
+// TestUpdateManyRefusesASecretHalfWithNoSecretField pins the secret half's
+// own rule: the surface documents it as writing the ENCRYPTED fields, and a
+// document that specifies only public fields would rewrite them through the
+// half whose whole purpose is the secret.
+func TestUpdateManyRefusesASecretHalfWithNoSecretField(t *testing.T) {
 	m, k, st := newTestManagerWithStore(t)
 	ctx := context.Background()
 
-	err := m.UpdateSecret(ctx, k, json.RawMessage(`{"host":"evil.example"}`))
+	err := m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"host":"evil.example"}`)}})
 	require.Error(t, err)
 	var invalid *InvalidError
 	require.ErrorAs(t, err, &invalid)
@@ -946,8 +942,46 @@ func TestUpdateSecretRefusesADocumentWithNoSecretField(t *testing.T) {
 
 	// A document that does specify the secret field is accepted, including
 	// beside a public one.
-	require.NoError(t, m.UpdateSecret(ctx, k, json.RawMessage(`{"pass":"s3cret"}`)))
+	require.NoError(t, m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"pass":"s3cret","host":"smtp.example"}`)}}))
 	assert.Equal(t, "s3cret", k.Of(m.Snapshot(ctx)).Pass)
+}
+
+// The secret-field rule judges the secret half alone. A valid public half on
+// the same key does not excuse a secret half that names only public fields,
+// and a refused secret half on a later key leaves every earlier key unwritten,
+// because the rule runs in the validation pass before any row is written.
+func TestUpdateManyJudgesTheSecretHalfOnItsOwn(t *testing.T) {
+	t.Run("beside a valid public half on the same key", func(t *testing.T) {
+		m, k, st := newTestManagerWithStore(t)
+		ctx := context.Background()
+
+		err := m.UpdateMany(ctx, []KeyWrite{{
+			Desc:   k,
+			Public: json.RawMessage(`{"port":2525}`),
+			Secret: json.RawMessage(`{"host":"evil.example"}`),
+		}})
+		var invalid *InvalidError
+		require.ErrorAs(t, err, &invalid)
+		assert.Contains(t, err.Error(), "must specify at least one of")
+		_, getErr := st.Settings().Get(ctx, k.Name())
+		assert.ErrorIs(t, getErr, store.ErrNotFound, "the valid public half must not be stored alone")
+	})
+
+	t.Run("on a later key of a multi-key write", func(t *testing.T) {
+		m, k, st := newTestManagerWithStore(t)
+		ctx := context.Background()
+
+		err := m.UpdateMany(ctx, []KeyWrite{
+			{Desc: k, Public: json.RawMessage(`{"host":"applied.example.com"}`)},
+			{Desc: KeySMTP, Secret: json.RawMessage(`{"host":"evil.example"}`)},
+		})
+		require.ErrorContains(t, err, "must specify at least one of")
+		assert.Contains(t, err.Error(), "password", "the message lists the refused key's secret fields")
+		_, getErr := st.Settings().Get(ctx, k.Name())
+		assert.ErrorIs(t, getErr, store.ErrNotFound, "the earlier key must not be stored")
+		_, getErr = st.Settings().Get(ctx, KeySMTP.Name())
+		assert.ErrorIs(t, getErr, store.ErrNotFound)
+	})
 }
 
 // TestUpdateMergesOntoTheDegradedBaseWhenTheStoredRowIsInvalid pins the
@@ -1055,9 +1089,7 @@ func TestUpdateManyTakesTheTableLockFirstThenWritesInKeyOrder(t *testing.T) {
 // deletes. They share one transaction body, so a per-key row lock re-added
 // to any one of them forms the identical cycle against every other one --
 // two writers, one holding test.bbb and scanning toward test.aaa while the
-// other holds test.aaa and scans toward test.bbb. UpdateSecret is absent
-// because it has no transaction of its own: it validates its document and
-// then calls UpdateMany, which the table covers.
+// other holds test.aaa and scans toward test.bbb.
 //
 // The expected sequence is the COMPLETE recorded call list, so a second
 // settings read slipped in front of the table lock shows up as an extra
@@ -1997,34 +2029,37 @@ func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
 	}
 }
 
-// TestUpdateSecretRefusalOrder pins the ORDER the secret verb's three
-// refusals answer in, which its own doc comment calls part of the contract.
+// TestUpdateManySecretHalfRefusalOrder pins the ORDER the secret half's
+// three refusals answer in.
 //
 // The key's shape comes first: a key with no encrypted half cannot take a
 // secret document at all, whatever the document says. The empty-document
 // check comes second, because the secret-field check below it finds no
-// secret field in an absent document and would otherwise answer an omitted
-// document with a message listing fields the caller never had to supply.
-func TestUpdateSecretRefusalOrder(t *testing.T) {
-	m, k := newTestManager(t)
+// secret field in a blank document and would otherwise answer it with a
+// message listing fields the caller never had to supply.
+func TestUpdateManySecretHalfRefusalOrder(t *testing.T) {
+	m, k := newTestManager(t, KeySignupEnabled)
 	ctx := context.Background()
+	// A blank document is a secret half that is present, so it reaches the
+	// checks, but it specifies nothing.
+	blank := json.RawMessage(`   `)
 
-	t.Run("a key with no secret half, and no document", func(t *testing.T) {
-		err := m.UpdateSecret(ctx, KeySignupEnabled, nil)
+	t.Run("a key with no secret half, and a blank document", func(t *testing.T) {
+		err := m.UpdateMany(ctx, []KeyWrite{{Desc: KeySignupEnabled, Secret: blank}})
 		require.ErrorContains(t, err, "has no secret fields")
 		assert.NotContains(t, err.Error(), "the partial document is required",
 			"the key's shape is answered before the document is examined")
 	})
 
-	t.Run("a secret-bearing key with no document", func(t *testing.T) {
-		err := m.UpdateSecret(ctx, k, nil)
+	t.Run("a secret-bearing key with a blank document", func(t *testing.T) {
+		err := m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: blank}})
 		require.ErrorContains(t, err, "the partial document is required")
 		assert.NotContains(t, err.Error(), "must specify at least one of",
-			"an omitted document is not a document that misses the secret fields")
+			"a blank document is not a document that misses the secret fields")
 	})
 
 	t.Run("a secret-bearing key with a public-only document", func(t *testing.T) {
-		err := m.UpdateSecret(ctx, k, json.RawMessage(`{"host":"evil.example"}`))
+		err := m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"host":"evil.example"}`)}})
 		require.ErrorContains(t, err, "must specify at least one of")
 		assert.Contains(t, err.Error(), "pass", "the message lists the key's secret fields")
 	})

@@ -1,3 +1,4 @@
+import type { DescMethod } from '@bufbuild/protobuf'
 import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord, MockModelScenarioStatus } from './mockModelScript'
@@ -6,7 +7,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { RunningNativeChild } from './runningChildProof'
 import { Code } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, WorkerAgentInputService, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoModelRequestCarries, expectUnsupportedSubagent, READ_ONLY_SUBAGENT_REASON } from './unsupportedSubagent'
 
 /**
@@ -58,23 +59,23 @@ vi.mock('@playwright/test', async (importOriginal) => {
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
   getTestChannel: async () => ({
-    callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string, text?: string }) => {
-      fake.log.push(method)
-      if (method === 'ListAgentInputQueue') {
+    callWorker: async (_workerId: string, method: DescMethod, payload: { agentId: string, text?: string }) => {
+      fake.log.push(method.name)
+      if (method === WorkerAgentInputService.method.listAgentInputQueue) {
         return {
-          snapshot: { agentId: payload.agentId, items: [] },
+          snapshot: { items: [] },
         }
       }
-      if (method === 'EnqueueAgentInput') {
+      if (method === WorkerAgentInputService.method.enqueueAgentInput) {
         const text = payload.text ?? ''
         fake.refused.push(text)
         if (fake.leak === 'at-refusal')
           fake.requests.push(request('the child task', text))
         throw Object.assign(new Error('refused'), { source: 'rpc', code: Code.InvalidArgument, message: 'invalid queued agent input: this agent does not accept that input' })
       }
-      if (method === 'InterruptAgent')
+      if (method === WorkerAgentService.method.interruptAgent)
         throw Object.assign(new Error('refused'), { source: 'rpc', code: Code.FailedPrecondition, message: 'this subagent cannot be interrupted' })
-      throw new Error(`The fake Worker has no method ${method}.`)
+      throw new Error(`The fake Worker has no method ${method.name}.`)
     },
   }),
 }))

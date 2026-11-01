@@ -1,43 +1,65 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/git.proto";
 
-// TerminalStatus tracks the lifecycle state of a terminal PTY.
-//
-// STARTING, READY, and STARTUP_FAILED are reported by the worker via
-// TerminalStatusChange. DISCONNECTED and EXITED are client-derived states
-// (worker channel dropped; TerminalClosed event observed) surfaced in the
-// same enum so frontend and persistence layers can use one type.
+// WorkerTerminalService opens, drives and reads terminals. Served by the Worker
+// inside an E2EE channel.
+service WorkerTerminalService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc OpenTerminal(OpenTerminalRequest) returns (OpenTerminalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
+  rpc RestartTerminal(RestartTerminalRequest) returns (RestartTerminalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
+  rpc SendInput(SendInputRequest) returns (SendInputResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
+  rpc ResizeTerminal(ResizeTerminalRequest) returns (ResizeTerminalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
+  rpc RenameTerminal(RenameTerminalRequest) returns (RenameTerminalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_WRITE };
+  }
+  rpc ListTerminals(ListTerminalsRequest) returns (ListTerminalsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_READ };
+  }
+  rpc InspectTerminalProcesses(InspectTerminalProcessesRequest) returns (InspectTerminalProcessesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_READ };
+  }
+  rpc ListAvailableShells(ListAvailableShellsRequest) returns (ListAvailableShellsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_TERMINAL_READ };
+  }
+}
+
+// TerminalStatus tracks the lifecycle state of a terminal PTY. The worker
+// reports every value. A lost worker channel is a display state that only the
+// client can observe, so it is no value here.
 enum TerminalStatus {
   TERMINAL_STATUS_UNSPECIFIED = 0;
   TERMINAL_STATUS_STARTING = 1;        // PTY spawn in progress
   TERMINAL_STATUS_READY = 2;           // PTY spawned; xterm can mount
   TERMINAL_STATUS_STARTUP_FAILED = 3;  // PTY spawn failed; see startup_error
-  TERMINAL_STATUS_DISCONNECTED = 4;    // Client-derived: worker channel lost
-  TERMINAL_STATUS_EXITED = 5;          // Client-derived: TerminalClosed observed
+  TERMINAL_STATUS_EXITED = 4;          // The shell process exited.
 }
 
 message OpenTerminalRequest {
-  string worker_id = 1;
-  string working_dir = 2;
-  string shell = 3;
-  string shell_start_dir = 4;
-  uint32 cols = 5;
-  uint32 rows = 6;
-  bool create_worktree = 7;     // If true, create a git worktree before starting
-  string worktree_branch = 8;  // Branch name for the worktree
-  string checkout_branch = 9;      // "Switch to branch" mode
-  string use_worktree_path = 10;    // "Use existing worktree" mode
-  string worktree_base_branch = 11; // Base branch for "Create new worktree" (default: current branch)
-  string create_branch = 12;        // "Create new branch" mode — branch name to create
-  string create_branch_base = 13;   // Base branch for "Create new branch" (default: current branch)
+  string working_dir = 1;
+  string shell = 2;
+  string shell_start_dir = 3;
+  uint32 cols = 4;
+  uint32 rows = 5;
+  // How to prepare the working directory. Absent = use it as it is.
+  GitSetup git_setup = 6;
 
   // Tab title. Optional: an empty title (or one that cleaning empties) means
   // "you pick one", and the worker takes a random "Terminal <Name>" from the
   // shared pool. Never refused — the worker CLEANS whatever arrives, the same
-  // rule UpdateTerminalTitle applies. Mirrors OpenAgentRequest.title.
-  string title = 14;
+  // rule RenameTerminal applies. Mirrors OpenAgentRequest.title.
+  string title = 7;
 
   // When true, this terminal is the QUAKE terminal of `working_dir` rather than
   // a tab of its own. `working_dir` is the whole address: a quake terminal
@@ -55,7 +77,7 @@ message OpenTerminalRequest {
   //
   // A unique partial index over the open rows enforces the last point, so the
   // guarantee survives two devices racing.
-  bool quake = 15;
+  bool quake = 8;
 }
 
 message OpenTerminalResponse {
@@ -69,18 +91,6 @@ message OpenTerminalResponse {
   // via the first TerminalStatusChange (gitStatus) after worktree creation
   // finishes on the async startup path.
   string title = 2;
-}
-
-message CloseTerminalRequest {
-  string terminal_id = 1;
-  WorktreeAction worktree_action = 2;
-}
-
-// CloseTerminalResponse reports the outcome of CloseTerminal. See
-// CloseTabResult for why partial failures are returned in-band rather
-// than as RPC errors.
-message CloseTerminalResponse {
-  CloseTabResult result = 1;
 }
 
 // RestartTerminalRequest respawns the shell process for an exited
@@ -111,12 +121,12 @@ message ResizeTerminalRequest {
 
 message ResizeTerminalResponse {}
 
-message UpdateTerminalTitleRequest {
+message RenameTerminalRequest {
   string terminal_id = 1;
   string title = 2;
 }
 
-message UpdateTerminalTitleResponse {
+message RenameTerminalResponse {
   // The title the worker actually STORED. Same contract as
   // RenameAgentResponse.title: cleaned, never refused, and on a request that
   // cleans to nothing it reports the title the terminal still holds.
@@ -145,14 +155,13 @@ message TerminalInfo {
   uint32 cols = 2;
   uint32 rows = 3;
   bytes screen = 4;
-  bool exited = 5;
-  string working_dir = 6;       // Tab's working directory context
-  string shell_start_dir = 7;   // Where the shell started
-  string title = 8;             // User-visible tab title
-  TerminalStatus status = 9;    // Lifecycle state (starting/ready/failed)
-  string startup_error = 10;    // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
-  string startup_message = 11;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  GitRepoStatus git_status = 12;
+  string working_dir = 5;       // Tab's working directory context
+  string shell_start_dir = 6;   // Where the shell started
+  string title = 7;             // User-visible tab title
+  TerminalStatus status = 8;    // Lifecycle state (starting/ready/failed/exited)
+  string startup_error = 9;     // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_message = 10;  // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
+  GitRepoStatus git_status = 11;
   // Cumulative PTY byte offset at the end of `screen`. It counts PTY
   // bytes only, and `screen` leads with the synthesized escape sequences
   // that restore the sticky xterm modes. `screen` is therefore longer
@@ -160,10 +169,10 @@ message TerminalInfo {
   // start to fall off the retained window. Client seeds its WatchEvents
   // `after_offset` from this so a resubscribe picks up exactly where
   // the snapshot left off instead of replaying `screen`.
-  int64 screen_end_offset = 13;
+  int64 screen_end_offset = 12;
   // False for an ordinary terminal tab. True for the quake terminal of
   // `working_dir` — see OpenTerminalRequest.quake.
-  bool quake = 14;
+  bool quake = 13;
 }
 
 message TerminalData {
@@ -205,8 +214,8 @@ message TerminalNotification {
 // TerminalTitleChanged reports OSC 0 (icon + title) or OSC 2 (title). OSC 1
 // (icon only) is ignored. Emitted only when the value actually changes.
 //
-// This replaces the client's xterm onTitleChange -> UpdateTerminalTitle round
-// trip, which fired once per shell prompt on most setups.
+// This replaces a client round trip from xterm's onTitleChange to a rename
+// RPC, which fired once per shell prompt on most setups.
 message TerminalTitleChanged {
   string title = 1;
 }
@@ -229,16 +238,16 @@ message TerminalProgress {
 // TerminalStatusChange notifies watchers of terminal lifecycle transitions,
 // in particular STARTING → READY or STARTING → STARTUP_FAILED during the
 // window between OpenTerminal returning and the PTY being ready for input.
+// TerminalEvent.terminal_id identifies the terminal.
 message TerminalStatusChange {
-  string terminal_id = 1;
-  TerminalStatus status = 2;
-  string startup_error = 3;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
-  string startup_message = 4; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
-  GitRepoStatus git_status = 5;
+  TerminalStatus status = 1;
+  string startup_error = 2;   // Populated when status=TERMINAL_STATUS_STARTUP_FAILED
+  string startup_message = 3; // Populated when status=TERMINAL_STATUS_STARTING (e.g. "Starting zsh…")
+  GitRepoStatus git_status = 4;
 }
 
 message ListAvailableShellsRequest {
-  string worker_id = 1;   // Which worker to query for shells (required)
+
 }
 
 message ListAvailableShellsResponse {

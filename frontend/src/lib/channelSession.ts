@@ -13,7 +13,6 @@ import { create, toBinary } from '@bufbuild/protobuf'
 import {
   DEFAULT_REJECT_BACKOFF_MS,
   MAX_CHUNK_SIZE,
-  PROTOCOL_VERSION,
   SESSION_KEY_HARD_CEILING_MS,
   SESSION_KEY_MAX_AGE_MS,
   SESSION_VERIFY_TIMEOUT_MS,
@@ -220,7 +219,6 @@ export class ChannelSession {
     flags: ChannelMessageFlags = ChannelMessageFlags.UNSPECIFIED,
   ): void {
     const msg = create(ChannelMessageSchema, {
-      protocolVersion: PROTOCOL_VERSION,
       channelId: ch.channelId,
       ciphertext,
       // uint64 on the wire; see the decode boundary in handleMessage for why ids

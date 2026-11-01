@@ -98,7 +98,7 @@ func proxiedAway(req *http.Request) *url.URL {
 // chosen transport then runs the request exactly once. There is no "try the
 // other transport on failure" path anywhere, so this layer can never replay a
 // request that the endpoint may already have processed -- which matters
-// because AddTab, CreateWorkspace and SubmitOps are not idempotent.
+// because CreateWorkspace and SubmitOps are not idempotent.
 type preferH2C struct {
 	prober *prober
 	h2c    http.RoundTripper

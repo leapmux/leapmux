@@ -62,7 +62,7 @@ func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID 
 // messages ("agent", "terminal"); fetch is the sqlc query.
 //
 // It carries no ownership check, and none is missing: the handler is already
-// behind requireWorkerOwner, and every row on this worker belongs to that one
+// behind the owner gate, and every row on this worker belongs to that one
 // owner. What survives is the NOT_FOUND / INVALID_ARGUMENT mapping, which the
 // handlers still depend on -- a close or an input write against an id this
 // worker never held must say so rather than fall through to a manager lookup

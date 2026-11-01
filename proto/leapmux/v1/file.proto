@@ -1,11 +1,30 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
+
+// WorkerFileService reads the Worker's file system. Served by the Worker inside
+// an E2EE channel.
+service WorkerFileService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc ListFilesystemRoots(ListFilesystemRootsRequest) returns (ListFilesystemRootsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
+  rpc StatFile(StatFileRequest) returns (StatFileResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_FILE_READ };
+  }
+}
+
 message ListDirectoryRequest {
-  string worker_id = 1;
-  string path = 2;
-  int32 max_depth = 3; // When > 0, merge single-child directories server-side up to this depth
-  bool dirs_only = 4; // When true, exclude non-directory entries before applying the entry limit
+  string path = 1;
+  int32 max_depth = 2; // When > 0, merge single-child directories server-side up to this depth
+  bool dirs_only = 3; // When true, exclude non-directory entries before applying the entry limit
   // When set, the response carries one listing per directory from from_root
   // down to path, outermost first, instead of path alone. Lets a tree reveal a
   // deep selection in one round trip instead of one per level.
@@ -16,7 +35,7 @@ message ListDirectoryRequest {
   // parent, so revealing a FILE costs one request too.
   //
   // Empty lists path alone, and a non-directory path is then an error.
-  string from_root = 5;
+  string from_root = 4;
 }
 
 message ListDirectoryResponse {
@@ -67,17 +86,16 @@ message DirectoryListing {
 }
 
 message ReadFileRequest {
-  string worker_id = 1;
-  string path = 2;
-  int64 offset = 3;
-  int64 limit = 4; // Max bytes; 0 = default (60KB)
+  string path = 1;
+  int64 offset = 2;
+  int64 limit = 3; // Max bytes; 0 = default (60KB)
   // When true and the file size exceeds the read window
   // (offset + effective limit), the server returns an empty content
   // payload with the file's total_size populated, skipping the actual
   // bytes. Lets the file viewer detect oversize files (e.g. images we
   // refuse to preview) in a single round trip — combining what would
   // otherwise be a StatFile + ReadFile pair.
-  bool meta_only_if_truncated = 5;
+  bool meta_only_if_truncated = 4;
 }
 
 message ReadFileResponse {
@@ -92,8 +110,7 @@ message ReadFileResponse {
 }
 
 message StatFileRequest {
-  string worker_id = 1;
-  string path = 2;
+  string path = 1;
 }
 
 message StatFileResponse {

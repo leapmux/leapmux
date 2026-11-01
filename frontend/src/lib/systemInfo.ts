@@ -1,9 +1,9 @@
 import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
 import { createSignal } from 'solid-js'
-import { authClient } from '~/api/clients'
+import { authClient, systemClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
-import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatLocalDateTime } from './dateFormat'
 
@@ -90,7 +90,7 @@ function current(): SystemInfoSnapshot {
 export async function loadSystemInfo(force = false): Promise<void> {
   if (snapshot() !== null && !force)
     return
-  const resp = await authClient.getSystemInfo({})
+  const resp = await systemClient.getSystemInfo({})
   setSnapshot({
     soloMode: resp.soloMode,
     soloAccess: resp.soloAccess,
@@ -105,11 +105,11 @@ export async function loadSystemInfo(force = false): Promise<void> {
     captchaSiteKey: resp.captchaSiteKey,
     altchaAlgorithm: resp.altchaAlgorithm,
     backendBuildInfo: {
-      version: resp.version,
-      commitHash: resp.commitHash,
-      commitTime: resp.commitTime,
-      buildTime: resp.buildTime,
-      branch: resp.branch,
+      version: resp.build?.version ?? '',
+      commitHash: resp.build?.commitHash ?? '',
+      commitTime: resp.build?.commitTime ?? '',
+      buildTime: resp.build?.buildTime ?? '',
+      branch: resp.build?.branch ?? '',
     },
   })
 }

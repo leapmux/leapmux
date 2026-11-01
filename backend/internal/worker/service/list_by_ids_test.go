@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -33,7 +34,7 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 		}))
 	}
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"a1", "a3"},
 	}, w)
 
@@ -50,7 +51,7 @@ func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{},
 	}, w)
 
@@ -65,7 +66,7 @@ func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"nonexistent-1", "nonexistent-2"},
 	}, w)
 
@@ -86,7 +87,7 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 	}))
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "a1")))
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"a1"},
 	}, w)
 
@@ -109,7 +110,7 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 		ID: "a2", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"a1", "a2", "nonexistent"},
 	}, w)
 
@@ -209,7 +210,7 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 		}))
 	}
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t1", "t3"},
 	}, w)
 
@@ -221,12 +222,50 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	assert.ElementsMatch(t, []string{"t1", "t3"}, ids)
 }
 
+// ListTerminals states one status for each terminal, and the status alone says
+// whether its shell runs. A live shell reads READY. A terminal with only a row
+// has no shell, so it reads EXITED. A persisted startup error wins over
+// EXITED, because the failed startup owns the status.
+func TestListTerminals_StatesTheStatusOfEachTerminal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	startTestTerminal(t, svc, ctx, "live")
+	for _, id := range []string{"row-only", "failed"} {
+		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+			ID: id, WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte("screen"),
+		}))
+	}
+	svc.persistTerminalStartupError("failed", "shell not found")
+
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"live", "row-only", "failed"},
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	byID := make(map[string]*leapmuxv1.TerminalInfo, len(resp.GetTerminals()))
+	for _, info := range resp.GetTerminals() {
+		byID[info.GetTerminalId()] = info
+	}
+	require.Len(t, byID, 3)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, byID["live"].GetStatus())
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, byID["row-only"].GetStatus())
+	assert.Empty(t, byID["row-only"].GetStartupError())
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, byID["failed"].GetStatus())
+	assert.Equal(t, "shell not found", byID["failed"].GetStartupError())
+}
+
 func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{},
 	}, w)
 
@@ -241,7 +280,7 @@ func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"nonexistent"},
 	}, w)
 
@@ -271,7 +310,7 @@ func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T
 	// handler must survive: a read error on an otherwise well-formed request.
 	require.NoError(t, svc.DB.Close())
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t1", "t2"},
 	}, w)
 
@@ -292,7 +331,7 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 		ClosedAt: sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t1"},
 	}, w)
 
@@ -319,7 +358,7 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 		Cols: 80, Rows: 24, Screen: screen,
 	}))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-db"},
 	}, w)
 
@@ -364,7 +403,7 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	marker := []byte("live_offset_test_marker")
 	require.True(t, svc.Terminals.AppendOutput("t-live", marker))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-live"},
 	}, w)
 
@@ -403,7 +442,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	startTestTerminal(t, svc, ctx, "t-altrefresh")
 	wantEndOffset := freezeAndInjectAltScreenPastRing(t, svc, "t-altrefresh")
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-altrefresh"},
 	}, w)
 
@@ -422,7 +461,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	// time the backend computes a delta.
 	assert.Equal(t, wantEndOffset, ti.GetScreenEndOffset(),
 		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
-	assert.True(t, ti.GetExited(),
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, ti.GetStatus(),
 		"the helper freezes the PTY to make the offset exact; pin that rather than leaving it incidental")
 }
 
@@ -453,7 +492,7 @@ func TestListTerminals_AltScreenRecoveryOnLiveTerminal(t *testing.T) {
 	// 110 KB > screenBufferSize (100 KB), so the toggle is out of the ring.
 	require.True(t, svc.Terminals.AppendOutput("t-altlive", bytes.Repeat([]byte{'a'}, 110*1024)))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-altlive"},
 	}, w)
 
@@ -462,7 +501,7 @@ func TestListTerminals_AltScreenRecoveryOnLiveTerminal(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	require.Len(t, resp.GetTerminals(), 1)
 	ti := resp.GetTerminals()[0]
-	assert.False(t, ti.GetExited(), "this case is worthless unless the terminal is still running")
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, ti.GetStatus(), "this case is worthless unless the terminal is still running")
 	require.GreaterOrEqual(t, len(ti.GetScreen()), len(altScreenEnter))
 	assert.Equal(t, []byte(altScreenEnter), ti.GetScreen()[:len(altScreenEnter)],
 		"a LIVE terminal must get the alt-screen restore prefix too; that is the vim-open-then-refresh case")
@@ -478,7 +517,7 @@ func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T
 	}))
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM agents WHERE id IN"})
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a1"}},
 	}, w)
 

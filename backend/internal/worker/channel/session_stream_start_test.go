@@ -38,13 +38,13 @@ func TestStreamStartupRetainsEarlyFramesAndCancellation(t *testing.T) {
 			manager.SetDispatcher(dispatcher)
 			session := performHandshake(t, manager, key, channelID, "user")
 			opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-			manager.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+			manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
 			<-entered
 			frame, err := encryptInner(t, session, &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_StreamRequest{
 				StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("latest interest"), Cancel: cancel},
 			}})
 			require.NoError(t, err)
-			manager.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
+			manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
 			continueBinding()
 			if cancel {
 				require.False(t, <-bound, "an early cancellation must prevent a later binding")
@@ -98,14 +98,14 @@ func TestStreamOverflowReportsAnErrorBeforeCancellationEndsTheStream(t *testing.
 	manager.SetDispatcher(dispatcher)
 	session := performHandshake(t, manager, key, channelID, "user")
 	opening := sendRequest(t, session, channelID, &leapmuxv1.InnerRpcRequest{Method: "stream"})
-	manager.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
+	manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: opening})
 	<-ready
 	deliver := func() {
 		frame, err := encryptInner(t, session, &leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_StreamRequest{
 			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("revision")},
 		}})
 		require.NoError(t, err)
-		manager.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
+		manager.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 7, Ciphertext: frame})
 	}
 	deliver()
 	continueBinding()
@@ -121,10 +121,10 @@ func TestStreamOverflowReportsAnErrorBeforeCancellationEndsTheStream(t *testing.
 	var envelope leapmuxv1.InnerMessage
 	require.NoError(t, proto.Unmarshal(plaintext, &envelope))
 	if response := envelope.GetResponse(); response != nil {
-		require.True(t, response.GetIsError())
-		require.Equal(t, int32(codes.ResourceExhausted), response.GetErrorCode())
+		require.NotNil(t, response.GetError())
+		require.Equal(t, int32(codes.ResourceExhausted), response.GetError().GetCode())
 	} else {
-		require.True(t, envelope.GetStream().GetIsError(), "a clean End must not hide the overflow error")
-		require.Equal(t, int32(codes.ResourceExhausted), envelope.GetStream().GetErrorCode())
+		require.NotNil(t, envelope.GetStream().GetError(), "a clean End must not hide the overflow error")
+		require.Equal(t, int32(codes.ResourceExhausted), envelope.GetStream().GetError().GetCode())
 	}
 }

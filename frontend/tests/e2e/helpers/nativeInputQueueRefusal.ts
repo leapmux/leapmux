@@ -1,7 +1,7 @@
 import type { QueuedAgentInput } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { currentNativeAgent } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
@@ -23,7 +23,7 @@ export async function expectNativeInputRefusal(
   const agent = await currentNativeAgent(native)
   const item = await retryUntilPass(async () => {
     const snapshot = await readNativeInputQueue(native.leapmuxServer, agent.id)
-    expect(snapshot.paused).toBe(true)
+    expect(snapshot.pauseReason).not.toBe(AgentInputQueuePauseReason.UNSPECIFIED)
     expect(snapshot.activeTurn).toBe(false)
     expect(snapshot.items).toHaveLength(1)
     const failed = snapshot.items[0]

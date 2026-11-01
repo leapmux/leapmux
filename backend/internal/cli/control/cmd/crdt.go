@@ -108,8 +108,8 @@ func crdtBootstrapLocal(ctx context.Context, c *control.Client, workspaceIDs []s
 	if err != nil {
 		return nil, fmt.Errorf("crdt bootstrap (local IPC): %w", err)
 	}
-	if innerResp.GetIsError() {
-		return nil, fmt.Errorf("crdt bootstrap (local IPC): %s", innerResp.GetErrorMessage())
+	if rpcErr := innerResp.GetError(); rpcErr != nil {
+		return nil, fmt.Errorf("crdt bootstrap (local IPC): %s", rpcErr.GetMessage())
 	}
 	var resp leapmuxv1.GetMaterializedResponse
 	if err := proto.Unmarshal(innerResp.GetPayload(), &resp); err != nil {
@@ -163,8 +163,8 @@ func streamWatchUserLocal(
 			break
 		}
 		env := msg
-		if env.GetIsError() {
-			return errors.New(env.GetErrorMessage())
+		if rpcErr := env.GetError(); rpcErr != nil {
+			return errors.New(rpcErr.GetMessage())
 		}
 		if len(env.GetPayload()) == 0 {
 			continue
@@ -351,7 +351,7 @@ func nowMillis() int64 {
 func opTombstoneTab(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) *leapmuxv1.CrdtOp {
 	op := envelope(bs)
 	op.Body = &leapmuxv1.CrdtOp_TombstoneTab{
-		TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: tabType, TabId: tabID},
+		TombstoneTab: &leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}},
 	}
 	return op
 }
@@ -369,7 +369,7 @@ func opTombstoneNode(bs *CRDTBootstrap, nodeID string) *leapmuxv1.CrdtOp {
 // variant. Used by every opSetTab* helper below.
 func newSetTabRegisterOp(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.CrdtOp, *leapmuxv1.SetTabRegisterOp) {
 	op := envelope(bs)
-	inner := &leapmuxv1.SetTabRegisterOp{TabType: tabType, TabId: tabID}
+	inner := &leapmuxv1.SetTabRegisterOp{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}}
 	op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: inner}
 	return op, inner
 }

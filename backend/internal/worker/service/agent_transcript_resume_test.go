@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -60,7 +61,7 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 	_, err := svc.Queries.CloseAgent(ctx, sourceID)
 	require.NoError(t, err)
 
-	dispatch(dispatcher, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: sessionID,
 	}, writer)
 	require.Empty(t, writer.errors)
@@ -105,7 +106,7 @@ func seedTranscriptSource(t *testing.T, svc *Service, id, workingDir, sessionID 
 func openTranscriptResumeAgent(t *testing.T, dispatcher *channel.Dispatcher, workingDir, sessionID string, provider leapmuxv1.AgentProvider) string {
 	t.Helper()
 	writer := newTestWriter()
-	dispatch(dispatcher, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: sessionID,
 	}, writer)
 	require.Empty(t, writer.errors)
@@ -189,7 +190,7 @@ func TestOpenAgentRejectsAnOpenNativeSession(t *testing.T) {
 				requestedDir = t.TempDir()
 			}
 			writer := newTestWriter()
-			dispatch(dispatcher, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 				WorkingDir: requestedDir, AgentProvider: provider, AgentSessionId: "session-a1",
 			}, writer)
 			if len(writer.responses) != 0 {
@@ -222,7 +223,7 @@ func TestConcurrentManualResumesClaimOneNativeSession(t *testing.T) {
 		AgentSessionId: "session-a1",
 	}
 	first := newTestWriter()
-	dispatch(dispatcher, "OpenAgent", request, first)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, first)
 	require.Empty(t, first.errors)
 	require.Len(t, first.responses, 1)
 	select {
@@ -232,7 +233,7 @@ func TestConcurrentManualResumesClaimOneNativeSession(t *testing.T) {
 	}
 
 	second := newTestWriter()
-	dispatch(dispatcher, "OpenAgent", request, second)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, second)
 	if len(second.responses) != 0 {
 		t.Fatalf("a second OpenAgent returned %d responses for the held native session", len(second.responses))
 	}

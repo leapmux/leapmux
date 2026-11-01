@@ -4,9 +4,8 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { getTabPayload, listAgents, listTerminals } from '~/api/workerRpc'
-import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
-import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
+import { TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
@@ -716,7 +715,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     kind: 'batched',
     predicate: tab => tab.type === TabType.TERMINAL
       && Boolean(tab.workerId)
-      && (!isHydrated(tab.id) || tab.status === TerminalStatus.DISCONNECTED),
+      && (!isHydrated(tab.id) || tab.status === TERMINAL_DISCONNECTED),
     fetchBatch: async (workerId, tabs) => {
       const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
       const resp = await listTerminals(workerId, {

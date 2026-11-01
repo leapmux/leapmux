@@ -1,10 +1,11 @@
+import type { DescMethod } from '@bufbuild/protobuf'
 import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { SteerDuringTextOptions } from './nativeToolSteering'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentInputState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputState, AgentProvider, QueueHeadDispatch, WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseQueuedTurnWithoutSteering, exerciseSteerAfterTool, exerciseSteerBeforeTool, exerciseSteerDuringText, exerciseStopWithPendingSteer } from './nativeToolSteering'
 import { bashToolCall } from './providerToolCalls'
 import { startWaitLimitForTests } from './testDeadline'
@@ -13,11 +14,11 @@ import { startWaitLimitForTests } from './testDeadline'
 const harness = vi.hoisted(() => ({
   events: [] as string[],
   sent: [] as string[],
+  // `beforeEach` sets the real dispatch: the hoisted block runs before the enum import.
   agent: {
     id: 'native-agent',
     workingDir: '/native/work',
-    supportsSteering: false,
-    supportsPreemption: true,
+    queueHeadDispatch: 0 as QueueHeadDispatch,
   },
   queue: [] as { id: string, text: string, state: number, canSteer: boolean, canPreempt: boolean }[],
   /** The Worker queue state of the next sent message, as the held turn leaves it. */
@@ -133,13 +134,13 @@ vi.mock('./nativeScenario', async (importOriginal) => {
 
 vi.mock('./api', () => ({
   getTestChannel: async () => ({
-    callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string }) => {
-      if (method === 'ListAgentInputQueue') {
+    callWorker: async (_workerId: string, method: DescMethod) => {
+      if (method === WorkerAgentInputService.method.listAgentInputQueue) {
         return {
-          snapshot: { agentId: payload.agentId, activeTurn: false, items: harness.queue },
+          snapshot: { activeTurn: false, items: harness.queue },
         }
       }
-      harness.events.push(`worker:${method}`)
+      harness.events.push(`worker:${method.name}`)
       throw harness.steerFailure ?? Object.assign(new Error('agent provider does not support steering'), { source: 'rpc', code: 9 })
     },
   }),
@@ -257,8 +258,7 @@ beforeEach(() => {
   harness.agent = {
     id: 'native-agent',
     workingDir: '/native/work',
-    supportsSteering: false,
-    supportsPreemption: true,
+    queueHeadDispatch: QueueHeadDispatch.PREEMPT,
   }
   harness.queue = []
   harness.queueNextSend = undefined
@@ -493,7 +493,7 @@ describe('exerciseQueuedTurnWithoutSteering', () => {
   })
 
   it('fails when the Worker offers no preemption of the held turn', async () => {
-    harness.agent = { ...harness.agent, supportsPreemption: false }
+    harness.agent = { ...harness.agent, queueHeadDispatch: QueueHeadDispatch.NONE }
     const { script } = fakeScript(0, turns)
     queueSecondPrompt(script)
     await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('the Worker offers preemption of the held turn')
@@ -530,7 +530,7 @@ describe('exerciseQueuedTurnWithoutSteering', () => {
   })
 
   it('refuses a provider that steers before it sends anything', async () => {
-    harness.agent = { ...harness.agent, supportsSteering: true }
+    harness.agent = { ...harness.agent, queueHeadDispatch: QueueHeadDispatch.STEER }
     const { script } = fakeScript(0, turns)
     await expect(exerciseQueuedTurnWithoutSteering(context(script))).rejects.toThrow('the provider cannot steer a running turn')
     expect(harness.sent).toEqual([])

@@ -16,8 +16,7 @@ import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSe
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
@@ -305,7 +304,6 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       let blockedReason = ''
       try {
         const preflight = await workerRpc.inspectWorktreeRemoval(props.workerId, {
-          workerId: props.workerId,
           path: props.gitToplevel,
         })
         blockedReason = preflight.blockedReason
@@ -344,7 +342,6 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     void run(async () => {
       const target = switchTo()
       await workerRpc.deleteBranch(props.workerId, {
-        workerId: props.workerId,
         path: props.gitToplevel,
         branchToDelete: i.branchName,
         switchToBranch: target,

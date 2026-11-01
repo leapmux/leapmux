@@ -44,14 +44,40 @@ type CredentialLifecycleEffects struct {
 	// channels because rescheduling is a pure channel-manager op with no worker
 	// close-notification, unlike the teardown methods on CredentialChannelCloser.
 	reschedule ChannelExpiryRescheduler
+	// userInfoObservers run on every UserInfoInvalidated, after the cache
+	// eviction. Set at construction only (see WithUserInfoObserver), so the
+	// slice needs no lock.
+	userInfoObservers []func(userID string)
+}
+
+// LifecycleOption configures CredentialLifecycleEffects at construction.
+type LifecycleOption func(*CredentialLifecycleEffects)
+
+// WithUserInfoObserver adds observe to the functions UserInfoInvalidated
+// calls. A copy of a user's profile that lives outside this process's auth
+// cache -- such as the username a connected worker reports -- follows a
+// change through it. UserInfoInvalidated runs for a change made in this
+// process and, through the revocation watcher, for one made in another Hub
+// process, so an observer sees both.
+func WithUserInfoObserver(observe func(userID string)) LifecycleOption {
+	return func(e *CredentialLifecycleEffects) {
+		if observe != nil {
+			e.userInfoObservers = append(e.userInfoObservers, observe)
+		}
+	}
 }
 
 func NewCredentialLifecycleEffects(
 	contexts *AuthContextRegistry,
 	channels CredentialChannelCloser,
 	reschedule ChannelExpiryRescheduler,
+	opts ...LifecycleOption,
 ) *CredentialLifecycleEffects {
-	return &CredentialLifecycleEffects{contexts: contexts, channels: channels, reschedule: reschedule}
+	e := &CredentialLifecycleEffects{contexts: contexts, channels: channels, reschedule: reschedule}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // SessionRevoked invalidates the session and terminates work authenticated by
@@ -385,14 +411,19 @@ func (e *CredentialLifecycleEffects) BearerElevationPolicyChangedBatch(kind Bear
 }
 
 // UserInfoInvalidated drops cached profile data without revoking credentials,
-// canceling leases, or closing channels.
+// canceling leases, or closing channels, then tells each user-info observer.
 func (e *CredentialLifecycleEffects) UserInfoInvalidated(userID string) {
-	if e == nil || e.contexts == nil {
+	if e == nil {
 		return
 	}
 	if userID == "" {
 		warnBlankRevocationTarget("UserInfoInvalidated")
 		return
 	}
-	e.contexts.EvictByUserID(userID)
+	if e.contexts != nil {
+		e.contexts.EvictByUserID(userID)
+	}
+	for _, observe := range e.userInfoObservers {
+		observe(userID)
+	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/util/drain"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 type blockingWriteCloser struct {
@@ -1094,4 +1095,45 @@ func TestDispatchAnswersRequestDequeuedUnderCancelledSession(t *testing.T) {
 	response := frame.GetResponse()
 	require.Equal(t, uint64(7), response.GetId(), "the reply must name the request it answers")
 	require.Contains(t, response.GetError(), "shutting down")
+}
+
+// The startup information carries the sidecar's build in the shared
+// leapmux.v1.BuildInfo message, built by the helper the hub and the worker use.
+func TestDispatchReportsTheBuildInStartupInfo(t *testing.T) {
+	// A test binary carries no linker-stamped build, so every variable but the
+	// version is empty. Distinct values per field make the test fail when the
+	// dispatch drops a field or reports a build of its own.
+	savedValue, savedHash, savedCommitTime, savedBuildTime, savedBranch := version.Value, version.CommitHash, version.CommitTime, version.BuildTime, version.Branch
+	t.Cleanup(func() {
+		version.Value, version.CommitHash, version.CommitTime, version.BuildTime, version.Branch = savedValue, savedHash, savedCommitTime, savedBuildTime, savedBranch
+	})
+	version.Value = "1.2.3"
+	version.CommitHash = "abc1234"
+	version.CommitTime = "2026-10-01T00:00:00Z"
+	version.BuildTime = "2026-10-02T00:00:00Z"
+	version.Branch = "feature/x"
+
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	var output bytes.Buffer
+	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
+
+	session.dispatch(context.Background(), &desktoppb.Request{
+		Id:     3,
+		Method: &desktoppb.Request_GetStartupInfo{GetStartupInfo: &desktoppb.GetStartupInfoRequest{}},
+	}, nil)
+
+	frame, err := ReadFrame(&output)
+	require.NoError(t, err)
+	response := frame.GetResponse()
+	require.Equal(t, uint64(3), response.GetId())
+	require.Empty(t, response.GetError())
+	build := response.GetStartupInfo().GetBuildInfo()
+	require.NotNil(t, build, "the startup information carries the build")
+	assert.Equal(t, "1.2.3", build.GetVersion())
+	assert.Equal(t, "abc1234", build.GetCommitHash())
+	assert.Equal(t, "2026-10-01T00:00:00Z", build.GetCommitTime())
+	assert.Equal(t, "2026-10-02T00:00:00Z", build.GetBuildTime())
+	assert.Equal(t, "feature/x", build.GetBranch())
+	assert.NotNil(t, response.GetStartupInfo().GetConfig(), "the startup information carries the config beside the build")
 }

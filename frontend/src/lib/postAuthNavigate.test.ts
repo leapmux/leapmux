@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isServerRoute, postAuthNavigate } from './postAuthNavigate'
+import { isServerRoute, postAuthDestination, postAuthNavigate } from './postAuthNavigate'
 
 describe('isServerRoute', () => {
   it('claims the hub-served /auth/ family', () => {
@@ -106,6 +106,70 @@ describe('postAuthNavigate', () => {
       postAuthNavigate(navigate, hostile, '/')
       expect(navigate).toHaveBeenCalledWith('/', { replace: true })
       expect(assign).not.toHaveBeenCalled()
+    }
+  })
+})
+
+// Sign-in recovery reads the destination before it navigates, because it must
+// know whether the document leaves before it waits for the router to arrive.
+describe('postAuthDestination', () => {
+  it('sends a hub route to a full-document load', () => {
+    expect(postAuthDestination('/oauth/authorize?state=s', '/')).toEqual({ kind: 'document', path: '/oauth/authorize?state=s' })
+  })
+
+  it('keeps an in-app path on the router', () => {
+    expect(postAuthDestination('/verify-email', '/')).toEqual({ kind: 'route', path: '/verify-email' })
+  })
+
+  it('falls back when the target is absent or empty', () => {
+    expect(postAuthDestination(undefined, '/')).toEqual({ kind: 'route', path: '/' })
+    expect(postAuthDestination('', '/')).toEqual({ kind: 'route', path: '/' })
+  })
+
+  // The fallback passes the same server-route test as a target does.
+  it('sends a hub-served fallback to a full-document load', () => {
+    expect(postAuthDestination(undefined, '/oauth/device')).toEqual({ kind: 'document', path: '/oauth/device' })
+  })
+
+  it('replaces a target that could leave the origin with the fallback', () => {
+    for (const hostile of [
+      'https://evil.example/',
+      '//evil.example/',
+      '/\\evil.example/',
+    ])
+      expect(postAuthDestination(hostile, '/'), hostile).toEqual({ kind: 'route', path: '/' })
+  })
+
+  // The two functions must never disagree: recovery waits for the router only
+  // when postAuthNavigate takes the router.
+  it('predicts the branch postAuthNavigate takes', () => {
+    const navigate = vi.fn()
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      for (const target of [
+        '/oauth/authorize?state=s',
+        '/verify-email',
+        '/auth/idp/complete-signup',
+        undefined,
+        'https://evil.example/',
+      ]) {
+        navigate.mockClear()
+        assign.mockClear()
+        postAuthNavigate(navigate, target, '/')
+        const destination = postAuthDestination(target, '/')
+        if (destination.kind === 'document') {
+          expect(assign, String(target)).toHaveBeenCalledWith(destination.path)
+          expect(navigate, String(target)).not.toHaveBeenCalled()
+        }
+        else {
+          expect(navigate, String(target)).toHaveBeenCalledWith(destination.path, { replace: true })
+          expect(assign, String(target)).not.toHaveBeenCalled()
+        }
+      }
+    }
+    finally {
+      vi.unstubAllGlobals()
     }
   })
 })

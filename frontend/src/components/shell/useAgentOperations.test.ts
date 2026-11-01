@@ -1,4 +1,4 @@
-import type { CloseAgentResponse } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
@@ -10,8 +10,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { clearScheduleDraft, getScheduleDraft, setScheduleDraft } from '~/components/chat/composer/scheduleDrafts'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentActivityState, AgentInfoSchema, AgentProvider, ControlResponseState, SendControlResponseResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { GitRepoStatusSchema, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { GitRepoStatusSchema, TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -26,9 +25,8 @@ import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { queueEditDraftKey } from '../chat/composer/draftIdentity'
 
-const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
+const mockCloseTab = vi.fn<(workerId: string, req: { tab?: { tabType: TabType, tabId: string }, worktreeAction?: WorktreeAction }) => Promise<CloseTabResponse>>()
 const mockOpenAgent = vi.fn()
-const mockSendAgentRawMessage = vi.fn()
 const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
@@ -39,9 +37,8 @@ const mockRetryAgentTurn = vi.fn()
 
 vi.mock('~/api/workerRpc', async importOriginal => ({
   ...await importOriginal<typeof import('~/api/workerRpc')>(),
-  closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
+  closeTab: (...args: unknown[]) => mockCloseTab(...args as [string, { tab?: { tabType: TabType, tabId: string }, worktreeAction?: WorktreeAction }]),
   openAgent: (...args: unknown[]) => mockOpenAgent(...args),
-  sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
   interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
@@ -257,7 +254,6 @@ describe('useAgentOperations', () => {
           await ops.handleOpenAgent(AgentProvider.CLAUDE_CODE, { workerId: 'w-2', workingDir: '/other/worktree' })
 
           expect(mockOpenAgent).toHaveBeenCalledWith('w-2', expect.objectContaining({
-            workerId: 'w-2',
             workingDir: '/other/worktree',
           }))
         }
@@ -813,7 +809,7 @@ describe('useAgentOperations', () => {
           })
 
           // Never-resolving RPC to prove the UI mutation is synchronous.
-          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
+          mockCloseTab.mockReturnValueOnce(new Promise(() => {}))
 
           ops.handleAgentClose('a-1')
 
@@ -824,7 +820,10 @@ describe('useAgentOperations', () => {
           expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-1')
           expect(releaseAgentComposerActionState).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
-          expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
+          expect(mockCloseTab).toHaveBeenCalledWith('w-1', {
+            tab: { tabType: TabType.AGENT, tabId: 'a-1' },
+            worktreeAction: WorktreeAction.KEEP,
+          })
         }
         finally {
           dispose()
@@ -844,7 +843,7 @@ describe('useAgentOperations', () => {
           setScheduleDraft('a-sched', '2030-01-01T18:45')
           setScheduleDraft(queueEditDraftKey('a-sched', 'input-1'), '')
           setScheduleDraft('a-other', '2030-01-02T18:45')
-          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
+          mockCloseTab.mockReturnValueOnce(new Promise(() => {}))
 
           ops.handleAgentClose('a-sched')
 
@@ -869,7 +868,7 @@ describe('useAgentOperations', () => {
             ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
           })
           agentActivityStore.apply('a-busy', AgentActivityState.WORKING)
-          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
+          mockCloseTab.mockReturnValueOnce(new Promise(() => {}))
 
           ops.handleAgentClose('a-busy')
 
@@ -902,19 +901,20 @@ describe('useAgentOperations', () => {
             workingDir: '/tmp',
           })
 
-          mockCloseAgent.mockResolvedValueOnce({
-            result: {
-              worktreePath: '',
-              worktreeId: '',
-              failureMessage: '',
-              failureDetail: '',
-            },
-          } as CloseAgentResponse)
+          mockCloseTab.mockResolvedValueOnce({
+            worktreePath: '',
+            worktreeId: '',
+            failureMessage: '',
+            failureDetail: '',
+          } as CloseTabResponse)
 
           ops.handleAgentClose('a-remove', WorktreeAction.REMOVE)
           await flush()
 
-          expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-remove', worktreeAction: WorktreeAction.REMOVE })
+          expect(mockCloseTab).toHaveBeenCalledWith('w-1', {
+            tab: { tabType: TabType.AGENT, tabId: 'a-remove' },
+            worktreeAction: WorktreeAction.REMOVE,
+          })
         }
         finally {
           dispose()
@@ -938,14 +938,12 @@ describe('useAgentOperations', () => {
             workingDir: '/tmp',
           })
 
-          mockCloseAgent.mockResolvedValueOnce({
-            result: {
-              worktreeId: 'wt-1',
-              worktreePath: '/some/wt',
-              failureMessage: 'Failed to remove worktree',
-              failureDetail: 'git worktree remove /some/wt: exit 128',
-            },
-          } as CloseAgentResponse)
+          mockCloseTab.mockResolvedValueOnce({
+            worktreeId: 'wt-1',
+            worktreePath: '/some/wt',
+            failureMessage: 'Failed to remove worktree',
+            failureDetail: 'git worktree remove /some/wt: exit 128',
+          } as CloseTabResponse)
 
           ops.handleAgentClose('a-fail', WorktreeAction.REMOVE)
           await flush()
@@ -977,7 +975,7 @@ describe('useAgentOperations', () => {
           })
 
           const err = new Error('network down')
-          mockCloseAgent.mockRejectedValueOnce(err)
+          mockCloseTab.mockRejectedValueOnce(err)
 
           ops.handleAgentClose('a-reject')
           await flush()
@@ -1007,11 +1005,11 @@ describe('useAgentOperations', () => {
             workingDir: '',
           })
 
-          mockCloseAgent.mockClear()
+          mockCloseTab.mockClear()
 
           ops.handleAgentClose('a-2')
 
-          expect(mockCloseAgent).not.toHaveBeenCalled()
+          expect(mockCloseTab).not.toHaveBeenCalled()
           expect(view.getAgentTab('a-2')).toBeUndefined()
           expect(view.getAgentTab('a-2')).toBeUndefined()
         }
@@ -1026,11 +1024,11 @@ describe('useAgentOperations', () => {
         try {
           const { ops } = setup()
 
-          mockCloseAgent.mockClear()
+          mockCloseTab.mockClear()
 
           ops.handleAgentClose('nonexistent')
 
-          expect(mockCloseAgent).not.toHaveBeenCalled()
+          expect(mockCloseTab).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -1069,15 +1067,13 @@ describe('useAgentOperations', () => {
           // has not landed, which is exactly when the local sweep is blind.
           expect(view.getAgentTab('a-child')).toBeDefined()
 
-          mockCloseAgent.mockResolvedValueOnce({
-            result: {
-              worktreePath: '',
-              worktreeId: '',
-              failureMessage: '',
-              failureDetail: '',
-            },
+          mockCloseTab.mockResolvedValueOnce({
+            worktreePath: '',
+            worktreeId: '',
+            failureMessage: '',
+            failureDetail: '',
             descendantAgentIds: ['a-grandchild', 'a-child'],
-          } as CloseAgentResponse)
+          } as CloseTabResponse)
 
           ops.handleAgentClose('a-root')
           // The parent goes synchronously; the children wait on the worker.
@@ -1123,16 +1119,14 @@ describe('useAgentOperations', () => {
             })
           }
 
-          mockCloseAgent.mockResolvedValueOnce({
-            result: {
-              worktreePath: '',
-              worktreeId: '',
-              failureMessage: '',
-              failureDetail: '',
-            },
+          mockCloseTab.mockResolvedValueOnce({
+            worktreePath: '',
+            worktreeId: '',
+            failureMessage: '',
+            failureDetail: '',
             // `a-never-opened` ran as a subagent but nobody opened its tab.
             descendantAgentIds: ['a-never-opened', 'a-real'],
-          } as CloseAgentResponse)
+          } as CloseTabResponse)
 
           ops.handleAgentClose('a-root3')
           await flush()
@@ -1178,15 +1172,13 @@ describe('useAgentOperations', () => {
           }
           const clearAgent = vi.spyOn(controlStore, 'clearAgent')
 
-          mockCloseAgent.mockResolvedValueOnce({
-            result: {
-              worktreePath: '',
-              worktreeId: '',
-              failureMessage: '',
-              failureDetail: '',
-            },
+          mockCloseTab.mockResolvedValueOnce({
+            worktreePath: '',
+            worktreeId: '',
+            failureMessage: '',
+            failureDetail: '',
             descendantAgentIds: ['a-kid'],
-          } as CloseAgentResponse)
+          } as CloseTabResponse)
 
           ops.handleAgentClose('a-root4')
           await flush()
@@ -1221,7 +1213,7 @@ describe('useAgentOperations', () => {
               workingDir: '/tmp',
             })
           }
-          mockCloseAgent.mockRejectedValueOnce(new Error('worker unreachable'))
+          mockCloseTab.mockRejectedValueOnce(new Error('worker unreachable'))
 
           ops.handleAgentClose('a-root2')
           await flush()

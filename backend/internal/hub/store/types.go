@@ -165,15 +165,12 @@ func (s ActiveSession) PageCursor() (time.Time, string) { return s.LastActiveAt,
 
 // Worker represents a registered worker node.
 type Worker struct {
-	ID              string
-	AuthToken       string
-	RegisteredBy    string
-	Status          leapmuxv1.WorkerStatus
-	CreatedAt       time.Time
-	LastSeenAt      *time.Time
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
+	ID           string
+	AuthToken    string
+	RegisteredBy string
+	Status       leapmuxv1.WorkerStatus
+	CreatedAt    time.Time
+	LastSeenAt   *time.Time
 	// AutoRegistered marks rows created by Server.RegisterWorker (the
 	// in-process bypass for the solo launcher's co-located worker).
 	// DeregisterWorker refuses these to keep users from accidentally
@@ -205,13 +202,6 @@ func WorkerStatusOf(deregisteringAt, deletedAt *time.Time) leapmuxv1.WorkerStatu
 // and, via the WorkerWithOwner embedding, ListAdmin), which order by
 // (created_at DESC, id DESC).
 func (w Worker) PageCursor() (time.Time, string) { return w.CreatedAt, w.ID }
-
-// WorkerPublicKeys holds a worker's public key material.
-type WorkerPublicKeys struct {
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
-}
 
 // WorkerWithOwner is the result of admin worker listing (JOIN with users).
 type WorkerWithOwner struct {
@@ -846,23 +836,13 @@ type ListUserSessionsParams struct {
 }
 
 type CreateWorkerParams struct {
-	ID              string
-	AuthToken       string
-	RegisteredBy    userid.UserID
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
+	ID           string
+	AuthToken    string
+	RegisteredBy userid.UserID
 	// AutoRegistered must be true only on the solo launcher's
 	// in-process bypass path (Server.RegisterWorker). All
 	// registration-key driven Register RPCs leave it false.
 	AutoRegistered bool
-}
-
-type UpdateWorkerPublicKeyParams struct {
-	ID              string
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
 }
 
 type DeregisterWorkerParams struct {
@@ -978,23 +958,12 @@ type UpsertTabParams struct {
 	Rendered    bool
 }
 
-// GetRenderedTabParams identifies a single rendered-tab row.
-//
-// UserID is the tenancy axis and is REQUIRED, for the reason spelled out on
-// GetOwnedTabParams: tab ids are client-minted and unique only within one
-// user, so (workspace_id, tab_type, tab_id) is not a key. The composite
-// workspace key makes the row's user the workspace's owner, so binding the
-// caller's id also refuses a caller who does not own the workspace.
-type GetRenderedTabParams struct {
-	UserID      userid.UserID
-	WorkspaceID string
-	TabType     leapmuxv1.TabType
-	TabID       string
-}
-
 // ListRenderedTabsByWorkspaceIDsParams scopes the rendered-tab listing to one
-// owner across a set of workspaces. See GetRenderedTabParams for why the
-// workspace set alone is not a tenancy scope.
+// owner across a set of workspaces. The workspace set alone is not a tenancy
+// scope: tab ids are client-minted and unique only within one user (see
+// GetOwnedTabParams). The composite workspace key makes the row's user the
+// workspace's owner, so binding the caller's id also refuses a caller who does
+// not own a listed workspace.
 type ListRenderedTabsByWorkspaceIDsParams struct {
 	UserID       userid.UserID
 	WorkspaceIDs []string

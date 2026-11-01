@@ -75,8 +75,6 @@ func terminalStatusName(s leapmuxv1.TerminalStatus) string {
 		return "ready"
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
 		return "startup_failed"
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_DISCONNECTED:
-		return "disconnected"
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
 		return "exited"
 	default:
@@ -106,8 +104,8 @@ func parseEnumFlag[T comparable](value string, mapping map[string]T) (T, bool) {
 // list` / `tab get` so the envelope shows "agent" instead of `1`.
 func workspaceTabToMap(t *leapmuxv1.WorkspaceTab) map[string]any {
 	return map[string]any{
-		"tab_id":       t.GetTabId(),
-		"tab_type":     tabTypeName(t.GetTabType()),
+		"tab_id":       t.GetTab().GetTabId(),
+		"tab_type":     tabTypeName(t.GetTab().GetTabType()),
 		"tile_id":      t.GetTileId(),
 		"worker_id":    t.GetWorkerId(),
 		"workspace_id": t.GetWorkspaceId(),
@@ -146,10 +144,8 @@ func agentInfoToMap(a *leapmuxv1.AgentInfo) map[string]any {
 		"permission_mode":  optionids.CurrentValue(groups, optionids.PermissionMode),
 		"effort":           optionids.CurrentValue(groups, optionids.Effort),
 		"worker_id":        a.GetWorkerId(),
-		"worker_name":      a.GetWorkerName(),
 		"working_dir":      a.GetWorkingDir(),
 		"git_status":       a.GetGitStatus(),
-		"home_dir":         a.GetHomeDir(),
 		"option_groups":    optionGroupsToList(groups),
 		"startup_error":    a.GetStartupError(),
 		"startup_message":  a.GetStartupMessage(),

@@ -1,9 +1,9 @@
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createSignal, getOwner, onCleanup, onMount } from 'solid-js'
-import { workerClient } from '~/api/clients'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { formatErrorMessage } from '~/lib/errors'
 import { createIdentityCache } from '~/lib/identityCache'
+import { listAllWorkers } from '~/lib/listAllWorkers'
 import { resetOnlinePrefetch, shouldPrefetchOnline, workerInfoStore } from '~/stores/workerInfo.store'
 
 export interface WorkerDialogContextOptions {
@@ -112,10 +112,10 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
   const fetchWorkers = async () => {
     const gen = ++fetchGen
     try {
-      const resp = await workerClient.listWorkers({})
+      const workers = await listAllWorkers()
       if (disposed || gen !== fetchGen)
         return false
-      const online = workerIdentity.stabilize(resp.workers.filter(b => b.online))
+      const online = workerIdentity.stabilize(workers.filter(b => b.online))
       setWorkers(online)
       if (online.length > 0 && !workerId()) {
         // Prefer the caller's preselected worker when it's online; fall

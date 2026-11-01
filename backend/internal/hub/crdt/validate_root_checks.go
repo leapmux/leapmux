@@ -65,8 +65,8 @@ func rootChecks(post *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp, intern
 					return reason, op.GetOpId()
 				}
 			}
-		case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
-			if reason, ok := validateRootAssignment(post, postRoots, body.SetWorkspaceRootNode.GetRootNodeId()); !ok {
+		case *leapmuxv1.CrdtOp_CreateWorkspace:
+			if reason, ok := validateRootAssignment(post, postRoots, body.CreateWorkspace.GetRootNodeId()); !ok {
 				return reason, op.GetOpId()
 			}
 		}

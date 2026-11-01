@@ -1,6 +1,6 @@
 import type { AuthState } from './AuthContext'
 /// <reference types="vitest/globals" />
-import type { User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
@@ -11,7 +11,7 @@ import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
 import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
-import { deferred, untilTrue } from '~/test-support/async'
+import { deferred, settle, untilTrue } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 import { AuthProvider, useAuth } from './AuthContext'
@@ -22,9 +22,11 @@ const mockPasswordSetupGate = vi.fn<() => boolean>(() => false)
 vi.mock('~/api/clients', () => ({
   authClient: {
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
-    getSystemInfo: vi.fn().mockResolvedValue({ signupEnabled: false, soloMode: false }),
     login: (...args: unknown[]) => mockLogin(...args),
     logout: vi.fn().mockResolvedValue({}),
+  },
+  systemClient: {
+    getSystemInfo: vi.fn().mockResolvedValue({ signupEnabled: false, soloMode: false }),
   },
   userClient: {},
 }))
@@ -79,6 +81,16 @@ vi.mock('~/lib/systemInfo', () => ({
   getCaptchaProvider: () => 1, // CaptchaProvider.ALTCHA
   getCaptchaSiteKey: () => '',
 }))
+
+/** A sign-in's SessionReport, for the adoption paths that take one. */
+function reportFor(user: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}): SessionReport {
+  return {
+    ...(user
+      ? { user }
+      : {}),
+    ...extra,
+  } as unknown as SessionReport
+}
 
 function TestConsumer() {
   const auth = useAuth()
@@ -136,7 +148,9 @@ describe('AuthContext', () => {
 
   it('restores session from cookie on mount when getCurrentUser succeeds', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'testuser', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser', isAdmin: false },
+      },
     })
 
     renderWithAuth()
@@ -151,7 +165,7 @@ describe('AuthContext', () => {
   // open with deferreds so each phase is observed, not raced past.
   it('advances the boot splash phase through bootstrap and lands on workspaces when authenticated', async () => {
     const systemInfo = deferred<void>()
-    const session = deferred<{ user: { id: string, username: string, isAdmin: boolean } }>()
+    const session = deferred<{ sessionReport: { user: { id: string, username: string, isAdmin: boolean } } }>()
     mockLoadSystemInfo.mockReturnValue(systemInfo.promise)
     mockGetCurrentUser.mockReturnValue(session.promise)
 
@@ -167,7 +181,9 @@ describe('AuthContext', () => {
     })
 
     session.resolve({
-      user: { id: 'u1', username: 'testuser', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser', isAdmin: false },
+      },
     })
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
@@ -175,7 +191,9 @@ describe('AuthContext', () => {
   })
 
   it('lands on ready when bootstrap finishes signed out', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: undefined })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: { user: undefined },
+    })
     renderWithAuth()
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
@@ -255,7 +273,9 @@ describe('AuthContext', () => {
   it('records a bootstrap error when the system info load fails', async () => {
     mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'solo', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'solo', isAdmin: false },
+      },
     })
 
     renderWithAuth()
@@ -277,7 +297,9 @@ describe('AuthContext', () => {
 
     mockLoadSystemInfo.mockResolvedValue(undefined)
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'recovered', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'recovered', isAdmin: false },
+      },
     })
     await auth().retryBootstrap()
 
@@ -299,7 +321,9 @@ describe('AuthContext', () => {
     })
 
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'recovered', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'recovered', isAdmin: false },
+      },
     })
     await auth().retryBootstrap()
 
@@ -314,11 +338,13 @@ describe('AuthContext', () => {
     // Simulate: user just returned from OAuth callback with a valid session cookie.
     // AuthContext.onMount calls getCurrentUser, which succeeds because the cookie is set.
     mockGetCurrentUser.mockResolvedValue({
-      user: {
-        id: 'u2',
-        username: 'oauth-user',
-        isAdmin: false,
-        oauthProviders: ['Google'],
+      sessionReport: {
+        user: {
+          id: 'u2',
+          username: 'oauth-user',
+          isAdmin: false,
+          oauthProviders: ['Google'],
+        },
       },
     })
 
@@ -338,7 +364,9 @@ describe('AuthContext', () => {
     // desktop sidecar's tunnels (which carry no identity of their own) must be
     // reset so they cannot keep relaying under the old user.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -347,7 +375,9 @@ describe('AuthContext', () => {
     mockResetTunnels.mockResolvedValue(undefined)
 
     mockLogin.mockResolvedValue({
-      user: { id: 'u2', username: 'bob', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
     })
     await auth().login('bob', 'pw')
 
@@ -360,7 +390,9 @@ describe('AuthContext', () => {
     // Re-login as the SAME identity (a session refresh) is not a transition, so
     // the pooled channels -- already correct for this user -- must be kept.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -368,7 +400,9 @@ describe('AuthContext', () => {
     mockResetTunnels.mockClear()
 
     mockLogin.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     await auth().login('alice', 'pw')
 
@@ -378,7 +412,9 @@ describe('AuthContext', () => {
 
   it('drops pooled channels and resets sidecar tunnels on logout', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -396,14 +432,18 @@ describe('AuthContext', () => {
   })
 
   it('enters the shell checklist on login before AppShell mounts', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: undefined })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: { user: undefined },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
     })
 
     mockLogin.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     await auth().login('alice', 'pw')
 
@@ -417,7 +457,9 @@ describe('AuthContext', () => {
     // that changes the id must release too; the old imperative wiring only released
     // at login/logout/auth-error and would have leaked the previous user's channels.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -425,7 +467,7 @@ describe('AuthContext', () => {
     mockResetTunnels.mockClear()
     mockResetTunnels.mockResolvedValue(undefined)
 
-    auth().setAuth({ id: 'u2', username: 'bob', isAdmin: false } as unknown as User)
+    void auth().setAuth(reportFor({ id: 'u2', username: 'bob', isAdmin: false }))
 
     await vi.waitFor(() => expect(mockCloseAll).toHaveBeenCalledOnce())
     expect(mockResetTunnels).toHaveBeenCalledOnce()
@@ -440,35 +482,39 @@ describe('AuthContext', () => {
   it('drops the elevation when a setUser path swaps to a different identity', async () => {
     const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
-      elevationExpiresAt: deadline,
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        elevationExpiresAt: deadline,
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     expect(auth().elevationExpiresAt()).toBe(deadline)
 
-    auth().setAuth({ id: 'u2', username: 'bob', isAdmin: false } as unknown as User)
+    void auth().setAuth(reportFor({ id: 'u2', username: 'bob', isAdmin: false }))
 
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('bob'))
     expect(auth().elevationExpiresAt()).toBeUndefined()
   })
 
   // The one reply that GRANTS an elevation in the same transaction that creates
-  // the session: SetInitialSoloPassword. Passing the deadline keeps the client
-  // state derived from the answer that created it, rather than from a following
-  // refresh whose failure is swallowed -- which would prompt the operator for
-  // the password they chose a moment earlier.
+  // the session: SetInitialSoloPassword. Its report carries the deadline, which
+  // keeps the client state derived from the answer that created it, rather than
+  // from a following refresh whose failure is swallowed -- which would prompt
+  // the operator for the password they chose a moment earlier.
   it('keeps an elevation the same reply granted', async () => {
     const inherited = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
     const granted = timestampFromDate(new Date(Date.now() + 30 * 60 * 1000))
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
-      elevationExpiresAt: inherited,
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        elevationExpiresAt: inherited,
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
-    auth().setAuth({ id: 'solo', username: 'solo', isAdmin: true } as unknown as User, granted)
+    void auth().setAuth(reportFor({ id: 'solo', username: 'solo', isAdmin: true }, { elevationExpiresAt: granted }))
 
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('solo'))
     expect(auth().elevationExpiresAt()).toBe(granted)
@@ -482,15 +528,19 @@ describe('AuthContext', () => {
     const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
     const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
-      elevationExpiresAt: deadline,
-      emailVerification: { nextResendAvailableAt: resend },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        elevationExpiresAt: deadline,
+        emailVerification: { nextResendAvailableAt: resend },
+      },
     })
     await auth().refreshUser()
 
@@ -507,13 +557,15 @@ describe('AuthContext', () => {
     it('does not revert a freshly proven elevation', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
       // A refresh leaves, carrying no deadline, and does not land yet.
-      const inFlight = deferred<{ user: { id: string, username: string, isAdmin: boolean } }>()
+      const inFlight = deferred<{ sessionReport: { user: { id: string, username: string, isAdmin: boolean } } }>()
       mockGetCurrentUser.mockReturnValue(inFlight.promise)
       const refreshing = auth().refreshUser()
 
@@ -523,7 +575,9 @@ describe('AuthContext', () => {
       expect(auth().elevationExpiresAt()).toBe(deadline)
 
       inFlight.resolve({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       await refreshing
 
@@ -536,7 +590,9 @@ describe('AuthContext', () => {
     it('does not revert a newer response that already landed', async () => {
       const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -546,14 +602,18 @@ describe('AuthContext', () => {
       const firstRefresh = auth().refreshUser()
 
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'renamed', isAdmin: false },
-        emailVerification: { nextResendAvailableAt: resend },
+        sessionReport: {
+          user: { id: 'u1', username: 'renamed', isAdmin: false },
+          emailVerification: { nextResendAvailableAt: resend },
+        },
       })
       await auth().refreshUser()
       expect(auth().user()?.username).toBe('renamed')
 
       first.resolve({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       await firstRefresh
 
@@ -571,11 +631,13 @@ describe('AuthContext', () => {
      */
     it('does not revert a same-identity user that landed first', async () => {
       mockGetCurrentUser.mockResolvedValue({
-        user: {
-          id: 'u1',
-          username: 'alice',
-          emailVerified: false,
-          isAdmin: false,
+        sessionReport: {
+          user: {
+            id: 'u1',
+            username: 'alice',
+            emailVerified: false,
+            isAdmin: false,
+          },
         },
       })
       const { auth } = renderWithAuthCapture()
@@ -585,17 +647,19 @@ describe('AuthContext', () => {
       mockGetCurrentUser.mockReturnValue(inFlight.promise)
       const refreshing = auth().refreshUser()
 
-      await auth().adoptSameIdentityUser(
+      await auth().openUserAdoption()(
         { id: 'u1', username: 'alice', emailVerified: true } as unknown as User,
       )
       expect(auth().user()?.emailVerified).toBe(true)
 
       inFlight.resolve({
-        user: {
-          id: 'u1',
-          username: 'alice',
-          emailVerified: false,
-          isAdmin: false,
+        sessionReport: {
+          user: {
+            id: 'u1',
+            username: 'alice',
+            emailVerified: false,
+            isAdmin: false,
+          },
         },
       })
       await refreshing
@@ -613,7 +677,9 @@ describe('AuthContext', () => {
     it('does not revert a cooldown a resend recorded while it was out', async () => {
       const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -625,7 +691,9 @@ describe('AuthContext', () => {
       auth().setVerificationResendAvailableAt(resend)
 
       inFlight.resolve({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       await refreshing
 
@@ -642,7 +710,9 @@ describe('AuthContext', () => {
     it('adopts the window a password proved', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -657,7 +727,9 @@ describe('AuthContext', () => {
     it('adopts the window a passkey proved', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -675,8 +747,10 @@ describe('AuthContext', () => {
     it('keeps the window when a success carries no timestamp', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-        elevationExpiresAt: deadline,
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+          elevationExpiresAt: deadline,
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -692,7 +766,9 @@ describe('AuthContext', () => {
     // and the rate-limit refusal are both sentences the user can act on.
     it('rethrows the hub refusal, and adopts nothing', async () => {
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -707,8 +783,10 @@ describe('AuthContext', () => {
     it('clears the window once the hub accepts a drop', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-        elevationExpiresAt: deadline,
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+          elevationExpiresAt: deadline,
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -721,8 +799,10 @@ describe('AuthContext', () => {
     it('keeps the window when the drop fails', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-        elevationExpiresAt: deadline,
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+          elevationExpiresAt: deadline,
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -759,7 +839,9 @@ describe('AuthContext', () => {
 
     async function signedIn() {
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       const captured = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -793,7 +875,7 @@ describe('AuthContext', () => {
     it('is not reverted by a GetCurrentUser that left earlier', async () => {
       const { auth } = await signedIn()
 
-      const reading = deferred<{ user: { id: string, username: string, isAdmin: boolean } }>()
+      const reading = deferred<{ sessionReport: { user: { id: string, username: string, isAdmin: boolean } } }>()
       mockGetCurrentUser.mockReturnValue(reading.promise)
       const refreshing = auth().refreshUser()
 
@@ -802,7 +884,9 @@ describe('AuthContext', () => {
 
       // The read answers with no window, because it left before the slide.
       reading.resolve({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
       })
       await refreshing
 
@@ -818,8 +902,10 @@ describe('AuthContext', () => {
      */
     it('loses to an End now that commits while it is in flight', async () => {
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-        elevationExpiresAt: timestampFromDate(new Date(Date.now() + 60 * 60 * 1000)),
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+          elevationExpiresAt: timestampFromDate(new Date(Date.now() + 60 * 60 * 1000)),
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -861,13 +947,15 @@ describe('AuthContext', () => {
   it('keeps the elevation when it adopts a same-identity user', async () => {
     const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
-      elevationExpiresAt: deadline,
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        elevationExpiresAt: deadline,
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
-    await auth().adoptSameIdentityUser({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
+    await auth().openUserAdoption()({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
 
     expect(auth().user()?.emailVerified).toBe(true)
     expect(auth().elevationExpiresAt()).toBe(deadline)
@@ -877,7 +965,9 @@ describe('AuthContext', () => {
     // null -> first-user is not an identity SWAP: there is nothing pooled to release,
     // and a spurious resetTunnels must not fire on a fresh page load.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     renderWithAuth()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -891,7 +981,9 @@ describe('AuthContext', () => {
     // restarts) must be logged, not break the logout flow or surface as an
     // unhandled rejection.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u1', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -909,6 +1001,541 @@ describe('AuthContext', () => {
 // writer of both. What matters is the ORDER: `AuthGuard`'s `Show` is a render
 // effect and runs ahead of a user effect in the same flush, so an effect-based
 // move would let `AppShell` mount and read the PREVIOUS account's keys.
+/** Sign in as `alice` from a signed-out bootstrap; returns the live context. */
+async function bootSignedOut(): Promise<() => AuthState> {
+  mockGetCurrentUser.mockRejectedValue(new ConnectError('no session', Code.Unauthenticated))
+  const { auth } = renderWithAuthCapture()
+  await untilTrue(() => !auth().loading())
+  mockGetCurrentUser.mockReset()
+  return auth
+}
+
+describe('AuthContext sign-in recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
+  // The sign-in SUCCEEDED; only its account projection could not be read. The
+  // context reads the account, adopts it, and marks recovery completed for the
+  // gate, which navigates and then finishes it.
+  it('adopts the account a recovery read returns', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({
+      sessionReport: {
+        emailVerification: { verificationRequired: false },
+      },
+    })
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    const result = await auth().login('alice', 'pw')
+
+    expect(result.outcome).toBe('recovering')
+    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    expect(auth().user()?.username).toBe('alice')
+    expect(auth().loading()).toBe(false)
+    expect(auth().signInRecovery()?.error).toBeNull()
+
+    auth().finishSignInRecovery()
+    expect(auth().signInRecovery()).toBeNull()
+  })
+
+  it('records a failed recovery read, and Retry re-reads only the account', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockRejectedValueOnce(new ConnectError('down', Code.Unavailable))
+
+    await auth().login('alice', 'pw')
+    await untilTrue(() => auth().signInRecovery()?.error != null)
+    expect(auth().user()).toBeNull()
+    expect(auth().signInRecovery()?.error).toContain('down')
+
+    mockGetCurrentUser.mockResolvedValueOnce({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    await auth().retrySignInRecovery()
+
+    expect(auth().user()?.username).toBe('alice')
+    expect(auth().signInRecovery()?.completed).toBe(true)
+    expect(mockLogin).toHaveBeenCalledOnce()
+  })
+
+  // The identity transition happens at once, before the account read: the
+  // previous identity, its elevation and its pooled channels all go.
+  it('drops the previous identity at once when the sign-in reports no account', async () => {
+    const deadline = timestampFromDate(new Date(Date.now() + 60 * 60 * 1000))
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u0', username: 'previous', isAdmin: true },
+        elevationExpiresAt: deadline,
+      },
+    })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('previous'))
+    expect(auth().elevationExpiresAt()).toBe(deadline)
+    mockCloseAll.mockClear()
+
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('down', Code.Unavailable))
+    await auth().login('alice', 'pw')
+
+    expect(auth().elevationExpiresAt()).toBeUndefined()
+    expect(auth().user()).toBeNull()
+    await vi.waitFor(() => expect(mockCloseAll).toHaveBeenCalled())
+    await untilTrue(() => auth().signInRecovery()?.error != null)
+    expect(auth().user()).toBeNull()
+  })
+
+  it('seeds the resend cooldown from a report with no account', async () => {
+    const auth = await bootSignedOut()
+    const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
+    mockLogin.mockResolvedValue({
+      sessionReport: {
+        emailVerification: { verificationRequired: true, nextResendAvailableAt: resend },
+      },
+    })
+    mockGetCurrentUser.mockReturnValue(new Promise(() => {}))
+
+    await auth().login('alice', 'pw')
+
+    expect(auth().verificationResendAvailableAt()).toBe(resend)
+    expect(auth().signInRecovery()?.verificationRequired).toBe(true)
+  })
+
+  // Recovery owns the navigation after the read, so it keeps the address the
+  // sign-in asked to continue to, such as a consent page.
+  it('keeps the redirect the sign-in asked to continue to', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockReturnValue(new Promise(() => {}))
+
+    await auth().login('alice', 'pw', undefined, { redirect: '/oauth/authorize?state=s' })
+
+    expect(auth().signInRecovery()?.redirect).toBe('/oauth/authorize?state=s')
+  })
+
+  it('states no redirect when the sign-in asked for none', async () => {
+    const auth = await bootSignedOut()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockReturnValue(new Promise(() => {}))
+
+    await auth().login('alice', 'pw')
+
+    const recovery = auth().signInRecovery()
+    expect(recovery).not.toBeNull()
+    expect(Object.keys(recovery ?? {})).not.toContain('redirect')
+  })
+
+  // setAuth is the other way into recovery: a sign-up or an OAuth completion
+  // whose report carries no account.
+  it('recovers from a setAuth report with no account', async () => {
+    const auth = await bootSignedOut()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    const outcome = await auth().setAuth(undefined, { redirect: '/settings' })
+
+    expect(outcome).toBe('recovering')
+    expect(auth().signInRecovery()?.redirect).toBe('/settings')
+    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    expect(auth().user()?.username).toBe('alice')
+  })
+
+  it('reads nothing when Retry runs with no recovery in progress', async () => {
+    const auth = await bootSignedOut()
+
+    await auth().retrySignInRecovery()
+
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+    expect(auth().signInRecovery()).toBeNull()
+  })
+
+  // A sign-out ends the session that the recovery reads. A late answer of that
+  // read must neither adopt the account nor start the recovery again.
+  it.each(['succeeds', 'fails'] as const)('stays signed out when the recovery read %s after a sign-out', async (answer) => {
+    const auth = await bootSignedOut()
+    const read = deferred<unknown>()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockReturnValueOnce(read.promise)
+    await auth().login('alice', 'pw')
+    expect(auth().signInRecovery()).not.toBeNull()
+
+    await auth().logout()
+    expect(auth().signInRecovery()).toBeNull()
+
+    if (answer === 'succeeds') {
+      read.resolve({
+        sessionReport: {
+          user: { id: 'u1', username: 'alice', isAdmin: false },
+        },
+      })
+    }
+    else {
+      read.reject(new ConnectError('down', Code.Unavailable))
+    }
+    await settle()
+
+    expect(auth().user()).toBeNull()
+    expect(auth().signInRecovery()).toBeNull()
+  })
+
+  // The recovery read keys its staleness on the operation, not on the count
+  // that every local write moves. A cooldown write during the read must not
+  // discard the read and leave the gate waiting with no read in flight.
+  it('adopts the account although an unrelated write landed during the read', async () => {
+    const auth = await bootSignedOut()
+    const read = deferred<unknown>()
+    mockLogin.mockResolvedValue({ sessionReport: {} })
+    mockGetCurrentUser.mockReturnValueOnce(read.promise)
+    await auth().login('alice', 'pw')
+
+    auth().setVerificationResendAvailableAt(timestampFromDate(new Date(Date.now() + 60 * 1000)))
+    read.resolve({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    expect(auth().user()?.username).toBe('alice')
+  })
+})
+
+describe('AuthContext operation ownership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
+  // Sign-in A recovers, and its read fails only after a newer sign-in B
+  // adopted its own account. A no longer owns the state, so it writes nothing.
+  it('ignores an older sign-in\'s recovery failure after a newer sign-in adopted', async () => {
+    const auth = await bootSignedOut()
+    const aRead = deferred<never>()
+    mockLogin.mockResolvedValueOnce({ sessionReport: {} })
+    mockGetCurrentUser.mockReturnValueOnce(aRead.promise)
+    await auth().login('alice', 'pw')
+
+    mockLogin.mockResolvedValueOnce({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    const b = await auth().login('bob', 'pw')
+    expect(b.outcome).toBe('adopted')
+
+    aRead.reject(new ConnectError('down', Code.Unavailable))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(auth().user()?.username).toBe('bob')
+    expect(auth().signInRecovery()).toBeNull()
+    expect(auth().bootstrapError()).toBeNull()
+    expect(auth().loading()).toBe(false)
+  })
+
+  // A's sign-in RPC answers while B's is still pending. A is superseded, so its
+  // `finally` must not end the `loading` B still holds.
+  it('keeps loading until the newest sign-in finishes', async () => {
+    const auth = await bootSignedOut()
+    const aLogin = deferred<unknown>()
+    const bLogin = deferred<unknown>()
+    mockLogin.mockReturnValueOnce(aLogin.promise).mockReturnValueOnce(bLogin.promise)
+
+    const a = auth().login('alice', 'pw')
+    const b = auth().login('bob', 'pw')
+    aLogin.resolve({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    expect((await a).outcome).toBe('superseded')
+    expect(auth().loading()).toBe(true)
+    expect(auth().user()).toBeNull()
+
+    bLogin.resolve({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    expect((await b).outcome).toBe('adopted')
+    expect(auth().loading()).toBe(false)
+    expect(auth().user()?.username).toBe('bob')
+  })
+
+  // The bootstrap restore's read fails only after a sign-in superseded it. The
+  // failure describes a session nobody uses, so no bootstrap error appears.
+  it('ignores a restore failure after a sign-in superseded it', async () => {
+    const restore = deferred<never>()
+    mockGetCurrentUser.mockReturnValueOnce(restore.promise)
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalledOnce())
+
+    mockLogin.mockResolvedValueOnce({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    await auth().login('bob', 'pw')
+    restore.reject(new ConnectError('boom', Code.Internal))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(auth().bootstrapError()).toBeNull()
+    expect(auth().user()?.username).toBe('bob')
+  })
+
+  // A's sign-in RPC fails only after B adopted its account. The failure
+  // belongs to an attempt nobody waits on, so the banner stays empty. A's
+  // caller still sees the rejection.
+  it('keeps the error banner empty when an older sign-in fails after a newer one adopted', async () => {
+    const auth = await bootSignedOut()
+    const aLogin = deferred<unknown>()
+    mockLogin.mockReturnValueOnce(aLogin.promise).mockResolvedValueOnce({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+
+    const a = auth().login('alice', 'wrong')
+    expect((await auth().login('bob', 'pw')).outcome).toBe('adopted')
+
+    aLogin.reject(new Error('invalid credentials'))
+    await expect(a).rejects.toThrow('invalid credentials')
+
+    expect(auth().error()).toBeNull()
+    expect(auth().loading()).toBe(false)
+    expect(auth().user()?.username).toBe('bob')
+  })
+
+  // A sign-in during the system info load owns the state. The bootstrap then
+  // stops: it neither restores a session over the sign-in nor reports a
+  // failure for a load nobody waits on.
+  it.each(['succeeds', 'fails'] as const)('leaves a sign-in alone when the superseded system info load %s', async (answer) => {
+    const systemInfo = deferred<void>()
+    mockLoadSystemInfo.mockReturnValueOnce(systemInfo.promise)
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(mockLoadSystemInfo).toHaveBeenCalledOnce())
+    mockLogin.mockResolvedValueOnce({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+    await auth().login('bob', 'pw')
+
+    if (answer === 'succeeds')
+      systemInfo.resolve()
+    else
+      systemInfo.reject(new Error('not connected'))
+    await settle()
+
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+    expect(auth().bootstrapError()).toBeNull()
+    expect(auth().user()?.username).toBe('bob')
+    expect(auth().loading()).toBe(false)
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
+  })
+})
+
+describe('AuthContext openUserAdoption', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
+  async function bootAs(fields: Record<string, unknown>): Promise<() => AuthState> {
+    mockGetCurrentUser.mockResolvedValue({ sessionReport: fields })
+    const { auth } = renderWithAuthCapture()
+    await untilTrue(() => !auth().loading())
+    mockGetCurrentUser.mockClear()
+    return auth
+  }
+
+  // A provider-only account's profile reply is the complete projection, and
+  // adopting it keeps the provider list and the step-up option.
+  it('adopts a same-identity reply with its providers and step-up rule', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+
+    await adopt({
+      id: 'u1',
+      username: 'alice',
+      displayName: 'Renamed',
+      oauthProviders: [
+        { id: 'gh', name: 'GitHub', enabled: true },
+      ],
+      mayElevateThroughAProvider: true,
+    } as unknown as User)
+
+    expect(auth().user()?.displayName).toBe('Renamed')
+    expect(auth().user()?.oauthProviders).toHaveLength(1)
+    expect(auth().user()?.mayElevateThroughAProvider).toBe(true)
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+  })
+
+  // The user ended the elevation while the profile write was out. The reply
+  // carries no elevation, and adopting it must not put the window back.
+  it('leaves an elevation the user ended in the meantime ended', async () => {
+    const deadline = timestampFromDate(new Date(Date.now() + 60 * 60 * 1000))
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+      elevationExpiresAt: deadline,
+    })
+    const adopt = auth().openUserAdoption()
+    mockDropElevation.mockResolvedValue(undefined)
+    await auth().dropElevation()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+
+    await adopt({ id: 'u1', username: 'alice' } as unknown as User)
+
+    expect(auth().elevationExpiresAt()).toBeUndefined()
+  })
+
+  // A newer elevation landed while the write was out. The adoption re-reads
+  // rather than adopting, and the newer deadline stands.
+  it('keeps a newer elevation that landed in the meantime', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    const newer = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
+    mockElevateWithPassword.mockResolvedValue(newer)
+    await auth().elevateWithPassword('pw')
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+        elevationExpiresAt: newer,
+      },
+    })
+
+    await adopt({ id: 'u1', username: 'alice', displayName: 'stale' } as unknown as User)
+
+    expect(auth().elevationExpiresAt()).toBe(newer)
+    expect(auth().user()?.displayName).not.toBe('stale')
+    expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+  })
+
+  // The identity changed while the write was out. The reply belongs to the old
+  // account, so the adoption re-reads the NEW identity instead.
+  it('re-reads instead of adopting after an identity change', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    await auth().setAuth(reportFor({ id: 'u2', username: 'bob', isAdmin: false }))
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u2', username: 'bob', isAdmin: false },
+      },
+    })
+
+    await adopt({ id: 'u1', username: 'alice' } as unknown as User)
+
+    expect(auth().user()?.username).toBe('bob')
+    expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+  })
+
+  it('re-reads when the reply carries no user', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: {
+          id: 'u1',
+          username: 'alice',
+          displayName: 'Read',
+          isAdmin: false,
+        },
+      },
+    })
+
+    await adopt(undefined)
+
+    expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+    expect(auth().user()?.displayName).toBe('Read')
+  })
+
+  // The /verify-email reply carries the verification status beside the user,
+  // and the adoption seeds the resend cooldown from it.
+  it('adopts the cooldown a same-identity reply carries', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
+
+    await adopt(
+      { id: 'u1', username: 'alice', emailVerified: true } as unknown as User,
+      { nextResendAvailableAt: resend } as unknown as EmailVerificationStatus,
+    )
+
+    expect(auth().user()?.emailVerified).toBe(true)
+    expect(auth().verificationResendAvailableAt()).toBe(resend)
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+  })
+
+  // Nobody was signed in when the mutation left, so no identity can match the
+  // reply. The adoption reads the account instead, and the reply's cooldown
+  // goes with the rest of the reply.
+  it('re-reads when it opened with nobody signed in', async () => {
+    const auth = await bootAs({ user: undefined })
+    const adopt = auth().openUserAdoption()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: {
+          id: 'u1',
+          username: 'alice',
+          displayName: 'Read',
+          isAdmin: false,
+        },
+      },
+    })
+
+    await adopt(
+      { id: 'u1', username: 'alice', displayName: 'Reply' } as unknown as User,
+      {
+        nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 60 * 1000)),
+      } as unknown as EmailVerificationStatus,
+    )
+
+    expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+    expect(auth().user()?.displayName).toBe('Read')
+    expect(auth().verificationResendAvailableAt()).toBeUndefined()
+  })
+})
+
 describe('AuthContext storage namespace', () => {
   beforeEach(() => {
     resetStorageAccountForTests()
@@ -942,7 +1569,9 @@ describe('AuthContext storage namespace', () => {
 
   it('points storage at the account before anything can render for it', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
 
     // Read the namespace from a component that REQUIRES the identity -- the shape
@@ -976,7 +1605,9 @@ describe('AuthContext storage namespace', () => {
   it('serves a stored preference from the first render that can ask for one', async () => {
     await seedStoredPrefs('alice', { diffView: 'split' })
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
 
     let seenWhileRendering: unknown
@@ -1010,7 +1641,9 @@ describe('AuthContext storage namespace', () => {
       },
     })
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
 
     const { auth } = renderWithAuthCapture()
@@ -1030,7 +1663,9 @@ describe('AuthContext storage namespace', () => {
   // `setStorageAccount` refuses, loudly, in the middle of a sign-in.
   it('does not publish an identity a newer one superseded mid-hydration', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
@@ -1044,8 +1679,8 @@ describe('AuthContext storage namespace', () => {
 
     // Both calls run their synchronous half before either hydration resolves,
     // so the second one owns the identity from that moment on.
-    const first = auth().adoptSameIdentityUser({ id: 'bob', username: 'bob' } as unknown as User)
-    const second = auth().adoptSameIdentityUser({ id: 'carol', username: 'carol' } as unknown as User)
+    const first = auth().setAuth(reportFor({ id: 'bob', username: 'bob' }))
+    const second = auth().setAuth(reportFor({ id: 'carol', username: 'carol' }))
     await Promise.all([first, second])
     await vi.waitFor(() => expect(auth().user()?.id).toBe('carol'))
 
@@ -1063,7 +1698,9 @@ describe('AuthContext storage namespace', () => {
   // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
   it('does not apply a superseded response\'s elevation window', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
@@ -1072,8 +1709,10 @@ describe('AuthContext storage namespace', () => {
 
     // A refresh carrying an elevation, superseded mid-flight by a sign-out.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
-      elevationExpiresAt: { seconds: 4_102_444_800n, nanos: 0 },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+        elevationExpiresAt: { seconds: 4_102_444_800n, nanos: 0 },
+      },
     })
     // `logout` runs `clearAuthUser` in its `finally`, which is the ordinary
     // production path into the null branch of `setUser`.
@@ -1090,7 +1729,9 @@ describe('AuthContext storage namespace', () => {
   // LEAVES. Clearing the namespace would make every one of them throw.
   it('keeps the namespace after a sign-out', async () => {
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'alice', username: 'alice', isAdmin: false },
+      sessionReport: {
+        user: { id: 'alice', username: 'alice', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
@@ -1109,7 +1750,9 @@ describe('AuthContext storage namespace', () => {
   it('treats a user with no id as signed out, not as a failed bootstrap', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: '', username: 'nobody', isAdmin: false },
+      sessionReport: {
+        user: { id: '', username: 'nobody', isAdmin: false },
+      },
     })
     const { auth } = renderWithAuthCapture()
 

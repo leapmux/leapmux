@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -47,7 +48,7 @@ func TestMessageSupplementProjectionListRejectsShadowedPrivateState(t *testing.T
 	svc, dispatcher, _ := setupTestService(t)
 	agentID, _, _ := createShadowedPrivateProjectionRow(t, svc)
 	writer := newTestWriter()
-	dispatch(dispatcher, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{AgentId: agentID, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{AgentId: agentID, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST}, writer)
 	assertPrivateProjectionRefusal(t, writer)
 }
 
@@ -81,7 +82,7 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 
 	list := func(req *leapmuxv1.ListAgentMessagesRequest) *leapmuxv1.ListAgentMessagesResponse {
 		w := newTestWriter()
-		dispatch(d, "ListAgentMessages", req, w)
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, w)
 		require.Len(t, w.responses, 1)
 		var resp leapmuxv1.ListAgentMessagesResponse
 		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
@@ -180,7 +181,7 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 // snapshot ships on the proto-default (UNSPECIFIED) anchor -- which resolves to
 // the LATEST page -- not only on an explicit LATEST. A scroll page (AFTER) still
 // omits it (the client already holds the snapshot and gets live updates via
-// AgentTodosChanged).
+// todos_changed).
 func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	t.Parallel()
 
@@ -205,7 +206,7 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 
 	list := func(req *leapmuxv1.ListAgentMessagesRequest) *leapmuxv1.ListAgentMessagesResponse {
 		w := newTestWriter()
-		dispatch(d, "ListAgentMessages", req, w)
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, req, w)
 		require.Len(t, w.responses, 1)
 		var resp leapmuxv1.ListAgentMessagesResponse
 		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
@@ -213,26 +214,30 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 	}
 
 	// UNSPECIFIED (anchor left unset) resolves to the LATEST page, so it ships todos.
-	// TodosLoaded is true so the client treats the snapshot as authoritative.
+	// The snapshot is present, so the client treats it as authoritative.
 	resp := list(&leapmuxv1.ListAgentMessagesRequest{AgentId: "agent-1", Limit: 10})
-	require.Len(t, resp.GetTodos(), 1)
-	assert.Equal(t, "Run tests", resp.GetTodos()[0].GetContent())
-	assert.True(t, resp.GetTodosLoaded())
+	require.NotNil(t, resp.GetTodos())
+	require.Len(t, resp.GetTodos().GetTodos(), 1)
+	assert.Equal(t, "Run tests", resp.GetTodos().GetTodos()[0].GetContent())
+	require.NotNil(t, resp.GetBackgroundTasks(), "the latest page carries the registry snapshot too")
+	require.NotNil(t, resp.GetGoal(), "the latest page carries the goal snapshot too")
+	assert.Nil(t, resp.GetGoal().GetGoal(), "an agent with no goal answers a present snapshot with no goal")
 	// The authoritative live-tail seq is carried so the --follow CLI can resume after
 	// it instead of inferring a spurious 0 from an empty page (see resumeCursorFor).
 	assert.Equal(t, int64(1), resp.GetLatestSeq())
 
-	// A scroll page (AFTER) does not re-ship the snapshot, and TodosLoaded is false
-	// so the client leaves its existing to-do list intact (rather than treating the
-	// absent snapshot as an authoritative empty list and wiping it).
+	// A scroll page (AFTER) does not re-ship any snapshot. Each one is absent, so
+	// the client leaves its existing state intact (rather than treating an absent
+	// snapshot as an authoritative empty list and wiping it).
 	resp = list(&leapmuxv1.ListAgentMessagesRequest{
 		AgentId:   "agent-1",
 		Anchor:    leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER,
 		CursorSeq: 0,
 		Limit:     10,
 	})
-	assert.Empty(t, resp.GetTodos())
-	assert.False(t, resp.GetTodosLoaded())
+	assert.Nil(t, resp.GetTodos())
+	assert.Nil(t, resp.GetBackgroundTasks())
+	assert.Nil(t, resp.GetGoal())
 
 	// An UNKNOWN anchor (a newer/forward-compat client) resolves to the LATEST
 	// page via resolveMessagePage's default, so it must ship todos too. This holds
@@ -243,8 +248,8 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 		Anchor:  leapmuxv1.MessagePageAnchor(99),
 		Limit:   10,
 	})
-	require.Len(t, resp.GetTodos(), 1)
-	assert.True(t, resp.GetTodosLoaded())
+	require.NotNil(t, resp.GetTodos())
+	require.Len(t, resp.GetTodos().GetTodos(), 1)
 	assert.Len(t, resp.GetMessages(), 1) // latest page returned, not empty
 }
 
@@ -293,7 +298,7 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wWatch := newTestWriter()
-			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+			dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: tc.replay, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 			}, wWatch)
 
@@ -358,7 +363,7 @@ func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 
 	// Resume from the 6th message's seq (cursor = seqs[5]).
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -434,7 +439,7 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 	tail := seqs[59]
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -497,7 +502,7 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 	}
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -552,7 +557,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 	}
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -583,7 +588,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 }
 
 // TestWatchEvents_ReplayShipsTodosSnapshot asserts a (re)subscribe replays a fresh
-// AgentTodosChanged snapshot. A RESUMING client catches up via AFTER pages, which
+// todos_changed snapshot. A RESUMING client catches up via AFTER pages, which
 // (unlike the cold-start LATEST page) never carry the to-do snapshot, and it does
 // not re-run its initial latest-page load -- so a to-do mutation missed while
 // disconnected would leave the sidebar stale until a manual jump-to-latest without
@@ -617,7 +622,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	// Resume from the first message's seq: a RESUMING subscriber whose catch-up
 	// would use AFTER pages and never re-fetch the todo snapshot.
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[0], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -638,7 +643,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	require.Eventually(t, func() bool {
 		todos = collectTodos()
 		return len(todos) > 0
-	}, 5*time.Second, 20*time.Millisecond, "expected an AgentTodosChanged snapshot during replay")
+	}, 5*time.Second, 20*time.Millisecond, "expected a todos_changed snapshot during replay")
 	require.Len(t, todos, 1)
 	assert.Equal(t, "Run tests", todos[0].GetContent())
 }
@@ -673,7 +678,7 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 	require.NoError(t, err)
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -702,9 +707,9 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 
 // TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty verifies
 // that a LATEST-page request for a CHILD (virtual subagent) agent answers with
-// BackgroundTasksLoaded=true and an empty task list. Children own no registry
-// and must never inherit the root's tasks; answering loaded=true (not false)
-// lets the client overwrite any stale state rather than retaining it.
+// a present registry snapshot that holds no task. Children own no registry
+// and must never inherit the root's tasks; a present snapshot (not an absent
+// one) lets the client overwrite any stale state rather than retaining it.
 func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -741,7 +746,7 @@ func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing
 	require.NoError(t, err)
 
 	w := newTestWriter()
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: "child-1",
 		Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
 		Limit:   10,
@@ -750,10 +755,12 @@ func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing
 	var resp leapmuxv1.ListAgentMessagesResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.Empty(t, resp.GetBackgroundTasks(),
+	require.NotNil(t, resp.GetBackgroundTasks(),
+		"a present snapshot, so the client overwrites stale state with the correct empty set")
+	assert.Empty(t, resp.GetBackgroundTasks().GetTasks(),
 		"child owns no registry; must not inherit the root's tasks")
-	assert.True(t, resp.GetBackgroundTasksLoaded(),
-		"loaded=true so the client overwrites stale state with the correct empty set")
+	require.NotNil(t, resp.GetGoal(), "a child answers a present goal snapshot")
+	assert.Nil(t, resp.GetGoal().GetGoal(), "a child never owns a goal")
 }
 
 // TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded verifies a ROOT
@@ -776,7 +783,7 @@ func TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: "root-1",
 		Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
 		Limit:   10,
@@ -785,7 +792,106 @@ func TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded(t *testing.T) {
 	var resp leapmuxv1.ListAgentMessagesResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.True(t, resp.GetBackgroundTasksLoaded(), "root LATEST page loads its registry")
-	require.Len(t, resp.GetBackgroundTasks(), 1)
-	assert.Equal(t, "rtask", resp.GetBackgroundTasks()[0].GetId())
+	require.NotNil(t, resp.GetBackgroundTasks(), "root LATEST page loads its registry")
+	require.Len(t, resp.GetBackgroundTasks().GetTasks(), 1)
+	assert.Equal(t, "rtask", resp.GetBackgroundTasks().GetTasks()[0].GetId())
+}
+
+// A failed to-do read omits the to-do snapshot, so the client keeps the list it
+// already has instead of reading an authoritative empty list. The other
+// snapshots still arrive, because each one has its own read.
+func TestListAgentMessages_OmitsTheTodoSnapshotWhenItsReadFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.DB.ExecContext(ctx, `DROP TABLE agent_todos`)
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
+		AgentId: "agent-1",
+		Limit:   10,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentMessagesResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Nil(t, resp.GetTodos(), "a failed read must not answer an authoritative empty list")
+	assert.NotNil(t, resp.GetBackgroundTasks(), "the registry has its own read")
+	assert.NotNil(t, resp.GetGoal(), "the goal has its own read")
+}
+
+// The registry snapshot follows the same rule as the to-do snapshot: a failed
+// read omits it, so the client keeps the registry it already has. The other
+// snapshots still arrive.
+func TestListAgentMessages_OmitsTheBackgroundTaskSnapshotWhenItsReadFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.DB.ExecContext(ctx, `DROP TABLE agent_background_tasks`)
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
+		AgentId: "agent-1",
+		Limit:   10,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentMessagesResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Nil(t, resp.GetBackgroundTasks(), "a failed read must not answer an authoritative empty registry")
+	assert.NotNil(t, resp.GetTodos(), "the to-do list has its own read")
+	assert.NotNil(t, resp.GetGoal(), "the goal has its own read")
+}
+
+// The latest page carries the whole goal snapshot: the goal, the stamp that
+// orders it against a live goal_changed event, and the actions the running
+// provider supports. A page that is not the latest carries none of it.
+func TestListAgentMessages_LatestPageCarriesTheGoalAndItsActions(t *testing.T) {
+	svc, d, _, services, _ := goalPublicationFixture(t)
+	const agentID = "goal-publication-owner"
+	services.UpsertGoal(goalPublicationUpdate("Ship the page", 5))
+	stored, err := svc.Output.LoadGoal(t.Context(), agentID)
+	require.NoError(t, err)
+	require.NotEmpty(t, stored.UpdatedAt, "precondition: the stored goal has a stamp")
+
+	list := func(anchor leapmuxv1.MessagePageAnchor) *leapmuxv1.ListAgentMessagesResponse {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
+			AgentId: agentID, Anchor: anchor, Limit: 10,
+		}, w)
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+		var resp leapmuxv1.ListAgentMessagesResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		return &resp
+	}
+
+	goal := list(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST).GetGoal()
+	require.NotNil(t, goal)
+	assert.Equal(t, "Ship the page", goal.GetGoal().GetObjective())
+	assert.Equal(t, stored.UpdatedAt, goal.GetGoalUpdatedAt())
+	assert.Equal(t, []leapmuxv1.AgentGoalAction{
+		leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET, leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_CLEAR,
+		leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_PAUSE, leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_RESUME,
+	}, goal.GetSupportedActions(), "the page states what the running provider supports")
+
+	assert.Nil(t, list(leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST).GetGoal(),
+		"a page that is not the latest carries no goal snapshot")
 }

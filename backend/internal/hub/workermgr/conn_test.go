@@ -1,6 +1,7 @@
 package workermgr
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/sendq"
 )
+
+// testHello is the WorkerHello every Conn in this package's tests is built
+// with: a classic-mode worker with a fixed 32-byte X25519 key. workermgrtest
+// has its own copy, because it imports this package and this package's tests
+// cannot import it back.
+func testHello() *leapmuxv1.WorkerHello {
+	return &leapmuxv1.WorkerHello{
+		Keys:           &leapmuxv1.WorkerPublicKeys{X25519: bytes.Repeat([]byte{0x42}, 32)},
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}
+}
 
 // testPool gives one Conn a private byte budget the size a production Hub
 // grants a single connection, so a test that fills its queue does not change
@@ -34,7 +46,7 @@ func TestConnSendReturnsWhileWriteParked(t *testing.T) {
 		}
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.Send(channelMsg(1)))
@@ -58,7 +70,7 @@ func TestConnOverBudgetFencesAndCancels(t *testing.T) {
 
 	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {} // never drain — fill the queue
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	const chunk = 1 << 20
@@ -88,7 +100,7 @@ func TestConnSendControlSucceedsWhenDataCeilingFull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	ceiling := sendq.DefaultMaxBytes - sendq.DefaultControlReserve
@@ -117,7 +129,7 @@ func TestConnSendControlFencesWhenFullySaturated(t *testing.T) {
 
 	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	// Fill via the control path until TryEnqueueControl refuses. Control
@@ -145,7 +157,7 @@ func TestConnSendControlFencesWhenFullySaturated(t *testing.T) {
 func TestConnFlushReturnsImmediatelyWhenIdle(t *testing.T) {
 	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -157,7 +169,7 @@ func TestConnDrainWriteErrorFences(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return errors.New("stream reset")
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -178,7 +190,7 @@ func TestConnFenceIsIdempotent(t *testing.T) {
 	conn, _ := NewConn(ctx, func() {
 		cancels.Add(1)
 		cancel()
-	}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 
 	conn.Fence()
 	conn.Fence()
@@ -213,7 +225,7 @@ func sizedCiphertext(t *testing.T, targetBytes int64) []byte {
 
 func TestConnDoneClosesOnFence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 	conn.Fence()
 	select {
 	case <-conn.Done():
@@ -227,7 +239,7 @@ func TestConnDrainAfterFenceWritesNothing(t *testing.T) {
 	conn, pump := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote++
 		return nil
-	}, nil)
+	}, nil, testHello())
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
 	conn.Fence()
 	require.NoError(t, pump.Drain())
@@ -245,7 +257,7 @@ func TestConnFlushWaitsForEveryQueuedFrame(t *testing.T) {
 		wrote = append(wrote, int(msg.GetChannelMessage().GetCorrelationId()))
 		mu.Unlock()
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.Send(channelMsg(1)))
@@ -275,32 +287,89 @@ func TestConnFlushWaitsForEveryQueuedFrame(t *testing.T) {
 	assert.Equal(t, []int{1, 2}, wrote)
 }
 
-func TestConnEncryptionModeConcurrent(t *testing.T) {
+// The handshake a Conn reports is a snapshot of the hello it was built with:
+// neither the caller's hello nor a returned response is shared with it, so no
+// later write can make two answers for one connection disagree.
+func TestConnHandshakeIsAnImmutableSnapshot(t *testing.T) {
+	hello := &leapmuxv1.WorkerHello{
+		Keys: &leapmuxv1.WorkerPublicKeys{
+			X25519: bytes.Repeat([]byte{0x01}, 32),
+			Mlkem:  bytes.Repeat([]byte{0x02}, 1568),
+			Slhdsa: bytes.Repeat([]byte{0x03}, 64),
+		},
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+	}
 	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return nil
-	}, nil)
+	}, nil, hello)
+	t.Cleanup(conn.Fence)
+
+	// Change the caller's hello after construction.
+	hello.EncryptionMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
+	hello.Keys.X25519[0] = 0xff
+	hello.Keys.Mlkem = nil
+
+	first := conn.Handshake()
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, first.GetEncryptionMode())
+	assert.Equal(t, bytes.Repeat([]byte{0x01}, 32), first.GetKeys().GetX25519())
+	assert.Len(t, first.GetKeys().GetMlkem(), 1568)
+
+	// Change a returned response.
+	first.EncryptionMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
+	first.Keys.X25519[0] = 0xee
+	first.Keys.Slhdsa = nil
+
+	second := conn.Handshake()
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, second.GetEncryptionMode())
+	assert.Equal(t, bytes.Repeat([]byte{0x01}, 32), second.GetKeys().GetX25519())
+	assert.Len(t, second.GetKeys().GetSlhdsa(), 64)
+}
+
+func TestNewConnRequiresAHello(t *testing.T) {
+	assert.PanicsWithValue(t, "workermgr.NewConn: hello is required", func() {
+		NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(),
+			func(*leapmuxv1.ConnectResponse) error { return nil }, nil, nil)
+	})
+}
+
+// A hello that carries no keys still answers with its mode, and with no keys
+// rather than an empty key message, so a caller sees the same absence the
+// worker sent.
+func TestConnHandshakeKeepsAnAbsentKeyMessageAbsent(t *testing.T) {
+	hello := &leapmuxv1.WorkerHello{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC}
+	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(),
+		func(*leapmuxv1.ConnectResponse) error { return nil }, nil, hello)
+	t.Cleanup(conn.Fence)
+
+	handshake := conn.Handshake()
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, handshake.GetEncryptionMode())
+	assert.Nil(t, handshake.GetKeys())
+}
+
+// Concurrent Handshake calls share nothing they could race on: each answer is
+// its own message, built from a hello no one writes after construction.
+func TestConnHandshakeIsSafeForConcurrentUse(t *testing.T) {
+	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(),
+		func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
-		wg.Add(2)
-		go func(i int) {
-			defer wg.Done()
-			conn.SetEncryptionMode(leapmuxv1.EncryptionMode(i%3 + 1))
-		}(i)
-		go func() {
-			defer wg.Done()
-			_ = conn.EncryptionMode()
-		}()
+	for range 16 {
+		wg.Go(func() {
+			handshake := conn.Handshake()
+			// Writing the answer must not reach the Conn or another caller.
+			handshake.Keys.X25519[0] = 0xff
+		})
 	}
 	wg.Wait()
+	assert.Equal(t, testHello().GetKeys().GetX25519(), conn.Handshake().GetKeys().GetX25519())
 }
 
 func TestSendPumpDrain_WritePanicDoesNotEscape(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		panic("worker stream already finished")
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -328,7 +397,7 @@ func TestConnSendWaitEnqueuesAndHonoursDeadline(t *testing.T) {
 	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote.Add(1)
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 	go func() {
 		for {
@@ -350,7 +419,7 @@ func TestConnSendWaitEnqueuesAndHonoursDeadline(t *testing.T) {
 	defer fillCancel()
 	fill, _ := NewConn(fillCtx, fillCancel, "w2", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(fill.Fence)
 	ceiling := sendq.DefaultMaxBytes - sendq.DefaultControlReserve
 	pad := sizedCiphertext(t, ceiling-512)
@@ -373,7 +442,7 @@ func TestConnFlushReturnsErrConnectionClosedAfterDiscard(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -396,7 +465,7 @@ func TestConnFlushReturnsErrConnectionClosedOnWriteError(t *testing.T) {
 		writeStarted.Done()
 		<-release
 		return fmt.Errorf("connection reset")
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	go func() {
@@ -445,7 +514,7 @@ func TestConnFlushPreservesCallerDeadlineWhenQueueStillOpen(t *testing.T) {
 		writeStarted.Done()
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	go func() {
@@ -481,7 +550,7 @@ func TestSendPumpDrainTurnBoundsBatchAndResignals(t *testing.T) {
 	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote.Add(1)
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	// Enqueue more frames than one DrainTurn admits (connDrainMaxFrames=32).
@@ -516,7 +585,7 @@ func TestSendPumpRePanicsConcurrentDrain(t *testing.T) {
 		close(started)
 		<-release
 		return nil
-	}, nil)
+	}, nil, testHello())
 	t.Cleanup(conn.Fence)
 
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -545,6 +614,6 @@ func TestNewConnRefusesToBuildWithoutABudget(t *testing.T) {
 
 	assert.PanicsWithValue(t, "workermgr.NewConn: pool is required", func() {
 		NewConn(context.Background(), func() {}, "w1", "u1", nil,
-			func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+			func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 	})
 }

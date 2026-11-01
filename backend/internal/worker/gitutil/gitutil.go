@@ -177,7 +177,7 @@ var gitEnvPins = []string{"GIT_TERMINAL_PROMPT=0", "LC_ALL=C", GitOptionalLocksO
 // Failures are logged at debug level so operators can diagnose unexpected misses
 // (e.g. permission errors) without the nil return silently losing context.
 // The supplied context is threaded into every shell-out so a caller that
-// cancels mid-call (e.g. CloseAgent landing during the async startup
+// cancels mid-call (e.g. CloseTab landing during the async startup
 // "Checking Git status…" phase) terminates the in-flight `git status`
 // subprocess instead of waiting for it to finish.
 func GetGitStatus(ctx context.Context, dir string) *leapmuxv1.GitRepoStatus {

@@ -9,8 +9,8 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
 import { formatErrorMessage } from '~/lib/errors'
+import { fetchAllPages } from '~/lib/fetchAllPages'
 import * as styles from './credentialList.css'
-import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
 
 /**
  * One app and every credential this account holds for it.
@@ -86,13 +86,11 @@ export const AccountConnectedApps: Component = () => {
       // The shared every-page loop owns the runaway cap, the stalled-cursor
       // guard and the keyed dedupe this panel taught the codebase.
       const tokens = await fetchAllPages(
-        async cursor => await userClient.listMyAPITokens({
-          cursor,
-          limit: BigInt(PAGE_SIZE),
-        })
-          .then(resp => ({ items: resp.tokens, nextCursor: resp.nextCursor ?? '' })),
+        async (page) => {
+          const resp = await userClient.listMyAPITokens({ page })
+          return { items: resp.tokens, page: resp.page }
+        },
         {
-          maxPages: MAX_PAGES,
           keyOf: token => token.id,
         },
       )

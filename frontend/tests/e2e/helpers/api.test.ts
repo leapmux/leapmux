@@ -1,13 +1,23 @@
+import type { DescMethod, JsonValue } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '../../../src/lib/channel'
+import { fromJson } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AdminSettingsService } from '~/generated/proto/leapmux/v1/admin_pb'
+import { AgentProvider, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AuthService } from '~/generated/proto/leapmux/v1/auth_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { SystemService } from '~/generated/proto/leapmux/v1/system_pb'
+import { UserService } from '~/generated/proto/leapmux/v1/user_pb'
+import { WorkerManagementService } from '~/generated/proto/leapmux/v1/worker_pb'
+import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
+import { procedureOf } from '~/lib/rpcProcedure'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { ChannelManager } from '../../../src/lib/channel'
 import {
   API_POLL_INTERVAL_MS,
   attemptLoginViaAPI,
   callHub,
+  clearSmtpViaAPI,
   closeTestChannels,
   configureBrokenSmtpViaAPI,
   deleteAllWorkspacesViaAPI,
@@ -15,6 +25,7 @@ import {
   deleteWorkspaceViaAPI,
   elevatedAdminSessionViaAPI,
   freshAdminSessionViaAPI,
+  getCurrentUser,
   getTestChannel,
   getWorkerId,
   hubRefusal,
@@ -25,9 +36,11 @@ import {
   logoutViaAPI,
   openAgentViaAPI,
   resetHubSettingsViaAPI,
+  signUpViaAPI,
   sqliteTextLiteral,
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
+  verifyEmailViaAPI,
   waitForEmailEnabled,
   waitForNewOnlineWorkerViaAPI,
 } from './api'
@@ -37,7 +50,7 @@ vi.mock('./e2e-channel', () => ({
   createTestChannelManager: vi.fn(),
 }))
 vi.mock('./altcha', () => ({
-  solveCaptchaViaAPI: vi.fn(async () => ({ captchaPayload: 'solved-captcha', honeypot: '' })),
+  solveCaptchaViaAPI: vi.fn(async () => ({ payload: 'solved-captcha', honeypot: '' })),
 }))
 
 let hubNumber = 0
@@ -128,13 +141,34 @@ describe('openAgentViaAPI', () => {
     await expect(openAgentViaAPI(server(), 'workspace', '/project', { agentSessionId: 'native-conversation-42' })).rejects.toBe(stopped)
     expect(callWorker).toHaveBeenCalledTimes(1)
     expect(callWorker.mock.calls[0]?.[0]).toBe('worker-a')
-    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({ workerId: 'worker-a', workingDir: '/project', agentSessionId: 'native-conversation-42' })
+    expect(callWorker.mock.calls[0]?.[1]).toBe(WorkerAgentService.method.openAgent)
+    expect(callWorker.mock.calls[0]?.[2]).toMatchObject({ workingDir: '/project', agentSessionId: 'native-conversation-42' })
+    // The routing argument names the Worker; the request body does not repeat it.
+    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('workerId')
+  })
+
+  it('sends the stated git setup unchanged', async () => {
+    const stopped = stopWorkerRequest()
+    const gitSetup = {
+      mode: {
+        case: 'createWorktree' as const,
+        value: { branch: 'feature', baseBranch: 'main' },
+      },
+    }
+    await expect(openAgentViaAPI(server(), 'workspace', '/project', { gitSetup })).rejects.toBe(stopped)
+    expect(callWorker.mock.calls[0]?.[2]).toMatchObject({ gitSetup })
+  })
+
+  it('sends no git setup when none is stated, so the Worker uses the directory as it is', async () => {
+    const stopped = stopWorkerRequest()
+    await expect(openAgentViaAPI(server(), 'workspace', '/project')).rejects.toBe(stopped)
+    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('gitSetup')
   })
 
   it('keeps session creation when no native session ID is supplied', async () => {
     const stopped = stopWorkerRequest()
     await expect(openAgentViaAPI(server(), 'workspace', '/project')).rejects.toBe(stopped)
-    expect(callWorker.mock.calls[0]?.[4]).not.toHaveProperty('agentSessionId')
+    expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('agentSessionId')
   })
 
   it('sends the model in the options map beside the option values, and the provider', async () => {
@@ -144,7 +178,7 @@ describe('openAgentViaAPI', () => {
       model: 'gpt-mock',
       optionValues: { effort: 'high' },
     })).rejects.toBe(stopped)
-    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({
+    expect(callWorker.mock.calls[0]?.[2]).toMatchObject({
       workingDir: '/project',
       agentProvider: AgentProvider.CODEX,
       options: { effort: 'high', model: 'gpt-mock' },
@@ -154,7 +188,7 @@ describe('openAgentViaAPI', () => {
   it('sends no options map, no provider, and no title for the Worker default', async () => {
     const stopped = stopWorkerRequest()
     await expect(openAgentViaAPI(server(), 'workspace')).rejects.toBe(stopped)
-    const request = callWorker.mock.calls[0]?.[4]
+    const request = callWorker.mock.calls[0]?.[2]
     expect(request).toMatchObject({ workingDir: '' })
     expect(request).not.toHaveProperty('options')
     expect(request).not.toHaveProperty('agentProvider')
@@ -222,12 +256,13 @@ describe('workspace deletion cleanup', () => {
       .toEqual(['DeleteWorkspace', 'ListWorkers'])
     expect(callWorker).toHaveBeenCalledTimes(2)
     expect(callWorker.mock.calls.map(call => call[0])).toEqual(['worker-a', 'worker-b'])
-    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({
+    expect(callWorker.mock.calls.map(call => call[1])).toEqual([WorkerTabService.method.cleanupWorkspace, WorkerTabService.method.cleanupWorkspace])
+    expect(callWorker.mock.calls[0]?.[2]).toMatchObject({
       tabs: [
         { tabType: TabType.AGENT, tabId: 'agent-a' },
       ],
     })
-    expect(callWorker.mock.calls[1]?.[4]).toMatchObject({
+    expect(callWorker.mock.calls[1]?.[2]).toMatchObject({
       tabs: [
         { tabType: TabType.TERMINAL, tabId: 'terminal-b' },
         { tabType: TabType.IMAGE, tabId: 'image-b' },
@@ -703,6 +738,7 @@ describe('waitForEmailEnabled', () => {
     await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
     await expect(waiting).resolves.toBeUndefined()
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenCalledWith(`${hubUrl}${procedureOf(SystemService.method.getSystemInfo)}`, expect.anything())
   })
 
   it('reads again after a refused read', async () => {
@@ -731,7 +767,7 @@ describe('waitForEmailEnabled', () => {
       throw new TypeError('fetch failed')
     })
     vi.stubGlobal('fetch', fetch)
-    await expect(waitForEmailEnabled(hubUrl)).rejects.toThrow('could not reach the hub (AuthService/GetSystemInfo)')
+    await expect(waitForEmailEnabled(hubUrl)).rejects.toThrow('could not reach the hub (SystemService/GetSystemInfo)')
     expect(fetch).toHaveBeenCalledOnce()
   })
 })
@@ -756,6 +792,21 @@ function recordedRequests(answer: (method: string) => Response) {
   return requests
 }
 
+/**
+ * Require that a recorded hub request travels to the procedure of `method`, and that its JSON body decodes as the
+ * input of `method`. The decode refuses an unknown field, so a body field that the proto no longer declares fails here.
+ */
+function expectHubRequest(request: { url: string, body: unknown } | undefined, method: DescMethod) {
+  expect(request?.url).toBe(`${hubUrl}${procedureOf(method)}`)
+  expect(() => fromJson(method.input, request?.body as JsonValue)).not.toThrow()
+}
+
+/** Answer with `json` after it decodes as the output of `method`, so the fixture holds only a shape that the hub sends. */
+function hubAnswer(method: DescMethod, json: JsonValue): Response {
+  fromJson(method.output, json)
+  return Response.json(json)
+}
+
 describe('callHub', () => {
   it('posts the JSON body with the session cookie and returns the JSON answer', async () => {
     const requests = recordedRequests(() => Response.json({ workspaceId: 'ws-9' }))
@@ -774,7 +825,7 @@ describe('callHub', () => {
 
   it('sends no cookie for an RPC that needs no session', async () => {
     const requests = recordedRequests(() => Response.json({}))
-    await callHub(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'unit' })
+    await callHub(hubUrl, 'SystemService/GetSystemInfo', {}, { operation: 'unit' })
     expect(requests[0]?.headers).toEqual({ 'Content-Type': 'application/json' })
   })
 
@@ -853,12 +904,12 @@ describe('attemptLoginViaAPI', () => {
         body: {
           username: 'alice',
           password: 'old-password',
-          captchaPayload: 'solved-captcha',
-          honeypot: '',
+          captcha: { payload: 'solved-captcha', honeypot: '' },
         },
         redirect: 'manual',
       },
     ])
+    expectHubRequest(requests[0], AuthService.method.login)
   })
 })
 
@@ -888,8 +939,7 @@ describe('freshAdminSessionViaAPI', () => {
         {
           username: TEST_ADMIN_USERNAME,
           password: TEST_ADMIN_PASSWORD,
-          captchaPayload: 'solved-captcha',
-          honeypot: '',
+          captcha: { payload: 'solved-captcha', honeypot: '' },
         },
       ],
     ])
@@ -911,8 +961,7 @@ describe('elevatedAdminSessionViaAPI', () => {
         {
           username: TEST_ADMIN_USERNAME,
           password: TEST_ADMIN_PASSWORD,
-          captchaPayload: 'solved-captcha',
-          honeypot: '',
+          captcha: { payload: 'solved-captcha', honeypot: '' },
         },
       ],
       [
@@ -948,6 +997,73 @@ describe('logoutViaAPI', () => {
   })
 })
 
+describe('getCurrentUser', () => {
+  const user = {
+    id: 'u-1',
+    username: 'alice',
+    displayName: 'Alice',
+    isAdmin: true,
+    email: 'alice@test.local',
+  }
+
+  it('reads the user from the session report of the reply', async () => {
+    const requests = recordedRequests(() => hubAnswer(AuthService.method.getCurrentUser, {
+      sessionReport: { user },
+    }))
+    await expect(getCurrentUser(hubUrl, 'leapmux-session=s1')).resolves.toEqual(user)
+    expectHubRequest(requests[0], AuthService.method.getCurrentUser)
+    expect(requests[0]?.headers.Cookie).toBe('leapmux-session=s1')
+  })
+
+  it.each([
+    { label: 'no session report', answer: {} },
+    {
+      label: 'a session report with no user',
+      answer: {
+        sessionReport: {
+          emailVerification: { verificationRequired: true },
+        },
+      },
+    },
+  ])('refuses a reply with $label', async ({ answer }) => {
+    recordedRequests(() => hubAnswer(AuthService.method.getCurrentUser, answer))
+    await expect(getCurrentUser(hubUrl, 'c')).rejects.toThrow('getCurrentUser: the GetCurrentUser reply carries no user')
+  })
+})
+
+describe('signUpViaAPI', () => {
+  it('sends the solved captcha as one proof beside the account fields, and returns the session cookie', async () => {
+    const requests = recordedRequests(() => new Response('{}', {
+      headers: { 'Set-Cookie': 'leapmux-session=new; Path=/; HttpOnly' },
+    }))
+    await expect(signUpViaAPI(hubUrl, 'bob', 'secret', 'Bob', 'bob@test.local')).resolves.toBe('leapmux-session=new')
+    expect(requests).toHaveLength(1)
+    expectHubRequest(requests[0], AuthService.method.signUp)
+    expect(requests[0]?.body).toEqual({
+      username: 'bob',
+      password: 'secret',
+      displayName: 'Bob',
+      email: 'bob@test.local',
+      captcha: { payload: 'solved-captcha', honeypot: '' },
+    })
+    expect(requests[0]?.redirect).toBe('manual')
+  })
+})
+
+describe('verifyEmailViaAPI', () => {
+  it('sends the verification token and the solved captcha proof with the session cookie', async () => {
+    const requests = recordedRequests(() => Response.json({}))
+    await verifyEmailViaAPI(hubUrl, 'leapmux-session=s3', 'token-1')
+    expect(requests).toHaveLength(1)
+    expectHubRequest(requests[0], UserService.method.verifyEmail)
+    expect(requests[0]?.body).toEqual({
+      verificationToken: 'token-1',
+      captcha: { payload: 'solved-captcha', honeypot: '' },
+    })
+    expect(requests[0]?.headers.Cookie).toBe('leapmux-session=s3')
+  })
+})
+
 describe('listWorkersViaAPI', () => {
   it('reads each worker with its online state, and an absent state as offline', async () => {
     recordedRequests(() => Response.json({
@@ -965,6 +1081,68 @@ describe('listWorkersViaAPI', () => {
   it('reads an absent workers field as no worker', async () => {
     recordedRequests(() => Response.json({}))
     await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([])
+  })
+
+  it('reads every page through the previous page\'s cursor', async () => {
+    let call = 0
+    const requests = recordedRequests(() => {
+      call++
+      return call === 1
+        ? hubAnswer(WorkerManagementService.method.listWorkers, {
+            workers: [
+              { id: 'w-1', online: true },
+            ],
+            page: { nextCursor: 'c1' },
+          })
+        : hubAnswer(WorkerManagementService.method.listWorkers, {
+            workers: [
+              { id: 'w-2', online: true },
+            ],
+            page: { nextCursor: '' },
+          })
+    })
+    await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([
+      { id: 'w-1', online: true },
+      { id: 'w-2', online: true },
+    ])
+    expect(requests.map(r => r.body)).toEqual([
+      {
+        page: { limit: 500, cursor: '' },
+      },
+      {
+        page: { limit: 500, cursor: 'c1' },
+      },
+    ])
+    for (const request of requests)
+      expectHubRequest(request, WorkerManagementService.method.listWorkers)
+  })
+
+  it('fails after its page limit when the hub reports a new cursor on every page', async () => {
+    let page = 0
+    const requests = recordedRequests(() => {
+      page++
+      return hubAnswer(WorkerManagementService.method.listWorkers, {
+        workers: [
+          { id: `w-${page}`, online: true },
+        ],
+        page: { nextCursor: `c${page}` },
+      })
+    })
+    await expect(listWorkersViaAPI(hubUrl, 'c')).rejects.toThrow('listWorkersViaAPI read 100 pages and the hub still reported more.')
+    expect(requests).toHaveLength(100)
+    expect(requests.at(-1)?.body).toEqual({
+      page: { limit: 500, cursor: 'c99' },
+    })
+  })
+
+  it('fails when the hub repeats a cursor instead of looping', async () => {
+    recordedRequests(() => Response.json({
+      workers: [
+        { id: 'w-1' },
+      ],
+      page: { nextCursor: 'stuck' },
+    }))
+    await expect(listWorkersViaAPI(hubUrl, 'c')).rejects.toThrow('the same cursor twice: stuck')
   })
 
   it('refuses a worker with no ID', async () => {
@@ -1021,15 +1199,29 @@ describe('configureBrokenSmtpViaAPI', () => {
     const requests = recordedRequests(() => Response.json({}))
     await configureBrokenSmtpViaAPI(hubUrl, 'admin-cookie')
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.method).toBe('AdminSettingsService/UpdateSetting')
-    const body = requests[0]?.body as { key: string, partialJson: string }
-    expect(body.key).toBe('smtp')
-    expect(JSON.parse(body.partialJson)).toEqual({
+    expectHubRequest(requests[0], AdminSettingsService.method.updateSettings)
+    const body = requests[0]?.body as { writes: Array<{ key: string, partialJson: string }> }
+    expect(body.writes).toHaveLength(1)
+    expect(body.writes[0]?.key).toBe('smtp')
+    expect(JSON.parse(body.writes[0]?.partialJson ?? '')).toEqual({
       host: '127.0.0.1',
       port: 1,
       from_address: 'hub@test.local',
       tls_mode: 'none',
     })
+  })
+})
+
+describe('clearSmtpViaAPI', () => {
+  it('resets the SMTP setting in one ResetSettings request', async () => {
+    const requests = recordedRequests(() => Response.json({}))
+    await clearSmtpViaAPI(hubUrl, 'admin-cookie')
+    expect(requests).toHaveLength(1)
+    expectHubRequest(requests[0], AdminSettingsService.method.resetSettings)
+    expect(requests[0]?.body).toEqual({
+      keys: ['smtp'],
+    })
+    expect(requests[0]?.headers.Cookie).toBe('admin-cookie')
   })
 })
 

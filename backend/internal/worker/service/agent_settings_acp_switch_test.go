@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -50,7 +51,7 @@ func TestUpdateAgentSettings_ModelSwitchGivesTheStoredEffortToARunningACPAgent(t
 		return agent.ConfirmedSettings(options)
 	}
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  row.ID,
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "leapmux/model-b"}},
 	}, w)

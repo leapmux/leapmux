@@ -62,17 +62,14 @@ var adminProcedureElevation = map[string]struct {
 	// Every WRITE takes writeUnderElevation and every READ takes nothing. A
 	// hub setting is deployment-wide, and several of these keys are the hub's
 	// own security controls.
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        {adminNeedsNoElevation, "a read; it reports which keys HOLD a secret and never a secret value"},
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       {adminNeedsElevatedCredential, "rewrites instance configuration; the CLI is the documented headless path"},
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: {adminNeedsElevatedCredential, "writes the encrypted halves (SMTP password, captcha secrets)"},
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      {adminNeedsElevatedCredential, "rewrites several settings at once, both halves, in one transaction"},
-	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        {adminNeedsElevatedCredential, "returns instance configuration to defaults, which can turn a control off"},
-	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       {adminNeedsElevatedCredential, "returns several settings to defaults in one transaction"},
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   {adminNeedsNoElevation, "a read; it reports which keys HOLD a secret and never a secret value"},
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure: {adminNeedsElevatedCredential, "rewrites instance configuration, both halves including the encrypted secrets, in one transaction; the CLI is the documented headless path"},
+	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:  {adminNeedsElevatedCredential, "returns instance configuration to defaults in one transaction, which can turn a control off"},
 
 	// --- AdminNetworkService ---
 	//
 	// A read of derived state. The WRITE that changes which addresses the hub
-	// answers on is AdminSettingsService.UpdateSetting, which is elevated
+	// answers on is AdminSettingsService.UpdateSettings, which is elevated
 	// above; this only reports what that write produced, so demanding a fresh
 	// factor to LOOK would ask for a proof and grant nothing.
 	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: {adminNeedsNoElevation, "a read; it reports the host's interfaces and which addresses the hub serves on"},

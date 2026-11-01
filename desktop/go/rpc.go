@@ -15,6 +15,7 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 
 	"github.com/leapmux/leapmux/util/drain"
+	"github.com/leapmux/leapmux/util/version"
 )
 
 type RPCSession struct {
@@ -408,14 +409,6 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			Result: &desktoppb.Response_SetDesktopBehavior{SetDesktopBehavior: &desktoppb.SetDesktopBehaviorResponse{}},
 		})
 
-	case *desktoppb.Request_GetBuildInfo:
-		s.writeResponse(&desktoppb.Response{
-			Id: id,
-			Result: &desktoppb.Response_BuildInfo{
-				BuildInfo: buildInfoToProto(s.app.GetBuildInfo()),
-			},
-		})
-
 	case *desktoppb.Request_GetSidecarInfo:
 		s.writeSidecarInfo(id)
 
@@ -425,7 +418,7 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, 
 			Result: &desktoppb.Response_StartupInfo{
 				StartupInfo: &desktoppb.StartupInfo{
 					Config:    configToProto(s.app.GetConfig()),
-					BuildInfo: buildInfoToProto(s.app.GetBuildInfo()),
+					BuildInfo: version.BuildInfoProto(),
 				},
 			},
 		})
@@ -645,16 +638,6 @@ func configToProto(cfg *DesktopConfig) *desktoppb.DesktopConfig {
 		TrayOnClose:    string(cfg.TrayOnClose),
 		TrayOnMinimize: string(cfg.TrayOnMinimize),
 		StartMinimized: string(cfg.StartMinimized),
-	}
-}
-
-func buildInfoToProto(info BuildInfo) *desktoppb.BuildInfo {
-	return &desktoppb.BuildInfo{
-		Version:    info.Version,
-		CommitHash: info.CommitHash,
-		CommitTime: info.CommitTime,
-		BuildTime:  info.BuildTime,
-		Branch:     info.Branch,
 	}
 }
 

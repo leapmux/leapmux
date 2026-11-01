@@ -206,11 +206,13 @@ func (svc *Service) replayTerminalCatchUp(
 	var termStatusChange *leapmuxv1.TerminalStatusChange
 	switch status {
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:
-		termStatusChange = buildTerminalStartingStatus(termID, startupMessage, nil)
+		termStatusChange = buildTerminalStartingStatus(startupMessage, nil)
 	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
-		termStatusChange = buildTerminalFailedStatus(termID, startupError)
+		termStatusChange = buildTerminalFailedStatus(startupError)
+	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
+		termStatusChange = buildTerminalExitedStatus()
 	default:
-		termStatusChange = buildTerminalReadyStatus(termID)
+		termStatusChange = buildTerminalReadyStatus()
 	}
 	sink.send(&leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{

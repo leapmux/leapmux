@@ -1,7 +1,8 @@
 import type { LogLine, PhaseMark, TimingWorker } from '../helpers/timingFixture'
 import process from 'node:process'
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { procedureOf } from '~/lib/rpcProcedure'
+import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
 import { exerciseProviderAgentButtons } from '../helpers/nativeAgentOpen'
@@ -137,8 +138,9 @@ timingTest.describe('agent open timing for Claude Code', () => {
           const w: Window & { __rpcMarks?: Array<{ type: string, method: string, at: number }> } = window
           return w.__rpcMarks ?? []
         })
-        const openSend = rpcMarks.find(m => m.type === 'rpc-send' && m.method === 'OpenAgent')
-        const openRecv = rpcMarks.find(m => m.type === 'rpc-recv' && m.method === 'OpenAgent')
+        const openProcedure = procedureOf(WorkerAgentService.method.openAgent)
+        const openSend = rpcMarks.find(m => m.type === 'rpc-send' && m.method === openProcedure)
+        const openRecv = rpcMarks.find(m => m.type === 'rpc-recv' && m.method === openProcedure)
 
         const backendMarks = extractWorkerMarks(
           srv.logLines,

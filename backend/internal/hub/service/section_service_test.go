@@ -23,7 +23,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
-	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
@@ -537,7 +536,7 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	require.NoError(t, err)
 	customID := createResp.GetSection().GetId()
 
-	_, err = env.client.MoveWorkspace(authedReq(ctx,
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(ctx,
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: workspaceID,
 			SectionId:   customID,
@@ -659,7 +658,7 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 	require.NotEmpty(t, inProgressID)
 
 	// Drag wsInProgress into the In progress section at lexorank.First().
-	_, err = env.client.MoveWorkspace(authedReq(ctx,
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(ctx,
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: wsInProgress,
 			SectionId:   inProgressID,
@@ -673,7 +672,7 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 		&leapmuxv1.CreateSectionRequest{Name: "Custom", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
 	require.NoError(t, err)
 	customID := createResp.GetSection().GetId()
-	_, err = env.client.MoveWorkspace(authedReq(ctx,
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(ctx,
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: wsCustom,
 			SectionId:   customID,
@@ -770,7 +769,7 @@ func TestSectionService_MoveSection(t *testing.T) {
 	}
 }
 
-func TestSectionService_MoveWorkspace(t *testing.T) {
+func TestSectionService_ListSectionsReportsAMovedWorkspace(t *testing.T) {
 	t.Parallel()
 
 	env := setupSectionTest(t)
@@ -796,7 +795,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	}
 
 	// A generic move keeps an active workspace inside the active boundary.
-	_, err = env.client.MoveWorkspace(authedReq(context.Background(),
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(context.Background(),
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: workspaceID,
 			SectionId:   inProgressID,
@@ -811,79 +810,6 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, inProgressID, items[0].GetSectionId())
 	assert.Equal(t, workspaceID, items[0].GetWorkspaceId())
-}
-
-func TestSectionService_MoveWorkspace_RefusesArchiveBoundary(t *testing.T) {
-	t.Parallel()
-
-	env := setupSectionTest(t)
-	ctx := context.Background()
-	workspaceID := storetest.SeedWorkspace(t, env.store, env.userID, "archive boundary")
-	sections, err := env.client.ListSections(authedReq(ctx, &leapmuxv1.ListSectionsRequest{}, env.token))
-	require.NoError(t, err)
-	var inProgressID, archivedID, filesID string
-	for _, section := range sections.GetSections() {
-		switch section.GetSectionType() {
-		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS:
-			inProgressID = section.GetId()
-		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
-			archivedID = section.GetId()
-		case leapmuxv1.SectionType_SECTION_TYPE_FILES:
-			filesID = section.GetId()
-		default:
-			// This test uses only the three section types above.
-		}
-	}
-	require.NotEmpty(t, inProgressID)
-	require.NotEmpty(t, archivedID)
-	require.NotEmpty(t, filesID)
-
-	_, err = env.client.MoveWorkspace(authedReq(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: workspaceID, SectionId: filesID, Position: "a",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-
-	_, err = env.client.MoveWorkspace(authedReq(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: workspaceID, SectionId: archivedID, Position: "a",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-
-	_, err = env.workspaceClient.SetWorkspaceArchiveState(authedReq(ctx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
-		WorkspaceId:  workspaceID,
-		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-	}, env.token))
-	require.NoError(t, err)
-	_, err = env.client.MoveWorkspace(authedReq(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: workspaceID, SectionId: inProgressID, Position: "b",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-}
-
-func TestSectionService_MoveWorkspace_RefusesForeignWorkspace(t *testing.T) {
-	t.Parallel()
-
-	env := setupSectionTest(t)
-	ctx := context.Background()
-	foreign := storetest.SeedUser(t, env.store, "move-foreign-owner")
-	workspaceID := storetest.SeedWorkspace(t, env.store, foreign.ID, "foreign")
-	sections, err := env.client.ListSections(authedReq(ctx, &leapmuxv1.ListSectionsRequest{}, env.token))
-	require.NoError(t, err)
-	var inProgressID string
-	for _, section := range sections.GetSections() {
-		if section.GetSectionType() == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
-			inProgressID = section.GetId()
-			break
-		}
-	}
-
-	_, err = env.client.MoveWorkspace(authedReq(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
 func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
@@ -902,13 +828,13 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	// Load the seeded sections and find their IDs.
 	listResp, _ := env.client.ListSections(authedReq(context.Background(),
 		&leapmuxv1.ListSectionsRequest{}, env.token))
-	var inProgressID string
+	var inProgressID, archivedID string
 	for _, s := range listResp.GetSections() {
 		switch s.GetSectionType() {
 		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS:
 			inProgressID = s.GetId()
 		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
-			// The lifecycle operation resolves the built-in Archived section.
+			archivedID = s.GetId()
 		default:
 			// Only the two workspace sections are needed to drive this test.
 		}
@@ -923,8 +849,9 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	assert.False(t, archived)
 
 	// Move to In Progress.
-	_, _ = env.client.MoveWorkspace(authedReq(context.Background(),
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(context.Background(),
 		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID, Position: "a"}, env.token))
+	require.NoError(t, err)
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      userid.MustNew(env.userID),
 		WorkspaceID: workspaceID,
@@ -932,12 +859,9 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, archived)
 
-	// Cross the boundary through the workspace lifecycle operation.
-	_, err = env.workspaceClient.SetWorkspaceArchiveState(authedReq(context.Background(),
-		&leapmuxv1.SetWorkspaceArchiveStateRequest{
-			WorkspaceId:  workspaceID,
-			ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		}, env.token))
+	// Cross the boundary by moving into the Archived section.
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(context.Background(),
+		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: archivedID}, env.token))
 	require.NoError(t, err)
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      userid.MustNew(env.userID),
@@ -946,12 +870,9 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, archived)
 
-	// Return through the same lifecycle operation.
-	_, err = env.workspaceClient.SetWorkspaceArchiveState(authedReq(context.Background(),
-		&leapmuxv1.SetWorkspaceArchiveStateRequest{
-			WorkspaceId:  workspaceID,
-			ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
-		}, env.token))
+	// Return by moving back into In progress.
+	_, err = env.workspaceClient.MoveWorkspace(authedReq(context.Background(),
+		&leapmuxv1.MoveWorkspaceRequest{WorkspaceId: workspaceID, SectionId: inProgressID}, env.token))
 	require.NoError(t, err)
 	archived, err = env.store.WorkspaceSectionItems().IsInArchivedSection(context.Background(), store.IsWorkspaceInArchivedSectionParams{
 		UserID:      userid.MustNew(env.userID),

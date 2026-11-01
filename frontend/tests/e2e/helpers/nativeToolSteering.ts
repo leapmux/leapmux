@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nati
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { INTERRUPTION_MARKER } from '../../../src/components/chat/assembledMessage'
-import { AgentActivityState, AgentInputState, SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputState, QueueHeadDispatch, WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { parseGenerationCounters } from './generationProgress'
@@ -310,7 +310,7 @@ export async function exerciseSteerBeforeTool(context: NativeScenarioContext, op
 /** Keep an unsupported steer in the queue and deliver it as a separate native turn. */
 export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeScenarioContext): Promise<void> {
   const agent = await currentNativeAgent(context)
-  expect(agent.supportsSteering, 'the provider cannot steer a running turn').toBe(false)
+  expect(agent.queueHeadDispatch, 'the provider cannot steer a running turn').not.toBe(QueueHeadDispatch.STEER)
   const marker = uniqueMarker()
   const gate = `native-queued-turn-${marker}`
   const nextPrompt = `NEXTQUEUEDPROMPT${marker}`
@@ -342,13 +342,13 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
     const row = queuedInputRow(context.page, nextPrompt).filter({ visible: true })
     await expect(row).toBeVisible()
     await expect(row.getByRole('button', { name: 'Steer', exact: true })).toHaveCount(0)
-    // The Worker offers preemption to every running root agent that cannot steer (`agentToProto` and
-    // `agentSupportsPreemption` in backend/internal/worker/service), and the row then offers Preempt in place of
-    // Steer. Read the agent while the turn runs, because the offer needs a running provider.
+    // The Worker offers preemption to every running root agent that cannot steer (`queueHeadDispatch` in
+    // backend/internal/worker/service), and the row then offers Preempt in place of Steer. Read the agent while the
+    // turn runs, because the offer needs a running provider.
     const running = await nativeAgentById(context, agent.id)
-    expect(running?.supportsPreemption, 'the Worker offers preemption of the held turn').toBe(true)
+    expect(running?.queueHeadDispatch, 'the Worker offers preemption of the held turn').toBe(QueueHeadDispatch.PREEMPT)
     await expect(row.getByRole('button', { name: 'Preempt', exact: true })).toHaveCount(1)
-    await expect(channel.callWorker(server.workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, { agentId: agent.id, inputId: item.id }))
+    await expect(channel.callWorker(server.workerId, WorkerAgentInputService.method.steerQueuedAgentInput, { agentId: agent.id, inputId: item.id }))
       .rejects
       .toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'agent provider does not support steering' })
     expect((await readQueue()).items.find(candidate => candidate.id === item.id)?.state).toBe(AgentInputState.QUEUED)

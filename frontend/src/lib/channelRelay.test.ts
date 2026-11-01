@@ -2,8 +2,7 @@ import type { ChannelSocket } from './channelRelay'
 import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HUB_CONTROL_CHANNEL_ID } from '~/generated/contracts/wire'
-import { ChannelMessageSchema, HubControlFrameSchema } from '~/generated/proto/leapmux/v1/channel_pb'
+import { ChannelMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { ChannelRelay } from './channelRelay'
 
@@ -65,13 +64,11 @@ describe('channelRelay', () => {
   it('ensureWebSocket opens, dedups concurrent dials, and send writes', async () => {
     const sock = new FakeSocket()
     const onFrame = vi.fn()
-    const onHubControl = vi.fn()
     const onCloseDrain = vi.fn()
     const relay = new ChannelRelay({
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl,
       onCloseDrain,
     })
 
@@ -91,7 +88,6 @@ describe('channelRelay', () => {
       createWebSocket: () => new FakeSocket(),
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     expect(() => relay.send(new Uint8Array([1]))).toThrow(ChannelError)
@@ -104,7 +100,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 100,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const p = relay.ensureWebSocket()
@@ -112,15 +107,13 @@ describe('channelRelay', () => {
     await expect(p).rejects.toThrow(/timed out/)
   })
 
-  it('routes length-prefixed frames to onFrame and hub control', async () => {
+  it('routes length-prefixed frames to onFrame', async () => {
     const sock = new FakeSocket()
     const onFrame = vi.fn()
-    const onHubControl = vi.fn()
     const relay = new ChannelRelay({
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl,
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -128,7 +121,6 @@ describe('channelRelay', () => {
     await open
 
     const workerMsg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-1',
       ciphertext: new Uint8Array([9]),
       correlationId: 1n,
@@ -138,17 +130,6 @@ describe('channelRelay', () => {
     })
     expect(onFrame).toHaveBeenCalledOnce()
     expect(onFrame.mock.calls[0]![0]).toBe('ch-1')
-
-    const hubMsg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
-      channelId: HUB_CONTROL_CHANNEL_ID,
-      ciphertext: toBinary(HubControlFrameSchema, create(HubControlFrameSchema, {})),
-      correlationId: 0n,
-    })
-    sock.emit('message', {
-      data: frame(hubMsg),
-    })
-    expect(onHubControl).toHaveBeenCalledOnce()
   })
 
   it('drops short and length-mismatched frames', async () => {
@@ -158,7 +139,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -184,7 +164,6 @@ describe('channelRelay', () => {
       },
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain,
     })
     const open1 = relay.ensureWebSocket()
@@ -217,7 +196,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sockets[createCount++]!,
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain,
     })
     const open1 = relay.ensureWebSocket()
@@ -252,7 +230,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sockets[createCount++]!,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open1 = relay.ensureWebSocket()
@@ -265,7 +242,6 @@ describe('channelRelay', () => {
     await open2
 
     const workerMsg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-1',
       ciphertext: new Uint8Array([9]),
       correlationId: 1n,
@@ -288,7 +264,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const p = relay.ensureWebSocket()
@@ -304,7 +279,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -312,7 +286,6 @@ describe('channelRelay', () => {
     await open
 
     const workerMsg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-view',
       ciphertext: new Uint8Array([1]),
       correlationId: 2n,
@@ -331,7 +304,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -348,7 +320,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame,
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -356,7 +327,6 @@ describe('channelRelay', () => {
     await open
 
     const workerMsg = create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-view',
       ciphertext: new Uint8Array([1]),
       correlationId: 2n,
@@ -375,7 +345,6 @@ describe('channelRelay', () => {
       createWebSocket: () => sock,
       wsOpenTimeoutMs: 5_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     })
     const open = relay.ensureWebSocket()
@@ -403,7 +372,6 @@ describe('channelRelay', () => {
         },
         wsOpenTimeoutMs: 5_000,
         onFrame: () => {},
-        onHubControl: () => {},
         onCloseDrain,
         onFatalClose,
       })

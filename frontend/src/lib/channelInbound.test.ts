@@ -87,7 +87,6 @@ function makeInbound(ch: InboundChannel, opts?: {
 function encryptInner(ch: InboundChannel, plaintext: Uint8Array, correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
   // Identity-session fixtures use the plaintext as their ciphertext.
   return create(ChannelMessageSchema, {
-    protocolVersion: 1,
     channelId: ch.channelId,
     ciphertext: plaintext,
     correlationId: BigInt(correlationId),
@@ -106,7 +105,6 @@ describe('channelInbound', () => {
     })
     const { inbound, forgetClosedChannel } = makeInbound(ch)
     inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-1',
       ciphertext: new Uint8Array(),
       correlationId: 0n,
@@ -165,7 +163,6 @@ describe('channelInbound', () => {
       kind: {
         case: 'response',
         value: create(InnerRpcResponseSchema, {
-          isError: false,
           payload: new Uint8Array([7]),
         }),
       },
@@ -180,7 +177,6 @@ describe('channelInbound', () => {
     const ch = makeChannel()
     const { inbound, closeChannel } = makeInbound(ch)
     inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
-      protocolVersion: 1,
       channelId: 'ch-1',
       ciphertext: new Uint8Array([1]),
       correlationId: BigInt(Number.MAX_SAFE_INTEGER) + 1n,

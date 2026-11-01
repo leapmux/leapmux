@@ -6,24 +6,28 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // TestRunWorkspaceCleanupFanout_AllSuccess verifies the happy-path
 // orchestration: every worker_id from DeleteWorkspace gets a
-// CleanupWorkspace, every entry reports "ok", and any worktrees the
-// worker returned are surfaced for the user to decide what to do
-// with.
+// CleanupWorkspace, and every entry reports "ok".
 func TestRunWorkspaceCleanupFanout_AllSuccess(t *testing.T) {
 	var (
 		mu     sync.Mutex
 		called []string
 	)
-	caller := func(_ context.Context, workerID string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, workerID string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		mu.Lock()
 		called = append(called, workerID)
 		mu.Unlock()
@@ -50,7 +54,7 @@ func TestRunWorkspaceCleanupFanout_AllSuccess(t *testing.T) {
 // deterministic-failure on worker A could silently swallow workers
 // B and C.
 func TestRunWorkspaceCleanupFanout_PartialFailure(t *testing.T) {
-	caller := func(_ context.Context, workerID string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, workerID string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		if workerID == "w2" {
 			return nil, errors.New("network unreachable")
 		}
@@ -71,7 +75,7 @@ func TestRunWorkspaceCleanupFanout_PartialFailure(t *testing.T) {
 // the per-worker entries still get assembled (the user wants to see
 // what was attempted) and overall status is "partial".
 func TestRunWorkspaceCleanupFanout_AllFailure(t *testing.T) {
-	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		return nil, errors.New("worker offline")
 	}
 	status, entries := runWorkspaceCleanupFanout(context.Background(), workerTabsFor("w1", "w2"), caller)
@@ -87,7 +91,7 @@ func TestRunWorkspaceCleanupFanout_AllFailure(t *testing.T) {
 // only step, no fan-out is needed, and overall status is "ok".
 func TestRunWorkspaceCleanupFanout_NoWorkers(t *testing.T) {
 	called := false
-	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		called = true
 		return nil, nil
 	}
@@ -97,17 +101,87 @@ func TestRunWorkspaceCleanupFanout_NoWorkers(t *testing.T) {
 	assert.False(t, called, "no workers means caller should not be invoked")
 }
 
-// TestRunWorkspaceCleanupFanout_OmitsEmptyWorktrees keeps the JSON
-// payload tidy when a worker reports no worktrees: the "worktrees"
-// key is dropped rather than emitting an empty list.
-func TestRunWorkspaceCleanupFanout_OmitsEmptyWorktrees(t *testing.T) {
-	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+// TestRunWorkspaceCleanupFanout_SuccessEntryHoldsOnlyTheWorkerAndStatus pins
+// the whole entry of a worker that cleaned up. CleanupWorkspaceResponse
+// carries no fields, so the entry states the worker and the outcome and
+// nothing else: no empty list, and no error key on a success.
+func TestRunWorkspaceCleanupFanout_SuccessEntryHoldsOnlyTheWorkerAndStatus(t *testing.T) {
+	caller := func(_ context.Context, _ string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		return &leapmuxv1.CleanupWorkspaceResponse{}, nil
 	}
 	_, entries := runWorkspaceCleanupFanout(context.Background(), workerTabsFor("w1"), caller)
 	require.Len(t, entries, 1)
-	_, has := entries[0]["worktrees"]
-	assert.False(t, has, "no worktrees → no key in the JSON output")
+	assert.Equal(t, map[string]any{"worker_id": "w1", "status": "ok"}, entries[0])
+}
+
+// cleanupDispatcher stands in for the worker's CleanupWorkspace handler and
+// records the requests that reach it.
+type cleanupDispatcher struct {
+	mu       sync.Mutex
+	methods  []string
+	requests []*leapmuxv1.CleanupWorkspaceRequest
+}
+
+func (d *cleanupDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	d.mu.Lock()
+	d.methods = append(d.methods, req.GetMethod())
+	d.mu.Unlock()
+	if req.GetMethod() != leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure {
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	var in leapmuxv1.CleanupWorkspaceRequest
+	if err := proto.Unmarshal(req.GetPayload(), &in); err != nil {
+		_ = w.SendError(int32(codes.InvalidArgument), err.Error())
+		return
+	}
+	d.mu.Lock()
+	d.requests = append(d.requests, &in)
+	d.mu.Unlock()
+	_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{})
+}
+
+// The production caller sends each worker its own tab identities through the
+// worker's CleanupWorkspace procedure. The worker closes exactly the tabs it
+// receives, so a tab that loses its type or id on the way is a tab that the
+// delete leaves open.
+func TestCliCleanupCaller_SendsTheTabIdentitiesToTheWorker(t *testing.T) {
+	disp := &cleanupDispatcher{}
+	startSpawnIPC(t, &recordingHub{}, disp)
+	c, err := requireClient("")
+	require.NoError(t, err)
+
+	tabs := []*leapmuxv1.TabIdent{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a-1"},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "f-1"},
+	}
+	resp, err := cliCleanupCaller(c)(t.Context(), "worker-A", tabs)
+	require.NoError(t, err)
+	assert.NotNil(t, resp, "a success returns the worker's reply")
+
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	assert.Equal(t, []string{leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure}, disp.methods)
+	require.Len(t, disp.requests, 1)
+	got := disp.requests[0].GetTabs()
+	require.Len(t, got, len(tabs))
+	for i, want := range tabs {
+		assert.Equal(t, want.GetTabType(), got[i].GetTabType())
+		assert.Equal(t, want.GetTabId(), got[i].GetTabId())
+	}
+}
+
+// A worker that refuses the cleanup returns no reply, so the fan-out reports
+// that worker as failed instead of reading an empty success.
+func TestCliCleanupCaller_ReturnsTheWorkersRefusal(t *testing.T) {
+	startSpawnIPC(t, &recordingHub{}, inBandErrorDispatcher{code: codes.Unavailable, message: "worker is shutting down"})
+	c, err := requireClient("")
+	require.NoError(t, err)
+
+	resp, err := cliCleanupCaller(c)(t.Context(), "worker-A", nil)
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "worker is shutting down")
 }
 
 // TestRunWorkspaceCleanupFanout_RoutesEachWorkerItsOwnTabs pins the routing the
@@ -123,7 +197,7 @@ func TestRunWorkspaceCleanupFanout_RoutesEachWorkerItsOwnTabs(t *testing.T) {
 		mu   sync.Mutex
 		seen = map[string][]string{}
 	)
-	caller := func(_ context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		ids := make([]string, 0, len(tabs))
 		for _, t := range tabs {
 			ids = append(ids, t.GetTabId())
@@ -135,11 +209,11 @@ func TestRunWorkspaceCleanupFanout_RoutesEachWorkerItsOwnTabs(t *testing.T) {
 	}
 
 	workerTabs := []*leapmuxv1.WorkerTabs{
-		{WorkerId: "w1", Tabs: []*leapmuxv1.TabRef{
+		{WorkerId: "w1", Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "a-1"},
 			{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t-1"},
 		}},
-		{WorkerId: "w2", Tabs: []*leapmuxv1.TabRef{
+		{WorkerId: "w2", Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "f-2"},
 		}},
 	}
@@ -163,7 +237,7 @@ func TestRunWorkspaceCleanupFanout_EmptyTabGroupIsStillCalled(t *testing.T) {
 		mu     sync.Mutex
 		called = map[string]int{}
 	)
-	caller := func(_ context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(_ context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		assert.Emptyf(t, tabs, "%s arrived with an empty group, so it must be called with no tabs", workerID)
 		mu.Lock()
 		called[workerID]++
@@ -189,7 +263,7 @@ func TestRunWorkspaceCleanupFanout_ContextPropagates(t *testing.T) {
 	const key ctxKey = "k"
 	parent := context.WithValue(context.Background(), key, "v")
 
-	caller := func(ctx context.Context, _ string, _ []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	caller := func(ctx context.Context, _ string, _ []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		assert.Equal(t, "v", ctx.Value(key), "fan-out must propagate the caller's context")
 		return &leapmuxv1.CleanupWorkspaceResponse{}, nil
 	}
@@ -224,7 +298,9 @@ func TestRunWorkspaceList_InsideWorkerSpawn(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.Nil(t, env.Error, "workspace list must succeed inside a worker spawn")
 	require.Len(t, env.Data, 1)
-	assert.Equal(t, "ws-1", env.Data[0]["id"])
+	// The whole row, so a field that the explicit map drops or renames fails
+	// here. The stub sends no created_at, and an absent instant is omitted.
+	assert.Equal(t, map[string]any{"id": "ws-1", "created_by": "u-spawn", "title": "First"}, env.Data[0])
 	assert.Equal(t, []string{"ListWorkspaces"}, hub.called(),
 		"a session-scoped list must cost exactly one hub call; no entity-id env var may add another")
 }
@@ -237,4 +313,42 @@ func workerTabsFor(workerIDs ...string) []*leapmuxv1.WorkerTabs {
 		out = append(out, &leapmuxv1.WorkerTabs{WorkerId: wid})
 	}
 	return out
+}
+
+// `workspace get` and `workspace list` print created_at as the same formatted
+// string every other listing verb prints, not as a protojson Timestamp object,
+// and omit it when the hub sends none.
+func TestWorkspaceToMap_PrintsCreatedAtAsAString(t *testing.T) {
+	created := time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC)
+	row := workspaceToMap(&leapmuxv1.Workspace{
+		Id: "ws-1", CreatedBy: "u-1", Title: "First", CreatedAt: timestamppb.New(created),
+	})
+	assert.Equal(t, map[string]any{
+		"id":         "ws-1",
+		"created_by": "u-1",
+		"title":      "First",
+		"created_at": created.Format(timeFormat),
+	}, row)
+
+	row = workspaceToMap(&leapmuxv1.Workspace{Id: "ws-2"})
+	assert.NotContains(t, row, "created_at", "an absent timestamp is omitted, not printed as the epoch")
+}
+
+// TestWorkspaceToMap_CarriesEveryFieldOfWorkspace is the tripwire for the
+// explicit map. A field that the Workspace message gains prints nowhere until
+// workspaceToMap prints it, and an operator's script then reads an absent
+// key, not an error.
+func TestWorkspaceToMap_CarriesEveryFieldOfWorkspace(t *testing.T) {
+	workspace := &leapmuxv1.Workspace{}
+	assertRowMapperCarriesEveryField(t, rowMapper{
+		name:   "workspaceToMap",
+		msg:    workspace,
+		render: func() map[string]any { return workspaceToMap(workspace) },
+		keys: map[string]string{
+			"id":         "id",
+			"created_by": "created_by",
+			"title":      "title",
+			"created_at": "created_at",
+		},
+	})
 }

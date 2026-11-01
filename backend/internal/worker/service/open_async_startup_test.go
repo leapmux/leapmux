@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -46,7 +47,7 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 	defer close(released)
 
 	start := time.Now()
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -81,7 +82,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	}
 
 	// Subscribe before opening so the broadcast is captured.
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -93,7 +94,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 
 	// Watch the agent to capture broadcasts.
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -145,7 +146,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 		return opts.Options, nil
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}, w)
@@ -166,7 +167,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	require.Equal(t, contracts.CodexOptionDefaultCollaborationMode, startedOpts.Options[contracts.CodexOptionCollaborationMode])
 
 	wUpdate := newTestWriter()
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: agentID,
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{
@@ -181,7 +182,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	require.Equal(t, codex.CollaborationPlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[contracts.CodexOptionCollaborationMode])
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	// handleWatchEvents returns once the request is SUBMITTED; the session
@@ -324,7 +325,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 		return confirmed, nil
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -343,7 +344,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}
 
 	wRaw := newTestWriter()
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: agentID,
 		Content: `{"type":"control_request","request_id":"test-set-mode","request":{"subtype":"set_permission_mode","mode":"plan"}}`,
 	}, wRaw)
@@ -354,7 +355,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	require.Equal(t, contracts.ClaudeModePlan, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	// handleWatchEvents returns once the request is SUBMITTED; the session
@@ -723,7 +724,7 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 		return opts.Options, nil
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}, w)
@@ -769,7 +770,7 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 	}
 	defer close(blocked)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -806,7 +807,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	}
 	defer close(blocked)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      "/bin/zsh",
 	}, w)
@@ -818,7 +819,7 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	require.NotEmpty(t, terminalID)
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{
 			TerminalId: terminalID,
 			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
@@ -866,7 +867,7 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 	}
 	defer close(blocked)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      "", // frontend default: let the backend resolve.
 	}, w)
@@ -900,7 +901,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	}
 	defer close(blocked)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      "/usr/bin/fish",
 	}, w)
@@ -910,7 +911,7 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 	terminalID := openResp.GetTerminalId()
 
 	wList := newTestWriter()
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{terminalID},
 	}, wList)
 	require.Empty(t, wList.errors)
@@ -944,7 +945,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 		return svc.Terminals.StartTerminal(ctx, opts, outFn, exitFn)
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      testutil.TestShell(),
 	}, w)
@@ -957,7 +958,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 
 	const title = "Terminal Ada"
 	wTitle := newTestWriter()
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{
 		TerminalId: terminalID,
 		Title:      title,
 	}, wTitle)
@@ -967,7 +968,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	require.Equal(t, title, rowBeforeStart.Title)
 
 	wResize := newTestWriter()
-	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
 		TerminalId: terminalID,
 		Cols:       100,
 		Rows:       40,
@@ -1014,7 +1015,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	}
 	defer close(blocked)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1033,7 +1034,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 		"expected runAgentStartup to reach phase 2 before startAgent blocks")
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	waitWatchUpdateAck(t, wWatch)
@@ -1077,7 +1078,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 		return map[string]string{}, nil
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1088,7 +1089,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	require.NotEmpty(t, agentID)
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -1164,6 +1165,22 @@ func TestBuildAgentStatusChange(t *testing.T) {
 		assert.Empty(t, sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
 	})
+
+	// Every status these builders make is a FULL status change, and a full
+	// change states one of the three queue-head dispatch values. UNSPECIFIED
+	// is reserved for a partial change, where it means "no update" (see
+	// BroadcastGitStatus).
+	t.Run("every full status states the queue-head dispatch", func(t *testing.T) {
+		for name, sc := range map[string]*leapmuxv1.AgentStatusChange{
+			"STARTING":       buildAgentStartingStatus(dbAgent, "", nil),
+			"STARTUP_FAILED": buildAgentFailedStatus(dbAgent, "boom", nil),
+			"INACTIVE":       buildAgentInactiveStatus(dbAgent, nil),
+			// The Manager holds no process for this agent.
+			"ACTIVE without a process": svc.buildAgentActiveStatus(dbAgent, nil),
+		} {
+			assert.Equal(t, leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE, sc.GetQueueHeadDispatch(), name)
+		}
+	})
 }
 
 // TestBuildTerminalStatusChange covers the per-status TerminalStatusChange
@@ -1172,22 +1189,29 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 	t.Parallel()
 
 	t.Run("STARTING carries startupMessage, empty error", func(t *testing.T) {
-		sc := buildTerminalStartingStatus("term-1", "Starting zsh…", nil)
+		sc := buildTerminalStartingStatus("Starting zsh…", nil)
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 		assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
 		assert.Empty(t, sc.GetStartupError())
 	})
 
 	t.Run("STARTUP_FAILED carries startupError, empty message", func(t *testing.T) {
-		sc := buildTerminalFailedStatus("term-1", "fork: permission denied")
+		sc := buildTerminalFailedStatus("fork: permission denied")
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, sc.GetStatus())
 		assert.Equal(t, "fork: permission denied", sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
 	})
 
 	t.Run("READY produces blank message and error", func(t *testing.T) {
-		sc := buildTerminalReadyStatus("term-1")
+		sc := buildTerminalReadyStatus()
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus())
+		assert.Empty(t, sc.GetStartupError())
+		assert.Empty(t, sc.GetStartupMessage())
+	})
+
+	t.Run("EXITED produces blank message and error", func(t *testing.T) {
+		sc := buildTerminalExitedStatus()
+		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, sc.GetStatus())
 		assert.Empty(t, sc.GetStartupError())
 		assert.Empty(t, sc.GetStartupMessage())
 	})
@@ -1206,7 +1230,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 		return nil, errors.New("forced startup failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    initRepo(t),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1216,7 +1240,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	agentID := openResp.GetAgent().GetId()
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -1258,7 +1282,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 		return nil, errors.New("forced startup failure: boom")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -1274,7 +1298,7 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 	// Agent's DB row stays open after startup failure — the in-tab
 	// error UI remains reachable across page refreshes; the user
 	// dismisses the failed agent via the "Close tab" button which
-	// calls CloseAgent.
+	// calls CloseTab.
 	require.Eventually(t, func() bool {
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
 		return err == nil && !row.ClosedAt.Valid
@@ -1344,11 +1368,10 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 
 	repoDir := initRepo(t)
 	branchName := "feature/rollback-label"
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    repoDir,
+		GitSetup:      createWorktreeSetup(branchName, ""),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -1414,8 +1437,8 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 
 // TestExecuteGitMode_HonorsCtxCancellation verifies executeGitMode exits
 // early when the context is cancelled between shell-outs. This is the
-// unit-level guarantee that CloseAgent / CloseTerminal mid-phase-0 does
-// not run expensive git commands against a doomed tab.
+// unit-level guarantee that a CloseTab mid-phase-0 does not run expensive
+// git commands against a doomed tab.
 func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -1438,12 +1461,11 @@ func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
 	t.Parallel()
 
-	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", &leapmuxv1.GitRepoStatus{
+	sc := buildTerminalStartingStatus("Starting zsh…", &leapmuxv1.GitRepoStatus{
 		Branch:    "feature/x",
 		OriginUrl: "git@example.com:org/repo.git",
 		Toplevel:  "/home/u/repo",
 	})
-	assert.Equal(t, "term-1", sc.GetTerminalId())
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
 	assert.Equal(t, "Starting zsh…", sc.GetStartupMessage())
 	assert.Equal(t, "feature/x", sc.GetGitStatus().GetBranch())

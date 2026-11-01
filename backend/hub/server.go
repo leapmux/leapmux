@@ -14,6 +14,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -562,9 +563,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	mailRenderer := mail.Renderer{BaseURL: hubBaseURL}
 
-	broadcaster := service.NewHubEventBroadcaster(cMgr)
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, broadcaster.NotifyWorkersChanged)
-
 	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on
 	// first reference per user. Lifecycle outbox / regular submits
@@ -586,7 +584,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}, slog.Default())
 	acquired.crdtRegistry = crdtRegistry
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, workerQueuePool)
+	// A deletion the notifier completes tells the owner's /ws/userevents
+	// subscribers that its worker list changed.
+	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, crdtRegistry.BroadcastWorkersChanged)
+
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, pendingReqs, notifierSvc, crdtRegistry, workerQueuePool, quartz.NewReal())
 	// The worker pool's count term. Its members take no lease, so the per-user
 	// connection cap cannot see them, and nothing else keeps the floors this
 	// pool guarantees from summing without limit.
@@ -639,12 +641,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// admin surface, and the user-deletion cascade -- so a worker torn down
 	// by any of the three is told to stop, loses its memoized delegation
 	// scope, and leaves its owner's client informed.
-	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, broadcaster)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
+	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, crdtRegistry.BroadcastWorkersChanged, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
-	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr)
+	// A connected worker reports its owner's username, so it follows a rename
+	// through the user-info effect.
+	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr,
+		auth.WithUserInfoObserver(connectorSvc.RedeliverWorkerIdentity))
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
@@ -653,6 +658,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 	})
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	leapmuxv1connect.RegisterSystemServiceHandler(connectServer, service.NewSystemService(authSvc))
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
 	// The cookie-name policy resolves per connection, so a secure_cookies
@@ -762,7 +768,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		settings.WithCrossValidation(refuseUnguardedExposure(cfg.SoloMode, authContexts.SoloGate())),
 	)
 	adminNetworkSvc := service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
-		Config: cfg, Settings: setMgr, SoloGate: authContexts.SoloGate(), Listen: listenReports,
+		Config: cfg, Settings: setMgr, Listen: listenReports,
 	})
 	leapmuxv1connect.RegisterAdminNetworkServiceHandler(connectServer, adminNetworkSvc)
 
@@ -814,9 +820,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
 	mux.Handle(contracts.WSRouteUserEvents, userEventsHandler)
-
-	reconcilerSvc := service.NewWorkerReconcilerService(st)
-	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer, reconcilerSvc)
 
 	// Every registered Connect procedure, mounted once, with the shared
 	// request-size cap of maxConnectRequestBytes applied to all of them.
@@ -1096,21 +1099,18 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	// A worker with a blank registrant is owned by nobody: requireWorkerOwner
-	// would refuse its real owner for the process's life. Refuse to create it.
+	// A worker with a blank registrant is owned by nobody: the worker's owner
+	// gate would refuse its real owner for the process's life. Refuse to create it.
 	registrantUID, ok := userid.New(registeredBy)
 	if !ok {
 		return nil, errors.New("register worker: registeredBy is required")
 	}
 	if err := s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
 		return tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       authToken,
-			RegisteredBy:    registrantUID,
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
-			AutoRegistered:  true,
+			ID:             workerID,
+			AuthToken:      authToken,
+			RegisteredBy:   registrantUID,
+			AutoRegistered: true,
 		})
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
@@ -1127,7 +1127,7 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 //
 // It returns the owner rather than just an existence check because workers.registered_by
 // is the AUTHORITY on who owns a worker -- it is NOT NULL, set at registration, and
-// the fact every machine-scoped gate (requireWorkerOwner) keys on. A caller that has
+// the fact every machine-scoped gate (the worker's owner gate) keys on. A caller that has
 // the worker's id therefore never needs to source the owner from anywhere else, and
 // must not: a local state file can lag or lose it, and "whoever the admin is now" is
 // a different question that happens to share an answer on a fresh single-user install.

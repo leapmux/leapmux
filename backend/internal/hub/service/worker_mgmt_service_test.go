@@ -51,7 +51,47 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetWorkers())
-	assert.False(t, resp.GetPage().GetHasMore())
+	assert.Empty(t, resp.GetPage().GetNextCursor())
+}
+
+// TestGetWorker_ReportsTimestampsAsInstants pins the worker's two instants as
+// Timestamps. created_at is the stored row's creation time. last_seen_at is
+// unset until the worker first connects, and set once the hub records a
+// heartbeat, so a client never reads an empty string as a time.
+func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
+	t.Parallel()
+
+	st := testutil.OpenTestStore(t)
+	owner := storetest.SeedUser(t, st, "worker-owner")
+	ownerID := userid.MustNew(owner.ID)
+	workerID := seedWorkersForOwner(t, st, ownerID, 1)[0]
+	row, err := st.Workers().GetOwned(context.Background(), store.GetOwnedWorkerParams{UserID: ownerID, WorkerID: workerID})
+	require.NoError(t, err)
+
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
+	get := func() *leapmuxv1.Worker {
+		t.Helper()
+		resp, err := svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: workerID})
+		require.NoError(t, err)
+		return resp.GetWorker()
+	}
+
+	fresh := get()
+	require.NotNil(t, fresh.GetCreatedAt())
+	assert.True(t, fresh.GetCreatedAt().AsTime().Equal(row.CreatedAt), "created_at is the stored creation time")
+	assert.Nil(t, fresh.GetLastSeenAt(), "a worker that never connected has no last-seen time")
+
+	require.NoError(t, st.Workers().UpdateLastSeen(context.Background(), workerID))
+	seen := get()
+	require.NotNil(t, seen.GetLastSeenAt(), "a heartbeat sets the last-seen time")
+	assert.False(t, seen.GetLastSeenAt().AsTime().Before(row.CreatedAt), "the worker is seen after it was created")
+
+	// The listing projects the same instants as the single read.
+	listed, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
+	require.NoError(t, err)
+	require.Len(t, listed.GetWorkers(), 1)
+	assert.True(t, listed.GetWorkers()[0].GetLastSeenAt().AsTime().Equal(seen.GetLastSeenAt().AsTime()))
 }
 
 // seedWorkersForOwner inserts n worker rows for one owner and returns their
@@ -64,12 +104,9 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 	for range n {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       id.Generate(),
-			RegisteredBy:    owner,
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
+			ID:           workerID,
+			AuthToken:    id.Generate(),
+			RegisteredBy: owner,
 		}))
 		ids = append(ids, workerID)
 	}
@@ -105,9 +142,8 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, resp.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped at the ceiling, not honoured")
-	assert.True(t, resp.GetPage().GetHasMore(), "the rows past the cap are still reachable")
 	require.NotEmpty(t, resp.GetPage().GetNextCursor(),
-		"a capped page must say where the next one starts")
+		"a capped page must say where the next one starts, so the rows past the cap stay reachable")
 
 	// The cap must not LOSE rows: the cursor reaches the remainder, and the
 	// two pages together are exactly what the test seeded.
@@ -116,8 +152,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, next.GetWorkers(), 1)
-	assert.False(t, next.GetPage().GetHasMore(), "the final page reports no more")
-	assert.Empty(t, next.GetPage().GetNextCursor())
+	assert.Empty(t, next.GetPage().GetNextCursor(), "the final page reports no more")
 
 	seen := make(map[string]bool, len(seeded))
 	for _, w := range resp.GetWorkers() {
@@ -148,7 +183,7 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
 	assert.Len(t, resp.GetWorkers(), 3, "an omitted limit takes the default, never zero")
-	assert.False(t, resp.GetPage().GetHasMore())
+	assert.Empty(t, resp.GetPage().GetNextCursor())
 }
 
 // TestNewWorkerManagementServiceRefusesAMissingCollaborator pins WHERE the
@@ -202,5 +237,5 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 	// which the constructor replaces with a private one.
 	assert.NotPanics(t, func() {
 		service.NewWorkerManagementService(st, mgr, nil, nil, sender, mail.Renderer{}, set, nil)
-	}, "the constructor supports a nil broadcaster, notifier and scope cache")
+	}, "the constructor supports a nil workers-changed notification, notifier and scope cache")
 }

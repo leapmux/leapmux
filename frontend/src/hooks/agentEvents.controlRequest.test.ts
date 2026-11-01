@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentControlRequestSchema, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { handleControlRequest } from '~/hooks/agentEvents'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -43,7 +43,6 @@ function controlStores() {
 
 function request(overrides: { requestId: string, nonBlocking?: boolean }): AgentControlRequest {
   return create(AgentControlRequestSchema, {
-    agentId: 'a1',
     requestId: overrides.requestId,
     claimToken: `tok-${overrides.requestId}`,
     payload: new TextEncoder().encode(JSON.stringify({

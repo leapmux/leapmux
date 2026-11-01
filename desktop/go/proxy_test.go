@@ -11,6 +11,7 @@ import (
 	"time"
 
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,7 +117,7 @@ func TestSwitchModeCancelsBlockedProxyRequest(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	requestStarted := make(chan struct{})
 	server := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/leapmux.v1.AuthService/GetSystemInfo" {
+		if r.URL.Path == leapmuxv1connect.SystemServiceGetSystemInfoProcedure {
 			w.WriteHeader(http.StatusOK)
 			return
 		}

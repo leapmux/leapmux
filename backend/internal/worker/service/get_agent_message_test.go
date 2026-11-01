@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -19,7 +20,7 @@ import (
 func getAgentMessage(t *testing.T, d *channel.Dispatcher, agentID string, seq int64) (*leapmuxv1.GetAgentMessageResponse, *testResponseWriter) {
 	t.Helper()
 	w := newTestWriter()
-	dispatch(d, "GetAgentMessage", &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceGetAgentMessageProcedure, &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, w)
 	if len(w.responses) == 0 {
 		return nil, w
 	}
@@ -34,7 +35,7 @@ func TestMessageSupplementProjectionGetRejectsShadowedPrivateState(t *testing.T)
 	svc, dispatcher, _ := setupTestService(t)
 	agentID, _, seq := createShadowedPrivateProjectionRow(t, svc)
 	writer := newTestWriter()
-	dispatch(dispatcher, "GetAgentMessage", &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, writer)
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceGetAgentMessageProcedure, &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, writer)
 	assertPrivateProjectionRefusal(t, writer)
 }
 

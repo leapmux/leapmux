@@ -95,7 +95,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	polls := &ownedTabPollSpy{WorkspaceTabIndexStore: st.WorkspaceTabIndex()}
 	h := service.NewWorkerDelegationHandler(tabIndexSpyStore{Store: st, tabIndex: polls}, tv, auth.NewCredentialLifecycleEffects(sc, nil, nil))
 	// Tests don't want production-grade backoff; shrink the
-	// AddTab-race propagation window so "tab missing" cases fail fast
+	// tab-creation propagation window so "tab missing" cases fail fast
 	// while still exercising the polling loop.
 	h.MintTabPropagationTimeout = testMintPropagationTimeout
 	h.MintTabPropagationStep = 5 * time.Millisecond
@@ -107,12 +107,9 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	workerID := id.Generate()
 	workerAuthToken := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       workerAuthToken,
-		RegisteredBy:    userid.MustNew(u.ID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    workerAuthToken,
+		RegisteredBy: userid.MustNew(u.ID),
 	}))
 
 	workspaceID := id.Generate()
@@ -179,7 +176,7 @@ func revokeRequest(t *testing.T, env *delegationEnv, workerAuthToken string, bod
 	return resp
 }
 
-// testMintPropagationTimeout shrinks the AddTab-race propagation window so the
+// testMintPropagationTimeout shrinks the tab-creation propagation window so the
 // cases that DO exercise the polling loop ("tab missing") finish quickly.
 //
 // It is no longer what any assertion compares against. "The poll did not run"
@@ -266,12 +263,9 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              otherWorkerID,
-		AuthToken:       otherAuthToken,
-		RegisteredBy:    userid.MustNew(env.userID),
-		PublicKey:       []byte("other-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("other-mlkem"),
-		SlhdsaPublicKey: []byte("other-slhdsa"),
+		ID:           otherWorkerID,
+		AuthToken:    otherAuthToken,
+		RegisteredBy: userid.MustNew(env.userID),
 	}))
 
 	resp := mintRequest(t, env, otherAuthToken, map[string]any{
@@ -288,7 +282,7 @@ func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
 	t.Parallel()
 
 	env := setupDelegation(t)
-	// Mint for a tab_id that has no row yet — emulates the AddTab race
+	// Mint for a tab_id that has no row yet — emulates the tab-creation race
 	// resolving negatively (tab will never appear). With test-tuned
 	// retry windows this resolves to 403 in ~50ms instead of waiting
 	// the full production backoff.
@@ -301,8 +295,8 @@ func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
 }
 
 // TestWorkerDelegation_Mint_RetriesUntilTabPropagates exercises the
-// AddTab-race recovery path: a worker that races mint ahead of the
-// hub-side workspace_tabs commit must succeed once the row appears,
+// tab-creation race recovery path: a worker that races mint ahead of the
+// hub-side workspace_tab_owned commit must succeed once the row appears,
 // not fail with a hard 403. This is the "lazy-mint resolves the
 // chicken-and-egg" guarantee the plan requires.
 func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
@@ -315,7 +309,7 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 	env.handler.MintTabPropagationStep = 10 * time.Millisecond
 
 	// Use a tab id that does NOT exist yet — it's inserted by a
-	// goroutine after a short delay, simulating AddTab landing later.
+	// goroutine after a short delay, simulating the tab's ops landing later.
 	lateTabID := id.Generate()
 
 	go func() {
@@ -525,12 +519,9 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              otherWorkerID,
-		AuthToken:       otherAuthToken,
-		RegisteredBy:    userid.MustNew(env.userID),
-		PublicKey:       []byte("other-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("other-mlkem"),
-		SlhdsaPublicKey: []byte("other-slhdsa"),
+		ID:           otherWorkerID,
+		AuthToken:    otherAuthToken,
+		RegisteredBy: userid.MustNew(env.userID),
 	}))
 
 	resp := revokeRequest(t, env, otherAuthToken, map[string]any{"token_id": tokenID})
@@ -665,4 +656,53 @@ func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
 	})
 	defer func() { _ = ok.Body.Close() }()
 	assert.Equal(t, http.StatusOK, ok.StatusCode)
+}
+
+// A store fault while resolving the worker's bearer is the hub's failure, not
+// the worker's: it must answer 500, never 401, which the worker would read as a
+// revoked auth token.
+func TestWorkerDelegation_Mint_AnswersInternalOnAStoreFault(t *testing.T) {
+	t.Parallel()
+
+	env := setupDelegationOverAFaultingWorkerStore(t)
+	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
+		"user_id":           env.userID,
+		"issued_for_tab_id": env.tabID,
+	})
+	assertInternalErrorWithoutCause(t, resp)
+}
+
+// Revoke resolves the worker the same way, so a store fault there is the
+// hub's failure too.
+func TestWorkerDelegation_Revoke_AnswersInternalOnAStoreFault(t *testing.T) {
+	t.Parallel()
+
+	env := setupDelegationOverAFaultingWorkerStore(t)
+	resp := revokeRequest(t, env, env.workerAuthToken, map[string]any{"token_id": "t-1"})
+	assertInternalErrorWithoutCause(t, resp)
+}
+
+// setupDelegationOverAFaultingWorkerStore serves the delegation routes over a
+// store whose every auth-token lookup fails with a store fault.
+func setupDelegationOverAFaultingWorkerStore(t *testing.T) *delegationEnv {
+	t.Helper()
+	env := setupDelegation(t)
+	mux := http.NewServeMux()
+	h := service.NewWorkerDelegationHandler(workerFaultStore{Store: env.store}, env.validator, auth.NewCredentialLifecycleEffects(env.cache, nil, nil))
+	h.RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	env.server = srv
+	return env
+}
+
+// assertInternalErrorWithoutCause asserts a 500 whose body does not repeat the
+// store's error text, which belongs in the hub's log and not on the wire.
+func assertInternalErrorWithoutCause(t *testing.T, resp *http.Response) {
+	t.Helper()
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "database is locked", "the store's error text must not reach the worker")
 }

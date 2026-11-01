@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
@@ -31,11 +32,8 @@ func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateWorktree:     true,
-		WorktreeBranch:     "feature/deep/slash",
-		WorktreeBaseBranch: "", // implicit: current branch or HEAD
-	}))
+	// An empty base branch means the current branch, or HEAD when detached.
+	plan, err := svc.validateGitMode(context.Background(), repoDir, createWorktreeSetup("feature/deep/slash", ""))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeCreateWorktree, plan.Mode)
 	assert.Equal(t, "feature/deep/slash", plan.BranchName)
@@ -55,9 +53,7 @@ func TestValidateGitMode_CreateBranchHappyPath(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateBranch: "feature/fresh",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, createBranchSetup("feature/fresh", ""))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeCreateBranch, plan.Mode)
 	assert.Equal(t, "feature/fresh", plan.BranchName)
@@ -72,9 +68,7 @@ func TestValidateGitMode_CheckoutExistingLocalBranch(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-")
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CheckoutBranch: "feature/local",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, checkoutBranchSetup("feature/local"))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeCheckoutBranch, plan.Mode)
 	assert.Equal(t, "feature/local", plan.CheckoutTarget)
@@ -91,9 +85,7 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 	run(t, local, "git", "fetch", "origin")
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CheckoutBranch: "origin/feature/remote",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), local, checkoutBranchSetup("origin/feature/remote"))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeCheckoutBranch, plan.Mode)
 }
@@ -104,7 +96,7 @@ func TestValidateGitMode_UseCurrentDefault(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, nil)
 	require.NoError(t, err)
 	assert.Equal(t, gitModeUseCurrent, plan.Mode)
 	assert.Equal(t, repoDir, plan.PlannedWorkingDir)
@@ -122,11 +114,7 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 	run(t, local, "git", "fetch", "origin")
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), local, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateWorktree:     true,
-		WorktreeBranch:     "feature/new-from-remote",
-		WorktreeBaseBranch: "origin/feature/base",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), local, createWorktreeSetup("feature/new-from-remote", "origin/feature/base"))
 	require.NoError(t, err)
 	assert.Equal(t, "origin/feature/base", plan.StartPoint)
 }
@@ -139,10 +127,7 @@ func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateWorktree: true,
-		WorktreeBranch: "feature/exec-happy",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, createWorktreeSetup("feature/exec-happy", ""))
 	require.NoError(t, err)
 
 	res, err := svc.executeGitMode(context.Background(), plan)
@@ -159,9 +144,7 @@ func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateBranch: "feature/exec-branch",
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, createBranchSetup("feature/exec-branch", ""))
 	require.NoError(t, err)
 
 	res, err := svc.executeGitMode(context.Background(), plan)
@@ -282,9 +265,7 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 	require.NoError(t, osSymlink(filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", "feature/deep/nest"), sym))
 	svc, _, _ := setupTestService(t)
 
-	plan, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		UseWorktreePath: sym,
-	}))
+	plan, err := svc.validateGitMode(context.Background(), repoDir, useWorktreePathSetup(sym))
 	require.NoError(t, err)
 	assert.Equal(t, gitModeUseWorktreePath, plan.Mode)
 	// The validated path is the sanitized input (the helper evals
@@ -299,11 +280,6 @@ func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
 }
 
 // ---------- helpers ----------
-
-// openAgentGitModeReq wraps the proto in the interface so the helper
-// compiles regardless of which proto type is used. validateGitMode only
-// reads the gitModeRequest methods so any request type works.
-func openAgentGitModeReq(r *leapmuxv1.OpenAgentRequest) gitModeRequest { return r }
 
 func osSymlink(target, link string) error { return os.Symlink(target, link) }
 
@@ -328,11 +304,10 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 
 	repoDir := initRepo(t)
 	branch := "feature/e2e-worktree"
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branch,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    repoDir,
+		GitSetup:      createWorktreeSetup(branch, ""),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -366,9 +341,9 @@ func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 
 	repoDir := initRepo(t)
 	branch := "feature/e2e-branch"
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    repoDir,
-		CreateBranch:  branch,
+		GitSetup:      createBranchSetup(branch, ""),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
@@ -393,11 +368,7 @@ func TestValidateGitMode_CreateWorktreeBranchExistsTakesPrecedenceOverMissingBas
 	run(t, repoDir, "git", "checkout", "-")
 	svc, _, _ := setupTestService(t)
 
-	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateWorktree:     true,
-		WorktreeBranch:     "feature/taken",
-		WorktreeBaseBranch: "does-not-exist",
-	}))
+	_, err := svc.validateGitMode(context.Background(), repoDir, createWorktreeSetup("feature/taken", "does-not-exist"))
 	require.Error(t, err)
 	// Both branchInLocal and !(baseExists||baseIsRemote) hold; the gate
 	// must surface the branch-collision error first to match pre-fanout
@@ -414,10 +385,7 @@ func TestValidateGitMode_CreateBranchExistsTakesPrecedenceOverMissingBase(t *tes
 	run(t, repoDir, "git", "checkout", "-")
 	svc, _, _ := setupTestService(t)
 
-	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateBranch:     "feature/taken",
-		CreateBranchBase: "does-not-exist",
-	}))
+	_, err := svc.validateGitMode(context.Background(), repoDir, createBranchSetup("feature/taken", "does-not-exist"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 	assert.NotContains(t, err.Error(), "base branch")
@@ -433,9 +401,7 @@ func TestValidateGitMode_CreateBranchNonGitDirSurfacesRepoError(t *testing.T) {
 	notRepo := t.TempDir()
 	svc, _, _ := setupTestService(t)
 
-	_, err := svc.validateGitMode(context.Background(), notRepo, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateBranch: "feature/anything",
-	}))
+	_, err := svc.validateGitMode(context.Background(), notRepo, createBranchSetup("feature/anything", ""))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not inside a git repository")
 	assert.NotContains(t, err.Error(), "already exists")
@@ -448,9 +414,7 @@ func TestValidateGitMode_CheckoutBranchNonGitDirSurfacesRepoError(t *testing.T) 
 	notRepo := t.TempDir()
 	svc, _, _ := setupTestService(t)
 
-	_, err := svc.validateGitMode(context.Background(), notRepo, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CheckoutBranch: "main",
-	}))
+	_, err := svc.validateGitMode(context.Background(), notRepo, checkoutBranchSetup("main"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not inside a git repository")
 	assert.NotContains(t, err.Error(), "does not exist")
@@ -462,9 +426,7 @@ func TestValidateGitMode_CheckoutBranchMissingBranchInRepo(t *testing.T) {
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
-	_, err := svc.validateGitMode(context.Background(), repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CheckoutBranch: "nope/does-not-exist",
-	}))
+	_, err := svc.validateGitMode(context.Background(), repoDir, checkoutBranchSetup("nope/does-not-exist"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"nope/does-not-exist"`)
 	assert.Contains(t, err.Error(), "does not exist")
@@ -485,10 +447,7 @@ func TestValidateGitMode_CreateBranchCancelledCtxSurfacesCancellation(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before the call
 
-	_, err := svc.validateGitMode(ctx, repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CreateBranch:     "newbranch",
-		CreateBranchBase: "main",
-	}))
+	_, err := svc.validateGitMode(ctx, repoDir, createBranchSetup("newbranch", "main"))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled,
 		"a cancelled ctx must surface as context.Canceled, not a misleading 'not inside a git repository'")
@@ -506,10 +465,74 @@ func TestValidateGitMode_CheckoutBranchCancelledCtxSurfacesCancellation(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := svc.validateGitMode(ctx, repoDir, openAgentGitModeReq(&leapmuxv1.OpenAgentRequest{
-		CheckoutBranch: "main",
-	}))
+	_, err := svc.validateGitMode(ctx, repoDir, checkoutBranchSetup("main"))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.NotContains(t, err.Error(), "is not inside a git repository")
+}
+
+// TestValidateGitModeMapsEachSetupCase gives every shape of GitSetup one
+// defined result. An absent setup uses the directory as it is. A present setup
+// that selects no mode, or a mode whose required value is empty, is refused
+// before any git command runs, so the refusals also hold in a directory that
+// is not a repository. A valid mode reaches its per-mode validator.
+func TestValidateGitModeMapsEachSetupCase(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	notRepo := t.TempDir()
+	svc, _, _ := setupTestService(t)
+
+	tests := []struct {
+		name    string
+		dir     string
+		setup   *leapmuxv1.GitSetup
+		mode    gitModeKind
+		wantErr string
+	}{
+		{name: "absent", dir: repoDir, setup: nil, mode: gitModeUseCurrent},
+		{name: "present with no mode", dir: notRepo, setup: &leapmuxv1.GitSetup{}, wantErr: "git_setup selects no mode"},
+		{name: "create_worktree with an empty branch", dir: notRepo, setup: createWorktreeSetup("", "main"), wantErr: "create_worktree.branch is required"},
+		{name: "create_worktree with a nil message", dir: notRepo, setup: &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateWorktree{}}, wantErr: "create_worktree.branch is required"},
+		{name: "create_worktree", dir: repoDir, setup: createWorktreeSetup("feature/new", ""), mode: gitModeCreateWorktree},
+		{name: "use_worktree_path empty", dir: notRepo, setup: useWorktreePathSetup(""), wantErr: "use_worktree_path is required"},
+		{name: "checkout_branch empty", dir: notRepo, setup: checkoutBranchSetup(""), wantErr: "checkout_branch is required"},
+		{name: "create_branch with an empty name", dir: notRepo, setup: createBranchSetup("", "main"), wantErr: "create_branch.name is required"},
+		{name: "create_branch with a nil message", dir: notRepo, setup: &leapmuxv1.GitSetup{Mode: &leapmuxv1.GitSetup_CreateBranch{}}, wantErr: "create_branch.name is required"},
+		{name: "create_branch", dir: repoDir, setup: createBranchSetup("feature/fresh", ""), mode: gitModeCreateBranch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := svc.validateGitMode(context.Background(), tt.dir, tt.setup)
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.mode, plan.Mode)
+		})
+	}
+}
+
+// OpenAgent refuses a present git setup that selects no mode before it
+// creates a DB row, so the refusal reaches the caller as InvalidArgument.
+func TestOpenAgentRefusesAGitSetupWithNoMode(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	repoDir := initRepo(t)
+
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    repoDir,
+		GitSetup:      &leapmuxv1.GitSetup{},
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+
+	requireInvalidArgument(t, w)
+	assert.Zero(t, countAgentRows(t, svc), "no DB row for a refused request")
 }

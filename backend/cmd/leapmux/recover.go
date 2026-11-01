@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -358,9 +359,21 @@ func withRecoverConfig(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), 
 // The selector RULE lives in service.ResolveUserSelector, shared with the
 // online admin RPCs so the two surfaces cannot disagree about what a valid
 // selector is. The WORDING stays here: this one talks to a person at a
-// terminal, so it lists flags and echoes the selector they typed.
+// terminal, so it lists flags and echoes the selector they typed. The
+// selector holds one of the two values, so this function refuses both flags
+// itself before it builds one.
 func resolveUser(ctx context.Context, st store.Store, userID, username string) (*store.User, error) {
-	user, err := service.ResolveUserSelector(ctx, st, userID, username)
+	if userID != "" && username != "" {
+		return nil, fmt.Errorf("--id and --username are mutually exclusive")
+	}
+	var sel *leapmuxv1.UserSelector
+	switch {
+	case userID != "":
+		sel = service.SelectUserByID(userID)
+	case username != "":
+		sel = service.SelectUserByUsername(username)
+	}
+	user, err := service.ResolveUserSelector(ctx, st, sel)
 	if err == nil {
 		return user, nil
 	}
@@ -372,8 +385,6 @@ func resolveUser(ctx context.Context, st store.Store, userID, username string) (
 	switch {
 	case errors.Is(err, service.ErrNoUserSelector):
 		return nil, fmt.Errorf("--id or --username is required")
-	case errors.Is(err, service.ErrAmbiguousUserSelector):
-		return nil, fmt.Errorf("--id and --username are mutually exclusive")
 	case errors.Is(err, store.ErrNotFound):
 		return nil, fmt.Errorf("user not found: %s", selector)
 	default:

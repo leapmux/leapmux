@@ -10,7 +10,6 @@ import (
 	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -61,10 +60,9 @@ func (c ConfiguredListen) PrimaryListenAddr() string { return c.Listen }
 // facts a settings row cannot carry: what interfaces this machine has, and
 // what the hub's sockets actually hold right now.
 type AdminNetworkService struct {
-	cfg      *config.Config
-	set      *settings.Manager
-	soloGate *auth.SoloGate
-	listen   ListenReporter
+	cfg    *config.Config
+	set    *settings.Manager
+	listen ListenReporter
 	// interfaces is the machine-interface source, injectable so a test can
 	// state a machine rather than assert about the one it runs on.
 	interfaces func() ([]net.Interface, error)
@@ -80,7 +78,6 @@ type AdminNetworkService struct {
 type AdminNetworkServiceDeps struct {
 	Config   *config.Config
 	Settings *settings.Manager
-	SoloGate *auth.SoloGate
 	// Listen reports the hub's live sockets. Nil degrades to ConfiguredListen,
 	// so every read in the service is unconditional.
 	Listen ListenReporter
@@ -105,7 +102,7 @@ func NewAdminNetworkService(deps AdminNetworkServiceDeps) *AdminNetworkService {
 		interfaces = net.Interfaces
 	}
 	return &AdminNetworkService{
-		cfg: deps.Config, set: deps.Settings, soloGate: deps.SoloGate,
+		cfg: deps.Config, set: deps.Settings,
 		listen: listen, interfaces: interfaces,
 	}
 }
@@ -141,7 +138,6 @@ func (s *AdminNetworkService) GetListenStatus(
 		Interfaces:     ifaces,
 		DefaultAddress: s.cfg.PrimaryTCPListen(),
 		Configured:     configured,
-		PasswordSet:    s.soloGate.PasswordSet(ctx),
 	}
 	for _, b := range s.listen.Bound() {
 		out.Bound = append(out.Bound, &leapmuxv1.BoundAddress{

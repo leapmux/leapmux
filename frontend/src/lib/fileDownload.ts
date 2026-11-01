@@ -23,7 +23,7 @@ export type DownloadProgress = (received: number, total: number) => void
  * `ChannelService.OpenChannel`. The relay Hub sees only the outer
  * `ChannelMessage` envelopes (channel_id, correlation_id, flags,
  * ciphertext bytes). Hub cannot decrypt the file content, the file
- * path inside `ReadFileRequest`, the RPC method name (`ReadFile`), or
+ * path inside `ReadFileRequest`, the RPC procedure (`WorkerFileService/ReadFile`), or
  * the `total_size` field in `ReadFileResponse`.
  *
  * Hub CAN observe — same as the inline file viewer — the destination
@@ -64,7 +64,6 @@ async function* streamFileChunks(
   let totalSize = -1
   while (totalSize < 0 || received < totalSize) {
     const resp = await workerRpc.readFile(workerId, {
-      workerId,
       path: filePath,
       offset: BigInt(received),
       limit: BigInt(DOWNLOAD_CHUNK_SIZE),

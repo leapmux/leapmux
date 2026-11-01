@@ -1,6 +1,9 @@
 import type { WorkspaceSortKey, WorkspaceSortOrder } from './workspaceSort'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { create } from '@bufbuild/protobuf'
+import { timestampFromMs } from '@bufbuild/protobuf/wkt'
 import { describe, expect, it } from 'vitest'
+import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
   canReorderWithin,
   DEFAULT_WORKSPACE_SORT_ORDER,
@@ -13,8 +16,17 @@ import {
   WORKSPACE_SORT_KEYS,
 } from './workspaceSort'
 
+/** A workspace; an empty `createdAt` leaves the timestamp absent, as a hub that reported none would. */
 function ws(id: string, title: string, createdAt = ''): Workspace {
-  return { id, title, createdAt } as Workspace
+  return create(WorkspaceSchema, {
+    id,
+    title,
+    ...(createdAt
+      ? {
+          createdAt: timestampFromMs(Date.parse(createdAt)),
+        }
+      : {}),
+  })
 }
 
 function order(key: WorkspaceSortKey, direction: 'asc' | 'desc' = 'asc'): WorkspaceSortOrder {
@@ -140,6 +152,29 @@ describe('sortWorkspaces', () => {
       ws('a', 'alpha', '2026-01-01'),
     ]
     expect(ids(sortWorkspaces(tied, order('created'), NO_RECENCY))).toEqual(['a', 'c'])
+  })
+
+  // A timestamp at the epoch reads as zero milliseconds. Zero is a reported
+  // time, so it must not sort as an absent one.
+  it('treats a creation time at the epoch as reported', () => {
+    const partial = [
+      ws('a', 'alpha'),
+      ws('b', 'Bravo', '1970-01-01T00:00:00Z'),
+    ]
+    expect(ids(sortWorkspaces(partial, order('created'), NO_RECENCY))).toEqual(['b', 'a'])
+    expect(ids(sortWorkspaces(partial, order('created', 'desc'), NO_RECENCY))).toEqual(['b', 'a'])
+  })
+
+  // The compare is chronological, not lexicographic, so the time of day and a
+  // negative offset from the epoch order correctly.
+  it('orders creation times by the instant', () => {
+    const times = [
+      ws('later', 'alpha', '2026-01-01T12:00:00Z'),
+      ws('earlier', 'bravo', '2026-01-01T09:00:00Z'),
+      ws('before-epoch', 'charlie', '1969-12-31T23:59:59Z'),
+    ]
+    expect(ids(sortWorkspaces(times, order('created'), NO_RECENCY))).toEqual(['before-epoch', 'earlier', 'later'])
+    expect(ids(sortWorkspaces(times, order('created', 'desc'), NO_RECENCY))).toEqual(['later', 'earlier', 'before-epoch'])
   })
 
   it('pins a workspace with no creation time last', () => {

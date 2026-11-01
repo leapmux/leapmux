@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -59,7 +60,7 @@ func workspaceToProto(w *store.Workspace) *leapmuxv1.Workspace {
 		Id:        w.ID,
 		CreatedBy: w.OwnerUserID,
 		Title:     w.Title,
-		CreatedAt: w.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		CreatedAt: timestamppb.New(w.CreatedAt),
 	}
 }
 
@@ -324,39 +325,53 @@ func (s *WorkspaceService) RenameWorkspace(
 	return &leapmuxv1.RenameWorkspaceResponse{}, nil
 }
 
-// SetWorkspaceArchiveState moves a workspace across the archive boundary and
-// nudges every Worker that hosts one of its tabs.
+// MoveWorkspace puts a workspace in a section at a position and nudges every
+// Worker that hosts one of its tabs.
+//
+// The destination section decides the archive state: the Archived section
+// archives the workspace, any other workspace section makes it active. One RPC
+// for both, so "Move to <custom section>" on an archived workspace is ONE
+// transaction -- the workspace never rests in In progress because a second
+// call failed, and it lands at the position the user dropped it at.
 //
 // The nudge IS the delivery. The Worker applies the Hub's authoritative state
 // through the same code its reconcile pass uses, so a client-side fan-out over
-// the returned tab list would be a second path to the same effect -- one that
-// exists only while a browser session is open, and that an archive from any
-// other client would skip.
-func (s *WorkspaceService) SetWorkspaceArchiveState(
+// the tab list would be a second path to the same effect -- one that exists
+// only while a browser session is open, and that a move from any other client
+// would skip.
+//
+// Every move nudges, including one that stays on the same side of the archive
+// boundary. That is the recovery path: when a Worker misses its nudge -- a
+// refused control frame, a reconnect -- the caller's remedy is to ask again,
+// and a repeat that nudged nobody would do nothing, leaving those processes
+// running until the Worker's hourly tick. Every step is idempotent: the
+// Worker's UPDATE changes a row only when the flag differs, and the nudge is
+// best-effort by contract.
+func (s *WorkspaceService) MoveWorkspace(
 	ctx context.Context,
-	req *leapmuxv1.SetWorkspaceArchiveStateRequest,
-) (*leapmuxv1.SetWorkspaceArchiveStateResponse, error) {
+	req *leapmuxv1.MoveWorkspaceRequest,
+) (*leapmuxv1.MoveWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if err := rejectDelegationBearer(user, "workspace lifecycle mutation"); err != nil {
-		return nil, err
-	}
-
-	requested := req.GetArchiveState()
-	if requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
-		requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "archive_state must be ACTIVE or ARCHIVED")
 	}
 
 	workspaceID := req.GetWorkspaceId()
 	var workerIDs []string
 	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can modify workspace state"); err != nil {
+		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can move workspace"); err != nil {
 			return err
 		}
-
+		if req.GetSectionId() == "" {
+			return connect.Errorf(connect.CodeInvalidArgument, "section_id is required")
+		}
+		destination, err := requireOwnedSection(ctx, tx, user.ID, req.GetSectionId())
+		if err != nil {
+			return err
+		}
+		if err := requireWorkspaceSection(destination); err != nil {
+			return err
+		}
 		currentlyArchived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
 			UserID:      user.ID,
 			WorkspaceID: workspaceID,
@@ -364,44 +379,30 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 		if err != nil {
 			return fmt.Errorf("read workspace archive state: %w", err)
 		}
-		requestArchived := requested == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
-
-		// The section move is the only step this skips when the workspace
-		// already sits on the requested side. The nudge below still runs, so
-		// the RPC ASSERTS the state its name claims rather than applying a
-		// transition.
-		//
-		// That difference is the recovery path. When a Worker misses its nudge
-		// -- a refused control frame, a reconnect -- the caller's remedy is to
-		// ask again, and a repeat that nudged nobody would do nothing, leaving
-		// those processes running until the Worker's hourly tick. Every step
-		// below is idempotent: the Worker's UPDATE changes a row only when the
-		// flag differs, and the nudge is best-effort by contract.
-		// An explicit destination moves the workspace even when it is already
-		// on the requested side, because "Move to <section>" on an archived
-		// workspace is one call now: unarchive AND land where the user asked.
-		explicitDestination := req.GetDestinationSectionId()
-		if currentlyArchived != requestArchived || explicitDestination != "" {
-			destinationID, err := resolveArchiveDestination(ctx, tx, user.ID, explicitDestination, requestArchived)
-			if err != nil {
+		destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+		// Crossing the archive boundary stops or resumes every process of the
+		// workspace, which is a lifecycle change a delegation bearer may not
+		// make. A move that stays on one side only reorders the sidebar.
+		if currentlyArchived != destinationArchived {
+			if err := rejectDelegationBearer(user, "workspace archive state change"); err != nil {
 				return err
 			}
-			position := req.GetPosition()
-			if position == "" {
-				items, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
-				if err != nil {
-					return fmt.Errorf("list workspace section items: %w", err)
-				}
-				position = appendPositionAfter(lastPositionInSection(items, destinationID), workspaceID)
+		}
+		position := req.GetPosition()
+		if position == "" {
+			items, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+			if err != nil {
+				return fmt.Errorf("list workspace section items: %w", err)
 			}
-			if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-				UserID:      user.ID,
-				WorkspaceID: workspaceID,
-				SectionID:   destinationID,
-				Position:    position,
-			}); err != nil {
-				return fmt.Errorf("move workspace across archive boundary: %w", err)
-			}
+			position = defaultMovePosition(items, workspaceID, destination.ID)
+		}
+		if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+			SectionID:   destination.ID,
+			Position:    position,
+		}); err != nil {
+			return fmt.Errorf("move workspace: %w", err)
 		}
 
 		tabs, err := tx.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
@@ -427,45 +428,20 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 			s.reconcileNudger.NudgeReconcile(workerID)
 		}
 	}
-	return &leapmuxv1.SetWorkspaceArchiveStateResponse{}, nil
+	return &leapmuxv1.MoveWorkspaceResponse{}, nil
 }
 
-// resolveArchiveDestination answers which section the workspace lands in.
-//
-// With no explicit id it is the built-in section for the requested side. With
-// one, the section must be the caller's, must be able to hold a workspace, and
-// must sit on the side the request asks for -- so a destination cannot
-// contradict archive_state, and this parameter can never become a second,
-// unguarded way to archive a workspace.
-func resolveArchiveDestination(ctx context.Context, tx store.Store, userID userid.UserID, explicitID string, requestArchived bool) (string, error) {
-	sections, err := tx.WorkspaceSections().ListByUserID(ctx, userID)
-	if err != nil {
-		return "", fmt.Errorf("list workspace sections: %w", err)
-	}
-	if explicitID == "" {
-		destinationType := leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS
-		if requestArchived {
-			destinationType = leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+// defaultMovePosition answers where a move with no position puts the workspace.
+// A workspace that already sits in the destination keeps its rank, so a repeat
+// -- the recovery path for a lost nudge -- does not reorder the sidebar on
+// every retry. Any other workspace is appended after the destination's tail.
+func defaultMovePosition(items []store.WorkspaceSectionItem, workspaceID, destinationID string) string {
+	for _, item := range items {
+		if item.WorkspaceID == workspaceID && item.SectionID == destinationID {
+			return item.Position
 		}
-		destinationID := findSectionOfType(sections, destinationType)
-		if destinationID == "" {
-			return "", fmt.Errorf("built-in destination section %s not found", destinationType)
-		}
-		return destinationID, nil
 	}
-	destination, err := requireOwnedSection(ctx, tx, userID, explicitID)
-	if err != nil {
-		return "", err
-	}
-	if err := requireWorkspaceSection(destination); err != nil {
-		return "", err
-	}
-	destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
-	if destinationArchived != requestArchived {
-		return "", connect.Errorf(connect.CodeInvalidArgument,
-			"destination section %s is on the other side of the archive boundary than the requested state", destination.ID)
-	}
-	return destination.ID, nil
+	return appendPositionAfter(lastPositionInSection(items, destinationID), workspaceID)
 }
 
 // distinctWorkerIDs reduces a workspace's owned tabs to the workers that host
@@ -499,10 +475,7 @@ func (s *WorkspaceService) DeleteWorkspace(
 	}
 	workspaceID := req.GetWorkspaceId()
 
-	var (
-		workerIDs  []string
-		workerTabs []*leapmuxv1.WorkerTabs
-	)
+	var workerTabs []*leapmuxv1.WorkerTabs
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpDelete,
 		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
@@ -533,10 +506,6 @@ func (s *WorkspaceService) DeleteWorkspace(
 				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list workspace tabs: %w", err))
 			}
 			workerTabs = groupTabsByWorker(tabs)
-			workerIDs = make([]string, 0, len(workerTabs))
-			for _, wt := range workerTabs {
-				workerIDs = append(workerIDs, wt.GetWorkerId())
-			}
 			rows, err := tx.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 				ID:          workspaceID,
 				OwnerUserID: user.ID,
@@ -565,7 +534,6 @@ func (s *WorkspaceService) DeleteWorkspace(
 			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpDelete,
 				WorkspaceID: workspaceID,
-				WorkerIDs:   workerIDs,
 			}, nil, nil
 		},
 	}); err != nil {
@@ -635,7 +603,7 @@ func groupTabsByWorker(tabs []store.OwnedTabRef) []*leapmuxv1.WorkerTabs {
 			byWorker[t.WorkerID] = wt
 			out = append(out, wt)
 		}
-		wt.Tabs = append(wt.Tabs, &leapmuxv1.TabRef{TabType: t.TabType, TabId: t.TabID})
+		wt.Tabs = append(wt.Tabs, &leapmuxv1.TabIdent{TabType: t.TabType, TabId: t.TabID})
 	}
 	return out
 }

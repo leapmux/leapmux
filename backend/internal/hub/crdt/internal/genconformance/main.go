@@ -116,7 +116,7 @@ func (g *gen) build() {
 		root := fmt.Sprintf("r%d", i)
 		g.spaces = append(g.spaces, ws)
 		g.nodes = append(g.nodes, root)
-		g.emit(fmt.Sprintf(`"setWorkspaceRootNode":{"workspaceId":%q,"rootNodeId":%q}`, ws, root))
+		g.emit(fmt.Sprintf(`"createWorkspace":{"workspaceId":%q,"rootNodeId":%q}`, ws, root))
 		g.emit(fmt.Sprintf(`"setNodeRegister":{"nodeId":%q,"kind":"NODE_KIND_LEAF"}`, root))
 	}
 
@@ -163,10 +163,10 @@ func (g *gen) build() {
 				g.tabs = append(g.tabs, id)
 			}
 			tile := g.pick(g.nodes)
-			g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"tileId":%q}`, id, tile))
-			g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"position":%q}`, id, string(rune('a'+g.rnd.IntN(26)))))
+			g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"tileId":%q}`, id, tile))
+			g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"position":%q}`, id, string(rune('a'+g.rnd.IntN(26)))))
 			if g.rnd.IntN(2) == 0 {
-				g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"workerId":"wk%d"}`, id, g.rnd.IntN(3)))
+				g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"workerId":"wk%d"}`, id, g.rnd.IntN(3)))
 			}
 		case 5: // reparent a node -- can create a cycle, which the projection must break
 			if len(g.nodes) > 2 {
@@ -189,9 +189,9 @@ func (g *gen) build() {
 		case 7: // tombstone a tab, then sometimes try to resurrect it (remove-wins)
 			if len(g.tabs) > 0 {
 				id := g.pick(g.tabs)
-				g.emit(fmt.Sprintf(`"tombstoneTab":{"tabType":"TAB_TYPE_AGENT","tabId":%q}`, id))
+				g.emit(fmt.Sprintf(`"tombstoneTab":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q}}`, id))
 				if g.rnd.IntN(3) == 0 {
-					g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"tileId":%q}`, id, g.pick(g.nodes)))
+					g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"tileId":%q}`, id, g.pick(g.nodes)))
 				}
 			}
 		case 8: // a floating window with its own root
@@ -232,7 +232,7 @@ func (g *gen) plantChain() {
 	// tombstoned by the walk (it only ever tombstones a workspace when there is
 	// more than one, and picks randomly) -- so re-register it here to be sure.
 	ws, root := "pw", "pr"
-	g.emit(fmt.Sprintf(`"setWorkspaceRootNode":{"workspaceId":%q,"rootNodeId":%q}`, ws, root))
+	g.emit(fmt.Sprintf(`"createWorkspace":{"workspaceId":%q,"rootNodeId":%q}`, ws, root))
 	g.emit(fmt.Sprintf(`"setNodeRegister":{"nodeId":%q,"kind":"NODE_KIND_SPLIT"}`, root))
 	mid := fmt.Sprintf("pm%d", base)
 	leaf := fmt.Sprintf("pl%d", base)
@@ -244,9 +244,9 @@ func (g *gen) plantChain() {
 	g.emit(fmt.Sprintf(`"setNodeRegister":{"nodeId":%q,"kind":"NODE_KIND_LEAF"}`, leaf))
 	g.emit(fmt.Sprintf(`"setNodeRegister":{"nodeId":%q,"parentId":%q}`, leaf, mid))
 	g.emit(fmt.Sprintf(`"setNodeRegister":{"nodeId":%q,"position":"m"}`, leaf))
-	g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"tileId":%q}`, tab, leaf))
-	g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"position":"m"}`, tab))
-	g.emit(fmt.Sprintf(`"setTabRegister":{"tabType":"TAB_TYPE_AGENT","tabId":%q,"workerId":"wk0"}`, tab))
+	g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"tileId":%q}`, tab, leaf))
+	g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"position":"m"}`, tab))
+	g.emit(fmt.Sprintf(`"setTabRegister":{"tab":{"tabType":"TAB_TYPE_AGENT","tabId":%q},"workerId":"wk0"}`, tab))
 	// Half the cases leave the chain intact, so the corpus carries the control
 	// as well as the subject -- a rule change that drops BOTH is distinguishable
 	// from one that drops only the tombstoned variant.

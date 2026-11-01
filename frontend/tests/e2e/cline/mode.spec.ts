@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { Buffer } from 'node:buffer'
 import { expect } from '@playwright/test'
 import { CLINE_PERMISSION_MODE } from '../../../src/generated/contracts/cline-protocol'
-import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputQueuePauseReason } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
 import { watchAgentEvents } from '../helpers/agentEventWatch'
 import { withCleanup } from '../helpers/cleanup'
@@ -41,7 +41,7 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
       if (event.event.case !== 'inputQueueChanged')
         return []
       const snapshot = event.event.value.snapshot
-      if (!snapshot || snapshot.agentId !== ownerBefore.id)
+      if (!snapshot)
         throw new Error('The Cline settling event requires the captured owner input queue.')
       return [snapshot]
     })
@@ -57,7 +57,7 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
     const busy = changedQueues[busyIndex]
     if (!busy)
       throw new Error('The native Cline rebuild did not hold its input queue.')
-    expect({ paused: busy.paused, itemCount: busy.items.length }).toEqual({ paused: false, itemCount: 0 })
+    expect({ pauseReason: busy.pauseReason, itemCount: busy.items.length }).toEqual({ pauseReason: AgentInputQueuePauseReason.UNSPECIFIED, itemCount: 0 })
     expect(changedQueues.slice(busyIndex + 1).some(snapshot => !snapshot.activeTurn && snapshot.revision > busy.revision)).toBe(true)
 
     const activity = () => watch.items().flatMap(event => event.event.case === 'activityChanged'
@@ -77,7 +77,7 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
           revision: snapshot.revision.toString(),
           activeTurn: snapshot.activeTurn,
           activeTurnSteerable: snapshot.activeTurnSteerable,
-          paused: snapshot.paused,
+          pauseReason: snapshot.pauseReason,
           itemCount: snapshot.items.length,
         })),
         activity: activity(),
@@ -203,8 +203,8 @@ clineTest.describe('Cline settings', () => {
       await expect(queuedInputRow(page, nextPrompt)).toBeVisible()
       await retryUntilPass(async () => {
         const heldQueue = await readNativeInputQueue(leapmuxServer, id)
-        expect({ activeTurn: heldQueue.activeTurn, paused: heldQueue.paused, itemCount: heldQueue.items.length })
-          .toEqual({ activeTurn: true, paused: false, itemCount: 1 })
+        expect({ activeTurn: heldQueue.activeTurn, pauseReason: heldQueue.pauseReason, itemCount: heldQueue.items.length })
+          .toEqual({ activeTurn: true, pauseReason: AgentInputQueuePauseReason.UNSPECIFIED, itemCount: 1 })
       })
       expect((await modelScript.status()).requests).toHaveLength(1)
       return { ownerBefore, oldValue }

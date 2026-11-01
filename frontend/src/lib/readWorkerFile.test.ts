@@ -94,6 +94,29 @@ describe('readWorkerFile', () => {
       .toEqual(Array.from({ length: 10 }, (_, index) => index * PAGE))
   })
 
+  // The worker id routes every read and stays out of each request body.
+  it('sends each read to the worker with only the file fields', async () => {
+    const bytes = fileBytes(PAGE + 10)
+    read
+      .mockResolvedValueOnce(response(bytes.subarray(0, 10), BigInt(bytes.length)))
+      .mockResolvedValueOnce(response(bytes.subarray(10), BigInt(bytes.length)))
+
+    await expect(readAll(bytes)).resolves.toMatchObject({ content: bytes })
+
+    expect(read.mock.calls[0]?.[0]).toBe('worker')
+    expect(read.mock.calls[0]?.[1]).toEqual({
+      path: '/file.bin',
+      limit: BigInt(bytes.length),
+      metaOnlyIfTruncated: true,
+    })
+    expect(read.mock.calls[1]?.[0]).toBe('worker')
+    expect(read.mock.calls[1]?.[1]).toEqual({
+      path: '/file.bin',
+      offset: 10n,
+      limit: BigInt(PAGE),
+    })
+  })
+
   it('fills a range that a short page leaves incomplete', async () => {
     const bytes = fileBytes(PAGE + 16)
     read.mockResolvedValueOnce(response(new Uint8Array(), BigInt(bytes.length)))

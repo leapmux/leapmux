@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -353,7 +354,7 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 	sink.BroadcastSessionInfo(permissionCheckInfo("native", "s-b", true))
 	sink.BroadcastSessionInfo(permissionCheckInfo("native", "s-a", true))
 
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	require.Eventually(t, func() bool {

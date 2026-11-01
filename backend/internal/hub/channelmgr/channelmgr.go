@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/leapmux/leapmux/channelwire"
@@ -1075,9 +1074,8 @@ func (m *Manager) getConnSender(userID, connID string) SendFunc {
 // The CLOSE flag is the sentinel, and the frame carries no ciphertext.
 func CloseNotification(channelID string) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: contracts.ProtocolVersion,
-		ChannelId:       channelID,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
+		ChannelId: channelID,
+		Flags:     leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_CLOSE,
 	}
 }
 
@@ -1091,24 +1089,6 @@ func sendCloseNotification(sender SendFunc, channelID string) {
 			"channel_id", channelID,
 			"error", err,
 		)
-	}
-}
-
-// SendToUser sends a ChannelMessage to all WebSocket connections of a specific user.
-func (m *Manager) SendToUser(userID string, msg *leapmuxv1.ChannelMessage) {
-	m.mu.RLock()
-	var senders []SendFunc
-	if conns := m.userSenders[userID]; conns != nil {
-		for _, uc := range conns {
-			senders = append(senders, uc.sendFn)
-		}
-	}
-	m.mu.RUnlock()
-
-	for _, sender := range senders {
-		if err := sender(msg); err != nil {
-			slog.Debug("failed to send control frame to user", "user_id", userID, "error", err)
-		}
 	}
 }
 

@@ -36,20 +36,25 @@ export const SignupPage: Component = () => {
    * solid/reactivity as an async tracked scope.
    */
   const handleSignedUp = async (resp: SignupResult) => {
+    // The redirect rides the adoption, because a sign-up that could not
+    // report its account recovers, and recovery owns the navigation then.
+    const redirect = stringParam(searchParams.redirect)
+    // Only an adopted account is this page's to route; see SignInOutcome.
+    if (await auth.setAuth(resp.report, { redirect }) !== 'adopted')
+      return
     // The signup RPC creates a session even when verification
     // is required, so the user can call the authenticated
     // VerifyEmail RPC directly. Send them to the verify page to
-    // click the email link or paste the code.
-    await auth.setAuth(resp.user)
-    if (resp.verificationRequired) {
-      auth.setVerificationResendAvailableAt(resp.nextResendAvailableAt)
+    // click the email link or paste the code. The adoption already seeded
+    // the resend cooldown from the report.
+    if (resp.report?.emailVerification?.verificationRequired) {
       setVerificationSent(true)
       navigate('/verify-email', { replace: true })
       return
     }
     // Same redirect contract as login (see safeRedirect):
     // a safe in-app path wins, anything else goes home.
-    postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
+    postAuthNavigate(navigate, redirect, '/')
   }
 
   return (

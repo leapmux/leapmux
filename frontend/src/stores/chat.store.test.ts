@@ -3311,7 +3311,7 @@ describe('createChatStore', () => {
     // The chat store does not extract todos from message content — the
     // worker persists every event in agent_todos and ships the current
     // snapshot via ListAgentMessagesResponse.todos and the
-    // AgentTodosChanged broadcast. These tests cover the
+    // todos_changed broadcast. These tests cover the
     // server-authoritative hydration path.
 
     const sampleTodos = [
@@ -3327,8 +3327,7 @@ describe('createChatStore', () => {
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: sampleTodos,
-          todosLoaded: true,
+          todos: { todos: sampleTodos },
         })
 
         await store.loadInitialMessages('w1', 'a1')
@@ -3356,19 +3355,18 @@ describe('createChatStore', () => {
       })
     })
 
-    it('treats an empty todos response as authoritative ("agent has none") when todosLoaded', async () => {
+    it('treats a present empty todos snapshot as authoritative ("agent has none")', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        // Seed a non-empty list, then deliver an authoritative empty snapshot
-        // (todosLoaded true): it overwrites to empty.
+        // Seed a non-empty list, then deliver an authoritative empty snapshot:
+        // it overwrites to empty.
         store.todos.replace('a1', sampleTodos)
         mockListAgentMessages.mockResolvedValueOnce({
           messages: [
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: [],
-          todosLoaded: true,
+          todos: { todos: [] },
         })
 
         await store.loadInitialMessages('w1', 'a1')
@@ -3377,21 +3375,18 @@ describe('createChatStore', () => {
       })
     })
 
-    it('leaves an existing list intact when todos failed to load (empty + todosLoaded false)', async () => {
+    it('leaves an existing list intact when todos failed to load (no snapshot)', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        // A populated list (e.g. from a prior AgentTodosChanged broadcast).
+        // A populated list (e.g. from a prior todos_changed broadcast).
         store.todos.replace('a1', sampleTodos)
-        // jump-to-latest whose backend LoadTodos failed: todos=[] but NOT loaded.
-        // Must NOT wipe the populated list (the wire can't otherwise distinguish a
-        // failed load from a genuine empty list).
+        // jump-to-latest whose backend LoadTodos failed: the page carries no
+        // to-do snapshot. It must NOT wipe the populated list.
         mockListAgentMessages.mockResolvedValueOnce({
           messages: [
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: [],
-          todosLoaded: false,
         })
 
         await store.loadInitialMessages('w1', 'a1')

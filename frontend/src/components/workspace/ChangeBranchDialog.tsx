@@ -16,14 +16,14 @@ import { ShellSelector } from '~/components/shell/ShellSelector'
 import { TitleInput } from '~/components/shell/TitleInput'
 import { DialogFormFooter, WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createTitleState } from '~/hooks/createTitleState'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
-import { CHANGE_BRANCH_MODES, changeBranchInitialIntent, fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
+import { CHANGE_BRANCH_MODES, changeBranchInitialIntent, GitMode, isChangeBranchMode, setupForCreateWorktree, useGitModeState } from '~/hooks/useGitModeState'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { flavorFromOs } from '~/lib/paths'
@@ -225,7 +225,6 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
 
   const dispatchMode = async (): Promise<void> => {
     const baseArgs = {
-      workerId: props.workerId,
       path: props.gitToplevel,
     }
     const intent = gitMode.currentIntent()
@@ -260,17 +259,16 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
       }
       case GitMode.CreateWorktree: {
         // The narrowed intent already proves we're in CreateWorktree, so
-        // project its fields directly instead of routing through
-        // `toGitFields()` (which re-derives the mode from `currentIntent`).
+        // project its setup directly instead of routing through
+        // `toGitSetup()` (which re-derives the mode from `currentIntent`).
         // No workspace id: neither OpenAgentRequest nor OpenTerminalRequest has
         // a field for one -- a Worker stores no workspace, and which workspace
         // the tab lands in is decided by the CRDT tile the CLIENT places it on.
         // The key used to be spread in here and was dropped on the wire, which
         // read as if the Worker filed the tab for a non-active workspace.
         const worktreeArgs = {
-          workerId: props.workerId,
           workingDir: props.gitToplevel,
-          ...fieldsForCreateWorktree(intent),
+          gitSetup: setupForCreateWorktree(intent),
         }
         if (worktreeTabType() === TabType.AGENT) {
           const provider = agentProvider()

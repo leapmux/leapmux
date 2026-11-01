@@ -12,8 +12,10 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -561,19 +563,19 @@ type connRequest[T any] interface {
 // fn receives a request whose conn_id is already known non-empty.
 func registerConnHandler[T any, PT connRequest[T]](
 	d ownerOnlyRegistrar,
-	method string,
-	scope leapmuxv1.Scope,
+	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, r PT, sender channel.ResponseWriter),
 ) {
-	d.Register(method, scope, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	deny := d.r.denial(procedure)
+	d.Register(procedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		r := PT(&msg)
 		if err := unmarshalRequest(req, r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
+			deny(sender, codes.InvalidArgument, "invalid request")
 			return
 		}
 		if r.GetConnId() == "" {
-			sendInvalidArgument(sender, "conn_id is required")
+			deny(sender, codes.InvalidArgument, "conn_id is required")
 			return
 		}
 		fn(ctx, caller, r, sender)
@@ -585,7 +587,7 @@ func registerConnHandler[T any, PT connRequest[T]](
 // Tunnels are machine-scoped -- they open arbitrary TCP out of the host -- so this
 // family takes an ownerOnlyRegistrar and is gated by WHERE it registers, exactly as
 // file/git/sysinfo are. It previously took the raw dispatcher and repeated
-// requireWorkerOwner in each handler, which a fifth handler could silently omit.
+// the owner check in each handler, which a fifth handler could silently omit.
 //
 // The one manager built here is worker-lifetime and shared across every channel
 // session; each handler is a method on it (see registerConnHandler for the prelude
@@ -593,20 +595,22 @@ func registerConnHandler[T any, PT connRequest[T]](
 // reaper for clean teardown hygiene.
 func registerTunnelHandlers(d ownerOnlyRegistrar) *tunnelManager {
 	tunnels := newTunnelManager()
-	registerConnHandler(d, "OpenTunnelConn", leapmuxv1.Scope_SCOPE_TUNNEL_OPEN, tunnels.openConn)
-	registerConnHandler(d, "SendTunnelData", leapmuxv1.Scope_SCOPE_TUNNEL_OPEN, tunnels.sendData)
-	registerConnHandler(d, "CloseTunnelConn", leapmuxv1.Scope_SCOPE_TUNNEL_OPEN, tunnels.closeConn)
-	registerConnHandler(d, "GrantTunnelReadCredit", leapmuxv1.Scope_SCOPE_TUNNEL_OPEN, tunnels.grantReadCredit)
+	registerConnHandler(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, tunnels.openConn)
+	registerConnHandler(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, tunnels.sendData)
+	registerConnHandler(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, tunnels.closeConn)
+	registerConnHandler(d, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, tunnels.grantReadCredit)
 	return tunnels
 }
 
-// openConn dials the target address and starts streaming data back.
+// openConn dials the target address and streams the conn back: an `opened`
+// event first, then the target's data. OpenTunnelConn is server-streaming, so
+// every refusal and dial failure is a stream error frame.
 func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	if !m.beginOpen(connID, dialCancel) {
 		dialCancel()
-		sendInvalidArgument(sender, "conn_id is canceled or already in use")
+		sendStreamError(sender, codes.InvalidArgument, "conn_id is canceled or already in use")
 		return
 	}
 	defer func() {
@@ -617,11 +621,11 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 	targetAddr := r.GetTargetAddr()
 	targetPort := r.GetTargetPort()
 	if targetAddr == "" {
-		sendInvalidArgument(sender, "target_addr is required")
+		sendStreamError(sender, codes.InvalidArgument, "target_addr is required")
 		return
 	}
 	if targetPort == 0 || targetPort > 65535 {
-		sendInvalidArgument(sender, "target_port must be 1-65535")
+		sendStreamError(sender, codes.InvalidArgument, "target_port must be 1-65535")
 		return
 	}
 
@@ -631,7 +635,7 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 	conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		slog.Error("failed to dial tunnel target", "addr", addr, "error", err)
-		sendInternalError(sender, fmt.Sprintf("dial %s: %v", addr, err))
+		sendStreamError(sender, codes.Internal, fmt.Sprintf("dial %s: %v", addr, err))
 		return
 	}
 
@@ -644,7 +648,7 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 
 	slog.Info("tunnel connection opened", "conn_id", connID, "target", addr, "user_id", caller.UserID)
 
-	if err := sendTunnelOpenResponse(sender, connID); err != nil {
+	if err := sendTunnelOpened(sender); err != nil {
 		// Close and evict tc unconditionally: the per-conn watcher may have
 		// already closed it (session/channel death mid-open), and gating the
 		// eviction on winning that race leaked the dead conn in m.conns.
@@ -883,13 +887,14 @@ func (tc *tunnelConn) close() bool {
 	return false
 }
 
-func sendTunnelOpenResponse(sender channel.ResponseWriter, connID string) error {
-	payload, err := proto.Marshal(&leapmuxv1.OpenTunnelConnResponse{ConnId: connID})
-	if err != nil {
-		return fmt.Errorf("marshal open tunnel response: %w", err)
-	}
-	if err := sender.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload}); err != nil {
-		return fmt.Errorf("send open tunnel response: %w", err)
+// sendTunnelOpened sends the `opened` event, the first frame of every
+// OpenTunnelConn stream that reached its target. The client completes its dial
+// on it.
+func sendTunnelOpened(sender channel.ResponseWriter) error {
+	if err := sendTunnelEvent(sender, &leapmuxv1.TunnelConnEvent{
+		Event: &leapmuxv1.TunnelConnEvent_Opened{Opened: &leapmuxv1.TunnelConnOpened{}},
+	}); err != nil {
+		return fmt.Errorf("send tunnel opened event: %w", err)
 	}
 	return nil
 }
@@ -919,8 +924,7 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 			// buf[:n] (SendStream carries the marshaled payload, not this slice), so
 			// the next tc.conn.Read reusing buf cannot corrupt an in-flight frame.
 			if err := sendTunnelEvent(tc.sender, &leapmuxv1.TunnelConnEvent{
-				ConnId: connID,
-				Data:   buf[:n],
+				Event: &leapmuxv1.TunnelConnEvent_Data{Data: buf[:n]},
 			}); err != nil {
 				break
 			}
@@ -954,8 +958,7 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 				// truly idle for halfCloseIdleTimeout the reaper closes and evicts
 				// it. See tunnelManager.sweepHalfClosed.
 				if sendErr := sendTunnelEvent(tc.sender, &leapmuxv1.TunnelConnEvent{
-					ConnId: connID,
-					Eof:    true,
+					Event: &leapmuxv1.TunnelConnEvent_Eof{Eof: &leapmuxv1.TunnelConnEof{}},
 				}); sendErr != nil {
 					// Relaying the EOF failed. The client's Conn.Read parks on this
 					// event with no read deadline (io.Copy sets none), so a lost
@@ -987,8 +990,7 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 			}
 			slog.Error("tunnel target read error", "conn_id", connID, "error", err)
 			if sendErr := sendTunnelEvent(tc.sender, &leapmuxv1.TunnelConnEvent{
-				ConnId: connID,
-				Error:  err.Error(),
+				Event: &leapmuxv1.TunnelConnEvent_Error{Error: err.Error()},
 			}); sendErr != nil {
 				slog.Log(context.Background(), sendFailureLevel(sendErr),
 					"failed to relay target read error; closing tunnel conn",

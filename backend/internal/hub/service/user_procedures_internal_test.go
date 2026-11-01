@@ -80,7 +80,6 @@ var userProcedureElevation = map[string]struct {
 	leapmuxv1connect.UserServiceListUserSettingsProcedure:        {unprotectedOnPurpose, "reads the caller's own preferences"},
 	leapmuxv1connect.UserServiceUpdateUserSettingProcedure:       {unprotectedOnPurpose, "writes the caller's own preference"},
 	leapmuxv1connect.UserServiceResetUserSettingProcedure:        {unprotectedOnPurpose, "returns the caller's own preference to its default"},
-	leapmuxv1connect.UserServiceGetTimeoutsProcedure:             {unprotectedOnPurpose, "reads instance timeouts every client needs to render"},
 }
 
 // protoProcedurePaths walks one proto file's service descriptors and builds

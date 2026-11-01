@@ -79,7 +79,7 @@ func TestValidate_TransientAuthLookupError_SurfacesAsErrNotForbidden(t *testing.
 		Position: &leapmuxv1.LWWString{Value: "p", Hlc: hlcAt(1, 2, "seed")},
 	}
 	tomb := stamped(&leapmuxv1.TombstoneTabOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 	}, hlcAt(10, 0, "a"))
 
 	boom := errors.New("db unavailable")
@@ -119,7 +119,7 @@ func TestValidate_TransientWorkerLookupError_SurfacesAsErr(t *testing.T) {
 	// Re-point the existing tab at a different worker so validateWorkerRefs runs
 	// CanUseWorker on the new id (an in-place edit clears the write check first).
 	op := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
 	}, hlcAt(10, 0, "a"))
 
@@ -137,15 +137,15 @@ func TestValidate_TabPlacementInvariant_OrphanTile(t *testing.T) {
 
 	// Tab points at a non-existent tile.
 	tab := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 
@@ -167,37 +167,57 @@ func TestValidate_ParentImmutable_RejectsReParent(t *testing.T) {
 
 func TestValidate_HubOnlyOp_RejectsClient(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
-	op := stamped(&leapmuxv1.SetWorkspaceRootNodeOp{
-		WorkspaceId: "w1", RootNodeId: "another",
-	}, hlcAt(10, 0, "a"))
-	op.Body = &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
-		WorkspaceId: "w1", RootNodeId: "another",
-	}}
+	op := &leapmuxv1.CrdtOp{
+		OpId: "op-a", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
+			WorkspaceId: "w1", RootNodeId: "another",
+		}},
+	}
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false /* not internal */, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 }
 
-// SetWorkspaceRegisterOp / TombstoneWorkspaceOp are the lifecycle create/delete
-// ops that now carry workspace-map membership through the serialized pipeline.
+// CreateWorkspaceOp / TombstoneWorkspaceOp are the lifecycle create/delete
+// ops that carry workspace-map membership through the serialized pipeline.
 // Both must be rejected as HUB_ONLY_OP when a client sends them (only the
 // internal lifecycle path may submit them) and accepted under internal=true.
-func TestValidate_SetWorkspaceRegister_HubOnlyGate(t *testing.T) {
+func TestValidate_CreateWorkspace_HubOnlyGate(t *testing.T) {
 	pre := crdt.NewState("user-1")
-	op := &leapmuxv1.CrdtOp{
-		OpId: "ws-reg", CanonicalHlc: hlcAt(10, 0, "a"),
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+	batch := []*leapmuxv1.CrdtOp{
+		stamped(&leapmuxv1.SetNodeRegisterOp{
+			NodeId: "root1",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+		}, hlcAt(10, 0, "a")),
+		{
+			OpId: "ws-create", CanonicalHlc: hlcAt(10, 1, "a"),
+			Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+				CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "root1"},
+			},
 		},
 	}
 	// Client path (internal=false): rejected as hub-only.
-	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, false, "p1", allowAll{})
+	res, _ := crdt.ValidateBatch(context.Background(), pre, batch, false, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_HUB_ONLY_OP, res.Reason)
 
-	// Internal path (internal=true): accepted.
-	res, working := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "hub", allowAll{})
+	// Internal path (internal=true): accepted, and the record carries its root.
+	res, working := crdt.ValidateBatch(context.Background(), pre, batch, true, "hub", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason)
 	require.NotNil(t, working)
-	assert.Contains(t, working.GetWorkspaces(), "w1", "internal SetWorkspaceRegisterOp should seed the record")
+	require.Contains(t, working.GetWorkspaces(), "w1", "internal CreateWorkspaceOp should create the record")
+	assert.Equal(t, "root1", working.GetWorkspaces()["w1"].GetRootNodeId())
+}
+
+// A create whose root names no live node cannot install a usable workspace:
+// the root check refuses it rather than storing a record with a dangling root.
+func TestValidate_CreateWorkspace_RefusesARootThatIsNotALiveNode(t *testing.T) {
+	op := &leapmuxv1.CrdtOp{
+		OpId: "ws-create", CanonicalHlc: hlcAt(10, 0, "a"),
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "missing"},
+		},
+	}
+	res, _ := crdt.ValidateBatch(context.Background(), crdt.NewState("user-1"), []*leapmuxv1.CrdtOp{op}, true, "hub", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_ROOT_NODE_NOT_UNIQUE, res.Reason)
 }
 
 func TestValidate_TombstoneWorkspace_HubOnlyGate(t *testing.T) {
@@ -233,11 +253,8 @@ func TestValidate_TombstoneWorkspace_HubOnlyGate(t *testing.T) {
 func TestValidate_HubOnlyOps_RejectEveryClientArm(t *testing.T) {
 	hlc := hlcAt(10, 0, "a")
 	hubOnlyOps := map[string]*leapmuxv1.CrdtOp{
-		"SetWorkspaceRootNode": {OpId: "root", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
-			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1"},
-		}},
-		"SetWorkspaceRegister": {OpId: "reg", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
+		"CreateWorkspace": {OpId: "create", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "root1"},
 		}},
 		"TombstoneWorkspace": {OpId: "del", CanonicalHlc: hlc, Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
@@ -256,12 +273,12 @@ func TestValidate_TabIDCollisionAcrossTypes(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	// First op claims tab_id=X under TAB_TYPE_AGENT.
 	a := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "X",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "X"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	// Second op claims the same tab_id under TAB_TYPE_TERMINAL.
 	b := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "X",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "X"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 1, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{a, b}, true, "p1", allowAll{})
@@ -283,18 +300,18 @@ func TestValidate_ReviveTabWithRePlacementAcceptsBatch(t *testing.T) {
 	}
 
 	revive := stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 	}, hlcAt(10, 0, "a"))
 	tile := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 1, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wk-1"},
 	}, hlcAt(10, 2, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 3, "a"))
 
@@ -315,7 +332,7 @@ func TestValidate_ReviveTabAloneRejectedIncomplete(t *testing.T) {
 		TombstoneAt: hlcAt(5, 0, "old"),
 	}
 	revive := stamped(&leapmuxv1.ReviveTabOp{
-		Tab: &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 	}, hlcAt(10, 0, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre,
 		[]*leapmuxv1.CrdtOp{revive}, false, "p1", allowAll{})
@@ -331,6 +348,30 @@ func TestValidate_ValueDomain_OpacityOutOfRange(t *testing.T) {
 	}, hlcAt(10, 0, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op}, true, "p1", allowAll{})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
+}
+
+// A register op that selects no register writes nothing, and apply ignores it.
+// The validator refuses it so that it never enters the journal as a stored
+// no-op.
+func TestValidate_ValueDomain_RegisterOpWithNoField(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	for _, tc := range []struct {
+		name string
+		op   *leapmuxv1.CrdtOp
+	}{
+		{"node", stamped(&leapmuxv1.SetNodeRegisterOp{NodeId: "root1"}, hlcAt(10, 0, "a"))},
+		{"tab", stamped(&leapmuxv1.SetTabRegisterOp{
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "t1"},
+		}, hlcAt(10, 1, "a"))},
+		{"floating window", stamped(&leapmuxv1.SetFloatingWindowRegisterOp{WindowId: "fw"}, hlcAt(10, 2, "a"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tc.op}, true, "p1", allowAll{})
+			assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason,
+				"a register op that names no register is refused")
+			assert.Equal(t, tc.op.GetOpId(), res.OffendingOpID)
+		})
+	}
 }
 
 // An op whose target carries an EMPTY id must be rejected at submit time.
@@ -356,15 +397,29 @@ func TestValidate_ValueDomain_EmptyTargetID(t *testing.T) {
 			Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root1"},
 		}, hlcAt(10, 0, "a"))},
 		{"tab", stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-			TabId:   "",
-			Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: ""},
+			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 		}, hlcAt(10, 1, "a"))},
 		{"floating window", stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
 			WindowId: "",
 			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: 0.5},
 		}, hlcAt(10, 2, "a"))},
 		{"tombstone node", stamped(&leapmuxv1.TombstoneNodeOp{NodeId: ""}, hlcAt(10, 3, "a"))},
+		// A tab identity is a type and an id, so a tab op with no type names no
+		// tab either.
+		{"untyped tab", stamped(&leapmuxv1.SetTabRegisterOp{
+			Tab:   &leapmuxv1.TabIdent{TabId: "t1"},
+			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+		}, hlcAt(10, 4, "a"))},
+		{"untyped tombstone tab", stamped(&leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabId: "t1"}}, hlcAt(10, 5, "a"))},
+		{"absent tab identity", stamped(&leapmuxv1.TombstoneTabOp{}, hlcAt(10, 6, "a"))},
+		{"untyped revive tab", stamped(&leapmuxv1.ReviveTabOp{Tab: &leapmuxv1.TabIdent{TabId: "t1"}}, hlcAt(10, 7, "a"))},
+		// The hub builds CreateWorkspace itself, but an internal batch gets the
+		// same identity check as a client one.
+		{"create workspace", &leapmuxv1.CrdtOp{
+			OpId: "op-create", CanonicalHlc: hlcAt(10, 8, "a"),
+			Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{RootNodeId: "root1"}},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tc.op}, true, "p1", allowAll{})
@@ -382,15 +437,15 @@ func TestValidate_ValueDomain_EmptyTargetID(t *testing.T) {
 func TestValidate_WorkerRef_AcceptsAccessibleWorker(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	tab := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w-ok"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	auth := workerScope{workers: map[string]bool{"w-ok": true}}
@@ -407,15 +462,15 @@ func TestValidate_WorkerRef_AcceptsAccessibleWorker(t *testing.T) {
 func TestValidate_WorkerRef_RejectsInaccessibleWorker(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	tab := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "f"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	auth := workerScope{workers: map[string]bool{"w-ok": true}} // "f" not allowed
@@ -434,7 +489,7 @@ func TestValidate_WorkerRef_RejectsInaccessibleWorker(t *testing.T) {
 func TestValidate_WorkerRef_EmptyWorkerIDSkipsCheck(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	clearWorker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: ""},
 	}, hlcAt(10, 1, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{clearWorker}, false, "p1", denyAll{})
@@ -449,15 +504,15 @@ func TestValidate_WorkerRef_EmptyWorkerIDSkipsCheck(t *testing.T) {
 func TestValidate_WorkerRef_SkippedUnderInternal(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	tab := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "ignored-by-internal"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, true /* internal */, "", denyAll{})
@@ -492,15 +547,15 @@ func TestValidate_TombstonedTarget_Rejects(t *testing.T) {
 func TestValidate_AuthCheck_DenyForbiddenWorkspace(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op, worker, pos}, false /* not internal */, "p1", denyAll{})
@@ -510,15 +565,15 @@ func TestValidate_AuthCheck_DenyForbiddenWorkspace(t *testing.T) {
 func TestValidate_AuthCheck_AllowsOwnerWrite(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op, worker, pos}, false, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
@@ -541,15 +596,15 @@ func TestValidate_TabPlacement_TabOnTileOutsideAnyWorkspace(t *testing.T) {
 	}, hlcAt(1, 0, "seed")))
 
 	tab := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "orphan-root"},
 	}, hlcAt(10, 0, "a"))
 	worker := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 	}, hlcAt(10, 1, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 2, "a"))
 

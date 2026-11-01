@@ -11,7 +11,7 @@ import type { Reassembler } from './reassembler'
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
+import type { InnerRpcResponse, InnerStreamMessage, RpcError } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { abortError, ChannelError } from './channelError'
@@ -26,6 +26,14 @@ const log = createLogger('channel')
  * client's allocator skips 0 for the same reason (backend/tunnel/channel.go).
  */
 export const FIRST_REQUEST_ID = 1
+
+/** The ChannelError for the in-band error of an inner RPC or stream. */
+function inBandChannelError(source: 'rpc' | 'stream', error: RpcError): ChannelError {
+  const fallback = source === 'rpc'
+    ? `RPC error code ${error.code}`
+    : `stream error code ${error.code}`
+  return new ChannelError(source, error.message || fallback, { code: error.code })
+}
 
 export interface PendingRequest {
   resolve: (resp: InnerRpcResponse) => void
@@ -335,17 +343,17 @@ export class ChannelRpcMux {
       log.debug('received inner RPC response', {
         channel_id: ch.channelId,
         correlation_id: correlationId,
-        is_error: resp.isError,
-        error_code: resp.errorCode,
-        error_message: resp.errorMessage,
+        is_error: resp.error !== undefined,
+        error_code: resp.error?.code,
+        error_message: resp.error?.message,
         payload_len: resp.payload.length,
       })
     }
     const pending = ch.pendingRequests.get(correlationId)
     if (pending) {
       this.unregisterRequest(ch, correlationId)
-      if (resp.isError) {
-        const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
+      if (resp.error) {
+        const err = inBandChannelError('rpc', resp.error)
         this.deps.notifyError(ch.workerId, err)
         pending.reject(err)
       }
@@ -359,7 +367,7 @@ export class ChannelRpcMux {
     // this arm the frame is dropped and the subscription waits forever
     // with no error to retry from. Errors only: a non-error unary payload on
     // a stream id is not something a listener can interpret.
-    if (!resp.isError) {
+    if (!resp.error) {
       return
     }
     const listener = ch.streamListeners.get(correlationId)
@@ -367,7 +375,7 @@ export class ChannelRpcMux {
       return
     }
     this.unregisterRequest(ch, correlationId)
-    const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
+    const err = inBandChannelError('rpc', resp.error)
     this.deps.notifyError(ch.workerId, err)
     this.deps.safeCall(() => listener.onError(err), 'stream onError listener')
   }
@@ -379,9 +387,9 @@ export class ChannelRpcMux {
         channel_id: ch.channelId,
         correlation_id: correlationId,
         end: streamMsg.end,
-        is_error: streamMsg.isError,
-        error_code: streamMsg.errorCode,
-        error_message: streamMsg.errorMessage,
+        is_error: streamMsg.error !== undefined,
+        error_code: streamMsg.error?.code,
+        error_message: streamMsg.error?.message,
         payload_len: streamMsg.payload.length,
       })
     }
@@ -389,8 +397,8 @@ export class ChannelRpcMux {
     if (listener) {
       // Unregister BEFORE invoking the terminal callback, and isolate every
       // listener call with safeCall, mirroring drainChannel.
-      if (streamMsg.isError) {
-        const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, { code: streamMsg.errorCode })
+      if (streamMsg.error) {
+        const err = inBandChannelError('stream', streamMsg.error)
         this.deps.notifyError(ch.workerId, err)
         this.unregisterRequest(ch, correlationId)
         this.deps.safeCall(() => listener.onError(err), 'stream onError listener')

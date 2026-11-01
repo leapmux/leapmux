@@ -1,7 +1,7 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { listRepoStartPoints } from './repoStartPoints'

@@ -13,7 +13,7 @@ const mockElevateSession = vi.fn()
 const mockBeginPasskeyElevation = vi.fn()
 const mockFinishPasskeyElevation = vi.fn()
 const mockDropElevation = vi.fn()
-const mockStartAuthentication = vi.fn()
+const mockAuthenticateForChallenge = vi.fn()
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -25,7 +25,7 @@ vi.mock('~/api/clients', () => ({
 }))
 
 vi.mock('~/lib/webauthn', () => ({
-  startAuthentication: (...args: unknown[]) => mockStartAuthentication(...args),
+  authenticateForChallenge: (...args: unknown[]) => mockAuthenticateForChallenge(...args),
 }))
 
 describe('isElevationCurrent', () => {
@@ -58,16 +58,15 @@ describe('elevation ceremonies', () => {
 
   it('elevateWithPasskey chains begin, the browser prompt, and finish', async () => {
     const until = timestampFromDate(new Date('2026-01-01T14:00:00Z'))
-    mockBeginPasskeyElevation.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{"challenge":"c"}' })
-    mockStartAuthentication.mockResolvedValue('{"id":"cred-1"}')
+    const challenge = { sessionId: 'sess-1', optionsJson: '{"challenge":"c"}' }
+    const credential = { sessionId: 'sess-1', credentialJson: '{"id":"cred-1"}' }
+    mockBeginPasskeyElevation.mockResolvedValue({ challenge })
+    mockAuthenticateForChallenge.mockResolvedValue(credential)
     mockFinishPasskeyElevation.mockResolvedValue({ elevationExpiresAt: until })
 
     await expect(elevateWithPasskey()).resolves.toBe(until)
-    expect(mockStartAuthentication).toHaveBeenCalledWith('{"challenge":"c"}')
-    expect(mockFinishPasskeyElevation).toHaveBeenCalledWith({
-      sessionId: 'sess-1',
-      credentialJson: '{"id":"cred-1"}',
-    })
+    expect(mockAuthenticateForChallenge).toHaveBeenCalledWith(challenge)
+    expect(mockFinishPasskeyElevation).toHaveBeenCalledWith({ credential })
   })
 
   it('dropElevation calls the hub', async () => {

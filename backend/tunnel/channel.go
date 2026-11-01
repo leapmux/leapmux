@@ -348,32 +348,32 @@ func mlkemPubForRekey(params *leapmuxv1.GetWorkerHandshakeParamsResponse) []byte
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return nil
 	}
-	return params.GetMlkemPublicKey()
+	return params.GetKeys().GetMlkem()
 }
 
 // newInitiatorHandshaker selects the handshake pair for the worker's encryption mode,
 // reading params.EncryptionMode exactly once.
 //
 // Every mode but CLASSIC gets the hybrid pair. That is deliberate rather than a
-// fallthrough: UNSPECIFIED already means POST_QUANTUM by the time it reaches a client
-// (ChannelService.GetWorkerHandshakeParams normalises it), and defaulting an unknown
-// future mode to the stronger handshake fails it closed on a handshake error rather
-// than silently downgrading the channel to X25519-only.
+// fallthrough: the hub refuses a WorkerHello whose mode is UNSPECIFIED, so a client
+// never receives one, and defaulting an unknown future mode to the stronger
+// handshake fails it closed on a handshake error rather than silently downgrading
+// the channel to X25519-only.
 func newInitiatorHandshaker(params *leapmuxv1.GetWorkerHandshakeParamsResponse) initiatorHandshaker {
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return initiatorHandshaker{
 			start: func() (*noiseutil.HandshakeState, []byte, error) {
-				return noiseutil.ClassicalInitiatorHandshake1(params.GetPublicKey())
+				return noiseutil.ClassicalInitiatorHandshake1(params.GetKeys().GetX25519())
 			},
 			finish: noiseutil.ClassicalInitiatorHandshake2,
 		}
 	}
 	return initiatorHandshaker{
 		start: func() (*noiseutil.HandshakeState, []byte, error) {
-			return noiseutil.InitiatorHandshake1(params.GetPublicKey(), params.GetMlkemPublicKey())
+			return noiseutil.InitiatorHandshake1(params.GetKeys().GetX25519(), params.GetKeys().GetMlkem())
 		},
 		finish: func(hs *noiseutil.HandshakeState, message2 []byte) (*noiseutil.Session, error) {
-			return noiseutil.InitiatorHandshake2(hs, message2, params.GetSlhdsaPublicKey())
+			return noiseutil.InitiatorHandshake2(hs, message2, params.GetKeys().GetSlhdsa())
 		},
 	}
 }
@@ -403,7 +403,8 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// TOFU key pinning — abort if the hub returns keys that don't match
 	// the recorded pin. First contact records the pin.
 	if pinStore != nil {
-		if err := pinStore.Verify(workerID, paramsResp.GetPublicKey(), paramsResp.GetMlkemPublicKey(), paramsResp.GetSlhdsaPublicKey()); err != nil {
+		keys := paramsResp.GetKeys()
+		if err := pinStore.Verify(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa()); err != nil {
 			return nil, fmt.Errorf("worker key pin: %w", err)
 		}
 	}
@@ -541,7 +542,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// bounded itself at 10s for the same reason.
 	pingCtx, cancelPing := context.WithTimeout(ctx, sessionVerifyTimeout)
 	defer cancelPing()
-	if _, err := ch.CallRPC(pingCtx, contracts.PingMethod, nil); err != nil {
+	if _, err := ch.CallRPC(pingCtx, leapmuxv1connect.WorkerSystemServicePingProcedure, nil); err != nil {
 		ch.Close()
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
@@ -655,8 +656,8 @@ func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (
 		// (see Close). A close-time wake-up arrives on ch.ctx.Done() below instead --
 		// an arm here claiming otherwise would tell the next reader that a bare
 		// receive is safe, which is the one thing that would hang forever.
-		if resp.GetIsError() {
-			return nil, fmt.Errorf("rpc error (code %d): %s", resp.GetErrorCode(), resp.GetErrorMessage())
+		if rpcErr := resp.GetError(); rpcErr != nil {
+			return nil, fmt.Errorf("rpc error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage())
 		}
 		return resp, nil
 	case <-waitCtx.Done():
@@ -1316,6 +1317,6 @@ func (ch *Channel) deliverRPCError(correlationID uint64, code int32, message str
 	stream, ok := ch.streamCbs[correlationID]
 	ch.mu.Unlock()
 	if ok {
-		stream.deliver(&leapmuxv1.InnerStreamMessage{IsError: true, ErrorCode: code, ErrorMessage: message})
+		stream.deliver(channelwire.NewStreamError(code, message))
 	}
 }

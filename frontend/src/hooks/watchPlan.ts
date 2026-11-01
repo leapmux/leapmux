@@ -2,14 +2,10 @@ import type {
   WatchAgentEntry,
   WatchRejection,
   WatchTerminalEntry,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+} from '~/generated/proto/leapmux/v1/watch_pb'
 import type { AgentTab, Tab } from '~/stores/tab.types'
-import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import {
-  TabType,
-  WatchMode,
-  WatchRejectionReason,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WatchMode, WatchRejectionReason, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { isSubagentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 

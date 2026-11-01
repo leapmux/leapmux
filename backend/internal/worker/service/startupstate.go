@@ -29,7 +29,7 @@ const (
 //     ListTerminals and to Service.agentToProto — status is otherwise derived from
 //     "is the process in the Manager?" which doesn't distinguish "starting"
 //     from "inactive".
-//   - let CloseAgent / CloseTerminal cancel an in-flight startup goroutine.
+//   - let CloseTab cancel an in-flight startup goroutine.
 //   - retain the startup error so the frontend can re-fetch it after a
 //     page refresh (it is not persisted across worker restarts; that is
 //     an acceptable edge case).

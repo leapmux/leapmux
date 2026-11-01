@@ -1075,8 +1075,7 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *leapmuxv1.
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return &leapmuxv1.BeginPasskeyElevationResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
@@ -1092,11 +1091,9 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1
 	if err != nil {
 		return nil, err
 	}
-	if req.GetSessionId() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "session_id is required")
-	}
-	if req.GetCredentialJson() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "credential_json is required")
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
@@ -1108,7 +1105,7 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1
 	}
 	// This verifies the assertion OUTSIDE the elevation write, for the same
 	// reason the password path hashes outside it.
-	if err := wa.FinishElevation(ctx, user.ID, req.GetSessionId(), req.GetCredentialJson()); err != nil {
+	if err := wa.FinishElevation(ctx, user.ID, ceremonyID, credentialJSON); err != nil {
 		return nil, mapElevationAssertionError(ctx, user.ID, err)
 	}
 	until, err := s.grantElevation(ctx, userInfo, actingSessionID)

@@ -194,7 +194,7 @@ type ExitHandler func(terminalID string, exitCode int)
 // governs only the spawn — once StartTerminal returns successfully,
 // the terminal's lifetime is managed by RemoveTerminal / Stop.
 // Cancelling ctx mid-spawn aborts the PTY fork (returning ctx.Err())
-// so a CloseTerminal that lands during the sync-path phase of
+// so a CloseTab that lands during the sync-path phase of
 // runTerminalStartup tears the nascent child down instead of leaking it.
 func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
 	m.mu.Lock()

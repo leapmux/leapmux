@@ -33,7 +33,8 @@ var formerDelegationAllowlist = []string{
 	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 	leapmuxv1connect.WorkspaceServiceListTabsProcedure,
-	leapmuxv1connect.WorkspaceServiceGetTabProcedure,
+	// WorkspaceService.GetTab left with the RPC itself, not as a narrowing:
+	// LocateTab answers the same lookup without a workspace id.
 	leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
 	leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
 	leapmuxv1connect.UserCRDTSubmitOpsProcedure,
@@ -64,7 +65,6 @@ var delegationProcedureScope = map[string]string{
 	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure: "owner-only listing; a delegation bearer reads exactly its user's workspaces",
 	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:   "loadWorkspaceForRead is owner-only against the bearer's user",
 	leapmuxv1connect.WorkspaceServiceListTabsProcedure:       "resolveAllowedWorkspacesForUser narrows to the bearer's user's workspaces",
-	leapmuxv1connect.WorkspaceServiceGetTabProcedure:         "owner-only workspace read before the tab lookup",
 	leapmuxv1connect.WorkspaceServiceLocateTabProcedure:      "LocateAccessibleRendered binds the bearer's user id",
 	leapmuxv1connect.WorkspaceServiceLocateTileProcedure:     "the resolved workspace goes through the owner-only read",
 	// workerScopePredicate narrows which WORKER ids the ops may bind a tab to.
@@ -125,16 +125,15 @@ var newlyDelegationReachable = map[string]string{
 	// through a named RPC instead of an op body. workspace:write is the honest
 	// unit for both, and splitting them would need a scope whose only member
 	// is "delete a workspace", which no consent screen could explain.
-	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.WorkspaceServiceSetWorkspaceArchiveStateProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.SectionServiceListSectionsProcedure:               "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceCreateSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceRenameSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceDeleteSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceMoveSectionProcedure:                "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceMoveWorkspaceProcedure:              "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.WorkspaceServiceMoveWorkspaceProcedure:   "SubmitOps already mutates the whole layout document; workspace:write is the honest unit, and the handler refuses a bearer a move across the archive boundary",
+	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.SectionServiceListSectionsProcedure:      "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceCreateSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceRenameSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceDeleteSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceMoveSectionProcedure:       "the sidebar is layout, which SubmitOps already reaches",
 }
 
 // TestDelegationCeilingAdmitsTheFormerAllowlistAndOnlyRecordedAdditions is the

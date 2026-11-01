@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
-import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AttachmentSchema, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AttachmentSchema, AvailableOptionGroupSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { formatResetTimestamp } from '~/lib/rateLimitUtils'
@@ -36,13 +36,15 @@ useTestStorage()
 const HOME = '/home/dev'
 const WORKTREE_DIR = '/home/dev/Workspaces/r-worktrees/feature'
 
-// The panel reads the home directory from the WORKER STORE. It used to read
-// `props.agent.homeDir`, which `agentTabToInfo` hard-codes to '' on every path
-// that renders this panel -- so nothing the composer showed ever shortened.
+// The panel reads the home directory and the worker name from the WORKER
+// STORE, because AgentInfo carries neither.
 vi.mock('~/stores/workerInfo.store', () => ({
   workerInfoStore: {
     fetchWorkerInfo: vi.fn().mockResolvedValue(undefined),
     workerInfo: () => null,
+    getName: (workerId: string) => (workerId === 'w1'
+      ? 'build-box-1'
+      : ''),
     getHomeDir: (workerId: string) => (workerId === 'w1'
       ? HOME
       : ''),
@@ -94,8 +96,6 @@ function agent(overrides: MessageInitShape<typeof AgentInfoSchema> = {}): AgentI
   return create(AgentInfoSchema, {
     agentProvider: AgentProvider.CLAUDE_CODE,
     workerId: 'w1',
-    // A tab row carries no home directory. The panel reads it from the Worker store.
-    homeDir: '',
     optionGroups: [],
     ...overrides,
   })
@@ -495,7 +495,11 @@ describe('AgentEditorPanel', () => {
     const controlStore = createControlStore()
     renderPanel({
       controlStore,
-      inputQueue: create(AgentInputQueueSnapshotSchema, { agentId: 'a1', paused }),
+      inputQueue: create(AgentInputQueueSnapshotSchema, {
+        pauseReason: paused
+          ? AgentInputQueuePauseReason.MANUAL
+          : AgentInputQueuePauseReason.UNSPECIFIED,
+      }),
     })
     const label = paused ? 'Resume Queue' : 'Pause Queue'
     expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
@@ -1397,7 +1401,6 @@ describe('agent editor panel', () => {
           repoGitStore={createRepoGitStore()}
           onSendMessage={() => {}}
           inputQueue={create(AgentInputQueueSnapshotSchema, {
-            agentId: agentId(),
           })}
           onSetQueuePaused={onSetQueuePaused}
         />
@@ -1426,8 +1429,6 @@ describe('agent editor panel', () => {
 
   it('turns the pause toggle into Resume Queue, in the label and in the name', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
       pauseReason: AgentInputQueuePauseReason.MANUAL,
     })
     const { unmount } = render(() => (
@@ -1463,8 +1464,6 @@ describe('agent editor panel', () => {
   // an action that the tab cannot take.
   it('draws no queue controls on a read-only subagent tab whose queue paused', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'c1',
-      paused: true,
       pauseReason: AgentInputQueuePauseReason.INTERRUPTED,
     })
     render(() => (
@@ -1490,8 +1489,6 @@ describe('agent editor panel', () => {
 
   it('says Send will queue while the queue is paused', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
       pauseReason: AgentInputQueuePauseReason.INTERRUPTED,
     })
     render(() => (
@@ -1524,8 +1521,6 @@ describe('agent editor panel', () => {
   it('resumes the queue from the banner button', async () => {
     const onSetQueuePaused = vi.fn().mockResolvedValue(undefined)
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
       pauseReason: AgentInputQueuePauseReason.AGENT_STOPPED,
     })
     render(() => (
@@ -1554,8 +1549,6 @@ describe('agent editor panel', () => {
       settle = resolve
     }))
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
       pauseReason: AgentInputQueuePauseReason.AGENT_STOPPED,
     })
     render(() => (
@@ -1759,12 +1752,10 @@ describe('agent editor panel', () => {
     vi.useRealTimers()
     const [agentId, setAgentId] = createSignal('a1')
     const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
-      agentId: id,
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: `owned-${id}`,
-          agentId: id,
           text: `preview ${id}`,
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -1772,10 +1763,10 @@ describe('agent editor panel', () => {
         },
       ],
     })
-    const onBeginQueueEdit = vi.fn((item: { agentId: string }) => Promise.resolve({
-      snapshot: queue(item.agentId),
+    const onBeginQueueEdit = vi.fn((agentId: string) => Promise.resolve({
+      snapshot: queue(agentId),
       attachments: [],
-      text: `full ${item.agentId}`,
+      text: `full ${agentId}`,
     }))
     let finishSave: (() => void) | undefined
     const onUpdateQueueItem = vi.fn(() => new Promise<void>((resolve) => {
@@ -1802,14 +1793,14 @@ describe('agent editor panel', () => {
     await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
     send?.()
     // The item holds no schedule and the save keeps it so, so the save omits it.
-    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [], undefined)
+    expect(onUpdateQueueItem).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'owned-a1' }), 'saved a1 edit', [], undefined)
 
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2'))
     finishSave?.()
     await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
 
-    expect(onBeginQueueEdit.mock.calls.filter(([item]) => item.agentId === 'a2')).toHaveLength(1)
+    expect(onBeginQueueEdit.mock.calls.filter(([agentId]) => agentId === 'a2')).toHaveLength(1)
     expect(document.querySelector('[data-testid="composer-editor"] .ProseMirror')).toHaveTextContent('full a2')
     expect(screen.getByRole('button', { name: 'Cancel Edit' })).toBeInTheDocument()
   })
@@ -1825,13 +1816,11 @@ describe('agent editor panel', () => {
     }
     setAttachments('a1', [normalAttachment])
     const queueSnapshot = (owner: string) => create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
       revision: owner ? 2n : 1n,
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: 'queued-1',
-          agentId: 'a1',
           text: 'queued preview',
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -1841,6 +1830,10 @@ describe('agent editor panel', () => {
     })
     const [snapshot, setSnapshot] = createSignal(queueSnapshot(''))
     const edited = queueSnapshot('client-a')
+    const onCancelQueueEdit = vi.fn(() => {
+      setSnapshot(queueSnapshot(''))
+      return Promise.resolve()
+    })
     render(() => (
       <PreferencesProvider>
         <AgentEditorPanel
@@ -1854,10 +1847,7 @@ describe('agent editor panel', () => {
             setSnapshot(edited)
             return Promise.resolve({ snapshot: edited, attachments: [], text: 'full queued text' })
           }}
-          onCancelQueueEdit={() => {
-            setSnapshot(queueSnapshot(''))
-            return Promise.resolve()
-          }}
+          onCancelQueueEdit={onCancelQueueEdit}
         />
       </PreferencesProvider>
     ))
@@ -1866,6 +1856,8 @@ describe('agent editor panel', () => {
     await Promise.resolve()
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     await Promise.resolve()
+    // The cancel carries the panel agent beside the item, which states none.
+    expect(onCancelQueueEdit).toHaveBeenCalledExactlyOnceWith('a1', expect.objectContaining({ id: 'queued-1' }))
     expect(getAttachments('a1')).toEqual([normalAttachment])
   })
 
@@ -1881,13 +1873,11 @@ describe('agent editor panel', () => {
       data: new TextEncoder().encode('queued'),
     })
     const snapshot = (owner: string) => create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
       revision: owner ? 2n : 1n,
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: 'queued-1',
-          agentId: 'a1',
           text: 'queued preview',
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -1956,12 +1946,10 @@ describe('agent editor panel', () => {
     const draftKey = queueEditDraftKey('a1', 'queued-1')
     saveDraft(draftKey, 'stale edit', -1)
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: 'queued-1',
-          agentId: 'a1',
           text: 'queued preview',
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -1988,19 +1976,17 @@ describe('agent editor panel', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Confirm delete?' }))
     await Promise.resolve()
 
-    expect(onDeleteQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'queued-1' }))
+    expect(onDeleteQueueItem).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'queued-1' }))
     expect((await loadDraft(draftKey)).content).toBe('')
   })
 
   it('requires confirmation before it retries uncertain delivery', async () => {
     const onRetryQueueItem = vi.fn().mockResolvedValue(undefined)
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: 'uncertain-1',
-          agentId: 'a1',
           text: 'possibly delivered',
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.DELIVERY_UNCERTAIN,
@@ -2026,18 +2012,16 @@ describe('agent editor panel', () => {
     expect(dialog).toHaveTextContent('The provider can already have accepted this input.')
     expect(onRetryQueueItem).not.toHaveBeenCalled()
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
-    expect(onRetryQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'uncertain-1' }), true)
+    expect(onRetryQueueItem).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'uncertain-1' }), true)
   })
 
   it('reloads an edit that the same browser client owns', () => {
     const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
     const snapshot = create(AgentInputQueueSnapshotSchema, {
-      agentId: 'a1',
-      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
       items: [
         {
           id: 'owned-1',
-          agentId: 'a1',
           text: 'preview',
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -2059,18 +2043,16 @@ describe('agent editor panel', () => {
       </PreferencesProvider>
     ))
 
-    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-1' }), false)
+    expect(onBeginQueueEdit).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'owned-1' }), false)
     expect(screen.getByRole('button', { name: 'Resume Edit' })).toBeInTheDocument()
   })
 
   it('loads the current agent edit while another agent edit request waits', async () => {
     const [agentId, setAgentId] = createSignal('a1')
     const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
-      agentId: id,
       items: [
         {
           id: `owned-${id}`,
-          agentId: id,
           text: id,
           kind: AgentInputKind.USER_MESSAGE,
           state: AgentInputState.QUEUED,
@@ -2092,12 +2074,12 @@ describe('agent editor panel', () => {
         />
       </PreferencesProvider>
     ))
-    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a1' }), false)
+    expect(onBeginQueueEdit).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'owned-a1' }), false)
 
     setAgentId('a2')
     await Promise.resolve()
 
-    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a2' }), false)
+    expect(onBeginQueueEdit).toHaveBeenCalledWith('a2', expect.objectContaining({ id: 'owned-a2' }), false)
   })
 
   // The defect this pins: the chip printed an absolute path while the sidebar
@@ -2141,12 +2123,10 @@ describe('agent editor panel schedule send', () => {
 
   /** A paused queue whose one item this client already edits, as after a reload. */
   const ownedEditQueue = (agentId: string, scheduledAt: string) => create(AgentInputQueueSnapshotSchema, {
-    agentId,
-    paused: true,
+    pauseReason: AgentInputQueuePauseReason.MANUAL,
     items: [
       {
         id: `owned-${agentId}`,
-        agentId,
         text: `preview ${agentId}`,
         kind: AgentInputKind.USER_MESSAGE,
         state: AgentInputState.QUEUED,
@@ -2349,7 +2329,7 @@ describe('agent editor panel schedule send', () => {
     expect(screen.getByTestId('schedule-send-trigger')).toHaveAttribute('data-scheduled', 'true')
     send?.()
     await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
-    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a1' }), 'full a1', [], undefined)
+    expect(onUpdateQueueItem).toHaveBeenCalledWith('a1', expect.objectContaining({ id: 'owned-a1' }), 'full a1', [], undefined)
   })
 
   it('clears an edit schedule by sending an empty one', async () => {
@@ -2383,7 +2363,7 @@ describe('agent editor panel schedule send', () => {
 
     send?.()
     await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
-    expect(onUpdateQueueItem.mock.calls[0]?.[3]).toBe('')
+    expect(onUpdateQueueItem.mock.calls[0]?.[4]).toBe('')
   })
 
   it('keeps an applied edit schedule across a switch to another agent and back', async () => {
@@ -2391,7 +2371,7 @@ describe('agent editor panel schedule send', () => {
     const [agentId, setAgentId] = createSignal('a1')
     const stored = futureAt(1).toISOString()
     const queueA1 = ownedEditQueue('a1', stored)
-    const queueA2 = create(AgentInputQueueSnapshotSchema, { agentId: 'a2', paused: true, items: [] })
+    const queueA2 = create(AgentInputQueueSnapshotSchema, { pauseReason: AgentInputQueuePauseReason.MANUAL, items: [] })
     const onUpdateQueueItem = vi.fn<NonNullable<AgentEditorPanelProps['onUpdateQueueItem']>>(() => Promise.resolve())
     let send: (() => void) | undefined
     render(() => (
@@ -2424,7 +2404,7 @@ describe('agent editor panel schedule send', () => {
     await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
     send?.()
     await waitFor(() => expect(onUpdateQueueItem).toHaveBeenCalled())
-    expect(onUpdateQueueItem.mock.calls[0]?.[3]).toBe(applied.toISOString())
+    expect(onUpdateQueueItem.mock.calls[0]?.[4]).toBe(applied.toISOString())
   })
 
   it('keeps schedule lifetime aligned with text edited days after the schedule was applied', async () => {
@@ -2510,5 +2490,148 @@ describe('agent editor panel schedule send', () => {
     // The control-response action cluster carries no schedule trigger: a reply
     // the user owes NOW inherits no ordinary schedule.
     expect(screen.queryByTestId('schedule-send-trigger')).not.toBeInTheDocument()
+  })
+})
+
+// The info card reads the worker name from the worker store, because
+// AgentInfo carries none. The store mock above holds a name for worker w1 only.
+describe('agent editor panel info card worker row', () => {
+  /** The panel for an agent with a session, so the status bar shows the info card. */
+  function renderWithInfoCard(workerId: string) {
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent({ workerId, agentSessionId: 'session-1' })}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+        />
+      </PreferencesProvider>
+    ))
+    return screen.getByTestId('agent-info-popover')
+  }
+
+  it('shows the worker name that the worker store holds', () => {
+    const popover = renderWithInfoCard('w1')
+
+    expect(within(popover).getByTestId('info-row-worker')).toHaveTextContent('build-box-1')
+  })
+
+  it('hides the Worker row for a worker the store holds no name for', () => {
+    const popover = renderWithInfoCard('w-unknown')
+
+    // The card itself renders, so the missing row is the name's absence.
+    expect(within(popover).getByTestId('session-id-value')).toHaveTextContent('session-1')
+    expect(within(popover).queryByTestId('info-row-worker')).toBeNull()
+  })
+})
+
+// Each queue command carries the agent beside the item, because a queued
+// item states no agent. These pin the agent each handler receives.
+describe('agent editor panel queue commands', () => {
+  /** A queue whose head the Worker marks steerable and preemptable. */
+  const headQueue = (state = AgentInputState.QUEUED) => create(AgentInputQueueSnapshotSchema, {
+    pauseReason: AgentInputQueuePauseReason.MANUAL,
+    items: [
+      {
+        id: 'head-1',
+        text: 'next turn',
+        kind: AgentInputKind.USER_MESSAGE,
+        state,
+        canSteer: true,
+        canPreempt: true,
+      },
+    ],
+  })
+
+  /**
+   * The panel over `headQueue()`. `agentId` is an accessor, so a test can move
+   * the panel to another agent; the other panel props pass through.
+   */
+  function renderQueuePanel(options: Partial<Omit<AgentEditorPanelProps, 'agentId'>> & { queueHeadDispatch?: QueueHeadDispatch, agentId?: () => string }) {
+    const { queueHeadDispatch, agentId, ...rest } = options
+    return render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId?.() ?? 'a1'}
+          agent={agent(queueHeadDispatch !== undefined
+            ? { queueHeadDispatch }
+            : {})}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={headQueue()}
+          queueClientId="client-a"
+          {...rest}
+        />
+      </PreferencesProvider>
+    ))
+  }
+
+  it('offers Steer for an agent that steers, and sends the panel agent with the item', async () => {
+    const onSteerQueueItem = vi.fn().mockResolvedValue(undefined)
+    const onPreemptQueueItem = vi.fn().mockResolvedValue(undefined)
+    renderQueuePanel({ queueHeadDispatch: QueueHeadDispatch.STEER, onSteerQueueItem, onPreemptQueueItem })
+
+    const row = screen.getByTestId('queued-input-head-1')
+    expect(within(row).queryByRole('button', { name: 'Preempt' })).toBeNull()
+    await fireEvent.click(within(row).getByRole('button', { name: 'Steer' }))
+
+    expect(onSteerQueueItem).toHaveBeenCalledExactlyOnceWith('a1', expect.objectContaining({ id: 'head-1' }))
+    expect(onPreemptQueueItem).not.toHaveBeenCalled()
+  })
+
+  it('offers Preempt for an agent that preempts, and sends the panel agent with the item', async () => {
+    const onSteerQueueItem = vi.fn().mockResolvedValue(undefined)
+    const onPreemptQueueItem = vi.fn().mockResolvedValue(undefined)
+    renderQueuePanel({ queueHeadDispatch: QueueHeadDispatch.PREEMPT, onSteerQueueItem, onPreemptQueueItem })
+
+    const row = screen.getByTestId('queued-input-head-1')
+    expect(within(row).queryByRole('button', { name: 'Steer' })).toBeNull()
+    await fireEvent.click(within(row).getByRole('button', { name: 'Preempt' }))
+
+    expect(onPreemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', expect.objectContaining({ id: 'head-1' }))
+    expect(onSteerQueueItem).not.toHaveBeenCalled()
+  })
+
+  // An agent that states no dispatch reads as NONE, so neither action shows
+  // even for a head the Worker marks steerable and preemptable.
+  it('offers neither action for an agent that states no head dispatch', () => {
+    renderQueuePanel({})
+
+    const row = screen.getByTestId('queued-input-head-1')
+    expect(within(row).queryByRole('button', { name: 'Steer' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: 'Preempt' })).toBeNull()
+  })
+
+  it('retries a failed input without asking, for the panel agent', async () => {
+    const onRetryQueueItem = vi.fn().mockResolvedValue(undefined)
+    renderQueuePanel({
+      inputQueue: headQueue(AgentInputState.FAILED),
+      onRetryQueueItem,
+    })
+
+    await fireEvent.click(within(screen.getByTestId('queued-input-head-1')).getByRole('button', { name: 'Retry' }))
+
+    expect(screen.queryByTestId('retry-uncertain-input-dialog')).toBeNull()
+    expect(onRetryQueueItem).toHaveBeenCalledExactlyOnceWith('a1', expect.objectContaining({ id: 'head-1' }), false)
+  })
+
+  // The confirmation holds the agent it opened for. A tab switch while the
+  // dialog is open must not send the retry to the agent the panel shows now.
+  it('retries an uncertain input for the agent it asked about, after the panel moves', async () => {
+    const onRetryQueueItem = vi.fn().mockResolvedValue(undefined)
+    const [agentId, setAgentId] = createSignal('a1')
+    renderQueuePanel({
+      agentId,
+      inputQueue: headQueue(AgentInputState.DELIVERY_UNCERTAIN),
+      onRetryQueueItem,
+    })
+
+    await fireEvent.click(within(screen.getByTestId('queued-input-head-1')).getByRole('button', { name: 'Retry' }))
+    setAgentId('a2')
+    const dialog = screen.getByTestId('retry-uncertain-input-dialog')
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
+
+    expect(onRetryQueueItem).toHaveBeenCalledExactlyOnceWith('a1', expect.objectContaining({ id: 'head-1' }), true)
   })
 })

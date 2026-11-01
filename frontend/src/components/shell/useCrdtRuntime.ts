@@ -57,6 +57,13 @@ export interface UseCrdtRuntimeOpts {
    * the loader's own `onMount` seeds the initial `listWorkspaces`.
    */
   onWorkspaceLifecycleChanged: () => void
+  /**
+   * Called when the user's worker list changes, and on every
+   * bootstrap. Late-bound by the caller for the same reason as
+   * onWorkspaceLifecycleChanged; the worker section's own effect seeds the
+   * first `listWorkers`.
+   */
+  onWorkersChanged: () => void
 }
 
 export interface CrdtRuntime {
@@ -595,6 +602,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // hydrated confirmedState (the tight T_now), not empty state.
     ready: hydrated,
     onWorkspaceLifecycleChanged: () => opts.onWorkspaceLifecycleChanged(),
+    onWorkersChanged: () => opts.onWorkersChanged(),
     onSubscriberClientId: id => setEffectiveClientId(id),
     onPendingDropped: () => {
     // EntityRemoved dropped at least one pending op (a redacted

@@ -1,15 +1,22 @@
 /// <reference types="vitest/globals" />
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
-import { describe, expect, it } from 'vitest'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
+import { create } from '@bufbuild/protobuf'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
-import { summarizeWorktreeCloses, worktreeRemovalToast } from './closeResultToast'
+import { CloseTabResponseSchema } from '~/generated/proto/leapmux/v1/worker_tab_pb'
+import { awaitCloseResult, summarizeWorktreeCloses, toastCloseFailure, worktreeRemovalToast } from './closeResultToast'
+
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+}))
 
 // The fold and the message it feeds. Both worktree-removal surfaces read them
 // -- the Delete branch dialog for a whole branch group, and the last-tab close
 // for one tab -- so the copy names the WORKTREE and never the tabs.
 
 describe('summarizeWorktreeCloses', () => {
-  const r = (worktreeRemoval: WorktreeRemovalOutcome) => ({ worktreeRemoval } as CloseTabResult)
+  const r = (worktreeRemoval: WorktreeRemovalOutcome) => ({ worktreeRemoval } as CloseTabResponse)
 
   it('folds one worker outcome into its flag', () => {
     expect(summarizeWorktreeCloses([
@@ -35,7 +42,7 @@ describe('summarizeWorktreeCloses', () => {
   it('treats a missing result as UNKNOWN, not as a clean no-op', () => {
     // awaitCloseResult resolves undefined when the close RPC rejects, there was
     // no worker to reach, or the local close threw. A worker-reported outcome
-    // is always a CloseTabResult -- even a degraded-to-KEEP close returns one
+    // is always a CloseTabResponse -- even a degraded-to-KEEP close returns one
     // with UNSPECIFIED -- so a missing result genuinely means "we do not know".
     expect(summarizeWorktreeCloses([undefined]))
       .toEqual({
@@ -132,5 +139,83 @@ describe('worktreeRemovalToast', () => {
   it('tracked but nothing removed reports "not removed" (e.g. a startup-race strand the GC will reclaim)', () => {
     expect(worktreeRemovalToast(s(), true))
       .toBe('Worktree not removed')
+  })
+})
+
+describe('toastCloseFailure', () => {
+  beforeEach(() => {
+    vi.mocked(showWarnToast).mockClear()
+  })
+
+  it('warns with the message and the detail of a partial failure', () => {
+    toastCloseFailure(create(CloseTabResponseSchema, {
+      failureMessage: 'Failed to remove worktree',
+      failureDetail: 'git worktree remove: exit 128',
+    }))
+    expect(showWarnToast).toHaveBeenCalledExactlyOnceWith('Failed to remove worktree: git worktree remove: exit 128')
+  })
+
+  it('warns with the message alone when the detail is empty', () => {
+    toastCloseFailure(create(CloseTabResponseSchema, { failureMessage: 'Failed to remove worktree' }))
+    expect(showWarnToast).toHaveBeenCalledExactlyOnceWith('Failed to remove worktree')
+  })
+
+  it.each([
+    ['an absent response', undefined],
+    [
+      'a response with no failure message',
+      create(CloseTabResponseSchema, { failureDetail: 'ignored without a message' }),
+    ],
+  ])('stays silent for %s', (_label, response) => {
+    toastCloseFailure(response)
+    expect(showWarnToast).not.toHaveBeenCalled()
+  })
+})
+
+// The close RPC answers with the CloseTabResponse itself now. These pin that
+// the helper hands that response through, and keeps undefined for a rejected
+// RPC alone.
+describe('awaitCloseResult', () => {
+  beforeEach(() => {
+    vi.mocked(showWarnToast).mockClear()
+  })
+
+  it('resolves with the response itself and warns nothing for a clean close', async () => {
+    const response = create(CloseTabResponseSchema, { worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
+
+    await expect(awaitCloseResult(Promise.resolve(response), 'Failed to close tab')).resolves.toBe(response)
+    expect(showWarnToast).not.toHaveBeenCalled()
+  })
+
+  // An empty response is the worker's definitive no-op (UNSPECIFIED), not a
+  // missing verdict. Reading it as undefined would report "could not confirm".
+  it('resolves an empty response as a definitive outcome, not as unknown', async () => {
+    const response = create(CloseTabResponseSchema)
+
+    const result = await awaitCloseResult(Promise.resolve(response), 'Failed to close tab')
+
+    expect(result).toBe(response)
+    expect(summarizeWorktreeCloses([result]).unknown).toBe(false)
+  })
+
+  it('warns about a partial failure and still resolves with the response', async () => {
+    const response = create(CloseTabResponseSchema, {
+      worktreeRemoval: WorktreeRemovalOutcome.FAILED,
+      failureMessage: 'Failed to remove worktree',
+      failureDetail: 'exit 128',
+    })
+
+    await expect(awaitCloseResult(Promise.resolve(response), 'Failed to close tab')).resolves.toBe(response)
+    expect(showWarnToast).toHaveBeenCalledExactlyOnceWith('Failed to remove worktree: exit 128')
+  })
+
+  it('warns with the label and resolves undefined when the RPC rejects', async () => {
+    const error = new Error('worker unreachable')
+
+    const result = await awaitCloseResult(Promise.reject(error), 'Failed to close tab')
+
+    expect(result).toBeUndefined()
+    expect(showWarnToast).toHaveBeenCalledExactlyOnceWith('Failed to close tab', error)
+    expect(summarizeWorktreeCloses([result]).unknown).toBe(true)
   })
 })

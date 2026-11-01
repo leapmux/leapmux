@@ -485,7 +485,7 @@ describe('DirectoryTree root row info', () => {
       <DirectoryTree workerId="w1" gitStatusStore={gitStatusStore} showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
     ))
 
-    await waitFor(() => expect(statFile).toHaveBeenCalledWith('w1', { workerId: 'w1', path: root }))
+    await waitFor(() => expect(statFile).toHaveBeenCalledWith('w1', { path: root }))
     // The root row only renders once the listing settles — statFile can resolve
     // while the tree is still in its loading branch.
     const rootRow = await rootRowWithMenuOpen()
@@ -513,7 +513,7 @@ describe('DirectoryTree root row info', () => {
 
     // A worktree-creating agent flips this true once its directory exists.
     setEnabled(true)
-    await waitFor(() => expect(statFile).toHaveBeenCalledWith('w1', { workerId: 'w1', path: root }))
+    await waitFor(() => expect(statFile).toHaveBeenCalledWith('w1', { path: root }))
   })
 
   /**

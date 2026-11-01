@@ -25,7 +25,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
-	"github.com/leapmux/leapmux/util/version"
 )
 
 // CaptchaService is the captcha surface AuthService consumes. The hub
@@ -226,9 +225,10 @@ func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*
 		return nil, err
 	}
 
-	resp := &leapmuxv1.LoginResponse{}
-	resp.User = userToProtoWithPasskeys(ctx, s.store, user)
-	resp.EmailVerification = emailVerificationToProto(s.loginVerificationOutcome(ctx, user))
+	resp := &leapmuxv1.LoginResponse{
+		SessionReport: signInReport(ctx, s.store, user,
+			emailVerificationToProto(s.loginVerificationOutcome(ctx, user)), nil),
+	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), token, expiresAt)
 	return resp, nil
 }
@@ -347,11 +347,11 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 
 	s.lifecycle.UserInfoInvalidated(uid.String())
 	resp := &leapmuxv1.SetInitialSoloPasswordResponse{
-		User: userToProto(storedUser, 0),
 		// The deadline the transaction above stamped, so the client's
 		// elevation state comes from the reply that granted it rather than
-		// from a second round trip that can fail.
-		ElevationExpiresAt: timestamppb.New(elevationExpiresAt),
+		// from a second round trip that can fail. A solo account has no
+		// verification to report.
+		SessionReport: signInReport(ctx, s.store, storedUser, nil, timestamppb.New(elevationExpiresAt)),
 	}
 	info.ResponseHeader().Set("Set-Cookie", auth.BuildSessionCookie(
 		sessionID, expiresAt, settings.SecureCookiesFor(ctx, snap)).String())
@@ -387,120 +387,24 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *leapmuxv1.GetCurr
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	// ONE count, for the number this REPORTS and for the step-up option rule
-	// below. Best-effort for the same reason userToProtoWithPasskeys is:
-	// this runs at every page load, so a transient count failure must not
-	// fail a request whose real work is elsewhere.
-	//
-	// The two readers take the failure differently, and they must. The
-	// reported number degrades to zero, which is a stale count on a screen.
-	// The RULE takes no answer at all: a zero that a failed read produced is
-	// not a fact about the account, and feeding it to the predicate below
-	// reports a passkey-only account as "verify through your provider", which
-	// providerMayElevateAccount then re-reads from the store and refuses. The
-	// client would have hidden the option that works and offered the one that
-	// cannot.
-	passkeyCount, counted := countPasskeysBestEffort(ctx, s.store, user)
-	// The step-up option rule, from the ONE predicate that decides it. It
-	// reads the two facts already in hand rather than paying a second COUNT.
-	//
-	// An unread count fails CLOSED, so the screen offers no option rather
-	// than only a refused one. The user still reaches every factor the
-	// account really holds through the ordinary prompt, and the next page
-	// load answers the question properly.
-	elevatesOnlyThroughAProvider := counted && accountShapeElevatesOnlyThroughAProvider(user.FirstCredentialExempt, passkeyCount)
-
-	// The link read REPORTS its failure only for the account shape that has
-	// nothing else to fall back on, and degrades for every other.
-	//
-	// An empty list is indistinguishable from "this account has no linked
-	// provider". For an account that holds neither a password nor a passkey
-	// the provider IS its only step-up option, so the empty list becomes
-	// "this account has nothing to verify with yet" on the screen the
-	// command-line consent leg just bounced the user to -- a false and
-	// alarming answer to a transient read.
-	//
-	// Every other account keeps a factor it can present, so the same failure
-	// costs it a missing Linked Accounts section until the next page load. It
-	// must NOT cost it the whole session: this runs on every page load, and a
-	// non-Unauthenticated failure leaves the client on a bootstrap error with
-	// no way into the app -- for a query most accounts never have a row for.
-	// An account whose passkey count did not read is in that second group by
-	// construction, because the shape above is false for it -- so one failed
-	// COUNT cannot turn this page load into a fatal one.
-	linkedProviders, err := s.linkedProvidersFor(ctx, userInfo.ID)
+	// The complete projection, whose rules completeUserProto states. Its one
+	// error is the link read of an account that elevates only through a
+	// provider, which has no other factor to fall back on.
+	userProto, err := completeUserProto(ctx, s.store, user)
 	if err != nil {
-		if elevatesOnlyThroughAProvider {
-			return nil, wrappedConnectError(connect.CodeInternal, err)
-		}
-		slog.WarnContext(ctx, "could not list the account's linked OAuth providers",
-			"user_id", user.ID, "err", err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-
-	userProto := userToProto(user, passkeyCount)
-	userProto.OauthProviders = linkedProviders
-	userProto.MayElevateThroughAProvider = elevatesOnlyThroughAProvider
 	return &leapmuxv1.GetCurrentUserResponse{
-		User: userProto,
-		// Reported, never sent: this runs on every page load.
-		EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
-		// Evaluated at NOW, not when the UserInfo was cached, so a window
-		// that lapsed inside the auth cache's lifetime is reported as
-		// absent rather than as a deadline in the past.
-		ElevationExpiresAt: elevationExpiresAtProto(userInfo, s.now()),
+		SessionReport: &leapmuxv1.SessionReport{
+			User: userProto,
+			// Reported, never sent: this runs on every page load.
+			EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
+			// Evaluated at NOW, not when the UserInfo was cached, so a window
+			// that lapsed inside the auth cache's lifetime is reported as
+			// absent rather than as a deadline in the past.
+			ElevationExpiresAt: elevationExpiresAtProto(userInfo, s.now()),
+		},
 	}, nil
-}
-
-// linkedProvidersFor lists the account's OAuth links, each with whether an
-// administrator currently has that provider enabled.
-//
-// It REPORTS a failure rather than discarding it, and that is the difference
-// from the passkey count beside it. The count's zero costs a wasted round
-// trip; an empty provider list is indistinguishable from "this account has no
-// linked provider", and for an account that holds neither a password nor a
-// passkey that is the ONLY step-up option -- so a transient store failure
-// told the user their account had nothing to verify with at all, on the
-// screen the command-line consent leg just bounced them to. An error the
-// client retries is the honest answer.
-//
-// A disabled provider's link is INCLUDED. See LinkedOAuthProvider.enabled: the
-// owner must still be able to detach a link whose provider an administrator
-// turned off, and the verification screen filters on the flag instead.
-func (s *AuthService) linkedProvidersFor(ctx context.Context, userID userid.UserID) ([]*leapmuxv1.LinkedOAuthProvider, error) {
-	links, err := s.store.OAuthUserLinks().ListByUser(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list the account's OAuth links: %w", err)
-	}
-	if len(links) == 0 {
-		return nil, nil
-	}
-	// ListAll is acceptable here: the number of configured OAuth providers is
-	// typically in the single digits, and adding a GetByIDs method to every
-	// backend is not worth the complexity.
-	providers, err := s.store.OAuthProviders().ListAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list the configured OAuth providers: %w", err)
-	}
-	rows := make(map[string]store.OAuthProviderSummary, len(providers))
-	for _, p := range providers {
-		rows[p.ID] = p
-	}
-	out := make([]*leapmuxv1.LinkedOAuthProvider, 0, len(links))
-	for _, link := range links {
-		row, ok := rows[link.ProviderID]
-		if !ok {
-			// An ABSENT row is different from a disabled one: the provider
-			// was removed, so there is no name to render and nothing the
-			// link can ever reach again.
-			continue
-		}
-		out = append(out, &leapmuxv1.LinkedOAuthProvider{
-			Id:      link.ProviderID,
-			Name:    row.Name,
-			Enabled: row.Enabled,
-		})
-	}
-	return out, nil
 }
 
 func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) (*leapmuxv1.SignUpResponse, error) {
@@ -581,13 +485,11 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
 		resp := &leapmuxv1.SignUpResponse{
-			// A password sign-up carries no passkeys yet.
-			User: userToProto(createdUser, 0),
-			EmailVerification: emailVerificationToProto(verificationOutcome{
+			SessionReport: signInReport(ctx, s.store, createdUser, emailVerificationToProto(verificationOutcome{
 				Required:              true,
 				EmailSent:             true,
 				NextResendAvailableAt: &nextResend,
-			}),
+			}), nil),
 		}
 		s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
 		s.hasAnyUser.Store(true)
@@ -662,94 +564,12 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 	}
 
 	resp := &leapmuxv1.SignUpResponse{
-		// Both callers are password sign-ups: no passkeys yet.
-		User: userToProto(user, 0),
+		// No verification: the address went straight to the email column.
+		SessionReport: signInReport(ctx, s.store, user, nil, nil),
 	}
 	info := serverCallInfo(ctx)
 	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	return resp, nil
-}
-
-func (s *AuthService) GetSystemInfo(ctx context.Context, req *leapmuxv1.GetSystemInfoRequest) (*leapmuxv1.GetSystemInfoResponse, error) {
-	providers, _ := s.store.OAuthProviders().ListEnabled(ctx)
-
-	var setupRequired bool
-	if !s.cfg.SoloMode {
-		hasUser, err := s.checkHasAnyUser(ctx)
-		if err != nil {
-			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
-		}
-		setupRequired = !hasUser
-	}
-
-	// A captcha-config read failure reports captcha as ENABLED, matching
-	// the interceptor's fail-closed enforcement on the same store: the
-	// opposite polarity would unblock a payload-less submit that the hub
-	// then denies, so the form would loop for ever on a mislabeled error. The
-	// provider is zero (UNSPECIFIED) on that degraded path — never a
-	// wrong concrete provider — and clients treat anything but a known
-	// enum as altcha. The rest of the system info stays usable, mirroring
-	// the providers flag above.
-	captchaCfg := s.captcha.Describe(ctx)
-	captchaEnabled := captchaCfg.Enabled
-	captchaProvider := captchaCfg.Provider
-	captchaSiteKey := captchaCfg.SiteKey()
-	altchaAlgorithm := captchaCfg.AltchaAlgorithm()
-
-	// Decide what URL workers should target. Precedence:
-	//   1. An explicit public_url setting wins (admin's canonical external URL,
-	//      typically used when the hub is behind a reverse proxy).
-	//   2. If the bind set names no TCP address (desktop's NoTCP mode), the
-	//      browser origin is `tauri://localhost`, which is unusable. Such a hub
-	//      can still hold a TCP address the extra_listen_addresses setting
-	//      added, so prefer that one and fall back to the local unix-socket /
-	//      named-pipe address, which workers can always dial locally.
-	//   3. Otherwise leave it empty — the frontend falls back to
-	//      window.location.origin, which already reflects whatever proxy or
-	//      hostname the user connects through.
-	//
-	// Case 2 tests the CONFIGURED bind set and NOT the live address. They
-	// differ on exactly the deployment this matters for: a desktop hub that
-	// gained an extra address has a live address, so testing that one dropped
-	// the case and answered "" -- and the frontend's window.location.origin
-	// fallback, which case 3 rests on, is `tauri://localhost` there.
-	var workerHubURL string
-	snap := s.snap(ctx)
-	switch {
-	case settings.KeyPublicURL.Of(snap) != "":
-		workerHubURL = settings.KeyPublicURL.Of(snap)
-	case s.cfg.PrimaryTCPListen() == "":
-		if addr := s.listenAddr(); addr != "" {
-			workerHubURL = settings.BaseURL(snap, addr)
-		} else if local, err := s.cfg.LocalListenURLs(); err == nil && len(local) > 0 {
-			// The first of several. The worker dials one endpoint; the rest
-			// of the local listeners still answer.
-			workerHubURL = local[0]
-		}
-	}
-
-	soloPasswordSet := s.soloGate.PasswordSet(ctx)
-
-	return &leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled:   s.signupEnabled(ctx),
-		SoloMode:        s.cfg.SoloMode,
-		SetupRequired:   setupRequired,
-		Version:         version.Value,
-		CommitHash:      version.CommitHash,
-		CommitTime:      version.CommitTime,
-		BuildTime:       version.BuildTime,
-		Branch:          version.Branch,
-		OauthEnabled:    len(providers) > 0,
-		WorkerHubUrl:    workerHubURL,
-		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
-		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(ctx)),
-		CaptchaEnabled:  captchaEnabled,
-		SoloAccess:      s.soloAccess(ctx, soloPasswordSet),
-		SoloPasswordSet: soloPasswordSet,
-		AltchaAlgorithm: altchaAlgorithm,
-		CaptchaProvider: captchaProvider,
-		CaptchaSiteKey:  captchaSiteKey,
-	}, nil
 }
 
 // GetAltchaChallenge issues a fresh ALTCHA challenge for the caller to
@@ -1030,13 +850,11 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	}
 
 	resp := &leapmuxv1.CompleteOAuthSignupResponse{
-		// An OAuth sign-up carries no passkeys yet.
-		User: userToProto(finalUser, 0),
-		EmailVerification: emailVerificationToProto(verificationOutcome{
+		SessionReport: signInReport(ctx, s.store, finalUser, emailVerificationToProto(verificationOutcome{
 			Required:              pendingEmail != "",
 			EmailSent:             emailSent,
 			NextResendAvailableAt: nextResend,
-		}),
+		}), nil),
 	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	// The pending row is consumed, so its browser binding has nothing left
@@ -1078,62 +896,6 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 		ExpiresAt:    pending.TokenExpiresAt,
 		KeyVersion:   int64(ks.ActiveVersion()),
 	})
-}
-
-func userToProto(u *store.User, passkeyCount int64) *leapmuxv1.User {
-	return &leapmuxv1.User{
-		Id:            u.ID,
-		Username:      u.Username,
-		DisplayName:   u.DisplayName,
-		IsAdmin:       u.IsAdmin,
-		Email:         u.Email,
-		EmailVerified: u.EmailVerified,
-		PendingEmail:  u.PendingEmail,
-		// The HASH, not the users.password_set column. The column is a claim
-		// the creating flow makes, and the solo bootstrap sets it true with an
-		// empty hash -- so the column reports a password on an account that
-		// cannot sign in with one. The client renders "Change Password" and
-		// "Password changed." from this field, which is exactly the sentence a
-		// solo owner must not read while setting their first one.
-		//
-		// The ADMISSION rules keep reading the column, and that is deliberate:
-		// the claim is what routes solo past the first-credential rule that no
-		// solo account could ever satisfy. See assertFirstCredentialAuthIsFresh.
-		PasswordSet:  u.HasUsablePassword(),
-		PasskeyCount: int32(passkeyCount),
-	}
-}
-
-// userToProtoWithPasskeys fills the passkey count best-effort. The count is
-// display data; a transient failure of this one query must not fail an RPC
-// whose main work already committed (a minted session, a rotated password).
-// It logs the failure, and the count reports zero.
-func userToProtoWithPasskeys(ctx context.Context, st store.Store, u *store.User) *leapmuxv1.User {
-	count, _ := countPasskeysBestEffort(ctx, st, u)
-	return userToProto(u, count)
-}
-
-// countPasskeysBestEffort returns the account's passkey count, and whether
-// the query answered at all. A failure logs a warning and reports (0, false).
-//
-// It is separate from userToProtoWithPasskeys because GetCurrentUser needs
-// the same number TWICE -- once to report it, once for the step-up option
-// rule -- and running the COUNT again for the second reader is the kind of
-// drift a shared value removes.
-//
-// The second return value is what keeps the two readers honest. A count of
-// zero means one of two things, and only one of them is a fact about the
-// account: it holds no passkey, or nobody could ask. A display tolerates the
-// first reading of both; an authorization-shaped rule must not, so it reads
-// this flag and fails closed. The value was a bare int64, and the discarded
-// error reached the rule as a genuine zero.
-func countPasskeysBestEffort(ctx context.Context, st store.Store, u *store.User) (int64, bool) {
-	count, err := st.PasskeyCredentials().CountByUser(ctx, u.ID)
-	if err != nil {
-		slog.WarnContext(ctx, "count passkeys for user proto", "user_id", u.ID, "err", err)
-		return 0, false
-	}
-	return count, true
 }
 
 // mapSignupCommitError maps an account-creation failure onto a connect

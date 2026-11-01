@@ -2,7 +2,7 @@ import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb
 import type { ModelScript } from '../helpers/modelScriptFixture'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { DeepseekHarnessGoalOwner } from './goalCleanup'
-import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalAction, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { currentNativeAgent } from '../helpers/nativeScenario'
@@ -34,9 +34,9 @@ export async function withDeepseekHarnessGoalCleanup<T>(context: GoalCleanupCont
   return withCleanup(operation, () => cleanupDeepseekHarnessGoal(capturedOwner, {
     clearGoal: async (captured) => {
       const channel = await getTestChannel(server.hubUrl, server.adminToken)
-      await channel.callWorker(captured.workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, { agentId: captured.agentId, action: AgentGoalAction.CLEAR })
-      const snapshot = await channel.callWorker(captured.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: captured.agentId, limit: 1 })
-      if (!snapshot.goalLoaded || snapshot.goal)
+      await channel.callWorker(captured.workerId, WorkerAgentService.method.updateAgentGoal, { agentId: captured.agentId, action: AgentGoalAction.CLEAR })
+      const snapshot = await channel.callWorker(captured.workerId, WorkerAgentService.method.listAgentMessages, { agentId: captured.agentId, limit: 1 })
+      if (!snapshot.goal || snapshot.goal.goal)
         throw new Error('The Worker did not confirm removal of the captured native goal.')
     },
     // The owner check above makes `captured.workerId` the scenario Worker, which the shared close reaches.

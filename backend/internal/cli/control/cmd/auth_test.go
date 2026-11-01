@@ -884,24 +884,10 @@ func TestEmittedError_IsEmittedTrueOnEmitErrorReturn(t *testing.T) {
 // every other caller of ListMyAPITokens is, always reads false. This command
 // authenticates with the credential itself, which is the whole point.
 func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
-	// A REAL UserService handler, so the client's own codec and the wire
-	// shape are exercised rather than a hand-written JSON body the proto
-	// client would refuse.
-	mux := http.NewServeMux()
-	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterUserServiceHandler(connectServer, &stubMyTokensService{})
-	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
-	srv := hubtransporttest.NewServer(t, mux)
-	defer srv.Close()
-
-	isolateCLIEnv(t)
-	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
-		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
-		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
-	}))
+	hubURL := startMyTokensHub(t, &stubMyTokensService{})
 
 	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
 	})
 
 	var env struct {
@@ -932,7 +918,7 @@ func (s *stubMyTokensService) ListMyAPITokens(
 	req *leapmuxv1.ListMyAPITokensRequest,
 ) (*leapmuxv1.ListMyAPITokensResponse, error) {
 	s.mu.Lock()
-	s.limits = append(s.limits, req.GetLimit())
+	s.limits = append(s.limits, int64(req.GetPage().GetLimit()))
 	s.mu.Unlock()
 	return &leapmuxv1.ListMyAPITokensResponse{
 		Tokens: []*leapmuxv1.MyAPIToken{
@@ -956,9 +942,29 @@ func (s *stubMyTokensService) requestedLimits() []int64 {
 // claims; a hand-copied 500 answers correctly only until the hub changes it.
 func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	stub := &stubMyTokensService{}
+	hubURL := startMyTokensHub(t, stub)
+
+	withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
+	})
+
+	limits := stub.requestedLimits()
+	require.NotEmpty(t, limits)
+	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
+}
+
+// startMyTokensHub serves handler as the hub's UserService and saves a live
+// credential for it, so `auth credentials` reaches the handler with a bearer.
+// It returns the --hub value.
+//
+// The handler is a REAL UserService handler, so the test runs the client's
+// own codec and wire shape, not a hand-written JSON body that the proto
+// client would refuse.
+func startMyTokensHub(t *testing.T, handler leapmuxv1connect.UserServiceHandler) string {
+	t.Helper()
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterUserServiceHandler(connectServer, stub)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, handler)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
@@ -968,14 +974,108 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 		HubURL: srv.URL, AccessToken: "lmx_a_test", RefreshToken: "lmx_r_test",
 		ExpiresAt: time.Now().Add(time.Hour), UserID: "u-1", Username: "alice",
 	}))
+	return srv.URL
+}
 
-	withCapturedStdout(t, func() {
-		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", srv.URL}))
+// pagedMyTokensService answers ListMyAPITokens one page at a time. pages
+// maps a request cursor to its page. A cursor that pages does not hold
+// fails with failure, or with InvalidArgument when failure is nil.
+type pagedMyTokensService struct {
+	leapmuxv1connect.UnimplementedUserServiceHandler
+	pages   map[string]*leapmuxv1.ListMyAPITokensResponse
+	failure error
+
+	mu      sync.Mutex
+	cursors []string
+}
+
+func (s *pagedMyTokensService) ListMyAPITokens(
+	_ context.Context,
+	req *leapmuxv1.ListMyAPITokensRequest,
+) (*leapmuxv1.ListMyAPITokensResponse, error) {
+	cursor := req.GetPage().GetCursor()
+	s.mu.Lock()
+	s.cursors = append(s.cursors, cursor)
+	s.mu.Unlock()
+	if page, ok := s.pages[cursor]; ok {
+		return page, nil
+	}
+	if s.failure != nil {
+		return nil, s.failure
+	}
+	return nil, connect.NewError(connect.CodeInvalidArgument, "unknown cursor "+cursor)
+}
+
+func (s *pagedMyTokensService) requestedCursors() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.cursors...)
+}
+
+// `auth credentials` prints EVERY page, not the first. A credential past the
+// first page is one the operator cannot see, and so cannot revoke. The second
+// request must carry the cursor that the first reply's page held, and a row
+// that a keyset boundary repeats prints once.
+func TestRunAuthCredentials_ReadsEveryPage(t *testing.T) {
+	stub := &pagedMyTokensService{pages: map[string]*leapmuxv1.ListMyAPITokensResponse{
+		"": {
+			Tokens: []*leapmuxv1.MyAPIToken{{Id: "tok-1"}, {Id: "tok-2"}},
+			Page:   &leapmuxv1.PageResponse{NextCursor: "page-2"},
+		},
+		"page-2": {
+			Tokens: []*leapmuxv1.MyAPIToken{{Id: "tok-2"}, {Id: "tok-3"}},
+		},
+	}}
+	hubURL := startMyTokensHub(t, stub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL}))
 	})
 
-	limits := stub.requestedLimits()
-	require.NotEmpty(t, limits)
-	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
+	var env struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	ids := make([]any, 0, len(env.Data))
+	for _, row := range env.Data {
+		ids = append(ids, row["id"])
+	}
+	assert.Equal(t, []any{"tok-1", "tok-2", "tok-3"}, ids, "every page, and the repeated row once")
+	assert.Equal(t, []string{"", "page-2"}, stub.requestedCursors(),
+		"the second request carries the cursor from the first reply's page")
+}
+
+// A page that fails part-way through the listing fails the whole verb. A
+// partial listing would hide the credentials on the pages it never read,
+// from somebody who audits what can reach their account.
+func TestRunAuthCredentials_AFailedLaterPageFailsTheListing(t *testing.T) {
+	stub := &pagedMyTokensService{
+		pages: map[string]*leapmuxv1.ListMyAPITokensResponse{
+			"": {
+				Tokens: []*leapmuxv1.MyAPIToken{{Id: "tok-1"}},
+				Page:   &leapmuxv1.PageResponse{NextCursor: "page-2"},
+			},
+		},
+		failure: connect.NewError(connect.CodeUnavailable, "hub is restarting"),
+	}
+	hubURL := startMyTokensHub(t, stub)
+
+	out := withCapturedStdout(t, func() {
+		err := RunAuthCredentials(fakeCmdCtx{}, []string{"--hub", hubURL})
+		require.Error(t, err)
+		assert.True(t, control.IsEmitted(err))
+	})
+
+	var env struct {
+		Data  json.RawMessage   `json:"data"`
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	assert.Equal(t, "rpc_failed", env.Error["code"])
+	assert.Contains(t, env.Error["message"], "hub is restarting")
+	assert.Empty(t, env.Data, "a failed listing prints no partial data")
+	assert.NotContains(t, string(out), "tok-1", "the rows of the first page must not print")
+	assert.Equal(t, []string{"", "page-2"}, stub.requestedCursors())
 }
 
 // TestCallbackHandlerNeverBlocksOnDuplicates pins the local-redirect login's
@@ -1096,7 +1196,7 @@ func currentUserServer(t *testing.T, username string, isAdmin bool) *httptest.Se
 			return
 		}
 		body, err := proto.Marshal(&leapmuxv1.GetCurrentUserResponse{
-			User: &leapmuxv1.User{Id: "u-hub", Username: username, IsAdmin: isAdmin},
+			SessionReport: &leapmuxv1.SessionReport{User: &leapmuxv1.User{Id: "u-hub", Username: username, IsAdmin: isAdmin}},
 		})
 		require.NoError(t, err)
 		w.Header().Set("Content-Type", "application/proto")

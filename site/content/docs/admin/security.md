@@ -74,8 +74,6 @@ Frontend↔Worker traffic is protected by a **hybrid post-quantum Noise_NK hands
 
 The channel is established in two stages, over two different transports. The Frontend first fetches the Worker's keys and encryption mode, then completes the Noise handshake through Hub-relayed unary RPCs — the Hub forwards each opaque handshake message to the Worker and the reply back. Only once a session exists does the Frontend attach it to the **shared WebSocket**, over which every channel's encrypted traffic is multiplexed. The WebSocket is therefore not the transport the handshake runs on.
 
-Alongside that ciphertext, the same WebSocket carries the Hub's own control frames on a reserved `_hub` channel — deliberately **plaintext**, since the Hub originates them and they are addressed to your browser rather than to a Worker. They signal things like "the worker list changed, re-fetch it", and carry no channel content.
-
 ### Primitives
 
 | Role | Classical | Post-quantum |

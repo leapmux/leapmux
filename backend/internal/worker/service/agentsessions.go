@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -37,7 +38,7 @@ const maxListedSessions = 50
 // called -- so a non-owner channel, notably a delegation bearer minted for a
 // different user, must not reach it.
 func registerAgentSessionHandlers(d registrar, svc *Service) {
-	registerOwnerGuarded(d, "ListAgentSessions", leapmuxv1.Scope_SCOPE_AGENT_READ, dispatchPlain,
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, dispatchPlain,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentSessionsRequest, sender channel.ResponseWriter) {
 			workingDir, err := validate.SanitizePath(r.GetWorkingDir(), svc.HomeDir)
 			if err != nil {

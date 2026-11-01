@@ -10,17 +10,19 @@
 // authenticated session and discovers `workspaces[wsID].rootNodeId` by
 // absorbing events on it. The test fixtures mirror that: open the
 // subscription BEFORE creating any workspace so the seed
-// `SetNodeRegister` + `SetWorkspaceRootNode` ops broadcast through
+// `SetNodeRegister` + `CreateWorkspace` ops broadcast through
 // the production filter-expansion path. Opening a fresh subscription
 // AFTER `createWorkspaceViaAPI` would mask a hub-side bug where the
 // seed ops are dropped for existing subscribers — a real production
 // regression that the fixture would silently hide.
 // ─────────────────────────────────────────────────────────────────────────
 
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { CrdtOp, SetTabRegisterOp } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
-import { create, fromBinary, toJson } from '@bufbuild/protobuf'
+import { create, fromBinary, fromJson, toJson } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
 import { CrdtOpSchema, SubmitOpsRequestSchema, WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
+import { ListTabsResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { callHub, pollHub } from './api'
 import { hubTransportUrl } from './hubTransport'
 
@@ -42,7 +44,7 @@ const nanoid48 = customAlphabet(ALPHABET, 48)
  *
  *   - `workspaces[wsID].rootNodeId` — populated either by the
  *     initial `UserMaterialized` (for workspaces that existed at
- *     subscribe time) or by the raw `SetWorkspaceRootNode` op the
+ *     subscribe time) or by the raw `CreateWorkspace` op the
  *     hub broadcasts for workspaces created later (which itself
  *     requires the hub's filter-expansion fix).
  *   - `currentEpoch` — read from the initial frame, refreshed if
@@ -159,10 +161,10 @@ async function openUserEventsSubscription(
         }
         case 'batch': {
           // The hub broadcasts each committed op batch as one `batch` event;
-          // scan its ops for the seed `SetWorkspaceRootNode` that carries the
+          // scan its ops for the seed `CreateWorkspace` that carries the
           // workspace's rootNodeId.
           for (const op of e.value.ops) {
-            if (op.body.case === 'setWorkspaceRootNode')
+            if (op.body.case === 'createWorkspace')
               setRoot(op.body.value.workspaceId, op.body.value.rootNodeId)
           }
           break
@@ -170,7 +172,7 @@ async function openUserEventsSubscription(
         case 'created': {
           // The `WorkspaceCreated` event carries root_node_id too; treat
           // it as another reliable source for the same datum so a future
-          // hub change that retires the raw `SetWorkspaceRootNode` op
+          // hub change that retires the raw `CreateWorkspace` op
           // (e.g. moves it to a synthesized "becoming visible" event)
           // doesn't strand the fixture.
           setRoot(e.value.workspaceId, e.value.rootNodeId)
@@ -201,7 +203,7 @@ async function openUserEventsSubscription(
           if (idx >= 0)
             arr.splice(idx, 1)
         }
-        reject(new Error(`awaitRootNodeId(${workspaceId}): timed out after ${timeoutMs}ms — the hub did not broadcast SetWorkspaceRootNode / WorkspaceCreated to this subscription. Likely an unfixed seed-ops filter-expansion bug.`))
+        reject(new Error(`awaitRootNodeId(${workspaceId}): timed out after ${timeoutMs}ms — the hub did not broadcast CreateWorkspace / WorkspaceCreated to this subscription. Likely an unfixed seed-ops filter-expansion bug.`))
       }, timeoutMs)
       const arr = waiters.get(workspaceId)
       if (arr)
@@ -321,8 +323,7 @@ async function submitSetTabRegisterBatch(args: {
       body: {
         case: 'setTabRegister',
         value: {
-          tabType: args.tabType,
-          tabId: args.tabId,
+          tab: { tabType: args.tabType, tabId: args.tabId },
           field,
         },
       },
@@ -410,13 +411,13 @@ export async function seedTabIntoWorkspace(args: {
   // batch committed but ListTabs returns empty, projection-repair
   // dropped the tab or the rendered index wasn't written.
   await pollHub(
-    () => callHub<{ tabs?: Array<{ tabId: string }> }>(args.hubUrl, 'WorkspaceService/ListTabs', {
+    async () => fromJson(ListTabsResponseSchema, await callHub<JsonValue>(args.hubUrl, 'WorkspaceService/ListTabs', {
       workspaceIds: [args.workspaceId],
     }, {
       cookie: args.cookie,
       operation: `seedTabIntoWorkspace(${args.tabId})`,
-    }),
-    data => data.tabs?.some(tab => tab.tabId === args.tabId)
+    })),
+    data => data.tabs.some(tab => tab.tab?.tabId === args.tabId)
       ? true
       : undefined,
     {

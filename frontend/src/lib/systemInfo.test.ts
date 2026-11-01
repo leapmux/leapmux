@@ -1,13 +1,15 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
-import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet } from './systemInfo'
+import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getBackendBuildInfo, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
-  authClient: {
+  systemClient: {
     getSystemInfo: (...args: unknown[]) => mockGetSystemInfo(...args),
+  },
+  authClient: {
     getOAuthProviders: vi.fn().mockResolvedValue({ providers: [] }),
   },
 }))
@@ -32,11 +34,13 @@ function systemInfoResponse(overrides: Record<string, unknown> = {}) {
     captchaProvider: CaptchaProvider.ALTCHA,
     captchaSiteKey: '',
     altchaAlgorithm: '',
-    version: '',
-    commitHash: '',
-    commitTime: '',
-    buildTime: '',
-    branch: '',
+    build: {
+      version: '',
+      commitHash: '',
+      commitTime: '',
+      buildTime: '',
+      branch: '',
+    },
     ...overrides,
   }
 }
@@ -201,6 +205,42 @@ describe('loadSystemInfo', () => {
     await loadSystemInfo(true)
     // A forced reload must re-run effects that read the snapshot.
     expect(seen).toEqual([false, true])
+  })
+
+  // The hub reports its build in one BuildInfo message, shared with the
+  // worker's system info and the desktop startup info.
+  it('reads the backend build from the build message', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      build: {
+        version: '1.2.3',
+        commitHash: 'abc1234',
+        commitTime: '2026-10-01T00:00:00Z',
+        buildTime: '2026-10-02T00:00:00Z',
+        branch: 'main',
+      },
+    }))
+    await loadSystemInfo(true)
+
+    expect(getBackendBuildInfo()).toEqual({
+      version: '1.2.3',
+      commitHash: 'abc1234',
+      commitTime: '2026-10-01T00:00:00Z',
+      buildTime: '2026-10-02T00:00:00Z',
+      branch: 'main',
+    })
+  })
+
+  it('reports an empty backend build when the reply has no build message', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ build: undefined }))
+    await loadSystemInfo(true)
+
+    expect(getBackendBuildInfo()).toEqual({
+      version: '',
+      commitHash: '',
+      commitTime: '',
+      buildTime: '',
+      branch: '',
+    })
   })
 })
 

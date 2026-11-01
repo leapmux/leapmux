@@ -16,6 +16,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -105,7 +106,7 @@ func runBranchMutationCustom(parent context.Context, timeout time.Duration, send
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
 func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
-	d.Register("GetGitInfo", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetGitInfoRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -191,7 +192,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("GetGitFileStatus", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.GetGitFileStatusRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -293,7 +294,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("ReadGitFile", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ReadGitFileRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -358,7 +359,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register("ListGitBranches", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceListGitBranchesProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListGitBranchesRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -392,7 +393,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register("ListGitWorktrees", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceListGitWorktreesProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListGitWorktreesRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -418,24 +419,28 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.RegisterTracked("InspectLastTabClose", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.RegisterTracked(leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectLastTabCloseRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
 			return
 		}
 
+		// An absent tab reads as an empty id and an UNSPECIFIED type, which
+		// answers that no prompt is needed.
+		tab := r.GetTab()
+
 		// Tracked via dispatcher RegisterTracked above: the dispatcher
 		// Add(1)s the bound Cleanup WaitGroup synchronously BEFORE the
 		// handler goroutine launches, so Shutdown.Wait can't slip past
 		// an in-flight inspect (DB read + errgroup of git probes).
-		traceTabClosePhase("inspect", r.GetTabId(), "handler_begin")
+		traceTabClosePhase("inspect", tab.GetTabId(), "handler_begin")
 		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 		defer cancel()
-		resp, err := svc.inspectLastTabClose(ctx, r.GetTabType(), r.GetTabId(), caller.UserID.String())
+		resp, err := svc.inspectLastTabClose(ctx, tab.GetTabType(), tab.GetTabId(), caller.UserID.String())
 		if err != nil {
-			slog.Error("inspect last tab close failed", "tab_type", r.GetTabType(), "tab_id", r.GetTabId(), "error", err)
-			traceTabClosePhase("inspect", r.GetTabId(), "handler_error")
+			slog.Error("inspect last tab close failed", "tab_type", tab.GetTabType(), "tab_id", tab.GetTabId(), "error", err)
+			traceTabClosePhase("inspect", tab.GetTabId(), "handler_error")
 			sendInternalError(sender, err.Error())
 			return
 		}
@@ -445,21 +450,21 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// early returns, and this answer is the same on every one of them.
 		//
 		// Best-effort: a failure costs the batched ordering, not the close. The
-		// CloseAgent response reports the list again, so a client still retires
+		// CloseTab response reports the list again, so a client still retires
 		// the subtree -- just a round trip later.
-		if r.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
-			ids, derr := svc.Queries.ListDescendantAgentIDs(ctx, sql.NullString{String: r.GetTabId(), Valid: true})
+		if tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
+			ids, derr := svc.Queries.ListDescendantAgentIDs(ctx, sql.NullString{String: tab.GetTabId(), Valid: true})
 			if derr != nil {
-				slog.Warn("inspect last tab close: list descendants failed", "tab_id", r.GetTabId(), "error", derr)
+				slog.Warn("inspect last tab close: list descendants failed", "tab_id", tab.GetTabId(), "error", derr)
 			} else {
 				resp.DescendantAgentIds = ids
 			}
 		}
-		traceTabClosePhase("inspect", r.GetTabId(), "handler_end")
+		traceTabClosePhase("inspect", tab.GetTabId(), "handler_end")
 		sendProtoResponse(sender, resp)
 	})
 
-	d.RegisterTracked("PushBranch", leapmuxv1.Scope_SCOPE_GIT_WRITE, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.RegisterTracked(leapmuxv1connect.WorkerGitServicePushBranchProcedure, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.PushBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -506,7 +511,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, &leapmuxv1.PushBranchResponse{})
 	})
 
-	d.Register("InspectBranchDeletion", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceInspectBranchDeletionProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectBranchDeletionRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -534,7 +539,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("InspectWorktreeRemoval", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectWorktreeRemovalRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -560,7 +565,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.Register("InspectBranchChange", leapmuxv1.Scope_SCOPE_GIT_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.Register(leapmuxv1connect.WorkerGitServiceInspectBranchChangeProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectBranchChangeRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -586,7 +591,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
-	d.RegisterTracked("CheckoutBranch", leapmuxv1.Scope_SCOPE_GIT_WRITE, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.RegisterTracked(leapmuxv1connect.WorkerGitServiceCheckoutBranchProcedure, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.CheckoutBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -622,7 +627,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.RegisterTracked("CreateBranch", leapmuxv1.Scope_SCOPE_GIT_WRITE, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.RegisterTracked(leapmuxv1connect.WorkerGitServiceCreateBranchProcedure, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.CreateBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")
@@ -657,7 +662,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.RegisterTracked("DeleteBranch", leapmuxv1.Scope_SCOPE_GIT_WRITE, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+	d.RegisterTracked(leapmuxv1connect.WorkerGitServiceDeleteBranchProcedure, func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.DeleteBranchRequest
 		if err := unmarshalRequest(req, &r); err != nil {
 			sendInvalidArgument(sender, "invalid request")

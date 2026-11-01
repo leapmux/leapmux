@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
+import { registerForChallenge } from '~/lib/webauthn'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
@@ -32,7 +33,7 @@ vi.mock('~/api/clients', () => ({
 // cancel-vs-failure rule under test is the one the component ships with.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
-  startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
+  registerForChallenge: vi.fn().mockResolvedValue({ sessionId: 's-1', credentialJson: '{"id":"cred"}' }),
 }))
 
 // The shared mock, so this page reads the same getters (passkeyBlocker,
@@ -43,7 +44,7 @@ vi.mock('~/lib/systemInfo', async () => {
   return m.systemInfoMock
 })
 
-const mockSetAuth = vi.fn()
+const mockSetAuth = vi.fn(async () => 'adopted')
 
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
@@ -165,9 +166,13 @@ describe('the first-run setup page (SetupPage)', () => {
   // passkey path has to accept it too -- the reserved rule is shared, and it
   // took the setup exemption on the password path only.
   it('registers the first administrator with a passkey', async () => {
-    mockBeginPasskeySignUp.mockResolvedValue({ sessionId: 's-1', optionsJson: '{}' })
+    mockBeginPasskeySignUp.mockResolvedValue({
+      challenge: { sessionId: 's-1', optionsJson: '{}' },
+    })
     mockFinishPasskeySignUp.mockResolvedValue({
-      user: { id: 'u-1', username: 'admin' },
+      sessionReport: {
+        user: { id: 'u-1', username: 'admin' },
+      },
     })
 
     renderSetup()
@@ -177,19 +182,27 @@ describe('the first-run setup page (SetupPage)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign up with passkey' }))
 
     await vi.waitFor(() => {
-      expect(mockFinishPasskeySignUp).toHaveBeenCalledWith({ sessionId: 's-1', credentialJson: '{"id":"cred"}' })
+      expect(mockFinishPasskeySignUp).toHaveBeenCalledWith({
+        credential: { sessionId: 's-1', credentialJson: '{"id":"cred"}' },
+      })
     })
     expect(mockBeginPasskeySignUp).toHaveBeenCalledWith(
       expect.objectContaining({ username: 'admin', email: 'admin@example.com' }),
     )
-    // The RPC creates the session, so the page adopts it and leaves.
-    expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u-1', username: 'admin' })
+    // The ceremony runs on the challenge that Begin returned.
+    expect(registerForChallenge).toHaveBeenCalledExactlyOnceWith({ sessionId: 's-1', optionsJson: '{}' })
+    // The RPC creates the session, so the page adopts its report and leaves.
+    expect(mockSetAuth).toHaveBeenCalledWith({
+      user: { id: 'u-1', username: 'admin' },
+    })
     expect(mockSignUp).not.toHaveBeenCalled()
   })
 
   it('still registers the first administrator with a password', async () => {
     mockSignUp.mockResolvedValue({
-      user: { id: 'u-1', username: 'admin' },
+      sessionReport: {
+        user: { id: 'u-1', username: 'admin' },
+      },
     })
 
     renderSetup()
@@ -204,8 +217,75 @@ describe('the first-run setup page (SetupPage)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
 
     await vi.waitFor(() => {
-      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'u-1', username: 'admin' })
+      expect(mockSetAuth).toHaveBeenCalledWith({
+        user: { id: 'u-1', username: 'admin' },
+      })
     })
     expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
+  })
+})
+
+// The page routes only an adopted account. A sign-up that could not report
+// its account recovers, and SignInRecoveryGate owns the navigation then; a
+// superseded adoption belongs to the newer operation.
+describe('the first-run setup page routing (SetupPage)', () => {
+  /**
+   * The page at /setup, with the app home at /, so a navigation shows. The
+   * returned list records each navigation the router makes.
+   */
+  function renderSetupRoute(): string[] {
+    const history = createMemoryHistory()
+    history.set({ value: '/setup', replace: true, scroll: false })
+    const navigations: string[] = []
+    history.listen(value => navigations.push(value))
+    render(() => (
+      <MemoryRouter history={history}>
+        <Route path="/setup" component={withPreferences(() => <SetupPage />)} />
+        <Route path="/" component={() => <div data-testid="app-home" />} />
+      </MemoryRouter>
+    ))
+    return navigations
+  }
+
+  async function submitPasswordSetup() {
+    await screen.findByText('Welcome to LeapMux')
+    fillCommonFields('admin')
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'strongpass1' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'strongpass1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+  }
+
+  it('goes home once the new account is adopted', async () => {
+    mockSignUp.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u-1', username: 'admin' },
+      },
+    })
+    mockSetAuth.mockResolvedValueOnce('adopted')
+    const navigations = renderSetupRoute()
+
+    await submitPasswordSetup()
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(navigations).toEqual(['/'])
+  })
+
+  it.each(['recovering', 'superseded'])('navigates nowhere for a %s adoption', async (outcome) => {
+    mockSignUp.mockResolvedValue({ sessionReport: {} })
+    mockSetAuth.mockResolvedValueOnce(outcome)
+    const navigations = renderSetupRoute()
+
+    await submitPasswordSetup()
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledExactlyOnceWith({}))
+    // One macrotask, so a navigation that follows the adoption has certainly run.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(navigations).toEqual([])
+    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
+    expect(screen.getByText('Welcome to LeapMux')).toBeInTheDocument()
   })
 })

@@ -61,9 +61,9 @@ func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 	require.EqualValues(t, 1, n)
 
 	// A real restricted write: it slides the window that admitted it.
-	body := `{"key":"` + settings.KeySignupEnabled.Name() + `","partial_json":"true"}`
+	body := `{"writes":[{"key":"` + settings.KeySignupEnabled.Name() + `","partial_json":"true"}]}`
 	req := httptest.NewRequest(http.MethodPost,
-		"/leapmux.v1.AdminSettingsService/UpdateSetting", bytes.NewReader([]byte(body)))
+		"/leapmux.v1.AdminSettingsService/UpdateSettings", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", auth.CookieName+"="+token)
 	rec := httptest.NewRecorder()

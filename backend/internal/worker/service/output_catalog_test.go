@@ -135,50 +135,34 @@ func TestCatalogProviderSampleCanPublishTheSameSink(t *testing.T) {
 	}
 }
 
-func TestCatalogCapabilitiesCanPublishTheSameSink(t *testing.T) {
-	for _, capability := range []string{"steering", "preemption"} {
-		t.Run(capability, func(t *testing.T) {
-			svc, writer, services := liveCatalogCallbackFixture(t, fixtureModelA)
-			sink := requireRootOutputSink(t, svc.Output, "agent-1")
-			svc.Output.WaitActivityRefreshes()
-			original := svc.Output.supportsSteering
-			if capability == "preemption" {
-				original = svc.Output.supportsPreemption
+func TestCatalogQueueHeadDispatchCanPublishTheSameSink(t *testing.T) {
+	svc, writer, services := liveCatalogCallbackFixture(t, fixtureModelA)
+	sink := requireRootOutputSink(t, svc.Output, "agent-1")
+	svc.Output.WaitActivityRefreshes()
+	original := svc.Output.queueHeadDispatch
+	expected := original("agent-1")
+	before := len(agentStatusChanges(t, writer, "agent-1"))
+	var entered bool
+	var callbacks int
+	var mutexesFree bool
+	svc.Output.SetQueueHeadDispatchFunc(func(agentID string) leapmuxv1.QueueHeadDispatch {
+		if !entered {
+			entered = true
+			mutexesFree = catalogCallbackLocksFree(sink)
+			if mutexesFree {
+				callbacks++
+				services.BroadcastStatusActive("original-native-session")
 			}
-			expected := original("agent-1")
-			before := len(agentStatusChanges(t, writer, "agent-1"))
-			var entered bool
-			var callbacks int
-			var mutexesFree bool
-			callback := func(agentID string) bool {
-				if !entered {
-					entered = true
-					mutexesFree = catalogCallbackLocksFree(sink)
-					if mutexesFree {
-						callbacks++
-						services.BroadcastStatusActive("original-native-session")
-					}
-				}
-				return original(agentID)
-			}
-			if capability == "steering" {
-				svc.Output.SetSupportsSteeringFunc(callback)
-			} else {
-				svc.Output.SetSupportsPreemptionFunc(callback)
-			}
-			services.BroadcastStatusActive("original-native-session")
-			assert.True(t, mutexesFree, "the configured capability reader must release both service mutexes")
-			assert.Equal(t, 1, callbacks)
-			changes := agentStatusChanges(t, writer, "agent-1")[before:]
-			assert.Len(t, changes, 2)
-			for _, change := range changes {
-				if capability == "steering" {
-					assert.Equal(t, expected, change.GetSupportsSteering())
-				} else {
-					assert.Equal(t, expected, change.GetSupportsPreemption())
-				}
-			}
-		})
+		}
+		return original(agentID)
+	})
+	services.BroadcastStatusActive("original-native-session")
+	assert.True(t, mutexesFree, "the configured dispatch reader must release both service mutexes")
+	assert.Equal(t, 1, callbacks)
+	changes := agentStatusChanges(t, writer, "agent-1")[before:]
+	assert.Len(t, changes, 2)
+	for _, change := range changes {
+		assert.Equal(t, expected, change.GetQueueHeadDispatch())
 	}
 }
 

@@ -5,7 +5,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { RunningNativeChild } from './runningChildProof'
 import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
-import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, InterruptAgentRequestSchema, InterruptAgentResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, WorkerAgentInputService, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { withCleanup } from './cleanup'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
@@ -77,7 +77,7 @@ export async function expectUnsupportedSubagent(
       expect(info.acceptsInterrupt).toBe(false)
       expect(parent.acceptsInterrupt).toBe(true)
       await expect(interruptButton(context.page)).toHaveCount(0)
-      await expect(channel.callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, {
+      await expect(channel.callWorker(workerId, WorkerAgentService.method.interruptAgent, {
         agentId: child.childId,
       })).rejects.toMatchObject({ source: 'rpc', code: Code.FailedPrecondition, message: 'this subagent cannot be interrupted' })
     }
@@ -88,7 +88,7 @@ export async function expectUnsupportedSubagent(
       await expectReadOnlySubagentReason(context.page)
       const inputId = crypto.randomUUID()
       const before = await readNativeInputQueue(context.leapmuxServer, child.childId)
-      await expect(channel.callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, {
+      await expect(channel.callWorker(workerId, WorkerAgentInputService.method.enqueueAgentInput, {
         agentId: child.childId,
         inputId,
         text: refusedMessage,

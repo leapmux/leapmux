@@ -63,9 +63,8 @@ func setTabTileOp(id, tile string, h *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
 		CanonicalHlc: h,
 		Body: &leapmuxv1.CrdtOp_SetTabRegister{
 			SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:   id,
-				Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: tile},
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: id},
+				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tile},
 			},
 		},
 	}
@@ -255,7 +254,7 @@ func TestCloneStateForBatch_TouchedNodeNotInPreIsHarmless(t *testing.T) {
 	assert.False(t, leakedToPre, "creating fresh node in working must not leak to pre")
 }
 
-// SetWorkspaceRegisterOp / TombstoneWorkspaceOp write to the Workspaces map,
+// CreateWorkspaceOp / TombstoneWorkspaceOp write to the Workspaces map,
 // so CloneStateForBatch must treat a lifecycle batch as touching workspaces
 // (deep-cloning that map and leaving the others shared with pre). This pins
 // the entity-kind contract the CloneStateForBatch doc rests on for the
@@ -297,27 +296,48 @@ func TestCloneStateForBatch_WorkspaceOpsCloneWorkspacesMapOnly(t *testing.T) {
 		"pre.Nodes[root-w1] must not be tombstoned by Apply on working")
 }
 
-// A SetWorkspaceRegisterOp on a brand-new workspace must not leak into pre when
+// A CreateWorkspaceOp on a brand-new workspace must not leak into pre when
 // Apply runs on the working copy — the symmetric create-side contract.
-func TestCloneStateForBatch_SetWorkspaceRegisterDoesNotLeakToPre(t *testing.T) {
+func TestCloneStateForBatch_CreateWorkspaceDoesNotLeakToPre(t *testing.T) {
 	pre := &leapmuxv1.UserCrdtState{
 		UserId:     "user-1",
 		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{},
 		MaxHlc:     hlc(0, 0, "seed"),
 	}
-	batch := []*leapmuxv1.CrdtOp{
-		{
-			OpId:         "ws-reg",
-			CanonicalHlc: hlc(1, 0, "hub"),
-			Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-				SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "fresh"},
-			},
-		},
-	}
+	batch := []*leapmuxv1.CrdtOp{createWorkspaceOp("fresh", "root-fresh", hlc(1, 0, "hub"))}
 	working := crdt.CloneStateForBatch(pre, batch)
 	for _, op := range batch {
 		crdt.Apply(working, op)
 	}
-	assert.Contains(t, working.Workspaces, "fresh", "Apply must seed the workspace in working")
-	assert.NotContains(t, pre.Workspaces, "fresh", "seeding in working must not leak to pre")
+	assert.Contains(t, working.Workspaces, "fresh", "Apply must create the workspace in working")
+	assert.NotContains(t, pre.Workspaces, "fresh", "creating in working must not leak to pre")
+}
+
+// A CreateWorkspaceOp that sets the root of an existing rootless record mutates
+// that record IN PLACE, so the record itself must be cloned, not only the map.
+func TestCloneStateForBatch_CreateWorkspaceOnARootlessRecordDoesNotLeakToPre(t *testing.T) {
+	pre := &leapmuxv1.UserCrdtState{
+		UserId: "user-1",
+		Workspaces: map[string]*leapmuxv1.WorkspaceContentsRecord{
+			"w1": {WorkspaceId: "w1"},
+		},
+		MaxHlc: hlc(0, 0, "seed"),
+	}
+	batch := []*leapmuxv1.CrdtOp{createWorkspaceOp("w1", "root-w1", hlc(1, 0, "hub"))}
+	working := crdt.CloneStateForBatch(pre, batch)
+	for _, op := range batch {
+		crdt.Apply(working, op)
+	}
+	assert.Equal(t, "root-w1", working.Workspaces["w1"].GetRootNodeId())
+	assert.Empty(t, pre.Workspaces["w1"].GetRootNodeId(), "setting the root in working must not leak to pre")
+}
+
+func createWorkspaceOp(workspaceID, rootNodeID string, at *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
+	return &leapmuxv1.CrdtOp{
+		OpId:         "ws-create-" + workspaceID,
+		CanonicalHlc: at,
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: workspaceID, RootNodeId: rootNodeID},
+		},
+	}
 }

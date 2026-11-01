@@ -20,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
@@ -61,14 +62,26 @@ func testSocketURL(t *testing.T) string {
 // round-trips correctly.
 func startTestServer(t *testing.T, info controlipc.TokenInfo, router *controlipc.Router) (string, leapmuxv1connect.ControlIPCServiceClient) {
 	t.Helper()
+	return listenTestServer(t, controlipc.Options{TokenInfo: info, Router: router})
+}
+
+// startTestServerWithOwnerUsername is startTestServer with a Whoami username
+// lookup.
+func startTestServerWithOwnerUsername(t *testing.T, info controlipc.TokenInfo, router *controlipc.Router, ownerUsername func(userid.UserID) string) leapmuxv1connect.ControlIPCServiceClient {
+	t.Helper()
+	_, client := listenTestServer(t, controlipc.Options{TokenInfo: info, Router: router, OwnerUsername: ownerUsername})
+	return client
+}
+
+// listenTestServer starts a server from opts with a fresh socket and token, and
+// returns the token and a client that sends it.
+func listenTestServer(t *testing.T, opts controlipc.Options) (string, leapmuxv1connect.ControlIPCServiceClient) {
+	t.Helper()
 	sockURL := testSocketURL(t)
 	rawToken := controlipc.MintToken()
-	srv, err := controlipc.Listen(controlipc.Options{
-		SocketURL: sockURL,
-		Token:     rawToken,
-		TokenInfo: info,
-		Router:    router,
-	})
+	opts.SocketURL = sockURL
+	opts.Token = rawToken
+	srv, err := controlipc.Listen(opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
 
@@ -137,6 +150,44 @@ func TestServer_Whoami_HappyPath(t *testing.T) {
 	assert.Equal(t, "worker-A", resp.GetWorkerId())
 	assert.Equal(t, "agent-1", resp.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, resp.GetTabType())
+	assert.Empty(t, resp.GetUsername(), "a server with no username lookup reports none")
+}
+
+// Whoami reports the username the worker holds for the token's user. The
+// lookup runs at every call, so a process sees its owner's rename.
+func TestServer_Whoami_ReportsTheOwnersUsername(t *testing.T) {
+	router := &controlipc.Router{
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
+	}
+	info := controlipc.TokenInfo{
+		UserID: userid.MustNew("u-1"), WorkerID: "worker-A", TabID: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}
+	var name atomic.Pointer[string]
+	alice := "alice"
+	name.Store(&alice)
+	var asked []userid.UserID
+	var mu sync.Mutex
+	client := startTestServerWithOwnerUsername(t, info, router, func(user userid.UserID) string {
+		mu.Lock()
+		asked = append(asked, user)
+		mu.Unlock()
+		return *name.Load()
+	})
+
+	resp, err := client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "alice", resp.GetUsername())
+
+	renamed := "alice2"
+	name.Store(&renamed)
+	resp, err = client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "alice2", resp.GetUsername(), "the username is read at every call")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, asked, 2)
+	assert.True(t, asked[0].MatchesUser(info.UserID), "the lookup is for the token's user")
 }
 
 func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
@@ -192,13 +243,13 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 	_, client := startTestServer(t, info, router)
 
 	resp, err := client.CallInner(context.Background(), &leapmuxv1.CallInnerRequest{
-		Method:         "worker.OpenAgent",
+		Method:         "worker." + leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,
 		Payload:        []byte(`{"hello":"world"}`),
 		TargetWorkerId: "worker-A",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []byte("local-resp"), resp.GetPayload())
-	assert.Equal(t, "OpenAgent", disp.gotMethod)
+	assert.Equal(t, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, disp.gotMethod)
 	assert.Equal(t, "u-1", disp.gotUserID.String())
 }
 
@@ -213,7 +264,7 @@ func TestServer_CallInner_AllowsFilesystemOnSpawningWorker(t *testing.T) {
 	_, client := startTestServer(t, info, router)
 
 	resp, err := client.CallInner(context.Background(), &leapmuxv1.CallInnerRequest{
-		Method:         "worker.ReadFile",
+		Method:         "worker." + leapmuxv1connect.WorkerFileServiceReadFileProcedure,
 		Payload:        []byte(`{"path":"/etc/hosts"}`),
 		TargetWorkerId: "worker-A", // same as spawning worker
 	})
@@ -236,7 +287,7 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
-		Method:          "worker.WatchEvents",
+		Method:          "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
 		ClientRequestId: "req-stream-1",
@@ -260,6 +311,43 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	}
 	cancel()
 	_ = stream.Close()
+}
+
+// A client retires its stream with UpdateStream{cancel: true}, through the
+// same service method that carries its revisions.
+func TestServer_UpdateStreamCancelRetiresTheStream(t *testing.T) {
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	router := &controlipc.Router{
+		WorkerID:        "worker-A",
+		UserID:          userid.MustNew("u-1"),
+		LocalDispatcher: &slowStreamDispatcher{stop: stop, emitted: &atomic.Int32{}},
+	}
+	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
+	_, client := startTestServer(t, info, router)
+
+	ctx := testutil.DeadlineContext(t)
+	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
+		Method:          "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
+		ClientRequestId: "req-retire",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	// The first frame proves the router registered the stream.
+	_, err = stream.Receive()
+	require.NoError(t, err)
+
+	_, err = client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{ClientRequestId: "req-retire", Cancel: true})
+	require.NoError(t, err)
+
+	for {
+		if _, err := stream.Receive(); err != nil {
+			break
+		}
+	}
+	require.NoError(t, ctx.Err(), "the stream ended because of the cancel, not the test deadline")
+	_, registered := router.StreamCancellers.Load("req-retire")
+	assert.False(t, registered, "the retired stream leaves no entry behind")
 }
 
 func TestServer_TokenRevokedAfterClose(t *testing.T) {
@@ -345,7 +433,7 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
-		Method:          "worker.WatchEvents",
+		Method:          "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
 		ClientRequestId: "req-stream-life",

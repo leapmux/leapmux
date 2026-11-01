@@ -152,7 +152,7 @@ func OpRetentionCutoffPhysicalMs(now time.Time, ttl time.Duration) int64 {
 }
 
 // SubmitInput is what callers hand the manager. internal=true skips
-// per-op auth and is required for SetWorkspaceRootNodeOp.
+// per-op auth and is required for CreateWorkspaceOp.
 //
 // It names no tenant: the manager it is submitted to IS the tenant. Registry.Get
 // keys managers by user id and refuses a blank one, and the factory builds
@@ -217,7 +217,7 @@ type Manager struct {
 	state *leapmuxv1.UserCrdtState
 	// The manager goroutine (Start's select loop) is the SOLE writer of
 	// m.state: every mutation -- including workspace lifecycle create/delete,
-	// which flows through SubmitInternal as SetWorkspaceRegisterOp /
+	// which flows through SubmitInternal as CreateWorkspaceOp /
 	// TombstoneWorkspaceOp -- goes through processSubmit / maybeCompact on
 	// that one goroutine. That makes the bare m.state map reads in
 	// ValidateBatch / DiffProjectionForBatch legitimately lock-free.
@@ -1024,7 +1024,7 @@ func (m *Manager) Submit(ctx context.Context, input SubmitInput) ([]*leapmuxv1.B
 
 // SubmitInternal is the in-process Go API for hub-driven ops
 // (lifecycle, worker reconciliation tombstones). The internal flag
-// skips the per-op auth check and gates SetWorkspaceRootNodeOp.
+// skips the per-op auth check and gates CreateWorkspaceOp.
 func (m *Manager) SubmitInternal(ctx context.Context, input SubmitInput) ([]*leapmuxv1.BatchResult, error) {
 	input.Internal = true
 	if input.PrincipalID == "" {
@@ -1202,7 +1202,7 @@ func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitRespon
 	// / DiffProjectionForBatch and the commit swap below need no extra lock
 	// beyond m.mu (which guards the RLock readers and the swap itself).
 	// Workspace lifecycle create/delete now flow through SubmitInternal as
-	// SetWorkspaceRegisterOp / TombstoneWorkspaceOp, so no out-of-band writer
+	// CreateWorkspaceOp / TombstoneWorkspaceOp, so no out-of-band writer
 	// remains.
 
 	results := make([]*leapmuxv1.BatchResult, 0, len(in.Batches))
@@ -1689,7 +1689,7 @@ func (m *Manager) LocateTileWorkspace(tileID string) string {
 // rotation does) or
 // constructing a record with hand-picked LWW HLCs that bypass the LWW-merge
 // path. Every workspace-record seed that CAN be an op batch should go through
-// SubmitInternal as a SetWorkspaceRegisterOp, mirroring the production
+// SubmitInternal as a CreateWorkspaceOp batch, mirroring the production
 // lifecycle create path.
 //
 // fn receives a CLONE, not the live generation, and the clone is published via

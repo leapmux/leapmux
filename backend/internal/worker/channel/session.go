@@ -267,13 +267,14 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	// has no legitimate path to do. Refuse rather than install a session with one.
 	//
 	// A session's UserID is the ONLY thing scoping every handler on this channel:
-	// requireWorkerOwner matches it against the Worker's registrant, and the
+	// the owner gate (ownerOnlyRegistrar.gate in internal/worker/service) matches it
+	// against the Worker's registrant, and the
 	// owner-scoped stores (worker_tab_payloads, worktree_tabs) bind it as half their
-	// key. An empty one would simply run as nobody -- denied by requireWorkerOwner
+	// key. An empty one would simply run as nobody -- denied by the owner gate
 	// but reaching no row either way, with every audit line recording nobody.
 	//
 	// This is the fourth boundary of this handshake, and the same rule the other
-	// three already apply: requireWorkerOwner refuses an empty identity on either
+	// three already apply: the owner gate refuses an empty identity on either
 	// side rather than matching two empty strings, verifyDelegationWorkerScope
 	// refuses an unrecorded minter, and both channel clients reject a Hub response
 	// that omits the identity. Fail closed here too.
@@ -1178,9 +1179,9 @@ func (b *boundSender) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		"channel_id", b.sender.channelID,
 		"correlation_id", b.requestID,
 		"method", b.method,
-		"is_error", resp.GetIsError(),
-		"error_code", resp.GetErrorCode(),
-		"error_message", resp.GetErrorMessage(),
+		"is_error", resp.GetError() != nil,
+		"error_code", resp.GetError().GetCode(),
+		"error_message", resp.GetError().GetMessage(),
 		"payload_len", len(resp.GetPayload()),
 	)
 	if err := b.sender.sendResponse(b.requestID, resp); err != nil {
@@ -1215,9 +1216,9 @@ func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
 		"correlation_id", b.requestID,
 		"method", b.method,
 		"end", msg.GetEnd(),
-		"is_error", msg.GetIsError(),
-		"error_code", msg.GetErrorCode(),
-		"error_message", msg.GetErrorMessage(),
+		"is_error", msg.GetError() != nil,
+		"error_code", msg.GetError().GetCode(),
+		"error_message", msg.GetError().GetMessage(),
 		"payload_len", len(msg.GetPayload()),
 	)
 	if err := b.sender.sendStream(b.requestID, msg); err != nil {

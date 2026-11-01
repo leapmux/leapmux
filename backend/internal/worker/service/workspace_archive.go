@@ -286,8 +286,9 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 	terminalSeen := make(map[string]struct{})
 	payloadSeen := make(map[payloadTabRef]struct{})
 	var set archiveTabSet
-	for _, tab := range tabs {
-		if tab == nil || tab.GetTabId() == "" {
+	for _, ref := range tabs {
+		tab := ref.GetTab()
+		if tab.GetTabId() == "" {
 			continue
 		}
 		switch tab.GetTabType() {
@@ -310,10 +311,10 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 			// blank user_id matches no row on a write and another account's row
 			// on a read, so a sender that forgot the field must hear about it
 			// rather than have its request half-applied.
-			if tab.GetUserId() == "" {
+			if ref.GetUserId() == "" {
 				return archiveTabSet{}, fmt.Errorf("tab %q is payload-backed and needs a user_id", tab.GetTabId())
 			}
-			key := payloadTabRef{userID: tab.GetUserId(), tabID: tab.GetTabId()}
+			key := payloadTabRef{userID: ref.GetUserId(), tabID: tab.GetTabId()}
 			if _, exists := payloadSeen[key]; !exists {
 				payloadSeen[key] = struct{}{}
 				set.payloads = append(set.payloads, key)

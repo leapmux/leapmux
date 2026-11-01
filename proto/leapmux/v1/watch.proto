@@ -1,0 +1,350 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "leapmux/v1/access.proto";
+import "leapmux/v1/agent.proto";
+import "leapmux/v1/terminal.proto";
+
+// WorkerWatchService serves the WatchEvents stream: a channel's per-agent and
+// per-terminal event subscription. Served by the Worker inside an E2EE channel.
+service WorkerWatchService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
+}
+
+// WatchReplayMode selects which history a WatchEvents subscriber replays before
+// the live stream begins. Sibling of MessagePageAnchor, narrowed to the modes
+// a tail subscription actually supports -- so OLDEST/BEFORE (meaningless for a
+// live tail) are simply unrepresentable rather than rejected at runtime.
+enum WatchReplayMode {
+  // Unset/unknown. The handler resolves it to LATEST (cold-start view).
+  WATCH_REPLAY_MODE_UNSPECIFIED = 0;
+  // Replay the most recent page, then stream live. cursor_seq is ignored. The
+  // cold-start subscription, matching the windowing client's initial LATEST load
+  // so the two dedup instead of tearing a gap into the loaded window.
+  WATCH_REPLAY_MODE_LATEST = 1;
+  // Replay every message after cursor_seq (seq > cursor_seq), then stream live.
+  // The reconnect/resume subscription that bridges the disconnect gap.
+  WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
+  // Replay every message after cursor_seq, as AFTER_CURSOR does, but replay
+  // NOTHING when the gap to the live tail is larger than
+  // contracts.CatchUpGapLimit. The worker measures the gap from
+  // WatchAgentEntry.window_tail_seq when the client declares it, else from
+  // cursor_seq. A windowed client abandons a gap that large and re-anchors on
+  // the newest page, so the burst would be pure waste. The client learns the
+  // tail from CatchUpStart.latest_seq. The worker sends this field for every
+  // replay mode.
+  WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE = 3;
+}
+
+// --- Event Streaming (per-agent / per-terminal) ---
+
+// WatchMode selects how much of an entity's traffic this channel receives.
+enum WatchMode {
+  // Treated as NOTIFY: an entry that says nothing about how much it wants gets
+  // the cheap half, never the expensive one.
+  WATCH_MODE_UNSPECIFIED = 0;
+  // Notification-class events only -- status changes, control requests and
+  // cancels, agent turn ends, terminal bells / notifications / titles /
+  // progress, terminal exits. Enough to keep a badge, a spinner, a title and a
+  // sound honest for a tab nobody is looking at, with none of the traffic only
+  // a rendered tab can use.
+  WATCH_MODE_NOTIFY = 1;
+  // Everything NOTIFY carries plus the entity's content: chat messages, stream
+  // deltas, to-do snapshots, terminal bytes -- and, on the transition INTO this
+  // mode, a catch-up replay.
+  WATCH_MODE_FULL = 2;
+}
+
+// WatchEventsRequest states the channel's WHOLE current interest, not an
+// increment. Entities the request omits are unsubscribed.
+//
+// The opening InnerRpcRequest carries the first one; every revision after that
+// rides an InnerStreamRequest on the SAME stream, so changing the set never
+// tears the subscription down and never re-replays entities that did not
+// change. The stream is retired by an InnerStreamRequest{cancel: true} or by
+// the channel closing -- an empty request now means "watching nothing" and
+// leaves the stream open.
+//
+// Revisions COALESCE: each states the whole interest, so the worker may apply
+// only the newest of a burst. A client applies only the ACK for its exact current update ID.
+message WatchEventsRequest {
+  repeated WatchAgentEntry agents = 1;
+  repeated WatchTerminalEntry terminals = 2;
+  // Echoed on WatchUpdateAck. Client-chosen, monotonic per stream; 0 is fine
+  // for a client that does not track revisions. "Per stream" here means per the
+  // client's logical subscription lifetime: a client that resets update_id on
+  // each fresh stream open MUST treat acks from prior stream generations as
+  // stale (the generation boundary does not by itself make a buffered ack from
+  // the prior stream current). Clients that keep a single monotonic counter for
+  // the whole subscription life (never resetting on reconnect) are immune; this
+  // is the stronger form both known clients (frontend and CLI) implement.
+  uint64 update_id = 3;
+}
+
+message WatchAgentEntry {
+  string agent_id = 1;
+  // History to replay when this FULL lifetime starts.
+  // A new replay_id starts another lifetime even when the registered mode stays FULL.
+  // Ignored for NOTIFY.
+  WatchReplayMode replay = 2;
+  // Exclusive sequence limit for AFTER_CURSOR replay (replay seq > cursor_seq).
+  // Ignored for LATEST or outside a FULL lifetime.
+  int64 cursor_seq = 3;
+  WatchMode mode = 4;
+  // The subscriber's loaded window tail, used ONLY as the base of the
+  // AFTER_CURSOR_OR_NONE skip decision: a windowed client re-anchors when the
+  // gap from its LOADED tail exceeds contracts.CatchUpGapLimit, and the resume
+  // cursor can lead that tail (frames the client observed but dropped while
+  // scrolled away). UNSET (the CLI, which never skips) keeps cursor_seq as the
+  // base. Never affects the replay query itself: that still pages after
+  // cursor_seq. Present 0 (an empty loaded window) is meaningful -- that client
+  // re-anchors on any gap past the limit.
+  optional int64 window_tail_seq = 5;
+  // Positive identity of this FULL lifetime. NOTIFY carries zero.
+  // Keep replay and cursor fields fixed while this identity remains FULL.
+  uint64 replay_id = 6;
+}
+
+message WatchTerminalEntry {
+  string terminal_id = 1;
+  // Resume cursor for the screen replay owed on the transition into
+  // WATCH_MODE_FULL. Ignored otherwise.
+  int64 after_offset = 2;
+  WatchMode mode = 3;
+}
+
+message WatchEventsResponse {
+  oneof event {
+    AgentEvent agent_event = 1;
+    TerminalEvent terminal_event = 2;
+    WatchUpdateAck update_ack = 3;
+  }
+}
+
+// WatchRejectionReason says WHY one entity in a WatchEventsRequest was not
+// subscribed. Modelled on ChannelOpenErrorCode (channel.proto) rather than on a
+// bare ConnectRPC code: what the client has to decide is settle-vs-retry, and a
+// status code loses that distinction the moment two causes map onto one code.
+enum WatchRejectionReason {
+  // Never sent. Present so an unrecognized reason is read as "unknown", which
+  // clients treat as DURABLE -- the safe direction, since a wrongly-settled
+  // entry is re-stated by the next real tab change while a wrongly-retried one
+  // loops forever.
+  WATCH_REJECTION_REASON_UNSPECIFIED = 0;
+  // DURABLE. This worker holds no live row with that id: closed, never created
+  // here, or living on a different worker. The client stops asking.
+  WATCH_REJECTION_REASON_NOT_FOUND = 1;
+  // TRANSIENT. The worker could not resolve the id at all, so this says
+  // NOTHING about whether the entity exists. Whatever the channel already had
+  // registered for it was left untouched. The client retries.
+  WATCH_REJECTION_REASON_LOOKUP_FAILED = 2;
+  // DURABLE. The credential that opened this channel was not granted the
+  // permission this entity kind needs: agent:read for an agent, terminal:read
+  // for a terminal. The client stops asking, and asking again with the same
+  // credential can never succeed.
+  //
+  // It is a PER-ENTITY reason rather than a whole-stream refusal because
+  // WatchEvents is a multiplexer: one request carries agents and terminals
+  // together, so a grant that covers one kind and not the other must subscribe
+  // what it covers and say precisely what it did not. Refusing the whole
+  // request would take away the half the account did grant.
+  WATCH_REJECTION_REASON_FORBIDDEN = 3;
+}
+
+// WatchRejection names one entity the worker did not subscribe, and why.
+message WatchRejection {
+  string entity_id = 1;
+  WatchRejectionReason reason = 2;
+}
+
+// Actual registered state for one agent after an interest update.
+message WatchAgentState {
+  string agent_id = 1;
+  WatchMode mode = 2;
+  // Positive for FULL and zero for NOTIFY.
+  uint64 replay_id = 3;
+}
+
+// WatchUpdateAck reports what one WatchEventsRequest actually subscribed. It is
+// sent for EVERY request, applied cleanly or not, and it never ends the stream.
+//
+// It is what makes a partial rejection recoverable. Registration is
+// replace-semantics, so an entity the worker cannot resolve is left
+// unsubscribed; without an ack that outcome was indistinguishable from success
+// and nothing ever retried it (issue #314). Carrying a REASON per entity --
+// rather than a bare id list plus a whole-request flag -- is what lets the
+// client settle a closed agent while retrying a transient fault, which is the
+// loop-vs-silence trade-off that kept #314 open. It also means a future per-id
+// or chunked lookup, the exact "transient rejection" #314 warns about, needs no
+// protocol change: it is already just another entity carrying LOOKUP_FAILED.
+message WatchUpdateAck {
+  uint64 update_id = 1;
+  repeated WatchRejection rejected_agents = 2;
+  repeated WatchRejection rejected_terminals = 3;
+  // Complete actual agent registration state for this channel.
+  // LOOKUP_FAILED returns the prior state because it does not apply the agent kind.
+  repeated WatchAgentState agent_states = 4;
+}
+
+message AgentEvent {
+  string agent_id = 1;
+  // Present on a replay frame, absent on a live frame. A client subscribes to
+  // live events before catch-up, so the same stream can contain live and
+  // replay frames during catch-up; the client uses this field to suppress
+  // replay alerts. broadcastReplayAgentEvent sets it.
+  ReplayOrigin replay = 2;
+  oneof event {
+    AgentChatMessage agent_message = 10;
+    AgentStatusChange status_change = 11;
+    AgentControlRequest control_request = 12;
+    AgentControlCancelRequest control_cancel = 13;
+    CatchUpComplete catch_up_complete = 14;
+    AgentTodoSnapshot todos_changed = 15;
+    CatchUpStart catch_up_start = 16;
+    AgentTurnEnd turn_end = 17;
+    AgentBackgroundTaskSnapshot background_tasks_changed = 18;
+    AgentInputQueueChanged input_queue_changed = 19;
+    AgentGoalSnapshot goal_changed = 20;
+    AgentActivityChanged activity_changed = 21;
+    // Worker response state updates do not establish that the provider process is active.
+    AgentControlRequest control_response_changed = 22;
+  }
+}
+
+// ReplayOrigin identifies the replay that produced a replay frame.
+message ReplayOrigin {
+  uint64 replay_id = 1; // The FULL lifetime that produced this replay; always positive.
+  // The watched agent that produced this replay. Root goal and task projections
+  // can use a different destination AgentEvent.agent_id.
+  string agent_id = 2;
+}
+
+// AgentTurnEnd fires when the agent finishes a turn. NOTIFY-class, so a tab
+// nobody is looking at still rings and still badges -- which the turn-end
+// divider it accompanies cannot do, being a chat message only a rendered tab
+// receives. The turn's tool count travels in AgentActivityChanged, which the
+// turn-end sound reads.
+message AgentTurnEnd {}
+
+// AgentActivityChanged carries the Worker's authoritative answer to "what is
+// this agent doing". The Worker derives it from the provider's own turn
+// bookkeeping, the background-task registry, the pending control requests and
+// the process state, so no client re-derives it from the transcript.
+//
+// EDGE-TRIGGERED: the Worker sends this only when the state CHANGES, never per
+// output line. NOTIFY-class, so the tab nobody is looking at still learns that
+// its agent settled -- which is the tab that most needs to ring and badge.
+//
+// The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
+// background task of this agent's is still running.
+//
+// EVERY instance of this message is a TRANSITION: the Worker sends it only where
+// its derived state differs from the one it last sent. The catch-up baseline is
+// a LEVEL and travels on CatchUpStart.activity_state instead. The two rode this
+// message together
+// once, and the
+// client could not
+// tell them apart.
+// It suppressed the
+// alert for the
+// whole catch-up
+// window, which
+// discarded each
+// genuine settle
+// that landed while
+// a tab replayed.
+//
+// A transition is not the same as news, so a client still compares against the
+// state it holds before it alerts. The Worker's "already sent" mark is per
+// process and per agent entry, and a worker
+// restart or a tab teardown drops it. The
+// first send afterwards then repeats a value
+// the client may already hold.
+message AgentActivityChanged {
+  AgentActivityState state = 1;
+  // Tool calls in the turn that this settle completes. The Worker records the
+  // count when a turn ends and spends it on the NEXT settle, so a turn that
+  // leaves a subagent running still reports its own count when the subagent
+  // finally settles the agent.
+  //
+  // UNSET when the agent starts working, when the provider reports no count,
+  // and when the settle follows no turn end at all -- a control request that
+  // arrives mid-turn, or a process exit. Clients suppress the sound for a
+  // zero-tool turn, so unset and 0 must stay distinguishable: unset means
+  // "ring", 0 means "this turn did nothing worth interrupting the user for".
+  optional int32 num_tool_uses = 2;
+}
+
+// CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
+// message replay burst. It carries the agent's authoritative live-tail seq and the
+// agent's derived activity, which are the two things a tab needs before it renders
+// the burst. A windowed
+// client that was disconnected reconciles against it FIRST -- dropping any loaded row
+// whose seq exceeds latest_seq (a tail deletion it missed while away) and clamping its
+// recorded live-tail -- so phantom rows are gone before the replay renders rather than
+// flashing until CatchUpComplete. CatchUpComplete repeats the reconcile as the final
+// authority after the burst.
+message CatchUpStart {
+  // The agent's authoritative live-tail seq at the moment replay began. Explicit
+  // presence: UNSET = the worker couldn't determine it (a DB error) and the client skips
+  // reconciliation; present 0 = the agent genuinely has no messages; present >0 = the
+  // authoritative MAX(seq).
+  optional int64 latest_seq = 1;
+  // What the agent is doing at the moment replay begins. A tab that just
+  // promoted to FULL then renders the right spinner and the right Interrupt
+  // button while the burst lands, rather than after it drains.
+  //
+  // A LEVEL, not a transition, which is why it rides this frame instead of
+  // AgentActivityChanged: the client rings on that message and must not ring for
+  // an agent that settled while it was away. The client seeds its store from
+  // this field and raises no alert. Under the WATCHED agent's own id, not the
+  // registry owner's -- a child tab's answer is its own registry row.
+  //
+  // The PUBLISHED state, which is what the live events carry, and not the exact
+  // derivation. The Worker debounces a settle, so the two differ for as long as
+  // one waits. A client seeded with the exact value would hold the
+  // settled state before the transition announcing it arrived, and
+  // would see no edge to ring on. See the Worker's AgentActivityPublished.
+  //
+  // UNSPECIFIED when the worker sends no opinion; the client then keeps whatever
+  // it holds rather than overwriting a fresher answer with a blank one.
+  AgentActivityState activity_state = 2;
+}
+
+message CatchUpComplete {
+  // The agent's authoritative live-tail seq at the moment replay completed. A windowed
+  // client can hold a stale tail if authoritative storage removed rows while it was
+  // disconnected. It drops any loaded row whose seq exceeds latest_seq and clamps its tail to this
+  // value, so its "new messages below" affordance can't stay stuck past a now-shorter
+  // history. Explicit presence: UNSET = the worker couldn't determine it (a DB error) and
+  // the client skips reconciliation; present 0 = the agent genuinely has no messages;
+  // present >0 = the authoritative MAX(seq).
+  optional int64 latest_seq = 1;
+  // The live-tail seq at the moment replay BEGAN (== CatchUpStart.latest_seq), repeated
+  // here so the reconcile can tell a deleted-during-replay phantom from a live arrival.
+  // The worker registers the watcher BEFORE reading latest_seq, so a message created and
+  // broadcast during catch-up can reach the client BEFORE this frame -- and its seq is
+  // necessarily ABOVE start_tail_seq (it didn't exist when replay began), while a
+  // deleted-during-replay phantom sits at-or-below it. So the client reaps only the
+  // (latest_seq, start_tail_seq] band and EXEMPTS rows above start_tail_seq (genuine live
+  // arrivals), instead of reaping everything above latest_seq (which would wrongly drop
+  // them). Same explicit presence as latest_seq; UNSET disables the band exemption (the
+  // client falls back to reaping above latest_seq, matching the pre-field behavior).
+  optional int64 start_tail_seq = 2;
+}
+
+message TerminalEvent {
+  string terminal_id = 1;
+  oneof event {
+    TerminalData data = 2;
+    TerminalClosed closed = 3;
+    TerminalStatusChange status_change = 4;
+    TerminalBell bell = 5;
+    TerminalNotification notification = 6;
+    TerminalTitleChanged title_changed = 7;
+    TerminalProgress progress = 8;
+  }
+}

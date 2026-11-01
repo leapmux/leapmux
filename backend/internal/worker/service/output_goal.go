@@ -251,20 +251,24 @@ func goalProgressInfo(update agent.GoalUpdate) map[string]interface{} {
 // GoalChangedEvent builds one independent snapshot from supplied data.
 // It reads no provider or stored state. A nil goal retains its clear stamp.
 func GoalChangedEvent(agentID string, snapshot GoalSnapshot, supportedActions []leapmuxv1.AgentGoalAction) *leapmuxv1.AgentEvent {
+	return &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event:   &leapmuxv1.AgentEvent_GoalChanged{GoalChanged: snapshot.Proto(supportedActions)},
+	}
+}
+
+// Proto builds the AgentGoalSnapshot that a broadcast, a replay and a latest
+// message page each carry. It copies the goal and the actions, so the result
+// shares no state with the snapshot. A nil goal keeps its clear stamp.
+func (snapshot GoalSnapshot) Proto(supportedActions []leapmuxv1.AgentGoalAction) *leapmuxv1.AgentGoalSnapshot {
 	var goal *leapmuxv1.AgentGoal
 	if snapshot.Goal != nil {
 		goal = proto.Clone(snapshot.Goal).(*leapmuxv1.AgentGoal)
 	}
-	return &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_GoalChanged{
-			GoalChanged: &leapmuxv1.AgentGoalChanged{
-				AgentId:          agentID,
-				Goal:             goal,
-				SupportedActions: slices.Clone(supportedActions),
-				GoalUpdatedAt:    snapshot.UpdatedAt,
-			},
-		},
+	return &leapmuxv1.AgentGoalSnapshot{
+		Goal:             goal,
+		SupportedActions: slices.Clone(supportedActions),
+		GoalUpdatedAt:    snapshot.UpdatedAt,
 	}
 }
 

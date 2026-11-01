@@ -1,6 +1,10 @@
 import type { WatchPlan } from './watchPlan'
 import type { WatchEventsHandle } from '~/api/workerRpc'
-import type { WatchAgentEntry, WatchEventsResponse, WatchRejection } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type {
+  WatchAgentEntry,
+  WatchEventsResponse,
+  WatchRejection,
+} from '~/generated/proto/leapmux/v1/watch_pb'
 import type { TabView } from '~/stores/tabView'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, onCleanup } from 'solid-js'
@@ -8,7 +12,11 @@ import { isDisconnectError } from '~/api/workerErrors'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToastWithLoggedCause } from '~/components/common/Toast'
 import { EVENTS_REJECTION_RETRY } from '~/generated/contracts/retry'
-import { WatchAgentEntrySchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import {
+  WatchAgentEntrySchema,
+  WatchMode,
+  WatchRejectionReason,
+} from '~/generated/proto/leapmux/v1/watch_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
@@ -395,9 +403,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
             const event = resp.event.value
             const receipt = s.replayRequests.get(event.agentId)
             if (event.replay && event.event.case === 'catchUpComplete'
-              && event.replayAgentId === event.agentId
+              && event.replay.agentId === event.agentId
               && receipt?.entry.mode === WatchMode.FULL
-              && receipt.entry.replayId === event.replayId) {
+              && receipt.entry.replayId === event.replay.replayId) {
               receipt.completed = true
             }
           }

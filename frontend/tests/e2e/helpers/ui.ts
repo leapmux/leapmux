@@ -10,7 +10,8 @@ import { permissionPresetsFor } from '../../../src/components/chat/providers/per
 import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
 import { hasOptions } from '../../../src/components/chat/settingsGroups'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { LocateTabResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
@@ -1496,7 +1497,7 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
     operation: 'The native settings tab lookup',
   })
   const { tab } = fromJson(LocateTabResponseSchema, located)
-  if (!tab || tab.tabId !== agentId || tab.tabType !== TabType.AGENT || !tab.workerId)
+  if (!tab || tab.tab?.tabId !== agentId || tab.tab.tabType !== TabType.AGENT || !tab.workerId)
     throw new Error('The native settings tab lookup returned no matching Worker identity.')
   const context = {
     leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId },

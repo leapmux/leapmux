@@ -347,11 +347,11 @@ describe('AccountConnectedApps', () => {
     mockList
       .mockResolvedValueOnce({
         tokens: [laptop],
-        nextCursor: 'page-2',
+        page: { nextCursor: 'page-2' },
       })
       .mockResolvedValueOnce({
         tokens: [desktop],
-        nextCursor: '',
+        page: { nextCursor: '' },
       })
 
     render(() => <AccountConnectedApps />)
@@ -361,8 +361,12 @@ describe('AccountConnectedApps', () => {
     // The limit is asked for, not left to the hub's default of fifty: the
     // page-count limit below is sized on the maximum, and an omitted limit made
     // the loop cover a tenth of what it claims at ten times the cost.
-    expect(mockList).toHaveBeenNthCalledWith(1, { cursor: '', limit: 500n })
-    expect(mockList).toHaveBeenNthCalledWith(2, { cursor: 'page-2', limit: 500n })
+    expect(mockList).toHaveBeenNthCalledWith(1, {
+      page: { cursor: '', limit: 500 },
+    })
+    expect(mockList).toHaveBeenNthCalledWith(2, {
+      page: { cursor: 'page-2', limit: 500 },
+    })
   })
 
   // A client loop whose only exit is a value the server chooses is a hang
@@ -370,7 +374,7 @@ describe('AccountConnectedApps', () => {
   it('stops when the cursor does not advance', async () => {
     mockList.mockResolvedValue({
       tokens: [laptop],
-      nextCursor: 'stuck',
+      page: { nextCursor: 'stuck' },
     })
 
     render(() => <AccountConnectedApps />)

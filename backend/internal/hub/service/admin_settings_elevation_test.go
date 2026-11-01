@@ -70,28 +70,14 @@ func authorized[T any](ctx context.Context, msg *T, authorize requestAuth) (cont
 func settingsWriteVerbs() map[string]settingsWrite {
 	key := settings.KeySignupEnabled.Name()
 	return map[string]settingsWrite{
-		"UpdateSetting": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateSetting(authorized(ctx,
-				&leapmuxv1.UpdateSettingRequest{Key: key, PartialJson: `true`}, authorize))
-			return err
-		},
-		"UpdateSettingSecret": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateSettingSecret(authorized(ctx,
-				&leapmuxv1.UpdateSettingSecretRequest{
-					Key: settings.KeySMTP.Name(), PartialJson: `{"password":"hunter2hunter2"}`,
-				}, authorize))
-			return err
-		},
-		"UpdateSettings": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+		"UpdateSettings public half": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
 			_, err := env.client.UpdateSettings(authorized(ctx,
-				&leapmuxv1.UpdateSettingsRequest{
-					Writes: []*leapmuxv1.SettingWrite{{Key: key, PartialJson: `true`}},
-				}, authorize))
+				oneWrite(key, `true`), authorize))
 			return err
 		},
-		"ResetSetting": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.ResetSetting(authorized(ctx,
-				&leapmuxv1.ResetSettingRequest{Key: key}, authorize))
+		"UpdateSettings secret half": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateSettings(authorized(ctx,
+				oneSecretWrite(settings.KeySMTP.Name(), `{"password":"hunter2hunter2"}`), authorize))
 			return err
 		},
 		"ResetSettings": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
@@ -180,9 +166,7 @@ func TestAdminSettingsService_WriteSlidesACredentialWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(authorized(ctx, &leapmuxv1.UpdateSettingRequest{
-		Key: settings.KeySignupEnabled.Name(), PartialJson: `true`,
-	}, bearerAuth(bearer)))
+	_, err = env.client.UpdateSettings(authorized(ctx, oneWrite(settings.KeySignupEnabled.Name(), `true`), bearerAuth(bearer)))
 	require.NoError(t, err)
 
 	row, err := env.st.APITokens().GetByID(ctx, tokenID)
@@ -209,9 +193,7 @@ func TestAdminSettingsService_WriteSlidesTheElevationWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
-		Key: settings.KeySignupEnabled.Name(), PartialJson: `true`,
-	}, env.token))
+	_, err = env.client.UpdateSettings(authedReq(ctx, oneWrite(settings.KeySignupEnabled.Name(), `true`), env.token))
 	require.NoError(t, err)
 
 	session, err := env.st.Sessions().GetByID(ctx, env.token, time.Now().UTC())
@@ -234,9 +216,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
-		Key: "no_such_setting_key", PartialJson: `true`,
-	}, env.token))
+	_, err = env.client.UpdateSettings(authedReq(ctx, oneWrite("no_such_setting_key", `true`), env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
@@ -253,9 +233,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 // arguments anyway.
 func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
-	_, err := env.client.UpdateSetting(authedReq(context.Background(), &leapmuxv1.UpdateSettingRequest{
-		Key: "no_such_setting_key", PartialJson: `true`,
-	}, env.token))
+	_, err := env.client.UpdateSettings(authedReq(context.Background(), oneWrite("no_such_setting_key", `true`), env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
@@ -291,9 +269,7 @@ func TestAdminSettingsService_SoloModeWritesWithoutAFactor(t *testing.T) {
 
 	// public_url is a key solo READS (it is not HiddenInSolo), so the write
 	// below reaches the gate rather than the solo key filter.
-	resp, err := env.client.UpdateSetting(ctx, &leapmuxv1.UpdateSettingRequest{
-		Key: settings.KeyPublicURL.Name(), PartialJson: `"https://hub.example.com"`,
-	})
+	resp, err := env.client.UpdateSettings(ctx, oneWrite(settings.KeyPublicURL.Name(), `"https://hub.example.com"`))
 	require.NoError(t, err, "a solo hub must be able to administer itself with no ceremony to prove a factor with")
 	require.NotNil(t, resp)
 

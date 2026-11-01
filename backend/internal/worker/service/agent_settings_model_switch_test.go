@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -101,7 +102,7 @@ func TestUpdateAgentSettings_StoppedAgentAcceptsAnOptionOfThePersistedCatalog(t 
 		ID: "agent-1",
 	}))
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"opencode_mode": "fast"}},
 	}, w)
@@ -151,7 +152,7 @@ func TestUpdateAgentSettings_StoppedModelSwitchUsesThePersistedCatalog(t *testin
 					svc.Agents.PreloadCache("agent-1", catalog)
 				}
 
-				dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+				dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 					AgentId:  "agent-1",
 					Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: fixtureModelB}},
 				}, w)

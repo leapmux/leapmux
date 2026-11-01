@@ -5,9 +5,9 @@ import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { assignDefined } from '~/lib/jsonPick'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
@@ -83,13 +83,10 @@ export function isSameRepo(
  * come from the projection rather than the worker.
  */
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> {
-  const status: TerminalStatus
-    = term.status === TerminalStatus.READY && term.exited
-      ? TerminalStatus.EXITED
-      : term.status
   const fields: Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> = {
     workerId,
-    status,
+    // The worker reports EXITED itself; the reply states every status.
+    status: term.status,
     startupError: term.startupError,
     startupMessage: term.startupMessage,
   }
@@ -110,7 +107,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
   // Any persisted screen means the shell already painted content; an
   // exited DB-only terminal has no future data source, so it must not
   // remain covered by the startup overlay either.
-  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.exited
+  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.status === TerminalStatus.EXITED
     ? true
     : undefined)
   if (term.gitStatus?.toplevel)
@@ -222,8 +219,7 @@ export function protoToAgentTabFields(
     agentStatus: agent.status,
     acceptsMessages: agent.acceptsMessages,
     acceptsInterrupt: agent.acceptsInterrupt,
-    supportsSteering: agent.supportsSteering,
-    supportsPreemption: agent.supportsPreemption,
+    queueHeadDispatch: agent.queueHeadDispatch,
     ...deriveOptionGroupTabFields(agent.optionGroups),
   }
   // Same absence-not-undefined rule as protoToTerminalTabFields.
@@ -248,8 +244,7 @@ export function protoToAgentTabFields(
 export const LIVE_STATUS_FIELDS = [
   'agentStatus',
   'agentSessionId',
-  'supportsSteering',
-  'supportsPreemption',
+  'queueHeadDispatch',
   'startupError',
   'startupMessage',
 ] as const satisfies readonly (keyof AgentTab)[]
@@ -571,7 +566,6 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
   return {
     id: tab.id,
     workerId: tab.workerId ?? '',
-    workerName: '',
     workingDir: tab.workingDir ?? '',
     title: tab.title ?? '',
     agentProvider: tab.agentProvider!,
@@ -581,14 +575,12 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     gitStatus: undefined,
     createdAt: tab.createdAt ?? '',
     closedAt: '',
-    homeDir: '',
     startupError: tab.startupError ?? '',
     startupMessage: tab.startupMessage ?? '',
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
     acceptsInterrupt: tab.acceptsInterrupt ?? false,
-    supportsSteering: tab.supportsSteering ?? false,
-    supportsPreemption: tab.supportsPreemption ?? false,
+    queueHeadDispatch: tab.queueHeadDispatch ?? QueueHeadDispatch.NONE,
     rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
 }
@@ -969,12 +961,9 @@ type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
  * newer than that reading. So the reply gives up the lifecycle fields and
  * keeps the rest: the title, the directories, the size, and the screen.
  *
- * One answer outlasts the event: a shell that exited. The catch-up marker that
- * a watch sends on subscribe reads READY for a shell that exited before the
- * subscription, because the marker has no field for the exit. Only the reply
- * carries it. A dead shell stays dead until a restart, and a restart needs a
- * user who presses Enter on an EXITED tab that is hydrated. A reply that says
- * EXITED therefore applies in full.
+ * One answer outlasts the event: a shell that exited. A dead shell stays dead
+ * until a restart, and a restart needs a user who presses Enter on an EXITED
+ * tab that is hydrated. A reply that says EXITED therefore applies in full.
  *
  * Another client can restart the shell while the reply is pending. The
  * restart then lands between the moment when the worker reads the state and the

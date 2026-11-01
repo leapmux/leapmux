@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -11,12 +13,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
@@ -449,21 +453,111 @@ func TestHandleMessage_ReconcileNudge_NilCallbackIsSafe(t *testing.T) {
 
 // The Hub delivers the worker's owner on every connect; without this dispatch arm
 // handleMessage falls through to the "unhandled hub message" warn and the worker
-// never learns who owns it -- leaving requireWorkerOwner to fail closed against the
+// never learns who owns it -- leaving the owner gate to fail closed against the
 // worker's own legitimate user, permanently and indistinguishably from a genuine
 // cross-tenant refusal.
 func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
-	var captured string
-	c.OnWorkerIdentity = func(registeredBy string) { captured = registeredBy }
+	var captured *leapmuxv1.WorkerIdentity
+	c.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) { captured = identity }
 
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
-			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1"},
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice"},
 		},
 	})
 
-	assert.Equal(t, "owner-1", captured, "OnWorkerIdentity should receive the Hub's owner")
+	require.NotNil(t, captured, "OnWorkerIdentity should receive the Hub's identity")
+	assert.Equal(t, "owner-1", captured.GetRegisteredBy(), "the callback receives the Hub's owner")
+	assert.Equal(t, "alice", captured.GetRegisteredByUsername(), "the callback receives the owner's username")
+}
+
+// The Hub sends the identity again on a live stream when the owner's account
+// changes. Each delivery reaches the callback in order, so the worker follows a
+// rename without a reconnect.
+func TestHandleMessage_WorkerIdentity_DeliversEveryReDelivery(t *testing.T) {
+	c := newTestClient(t, "http://localhost:0")
+	var captured []*leapmuxv1.WorkerIdentity
+	c.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) { captured = append(captured, identity) }
+
+	first := &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice"}
+	renamed := &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice2"}
+	for _, identity := range []*leapmuxv1.WorkerIdentity{first, renamed} {
+		c.handleMessage(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: identity},
+		})
+	}
+
+	require.Len(t, captured, 2, "a re-delivery on the same connection is not dropped")
+	assert.Same(t, first, captured[0])
+	assert.Same(t, renamed, captured[1], "the callback receives the Hub's message as it is")
+	assert.True(t, c.identityReceived.Load())
+}
+
+// listOwnedTabsConnector serves only ListOwnedTabsForWorker of the connector
+// service, and records the bearer each call carries.
+type listOwnedTabsConnector struct {
+	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
+	calls atomic.Int32
+	auth  atomic.Pointer[string]
+}
+
+func (s *listOwnedTabsConnector) ListOwnedTabsForWorker(ctx context.Context, _ *leapmuxv1.ListOwnedTabsForWorkerRequest) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+	s.calls.Add(1)
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		auth := info.RequestHeader().Get("Authorization")
+		s.auth.Store(&auth)
+	}
+	return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "owner-1"}, nil
+}
+
+// startListOwnedTabsConnector serves the connector over unencrypted HTTP/2,
+// which is what the worker's client speaks.
+func startListOwnedTabsConnector(t *testing.T) (*listOwnedTabsConnector, string) {
+	t.Helper()
+	svc := &listOwnedTabsConnector{}
+	mux := http.NewServeMux()
+	srv := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(srv, svc)
+	connecthttp.Mount(mux, srv, connecthttp.WithReadMaxBytes(0))
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = &http.Protocols{}
+	server.Config.Protocols.SetHTTP1(true)
+	server.Config.Protocols.SetUnencryptedHTTP2(true)
+	server.Start()
+	t.Cleanup(server.Close)
+	return svc, server.URL
+}
+
+// The orphan reconciler's list call is a method of the connector service. A
+// hub that serves only that service answers it, with the worker's own token as
+// the bearer.
+func TestListOwnedTabsForWorker_CallsTheConnectorService(t *testing.T) {
+	svc, url := startListOwnedTabsConnector(t)
+	c := newTestClient(t, url)
+	c.mu.Lock()
+	c.authToken = "worker-token"
+	c.mu.Unlock()
+
+	resp, err := c.ListOwnedTabsForWorker(testutil.DeadlineContext(t))
+	require.NoError(t, err)
+	assert.Equal(t, "owner-1", resp.GetOwnerUserId(), "the whole response reaches the caller")
+	require.Equal(t, int32(1), svc.calls.Load())
+	require.NotNil(t, svc.auth.Load())
+	assert.Equal(t, "Bearer worker-token", *svc.auth.Load())
+}
+
+// Before the first Connect the client holds no token, so it refuses locally
+// rather than asking the hub without credentials.
+func TestListOwnedTabsForWorker_RefusesWithoutAToken(t *testing.T) {
+	svc, url := startListOwnedTabsConnector(t)
+	c := newTestClient(t, url)
+
+	resp, err := c.ListOwnedTabsForWorker(testutil.DeadlineContext(t))
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "no auth token")
+	assert.Zero(t, svc.calls.Load(), "the hub is never asked without a token")
 }
 
 // The optional-callback contract: a client with no identity consumer wired (tests,
@@ -500,7 +594,7 @@ func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
 
 // The worker owner is sourced ONLY from the Hub's connect-time WorkerIdentity
 // greeting; if a proxy strips the oneof, a partial upgrade drops it, or a Hub
-// bug never sends it, requireWorkerOwner would deny every machine-scoped RPC
+// bug never sends it, the owner gate would deny every machine-scoped RPC
 // for the connection's life with no recovery short of a reconnect. A watchdog
 // force-closes the stream when the greeting does not arrive in time, so the
 // reconnect backoff re-runs the greeting on a fresh stream.
@@ -547,7 +641,7 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 // stops as soon as the Hub delivers the identity.
 func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
-	c.OnWorkerIdentity = func(string) {}
+	c.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) {}
 	assert.False(t, c.identityReceived.Load())
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
@@ -700,8 +794,8 @@ func TestClientTrySendDropsWhenBudgetFull(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	filler := &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: make([]byte, 400)},
+		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+			ChannelMessageResp: &leapmuxv1.ChannelMessage{Ciphertext: make([]byte, 400)},
 		},
 	}
 	fillSize := connectReqSize(filler)
@@ -747,8 +841,8 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	filler := &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: make([]byte, 400)},
+		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+			ChannelMessageResp: &leapmuxv1.ChannelMessage{Ciphertext: make([]byte, 400)},
 		},
 	}
 	fillSize := connectReqSize(filler)

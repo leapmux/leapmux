@@ -1,6 +1,8 @@
+import type { DescMethod } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentGoalAction } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { AgentGoalAction, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { TabType, WorktreeAction } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { WorkerTabService } from '../../../src/generated/proto/leapmux/v1/worker_tab_pb'
 import { deepseekHarnessGoalOwner, withDeepseekHarnessGoalCleanup } from './goalCleanupRuntime'
 
 const mocks = vi.hoisted(() => ({
@@ -16,12 +18,12 @@ vi.mock('../helpers/nativeScenario', () => ({
 
 beforeEach(() => {
   mocks.channel.mockReset().mockResolvedValue({ callWorker: mocks.callWorker })
-  mocks.callWorker.mockReset().mockImplementation(async (_worker: string, method: string) => {
-    if (method === 'UpdateAgentGoal')
+  mocks.callWorker.mockReset().mockImplementation(async (_worker: string, method: DescMethod) => {
+    if (method === WorkerAgentService.method.updateAgentGoal)
       return {}
-    if (method === 'ListAgentMessages')
-      return { goalLoaded: true }
-    throw new Error(`The cleanup test received an unexpected Worker method: ${method}.`)
+    if (method === WorkerAgentService.method.listAgentMessages)
+      return { goal: {} }
+    throw new Error(`The cleanup test received an unexpected Worker method: ${method.name}.`)
   })
   mocks.nativeAgentById.mockReset()
 })
@@ -60,8 +62,8 @@ describe('withDeepseekHarnessGoalCleanup', () => {
     await withDeepseekHarnessGoalCleanup(native, owner, ['first-round', 'second-round'], async () => {
       owner.agentId = 'selected-child'
     })
-    expect(mocks.callWorker).toHaveBeenNthCalledWith(1, 'owned-worker', 'UpdateAgentGoal', expect.anything(), expect.anything(), { agentId: 'owned-root', action: AgentGoalAction.CLEAR })
-    expect(mocks.callWorker).toHaveBeenNthCalledWith(2, 'owned-worker', 'ListAgentMessages', expect.anything(), expect.anything(), { agentId: 'owned-root', limit: 1 })
+    expect(mocks.callWorker).toHaveBeenNthCalledWith(1, 'owned-worker', WorkerAgentService.method.updateAgentGoal, { agentId: 'owned-root', action: AgentGoalAction.CLEAR })
+    expect(mocks.callWorker).toHaveBeenNthCalledWith(2, 'owned-worker', WorkerAgentService.method.listAgentMessages, { agentId: 'owned-root', limit: 1 })
     expect(native.modelScript.releaseGateIfHeld.mock.calls).toEqual([
       ['first-round'],
       ['second-round'],
@@ -93,12 +95,12 @@ describe('withDeepseekHarnessGoalCleanup', () => {
     const native = context()
     const failure = new Error('The native goal clear failed.')
     const calls: string[] = []
-    mocks.callWorker.mockImplementation(async (_worker: string, method: string) => {
-      calls.push(method)
-      if (method === 'UpdateAgentGoal')
+    mocks.callWorker.mockImplementation(async (_worker: string, method: DescMethod) => {
+      calls.push(method.name)
+      if (method === WorkerAgentService.method.updateAgentGoal)
         throw failure
-      if (method === 'CloseAgent')
-        return { result: {} }
+      if (method === WorkerTabService.method.closeTab)
+        return {}
       throw new Error('The fallback cleanup called an unexpected Worker method.')
     })
     // The Worker lists only rows that are not closed, so a completed close reads as no agent.
@@ -108,28 +110,29 @@ describe('withDeepseekHarnessGoalCleanup', () => {
       return true
     })
     await expect(withDeepseekHarnessGoalCleanup(native, { agentId: 'owned-root', workerId: 'owned-worker' }, ['held-round'], async () => {})).rejects.toBe(failure)
-    expect(mocks.callWorker).toHaveBeenNthCalledWith(2, 'owned-worker', 'CloseAgent', expect.anything(), expect.anything(), { agentId: 'owned-root', worktreeAction: WorktreeAction.KEEP })
-    expect(calls).toEqual(['UpdateAgentGoal', 'CloseAgent', 'release'])
+    expect(mocks.callWorker).toHaveBeenNthCalledWith(2, 'owned-worker', WorkerTabService.method.closeTab, {
+      tab: { tabType: TabType.AGENT, tabId: 'owned-root' },
+      worktreeAction: WorktreeAction.KEEP,
+    })
+    expect(calls).toEqual(['UpdateAgentGoal', 'CloseTab', 'release'])
   })
 
   it.each([
-    { goalLoaded: false },
+    {},
     {
-      goalLoaded: true,
-      goal: { objective: 'The goal remains active.' },
+      goal: {
+        goal: { objective: 'The goal remains active.' },
+      },
     },
   ])('refuses an unconfirmed clear and still releases after close refusal: %j', async (snapshot) => {
     const native = context()
-    mocks.callWorker.mockImplementation(async (_worker: string, method: string) => {
-      if (method === 'UpdateAgentGoal')
+    mocks.callWorker.mockImplementation(async (_worker: string, method: DescMethod) => {
+      if (method === WorkerAgentService.method.updateAgentGoal)
         return {}
-      if (method === 'ListAgentMessages')
+      if (method === WorkerAgentService.method.listAgentMessages)
         return snapshot
-      if (method === 'CloseAgent') {
-        return {
-          result: { failureMessage: 'The native root did not close.' },
-        }
-      }
+      if (method === WorkerTabService.method.closeTab)
+        return { failureMessage: 'The native root did not close.' }
       throw new Error('The cleanup called an unexpected Worker method.')
     })
     await expect(withDeepseekHarnessGoalCleanup(native, { agentId: 'owned-root', workerId: 'owned-worker' }, ['held-round'], async () => {})).rejects.toMatchObject({

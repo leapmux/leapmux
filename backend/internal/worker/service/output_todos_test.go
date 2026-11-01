@@ -971,7 +971,7 @@ func TestOutputTodos_EnrichmentNeverReplaysTheListTheRowAlreadyCarried(t *testin
 	assert.Equal(t, "fresh", rows[0].Content, "the enriched older row must not restore its own list")
 }
 
-// Note: AgentTodosChanged broadcast is a one-line call adjacent to the
+// Note: the todos_changed broadcast is a one-line call adjacent to the
 // already-tested broadcast for AgentMessage; covering it would require a
 // second-level test harness around channel.ResponseWriter. The above persistence
 // tests prove the upstream extract/apply pipeline; the broadcast is a

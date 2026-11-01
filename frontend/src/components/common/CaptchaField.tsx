@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { CaptchaAction } from '~/generated/contracts/captcha'
 
 import { Match, Show, Switch } from 'solid-js'
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
 import { getCaptchaProvider } from '~/lib/systemInfo'
 import { AltchaField } from './AltchaField'
 import { RecaptchaV3Field } from './RecaptchaV3Field'

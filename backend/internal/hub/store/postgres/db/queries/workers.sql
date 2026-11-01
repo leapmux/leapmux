@@ -1,6 +1,6 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, auth_token, registered_by, public_key, mlkem_public_key, slhdsa_public_key, auto_registered)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO workers (id, auth_token, registered_by, auto_registered)
+VALUES ($1, $2, $3, $4);
 
 -- name: GetWorkerByID :one
 SELECT * FROM workers WHERE id = $1 AND deleted_at IS NULL;
@@ -37,12 +37,6 @@ UPDATE workers SET deleted_at = NOW() WHERE registered_by = $1 AND deleted_at IS
 
 -- name: UpdateWorkerLastSeen :exec
 UPDATE workers SET last_seen_at = NOW() WHERE id = $1;
-
--- name: UpdateWorkerPublicKey :exec
-UPDATE workers SET public_key = $1, mlkem_public_key = $2, slhdsa_public_key = $3 WHERE id = $4;
-
--- name: GetWorkerPublicKey :one
-SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = $1 AND deleted_at IS NULL;
 
 -- Each state and owner filter has its own query. Literal predicates let
 -- the planner select an ordered index for exactly the requested population.

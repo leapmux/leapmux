@@ -74,7 +74,7 @@ function providerWireName(provider: ExternalCaptchaProvider): string {
 // failure states the last read.
 async function waitForSystemInfoProvider(hubUrl: string, provider: ExternalCaptchaProvider): Promise<void> {
   await retryUntilPass(async () => {
-    const info = await callHub<{ captchaProvider?: string }>(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'waitForSystemInfoProvider' })
+    const info = await callHub<{ captchaProvider?: string }>(hubUrl, 'SystemService/GetSystemInfo', {}, { operation: 'waitForSystemInfoProvider' })
     expect(info.captchaProvider, `the hub reports the captcha provider ${provider}`).toBe(providerWireName(provider))
   })
 }

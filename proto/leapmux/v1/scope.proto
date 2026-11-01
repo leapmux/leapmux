@@ -17,22 +17,23 @@ package leapmux.v1;
 // Everything else is grantable. A grant SUBTRACTS from the account's own
 // authority and never adds to it, so a scope can only ever deny.
 enum Scope {
-  // The zero. Never grantable and never stored. A procedure that maps to it is
-  // one nobody classified, and it is refused to every scoped credential -- so
-  // a new procedure is unreachable by an app until somebody assigns it.
+  // The zero. Never grantable and never stored. A method whose MethodAccess
+  // (access.proto) is absent is one nobody classified, and it is refused to
+  // every scoped credential -- so a new method is unreachable by an app until
+  // somebody assigns it.
   SCOPE_UNSPECIFIED = 0;
 
   // The recorded refusal. It marks the procedures NO grant reaches, whatever
   // an account ticks on a consent screen: the account's own credential
-  // surface, which the enforcement table in
-  // internal/hub/auth/procedure_scopes.go states -- the one source of that
-  // classification, including which formerly refused surfaces ordinary scopes
-  // now reach (app registration sits behind admin:apps). It can never appear
-  // in a request or on a consent screen.
+  // surface. Each hub method's MethodAccess option (access.proto) states its
+  // classification, and that option is the one source of it, including which
+  // formerly refused surfaces ordinary scopes now reach (app registration sits
+  // behind admin:apps). It can never appear in a request or on a consent
+  // screen.
   //
-  // It is a value rather than an absence because the alternative is a map miss,
-  // and a miss cannot state a REASON. A reader of the map learns that the
-  // procedure was considered and refused, not that somebody forgot it.
+  // It is a value rather than an absence because an absent option cannot state
+  // a REASON. A reader of the proto learns that the method was considered and
+  // refused, not that somebody forgot it.
   SCOPE_NEVER = 1;
 
   // The absence of a limit, carried EXPLICITLY.
@@ -94,7 +95,7 @@ enum Scope {
   // There is no file:write scope, because the Worker registers no file-write
   // handler. An unused scope on a consent screen is a lie; a future write
   // handler adds its own. The one destructive path the tab-payload verbs can
-  // reach -- RevokeTabPayload with WORKTREE_ACTION_REMOVE, which runs
+  // reach -- CloseTab of a FILE or IMAGE tab with WORKTREE_ACTION_REMOVE, which runs
   // `git worktree remove` -- is gated under SCOPE_GIT_WRITE at the action,
   // so file:read alone stays read-only.
   SCOPE_FILE_READ = 13;

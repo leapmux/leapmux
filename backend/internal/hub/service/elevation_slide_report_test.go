@@ -42,8 +42,8 @@ func signupKey() string { return settings.KeySignupEnabled.Name() }
 func writeOneSetting(t *testing.T, env *adminSettingsEnv, authorize requestAuth) *connect.CallInfo {
 	t.Helper()
 	ctx, info := connect.NewClientContext(context.Background())
-	_, err := env.client.UpdateSetting(authorized(ctx,
-		&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, authorize))
+	_, err := env.client.UpdateSettings(authorized(ctx,
+		oneWrite(signupKey(), `true`), authorize))
 	require.NoError(t, err)
 	return info
 }
@@ -197,8 +197,8 @@ func TestElevationSlideReportsNothingOnARefusal(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
 
 	ctx, info := connect.NewClientContext(context.Background())
-	_, err := env.client.UpdateSetting(authorized(ctx,
-		&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, cookieAuth(env.token)))
+	_, err := env.client.UpdateSettings(authorized(ctx,
+		oneWrite(signupKey(), `true`), cookieAuth(env.token)))
 	require.Error(t, err)
 
 	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),

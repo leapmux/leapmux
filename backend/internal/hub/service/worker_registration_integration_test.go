@@ -50,7 +50,7 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			register := func(key string, done chan<- result) {
 				requestCtx, info := connect.NewClientContext(ctx)
 				info.RequestHeader().Set("Authorization", "Bearer "+key)
-				response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{Version: "v"})
+				response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{})
 				done <- result{response: response, err: err}
 			}
 			firstDone, secondDone := make(chan result, 1), make(chan result, 1)

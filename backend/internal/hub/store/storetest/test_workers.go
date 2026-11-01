@@ -323,26 +323,6 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.NotNil(t, found.LastSeenAt)
 	})
 
-	t.Run("update public key", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "pubkey-user")
-		worker := SeedWorker(t, st, user.ID)
-
-		err := st.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
-			ID:              worker.ID,
-			PublicKey:       []byte("classic-key"),
-			MlkemPublicKey:  []byte("mlkem-key"),
-			SlhdsaPublicKey: []byte("slhdsa-key"),
-		})
-		require.NoError(t, err)
-
-		keys, err := st.Workers().GetPublicKey(ctx, worker.ID)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("classic-key"), keys.PublicKey)
-		assert.Equal(t, []byte("mlkem-key"), keys.MlkemPublicKey)
-		assert.Equal(t, []byte("slhdsa-key"), keys.SlhdsaPublicKey)
-	})
-
 	t.Run("deregister", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "dereg-user")
@@ -415,49 +395,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 		}
 	})
 
-	t.Run("create with public keys", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "pk-worker-user")
-
-		workerID := id.Generate()
-		err := st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       id.Generate(),
-			RegisteredBy:    userid.MustNew(user.ID),
-			PublicKey:       []byte("pk"),
-			MlkemPublicKey:  []byte("mlkem"),
-			SlhdsaPublicKey: []byte("slhdsa"),
-		})
-		require.NoError(t, err)
-
-		keys, err := st.Workers().GetPublicKey(ctx, workerID)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("pk"), keys.PublicKey)
-		assert.Equal(t, []byte("mlkem"), keys.MlkemPublicKey)
-		assert.Equal(t, []byte("slhdsa"), keys.SlhdsaPublicKey)
-	})
-
 	t.Run("get by auth token not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.Workers().GetByAuthToken(ctx, "nonexistent-token")
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
-	t.Run("get public key of deleted worker returns not found", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "pubkey-del-user")
-		worker := SeedWorker(t, st, user.ID)
-
-		err := st.Workers().MarkDeleted(ctx, worker.ID)
-		require.NoError(t, err)
-
-		_, err = st.Workers().GetPublicKey(ctx, worker.ID)
-		assert.ErrorIs(t, err, store.ErrNotFound)
-	})
-
-	t.Run("get public key not found", func(t *testing.T) {
-		st := s.NewStore(t)
-		_, err := st.Workers().GetPublicKey(ctx, "nonexistent-worker")
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -688,7 +628,6 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		err := st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: worker.ID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
-			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
@@ -765,26 +704,6 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
 			"same-millisecond workers must not be skipped across page boundaries")
-	})
-
-	t.Run("update public key reflected in get by id", func(t *testing.T) {
-		st := s.NewStore(t)
-		user := SeedUser(t, st, "pk-getbyid-user")
-		worker := SeedWorker(t, st, user.ID)
-
-		err := st.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
-			ID:              worker.ID,
-			PublicKey:       []byte("new-classic"),
-			MlkemPublicKey:  []byte("new-mlkem"),
-			SlhdsaPublicKey: []byte("new-slhdsa"),
-		})
-		require.NoError(t, err)
-
-		found, err := st.Workers().GetByID(ctx, worker.ID)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("new-classic"), found.PublicKey)
-		assert.Equal(t, []byte("new-mlkem"), found.MlkemPublicKey)
-		assert.Equal(t, []byte("new-slhdsa"), found.SlhdsaPublicKey)
 	})
 
 	t.Run("mark deleted is idempotent", func(t *testing.T) {

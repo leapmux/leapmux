@@ -52,7 +52,7 @@ describe('useAvailableShells', () => {
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
         expect(listAvailableShells.mock.calls[0]).toEqual([
           'A',
-          { workerId: 'A' },
+          {},
         ])
         expect(hook.shells()).toEqual(['/bin/zsh', '/bin/bash'])
         expect(hook.defaultShell()).toBe('/bin/zsh')

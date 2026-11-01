@@ -106,30 +106,25 @@ export const VerifyEmailPage: Component = () => {
     setSubmitting(true)
     setError(null)
     try {
+      // Opened BEFORE the request leaves, so a reply that lands after an
+      // identity change re-reads the new identity instead of adopting this one.
+      const adopt = auth.openUserAdoption()
       const resp = await userClient.verifyEmail({
         verificationToken: normalized,
         ...captcha.fields(),
       })
-      // The RESPONSE is the authoritative account, so adopt it first. A second
-      // round trip can fail, and `refreshUser` discards its own failure, so a
-      // page that read the account only through the refresh navigates home with
-      // `emailVerified` still false for an address the hub just verified.
-      // Preferences then renders "unverified / Verify", and
-      // RegisterWorkerDialog keeps its email control disabled.
+      // The RESPONSE is the authoritative account and its verification
+      // status, so adopt them. A page that read the account only through a
+      // refresh navigated home with `emailVerified` still false whenever that
+      // second round trip failed: Preferences then rendered "unverified /
+      // Verify", and RegisterWorkerDialog kept its email control disabled.
       //
-      // adoptSameIdentityUser, never setAuth: this is the SAME identity, so it
-      // is a refresh and not a transition. setAuth clears the elevation
-      // deadline -- which is right when a sign-in lands a new user, and wrong
-      // here, where the hub touched no elevation column at all. Clearing it
-      // made Preferences report a verified session as unverified and hid the
-      // "End now" button while the window was still open, and sent a CLI
-      // consent bounce back through /elevate for a factor the hub would not
-      // have asked for.
-      if (resp.user)
-        await auth.adoptSameIdentityUser(resp.user)
-      // The refresh stays for the two signals the response does NOT carry: the
-      // resend cooldown and the elevation deadline.
-      await auth.refreshUser()
+      // Never setAuth: this is the SAME identity, so it is an adoption and
+      // not a transition. setAuth clears the elevation deadline -- right when
+      // a sign-in lands a new user, and wrong here, where the hub touched no
+      // elevation column. The adoption never writes the elevation, and it
+      // re-reads the account when the reply carries none.
+      await adopt(resp.user, resp.emailVerification)
       navigate('/', { replace: true })
     }
     catch (e) {

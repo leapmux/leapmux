@@ -155,7 +155,7 @@ export function useGitPathInfo(
   }
 
   const fetcher = createGuardedFetch<{ wid: string, p: string }, Awaited<ReturnType<typeof workerRpc.getGitInfo>>>({
-    fetch: ({ wid, p }, signal) => workerRpc.getGitInfo(wid, { workerId: wid, path: p }, { signal }),
+    fetch: ({ wid, p }, signal) => workerRpc.getGitInfo(wid, { path: p }, { signal }),
     applySuccess: (resp, args) => {
       // First-probe-on-worktree-root → remap: the caller's path setter
       // will switch to the canonical repoRoot, retriggering the probe.

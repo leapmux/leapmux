@@ -4,10 +4,10 @@ import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentActivityState, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { GitRepoStatusSchema, TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
+import { GitRepoStatusSchema, TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, markTerminalExited } from '~/hooks/terminalEvents'
@@ -86,7 +86,6 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
     cols: 80,
     rows: 24,
     status: TerminalStatus.READY,
-    exited: false,
     gitBranch: '',
     gitOriginUrl: '',
     gitToplevel: '',
@@ -134,8 +133,6 @@ function applyLiveStatus(
   handleAgentStatusChange(
     agentId,
     create(AgentStatusChangeSchema, {
-      agentId,
-      workerOnline: true,
       status: event.status,
       ...(event.gitStatus !== undefined
         ? { gitStatus: event.gitStatus }
@@ -175,7 +172,7 @@ function applyLiveTerminalStatus(
     s.repoGitStore,
     s.view.getTerminalTab(terminalId),
     terminalId,
-    create(TerminalStatusChangeSchema, { terminalId, ...event }),
+    create(TerminalStatusChangeSchema, { ...event }),
     'w1',
   )
 }
@@ -909,7 +906,7 @@ describe('useTabHydrators', () => {
       })
       const s = setupWithCompanion('q1')
       const d = createRoot((dispose) => {
-        s.metadata.patch('q1', { terminalStatus: TerminalStatus.DISCONNECTED })
+        s.metadata.patch('q1', { terminalStatus: TERMINAL_DISCONNECTED })
         s.mount()
         return dispose
       })
@@ -1047,7 +1044,7 @@ describe('useTabHydrators', () => {
       markTerminalExited(s.metadata, 't1')
       reply.settle({
         terminals: [
-          terminalInfo('t1', { status: TerminalStatus.READY, exited: false }),
+          terminalInfo('t1', { status: TerminalStatus.READY }),
         ],
         verdicts: [],
       })
@@ -1082,14 +1079,14 @@ describe('useTabHydrators', () => {
     // that exited before the subscription, because it has no field for the exit.
     // The reply is the only message that carries it. A tab that watches while it
     // hydrates, as a reloaded page does, applies that marker first.
-    it('applies an EXITED reply after a READY event that the catch-up marker sent', async () => {
+    it('applies an EXITED reply after a newer READY event', async () => {
       const reply = heldReply()
       const { s, dispose } = await mountWithHeldReply(['t1'], reply)
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
       reply.settle({
         terminals: [
-          terminalInfo('t1', { status: TerminalStatus.READY, exited: true }),
+          terminalInfo('t1', { status: TerminalStatus.EXITED }),
         ],
         verdicts: [],
       })
@@ -1106,11 +1103,11 @@ describe('useTabHydrators', () => {
     it('applies the reply to a DISCONNECTED tab after a READY event that the tab refused', async () => {
       const reply = heldReply()
       const { s, dispose } = await mountWithHeldReply(['t1'], reply, (st) => {
-        st.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.DISCONNECTED })
+        st.metadata.patch('t1', { hydrated: true, terminalStatus: TERMINAL_DISCONNECTED })
       })
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
-      expect(s.view.getTerminalTab('t1')?.status, 'the live handler leaves DISCONNECTED alone').toBe(TerminalStatus.DISCONNECTED)
+      expect(s.view.getTerminalTab('t1')?.status, 'the live handler leaves DISCONNECTED alone').toBe(TERMINAL_DISCONNECTED)
       reply.settle({
         terminals: [
           terminalInfo('t1', { status: TerminalStatus.READY }),
@@ -1170,7 +1167,7 @@ describe('useTabHydrators', () => {
       const reply = heldReply()
       const { s, dispose } = await mountWithHeldReply(['t1'], reply, (st) => {
         // The offline sweep marked the tab, so the hydrator asks again.
-        st.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.DISCONNECTED })
+        st.metadata.patch('t1', { hydrated: true, terminalStatus: TERMINAL_DISCONNECTED })
       })
 
       // The restart of the shell reaches the tab while the reply is pending.
@@ -1397,7 +1394,7 @@ describe('useTabHydrators', () => {
 
       // The worker goes offline: the sweep in `useWorkspaceConnection` marks
       // every READY terminal on it DISCONNECTED.
-      s.metadata.patch('t1', { terminalStatus: TerminalStatus.DISCONNECTED })
+      s.metadata.patch('t1', { terminalStatus: TERMINAL_DISCONNECTED })
       await flush()
       await flush()
 
@@ -1422,12 +1419,12 @@ describe('useTabHydrators', () => {
       await flush()
       await flush()
 
-      s.metadata.patch('t1', { terminalStatus: TerminalStatus.DISCONNECTED })
+      s.metadata.patch('t1', { terminalStatus: TERMINAL_DISCONNECTED })
       await flush()
       await flush()
       expect(mockListTerminals).toHaveBeenCalledTimes(2)
       // The reply carries the worker's real status, which clears the trigger.
-      expect(s.view.getTerminalTab('t1')?.status).not.toBe(TerminalStatus.DISCONNECTED)
+      expect(s.view.getTerminalTab('t1')?.status).not.toBe(TERMINAL_DISCONNECTED)
 
       // An unrelated change re-runs the dispatch effect; nothing more goes out.
       s.metadata.patch('t1', { hasNotification: true })

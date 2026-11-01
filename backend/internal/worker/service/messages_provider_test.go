@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -47,7 +48,7 @@ func TestListAgentMessagesCarriesTheAgentsProvider(t *testing.T) {
 	}
 
 	var listed leapmuxv1.ListAgentMessagesResponse
-	call("ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	call(leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: agentID, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, Limit: 10,
 	}, &listed)
 	require.Len(t, listed.GetMessages(), 2)
@@ -56,12 +57,12 @@ func TestListAgentMessagesCarriesTheAgentsProvider(t *testing.T) {
 	}
 
 	var single leapmuxv1.GetAgentMessageResponse
-	call("GetAgentMessage", &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seqs[1]}, &single)
+	call(leapmuxv1connect.WorkerAgentServiceGetAgentMessageProcedure, &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seqs[1]}, &single)
 	require.NotNil(t, single.GetMessage())
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, single.GetMessage().GetAgentProvider(), "GetAgentMessage")
 
 	var span leapmuxv1.GetAgentSpanMessagesResponse
-	call("GetAgentSpanMessages", &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: "span-1"}, &span)
+	call(leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: "span-1"}, &span)
 	require.Len(t, span.GetMessages(), 2)
 	for _, message := range span.GetMessages() {
 		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, message.GetAgentProvider(), "GetAgentSpanMessages %s", message.GetId())

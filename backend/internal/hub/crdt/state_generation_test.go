@@ -245,8 +245,7 @@ func submitTombstonedTab(t *testing.T, ctx context.Context, mgr *crdt.Manager, t
 			Ops: []*leapmuxv1.CrdtOp{{
 				OpId: "op-tomb-" + tabID,
 				Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TabId:   tabID,
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 				}},
 			}},
 		}}),

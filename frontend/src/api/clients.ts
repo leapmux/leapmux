@@ -4,6 +4,7 @@ import { AppService } from '~/generated/proto/leapmux/v1/app_pb'
 import { AuthService } from '~/generated/proto/leapmux/v1/auth_pb'
 import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
 import { SectionService } from '~/generated/proto/leapmux/v1/section_pb'
+import { SystemService } from '~/generated/proto/leapmux/v1/system_pb'
 import { UserCRDT } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { UserService } from '~/generated/proto/leapmux/v1/user_pb'
 import { WorkerManagementService } from '~/generated/proto/leapmux/v1/worker_pb'
@@ -12,6 +13,7 @@ import { transport, unloadTransport } from './transport'
 
 export const appClient = createClient(AppService, transport)
 export const authClient = createClient(AuthService, transport)
+export const systemClient = createClient(SystemService, transport)
 export const workerClient = createClient(WorkerManagementService, transport)
 export const userClient = createClient(UserService, transport)
 export const sectionClient = createClient(SectionService, transport)

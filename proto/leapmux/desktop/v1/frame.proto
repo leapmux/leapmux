@@ -1,6 +1,8 @@
 syntax = "proto3";
 package leapmux.desktop.v1;
 
+import "leapmux/v1/build_info.proto";
+
 // --- Top-level wire message ---
 
 message Frame {
@@ -18,48 +20,46 @@ message Request {
   oneof method {
     GetConfigRequest get_config = 10;
     SetWindowSizeRequest set_window_size = 11;
-    GetBuildInfoRequest get_build_info = 12;
-    CheckFullDiskAccessRequest check_full_disk_access = 13;
-    GetSidecarInfoRequest get_sidecar_info = 14;
-    GetStartupInfoRequest get_startup_info = 15;
-    OpenFullDiskAccessSettingsRequest open_full_disk_access_settings = 16;
-    ConnectSoloRequest connect_solo = 17;
-    ConnectDistributedRequest connect_distributed = 18;
-    ProxyHttpRequest proxy_http = 19;
-    OpenChannelRelayRequest open_channel_relay = 20;
-    SendChannelMessageRequest send_channel_message = 21;
-    CloseChannelRelayRequest close_channel_relay = 22;
-    SwitchModeRequest switch_mode = 23;
-    CreateTunnelRequest create_tunnel = 24;
-    DeleteTunnelRequest delete_tunnel = 25;
-    ListTunnelsRequest list_tunnels = 26;
-    ShutdownRequest shutdown = 27;
-    ListExternalAppsRequest list_external_apps = 28;
-    OpenInExternalAppRequest open_in_external_app = 29;
+    CheckFullDiskAccessRequest check_full_disk_access = 12;
+    GetSidecarInfoRequest get_sidecar_info = 13;
+    GetStartupInfoRequest get_startup_info = 14;
+    OpenFullDiskAccessSettingsRequest open_full_disk_access_settings = 15;
+    ConnectSoloRequest connect_solo = 16;
+    ConnectDistributedRequest connect_distributed = 17;
+    ProxyHttpRequest proxy_http = 18;
+    OpenChannelRelayRequest open_channel_relay = 19;
+    SendChannelMessageRequest send_channel_message = 20;
+    CloseChannelRelayRequest close_channel_relay = 21;
+    SwitchModeRequest switch_mode = 22;
+    CreateTunnelRequest create_tunnel = 23;
+    DeleteTunnelRequest delete_tunnel = 24;
+    ListTunnelsRequest list_tunnels = 25;
+    ShutdownRequest shutdown = 26;
+    ListExternalAppsRequest list_external_apps = 27;
+    OpenInExternalAppRequest open_in_external_app = 28;
     // UserEvents relay: the webview cannot directly dial the
     // unix-socket hub for /ws/userevents, so the sidecar opens the WS
     // on its behalf and proxies inbound frames as Tauri events.
     // Mirrors the OpenChannelRelay / CloseChannelRelay pattern but
     // is read-only — the frontend never writes to /ws/userevents.
-    OpenUserEventsRelayRequest open_user_events_relay = 30;
-    CloseUserEventsRelayRequest close_user_events_relay = 31;
-    CliPathStatusRequest cli_path_status = 32;
-    CliInstallSymlinkRequest cli_install_symlink = 33;
+    OpenUserEventsRelayRequest open_user_events_relay = 29;
+    CloseUserEventsRelayRequest close_user_events_relay = 30;
+    CliPathStatusRequest cli_path_status = 31;
+    CliInstallSymlinkRequest cli_install_symlink = 32;
     // Tear down every tunnel and its pooled E2EE channels WITHOUT dropping the
     // sidecar<->Hub connection. The frontend fires this on a logout / auth
     // change so a distributed-mode user switch cannot leave the previous user's
     // tunnels relaying (or their cached channels reusable) under the old
     // identity -- the sidecar has no identity of its own to key that on.
-    ResetTunnelsRequest reset_tunnels = 34;
+    ResetTunnelsRequest reset_tunnels = 33;
     // Cache the resolved Desktop preferences on this device. See
     // SetDesktopBehaviorRequest below for why the shell needs a copy at all.
-    SetDesktopBehaviorRequest set_desktop_behavior = 35;
+    SetDesktopBehaviorRequest set_desktop_behavior = 34;
   }
 }
 
 // Parameterless requests
 message GetConfigRequest {}
-message GetBuildInfoRequest {}
 message GetStartupInfoRequest {}
 message CheckFullDiskAccessRequest {}
 message GetSidecarInfoRequest {}
@@ -205,18 +205,17 @@ message Response {
   oneof result {
     DesktopConfig config = 10;
     SetWindowSizeResponse set_window_size = 11;
-    BuildInfo build_info = 12;
-    BoolValue bool_value = 13;
-    LifecycleResult lifecycle = 14;
-    ProxyHttpResponse proxy_http = 15;
-    CreateTunnelResponse create_tunnel = 16;
-    ListTunnelsResponse list_tunnels = 17;
-    StartupInfo startup_info = 18;
-    SidecarInfo sidecar_info = 19;
-    ListExternalAppsResponse list_external_apps = 20;
-    CliPathStatusResponse cli_path_status = 21;
-    CliInstallSymlinkResponse cli_install_symlink = 22;
-    SetDesktopBehaviorResponse set_desktop_behavior = 23;
+    BoolValue bool_value = 12;
+    LifecycleResult lifecycle = 13;
+    ProxyHttpResponse proxy_http = 14;
+    CreateTunnelResponse create_tunnel = 15;
+    ListTunnelsResponse list_tunnels = 16;
+    StartupInfo startup_info = 17;
+    SidecarInfo sidecar_info = 18;
+    ListExternalAppsResponse list_external_apps = 19;
+    CliPathStatusResponse cli_path_status = 20;
+    CliInstallSymlinkResponse cli_install_symlink = 21;
+    SetDesktopBehaviorResponse set_desktop_behavior = 22;
   }
 }
 
@@ -319,7 +318,7 @@ message ExternalApp {
 
 message StartupInfo {
   DesktopConfig config = 1;
-  BuildInfo build_info = 2;
+  leapmux.v1.BuildInfo build_info = 2;
 }
 
 enum SidecarShellMode {
@@ -429,14 +428,6 @@ message DesktopConfig {
   string tray_on_minimize = 8;
   // "window" | "minimized"
   string start_minimized = 9;
-}
-
-message BuildInfo {
-  string version = 1;
-  string commit_hash = 2;
-  string commit_time = 3;
-  string build_time = 4;
-  string branch = 5; // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
 }
 
 message TunnelConfig {

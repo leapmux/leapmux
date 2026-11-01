@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -179,7 +180,7 @@ func TestFailStartup_ListAgentsReportsTheFailureThatTheClientReceived(t *testing
 		return nil, errors.New("claude: command not found")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -195,7 +196,7 @@ func TestFailStartup_ListAgentsReportsTheFailureThatTheClientReceived(t *testing
 		},
 		read: func() {
 			lw := newTestWriter()
-			dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, lw)
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, lw)
 			listed <- lw
 		},
 	})
@@ -227,7 +228,7 @@ func TestFailStartup_ListTerminalsReportsTheFailureThatTheClientReceived(t *test
 		return errors.New("no such shell")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      testutil.TestShell(),
 	}, w)
@@ -243,7 +244,7 @@ func TestFailStartup_ListTerminalsReportsTheFailureThatTheClientReceived(t *test
 		},
 		read: func() {
 			lw := newTestWriter()
-			dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, lw)
+			dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, lw)
 			listed <- lw
 		},
 	})

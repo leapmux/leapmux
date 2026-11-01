@@ -92,7 +92,7 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	call.RequestHeader().Set("User-Agent", "setup-browser")
 	response, err := tcpAuthClient(base).SetInitialSoloPassword(ctx, request)
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, response.GetUser().GetUsername())
+	assert.Equal(t, usernames.Solo, response.GetSessionReport().GetUser().GetUsername())
 
 	setCookie := call.ResponseHeader().Get("Set-Cookie")
 	// The trusted proxy verified HTTPS for this request, so the cookie is

@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider, AgentStatus, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { WorkerTabService } from '../../../src/generated/proto/leapmux/v1/worker_tab_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
@@ -283,16 +285,12 @@ function catalogFixture(options: {
     controls: () => controls,
     cancel: calls.cancelWatch,
   })
-  const workerClose = vi.fn(async () => ({
-    result: { failureMessage: '', failureDetail: '' },
-  }))
+  const workerClose = vi.fn(async () => ({ failureMessage: '', failureDetail: '' }))
   calls.channel.mockResolvedValue({ callWorker: workerClose })
   calls.nativeAgent.mockResolvedValue(liveAgent)
   workerClose.mockImplementation(async () => {
     calls.nativeAgent.mockResolvedValue(null)
-    return {
-      result: { failureMessage: '', failureDetail: '' },
-    }
+    return { failureMessage: '', failureDetail: '' }
   })
   const status = (stepCount: number): MockModelScenarioStatus => ({
     complete: stepCount === 2,
@@ -730,7 +728,9 @@ describe('readAmpExecutorCatalog', () => {
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toThrow(/native.*permission|permission.*native/i)
     expect(approve).not.toHaveBeenCalled()
     expect(calls.catalog).not.toHaveBeenCalled()
-    expect(workerClose).toHaveBeenCalledWith('actual-worker', 'CloseAgent', expect.anything(), expect.anything(), expect.objectContaining({ agentId: 'actual-agent' }))
+    expect(workerClose).toHaveBeenCalledWith('actual-worker', WorkerTabService.method.closeTab, expect.objectContaining({
+      tab: { tabType: TabType.AGENT, tabId: 'actual-agent' },
+    }))
     expect(calls.cancelWatch).toHaveBeenCalledTimes(1)
     expect(existsSync(files().pidFile)).toBe(false)
     expect(existsSync(files().releaseFile)).toBe(false)

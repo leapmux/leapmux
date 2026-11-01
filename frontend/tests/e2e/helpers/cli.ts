@@ -92,7 +92,7 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
   // strings), and the response JSON is the message object.
   // A refusal states the hub's reason, which identifies the setup requirement that failed.
   const minted = await callHub<{ accessToken?: string }>(hubURL, 'AdminUserService/IssueAPIToken', {
-    userId: userID,
+    user: { id: userID },
     // Identify this app installation. An app can hold separate credentials on multiple machines.
     installationName: `e2e-${Date.now()}`,
     ttlSeconds: '3600',

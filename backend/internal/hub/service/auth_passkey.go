@@ -50,18 +50,23 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *leapmuxv1.Begi
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.BeginPasskeyLoginResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
 func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.FinishPasskeyLoginRequest) (*leapmuxv1.FinishPasskeyLoginResponse, error) {
 	info := serverCallInfo(ctx)
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
+	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
-	user, passkeyCount, err := wa.FinishLogin(ctx, req.GetSessionId(), req.GetCredentialJson())
+	// The count FinishLogin returns is not reused: signInReport builds the
+	// complete projection, which counts as GetCurrentUser does.
+	user, _, err := wa.FinishLogin(ctx, ceremonyID, credentialJSON)
 	if err != nil {
 		switch classifyWebAuthnError(err) {
 		case webAuthnErrorClone:
@@ -104,8 +109,8 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 	resp := &leapmuxv1.FinishPasskeyLoginResponse{
-		User:              userToProto(user, passkeyCount),
-		EmailVerification: emailVerificationToProto(s.loginVerificationOutcome(ctx, user)),
+		SessionReport: signInReport(ctx, s.store, user,
+			emailVerificationToProto(s.loginVerificationOutcome(ctx, user)), nil),
 	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	return resp, nil
@@ -159,8 +164,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.BeginPasskeySignUpResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
@@ -169,11 +173,15 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	if s.cfg.SoloMode {
 		return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey sign-up is not available")
 	}
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
+	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
-	draft, cred, err := wa.FinishSignUp(ctx, req.GetSessionId(), req.GetCredentialJson())
+	draft, cred, err := wa.FinishSignUp(ctx, ceremonyID, credentialJSON)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
@@ -255,13 +263,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 	resp := &leapmuxv1.FinishPasskeySignUpResponse{
-		// The ceremony just stored this account's single passkey.
-		User: userToProto(createdUser, 1),
-		EmailVerification: emailVerificationToProto(verificationOutcome{
+		SessionReport: signInReport(ctx, s.store, createdUser, emailVerificationToProto(verificationOutcome{
 			Required:              verificationRequired,
 			EmailSent:             emailSent,
 			NextResendAvailableAt: nextResend,
-		}),
+		}), nil),
 	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
 	return resp, nil

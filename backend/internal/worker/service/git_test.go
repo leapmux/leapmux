@@ -14,6 +14,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -188,7 +189,7 @@ func TestGetGitFileStatus_ReturnsOriginUrlAndCurrentBranch(t *testing.T) {
 	// Create a file so there's something in the status.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello\n"), 0o644))
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: dir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -212,7 +213,7 @@ func TestGetGitFileStatus_WorktreeReturnsToplevel(t *testing.T) {
 	wtDir := filepath.Join(t.TempDir(), "wt-feature")
 	run(t, repoDir, "git", "worktree", "add", "-b", "wt-feature", wtDir)
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: wtDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -246,7 +247,7 @@ func TestGetGitFileStatus_MainTreeToplevelEqualsRepoRoot(t *testing.T) {
 	_, d, w := setupTestService(t)
 	repoDir := canonicalRepoDir(t)
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: repoDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -275,7 +276,7 @@ func TestGetGitFileStatus_ReturnsAheadBehind(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 1")
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "ahead 2")
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: repoDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -314,7 +315,7 @@ func TestGetGitFileStatus_ReturnsBehind(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1", strings.TrimSpace(behindOut), "precondition: local main is one commit behind origin/main")
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: repoDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -343,7 +344,7 @@ func TestGetGitFileStatus_DetachedHEAD(t *testing.T) {
 	headSHA = strings.TrimSpace(headSHA)
 	run(t, dir, "git", "checkout", "--detach", headSHA)
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: dir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -474,7 +475,7 @@ func TestGetGitFileStatus_BackfillsIdentityWhenGetGitStatusNil(t *testing.T) {
 	run(t, dir, "git", "checkout", "-b", "nil-status-branch")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x\n"), 0o644))
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: dir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -1198,6 +1199,46 @@ func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt())
+}
+
+// The request states the tab as one TabIdent. An absent tab, an empty tab id
+// or an UNSPECIFIED type answers that no prompt is needed, and the RPC still
+// succeeds. The UNSPECIFIED case uses the id of an agent on a dirty branch,
+// which prompts when the request states its type, so the answer cannot come
+// from a guessed type.
+func TestInspectLastTabClose_AnIncompleteTabNeedsNoPrompt(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-dirty", repoDir)
+	inspect := func(t *testing.T, tab *leapmuxv1.TabIdent) *leapmuxv1.InspectLastTabCloseResponse {
+		t.Helper()
+		w := newTestWriter()
+		dispatch(d, leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, &leapmuxv1.InspectLastTabCloseRequest{Tab: tab}, w)
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+		var resp leapmuxv1.InspectLastTabCloseResponse
+		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+		return &resp
+	}
+
+	require.True(t, inspect(t, agentTabIdent("agent-dirty")).GetShouldPrompt(),
+		"precondition: the agent prompts when the request states its type")
+
+	for name, tab := range map[string]*leapmuxv1.TabIdent{
+		"an absent tab":       nil,
+		"an empty tab id":     {TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		"an UNSPECIFIED type": {TabId: "agent-dirty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := inspect(t, tab)
+			assert.False(t, resp.GetShouldPrompt())
+			assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+			assert.Empty(t, resp.GetDescendantAgentIds())
+		})
+	}
 }
 
 func TestInspectLastTabClose_BranchLastTabDirtyPrompts(t *testing.T) {
@@ -2658,7 +2699,7 @@ func TestInspectWorktreeRemovalRPC_AnswersForALinkedWorktree(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "rpc-removable", wtDir)
 
 	w := newTestWriter()
-	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.InspectWorktreeRemovalResponse
@@ -2676,7 +2717,7 @@ func TestInspectWorktreeRemovalRPC_ReportsALock(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the operator", wtDir)
 
 	w := newTestWriter()
-	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
 	require.Empty(t, w.errors, "a refusal is a verdict, not an RPC failure")
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.InspectWorktreeRemovalResponse
@@ -2693,7 +2734,7 @@ func TestInspectWorktreeRemovalRPC_RejectsAnEmptyPath(t *testing.T) {
 	_, d, _ := setupTestService(t)
 
 	w := newTestWriter()
-	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: ""}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceInspectWorktreeRemovalProcedure, &leapmuxv1.InspectWorktreeRemovalRequest{Path: ""}, w)
 	require.Len(t, w.errors, 1)
 	assert.Equal(t, codePermissionDenied, w.errors[0].code)
 	assert.Empty(t, w.responses)
@@ -4070,7 +4111,7 @@ func TestExecuteCheckoutBranch_InsideWorktreeTracksAssociation(t *testing.T) {
 	// entirely (unlike executeUseCurrent), so opening an agent in
 	// CheckoutBranch mode inside a worktree left WorktreeID empty.
 	// registerTabForWorktree('', ...) was then a no-op and a later
-	// CloseAgent with WorktreeAction.REMOVE silently degraded to KEEP.
+	// CloseTab with WorktreeAction.REMOVE silently degraded to KEEP.
 	// Both code paths must now produce the same WorktreeID for an
 	// equivalent dir.
 	svc, _, _ := setupTestService(t)
@@ -5080,7 +5121,7 @@ func TestReadGitFile_RejectsUnspecifiedRef(t *testing.T) {
 	run(t, repoDir, "git", "add", "tracked.txt")
 	run(t, repoDir, "git", "commit", "-m", "add tracked")
 
-	dispatch(d, "ReadGitFile", &leapmuxv1.ReadGitFileRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
 		Path: filePath,
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_UNSPECIFIED,
 	}, w)
@@ -5104,7 +5145,7 @@ func TestReadGitFile_HeadReturnsCommittedContent(t *testing.T) {
 	// ref, not from disk.
 	require.NoError(t, os.WriteFile(filePath, []byte("dirty\n"), 0o644))
 
-	dispatch(d, "ReadGitFile", &leapmuxv1.ReadGitFileRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
 		Path: filePath,
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
 	}, w)
@@ -5132,7 +5173,7 @@ func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {
 	run(t, repoDir, "git", "add", "tracked.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("v3-dirty\n"), 0o644))
 
-	dispatch(d, "ReadGitFile", &leapmuxv1.ReadGitFileRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
 		Path: filePath,
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_STAGED,
 	}, w)
@@ -5159,7 +5200,7 @@ func TestReadGitFile_MissingFileAtRefReturnsExistsFalse(t *testing.T) {
 	filePath := filepath.Join(repoDir, "never-tracked.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("untracked\n"), 0o644))
 
-	dispatch(d, "ReadGitFile", &leapmuxv1.ReadGitFileRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
 		Path: filePath,
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
 	}, w)
@@ -6243,7 +6284,7 @@ func assertUnconfirmedWorktreePreserved(t *testing.T, svc *Service, ctx context.
 			untracked[name] = content
 		}
 	}
-	result, _ := svc.closeAgentTabCommon("user-1", tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	result := svc.closeAgentTabCommon("user-1", tabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.WorktreeRemoval)
 	if before != nil {
 		assert.DirExists(t, wt.WorktreePath)
@@ -6297,7 +6338,7 @@ func TestGetGitFileStatus_AnnotatesStatsFromSubdirectory(t *testing.T) {
 	// into one directory row. Add the intent-to-add so status lists the file.
 	run(t, repoDir, "git", "add", "-N", "frontend/src/app.ts")
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: filepath.Join(repoDir, "frontend"),
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -6339,7 +6380,7 @@ func TestGetGitFileStatus_AnnotatesStatsInAWorktree(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "wt.txt"), content, 0o644))
 	run(t, wtDir, "git", "add", "-N", "wt.txt")
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: wtDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -6383,7 +6424,7 @@ func TestGitFileStatusModTimeIsFixedWidthWithSubsecondPrecision(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "second.txt"), []byte("2\n"), 0o644))
 	run(t, repoDir, "git", "add", "-N", "first.txt", "second.txt")
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{
 		Path: repoDir,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -6435,7 +6476,7 @@ func TestGetGitFileStatus_LeavesStatsUnsetWhenNotStatable(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "build"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "build", "out.js"), []byte("x\n"), 0o644))
 
-	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{Path: repoDir}, w)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, &leapmuxv1.GetGitFileStatusRequest{Path: repoDir}, w)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.GetGitFileStatusResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
@@ -6655,7 +6696,7 @@ func TestSubdirectorySymlinkUsesCanonicalGitTopLevel(t *testing.T) {
 		if !tc.prompt {
 			assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.Target)
 		}
-		closed, _ := svc.closeAgentTabCommon("user-1", tc.id, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
+		closed := svc.closeAgentTabCommon("user-1", tc.id, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
 		assert.Empty(t, closed.FailureMessage)
 	}
 }

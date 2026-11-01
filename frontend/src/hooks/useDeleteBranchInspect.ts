@@ -44,7 +44,6 @@ export function useDeleteBranchInspect(args: UseDeleteBranchInspectArgs): Delete
 
   const fetcher = createGuardedFetch<void, InspectBranchDeletionResponse>({
     fetch: (_args, signal) => workerRpc.inspectBranchDeletion(args.workerId, {
-      workerId: args.workerId,
       path: args.gitToplevel,
       branchNameHint: args.branchName ?? '',
     }, { signal }),

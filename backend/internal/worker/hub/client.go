@@ -33,12 +33,14 @@ import (
 
 // Client manages the connection to the Hub.
 type Client struct {
-	connector  leapmuxv1connect.WorkerConnectorServiceClient
-	reconciler leapmuxv1connect.WorkerReconcilerServiceClient
-	endpoint   *hubtransport.Endpoint
-	authToken  string
-	terminals  *terminal.Manager
-	channelMgr *channel.Manager
+	connector leapmuxv1connect.WorkerConnectorServiceClient
+	// connectorUnary is the same service over the Connect protocol, for the
+	// unary ListOwnedTabsForWorker call the orphan reconciler makes.
+	connectorUnary leapmuxv1connect.WorkerConnectorServiceClient
+	endpoint       *hubtransport.Endpoint
+	authToken      string
+	terminals      *terminal.Manager
+	channelMgr     *channel.Manager
 
 	// OnDeregister is called when the Hub sends a deregistration notification.
 	// The worker should clear its state and shut down gracefully.
@@ -60,15 +62,17 @@ type Client struct {
 	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
 	// message on every Connect stream, before it publishes the connection -- so it
 	// fires before any ChannelOpen on the same stream can create a session, and
-	// therefore before any handler requireWorkerOwner gates can be dispatched.
+	// therefore before any handler the owner gate guards can be dispatched. The
+	// Hub sends the message again on a live stream when the owner's account
+	// changes, so the callback can run more than once per connection.
 	//
 	// The Hub is the only authority: it owns workers.registered_by. The worker keeps
 	// no copy, so a reconnect re-establishes the owner rather than trusting a cache
 	// that could have gone missing.
-	OnWorkerIdentity func(registeredBy string)
+	OnWorkerIdentity func(identity *leapmuxv1.WorkerIdentity)
 
 	// PublicKey is the Worker's X25519 public key for E2EE channels.
-	// Sent to the Hub with the initial heartbeat.
+	// Sent to the Hub in the WorkerHello that opens every Connect stream.
 	PublicKey []byte
 	// MlkemPublicKey is the Worker's ML-KEM-1024 public key.
 	MlkemPublicKey []byte
@@ -89,7 +93,7 @@ type Client struct {
 	// identityReceived is set when the Hub delivers WorkerIdentity on the
 	// current connection. A watchdog (see watchForIdentity) force-closes the
 	// stream if it never arrives, so a proxy that strips the oneof, a partial
-	// upgrade, or a Hub bug cannot wedge requireWorkerOwner for the
+	// upgrade, or a Hub bug cannot wedge the owner gate for the
 	// connection's life with no recovery short of a reconnect.
 	identityReceived atomic.Bool
 
@@ -148,7 +152,7 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 			connecthttp.WithReadMaxBytes(0),
 			connecthttp.WithGRPC(),
 		))),
-		reconciler: leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(
+		connectorUnary: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 			httpClient,
 			connectURL,
 			connecthttp.WithReadMaxBytes(0),
@@ -352,7 +356,7 @@ func (c *Client) markEnqueued() {
 	c.mu.Unlock()
 }
 
-// ListOwnedTabsForWorker calls the hub's WorkerReconcilerService.
+// ListOwnedTabsForWorker calls the hub's WorkerConnectorService.ListOwnedTabsForWorker.
 // Authenticated by the worker's auth token (last seen on Connect).
 // Returns nil + error if Connect hasn't been called yet.
 //
@@ -369,7 +373,7 @@ func (c *Client) ListOwnedTabsForWorker(ctx context.Context) (*leapmuxv1.ListOwn
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
 	ctx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	resp, err := c.reconciler.ListOwnedTabsForWorker(ctx, req)
+	resp, err := c.connectorUnary.ListOwnedTabsForWorker(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -399,30 +403,34 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		return err
 	}
 
-	// Send an initial heartbeat INLINE on the stream before the writer exists.
-	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first
-	// Send(), and nothing else may enqueue until the writer is published.
+	// Send the WorkerHello INLINE on the stream before the writer exists. The
+	// Hub reads it before it lists this worker online, and answers the handshake
+	// of every channel from it. ConnectRPC with gRPC protocol only sends HTTP/2
+	// headers on the first Send(), and nothing else may enqueue until the writer
+	// is published.
 	//
 	// When the Hub refuses before that write finishes (fenced registry, worker
 	// cap, …), Send wraps io.EOF and Receive carries the real status — see
 	// connect.ClientStream.Send. Surface that status so reconnect logic
 	// sees Unavailable/ResourceExhausted instead of a bare Unknown/EOF.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{
-				PublicKey:       c.PublicKey,
-				MlkemPublicKey:  c.MlkemPublicKey,
-				SlhdsaPublicKey: c.SlhdsaPublicKey,
-				EncryptionMode:  c.EncryptionMode,
+		Payload: &leapmuxv1.ConnectRequest_Hello{
+			Hello: &leapmuxv1.WorkerHello{
+				Keys: &leapmuxv1.WorkerPublicKeys{
+					X25519: c.PublicKey,
+					Mlkem:  c.MlkemPublicKey,
+					Slhdsa: c.SlhdsaPublicKey,
+				},
+				EncryptionMode: c.EncryptionMode,
 			},
 		},
 	}); err != nil {
 		if errors.Is(err, io.EOF) {
 			if _, recvErr := stream.Receive(); recvErr != nil {
-				return fmt.Errorf("initial heartbeat: %w", recvErr)
+				return fmt.Errorf("hello: %w", recvErr)
 			}
 		}
-		return fmt.Errorf("initial heartbeat: %w", err)
+		return fmt.Errorf("hello: %w", err)
 	}
 
 	writer := sendq.New(connCtx, sendq.Config[*leapmuxv1.ConnectRequest]{
@@ -548,7 +556,7 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	case *leapmuxv1.ConnectResponse_WorkerIdentity:
 		c.identityReceived.Store(true)
 		if c.OnWorkerIdentity != nil {
-			c.OnWorkerIdentity(payload.WorkerIdentity.GetRegisteredBy())
+			c.OnWorkerIdentity(payload.WorkerIdentity)
 		}
 
 	default:
@@ -603,7 +611,7 @@ const heartbeatIdleTimeout = 5 * time.Second
 // connect-time WorkerIdentity greeting before force-closing the stream. The
 // Hub sends it before publishing the connection, so its absence within this
 // budget signals a stripped/dropped greeting -- which would otherwise leave
-// requireWorkerOwner denying every machine-scoped RPC (file, git, sysinfo,
+// the owner gate denying every machine-scoped RPC (file, git, sysinfo,
 // tunnel) for the connection's life, indistinguishable from a genuine
 // cross-tenant refusal. Force-closing triggers ConnectWithReconnect's
 // backoff, which re-runs the greeting on a fresh stream.
@@ -685,9 +693,7 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 			if idle >= heartbeatIdleTimeout {
 				if err := c.Send(&leapmuxv1.ConnectRequest{
 					Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-						Heartbeat: &leapmuxv1.Heartbeat{
-							EncryptionMode: c.EncryptionMode,
-						},
+						Heartbeat: &leapmuxv1.Heartbeat{},
 					},
 				}); err != nil {
 					// Debug when the connection was simply going away: the loop races

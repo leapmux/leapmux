@@ -25,17 +25,18 @@ import (
 // the worker's owner. One type carried by every caller is what removes
 // that difference.
 type WorkerDeregisterEffects struct {
-	scopeCache  *auth.DelegationScopeCache
-	notifier    *notifier.Notifier
-	broadcaster *HubEventBroadcaster
+	scopeCache           *auth.DelegationScopeCache
+	notifier             *notifier.Notifier
+	notifyWorkersChanged func(userID string)
 }
 
 // NewWorkerDeregisterEffects binds the three collaborators. Production
-// passes all three. Each one is nil-tolerant so a test that exercises only
-// the store half can pass nil, the same rule
+// passes all three; notifyWorkersChanged is the CRDT registry's
+// BroadcastWorkersChanged. Each one is nil-tolerant so a test that exercises
+// only the store half can pass nil, the same rule
 // auth.CredentialLifecycleEffects holds.
-func NewWorkerDeregisterEffects(scopeCache *auth.DelegationScopeCache, n *notifier.Notifier, broadcaster *HubEventBroadcaster) *WorkerDeregisterEffects {
-	return &WorkerDeregisterEffects{scopeCache: scopeCache, notifier: n, broadcaster: broadcaster}
+func NewWorkerDeregisterEffects(scopeCache *auth.DelegationScopeCache, n *notifier.Notifier, notifyWorkersChanged func(userID string)) *WorkerDeregisterEffects {
+	return &WorkerDeregisterEffects{scopeCache: scopeCache, notifier: n, notifyWorkersChanged: notifyWorkersChanged}
 }
 
 // Apply runs the three effects for one deregistered worker. ownerID is the
@@ -66,8 +67,8 @@ func (e *WorkerDeregisterEffects) Apply(ctx context.Context, workerID, ownerID s
 		}
 	}
 
-	if e.broadcaster != nil {
-		e.broadcaster.NotifyWorkersChanged(ownerID)
+	if e.notifyWorkersChanged != nil {
+		e.notifyWorkersChanged(ownerID)
 	}
 	return nil
 }

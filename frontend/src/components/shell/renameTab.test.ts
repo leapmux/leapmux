@@ -1,16 +1,16 @@
 import type { RenameTabDeps } from './renameTab'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { renameTab } from './renameTab'
 
 const mockRenameAgent = vi.fn().mockResolvedValue({})
-const mockUpdateTerminalTitle = vi.fn().mockResolvedValue({})
+const mockRenameTerminal = vi.fn().mockResolvedValue({})
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   renameAgent: (...args: unknown[]) => mockRenameAgent(...args),
-  updateTerminalTitle: (...args: unknown[]) => mockUpdateTerminalTitle(...args),
+  renameTerminal: (...args: unknown[]) => mockRenameTerminal(...args),
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -126,13 +126,13 @@ describe('renameTab', () => {
   // The sidebar tree used to patch the metadata and stop there, so a terminal
   // renamed from the sidebar lost its name on the next reload and reached no
   // other client.
-  it('persists a terminal rename through UpdateTerminalTitle', () => {
+  it('persists a terminal rename through RenameTerminal', () => {
     const tab = terminalTab({ ptyTitle: 'zsh' })
     const d = deps(tab)
 
     renameTab(d, tab, 'Build watcher')
 
-    expect(mockUpdateTerminalTitle).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
+    expect(mockRenameTerminal).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
   })
 
   it('clears ptyTitle for a terminal so the manual rename sticks', () => {
@@ -173,7 +173,7 @@ describe('renameTab', () => {
 
     renameTab(d, tab, 'zsh II')
 
-    expect(mockUpdateTerminalTitle).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'zsh II' })
+    expect(mockRenameTerminal).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'zsh II' })
   })
 
   it('leaves a FILE tab alone, because its title is its path', () => {
@@ -190,7 +190,7 @@ describe('renameTab', () => {
 
     expect(d.patch).not.toHaveBeenCalled()
     expect(mockRenameAgent).not.toHaveBeenCalled()
-    expect(mockUpdateTerminalTitle).not.toHaveBeenCalled()
+    expect(mockRenameTerminal).not.toHaveBeenCalled()
   })
 
   it('sends an empty worker id when the tab lookup misses, rather than skipping the call', () => {
@@ -213,7 +213,7 @@ describe('renameTab', () => {
   })
 
   it('warns when the terminal rename fails', async () => {
-    mockUpdateTerminalTitle.mockRejectedValueOnce(new Error('offline'))
+    mockRenameTerminal.mockRejectedValueOnce(new Error('offline'))
     const tab = terminalTab()
 
     renameTab(deps(tab), tab, 'Renamed')

@@ -26,10 +26,12 @@ func RunWorkerGet(rawCtx any, args []string) error {
 		var resp leapmuxv1.GetWorkerResponse
 		return hubCallUnaryEmitOn(ctx, c, "GetWorker",
 			&leapmuxv1.GetWorkerRequest{WorkerId: got.WorkerID}, &resp,
-			func() any { return resp.GetWorker() })
+			func() any { return workerToMap(resp.GetWorker()) })
 	})
 }
 
+// RunWorkerList prints EVERY worker the caller owns. The hub answers one page
+// per call, so the command reads each page in turn.
 func RunWorkerList(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
@@ -37,10 +39,46 @@ func RunWorkerList(rawCtx any, args []string) error {
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
-	var resp leapmuxv1.ListWorkersResponse
-	return hubUnaryEmit(hub, "ListWorkers",
-		&leapmuxv1.ListWorkersRequest{}, &resp,
-		func() any { return resp.GetWorkers() })
+	c, err := requireClient(hub)
+	if err != nil {
+		return err
+	}
+	workers, err := listAllWorkers(context.Background(), c)
+	if err != nil {
+		return control.EmitErrorWith(classifyHubError(err), err)
+	}
+	rows := make([]map[string]any, 0, len(workers))
+	for _, w := range workers {
+		rows = append(rows, workerToMap(w))
+	}
+	return control.EmitData(rows)
+}
+
+// listAllWorkers reads every page of the caller's workers, over whichever
+// transport the client uses.
+func listAllWorkers(ctx context.Context, c *control.Client) ([]*leapmuxv1.Worker, error) {
+	return readAllPages(func(cursor string) ([]*leapmuxv1.Worker, string, error) {
+		var resp leapmuxv1.ListWorkersResponse
+		err := hubCallUnary(ctx, c, "ListWorkers", &leapmuxv1.ListWorkersRequest{
+			Page: &leapmuxv1.PageRequest{Cursor: cursor, Limit: listPageSize},
+		}, &resp)
+		return resp.GetWorkers(), resp.GetPage().GetNextCursor(), err
+	}, (*leapmuxv1.Worker).GetId)
+}
+
+// workerToMap renders one worker for the CLI's JSON. putTime prints each
+// instant as a string in the CLI's one layout and omits an unset one, such as
+// the last-seen time of a worker that never connected.
+func workerToMap(w *leapmuxv1.Worker) map[string]any {
+	row := map[string]any{
+		"id":              w.GetId(),
+		"online":          w.GetOnline(),
+		"registered_by":   w.GetRegisteredBy(),
+		"auto_registered": w.GetAutoRegistered(),
+	}
+	putTime(row, "created_at", w.GetCreatedAt())
+	putTime(row, "last_seen_at", w.GetLastSeenAt())
+	return row
 }
 
 // `worker pins` is a subgroup whose list/show/remove leaves operate on

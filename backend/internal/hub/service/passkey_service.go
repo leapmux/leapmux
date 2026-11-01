@@ -817,8 +817,7 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *leapmux
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return &leapmuxv1.BeginPasskeyRegistrationResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
@@ -827,11 +826,9 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 	if err != nil {
 		return nil, err
 	}
-	if req.GetSessionId() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "session_id is required")
-	}
-	if req.GetCredentialJson() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "credential_json is required")
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
 	}
 	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
@@ -857,7 +854,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 			if err != nil {
 				return err
 			}
-			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.GetSessionId(), req.GetCredentialJson())
+			verified, err = wa.VerifyRegistration(ctx, peek.ID, ceremonyID, credentialJSON)
 			return err
 		},
 		func(tx store.Store, user *store.User) (stepUpMutationResult, error) {

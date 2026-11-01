@@ -1,4 +1,4 @@
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { TabMetadata, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
@@ -65,7 +65,7 @@ export function hasPlaceableTab(
  *
  * The empty answer is a refusal, not a failure mode to ignore: while the
  * projection has no tree for this workspace, placement resolves to the
- * locally-minted placeholder leaf. Emitting `AddTab` against that names a
+ * locally-minted placeholder leaf. A tab op placed on that leaf names a
  * node the hub has never heard of, and it rejects the batch — after the
  * caller has already created the agent or terminal on the worker, so the
  * result is an orphaned resource with no tab.

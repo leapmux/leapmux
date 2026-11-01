@@ -247,8 +247,7 @@ func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *leap
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return &leapmuxv1.BeginAccountRecoveryPasskeyResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
@@ -259,8 +258,9 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *lea
 	if req.GetToken() == "" {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "token is required")
 	}
-	if req.GetSessionId() == "" || req.GetCredentialJson() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "session and credential are required")
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
@@ -283,7 +283,7 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *lea
 	// charges no attempt: the ceremony session it consumes is single-use,
 	// and only the captcha'd Begin could mint one. The session also binds
 	// the token hash Begin charged.
-	userID, cred, err := wa.VerifyRecoveryRegistration(ctx, req.GetSessionId(), req.GetCredentialJson(), hashedToken)
+	userID, cred, err := wa.VerifyRecoveryRegistration(ctx, ceremonyID, credentialJSON, hashedToken)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}

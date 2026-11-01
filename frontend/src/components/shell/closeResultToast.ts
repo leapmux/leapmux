@@ -1,4 +1,4 @@
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
 
@@ -19,11 +19,11 @@ export interface WorktreeCloseSummary {
 // more closes into a single verdict. A missing result means no definitive
 // outcome for that tab: the close RPC was rejected, there was no worker to
 // dispatch to, or the local close threw (each already warn-toasted its own
-// detail). A worker-reported outcome is always a CloseTabResult -- even a
+// detail). A worker-reported outcome is always a CloseTabResponse -- even a
 // degraded-to-KEEP close returns one with UNSPECIFIED -- so a missing result
 // genuinely means "we do not know", and the caller reports "could not confirm"
 // rather than a clean "not removed".
-export function summarizeWorktreeCloses(results: readonly (CloseTabResult | undefined)[]): WorktreeCloseSummary {
+export function summarizeWorktreeCloses(results: readonly (CloseTabResponse | undefined)[]): WorktreeCloseSummary {
   let removed = false
   let failed = false
   let stillReferenced = false
@@ -120,10 +120,10 @@ export function worktreeRemovalToast(
 }
 
 // toastCloseFailure surfaces a partial tab-close failure. No-op on
-// success (empty failureMessage or missing result). The backend always
+// success (empty failureMessage or missing response). The backend always
 // pairs failureMessage with a failureDetail (err.Error()), but we guard
 // against empty detail defensively.
-export function toastCloseFailure(result: CloseTabResult | undefined): void {
+export function toastCloseFailure(result: CloseTabResponse | undefined): void {
   if (!result || !result.failureMessage)
     return
   showWarnToast(result.failureDetail
@@ -141,22 +141,22 @@ export function warnWorktreeUnreachable(worktreeAction: WorktreeAction): void {
     showWarnToast('Closed the tab, but could not remove its worktree (no worker connection).')
 }
 
-// awaitCloseResult normalizes a worker close RPC into the shape the
+// awaitCloseResult normalizes a worker CloseTab RPC into the shape the
 // delete-branch flow consumes: toast any partial failure on success and
-// resolve with the result; warn (with failLabel) and resolve undefined on
+// resolve with the response; warn (with failLabel) and resolve undefined on
 // RPC rejection. Folds the then/catch envelope every close helper repeated
 // verbatim so they all report failures identically. The undefined returned on
 // rejection is what closeWorktreeTabs reads as an "unknown" worktree outcome
 // (the server-side removal state is genuinely indeterminate after a rejected
 // RPC), distinct from a worker-reported UNSPECIFIED (a definitive no-op).
 export function awaitCloseResult(
-  rpc: Promise<{ result?: CloseTabResult }>,
+  rpc: Promise<CloseTabResponse>,
   failLabel: string,
-): Promise<CloseTabResult | undefined> {
+): Promise<CloseTabResponse | undefined> {
   return rpc
     .then((resp) => {
-      toastCloseFailure(resp.result)
-      return resp.result
+      toastCloseFailure(resp)
+      return resp
     })
     .catch((err) => {
       showWarnToast(failLabel, err)

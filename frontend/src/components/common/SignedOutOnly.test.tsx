@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
-import { SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
+import { SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 vi.mock('~/lib/systemInfo', async () => {

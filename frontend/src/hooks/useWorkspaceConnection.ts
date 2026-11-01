@@ -1,5 +1,5 @@
 import type { CatchUpPhase } from './agentEvents'
-import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
@@ -14,11 +14,12 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { assertNever } from '~/lib/assertNever'
+import { WatchMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { isPublishedActivityState } from '~/stores/agentActivity.store'
 import { exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
@@ -218,33 +219,6 @@ interface RequestedReplay {
   liveClaims: Set<ReplayTopic>
 }
 
-/** Require each payload agent ID to match the frame destination. */
-function replayPayloadMatchesAgent(agentEvent: AgentEvent): boolean {
-  const inner = agentEvent.event
-  switch (inner.case) {
-    case 'statusChange':
-    case 'controlRequest':
-    case 'controlResponseChanged':
-    case 'controlCancel':
-    case 'todosChanged':
-    case 'goalChanged':
-    case 'backgroundTasksChanged':
-      return inner.value.agentId === agentEvent.agentId
-    case 'inputQueueChanged':
-      return inner.value.snapshot?.agentId === agentEvent.agentId
-    case 'agentMessage':
-    case 'catchUpStart':
-    case 'catchUpComplete':
-    case 'turnEnd':
-    case 'activityChanged':
-      return true
-    case undefined:
-      return false
-    default:
-      return assertNever(inner)
-  }
-}
-
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, agentActivityStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
@@ -393,19 +367,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   /** Validate the exact transmitted origin before any replay effect. */
   function activeReplayFor(agentEvent: AgentEvent, streamWorkerId: string): RequestedReplay | undefined {
-    const origin = agentEvent.replayAgentId
+    const origin = agentEvent.replay?.agentId ?? ''
+    const replayId = agentEvent.replay?.replayId ?? 0n
     const requested = resumeTails.get(origin)
     if (!origin || !requested || requested.workerId !== streamWorkerId
-      || requested.replayId !== agentEvent.replayId
-      || !agentSessionStore.acceptsReplay(origin, agentEvent.replayId)) {
+      || requested.replayId !== replayId
+      || !agentSessionStore.acceptsReplay(origin, replayId)) {
       return undefined
     }
     if (view.getAgentTab(origin)?.workerId !== streamWorkerId)
       return undefined
     const destination = view.getAgentTab(agentEvent.agentId)
     if (destination && destination.workerId !== streamWorkerId)
-      return undefined
-    if (!replayPayloadMatchesAgent(agentEvent))
       return undefined
     if (agentEvent.agentId !== origin) {
       const kind = agentEvent.event.case
@@ -432,11 +405,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
-    const replayId = agentEvent.replayId
-    const requested = agentEvent.replay
+    const isReplay = agentEvent.replay !== undefined
+    const replayId = agentEvent.replay?.replayId ?? 0n
+    const requested = isReplay
       ? activeReplayFor(agentEvent, streamWorkerId)
       : undefined
-    if (agentEvent.replay && !requested && inner.case !== 'agentMessage')
+    if (isReplay && !requested && inner.case !== 'agentMessage')
       return
     const resumeTail = requested?.cursorSeq
 
@@ -448,7 +422,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // - A plan title.
     // - INACTIVE cleanup.
     // See AgentEvent.replay.
-    const catchUpPhase: CatchUpPhase = agentEvent.replay ? 'catchingUp' : 'live'
+    const catchUpPhase: CatchUpPhase = isReplay ? 'catchingUp' : 'live'
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
         return
@@ -480,7 +454,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           },
           catchUpPhase,
           replayId,
-          agentEvent.replay && !requested
+          isReplay && !requested
             ? 'retain-transcript'
             : 'apply-current-state',
         )
@@ -526,7 +500,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       case 'controlCancel': {
         const cc = inner.value
-        handleControlCancellation(cc, controlStore)
+        handleControlCancellation(agentId, cc, controlStore)
         break
       }
       case 'turnEnd':
@@ -537,12 +511,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         params.onTurnEndRefresh?.(agentId)
         break
       case 'inputQueueChanged': {
-        agentInputQueueStore.apply(inner.value.snapshot)
+        agentInputQueueStore.apply(agentId, inner.value.snapshot)
         break
       }
       case 'todosChanged': {
         const tc = inner.value
-        chatStore.todos.replace(tc.agentId, tc.todos)
+        chatStore.todos.replace(agentId, tc.todos)
         break
       }
       case 'goalChanged': {
@@ -551,11 +525,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const gc = inner.value
         if (requested?.liveClaims.has('goal'))
           break
-        const outcome = chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
+        const outcome = chatStore.goal.replace(agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
         if (catchUpPhase === 'live' && outcome !== 'stale') {
-          claimRootTopic(streamWorkerId, gc.agentId, 'goal')
+          claimRootTopic(streamWorkerId, agentId, 'goal')
           if (outcome === 'progress-cleared')
-            agentSessionStore.claimGoalProgressClear(gc.agentId, { phase: 'live' })
+            agentSessionStore.claimGoalProgressClear(agentId, { phase: 'live' })
         }
         break
       }
@@ -565,9 +539,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const bc = inner.value
         if (requested?.liveClaims.has('tasks'))
           break
-        chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
+        chatStore.backgroundTasks.replace(agentId, bc.tasks)
         if (catchUpPhase === 'live')
-          claimRootTopic(streamWorkerId, bc.agentId, 'tasks')
+          claimRootTopic(streamWorkerId, agentId, 'tasks')
         break
       }
       case 'activityChanged': {
@@ -824,7 +798,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (affectedTerminals.size > 0) {
             params.metadata.patchMatching(
               (_meta, tabId) => affectedTerminals.has(tabId),
-              { terminalStatus: TerminalStatus.DISCONNECTED },
+              { terminalStatus: TERMINAL_DISCONNECTED },
             )
           }
           for (const tab of agents) {

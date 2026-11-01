@@ -80,12 +80,9 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	workerID := id.Generate()
 	workerAuthTok := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       workerAuthTok,
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    workerAuthTok,
+		RegisteredBy: userid.MustNew(userID),
 	}))
 
 	return &teardownEnv{
@@ -241,7 +238,6 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	workerB := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID: workerB, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(env.userID),
-		PublicKey: []byte("k2-32-bytes-padding-padding-okok"), MlkemPublicKey: []byte("m2"), SlhdsaPublicKey: []byte("s2"),
 	}))
 
 	env.channelMgr.RegisterWithAuthInfo(chA, workerA, env.userID, channelmgr.AuthInfo{

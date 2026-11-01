@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -23,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
 // fakeAdminHub answers the admin RPCs one `control admin ...` verb makes,
@@ -37,14 +40,25 @@ type fakeAdminHub struct {
 	leapmuxv1connect.UnimplementedAdminSettingsServiceHandler
 	leapmuxv1connect.UnimplementedAdminUserServiceHandler
 	leapmuxv1connect.UnimplementedAdminIdPServiceHandler
+	leapmuxv1connect.UnimplementedAdminWorkerServiceHandler
 
 	mu sync.Mutex
 
 	// values and descriptors answer ListSettings.
 	values      []*leapmuxv1.SettingValue
 	descriptors []*leapmuxv1.SettingDescriptor
-	// restart is what UpdateSetting reports for the written key.
+	// restart makes UpdateSettings report every written key as
+	// restart-class.
 	restart bool
+	// restartKeys, when non-nil, replaces restart: UpdateSettings reports
+	// exactly these keys as restart-class, whatever the request wrote.
+	restartKeys []string
+	// rewriteValues, when set, rewrites the values that UpdateSettings and
+	// ResetSettings answer, so a test can send a reply of the wrong length.
+	rewriteValues func([]*leapmuxv1.SettingValue) []*leapmuxv1.SettingValue
+	// listPage is the page that every listing RPC answers with. nil sends
+	// no page at all.
+	listPage *leapmuxv1.PageResponse
 	// resetErr, when set, refuses ResetSettings.
 	resetErr error
 	// resetPasswordErr, when set, refuses ResetPassword.
@@ -54,13 +68,13 @@ type fakeAdminHub struct {
 	lockedOutUsers int64
 
 	listCalls        int
-	updated          []*leapmuxv1.UpdateSettingRequest
 	updatedMany      []*leapmuxv1.UpdateSettingsRequest
 	resetKeys        [][]string
 	setAdmin         []*leapmuxv1.SetUserAdminRequest
 	resetPasswords   []*leapmuxv1.ResetPasswordRequest
 	issuedTokens     []*leapmuxv1.IssueAPITokenRequest
 	removedProviders []*leapmuxv1.RemoveOAuthProviderRequest
+	listRequests     []proto.Message
 }
 
 func (h *fakeAdminHub) ListSettings(
@@ -75,29 +89,26 @@ func (h *fakeAdminHub) ListSettings(
 	}, nil
 }
 
-func (h *fakeAdminHub) UpdateSetting(
-	_ context.Context, req *leapmuxv1.UpdateSettingRequest,
-) (*leapmuxv1.UpdateSettingResponse, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.updated = append(h.updated, req)
-	return &leapmuxv1.UpdateSettingResponse{
-		Value:   &leapmuxv1.SettingValue{Key: req.GetKey(), EffectiveJson: req.GetPartialJson()},
-		Restart: h.restart,
-	}, nil
-}
-
 func (h *fakeAdminHub) UpdateSettings(
 	_ context.Context, req *leapmuxv1.UpdateSettingsRequest,
 ) (*leapmuxv1.UpdateSettingsResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.updatedMany = append(h.updatedMany, req)
-	values := make([]*leapmuxv1.SettingValue, 0, len(req.GetWrites()))
+	resp := &leapmuxv1.UpdateSettingsResponse{}
 	for _, w := range req.GetWrites() {
-		values = append(values, &leapmuxv1.SettingValue{Key: w.GetKey()})
+		resp.Values = append(resp.Values, &leapmuxv1.SettingValue{Key: w.GetKey(), EffectiveJson: w.GetPartialJson()})
+		if h.restart {
+			resp.RestartKeys = append(resp.RestartKeys, w.GetKey())
+		}
 	}
-	return &leapmuxv1.UpdateSettingsResponse{Values: values}, nil
+	if h.restartKeys != nil {
+		resp.RestartKeys = h.restartKeys
+	}
+	if h.rewriteValues != nil {
+		resp.Values = h.rewriteValues(resp.Values)
+	}
+	return resp, nil
 }
 
 func (h *fakeAdminHub) ResetSettings(
@@ -113,7 +124,59 @@ func (h *fakeAdminHub) ResetSettings(
 	for _, key := range req.GetKeys() {
 		values = append(values, &leapmuxv1.SettingValue{Key: key})
 	}
+	if h.rewriteValues != nil {
+		values = h.rewriteValues(values)
+	}
 	return &leapmuxv1.ResetSettingsResponse{Values: values}, nil
+}
+
+// The four listing handlers below record the request and answer with one row
+// and listPage. A test reads the page and the owner filter that the verb sent,
+// and the next cursor that the verb printed.
+func (h *fakeAdminHub) ListUsers(
+	_ context.Context, req *leapmuxv1.ListUsersRequest,
+) (*leapmuxv1.ListUsersResponse, error) {
+	h.recordList(req)
+	return &leapmuxv1.ListUsersResponse{
+		Users: []*leapmuxv1.AdminUser{{Id: "u-1", Username: "amy"}},
+		Page:  h.listPage,
+	}, nil
+}
+
+func (h *fakeAdminHub) ListAPITokens(
+	_ context.Context, req *leapmuxv1.ListAPITokensRequest,
+) (*leapmuxv1.ListAPITokensResponse, error) {
+	h.recordList(req)
+	return &leapmuxv1.ListAPITokensResponse{
+		Tokens: []*leapmuxv1.AdminAPIToken{{Id: "t-1", UserId: "u-1"}},
+		Page:   h.listPage,
+	}, nil
+}
+
+func (h *fakeAdminHub) ListDelegationTokens(
+	_ context.Context, req *leapmuxv1.ListDelegationTokensRequest,
+) (*leapmuxv1.ListDelegationTokensResponse, error) {
+	h.recordList(req)
+	return &leapmuxv1.ListDelegationTokensResponse{
+		Tokens: []*leapmuxv1.AdminDelegationToken{{Id: "d-1", UserId: "u-1"}},
+		Page:   h.listPage,
+	}, nil
+}
+
+func (h *fakeAdminHub) ListWorkers(
+	_ context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest,
+) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
+	h.recordList(req)
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{
+		Workers: []*leapmuxv1.AdminWorker{{Id: "w-1", RegisteredBy: "u-1"}},
+		Page:    h.listPage,
+	}, nil
+}
+
+func (h *fakeAdminHub) recordList(req proto.Message) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.listRequests = append(h.listRequests, req)
 }
 
 func (h *fakeAdminHub) SetUserAdmin(
@@ -123,7 +186,7 @@ func (h *fakeAdminHub) SetUserAdmin(
 	defer h.mu.Unlock()
 	h.setAdmin = append(h.setAdmin, req)
 	return &leapmuxv1.SetUserAdminResponse{
-		User: &leapmuxv1.AdminUser{Id: "u-1", Username: req.GetUsername(), IsAdmin: req.GetIsAdmin()},
+		User: &leapmuxv1.AdminUser{Id: "u-1", Username: req.GetUser().GetUsername(), IsAdmin: req.GetIsAdmin()},
 	}, nil
 }
 
@@ -144,7 +207,7 @@ func (h *fakeAdminHub) ResetPassword(
 	if h.resetPasswordErr != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetPasswordErr.Error()).WithCause(h.resetPasswordErr)
 	}
-	userID, username := req.GetId(), req.GetUsername()
+	userID, username := req.GetUser().GetId(), req.GetUser().GetUsername()
 	if userID == "" {
 		userID = "u-7"
 	}
@@ -183,14 +246,6 @@ func (h *fakeAdminHub) RemoveOAuthProvider(
 
 // The takers below read a recording and clear it, so a test that runs two
 // verbs reads each one's calls without holding the lock itself.
-func (h *fakeAdminHub) takeUpdates() []*leapmuxv1.UpdateSettingRequest {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	out := h.updated
-	h.updated = nil
-	return out
-}
-
 func (h *fakeAdminHub) takeUpdatesMany() []*leapmuxv1.UpdateSettingsRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -239,6 +294,14 @@ func (h *fakeAdminHub) takeRemovedProviders() []*leapmuxv1.RemoveOAuthProviderRe
 	return out
 }
 
+func (h *fakeAdminHub) takeListRequests() []proto.Message {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := h.listRequests
+	h.listRequests = nil
+	return out
+}
+
 func (h *fakeAdminHub) listCallCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -260,6 +323,7 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(server, hub)
 	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
 	leapmuxv1connect.RegisterAdminIdPServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(server, hub)
 	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 
 	srv := hubtransporttest.NewServer(t, mux)
@@ -382,7 +446,10 @@ func TestAdminSettingsSet_ReportsThePropagationWithoutASecondRead(t *testing.T) 
 	assert.Contains(t, data["note_hot"], "30-second",
 		"an out-of-band write to the shared database lags by the snapshot TTL")
 
-	assert.Len(t, hub.takeUpdates(), 1)
+	updates := hub.takeUpdatesMany()
+	require.Len(t, updates, 1)
+	assert.Equal(t, []*leapmuxv1.SettingWrite{{Key: "theme", PartialJson: `"dark"`}}, updates[0].GetWrites(),
+		"one write that carries the value in the public half")
 	assert.Zero(t, hub.listCallCount(), "the propagation class rides the write's reply, so no listing is needed")
 }
 
@@ -398,6 +465,232 @@ func TestAdminSettingsSet_ReportsARestartClassKey(t *testing.T) {
 	assert.Equal(t, "restart", data["propagation"])
 	assert.Contains(t, data, "note_restart")
 	assert.NotContains(t, data, "note_hot", "a restart-class key must not claim the value is already live")
+}
+
+// The restart class belongs to the key that the verb wrote. A reply that
+// lists a different key as restart-class says nothing about this one, so the
+// verb reports this key as hot. A verb that tested "any restart key at all"
+// would tell the operator to restart for nothing.
+func TestAdminSettingsSet_IgnoresTheRestartClassOfAnotherKey(t *testing.T) {
+	hub := &fakeAdminHub{restartKeys: []string{"listen_addr"}}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminSettingsSet(fakeCmdCtx{}, []string{"--hub", url, "theme", `"dark"`}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "hot", data["propagation"], "only the written key's own class counts")
+	assert.Contains(t, data, "note_hot")
+	assert.NotContains(t, data, "note_restart")
+}
+
+// `settings set-secret` sends its document in the SECRET half of one write,
+// and leaves the public half empty. Only the secret half makes the hub
+// require at least one secret field, which is the rule that keeps this verb
+// from rewriting a public field such as the SMTP host.
+func TestAdminSettingsSetSecret_SendsTheDocumentInTheSecretHalf(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminSettingsSetSecret(fakeCmdCtx{},
+			[]string{"--hub", url, "smtp", `{"password":"hunter2"}`}))
+	})
+
+	updates := hub.takeUpdatesMany()
+	require.Len(t, updates, 1)
+	assert.Equal(t, []*leapmuxv1.SettingWrite{{Key: "smtp", SecretPartialJson: `{"password":"hunter2"}`}},
+		updates[0].GetWrites(), "one write that carries the document in the secret half only")
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "smtp", data["key"], "the verb prints the value that the hub answers")
+	assert.NotContains(t, string(out), "hunter2", "the verb prints the hub's reply, never its own request")
+}
+
+// `settings reset KEY` resets that one key in one ResetSettings call, and
+// prints the value that the hub answers for it.
+func TestAdminSettingsReset_ResetsTheOneKey(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "theme"}))
+	})
+
+	assert.Equal(t, [][]string{{"theme"}}, hub.takeResets())
+	assert.Equal(t, "theme", envelopeData(t, out)["key"])
+}
+
+// `rate-limit reset --operation X` resets the settings key of that operation
+// alone, and prints the value that the hub answers for it.
+func TestAdminRateLimitReset_ResetsTheKeyOfTheOperation(t *testing.T) {
+	key, err := rateLimitOperation("elevation")
+	require.NoError(t, err)
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminRateLimitReset(fakeCmdCtx{}, []string{"--hub", url, "--operation", "elevation"}))
+	})
+
+	assert.Equal(t, [][]string{{key}}, hub.takeResets())
+	assert.Equal(t, key, envelopeData(t, out)["key"])
+}
+
+// The hub answers one value for each key that a request lists, so a reply
+// with any other count is a hub fault. Every verb that writes or resets ONE
+// key must report that fault under its own code. It must not print a value
+// for the wrong key, and it must not panic on an empty reply.
+func TestAdminSingleKeyVerbs_RefuseAReplyWithTheWrongValueCount(t *testing.T) {
+	verbs := []struct {
+		name string
+		args []string
+		run  func(any, []string) error
+		code string
+	}{
+		{"settings set", []string{"theme", `"dark"`}, RunAdminSettingsSet, "update_failed"},
+		{"settings set-secret", []string{"smtp", `{"password":"x"}`}, RunAdminSettingsSetSecret, "update_failed"},
+		{"settings reset", []string{"theme"}, RunAdminSettingsReset, "reset_failed"},
+		{"rate-limit set", []string{"--operation", "elevation", "--window", "120"}, RunAdminRateLimitSet, "rate_limit_set_failed"},
+		{"rate-limit reset", []string{"--operation", "elevation"}, RunAdminRateLimitReset, "reset_failed"},
+	}
+	replies := []struct {
+		name    string
+		rewrite func([]*leapmuxv1.SettingValue) []*leapmuxv1.SettingValue
+		count   int
+	}{
+		{"no value", func([]*leapmuxv1.SettingValue) []*leapmuxv1.SettingValue { return nil }, 0},
+		{"two values", func(values []*leapmuxv1.SettingValue) []*leapmuxv1.SettingValue {
+			return append(values, &leapmuxv1.SettingValue{Key: "another_key"})
+		}, 2},
+	}
+	for _, verb := range verbs {
+		for _, reply := range replies {
+			t.Run(verb.name+"/"+reply.name, func(t *testing.T) {
+				hub := &fakeAdminHub{rewriteValues: reply.rewrite}
+				url := startAdminHub(t, hub)
+
+				out := withCapturedStdout(t, func() {
+					err := verb.run(fakeCmdCtx{}, append([]string{"--hub", url}, verb.args...))
+					require.Error(t, err)
+					assert.True(t, control.IsEmitted(err))
+				})
+
+				envErr := envelopeError(t, out)
+				assert.Equal(t, verb.code, envErr["code"])
+				assert.Contains(t, envErr["message"],
+					fmt.Sprintf("the hub answered %d setting values for one key", reply.count))
+				assert.NotContains(t, string(out), "another_key", "a value for another key must never print")
+			})
+		}
+	}
+}
+
+// A listing verb sends --limit and --cursor in the page of its request, and
+// prints the next cursor from the page of the reply. The cursor lives in a
+// nested message, so a verb that read it from anywhere else printed an empty
+// cursor, and an operator could never reach the second page.
+func TestAdminUserList_SendsThePageAndPrintsTheNextCursor(t *testing.T) {
+	hub := &fakeAdminHub{listPage: &leapmuxv1.PageResponse{NextCursor: "c2"}}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminUserList(fakeCmdCtx{},
+			[]string{"--hub", url, "--limit", "7", "--cursor", "c1", "--query", "am"}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "c2", data["next_cursor"])
+	users, ok := data["users"].([]any)
+	require.True(t, ok, "users must print as a list: %v", data["users"])
+	assert.Len(t, users, 1)
+
+	requests := hub.takeListRequests()
+	require.Len(t, requests, 1)
+	req, ok := requests[0].(*leapmuxv1.ListUsersRequest)
+	require.True(t, ok, "unexpected request type %T", requests[0])
+	assert.EqualValues(t, 7, req.GetPage().GetLimit())
+	assert.Equal(t, "c1", req.GetPage().GetCursor())
+	assert.Equal(t, "am", req.GetQuery())
+}
+
+// A reply with no page message reads as the last page. The verb still prints
+// the next_cursor field, empty, which tells a script that the listing ended.
+// Without flags the verb sends the default limit and no cursor.
+func TestAdminUserList_PrintsAnEmptyCursorAfterTheLastPage(t *testing.T) {
+	hub := &fakeAdminHub{}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminUserList(fakeCmdCtx{}, []string{"--hub", url}))
+	})
+
+	data := envelopeData(t, out)
+	require.Contains(t, data, "next_cursor", "an absent key reads as a verb that does not page")
+	assert.Equal(t, "", data["next_cursor"])
+
+	requests := hub.takeListRequests()
+	require.Len(t, requests, 1)
+	req, ok := requests[0].(*leapmuxv1.ListUsersRequest)
+	require.True(t, ok, "unexpected request type %T", requests[0])
+	assert.EqualValues(t, service.DefaultPageLimit, req.GetPage().GetLimit())
+	assert.Empty(t, req.GetPage().GetCursor())
+}
+
+// Each listing that takes the optional owner filter sends it as the hub's
+// user selector. Neither flag sends no selector, which lists every owner.
+// Either flag sends a selector over that one handle. An empty selector would
+// differ from an absent one on the wire, so the test tells them apart.
+func TestAdminOwnerFilteredLists_SendTheOwnerSelector(t *testing.T) {
+	type ownerFilteredRequest interface {
+		GetUser() *leapmuxv1.UserSelector
+		GetPage() *leapmuxv1.PageRequest
+	}
+	verbs := []struct {
+		name string
+		run  func(any, []string) error
+	}{
+		{"api-token list", RunAdminAPITokenList},
+		{"delegation-token list", RunAdminDelegationTokenList},
+		{"worker list", RunAdminWorkerList},
+	}
+	filters := []struct {
+		name     string
+		args     []string
+		id       string
+		username string
+	}{
+		{"neither flag", nil, "", ""},
+		{"user id", []string{"--user-id", "usr_1"}, "usr_1", ""},
+		{"username", []string{"--username", "amy"}, "", "amy"},
+	}
+	for _, verb := range verbs {
+		for _, filter := range filters {
+			t.Run(verb.name+"/"+filter.name, func(t *testing.T) {
+				hub := &fakeAdminHub{listPage: &leapmuxv1.PageResponse{NextCursor: "next"}}
+				url := startAdminHub(t, hub)
+
+				out := withCapturedStdout(t, func() {
+					require.NoError(t, verb.run(fakeCmdCtx{}, append([]string{"--hub", url}, filter.args...)))
+				})
+				assert.Equal(t, "next", envelopeData(t, out)["next_cursor"])
+
+				requests := hub.takeListRequests()
+				require.Len(t, requests, 1)
+				req, ok := requests[0].(ownerFilteredRequest)
+				require.True(t, ok, "unexpected request type %T", requests[0])
+				assert.EqualValues(t, service.DefaultPageLimit, req.GetPage().GetLimit())
+				if filter.id == "" && filter.username == "" {
+					assert.Nil(t, req.GetUser(), "neither flag must send no selector, which lists every owner")
+					return
+				}
+				require.NotNil(t, req.GetUser())
+				assert.Equal(t, filter.id, req.GetUser().GetId())
+				assert.Equal(t, filter.username, req.GetUser().GetUsername())
+			})
+		}
+	}
 }
 
 // `settings list` and `settings get` must point at the verb that can
@@ -714,10 +1007,11 @@ func TestAdminRateLimitSet_SubstitutesTheCatalogueDefaultForAPassedZero(t *testi
 
 	def, ok := ratelimit.DefaultLimits(ratelimit.OpElevation)
 	require.True(t, ok)
-	updates := hub.takeUpdates()
+	updates := hub.takeUpdatesMany()
 	require.Len(t, updates, 1)
+	require.Len(t, updates[0].GetWrites(), 1)
 	var doc map[string]any
-	require.NoError(t, json.Unmarshal([]byte(updates[0].GetPartialJson()), &doc))
+	require.NoError(t, json.Unmarshal([]byte(updates[0].GetWrites()[0].GetPartialJson()), &doc))
 	assert.EqualValues(t, def.MaxAttempts, doc["max_attempts"])
 	assert.EqualValues(t, def.WindowSeconds, doc["window_seconds"])
 	assert.NotContains(t, doc, "enabled", "`rate-limit enable|disable` owns the switch")
@@ -768,8 +1062,8 @@ func TestAdminUserResetPassword_ReportsTheSubjectAndTheRevokedCounts(t *testing.
 	// the hub resets nothing and the counts above describe no work.
 	calls := hub.takeResetPasswords()
 	require.Len(t, calls, 1)
-	assert.Equal(t, "u-7", calls[0].GetId())
-	assert.Empty(t, calls[0].GetUsername(), "the operator addressed the user by id")
+	assert.Equal(t, "u-7", calls[0].GetUser().GetId())
+	assert.Empty(t, calls[0].GetUser().GetUsername(), "the operator addressed the user by id")
 	assert.Equal(t, "s3cr3t", calls[0].GetPassword())
 }
 
@@ -792,8 +1086,8 @@ func TestAdminUserResetPassword_ReportsTheUserIDWhenAddressedByUsername(t *testi
 
 	calls := hub.takeResetPasswords()
 	require.Len(t, calls, 1)
-	assert.Equal(t, "amy", calls[0].GetUsername())
-	assert.Empty(t, calls[0].GetId())
+	assert.Equal(t, "amy", calls[0].GetUser().GetUsername())
+	assert.Empty(t, calls[0].GetUser().GetId())
 }
 
 // A hub that refuses the reset must reach the operator under this verb's
@@ -892,8 +1186,8 @@ func TestAdminAPITokenIssue_AddressesTheOwnerByUsername(t *testing.T) {
 
 	issued := hub.takeIssuedTokens()
 	require.Len(t, issued, 1)
-	assert.Equal(t, "amy", issued[0].GetUsername())
-	assert.Empty(t, issued[0].GetUserId())
+	assert.Equal(t, "amy", issued[0].GetUser().GetUsername())
+	assert.Empty(t, issued[0].GetUser().GetId())
 	assert.Equal(t, "ci-bot", issued[0].GetInstallationName())
 }
 

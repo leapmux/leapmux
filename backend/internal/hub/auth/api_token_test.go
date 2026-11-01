@@ -50,12 +50,9 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 	ctx := context.Background()
 	workerID = id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
 	}))
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,

@@ -135,8 +135,7 @@ func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-tomb-tA",
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:   "tA",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			}},
 		}},
 	}
@@ -184,8 +183,7 @@ func TestManager_CompactionDoesNotPruneLiveRecords(t *testing.T) {
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-tomb-tA",
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:   "tA",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			}},
 		}},
 	}

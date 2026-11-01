@@ -56,7 +56,7 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId: "op-move",
 			Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root2"},
 			}},
 		}},

@@ -253,14 +253,18 @@ describe('framedEntityKeys', () => {
       [
         {
           case: 'setTabRegister',
-          value: { tabId: 't' },
+          value: {
+            tab: { tabId: 't' },
+          },
         },
         'tab:t',
       ],
       [
         {
           case: 'tombstoneTab',
-          value: { tabId: 't' },
+          value: {
+            tab: { tabId: 't' },
+          },
         },
         'tab:t',
       ],
@@ -280,14 +284,7 @@ describe('framedEntityKeys', () => {
       ],
       [
         {
-          case: 'setWorkspaceRootNode',
-          value: { workspaceId: 'ws' },
-        },
-        'ws:ws',
-      ],
-      [
-        {
-          case: 'setWorkspaceRegister',
+          case: 'createWorkspace',
           value: { workspaceId: 'ws' },
         },
         'ws:ws',
@@ -332,7 +329,9 @@ describe('framedEntityKeys', () => {
             {
               body: {
                 case: 'setTabRegister',
-                value: { tabId: 't1' },
+                value: {
+                  tab: { tabId: 't1' },
+                },
               },
             },
             {
@@ -476,7 +475,9 @@ describe('framedEntityKeys', () => {
             {
               body: {
                 case: 'setTabRegister',
-                value: { tabId: 't1' },
+                value: {
+                  tab: { tabId: 't1' },
+                },
               },
             },
           ],

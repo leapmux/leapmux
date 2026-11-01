@@ -203,12 +203,7 @@ func (h *OutputHandler) SetShuttingDown() {
 func (h *OutputHandler) broadcastBackgroundTasks(rootAgentID string, rows []bgtask.Item) {
 	h.watcher.BroadcastAgentEvent(rootAgentID, &leapmuxv1.AgentEvent{
 		AgentId: rootAgentID,
-		Event: &leapmuxv1.AgentEvent_BackgroundTasksChanged{
-			BackgroundTasksChanged: &leapmuxv1.AgentBackgroundTasksChanged{
-				AgentId: rootAgentID,
-				Tasks:   bgtask.ItemsToProto(rows),
-			},
-		},
+		Event:   &leapmuxv1.AgentEvent_BackgroundTasksChanged{BackgroundTasksChanged: bgtask.SnapshotToProto(rows)},
 	})
 }
 

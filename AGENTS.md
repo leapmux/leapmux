@@ -18,7 +18,8 @@ path, wire compatibility or migration hygiene, and never propose a shim.
 - Renumber, regroup, replace or remove protobuf fields freely, leaving **no
   `reserved` and no hole**: delete the field and move every later field down
   one. A reservation protects a number still meaningful on some wire or in some
-  database, and nothing here is.
+  database, and nothing here is. `backend/internal/protonumbering` fails a hole
+  or a reservation in any leapmux message or enum.
   - Renumbering an enum is a **data change** where a column stores its
     ordinals (see **Enum columns store proto enum ordinals**): move the column
     `CHECK`s to a plain `BETWEEN 1 AND <last>`, no carve-out.
@@ -122,8 +123,8 @@ task first builds the Go sidecar that Tauri's bundle resources point at
 
 A column whose values are a closed set is an enum: it takes its numbering from a
 proto enum and stores the ordinal as an integer, never the name — even for a
-hub-internal vocabulary, which goes in `proto/leapmux/v1/hub_storage.proto` (no
-message or RPC) if it has no enum yet.
+vocabulary internal to the hub or the worker, which goes in
+`proto/leapmux/v1/storage.proto` (no message or RPC) if it has no enum yet.
 
 - **CHECK the range, starting at 1.** Proto3 fixes UNSPECIFIED at 0 and an unset
   Go field holds 0, so a forgotten write fails instead of storing a value nobody
@@ -459,7 +460,7 @@ Run E2E tests locally before claiming that an E2E change works.
   `src/test-support/visibleChatLocators.test.ts` rejects an unscoped test-id or
   `text=` locator.
 - **Wait on the WORKER, not the tab count or the hub's list** — both are
-  optimistic CRDT state. `emitRemoveTab` tombstones at once while `CloseAgent`
+  optimistic CRDT state. `emitRemoveTab` tombstones at once while `CloseTab`
   is still stopping the process, and `listAgentsViaAPI` reads the hub's
   `ListTabs`, already cleared by that tombstone. Poll `inspectLastTabCloseViaAPI`
   for a close verdict, or `waitForAgentStartupViaAPI` for startup (it waits for

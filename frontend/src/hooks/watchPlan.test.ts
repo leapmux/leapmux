@@ -1,7 +1,7 @@
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import { describe, expect, it, vi } from 'vitest'
-import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WatchMode, WatchRejectionReason, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import {
   agentWatchEntry,
   buildWatchPlans,

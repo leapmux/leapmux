@@ -3,7 +3,7 @@ import { Code, ConnectError, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
 import { desktopFetch, getCapabilities, isTauriApp } from '~/api/platformBridge'
 import * as wireHeaders from '~/generated/contracts/headers'
-import { UserService } from '~/generated/proto/leapmux/v1/user_pb'
+import { SystemService } from '~/generated/proto/leapmux/v1/system_pb'
 import { isElevationRequired, promptForElevation } from '~/lib/elevationPrompt'
 
 // Callbacks for auth state changes (set by AuthContext)
@@ -369,7 +369,7 @@ const timeoutConfig: TimeoutConfig = {
 /** Load timeout configuration from the server. Call after authentication. */
 export async function loadTimeouts(): Promise<void> {
   try {
-    const client = createClient(UserService, transport)
+    const client = createClient(SystemService, transport)
     const resp = await client.getTimeouts({})
     if (resp.apiTimeoutSeconds > 0)
       timeoutConfig.apiTimeoutSeconds = resp.apiTimeoutSeconds

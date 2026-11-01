@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -82,7 +83,7 @@ func TestListAgents_AnActiveAgentStatesTheSessionThatItsStartupStored(t *testing
 	listed := make(chan struct{})
 	go func() {
 		defer close(listed)
-		dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{id}}, w)
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{id}}, w)
 	}()
 	require.Eventually(t, func() bool { _, err := os.Stat(gitStarted); return err == nil }, inputQueueWait, 10*time.Millisecond,
 		"ListAgents must reach the git status of its row")

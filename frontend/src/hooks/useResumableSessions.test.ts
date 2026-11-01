@@ -74,10 +74,9 @@ describe('useResumableSessions', () => {
       expect(sessions().map(s => s.sessionId)).toEqual(['ses_a', 'ses_b'])
       expect(loading()).toBe(false)
 
-      // The worker id rides both the envelope and the request body, and the
-      // signal is what lets a superseded call be abandoned.
+      // The worker id routes the call and stays out of the request body, and
+      // the signal is what lets a superseded call be abandoned.
       expect(listAgentSessions).toHaveBeenCalledWith('w-1', {
-        workerId: 'w-1',
         workingDir: '/repo',
         agentProvider: AgentProvider.CLAUDE_CODE,
       }, expect.objectContaining({
@@ -151,12 +150,13 @@ describe('useResumableSessions', () => {
       })
       await flush()
       expect(listAgentSessions).toHaveBeenCalledTimes(2)
+      const next = {
+        ...ARGS,
+        ...change,
+      }
       expect(listAgentSessions).toHaveBeenLastCalledWith(
-        {
-          ...ARGS,
-          ...change,
-        }.workerId,
-        expect.objectContaining(change),
+        next.workerId,
+        { workingDir: next.workingDir, agentProvider: next.agentProvider },
         expect.anything(),
       )
       dispose()

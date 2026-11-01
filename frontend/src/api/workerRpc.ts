@@ -6,82 +6,133 @@
  * sees the plaintext content.
  */
 
-import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
-import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
+import type { DescMessage, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type {
+  ApproveAutoReviewDenialRequestSchema,
   ApproveAutoReviewDenialResponse,
+  BeginQueuedAgentInputEditRequestSchema,
   BeginQueuedAgentInputEditResponse,
+  CancelQueuedAgentInputEditRequestSchema,
   CancelQueuedAgentInputEditResponse,
-  CloseAgentResponse,
+  DeleteQueuedAgentInputRequestSchema,
   DeleteQueuedAgentInputResponse,
+  EnqueueAgentInputRequestSchema,
   EnqueueAgentInputResponse,
+  GetAgentMessageRequestSchema,
   GetAgentMessageResponse,
+  GetAgentSpanMessagesRequestSchema,
   GetAgentSpanMessagesResponse,
+  InterruptAgentRequestSchema,
   InterruptAgentResponse,
+  ListAgentMessagesRequestSchema,
   ListAgentMessagesResponse,
+  ListAgentSessionsRequestSchema,
   ListAgentSessionsResponse,
+  ListAgentsRequestSchema,
   ListAgentsResponse,
   ListAvailableProvidersResponse,
+  ListMessageMarksRequestSchema,
+
   ListMessageMarksResponse,
+  MoveQueuedAgentInputRequestSchema,
   MoveQueuedAgentInputResponse,
+  OpenAgentRequestSchema,
   OpenAgentResponse,
+  PreemptQueuedAgentInputRequestSchema,
   PreemptQueuedAgentInputResponse,
+  RenameAgentRequestSchema,
   RenameAgentResponse,
+  RetryAgentTurnRequestSchema,
   RetryAgentTurnResponse,
+  RetryQueuedAgentInputRequestSchema,
   RetryQueuedAgentInputResponse,
-  SendAgentRawMessageResponse,
+  SendControlResponseRequestSchema,
   SendControlResponseResponse,
+  SetAgentInputQueuePausedRequestSchema,
   SetAgentInputQueuePausedResponse,
+  SteerQueuedAgentInputRequestSchema,
   SteerQueuedAgentInputResponse,
+  UpdateAgentGoalRequestSchema,
   UpdateAgentGoalResponse,
+  UpdateAgentSettingsRequestSchema,
   UpdateAgentSettingsResponse,
+  UpdateQueuedAgentInputRequestSchema,
   UpdateQueuedAgentInputResponse,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EncryptionMode, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import type {
+  ListDirectoryRequestSchema,
   ListDirectoryResponse,
   ListFilesystemRootsResponse,
+  ReadFileRequestSchema,
+
   ReadFileResponse,
+  StatFileRequestSchema,
   StatFileResponse,
 } from '~/generated/proto/leapmux/v1/file_pb'
 import type {
+  CheckoutBranchRequestSchema,
   CheckoutBranchResponse,
+  CreateBranchRequestSchema,
   CreateBranchResponse,
+  DeleteBranchRequestSchema,
   DeleteBranchResponse,
+  GetGitFileStatusRequestSchema,
   GetGitFileStatusResponse,
+  GetGitInfoRequestSchema,
   GetGitInfoResponse,
+  InspectBranchChangeRequestSchema,
   InspectBranchChangeResponse,
+  InspectBranchDeletionRequestSchema,
+
   InspectBranchDeletionResponse,
+  InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponse,
+  InspectWorktreeRemovalRequestSchema,
   InspectWorktreeRemovalResponse,
+  ListGitBranchesRequestSchema,
   ListGitBranchesResponse,
+  ListGitWorktreesRequestSchema,
   ListGitWorktreesResponse,
+  PushBranchRequestSchema,
   PushBranchResponse,
+  ReadGitFileRequestSchema,
   ReadGitFileResponse,
 } from '~/generated/proto/leapmux/v1/git_pb'
 import type {
-  CloseTerminalResponse,
+  InspectTerminalProcessesRequestSchema,
   InspectTerminalProcessesResponse,
+  ListAvailableShellsRequestSchema,
   ListAvailableShellsResponse,
+  ListTerminalsRequestSchema,
   ListTerminalsResponse,
+  OpenTerminalRequestSchema,
+
   OpenTerminalResponse,
+  RenameTerminalRequestSchema,
+  RenameTerminalResponse,
+  ResizeTerminalRequestSchema,
   ResizeTerminalResponse,
+  RestartTerminalRequestSchema,
   RestartTerminalResponse,
+  SendInputRequestSchema,
   SendInputResponse,
-  UpdateTerminalTitleResponse,
 } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type {
-  GetWorkerSystemInfoResponse,
-} from '~/generated/proto/leapmux/v1/worker_pb'
-import type {
+  GetTabPayloadRequestSchema,
   GetTabPayloadResponse,
+  RegisterTabPayloadRequestSchema,
+
   RegisterTabPayloadResponse,
-  RevokeTabPayloadResponse,
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import type { GetWorkerSystemInfoResponse } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import type {
+  CleanupWorkspaceRequestSchema,
   CleanupWorkspaceResponse,
-  WatchEventsResponse,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+  CloseTabRequestSchema,
+  CloseTabResponse,
+} from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { Code, createClient } from '@connectrpc/connect'
@@ -90,144 +141,20 @@ import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
-import { WORKER_RPC_METHOD } from '~/generated/contracts/worker-vocab'
-import {
-  ApproveAutoReviewDenialRequestSchema,
-  ApproveAutoReviewDenialResponseSchema,
-  BeginQueuedAgentInputEditRequestSchema,
-  BeginQueuedAgentInputEditResponseSchema,
-  CancelQueuedAgentInputEditRequestSchema,
-  CancelQueuedAgentInputEditResponseSchema,
-  CloseAgentRequestSchema,
-  CloseAgentResponseSchema,
-  DeleteQueuedAgentInputRequestSchema,
-  DeleteQueuedAgentInputResponseSchema,
-  EnqueueAgentInputRequestSchema,
-  EnqueueAgentInputResponseSchema,
-  GetAgentMessageRequestSchema,
-  GetAgentMessageResponseSchema,
-  GetAgentSpanMessagesRequestSchema,
-  GetAgentSpanMessagesResponseSchema,
-  InterruptAgentRequestSchema,
-  InterruptAgentResponseSchema,
-  ListAgentMessagesRequestSchema,
-  ListAgentMessagesResponseSchema,
-  ListAgentSessionsRequestSchema,
-  ListAgentSessionsResponseSchema,
-  ListAgentsRequestSchema,
-  ListAgentsResponseSchema,
-  ListAvailableProvidersRequestSchema,
-  ListAvailableProvidersResponseSchema,
-  ListMessageMarksRequestSchema,
-  ListMessageMarksResponseSchema,
-  MoveQueuedAgentInputRequestSchema,
-  MoveQueuedAgentInputResponseSchema,
-  OpenAgentRequestSchema,
-  OpenAgentResponseSchema,
-  PreemptQueuedAgentInputRequestSchema,
-  PreemptQueuedAgentInputResponseSchema,
-  RenameAgentRequestSchema,
-  RenameAgentResponseSchema,
-  RetryAgentTurnRequestSchema,
-  RetryAgentTurnResponseSchema,
-  RetryQueuedAgentInputRequestSchema,
-  RetryQueuedAgentInputResponseSchema,
-  SendAgentRawMessageRequestSchema,
-  SendAgentRawMessageResponseSchema,
-  SendControlResponseRequestSchema,
-  SendControlResponseResponseSchema,
-  SetAgentInputQueuePausedRequestSchema,
-  SetAgentInputQueuePausedResponseSchema,
-  SteerQueuedAgentInputRequestSchema,
-  SteerQueuedAgentInputResponseSchema,
-  UpdateAgentGoalRequestSchema,
-  UpdateAgentGoalResponseSchema,
-  UpdateAgentSettingsRequestSchema,
-  UpdateAgentSettingsResponseSchema,
-  UpdateQueuedAgentInputRequestSchema,
-  UpdateQueuedAgentInputResponseSchema,
-} from '~/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentInputService, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
-import {
-  ListDirectoryRequestSchema,
-  ListDirectoryResponseSchema,
-  ListFilesystemRootsRequestSchema,
-  ListFilesystemRootsResponseSchema,
-  ReadFileRequestSchema,
-  ReadFileResponseSchema,
-  StatFileRequestSchema,
-  StatFileResponseSchema,
-} from '~/generated/proto/leapmux/v1/file_pb'
-import {
-  CheckoutBranchRequestSchema,
-  CheckoutBranchResponseSchema,
-  CreateBranchRequestSchema,
-  CreateBranchResponseSchema,
-  DeleteBranchRequestSchema,
-  DeleteBranchResponseSchema,
-  GetGitFileStatusRequestSchema,
-  GetGitFileStatusResponseSchema,
-  GetGitInfoRequestSchema,
-  GetGitInfoResponseSchema,
-  InspectBranchChangeRequestSchema,
-  InspectBranchChangeResponseSchema,
-  InspectBranchDeletionRequestSchema,
-  InspectBranchDeletionResponseSchema,
-  InspectLastTabCloseRequestSchema,
-  InspectLastTabCloseResponseSchema,
-  InspectWorktreeRemovalRequestSchema,
-  InspectWorktreeRemovalResponseSchema,
-  ListGitBranchesRequestSchema,
-  ListGitBranchesResponseSchema,
-  ListGitWorktreesRequestSchema,
-  ListGitWorktreesResponseSchema,
-  PushBranchRequestSchema,
-  PushBranchResponseSchema,
-  ReadGitFileRequestSchema,
-  ReadGitFileResponseSchema,
-} from '~/generated/proto/leapmux/v1/git_pb'
-import {
-  CloseTerminalRequestSchema,
-  CloseTerminalResponseSchema,
-  InspectTerminalProcessesRequestSchema,
-  InspectTerminalProcessesResponseSchema,
-  ListAvailableShellsRequestSchema,
-  ListAvailableShellsResponseSchema,
-  ListTerminalsRequestSchema,
-  ListTerminalsResponseSchema,
-  OpenTerminalRequestSchema,
-  OpenTerminalResponseSchema,
-  ResizeTerminalRequestSchema,
-  ResizeTerminalResponseSchema,
-  RestartTerminalRequestSchema,
-  RestartTerminalResponseSchema,
-  SendInputRequestSchema,
-  SendInputResponseSchema,
-  UpdateTerminalTitleRequestSchema,
-  UpdateTerminalTitleResponseSchema,
-} from '~/generated/proto/leapmux/v1/terminal_pb'
-import {
-  GetWorkerSystemInfoRequestSchema,
-  GetWorkerSystemInfoResponseSchema,
-} from '~/generated/proto/leapmux/v1/worker_pb'
-import {
-  GetTabPayloadRequestSchema,
-  GetTabPayloadResponseSchema,
-  RegisterTabPayloadRequestSchema,
-  RegisterTabPayloadResponseSchema,
-  RevokeTabPayloadRequestSchema,
-  RevokeTabPayloadResponseSchema,
-} from '~/generated/proto/leapmux/v1/worker_private_pb'
-import {
-  CleanupWorkspaceRequestSchema,
-  CleanupWorkspaceResponseSchema,
-  WatchEventsRequestSchema,
-  WatchEventsResponseSchema,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+import { WorkerFileService } from '~/generated/proto/leapmux/v1/file_pb'
+import { WorkerGitService } from '~/generated/proto/leapmux/v1/git_pb'
+import { WorkerTerminalService } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { WatchEventsRequestSchema, WatchEventsResponseSchema, WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
+import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { ChannelError } from '~/lib/channelError'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
+import { procedureOf } from '~/lib/rpcProcedure'
 import { sleep } from '~/lib/sleep'
 
 const log = createLogger('workerRpc')
@@ -269,9 +196,9 @@ class BrowserChannelTransport implements ChannelTransport {
     const resp = await channelRpcClient.getWorkerHandshakeParams({ workerId })
     return {
       keys: {
-        x25519PublicKey: resp.publicKey,
-        mlkemPublicKey: resp.mlkemPublicKey,
-        slhdsaPublicKey: resp.slhdsaPublicKey,
+        x25519PublicKey: resp.keys?.x25519 ?? new Uint8Array(),
+        mlkemPublicKey: resp.keys?.mlkem ?? new Uint8Array(),
+        slhdsaPublicKey: resp.keys?.slhdsa ?? new Uint8Array(),
       },
       encryptionMode: resp.encryptionMode,
     }
@@ -355,26 +282,22 @@ function isWorkerUnavailable(err: unknown): err is ChannelError {
  * A retry cannot double-apply a write: every site the worker answers
  * `Unavailable` from returns before it mutates anything.
  */
-async function callWorker<
-  ReqSchema extends GenMessage<any>,
-  RespSchema extends GenMessage<any>,
->(
+async function callWorker<I extends DescMessage, O extends DescMessage>(
   workerId: string,
-  method: string,
-  reqSchema: ReqSchema,
-  respSchema: RespSchema,
-  req: MessageInitShape<ReqSchema>,
+  method: DescMethodUnary<I, O>,
+  req: MessageInitShape<I>,
   opts?: { timeoutMs?: number, signal?: AbortSignal },
-): Promise<MessageShape<RespSchema>> {
+): Promise<MessageShape<O>> {
+  const procedure = procedureOf(method)
   for (let attempt = 0; ; attempt++) {
     emitDevEvent('leapmux:rpc-send', () => ({
-      method,
+      method: procedure,
       at: performance.now(),
     }))
     try {
-      const resp = await channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+      const resp = await channelManager.callWorker(workerId, method, req, opts)
       emitDevEvent('leapmux:rpc-recv', () => ({
-        method,
+        method: procedure,
         at: performance.now(),
         ok: true,
       }))
@@ -382,7 +305,7 @@ async function callWorker<
     }
     catch (err) {
       emitDevEvent('leapmux:rpc-recv', () => ({
-        method,
+        method: procedure,
         at: performance.now(),
         ok: false,
       }))
@@ -398,15 +321,20 @@ async function callWorker<
 // ---------------------------------------------------------------------------
 
 export function getWorkerSystemInfo(workerId: string): Promise<GetWorkerSystemInfoResponse> {
-  return callWorker(workerId, 'GetWorkerSystemInfo', GetWorkerSystemInfoRequestSchema, GetWorkerSystemInfoResponseSchema, {})
+  return callWorker(workerId, WorkerSystemService.method.getWorkerSystemInfo, {})
 }
 
 // ---------------------------------------------------------------------------
 // Workspace Cleanup (via E2EE channel to worker)
 // ---------------------------------------------------------------------------
 
+/** Closes one tab of any type. Partial failures come back in-band; see CloseTabResponse. */
+export function closeTab(workerId: string, req: MessageInitShape<typeof CloseTabRequestSchema>): Promise<CloseTabResponse> {
+  return callWorker(workerId, WorkerTabService.method.closeTab, req)
+}
+
 export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof CleanupWorkspaceRequestSchema>): Promise<CleanupWorkspaceResponse> {
-  return callWorker(workerId, 'CleanupWorkspace', CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, req)
+  return callWorker(workerId, WorkerTabService.method.cleanupWorkspace, req)
 }
 
 // ---------------------------------------------------------------------------
@@ -417,21 +345,14 @@ export function registerTabPayload(
   workerId: string,
   req: MessageInitShape<typeof RegisterTabPayloadRequestSchema>,
 ): Promise<RegisterTabPayloadResponse> {
-  return callWorker(workerId, 'RegisterTabPayload', RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema, req)
+  return callWorker(workerId, WorkerPrivateService.method.registerTabPayload, req)
 }
 
 export function getTabPayload(
   workerId: string,
   req: MessageInitShape<typeof GetTabPayloadRequestSchema>,
 ): Promise<GetTabPayloadResponse> {
-  return callWorker(workerId, 'GetTabPayload', GetTabPayloadRequestSchema, GetTabPayloadResponseSchema, req)
-}
-
-export function revokeTabPayload(
-  workerId: string,
-  req: MessageInitShape<typeof RevokeTabPayloadRequestSchema>,
-): Promise<RevokeTabPayloadResponse> {
-  return callWorker(workerId, 'RevokeTabPayload', RevokeTabPayloadRequestSchema, RevokeTabPayloadResponseSchema, req)
+  return callWorker(workerId, WorkerPrivateService.method.getTabPayload, req)
 }
 
 // ---------------------------------------------------------------------------
@@ -439,85 +360,77 @@ export function revokeTabPayload(
 // ---------------------------------------------------------------------------
 
 export function openAgent(workerId: string, req: MessageInitShape<typeof OpenAgentRequestSchema>): Promise<OpenAgentResponse> {
-  return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req, {
+  return callWorker(workerId, WorkerAgentService.method.openAgent, req, {
     timeoutMs: apiLoadingTimeoutMs(),
   })
 }
 
-export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseAgentRequestSchema>): Promise<CloseAgentResponse> {
-  return callWorker(workerId, 'CloseAgent', CloseAgentRequestSchema, CloseAgentResponseSchema, req)
-}
-
 export function enqueueAgentInput(workerId: string, req: MessageInitShape<typeof EnqueueAgentInputRequestSchema>): Promise<EnqueueAgentInputResponse> {
-  return callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.enqueueAgentInput, req)
 }
 
 export function beginQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof BeginQueuedAgentInputEditRequestSchema>): Promise<BeginQueuedAgentInputEditResponse> {
-  return callWorker(workerId, 'BeginQueuedAgentInputEdit', BeginQueuedAgentInputEditRequestSchema, BeginQueuedAgentInputEditResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.beginQueuedAgentInputEdit, req)
 }
 
 export function updateQueuedAgentInput(workerId: string, req: MessageInitShape<typeof UpdateQueuedAgentInputRequestSchema>): Promise<UpdateQueuedAgentInputResponse> {
-  return callWorker(workerId, 'UpdateQueuedAgentInput', UpdateQueuedAgentInputRequestSchema, UpdateQueuedAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.updateQueuedAgentInput, req)
 }
 
 export function cancelQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof CancelQueuedAgentInputEditRequestSchema>): Promise<CancelQueuedAgentInputEditResponse> {
-  return callWorker(workerId, 'CancelQueuedAgentInputEdit', CancelQueuedAgentInputEditRequestSchema, CancelQueuedAgentInputEditResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.cancelQueuedAgentInputEdit, req)
 }
 
 export function deleteQueuedAgentInput(workerId: string, req: MessageInitShape<typeof DeleteQueuedAgentInputRequestSchema>): Promise<DeleteQueuedAgentInputResponse> {
-  return callWorker(workerId, 'DeleteQueuedAgentInput', DeleteQueuedAgentInputRequestSchema, DeleteQueuedAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.deleteQueuedAgentInput, req)
 }
 
 export function moveQueuedAgentInput(workerId: string, req: MessageInitShape<typeof MoveQueuedAgentInputRequestSchema>): Promise<MoveQueuedAgentInputResponse> {
-  return callWorker(workerId, 'MoveQueuedAgentInput', MoveQueuedAgentInputRequestSchema, MoveQueuedAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.moveQueuedAgentInput, req)
 }
 
 export function setAgentInputQueuePaused(workerId: string, req: MessageInitShape<typeof SetAgentInputQueuePausedRequestSchema>): Promise<SetAgentInputQueuePausedResponse> {
-  return callWorker(workerId, 'SetAgentInputQueuePaused', SetAgentInputQueuePausedRequestSchema, SetAgentInputQueuePausedResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.setAgentInputQueuePaused, req)
 }
 
 export function steerQueuedAgentInput(workerId: string, req: MessageInitShape<typeof SteerQueuedAgentInputRequestSchema>): Promise<SteerQueuedAgentInputResponse> {
-  return callWorker(workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.steerQueuedAgentInput, req)
 }
 
 export function preemptQueuedAgentInput(workerId: string, req: MessageInitShape<typeof PreemptQueuedAgentInputRequestSchema>): Promise<PreemptQueuedAgentInputResponse> {
-  return callWorker(workerId, 'PreemptQueuedAgentInput', PreemptQueuedAgentInputRequestSchema, PreemptQueuedAgentInputResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.preemptQueuedAgentInput, req)
 }
 
 export function retryQueuedAgentInput(workerId: string, req: MessageInitShape<typeof RetryQueuedAgentInputRequestSchema>): Promise<RetryQueuedAgentInputResponse> {
-  return callWorker(workerId, 'RetryQueuedAgentInput', RetryQueuedAgentInputRequestSchema, RetryQueuedAgentInputResponseSchema, req)
-}
-
-export function sendAgentRawMessage(workerId: string, req: MessageInitShape<typeof SendAgentRawMessageRequestSchema>): Promise<SendAgentRawMessageResponse> {
-  return callWorker(workerId, 'SendAgentRawMessage', SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema, req)
+  return callWorker(workerId, WorkerAgentInputService.method.retryQueuedAgentInput, req)
 }
 
 export function listAgents(workerId: string, req: MessageInitShape<typeof ListAgentsRequestSchema>): Promise<ListAgentsResponse> {
-  return callWorker(workerId, 'ListAgents', ListAgentsRequestSchema, ListAgentsResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.listAgents, req)
 }
 
 export function listAgentMessages(workerId: string, req: MessageInitShape<typeof ListAgentMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListAgentMessagesResponse> {
-  return callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, req, opts)
+  return callWorker(workerId, WorkerAgentService.method.listAgentMessages, req, opts)
 }
 
 export function listMessageMarks(workerId: string, req: MessageInitShape<typeof ListMessageMarksRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListMessageMarksResponse> {
-  return callWorker(workerId, 'ListMessageMarks', ListMessageMarksRequestSchema, ListMessageMarksResponseSchema, req, opts)
+  return callWorker(workerId, WorkerAgentService.method.listMessageMarks, req, opts)
 }
 
 export function getAgentMessage(workerId: string, req: MessageInitShape<typeof GetAgentMessageRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentMessageResponse> {
-  return callWorker(workerId, 'GetAgentMessage', GetAgentMessageRequestSchema, GetAgentMessageResponseSchema, req, opts)
+  return callWorker(workerId, WorkerAgentService.method.getAgentMessage, req, opts)
 }
 
 export function getAgentSpanMessages(workerId: string, req: MessageInitShape<typeof GetAgentSpanMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentSpanMessagesResponse> {
-  return callWorker(workerId, WORKER_RPC_METHOD.GetAgentSpanMessages, GetAgentSpanMessagesRequestSchema, GetAgentSpanMessagesResponseSchema, req, opts)
+  return callWorker(workerId, WorkerAgentService.method.getAgentSpanMessages, req, opts)
 }
 
 export function renameAgent(workerId: string, req: MessageInitShape<typeof RenameAgentRequestSchema>): Promise<RenameAgentResponse> {
-  return callWorker(workerId, 'RenameAgent', RenameAgentRequestSchema, RenameAgentResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.renameAgent, req)
 }
 
 export function interruptAgent(workerId: string, req: MessageInitShape<typeof InterruptAgentRequestSchema>): Promise<InterruptAgentResponse> {
-  return callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.interruptAgent, req)
 }
 
 /**
@@ -532,7 +445,7 @@ export function interruptAgent(workerId: string, req: MessageInitShape<typeof In
  * change, while a text-route provider updates state after queue delivery.
  */
 export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof UpdateAgentGoalRequestSchema>): Promise<UpdateAgentGoalResponse> {
-  return callWorker(workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.updateAgentGoal, req)
 }
 
 /**
@@ -541,7 +454,7 @@ export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof U
  * stored row, so the request states only which row and which review.
  */
 export function approveAutoReviewDenial(workerId: string, req: MessageInitShape<typeof ApproveAutoReviewDenialRequestSchema>): Promise<ApproveAutoReviewDenialResponse> {
-  return callWorker(workerId, 'ApproveAutoReviewDenial', ApproveAutoReviewDenialRequestSchema, ApproveAutoReviewDenialResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.approveAutoReviewDenial, req)
 }
 
 /**
@@ -557,15 +470,15 @@ export function approveAutoReviewDenial(workerId: string, req: MessageInitShape<
  * turn started.
  */
 export function retryAgentTurn(workerId: string, req: MessageInitShape<typeof RetryAgentTurnRequestSchema>): Promise<RetryAgentTurnResponse> {
-  return callWorker(workerId, 'RetryAgentTurn', RetryAgentTurnRequestSchema, RetryAgentTurnResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.retryAgentTurn, req)
 }
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {
-  return callWorker(workerId, 'SendControlResponse', SendControlResponseRequestSchema, SendControlResponseResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.sendControlResponse, req)
 }
 
 export function updateAgentSettings(workerId: string, req: MessageInitShape<typeof UpdateAgentSettingsRequestSchema>): Promise<UpdateAgentSettingsResponse> {
-  return callWorker(workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, req)
+  return callWorker(workerId, WorkerAgentService.method.updateAgentSettings, req)
 }
 
 /**
@@ -581,14 +494,14 @@ export function listAgentSessions(
   req: MessageInitShape<typeof ListAgentSessionsRequestSchema>,
   opts?: { signal?: AbortSignal },
 ): Promise<ListAgentSessionsResponse> {
-  return callWorker(workerId, 'ListAgentSessions', ListAgentSessionsRequestSchema, ListAgentSessionsResponseSchema, req, opts)
+  return callWorker(workerId, WorkerAgentService.method.listAgentSessions, req, opts)
 }
 
 export function listAvailableProviders(
   workerId: string,
   opts?: { signal?: AbortSignal },
 ): Promise<ListAvailableProvidersResponse> {
-  return callWorker(workerId, 'ListAvailableProviders', ListAvailableProvidersRequestSchema, ListAvailableProvidersResponseSchema, {}, opts)
+  return callWorker(workerId, WorkerAgentService.method.listAvailableProviders, {}, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -596,32 +509,28 @@ export function listAvailableProviders(
 // ---------------------------------------------------------------------------
 
 export function openTerminal(workerId: string, req: MessageInitShape<typeof OpenTerminalRequestSchema>): Promise<OpenTerminalResponse> {
-  return callWorker(workerId, 'OpenTerminal', OpenTerminalRequestSchema, OpenTerminalResponseSchema, req)
-}
-
-export function closeTerminal(workerId: string, req: MessageInitShape<typeof CloseTerminalRequestSchema>): Promise<CloseTerminalResponse> {
-  return callWorker(workerId, 'CloseTerminal', CloseTerminalRequestSchema, CloseTerminalResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.openTerminal, req)
 }
 
 export function restartTerminal(workerId: string, req: MessageInitShape<typeof RestartTerminalRequestSchema>): Promise<RestartTerminalResponse> {
-  return callWorker(workerId, 'RestartTerminal', RestartTerminalRequestSchema, RestartTerminalResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.restartTerminal, req)
 }
 
 export function sendInput(workerId: string, req: MessageInitShape<typeof SendInputRequestSchema>, opts?: { timeoutMs?: number, signal?: AbortSignal }): Promise<SendInputResponse> {
-  return callWorker(workerId, 'SendInput', SendInputRequestSchema, SendInputResponseSchema, req, opts)
+  return callWorker(workerId, WorkerTerminalService.method.sendInput, req, opts)
 }
 
 export function resizeTerminal(workerId: string, req: MessageInitShape<typeof ResizeTerminalRequestSchema>): Promise<ResizeTerminalResponse> {
-  return callWorker(workerId, 'ResizeTerminal', ResizeTerminalRequestSchema, ResizeTerminalResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.resizeTerminal, req)
 }
 
-/** Explicit user rename — PTY OSC titles are persisted worker-side instead. */
-export function updateTerminalTitle(workerId: string, req: MessageInitShape<typeof UpdateTerminalTitleRequestSchema>): Promise<UpdateTerminalTitleResponse> {
-  return callWorker(workerId, 'UpdateTerminalTitle', UpdateTerminalTitleRequestSchema, UpdateTerminalTitleResponseSchema, req)
+/** Explicit user rename. A PTY's OSC title reaches clients as a live overlay (TerminalTitleChanged) instead. */
+export function renameTerminal(workerId: string, req: MessageInitShape<typeof RenameTerminalRequestSchema>): Promise<RenameTerminalResponse> {
+  return callWorker(workerId, WorkerTerminalService.method.renameTerminal, req)
 }
 
 export function listTerminals(workerId: string, req: MessageInitShape<typeof ListTerminalsRequestSchema>): Promise<ListTerminalsResponse> {
-  return callWorker(workerId, 'ListTerminals', ListTerminalsRequestSchema, ListTerminalsResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.listTerminals, req)
 }
 
 /**
@@ -630,11 +539,11 @@ export function listTerminals(workerId: string, req: MessageInitShape<typeof Lis
  * terminal it holds in one round trip.
  */
 export function inspectTerminalProcesses(workerId: string, req: MessageInitShape<typeof InspectTerminalProcessesRequestSchema>): Promise<InspectTerminalProcessesResponse> {
-  return callWorker(workerId, 'InspectTerminalProcesses', InspectTerminalProcessesRequestSchema, InspectTerminalProcessesResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.inspectTerminalProcesses, req)
 }
 
 export function listAvailableShells(workerId: string, req: MessageInitShape<typeof ListAvailableShellsRequestSchema>): Promise<ListAvailableShellsResponse> {
-  return callWorker(workerId, 'ListAvailableShells', ListAvailableShellsRequestSchema, ListAvailableShellsResponseSchema, req)
+  return callWorker(workerId, WorkerTerminalService.method.listAvailableShells, req)
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +551,7 @@ export function listAvailableShells(workerId: string, req: MessageInitShape<type
 // ---------------------------------------------------------------------------
 
 export function listDirectory(workerId: string, req: MessageInitShape<typeof ListDirectoryRequestSchema>): Promise<ListDirectoryResponse> {
-  return callWorker(workerId, 'ListDirectory', ListDirectoryRequestSchema, ListDirectoryResponseSchema, req)
+  return callWorker(workerId, WorkerFileService.method.listDirectory, req)
 }
 
 /**
@@ -656,15 +565,15 @@ export function listDirectory(workerId: string, req: MessageInitShape<typeof Lis
  * the channel already identifies it.
  */
 export function listFilesystemRoots(workerId: string): Promise<ListFilesystemRootsResponse> {
-  return callWorker(workerId, 'ListFilesystemRoots', ListFilesystemRootsRequestSchema, ListFilesystemRootsResponseSchema, {})
+  return callWorker(workerId, WorkerFileService.method.listFilesystemRoots, {})
 }
 
 export function readFile(workerId: string, req: MessageInitShape<typeof ReadFileRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ReadFileResponse> {
-  return callWorker(workerId, 'ReadFile', ReadFileRequestSchema, ReadFileResponseSchema, req, opts)
+  return callWorker(workerId, WorkerFileService.method.readFile, req, opts)
 }
 
 export function statFile(workerId: string, req: MessageInitShape<typeof StatFileRequestSchema>): Promise<StatFileResponse> {
-  return callWorker(workerId, 'StatFile', StatFileRequestSchema, StatFileResponseSchema, req)
+  return callWorker(workerId, WorkerFileService.method.statFile, req)
 }
 
 // ---------------------------------------------------------------------------
@@ -672,55 +581,55 @@ export function statFile(workerId: string, req: MessageInitShape<typeof StatFile
 // ---------------------------------------------------------------------------
 
 export function getGitInfo(workerId: string, req: MessageInitShape<typeof GetGitInfoRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitInfoResponse> {
-  return callWorker(workerId, 'GetGitInfo', GetGitInfoRequestSchema, GetGitInfoResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.getGitInfo, req, opts)
 }
 
 export function getGitFileStatus(workerId: string, req: MessageInitShape<typeof GetGitFileStatusRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitFileStatusResponse> {
-  return callWorker(workerId, 'GetGitFileStatus', GetGitFileStatusRequestSchema, GetGitFileStatusResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.getGitFileStatus, req, opts)
 }
 
 export function readGitFile(workerId: string, req: MessageInitShape<typeof ReadGitFileRequestSchema>): Promise<ReadGitFileResponse> {
-  return callWorker(workerId, 'ReadGitFile', ReadGitFileRequestSchema, ReadGitFileResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.readGitFile, req)
 }
 
 export function inspectLastTabClose(workerId: string, req: MessageInitShape<typeof InspectLastTabCloseRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectLastTabCloseResponse> {
-  return callWorker(workerId, 'InspectLastTabClose', InspectLastTabCloseRequestSchema, InspectLastTabCloseResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.inspectLastTabClose, req, opts)
 }
 
 export function pushBranch(workerId: string, req: MessageInitShape<typeof PushBranchRequestSchema>): Promise<PushBranchResponse> {
-  return callWorker(workerId, 'PushBranch', PushBranchRequestSchema, PushBranchResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.pushBranch, req)
 }
 
 export function listGitBranches(workerId: string, req: MessageInitShape<typeof ListGitBranchesRequestSchema>): Promise<ListGitBranchesResponse> {
-  return callWorker(workerId, 'ListGitBranches', ListGitBranchesRequestSchema, ListGitBranchesResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.listGitBranches, req)
 }
 
 export function listGitWorktrees(workerId: string, req: MessageInitShape<typeof ListGitWorktreesRequestSchema>): Promise<ListGitWorktreesResponse> {
-  return callWorker(workerId, 'ListGitWorktrees', ListGitWorktreesRequestSchema, ListGitWorktreesResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.listGitWorktrees, req)
 }
 
 export function inspectBranchDeletion(workerId: string, req: MessageInitShape<typeof InspectBranchDeletionRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchDeletionResponse> {
-  return callWorker(workerId, 'InspectBranchDeletion', InspectBranchDeletionRequestSchema, InspectBranchDeletionResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.inspectBranchDeletion, req, opts)
 }
 
 export function inspectWorktreeRemoval(workerId: string, req: MessageInitShape<typeof InspectWorktreeRemovalRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectWorktreeRemovalResponse> {
-  return callWorker(workerId, 'InspectWorktreeRemoval', InspectWorktreeRemovalRequestSchema, InspectWorktreeRemovalResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.inspectWorktreeRemoval, req, opts)
 }
 
 export function inspectBranchChange(workerId: string, req: MessageInitShape<typeof InspectBranchChangeRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchChangeResponse> {
-  return callWorker(workerId, 'InspectBranchChange', InspectBranchChangeRequestSchema, InspectBranchChangeResponseSchema, req, opts)
+  return callWorker(workerId, WorkerGitService.method.inspectBranchChange, req, opts)
 }
 
 export function checkoutBranch(workerId: string, req: MessageInitShape<typeof CheckoutBranchRequestSchema>): Promise<CheckoutBranchResponse> {
-  return callWorker(workerId, 'CheckoutBranch', CheckoutBranchRequestSchema, CheckoutBranchResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.checkoutBranch, req)
 }
 
 export function createBranch(workerId: string, req: MessageInitShape<typeof CreateBranchRequestSchema>): Promise<CreateBranchResponse> {
-  return callWorker(workerId, 'CreateBranch', CreateBranchRequestSchema, CreateBranchResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.createBranch, req)
 }
 
 export function deleteBranch(workerId: string, req: MessageInitShape<typeof DeleteBranchRequestSchema>): Promise<DeleteBranchResponse> {
-  return callWorker(workerId, 'DeleteBranch', DeleteBranchRequestSchema, DeleteBranchResponseSchema, req)
+  return callWorker(workerId, WorkerGitService.method.deleteBranch, req)
 }
 
 // ---------------------------------------------------------------------------
@@ -758,7 +667,7 @@ export async function watchEventsViaChannel(
   const msg = create(WatchEventsRequestSchema, request)
   const payload = toBinary(WatchEventsRequestSchema, msg)
 
-  const streamHandle = channelManager.stream(channelId, 'WatchEvents', payload)
+  const streamHandle = channelManager.stream(channelId, WorkerWatchService.method.watchEvents, payload)
 
   // Buffer messages that arrive before the consumer wires its callbacks.
   // See streamBuffer.ts for the full rationale.

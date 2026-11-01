@@ -1,12 +1,81 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
-import "leapmux/v1/workspace.proto";
+
+// WorkerGitService reads and changes git repositories on the Worker's machine.
+// Served by the Worker inside an E2EE channel.
+service WorkerGitService {
+  option (leapmux.v1.host) = SERVICE_HOST_WORKER;
+  rpc GetGitInfo(GetGitInfoRequest) returns (GetGitInfoResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc GetGitFileStatus(GetGitFileStatusRequest) returns (GetGitFileStatusResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc ReadGitFile(ReadGitFileRequest) returns (ReadGitFileResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc ListGitBranches(ListGitBranchesRequest) returns (ListGitBranchesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc ListGitWorktrees(ListGitWorktreesRequest) returns (ListGitWorktreesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc InspectBranchDeletion(InspectBranchDeletionRequest) returns (InspectBranchDeletionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc InspectWorktreeRemoval(InspectWorktreeRemovalRequest) returns (InspectWorktreeRemovalResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc InspectBranchChange(InspectBranchChangeRequest) returns (InspectBranchChangeResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc InspectLastTabClose(InspectLastTabCloseRequest) returns (InspectLastTabCloseResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
+  rpc PushBranch(PushBranchRequest) returns (PushBranchResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+  rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+  rpc CreateBranch(CreateBranchRequest) returns (CreateBranchResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+  rpc DeleteBranch(DeleteBranchRequest) returns (DeleteBranchResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_WRITE };
+  }
+}
+
+// GitSetup prepares the working directory of a new agent or terminal. Absent
+// means "use the directory as it is". A present setup selects exactly one mode;
+// a setup that selects none, or a mode whose required value is empty, is
+// refused before any git command runs.
+message GitSetup {
+  oneof mode {
+    GitCreateWorktree create_worktree = 1; // Create a git worktree before starting.
+    string use_worktree_path = 2;          // Use an existing worktree.
+    string checkout_branch = 3;            // Switch to a branch.
+    GitCreateBranch create_branch = 4;     // Create a branch and switch to it.
+  }
+}
+
+// GitCreateWorktree creates a worktree on a new branch.
+message GitCreateWorktree {
+  string branch = 1;      // Branch name for the worktree (required)
+  string base_branch = 2; // Branch to start from; empty = the current branch
+}
+
+// GitCreateBranch creates a branch and checks it out in the working directory.
+message GitCreateBranch {
+  string name = 1;        // Branch name to create (required)
+  string base_branch = 2; // Branch to start from; empty = the current branch
+}
 
 message GetGitInfoRequest {
-  string worker_id = 1;
-  string path = 2;
+  string path = 1;
 }
 
 message GetGitInfoResponse {
@@ -38,8 +107,9 @@ enum LastTabCloseTarget {
 }
 
 message InspectLastTabCloseRequest {
-  TabType tab_type = 1;
-  string tab_id = 2;
+  // The tab the client is about to close. Absent, or with an empty tab id or
+  // an UNSPECIFIED type, answers that no prompt is needed.
+  TabIdent tab = 1;
 }
 
 // BranchGitState bundles the diff/push fields that both
@@ -82,7 +152,7 @@ message InspectLastTabCloseResponse {
   // Every subagent BELOW an AGENT tab, at any depth, in no particular order.
   // Empty for every other tab type.
   //
-  // Reported HERE, and not only on CloseAgentResponse, so a client can tombstone
+  // Reported HERE, and not only on CloseTabResponse, so a client can tombstone
   // the subtree in the SAME batch as the tab it is closing, with the children
   // ahead of their parent. A client that learns the ids only from the close
   // response must tombstone the parent first, and every peer then briefly
@@ -132,8 +202,7 @@ message PushBranchRequest {
 message PushBranchResponse {}
 
 message GetGitFileStatusRequest {
-  string worker_id = 1;
-  string path = 2;       // Working directory (worker resolves to repo root)
+  string path = 1;       // Working directory (worker resolves to repo root)
 }
 
 message GetGitFileStatusResponse {
@@ -156,9 +225,8 @@ enum GitFileRef {
 }
 
 message ReadGitFileRequest {
-  string worker_id = 1;
-  string path = 2;       // Absolute path to the file
-  GitFileRef ref = 3;
+  string path = 1;       // Absolute path to the file
+  GitFileRef ref = 2;
 }
 
 message ReadGitFileResponse {
@@ -168,8 +236,7 @@ message ReadGitFileResponse {
 }
 
 message ListGitBranchesRequest {
-  string worker_id = 1;
-  string path = 2;
+  string path = 1;
 }
 
 message GitBranchEntry {
@@ -199,8 +266,7 @@ message GitWorktreeEntry {
 }
 
 message ListGitWorktreesRequest {
-  string worker_id = 1;
-  string path = 2;
+  string path = 1;
 }
 
 message ListGitWorktreesResponse {
@@ -212,14 +278,13 @@ message ListGitWorktreesResponse {
 // Always returns full info (no fast-path skip), since callers always
 // want to see it.
 message InspectBranchDeletionRequest {
-  string worker_id = 1;
-  string path = 2;             // working directory of the branch group
+  string path = 1;             // working directory of the branch group
   // Optional branch label the caller already knows (from the branch
   // group row that opened the dialog). When set, the worker skips its
   // own queryGitPathInfo rev-parse fork and uses this name directly,
   // saving one round trip per dialog open. The diff/push probes still
   // run against `path` regardless. Pass empty to fall back to a probe.
-  string branch_name_hint = 3;
+  string branch_name_hint = 2;
 }
 
 message InspectBranchDeletionResponse {
@@ -273,8 +338,7 @@ message InspectBranchDeletionResponse {
 // lock, a main working tree, or a path git no longer lists. Every other
 // outcome stays a toast that the close raises when it lands.
 message InspectWorktreeRemovalRequest {
-  string worker_id = 1;
-  string path = 2;             // working tree to remove (the branch group's toplevel)
+  string path = 1;             // working tree to remove (the branch group's toplevel)
 }
 
 message InspectWorktreeRemovalResponse {
@@ -302,8 +366,7 @@ message InspectWorktreeRemovalResponse {
 // fetch so the dialog pays one round trip and one shared queryGitPathInfo
 // for everything.
 message InspectBranchChangeRequest {
-  string worker_id = 1;
-  string path = 2;             // working directory of the branch group
+  string path = 1;             // working directory of the branch group
 }
 
 message InspectBranchChangeResponse {
@@ -334,9 +397,8 @@ message InspectBranchChangeResponse {
 // --track <remote>` for remote-tracking refs (e.g. "origin/foo") when no
 // matching local branch already exists.
 message CheckoutBranchRequest {
-  string worker_id = 1;
-  string path = 2;
-  string branch = 3;          // local name; remote refs prefixed e.g. "origin/foo"
+  string path = 1;
+  string branch = 2;          // local name; remote refs prefixed e.g. "origin/foo"
 }
 
 message CheckoutBranchResponse {}
@@ -344,10 +406,9 @@ message CheckoutBranchResponse {}
 // CreateBranch creates a new branch off a base and checks it out in the
 // working directory (`git checkout -b <new_branch> [<base_branch>]`).
 message CreateBranchRequest {
-  string worker_id = 1;
-  string path = 2;
-  string new_branch = 3;
-  string base_branch = 4;     // empty = HEAD
+  string path = 1;
+  string new_branch = 2;
+  string base_branch = 3;     // empty = HEAD
 }
 
 message CreateBranchResponse {}
@@ -357,10 +418,9 @@ message CreateBranchResponse {}
 // `git branch -D <branch_to_delete>`. If the delete fails, the worker
 // attempts to restore the original branch before returning the error.
 message DeleteBranchRequest {
-  string worker_id = 1;
-  string path = 2;
-  string branch_to_delete = 3;
-  string switch_to_branch = 4;
+  string path = 1;
+  string branch_to_delete = 2;
+  string switch_to_branch = 3;
 }
 
 message DeleteBranchResponse {}

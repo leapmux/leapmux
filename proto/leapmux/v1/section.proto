@@ -1,24 +1,34 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/access.proto";
 // SectionService manages per-user sidebar sections.
-// Called by Frontend on Hub via ConnectRPC.
+// Called by Frontend on Hub via ConnectRPC. Moving a WORKSPACE between
+// sections is WorkspaceService.MoveWorkspace, because the destination section
+// decides whether the workspace is archived.
 service SectionService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // List all sections and workspace assignments for the current user.
   // Read-only: the default sections are seeded when the user is created.
-  rpc ListSections(ListSectionsRequest) returns (ListSectionsResponse);
+  rpc ListSections(ListSectionsRequest) returns (ListSectionsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
   // Create a new custom section.
-  rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse);
+  rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
   // Rename a custom section.
-  rpc RenameSection(RenameSectionRequest) returns (RenameSectionResponse);
+  rpc RenameSection(RenameSectionRequest) returns (RenameSectionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
   // Delete a custom section (moves its workspaces to "In progress").
-  rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
+  rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
   // Move a section to a different sidebar and/or position.
-  rpc MoveSection(MoveSectionRequest) returns (MoveSectionResponse);
-  // Move a workspace to a different section at a given position. This method
-  // cannot move a workspace into or out of Archived. Use
-  // WorkspaceService.SetWorkspaceArchiveState for that lifecycle change.
-  rpc MoveWorkspace(MoveWorkspaceRequest) returns (MoveWorkspaceResponse);
+  rpc MoveSection(MoveSectionRequest) returns (MoveSectionResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
 }
 
 // SectionType distinguishes built-in from user-created sections.
@@ -101,10 +111,3 @@ message MoveSectionRequest {
 
 message MoveSectionResponse {}
 
-message MoveWorkspaceRequest {
-  string workspace_id = 1;
-  string section_id = 2;
-  string position = 3;
-}
-
-message MoveWorkspaceResponse {}

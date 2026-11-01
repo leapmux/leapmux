@@ -59,9 +59,7 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 		t.Fatal(err)
 	}
 	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
-	}))
+	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 	_, err = stream.Receive() // the WorkerIdentity greeting
 	require.NoError(t, err)
 	require.NoError(t, stream.CloseSend()) // the worker hangs up cleanly

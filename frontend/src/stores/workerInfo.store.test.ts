@@ -20,16 +20,16 @@ const { createWorkerInfoStore, workerInfoStore, resetOnlinePrefetch } = await im
 const workerInfoCache = await import('~/lib/workerInfoCache')
 const { getWorkerInfo, setWorkerInfo, clearWorkerInfo } = workerInfoCache
 
+/** A GetWorkerSystemInfo reply: the identity fields, and the build in its own message. */
 function makeRespFor(id: string, overrides: Partial<WorkerInfo> = {}) {
+  const { version = '1.0.0', commitHash = 'deadbeef', buildTime = '2026-01-01', ...identity } = overrides
   return {
     name: `worker-${id}`,
     os: 'linux',
     arch: 'x64',
     homeDir: `/home/${id}`,
-    version: '1.0.0',
-    commitHash: 'deadbeef',
-    buildTime: '2026-01-01',
-    ...overrides,
+    ...identity,
+    build: { version, commitHash, buildTime },
   }
 }
 
@@ -65,6 +65,45 @@ describe('workerInfoStore', () => {
       expect(store.workerInfo(id)?.homeDir).toBe(`/home/${id}`)
       // The stored row is written for cross-store sharing.
       expect((await getWorkerInfo(id))?.homeDir).toBe(`/home/${id}`)
+      dispose()
+    })
+  })
+
+  // GetWorkerSystemInfo reports the worker's build in one BuildInfo message,
+  // the same message the hub's system info carries.
+  it('reads the worker\'s build from the build message', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id, {
+        version: '2.0.0',
+        commitHash: 'f00dcafe',
+        buildTime: '2026-10-31',
+      }))
+
+      const info = await createWorkerInfoStore().fetchWorkerInfo(id)
+
+      expect(info).toMatchObject({ version: '2.0.0', commitHash: 'f00dcafe', buildTime: '2026-10-31' })
+      dispose()
+    })
+  })
+
+  it('stores an empty build when the reply has no build message', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      mockGetWorkerSystemInfo.mockResolvedValueOnce({
+        ...makeRespFor(id),
+        build: undefined,
+      })
+
+      const info = await createWorkerInfoStore().fetchWorkerInfo(id)
+
+      expect(info).toMatchObject({
+        name: `worker-${id}`,
+        version: '',
+        commitHash: '',
+        buildTime: '',
+      })
+      expect((await getWorkerInfo(id))?.version).toBe('')
       dispose()
     })
   })
@@ -201,6 +240,17 @@ describe('workerInfoStore', () => {
       expect(store.workerInfo(id)).toBeNull()
       await vi.waitFor(() => expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted'))
       expect(store.getHomeDir(id)).toBe('/home/persisted')
+      expect(store.getName(id)).toBe('persisted')
+      dispose()
+    })
+  })
+
+  it('answers an empty name and home directory for a worker it holds no info for', () => {
+    createRoot((dispose) => {
+      const store = createWorkerInfoStore()
+      const id = uniqueWorkerId()
+      expect(store.getName(id)).toBe('')
+      expect(store.getHomeDir(id)).toBe('')
       dispose()
     })
   })
@@ -563,7 +613,13 @@ describe('workerInfo feeds a projection that can tell a change happened', () => 
       // up before any RPC. Stamped past the freshness window, so the fetch below
       // actually spends its round trip instead of answering from the row.
       setWorkerInfo(id, {
-        ...makeRespFor(id, { homeDir: '/home/before' }),
+        name: `worker-${id}`,
+        os: 'linux',
+        arch: 'x64',
+        homeDir: '/home/before',
+        version: '1.0.0',
+        commitHash: 'deadbeef',
+        buildTime: '2026-01-01',
         updatedAt: Date.now() - 10 * 60_000,
       })
       expect(store.workerInfo(id)).toBeNull()

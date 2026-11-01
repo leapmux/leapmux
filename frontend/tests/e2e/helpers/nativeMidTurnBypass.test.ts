@@ -1,10 +1,10 @@
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { NativePermissionOperationPlan } from './nativePermission'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { watchAgentEvents } from './agentEventWatch'
 import { exerciseMidTurnBypass } from './nativeMidTurnBypass'
 import { createNativePermissionFileWrite } from './nativePermission'
@@ -258,7 +258,7 @@ describe('exerciseMidTurnBypass', () => {
       event: { case: 'turnEnd', value: {} },
     }))).toEqual({ kind: 'turnEnd' })
     expect(select(create(AgentEventSchema, {
-      replay: true,
+      replay: { replayId: 1n, agentId: 'agent-1' },
       event: { case: 'turnEnd', value: {} },
     }))).toBeUndefined()
     expect(sendMessage).toHaveBeenCalledOnce()

@@ -68,8 +68,10 @@ describe('useDeleteBranchInspect', () => {
       await flushMicrotasks()
       const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
       expect(inspectCall).toBeDefined()
-      const [, req] = inspectCall ?? []
-      expect(req).toMatchObject({
+      const [workerId, req] = inspectCall ?? []
+      // The worker id routes the call and stays out of the request body.
+      expect(workerId).toBe('w1')
+      expect(req).toEqual({
         path: '/repo',
         branchNameHint: 'doomed',
       })
@@ -90,7 +92,7 @@ describe('useDeleteBranchInspect', () => {
       const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
       expect(inspectCall).toBeDefined()
       const [, req] = inspectCall ?? []
-      expect(req).toMatchObject({ branchNameHint: '' })
+      expect(req).toEqual({ path: '/repo', branchNameHint: '' })
       dispose()
     })
   })

@@ -21,12 +21,17 @@ WHERE id = sqlc.arg(id)
 
 -- SoftDeleteRegistrationKey is the user-initiated path; ownership lives
 -- in the WHERE clause so a single roundtrip both authorizes and acts.
--- Re-running on an already-dead row still updates expires_at (the WHERE
--- matches by id+owner only); the service layer maps 0 rows to NotFound.
+-- The liveness guard (current expires_at > now) refuses a dead row --
+-- expired, consumed or already revoked -- as ExtendRegistrationKey does.
+-- Without it, a repeated revoke moves an old expires_at forward to now,
+-- and the purge, which deletes by age, keeps the row longer. The service
+-- layer maps 0 rows to NotFound.
 -- name: SoftDeleteRegistrationKey :execresult
 UPDATE worker_registration_keys
 SET expires_at = sqlc.arg(expires_at)
-WHERE id = sqlc.arg(id) AND created_by = sqlc.arg(created_by);
+WHERE id = sqlc.arg(id)
+  AND created_by = sqlc.arg(created_by)
+  AND expires_at > sqlc.arg(now);
 
 -- MySQL has no UPDATE ... RETURNING. The Go store wraps these two
 -- statements in a transaction with the SELECT taking a row lock.
@@ -66,7 +71,9 @@ WHERE (sqlc.narg(now) IS NULL OR k.expires_at > sqlc.narg(now))
 ORDER BY k.created_at DESC, k.id DESC
 LIMIT ?;
 
+-- AdminSoftDeleteRegistrationKey is the operator path: no ownership
+-- check, and the same liveness guard as SoftDeleteRegistrationKey.
 -- name: AdminSoftDeleteRegistrationKey :execresult
 UPDATE worker_registration_keys
-SET expires_at = ?
-WHERE id = ?;
+SET expires_at = sqlc.arg(expires_at)
+WHERE id = sqlc.arg(id) AND expires_at > sqlc.arg(now);

@@ -56,7 +56,6 @@ function listenStatus(overrides: Record<string, unknown> = {}) {
     bound: [
       { address: '127.0.0.1:4327', source: 'listen', error: '' },
     ],
-    passwordSet: false,
     ...overrides,
   }
 }

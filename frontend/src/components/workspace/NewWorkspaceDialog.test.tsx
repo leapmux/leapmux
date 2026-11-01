@@ -7,8 +7,12 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { ListGitBranchesResponseSchema, ListGitWorktreesResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
-import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import {
+  CreateWorkspaceResponseSchema,
+  DeleteWorkspaceResponseSchema,
+} from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
@@ -142,7 +146,8 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
  */
 async function submitDialog(): Promise<void> {
   const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
-  fireEvent.click(screen.getByTestId('pick-dir'))
+  // The directory tree mounts once the worker list loads, so wait for it.
+  fireEvent.click(await screen.findByTestId('pick-dir'))
   await waitFor(() => expect(createButton.disabled).toBe(false))
   fireEvent.click(createButton)
 }
@@ -204,7 +209,7 @@ describe('NewWorkspaceDialog', () => {
     renderDialog()
 
     const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
-    fireEvent.click(screen.getByTestId('pick-dir'))
+    fireEvent.click(await screen.findByTestId('pick-dir'))
     await waitFor(() => expect(createButton.disabled).toBe(false))
 
     fireEvent.input(screen.getByLabelText('Title'), {
@@ -412,8 +417,52 @@ describe('NewWorkspaceDialog', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[0]).toBe(WORKER_ID)
       expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1])
-        .toMatchObject({ workerId: WORKER_ID, workingDir: REPO_DIR })
+        .toMatchObject({ workingDir: REPO_DIR })
+    })
+
+    // The dialog sends the git mode as ONE git_setup, built from the mode the
+    // user picked. The current state is the absent setup: the worker uses the
+    // directory as it is.
+    it('sends no git setup for the current state', async () => {
+      renderDialog({ startPoint: REPO_START })
+
+      const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      expect(screen.getByLabelText('Use current state')).toBeChecked()
+      fireEvent.click(createButton)
+
+      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1].gitSetup).toBeUndefined()
+    })
+
+    it.each([
+      [
+        'Create new branch',
+        'createBranch',
+        { name: 'feature-x', baseBranch: 'main' },
+      ],
+      [
+        'Create new worktree',
+        'createWorktree',
+        { branch: 'feature-x', baseBranch: 'main' },
+      ],
+    ] as const)('sends the setup of %s with the typed name and the base branch', async (mode, setupCase, value) => {
+      renderDialog({ startPoint: REPO_START })
+      const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      fireEvent.click(await screen.findByLabelText(mode))
+      fireEvent.input(await screen.findByPlaceholderText('feature-branch'), {
+        target: { value: 'feature-x' },
+      })
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      fireEvent.click(createButton)
+
+      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
+        mode: { case: setupCase, value },
+      })
     })
 
     it('paints the git options straight away, with no loading spinner', async () => {

@@ -57,7 +57,7 @@ describe('accountAppRegistrations', () => {
     authState.admin = false
     mockList.mockResolvedValue({
       apps: [app],
-      nextCursor: '',
+      page: { nextCursor: '' },
       openRegistrationEnabled: false,
     })
     mockRegister.mockResolvedValue({ app, clientSecret: '' })
@@ -140,18 +140,20 @@ describe('accountAppRegistrations', () => {
       apps: [
         { ...app, clientId: 'app-1', clientName: 'Page one app' },
       ],
-      nextCursor: 'cursor-2',
+      page: { nextCursor: 'cursor-2' },
       openRegistrationEnabled: false,
     }).mockResolvedValueOnce({
       apps: [pageTwo],
-      nextCursor: '',
+      page: { nextCursor: '' },
       openRegistrationEnabled: false,
     })
     render(() => <AppRegistrations />)
     expect(await screen.findByText('Page one app')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('Page two app')).toBeInTheDocument())
     expect(mockList).toHaveBeenCalledTimes(2)
-    expect(mockList).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-2' }))
+    expect(mockList).toHaveBeenLastCalledWith(expect.objectContaining({
+      page: { cursor: 'cursor-2', limit: 500 },
+    }))
   })
 
   it('reports an account with no registrations', async () => {
@@ -642,18 +644,18 @@ describe('refresh generation guard', () => {
     const newerApp = { ...app, clientId: 'app-new', clientName: 'Newer registration' }
     // onMount refresh: page one answers, page TWO stalls -- the older
     // generation is parked mid-pagination.
-    const stalePageTwo = deferred<{ apps: typeof app[], nextCursor: string, openRegistrationEnabled: boolean }>()
+    const stalePageTwo = deferred<{ apps: typeof app[], page: { nextCursor: string }, openRegistrationEnabled: boolean }>()
     mockList
       .mockResolvedValueOnce({
         apps: [app],
-        nextCursor: 'cursor-2',
+        page: { nextCursor: 'cursor-2' },
         openRegistrationEnabled: false,
       })
       .mockReturnValueOnce(stalePageTwo.promise)
       // A write path then fires a NEWER refresh, which answers in one page.
       .mockResolvedValueOnce({
         apps: [newerApp],
-        nextCursor: '',
+        page: { nextCursor: '' },
         openRegistrationEnabled: false,
       })
     render(() => <AppRegistrations />)
@@ -676,7 +678,7 @@ describe('refresh generation guard', () => {
     // The OLDER refresh's parked page resolves now, carrying the stale list.
     stalePageTwo.resolve({
       apps: [app],
-      nextCursor: '',
+      page: { nextCursor: '' },
       openRegistrationEnabled: false,
     })
     await new Promise(resolve => setTimeout(resolve, 20))

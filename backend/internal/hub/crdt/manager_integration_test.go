@@ -63,36 +63,39 @@ func runManager(t testing.TB, userID string, auth crdt.AuthChecker, nowSeed int6
 	return mgr, j, cancel
 }
 
+// workspaceCreateOps returns the production lifecycle create seed for one
+// workspace: the SetNodeRegister that creates the root LEAF, then the
+// CreateWorkspaceOp that creates the workspace record with that root. The
+// order matters: validateRootAssignment needs the root node in the post-batch
+// state when it checks the create.
+func workspaceCreateOps(workspaceID, rootID string) []*leapmuxv1.CrdtOp {
+	return []*leapmuxv1.CrdtOp{
+		{
+			OpId: "seed-root-kind-" + workspaceID,
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: rootID,
+				Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+			}},
+		},
+		{
+			OpId: "seed-create-" + workspaceID,
+			Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
+				WorkspaceId: workspaceID,
+				RootNodeId:  rootID,
+			}},
+		},
+	}
+}
+
 // seedRootInternal seeds the workspace record + root node via the lifecycle
-// path: a SetWorkspaceRegister op (seeds the WorkspaceContentsRecord) followed
-// by the root-node kind + root-assignment ops, all in one atomic batch — the
-// same shape as the production applyLifecycleCreate seed. Routing the record
-// seed through SubmitInternal keeps the manager goroutine the sole writer of
-// m.state (no off-goroutine MutateInternal write).
+// path, in one atomic batch of the same shape as the production
+// applyLifecycleCreate seed (workspaceCreateOps). Routing the record seed
+// through SubmitInternal keeps the manager goroutine the sole writer of m.state
+// (no off-goroutine MutateInternal write).
 func seedRootInternal(t testing.TB, mgr *crdt.Manager, workspaceID, rootID string) {
 	t.Helper()
-	setRegister := &leapmuxv1.CrdtOp{
-		OpId: "seed-workspace-register-" + workspaceID,
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
-			WorkspaceId: workspaceID,
-		}},
-	}
-	rootKind := &leapmuxv1.CrdtOp{
-		OpId: "seed-root-kind-" + workspaceID,
-		Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
-			NodeId: rootID,
-			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
-		}},
-	}
-	rootRegister := &leapmuxv1.CrdtOp{
-		OpId: "seed-root-register-" + workspaceID,
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
-			WorkspaceId: workspaceID,
-			RootNodeId:  rootID,
-		}},
-	}
 	results, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: []*leapmuxv1.CrdtOp{setRegister, rootKind, rootRegister}}},
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-" + workspaceID, Ops: workspaceCreateOps(workspaceID, rootID)}},
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
@@ -106,15 +109,15 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 		BatchId: batchID,
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-" + batchID + "-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
 			}}},
 			{OpId: "op-" + batchID + "-worker", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID},
 			}}},
 			{OpId: "op-" + batchID + "-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID,
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: position},
 			}}},
 		},
@@ -123,7 +126,7 @@ func addTabBatch(t *testing.T, batchID string, tabID, tileID, workerID, position
 
 // TestManager_LifecycleOpsSerializeWithClientSubmit exercises the model that
 // replaced the old out-of-band MutateInternal: workspace lifecycle create/delete
-// now flow through SubmitInternal as SetWorkspaceRegisterOp / TombstoneWorkspaceOp,
+// now flow through SubmitInternal as CreateWorkspaceOp / TombstoneWorkspaceOp,
 // so the manager goroutine stays the SOLE writer of m.state and its bare
 // Workspaces reads in ValidateBatch -> registeredRoots stay race-free WITHOUT a
 // stateWriteMu across the DB commit.
@@ -178,7 +181,7 @@ func TestManager_LifecycleOpsSerializeWithClientSubmit(t *testing.T) {
 				{OpId: "seed-kind-" + ws, Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 					NodeId: root, Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 				}}},
-				{OpId: "seed-root-" + ws, Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+				{OpId: "seed-root-" + ws, Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 					WorkspaceId: ws, RootNodeId: root,
 				}}},
 			})
@@ -487,15 +490,12 @@ func TestManager_RestartReplay(t *testing.T) {
 // "after restart, workspace appears in sidebar but the agent tab never
 // renders and the frontend times out at 30s":
 //
-// The workspace's WorkspaceContentsRecord placeholder is added to
-// `state.Workspaces` by the SetWorkspaceRegisterOp in the lifecycle
-// create seed batch (journaled alongside the SetWorkspaceRootNodeOp).
-// On Bootstrap replay the seed batch re-applies; but applySetWorkspaceRootNode
-// silently dropped the op when the placeholder was missing — so on
-// Bootstrap-from-empty-snapshot (an op log written before
-// SetWorkspaceRegisterOp existed), the workspace record vanished and the
-// frontend's awaitWorkspaceBootstrap polled `workspaces[wsID].rootNodeId`
-// forever.
+// The workspace's WorkspaceContentsRecord is created in `state.Workspaces` by
+// the CreateWorkspaceOp in the lifecycle create seed batch. On Bootstrap replay
+// the seed batch re-applies. The op that once assigned the root silently
+// dropped itself when no record was present — so on a Bootstrap from an empty
+// snapshot the workspace record vanished and the frontend's
+// awaitWorkspaceBootstrap polled `workspaces[wsID].rootNodeId` forever.
 //
 // The contract: after restart, the workspace record (and its
 // root_node_id register) MUST survive replay; the projection
@@ -1042,7 +1042,7 @@ func TestManager_TabIndexInSync(t *testing.T) {
 	tombstoneBatch := &leapmuxv1.OpBatch{
 		BatchId: "b2",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-tomb-tA", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
@@ -1068,15 +1068,15 @@ func TestManager_AtomicBatch_RejectAll_OnAnyOpFailure(t *testing.T) {
 		BatchId: "fail-batch",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-tile-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
 			}}},
 			{OpId: "op-worker-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad"},
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
 			}}},
 			{OpId: "op-pos-bad", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 			}}},
 		},
@@ -1104,7 +1104,7 @@ func TestManager_IndependentBatches_OneRejection_DoesNotAffectOthers(t *testing.
 		BatchId: "bad",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "op-bad-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tBad"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost"},
 			}}},
 		},
@@ -1150,11 +1150,11 @@ func TestManager_HubOnlyOp_FromClient_Rejected(t *testing.T) {
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
-	// Client tries to call SetWorkspaceRootNode (hub-only).
+	// Client tries to submit a CreateWorkspace (hub-only).
 	batch := &leapmuxv1.OpBatch{
 		BatchId: "evil",
-		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-evil", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
-			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "stolen"},
+		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-evil", Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "stolen"},
 		}}},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
@@ -1179,15 +1179,15 @@ func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing
 		BatchId: "init",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "init-1", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 			}}},
 			{OpId: "init-2", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
 			}}},
 			{OpId: "init-3", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 			}}},
 		},
@@ -1206,11 +1206,11 @@ func TestManager_SameBatch_RegisterConflict_LastWinsBySubmissionOrder(t *testing
 		BatchId: "conflict",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "c-1", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "first"},
 			}}},
 			{OpId: "c-2", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+				Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 				Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "second"},
 			}}},
 		},

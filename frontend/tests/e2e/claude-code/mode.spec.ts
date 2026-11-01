@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { procedureOf } from '~/lib/rpcProcedure'
 import { CLAUDE_MODE } from '../../../src/generated/contracts/claude-protocol'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { systemText } from '../helpers/mockModelScript'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -209,7 +211,7 @@ notificationTest.describe('notification consolidation', () => {
     await expectSettingsChip(page, 'Plan Mode')
     await waitForSettingsIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Plan Mode)' })).toHaveCount(1)
-    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    expect(await sentRpcMethods(page)).toContain(procedureOf(WorkerAgentService.method.updateAgentSettings))
     await copyModeNotification(page, 'Mode (Default → Plan Mode)', 'plan')
 
     // Returning to the starting mode cancels the effective change.
@@ -223,7 +225,7 @@ notificationTest.describe('notification consolidation', () => {
     await waitForSettingsIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Accept Edits)' })).toHaveCount(1)
     await expect(messageBubbles(page).filter({ hasText: 'Mode (Plan Mode → Accept Edits)' })).toHaveCount(0)
-    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    expect(await sentRpcMethods(page)).toContain(procedureOf(WorkerAgentService.method.updateAgentSettings))
     await copyModeNotification(page, 'Mode (Default → Accept Edits)', 'acceptEdits')
 
     await page.reload()
@@ -242,7 +244,7 @@ notificationTest.describe('notification consolidation', () => {
     await waitForSettingsIdle(page)
     await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Plan Mode)' })).toHaveCount(0)
     await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Accept Edits)' })).toHaveCount(1)
-    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    expect(await sentRpcMethods(page)).toContain(procedureOf(WorkerAgentService.method.updateAgentSettings))
     await copyModeNotification(page, 'Mode (Default → Accept Edits)', 'acceptEdits')
 
     expect((await modelScript.status()).requests).toHaveLength(0)

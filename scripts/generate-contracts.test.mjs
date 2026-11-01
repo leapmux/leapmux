@@ -202,7 +202,7 @@ describe('checkWire', () => {
     // A table key that is absent from the flat object emits `undefined`.
     // The coverage check returns a ContractError that identifies the key.
     expectContractError(
-      () => checkWire({ ...WIRE, protocolVersion: undefined }),
+      () => checkWire({ ...WIRE, maxIncompleteChunked: undefined }),
       'name table',
     )
   })
@@ -468,13 +468,6 @@ describe('emitters', () => {
     // the multiplier to Go and the browser.
     const go = emitGoRetry(RETRY)
     expect(go).toContain('EventsRejectionRetryMultiplier  = 2')
-  })
-
-  it('emits the wire protocol version both sides stamp on every envelope', () => {
-    const go = emitGoWire(WIRE, deriveWire(WIRE))
-    expect(go).toContain('const ProtocolVersion = 1')
-    const ts = emitTsWire(WIRE, deriveWire(WIRE))
-    expect(ts).toContain('export const PROTOCOL_VERSION = 1 as const')
   })
 
   it('emits the session refused-control table and the TS provider list', () => {

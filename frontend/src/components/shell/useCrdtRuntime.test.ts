@@ -46,14 +46,21 @@ const userEventsSpy = vi.hoisted(() => ({
   // runtime chose. The hook itself already carries the close reason to here;
   // what is worth pinning is that this end reads it.
   onFatalClose: null as null | ((info: { code: number, reason: string }) => void),
+  // Captured so a test can fire the two list-change events the hook reports.
+  onWorkersChanged: null as null | (() => void),
+  onWorkspaceLifecycleChanged: null as null | (() => void),
 }))
 vi.mock('./useUserEvents', () => ({
   useUserEvents: (opts: {
     ready?: () => boolean
     onFatalClose?: (info: { code: number, reason: string }) => void
+    onWorkersChanged?: () => void
+    onWorkspaceLifecycleChanged?: () => void
   }) => {
     userEventsSpy.ready = opts.ready ?? (() => true)
     userEventsSpy.onFatalClose = opts.onFatalClose ?? null
+    userEventsSpy.onWorkersChanged = opts.onWorkersChanged ?? null
+    userEventsSpy.onWorkspaceLifecycleChanged = opts.onWorkspaceLifecycleChanged ?? null
     return {
       bootstrapped: () => false,
       clock: () => null,
@@ -194,6 +201,7 @@ function mountRuntime(userId: () => string) {
       getWorkspaceId: () => 'ws-1',
       activeClient: createActiveClientStore(),
       onWorkspaceLifecycleChanged: () => {},
+      onWorkersChanged: () => {},
     })
   })
   return { runtime, dispose }
@@ -489,6 +497,7 @@ describe('useCrdtRuntime hydration gate', () => {
           getWorkspaceId: () => 'ws-1',
           activeClient: createActiveClientStore(),
           onWorkspaceLifecycleChanged: () => {},
+          onWorkersChanged: () => {},
         })
       })
       await settleUntil(() => userEventsSpy.ready!() === true)
@@ -998,6 +1007,56 @@ describe('useCrdtRuntime fatal close', () => {
 
     expect(toastSpy.sticky).toHaveLength(1)
     expect(toastSpy.sticky[0]).toContain('Close another tab')
+    dispose()
+  })
+})
+
+// The runtime owns the user-events socket, and the worker section lives
+// further down AppShell. The runtime forwards each worker-list change to the
+// caller's callback, which AppShell binds late to the section's refetch.
+describe('useCrdtRuntime worker list changes', () => {
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    sessionStorageSet(KEY_CLIENT_ID, CLIENT)
+    _resetCheckpointStoreForTest()
+    opLog.reset()
+    userEventsSpy.ready = null
+    userEventsSpy.onWorkersChanged = null
+    userEventsSpy.onWorkspaceLifecycleChanged = null
+  })
+
+  afterEach(() => {
+    _resetCheckpointStoreForTest()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  function mountWithCallbacks(callbacks: { onWorkersChanged: () => void, onWorkspaceLifecycleChanged: () => void }) {
+    let dispose = () => {}
+    createRoot((d) => {
+      dispose = d
+      useCrdtRuntime({
+        userId: () => 'user-a',
+        getWorkspaceId: () => 'ws-1',
+        activeClient: createActiveClientStore(),
+        ...callbacks,
+      })
+    })
+    return dispose
+  }
+
+  it('forwards each worker list change to the caller, and to no other callback', () => {
+    const onWorkersChanged = vi.fn()
+    const onWorkspaceLifecycleChanged = vi.fn()
+    const dispose = mountWithCallbacks({ onWorkersChanged, onWorkspaceLifecycleChanged })
+    expect(userEventsSpy.onWorkersChanged).not.toBeNull()
+
+    userEventsSpy.onWorkersChanged!()
+    userEventsSpy.onWorkersChanged!()
+
+    expect(onWorkersChanged).toHaveBeenCalledTimes(2)
+    expect(onWorkspaceLifecycleChanged).not.toHaveBeenCalled()
     dispose()
   })
 })

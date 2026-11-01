@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"connectrpc.com/connect/v2"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -166,6 +169,22 @@ const (
 	// origin is one the hub does not serve. CodeFailedPrecondition.
 	webAuthnErrorUnavailable
 )
+
+// requireWebAuthnCredential returns the ceremony session and credential a
+// Finish request carries. It refuses an absent credential, an empty session id
+// and an empty credential with InvalidArgument. Every Finish handler calls it
+// first, so a malformed request never reaches the WebAuthn library, whose own
+// error would go through classifyWebAuthnError and read as a rejected
+// credential or an expired session.
+func requireWebAuthnCredential(cred *leapmuxv1.WebAuthnCredential) (sessionID, credentialJSON string, err error) {
+	if cred.GetSessionId() == "" {
+		return "", "", connect.NewError(connect.CodeInvalidArgument, "credential.session_id is required")
+	}
+	if cred.GetCredentialJson() == "" {
+		return "", "", connect.NewError(connect.CodeInvalidArgument, "credential.credential_json is required")
+	}
+	return cred.GetSessionId(), cred.GetCredentialJson(), nil
+}
 
 // classifyWebAuthnError maps a ceremony error to the class its surface must
 // answer with. An error it does not recognize is infrastructure.

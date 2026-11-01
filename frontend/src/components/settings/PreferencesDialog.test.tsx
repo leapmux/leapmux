@@ -10,7 +10,7 @@ import { PreferencesDialog } from './PreferencesDialog'
 
 const listUserSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [], values: [] }))
 const listSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [], values: [] }))
-const updateSetting = vi.hoisted(() => vi.fn())
+const updateSettings = vi.hoisted(() => vi.fn())
 const isAdmin = vi.hoisted(() => vi.fn(() => false))
 const solo = vi.hoisted(() => vi.fn(() => false))
 const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
@@ -23,9 +23,8 @@ vi.mock('~/api/clients', () => ({
   },
   adminSettingsClient: {
     listSettings,
-    updateSetting,
-    updateSettingSecret: vi.fn(),
-    resetSetting: vi.fn(),
+    updateSettings,
+    resetSettings: vi.fn(),
   },
   // The hub-wide registrations row's custom editor lists apps through this.
   appClient: {
@@ -1007,8 +1006,10 @@ describe('a hub-setting write keeps the row it came from', () => {
         signupValue('false'),
       ],
     })
-    updateSetting.mockResolvedValue({
-      value: signupValue('true', { valueJson: 'true', customized: true }),
+    updateSettings.mockResolvedValue({
+      values: [
+        signupValue('true', { valueJson: 'true', customized: true }),
+      ],
     })
 
     renderDialog('admin-signup')

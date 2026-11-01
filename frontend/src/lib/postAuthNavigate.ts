@@ -120,10 +120,30 @@ export function postAuthNavigate(
   target: string | undefined,
   fallback: string,
 ): void {
-  const safe = safeRedirect(target) ?? fallback
-  if (isServerRoute(safe)) {
-    window.location.assign(safe)
+  const destination = postAuthDestination(target, fallback)
+  if (destination.kind === 'document') {
+    window.location.assign(destination.path)
     return
   }
-  navigate(safe, { replace: true })
+  navigate(destination.path, { replace: true })
+}
+
+/**
+ * Where a post-auth navigation goes: a full-document load of an address the hub
+ * serves, or a client-side route of this SPA.
+ */
+export type PostAuthDestination
+  = | { kind: 'document', path: string }
+    | { kind: 'route', path: string }
+
+/**
+ * The destination `postAuthNavigate` would take, without taking it. Sign-in
+ * recovery reads it, because it must know whether the document leaves before
+ * it decides whether to wait for the router to arrive.
+ */
+export function postAuthDestination(target: string | undefined, fallback: string): PostAuthDestination {
+  const safe = safeRedirect(target) ?? fallback
+  return isServerRoute(safe)
+    ? { kind: 'document', path: safe }
+    : { kind: 'route', path: safe }
 }

@@ -57,7 +57,6 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.Error(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: "worker-blank-registrant", AuthToken: "token-blank-registrant",
 			RegisteredBy: userid.UserID{},
-			PublicKey:    []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
 		}), "a worker has no blank-id registrant to reference")
 	})
 

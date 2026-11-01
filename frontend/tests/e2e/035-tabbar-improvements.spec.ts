@@ -1,7 +1,9 @@
 import { expect } from '@playwright/test'
 import { PROVIDER_DISPLAY_NAME } from '../../src/generated/contracts/providers'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerSystemService } from '../../src/generated/proto/leapmux/v1/worker_system_pb'
 import { test } from './fixtures'
+import { getTestChannel } from './helpers/api'
 import { sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { composerEditor, expectAgentTabCount, openAgentInfoCard, openAgentViaUI } from './helpers/ui'
 
@@ -108,5 +110,18 @@ test.describe('TabBar Improvements', () => {
       await page.keyboard.press('Escape')
       await expect(popover).not.toBeVisible()
     }
+  })
+
+  // AgentInfo carries no worker name. The card reads it from the worker store, which the Worker itself fills through
+  // GetWorkerSystemInfo, so the row shows the name the Worker reports.
+  test('the info card names the agent\'s worker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    void authenticatedWorkspace
+    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+    const info = await channel.callWorker(leapmuxServer.workerId, WorkerSystemService.method.getWorkerSystemInfo, {})
+    expect(info.name, 'the Worker reports its name').not.toBe('')
+
+    await openAgentViaUI(page)
+    const popover = await openAgentInfoCard(page)
+    await expect(popover.locator('[data-testid="info-row-worker"]')).toContainText(info.name)
   })
 })

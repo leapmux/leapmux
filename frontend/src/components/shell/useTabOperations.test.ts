@@ -5,10 +5,9 @@ import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -28,9 +27,7 @@ import { createTestFloatingWindowStore, createTestTabStores } from '~/test-suppo
 const mockInspectLastTabClose = vi.fn((..._args: unknown[]) => Promise.resolve({ shouldPrompt: false } as unknown))
 const mockPushBranch = vi.fn((..._args: unknown[]) => {})
 const mockRegisterTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockRevokeTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockCloseAgent = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
-const mockCloseTerminal = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
+const mockCloseTab = vi.fn((..._args: unknown[]) => Promise.resolve({}))
 const mockShowWarnToast = vi.fn()
 const mockShowInfoToast = vi.fn()
 
@@ -38,9 +35,7 @@ vi.mock('~/api/workerRpc', () => ({
   inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
   pushBranch: (...args: unknown[]) => mockPushBranch(...args),
   registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
-  revokeTabPayload: (...args: unknown[]) => mockRevokeTabPayload(...args),
-  closeAgent: (...args: unknown[]) => mockCloseAgent(...args),
-  closeTerminal: (...args: unknown[]) => mockCloseTerminal(...args),
+  closeTab: (...args: unknown[]) => mockCloseTab(...args),
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -128,7 +123,7 @@ function setup(
   addAgent(stores, 'agent-b', tileId, 'b')
   selection.setActiveById(TabType.AGENT, 'agent-a')
 
-  // handleAgentClose / handleTerminalClose return Promise<CloseTabResult |
+  // handleAgentClose / handleTerminalClose return Promise<CloseTabResponse |
   // undefined>, but these tests only assert how they're invoked (call args),
   // not the resolved outcome, so a plain vi.fn() (resolving undefined) is enough.
   const handleAgentClose = vi.fn()
@@ -206,9 +201,9 @@ describe('useTabOperations', () => {
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
     mockPushBranch.mockReset()
     mockRegisterTabPayload.mockReset()
-    mockRevokeTabPayload.mockReset()
+    mockCloseTab.mockReset()
     mockRegisterTabPayload.mockImplementation(() => Promise.resolve({}))
-    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
+    mockCloseTab.mockImplementation(() => Promise.resolve({}))
     mockShowWarnToast.mockReset()
     mockShowInfoToast.mockReset()
   })
@@ -604,7 +599,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose on a FILE tab inspects then calls RevokeTabPayload with KEEP', async () => {
+    it('handleTabClose on a FILE tab inspects then calls CloseTab with KEEP', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -619,10 +614,10 @@ describe('useTabOperations', () => {
           expect(ok).toBe(true)
           await Promise.resolve()
           expect(mockInspectLastTabClose).toHaveBeenCalledTimes(1)
-          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRevokeTabPayload.mock.calls[0] ?? []
+          expect(mockCloseTab).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockCloseTab.mock.calls[0] ?? []
           expect(workerId).toBe('w-1')
-          expect((req as { tabId: string }).tabId).toBe('file-1')
+          expect((req as { tab: { tabType: TabType, tabId: string } }).tab).toEqual({ tabType: TabType.FILE, tabId: 'file-1' })
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
         }
         finally {
@@ -777,7 +772,7 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(false)
           expect(view.all().some(t => t.id === 'file-last')).toBe(true)
-          expect(mockRevokeTabPayload).not.toHaveBeenCalled()
+          expect(mockCloseTab).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -785,10 +780,10 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab close-anyway forwards WorktreeAction.KEEP to RevokeTabPayload', async () => {
+    it('handleTabClose FILE tab close-anyway forwards WorktreeAction.KEEP to CloseTab', async () => {
       // Counterpart to the schedule-delete test below: the user chose
       // to close the last FILE tab but keep the worktree on disk.
-      // RevokeTabPayload must still fire (the row + worktree link
+      // CloseTab must still fire (the row + worktree link
       // need to come down) with KEEP so the worker side leaves the
       // worktree alone — same shape as the AGENT/TERMINAL close-anyway
       // path.
@@ -805,8 +800,8 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(true)
           await Promise.resolve()
-          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeTabPayload.mock.calls[0] ?? []
+          expect(mockCloseTab).toHaveBeenCalledTimes(1)
+          const [, req] = mockCloseTab.mock.calls[0] ?? []
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
           expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
         }
@@ -816,13 +811,14 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab schedule-delete forwards WorktreeAction.REMOVE to RevokeTabPayload', async () => {
+    it('handleTabClose FILE tab schedule-delete forwards WorktreeAction.REMOVE to CloseTab', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
           addFile('file-delete', '/tmp/myfile.go')
           const tab = view.getById(TabType.FILE, 'file-delete')!
           mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true })
+          mockCloseTab.mockResolvedValueOnce({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
 
           const closePromise = ops.handleTabClose(tab)
           await flush()
@@ -830,14 +826,14 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(true)
           await Promise.resolve()
-          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeTabPayload.mock.calls[0] ?? []
+          expect(mockCloseTab).toHaveBeenCalledTimes(1)
+          const [, req] = mockCloseTab.mock.calls[0] ?? []
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.REMOVE)
           // The report is the worker's verdict, not an optimistic promise at
-          // click time. This mock resolves no result, so the honest answer is
-          // "could not confirm".
+          // click time: the toast follows the REMOVED outcome the close
+          // response carries.
           await settle()
-          expect(mockShowInfoToast).toHaveBeenCalledWith('Could not confirm the worktree removal')
+          expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree removed')
           expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
         }
         finally {
@@ -1415,10 +1411,8 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockCloseAgent.mockReset()
-    mockCloseTerminal.mockReset()
-    mockRevokeTabPayload.mockReset()
-    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
+    mockCloseTab.mockReset()
+    mockCloseTab.mockImplementation(() => Promise.resolve({}))
   })
 
   /**
@@ -1499,7 +1493,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
 
       expect(handleAgentClose).toHaveBeenCalledWith('agent-cross', WorktreeAction.KEEP)
       // And NOT by hand: a direct RPC here is exactly the duplicate that drifted.
-      expect(mockCloseAgent).not.toHaveBeenCalled()
+      expect(mockCloseTab).not.toHaveBeenCalled()
       // No tombstone assertion: emitting it is the shared handler's job, and the
       // handler is stubbed here. Asserting it would only check that the stub was
       // told to do something. Routing IS the property under test -- the old
@@ -1520,12 +1514,12 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       expect(await ops.handleTabClose(tab)).toBe(true)
 
       expect(handleTerminalClose).toHaveBeenCalledWith('term-cross', WorktreeAction.KEEP)
-      expect(mockCloseTerminal).not.toHaveBeenCalled()
+      expect(mockCloseTab).not.toHaveBeenCalled()
       dispose()
     })
   })
 
-  it('closes a FILE tab in another workspace via revokeTabPayload', async () => {
+  it('closes a FILE tab in another workspace via closeTab', async () => {
     await createRoot(async (dispose) => {
       const { ops, tab, view, handleAgentClose, handleTerminalClose }
         = setupCrossWorkspace(TabType.FILE, 'file-cross', { filePath: '/repo/x.md' })
@@ -1538,10 +1532,10 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       // workerId.
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
-      expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-      expect(mockRevokeTabPayload.mock.calls[0]?.[0]).toBe('w-other')
-      expect(mockRevokeTabPayload.mock.calls[0]?.[1]).toMatchObject({
-        tabId: 'file-cross',
+      expect(mockCloseTab).toHaveBeenCalledTimes(1)
+      expect(mockCloseTab.mock.calls[0]?.[0]).toBe('w-other')
+      expect(mockCloseTab.mock.calls[0]?.[1]).toMatchObject({
+        tab: { tabType: TabType.FILE, tabId: 'file-cross' },
         worktreeAction: WorktreeAction.KEEP,
       })
       expect(view.getById(TabType.FILE, 'file-cross')).toBeUndefined()
@@ -1558,8 +1552,8 @@ describe('useTabOperations.handleTabClose focus migration', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockRevokeTabPayload.mockReset()
-    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
+    mockCloseTab.mockReset()
+    mockCloseTab.mockImplementation(() => Promise.resolve({}))
   })
 
   it('moves focusedTileId to the surviving active tab\'s tile when the focused tile empties', async () => {
@@ -1757,8 +1751,8 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockRevokeTabPayload.mockReset()
-    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
+    mockCloseTab.mockReset()
+    mockCloseTab.mockImplementation(() => Promise.resolve({}))
   })
 
   it('closing the last FILE tab in a single-tile floating window auto-removes the window', async () => {
@@ -1845,12 +1839,8 @@ describe('useTabOperations.closeTabWithAction', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockCloseAgent.mockReset()
-    mockCloseTerminal.mockReset()
-    mockRevokeTabPayload.mockReset()
-    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
-    mockCloseAgent.mockImplementation(() => Promise.resolve({ result: undefined }))
-    mockCloseTerminal.mockImplementation(() => Promise.resolve({ result: undefined }))
+    mockCloseTab.mockReset()
+    mockCloseTab.mockImplementation(() => Promise.resolve({}))
   })
 
   it('dispatches AGENT tab to agentOps.handleAgentClose with the supplied action', () => {
@@ -1923,6 +1913,61 @@ describe('useTabOperations.closeTabWithAction', () => {
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
       expect(view.all().some(t => t.id === 'f1')).toBe(false)
+      dispose()
+    })
+  })
+
+  // The close sends the tab's own type. The worker reads the kind off the row
+  // it deletes and uses the sent type as a fallback only, so an IMAGE tab
+  // must not reach it labelled FILE.
+  it('sends CloseTab with the IMAGE type for an IMAGE tab', async () => {
+    await createRoot(async (dispose) => {
+      const { view, ops, tileId } = setup()
+      emitAddTab({
+        type: TabType.IMAGE,
+        id: 'img-1',
+        tileId,
+        position: 'p-img',
+        workerId: 'w-1',
+      })
+      const image = view.getById(TabType.IMAGE, 'img-1')!
+      mockCloseTab.mockResolvedValueOnce({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
+
+      const result = await ops.closeTabWithAction(image, WorktreeAction.REMOVE)
+
+      expect(mockCloseTab).toHaveBeenCalledExactlyOnceWith('w-1', {
+        tab: { tabType: TabType.IMAGE, tabId: 'img-1' },
+        worktreeAction: WorktreeAction.REMOVE,
+      })
+      // The response itself is the close outcome the delete-branch flow folds.
+      expect(result).toEqual({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
+      expect(view.getById(TabType.IMAGE, 'img-1')).toBeUndefined()
+      dispose()
+    })
+  })
+
+  // A payload tab with no worker has nobody to send CloseTab to. A REMOVE then
+  // cannot reach the worktree, so the user hears so, and the outcome is
+  // unknown rather than a clean no-op.
+  it('warns and resolves no outcome for a REMOVE close of a payload tab with no worker', async () => {
+    await createRoot(async (dispose) => {
+      const { view, ops, tileId } = setup()
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'file-orphan',
+        tileId,
+        position: 'p-orphan',
+        workerId: '',
+      })
+      const file = view.getById(TabType.FILE, 'file-orphan')!
+      mockShowWarnToast.mockClear()
+
+      const result = await ops.closeTabWithAction(file, WorktreeAction.REMOVE)
+
+      expect(result).toBeUndefined()
+      expect(mockCloseTab).not.toHaveBeenCalled()
+      expect(mockShowWarnToast).toHaveBeenCalledExactlyOnceWith('Closed the tab, but could not remove its worktree (no worker connection).')
+      expect(view.getById(TabType.FILE, 'file-orphan')).toBeUndefined()
       dispose()
     })
   })
@@ -2116,7 +2161,7 @@ describe('useTabOperations.closeTabWithAction', () => {
       ops.closeTabWithAction(tab, WorktreeAction.KEEP)
 
       expect(handleAgentClose).toHaveBeenCalledWith('agent-cross', WorktreeAction.KEEP)
-      expect(mockCloseAgent).not.toHaveBeenCalled()
+      expect(mockCloseTab).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -2128,7 +2173,7 @@ describe('useTabOperations.closeTabWithAction', () => {
       ops.closeTabWithAction(tab, WorktreeAction.REMOVE)
 
       expect(handleTerminalClose).toHaveBeenCalledWith('term-cross', WorktreeAction.REMOVE)
-      expect(mockCloseTerminal).not.toHaveBeenCalled()
+      expect(mockCloseTab).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -2142,10 +2187,10 @@ describe('useTabOperations.closeTabWithAction', () => {
 
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
-      expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
-      expect(mockRevokeTabPayload.mock.calls[0]?.[0]).toBe('w-cross')
-      expect(mockRevokeTabPayload.mock.calls[0]?.[1]).toMatchObject({
-        tabId: 'file-cross',
+      expect(mockCloseTab).toHaveBeenCalledTimes(1)
+      expect(mockCloseTab.mock.calls[0]?.[0]).toBe('w-cross')
+      expect(mockCloseTab.mock.calls[0]?.[1]).toMatchObject({
+        tab: { tabType: TabType.FILE, tabId: 'file-cross' },
         worktreeAction: WorktreeAction.KEEP,
       })
       expect(view.getById(TabType.FILE, 'file-cross')).toBeUndefined()

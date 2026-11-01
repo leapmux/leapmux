@@ -17,7 +17,7 @@ func filterTabsByType(in []*leapmuxv1.WorkspaceTab, wanted leapmuxv1.TabType) []
 	}
 	out := make([]*leapmuxv1.WorkspaceTab, 0, len(in))
 	for _, t := range in {
-		if t.GetTabType() == wanted {
+		if t.GetTab().GetTabType() == wanted {
 			out = append(out, t)
 		}
 	}

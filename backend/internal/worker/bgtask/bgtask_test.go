@@ -262,6 +262,36 @@ func TestItemsToProto(t *testing.T) {
 	assert.Equal(t, "b", out[1].GetId())
 }
 
+// A snapshot is the whole registry, so it carries every row in order.
+func TestSnapshotToProto(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotToProto([]Item{
+		{RowKey: "a", Kind: KindShell, Status: StatusRunning},
+		{RowKey: "b", Kind: KindSubagent, Status: StatusSucceeded},
+	})
+	require.NotNil(t, snapshot)
+	require.Len(t, snapshot.GetTasks(), 2)
+	assert.Equal(t, "a", snapshot.GetTasks()[0].GetId())
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING, snapshot.GetTasks()[0].GetStatus())
+	assert.Equal(t, "b", snapshot.GetTasks()[1].GetId())
+	assert.Equal(t, leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, snapshot.GetTasks()[1].GetKind())
+}
+
+// An empty registry is still a snapshot: it tells the client to clear its rows.
+// A nil message would mean that no snapshot was sent at all.
+func TestSnapshotToProtoOfAnEmptyRegistryIsAnEmptySnapshot(t *testing.T) {
+	t.Parallel()
+
+	for name, items := range map[string][]Item{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := SnapshotToProto(items)
+			require.NotNil(t, snapshot)
+			assert.Empty(t, snapshot.GetTasks())
+		})
+	}
+}
+
 // A row key is an IDENTITY, so the rule REFUSES and never rewrites. The
 // earlier version stripped what a reader cannot see and capped the length,
 // which made it non-injective: two provider keys mapped onto one string, the
@@ -559,7 +589,7 @@ func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 	}
 
 	out := ItemsToProto(rows)
-	_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTasksChanged{AgentId: "root-1", Tasks: out})
+	_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: out})
 	require.NoError(t, err, "one bad field must not drop the whole registry broadcast")
 
 	require.Len(t, out, 3)
@@ -602,7 +632,7 @@ func TestItemToProtoDropsAnUnusableGroupKeyRatherThanRepairingIt(t *testing.T) {
 			assert.Empty(t, out.GetGroupLabel(), "a heading that names no group has nothing to name")
 			assert.Equal(t, "t", out.GetTitle(), "the row itself survives, ungrouped")
 
-			_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTasksChanged{AgentId: "root-1", Tasks: []*leapmuxv1.BackgroundTaskItem{out}})
+			_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: []*leapmuxv1.BackgroundTaskItem{out}})
 			require.NoError(t, err, "the whole registry broadcast must still marshal")
 		})
 	}

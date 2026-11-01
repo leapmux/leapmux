@@ -1,5 +1,50 @@
-import { describe, expect, it } from 'vitest'
-import { expectSettingsNotificationEnvelope } from './notificationCopy'
+import type { DescMethod } from '@bufbuild/protobuf'
+import type { Locator } from '@playwright/test'
+import { describe, expect, it, vi } from 'vitest'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { procedureOf } from '../../../src/lib/rpcProcedure'
+import { copySettingsNotification, expectSettingsNotificationEnvelope } from './notificationCopy'
+
+/** The JSON that the fake Copy button writes to the clipboard: one settings notification. */
+const copy = vi.hoisted(() => ({
+  text: JSON.stringify({
+    content: {
+      type: 'settings_changed',
+      changes: {
+        mode: { old: 'default', new: 'plan' },
+      },
+    },
+  }),
+}))
+
+vi.mock('./clipboardCapture', () => ({
+  captureClipboardText: async (_page: unknown, action: () => Promise<unknown>) => {
+    await action()
+    return copy.text
+  },
+}))
+
+vi.mock('./timingFixture', () => ({
+  installRpcListeners: async () => {},
+}))
+
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  return {
+    ...actual,
+    expect: (value: unknown, message?: string) => {
+      // The fake bubble is one row on the page.
+      if (typeof value === 'object' && value !== null && 'fakeBubble' in value) {
+        return {
+          toHaveCount: async (count: number) => {
+            expect(count).toBe(1)
+          },
+        }
+      }
+      return expect(value, message)
+    },
+  }
+})
 
 describe('expectSettingsNotificationEnvelope', () => {
   const change = { groupId: 'mode', oldValue: 'default', value: 'plan' }
@@ -103,5 +148,44 @@ describe('expectSettingsNotificationEnvelope', () => {
     ],
   ] as const)('rejects a malformed or synthesized supplement: %j', (supplement, reason) => {
     expect(() => expectSettingsNotificationEnvelope(JSON.stringify({ content: thread, supplemental_content: supplement }), change)).toThrow(reason)
+  })
+})
+
+describe('copySettingsNotification', () => {
+  const change = { groupId: 'mode', oldValue: 'default', value: 'plan' }
+
+  /** A settings row whose page observed `sent`, as the RPC listener records the procedures that the app sends. */
+  function bubble(sent: string[]): Locator {
+    const page = {
+      evaluate: async () => sent,
+    }
+    const row = {
+      fakeBubble: true,
+      page: () => page,
+      hover: async () => {},
+      locator: () => ({
+        getByTestId: () => ({
+          click: async () => {},
+        }),
+      }),
+    }
+    return row as unknown as Locator
+  }
+
+  it('accepts a copy whose page fetched no message history', async () => {
+    await expect(copySettingsNotification(bubble([
+      procedureOf(WorkerAgentService.method.listAgents),
+    ]), change)).resolves.toBeUndefined()
+  })
+
+  // The app's worker RPC layer emits each call under procedureOf(method), so the check compares that form.
+  it.each([
+    WorkerAgentService.method.listAgentMessages,
+    WorkerAgentService.method.getAgentMessage,
+    WorkerAgentService.method.getAgentSpanMessages,
+  ] as DescMethod[])('fails when the copy fetched history through $name', async (method) => {
+    await expect(copySettingsNotification(bubble([
+      procedureOf(method),
+    ]), change)).rejects.toThrow('to not include')
   })
 })

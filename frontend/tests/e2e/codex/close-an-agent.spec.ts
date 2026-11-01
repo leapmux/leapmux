@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { AgentActivityState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import { codexTest } from '../codex-fixtures'
 import { exerciseCloseAgent } from '../helpers/nativeLifecycle'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'

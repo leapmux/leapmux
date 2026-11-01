@@ -9,7 +9,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { stringParam } from '~/lib/searchParam'
-import { passkeyErrorMessage, startRegistration } from '~/lib/webauthn'
+import { passkeyErrorMessage, registerForChallenge } from '~/lib/webauthn'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 import { passwordCanSubmit, PasswordFields } from './PasswordFields'
@@ -49,11 +49,9 @@ export const RecoverCompletePage: Component = () => {
           token: recoveryToken,
           ...captcha.fields(),
         })
-        const credentialJson = await startRegistration(begin.optionsJson)
         await authClient.finishAccountRecoveryPasskey({
           token: recoveryToken,
-          sessionId: begin.sessionId,
-          credentialJson,
+          credential: await registerForChallenge(begin.challenge),
         })
       }
       else {

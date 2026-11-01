@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
-import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { WorkerPrivateService } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
 import { fileTabPayload } from '../../src/lib/tabPayload'
 import { test } from './fixtures'
 import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
@@ -56,7 +56,7 @@ test.describe('worktree close safety', () => {
     const workspaceId = await createWorkspaceViaAPI(hubUrl, cookie, 'Untracked file worktree')
     const channel = await getTestChannel(hubUrl, cookie)
     const tabId = `file-untracked-${workspaceId}`
-    await channel.callWorker(workerId, 'RegisterTabPayload', RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema, {
+    await channel.callWorker(workerId, WorkerPrivateService.method.registerTabPayload, {
       tabId,
       payload: fileTabPayload(join(paths.nested, 'committed.txt'), paths.worktree),
     })

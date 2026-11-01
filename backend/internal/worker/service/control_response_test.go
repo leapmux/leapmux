@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -145,7 +146,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 			}
 		}
 	}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -235,7 +236,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 			}
 		}
 	}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -288,7 +289,7 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
 			"response":{
@@ -343,7 +344,7 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 	// The sentinel has no JSON-special characters, so embedding the constant keeps the wire
 	// value in lockstep with the backend's rule without a fmt import.
 	response := []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"deny","message":"` + agent.ControlRejectedByUserMessage + `"}}}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -394,7 +395,7 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 
 	confirmPlanCollaborationForTest(t, svc)
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
 			"response":{
@@ -441,7 +442,7 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
 			"response":{"request_id":"plan-1","response":{"behavior":"allow"}}
@@ -495,11 +496,11 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 	}
 	confirmPlanCollaborationForTest(t, svc)
 
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	// The first answer deleted the request; re-store it so the duplicate ALSO resolves as a loaded
 	// plan-prompt. The idempotency claim -- not a request-gone short-circuit -- must stop the reapply.
 	storeRequest()
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors)
 
 	rows := waitForMessageCount(t, svc, "agent-1", 2)
@@ -631,7 +632,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 
 	registerAgentWatch(svc, "test-ch", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
 			"type":"control_response",
@@ -702,7 +703,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 			"answers":[["Build"],["Dev"]]
 		}
 	}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -769,7 +770,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 			"outcome":{"outcome":"selected","optionId":"proceed_once"}
 		}
 	}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -820,7 +821,7 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 	defer svc.Agents.StopAgent("agent-1")
 
 	response := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -861,7 +862,7 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 	defer svc.Agents.StopAgent("agent-1")
 
 	response := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"deny","message":"` + agent.ControlRejectedByUserMessage + `"}}}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -898,7 +899,7 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 	defer svc.Agents.StopAgent("agent-1")
 
 	response := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"deny","message":"use ripgrep instead"}}}`)
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: response,
 	}, w)
@@ -931,7 +932,7 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{
 			"id":"jsonrpc-req",
@@ -961,7 +962,7 @@ func TestSendControlResponseRejectsUnknownRequests(t *testing.T) {
 			}))
 			sends := 0
 			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
-			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: "agent-1",
 				Content: []byte(`{"response":{"request_id":"missing","response":{"behavior":"allow"}}}`),
 			}, writer)
@@ -1004,8 +1005,8 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 		AgentId: "agent-1",
 		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
 	}
-	dispatch(d, "SendControlResponse", answer, w)
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors, "neither answer errors -- the winner forwards, the duplicate is a deduped no-op")
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
@@ -1045,8 +1046,8 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 		AgentId: "agent-1",
 		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
 	}
-	dispatch(d, "SendControlResponse", answer, w)
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors, "neither answer errors -- the winner forwards, the duplicate is a deduped no-op")
 
 	cancels := 0
@@ -1101,13 +1102,13 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 	}
 	confirmPlanCollaborationForTest(t, svc)
 
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors)
 	_ = waitForMessageCount(t, svc, "agent-1", 2)
 
 	// Stop the agent so any forward the duplicate ATTEMPTS surfaces as an "agent not running" error.
 	svc.Agents.StopAgent("agent-1")
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors,
 		"a request-gone duplicate must not forward its diverged response -- winner-only forward draws no error even to a stopped agent")
 
@@ -1132,7 +1133,7 @@ func TestSendControlResponseRejectsUnattributableContent(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"foo":"bar"}`),
 	}, w)
@@ -1166,7 +1167,7 @@ func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.
 	defer svc.Agents.StopAgent("agent-1")
 
 	// Approve WITHOUT clearContext, so no plan execution / synthetic prompt is persisted.
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
 	}, w)
@@ -1198,7 +1199,7 @@ func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-ask","response":{"behavior":"allow","message":"Yes, continue."}}}`),
 	}, w)
@@ -1234,7 +1235,7 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId:      "agent-1",
 		PlanApproval: &leapmuxv1.PlanApprovalSettings{ClearContext: true},
 		Content:      []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
@@ -1278,7 +1279,7 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 	defer svc.Agents.StopAgent("agent-1")
 
 	// The request_id carries surrounding whitespace on the wire.
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"  req-1  ","response":{"behavior":"allow"}}}`),
 	}, w)
@@ -1377,12 +1378,12 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 		Content:    []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`),
 		ClaimToken: "instA",
 	}
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	// The full restart the clear-context plan exit triggers (initiatePlanExecutionRestart ->
 	// ClearAgentRuntimeState = ClearPendingControlRequests + CleanupAgent). Neither touches the durable
 	// answer claim, so the claim survives and the duplicate below (same token) is deduped.
 	svc.Output.ClearAgentRuntimeState("agent-1")
-	dispatch(d, "SendControlResponse", answer, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, answer, w)
 	require.Empty(t, w.errors, "neither answer errors -- the winner forwards, the straddling duplicate is a deduped no-op")
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
@@ -1418,7 +1419,7 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 
 	content := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"req-1","response":{"behavior":"allow"}}}`)
 	// Instance A answers with its echoed token.
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
 
 	// Relaunch, then the new subprocess re-issues a request that reuses id "req-1" -- PublishControlRequest
 	// mints a fresh token, which the frontend would echo. Read it back (as the frontend does via the
@@ -1428,10 +1429,10 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 	reissued, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
 	require.NoError(t, err)
 	require.NotEqual(t, "instA", reissued.ClaimToken, "the reissued instance minted a distinct token")
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: reissued.ClaimToken}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: reissued.ClaimToken}, w)
 
 	// A stale duplicate of the PRE-relaunch instance (old token) is still deduped -- the reuse window is closed.
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: content, ClaimToken: "instA"}, w)
 	require.Empty(t, w.errors)
 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
@@ -1464,7 +1465,7 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"response":{"request_id":"7","response":{"behavior":"deny","message":"Needs tests."}}}`),
 	}, w)
@@ -1518,7 +1519,7 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
 		Content: []byte(`{"response":{"request_id":"plan-7","response":{"behavior":"allow"}}}`),
 	}, w)
@@ -1997,7 +1998,7 @@ func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
 			})
 			row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 			require.NoError(t, err)
-			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: "agent-1", Content: []byte(test.invalid), ClaimToken: "claim-1",
 			}, writer)
 			require.Empty(t, writer.errors)
@@ -2110,7 +2111,7 @@ func TestSendControlResponse_QoderPlanExitAppliesSelectedMode(t *testing.T) {
 				}
 			}
 
-			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: "agent-1", PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.QoderModeAuto},
 				Content: decision,
 			}, writer)

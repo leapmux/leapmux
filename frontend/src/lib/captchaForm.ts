@@ -3,9 +3,18 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { createSignal } from 'solid-js'
 import { isCaptchaEnabled, isCaptchaUnsolvableHere, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
 
+/**
+ * The request field every protected request carries: one `CaptchaProof`. A
+ * caller spreads it into the request, so a protected request names the proof
+ * once rather than its two parts.
+ */
 export interface CaptchaRequestFields {
-  captchaPayload: string
-  honeypot: string
+  captcha: {
+    /** The provider token; empty until the widget verifies. */
+    payload: string
+    /** The hidden anti-bot field; any value fails verification. */
+    honeypot: string
+  }
 }
 
 export interface CaptchaFormState {
@@ -117,8 +126,10 @@ export function createCaptchaForm(): CaptchaFormState {
     },
     blocksSubmit: () => pending() || unsolvable() || (required() && payload() === null),
     fields: () => ({
-      captchaPayload: payload() ?? '',
-      honeypot: honeypot(),
+      captcha: {
+        payload: payload() ?? '',
+        honeypot: honeypot(),
+      },
     }),
   }
 }

@@ -49,7 +49,6 @@ type LifecyclePayload struct {
 	NewTitle    string          `json:"new_title,omitempty"`
 	RootNodeID  string          `json:"root_node_id,omitempty"`
 	OpBytes     [][]byte        `json:"op_bytes,omitempty"` // each is proto.Marshal(CrdtOp)
-	WorkerIDs   []string        `json:"worker_ids,omitempty"`
 }
 
 // EncodeLifecyclePayload returns the bytes for a lifecycle_outbox.payload.
@@ -229,7 +228,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// Expand each existing subscriber's Filter to include the new
 	// workspace BEFORE SubmitInternal broadcasts the seed batch.
 	// Otherwise the seed `SetNodeRegister` (root LEAF) and
-	// `SetWorkspaceRootNode` ops are dropped at the broadcast filter
+	// `CreateWorkspace` ops are dropped at the broadcast filter
 	// (subscribers don't yet have `wsID` in their allow-set), the
 	// frontend never learns the workspace's root_node_id, and the
 	// agent tab the user just opened never lands in the CRDT
@@ -244,24 +243,15 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		return fmt.Errorf("expand subscribers for workspace %s: %w", wsID, err)
 	}
 
-	// Build the seed batch: SetWorkspaceRegister seeds the
-	// WorkspaceContentsRecord map entry (root_node_id empty) so the
-	// accompanying SetNodeRegister + SetWorkspaceRootNode ops have a
-	// record to land on. Folding all three into one atomic batch means
-	// the workspace record and its root either commit together or not at
-	// all -- no out-of-band m.state mutation, so the manager goroutine
-	// stays the sole writer and its bare map reads stay race-free.
-	seedOps := make([]*leapmuxv1.CrdtOp, 0, len(ops)+1)
-	seedOps = append(seedOps, &leapmuxv1.CrdtOp{
-		OpId: id.Generate(),
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: wsID},
-		},
-	})
-	seedOps = append(seedOps, ops...)
+	// The seed batch is the payload's ops as they stand: SetNodeRegister
+	// creates the root node, then CreateWorkspace creates the
+	// WorkspaceContentsRecord with that root. One atomic batch means the
+	// workspace record and its root either commit together or not at all --
+	// no out-of-band m.state mutation, so the manager goroutine stays the sole
+	// writer and its bare map reads stay race-free.
 	batch := &leapmuxv1.OpBatch{
 		BatchId: lifecycleCreateBatchIDPrefix + wsID,
-		Ops:     seedOps,
+		Ops:     ops,
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
 
@@ -432,7 +422,7 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// subscriber-visible event. A successful re-drain re-broadcasts, which is
 	// idempotent on the subscriber side (deleting an already-absent workspace
 	// and re-running the lifecycle-changed refresh).
-	m.BroadcastWorkspaceDeleted(p.WorkspaceID, p.WorkerIDs)
+	m.BroadcastWorkspaceDeleted(p.WorkspaceID)
 	// Drop the deleted workspace from every subscriber's Filter so a
 	// long-lived subscription doesn't accumulate dead workspace_ids
 	// across the manager's lifetime. Mirrors the contraction on a failed
@@ -501,7 +491,7 @@ func enumerateWorkspaceDeleteOps(state *leapmuxv1.UserCrdtState, wsID string) []
 		out = append(out, &leapmuxv1.CrdtOp{
 			OpId: id.Generate(),
 			Body: &leapmuxv1.CrdtOp_TombstoneTab{
-				TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: tab.GetTabType(), TabId: tabID},
+				TombstoneTab: &leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabType: tab.GetTabType(), TabId: tabID}},
 			},
 		})
 	}

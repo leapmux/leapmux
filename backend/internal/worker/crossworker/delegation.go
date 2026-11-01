@@ -46,9 +46,10 @@ type DelegationStore struct {
 	WorkerID        string
 
 	// MintMaxAttempts caps total attempts when the hub returns
-	// "tab not owned by calling worker" (403). This races with
-	// AddTab propagation: the worker AddTab's the tab and may try
-	// to mint before the hub-side workspace_tab_owned row is visible.
+	// "tab not owned by calling worker" (403). This races with the
+	// tab's creation: the ops that add the tab reach the hub through
+	// SubmitOps, and a mint can arrive before the hub-side
+	// workspace_tab_owned row is visible.
 	// Retries use exponential backoff starting at MintRetryBackoff.
 	MintMaxAttempts  int
 	MintRetryBackoff time.Duration
@@ -191,7 +192,7 @@ func (s *DelegationStore) GetBearer(ctx context.Context, userID userid.UserID) (
 
 // tabPropagationError is returned by mintOnce when the hub responds 403
 // with the "tab not owned by calling worker" message. It signals that
-// the AddTab → mint race may resolve on a brief retry.
+// the tab-creation → mint race may resolve on a brief retry.
 type tabPropagationError struct {
 	body string
 }
@@ -239,7 +240,7 @@ func (s *DelegationStore) mint(ctx context.Context, userID userid.UserID) (minte
 		if mErr == nil {
 			return minted, nil
 		}
-		// Only the AddTab → mint propagation race is worth retrying;
+		// Only the tab-creation → mint propagation race is worth retrying;
 		// every other error (auth, unknown tab) is permanent.
 		var propErr *tabPropagationError
 		if !errors.As(mErr, &propErr) {

@@ -5,6 +5,7 @@ import (
 	"flag"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
@@ -47,7 +48,7 @@ func RunAgentSendControlResponse(rawCtx any, args []string) error {
 		},
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
 			var response leapmuxv1.SendControlResponseResponse
-			if err := callInnerRPC(ctx, c, workerID, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: agentID, RequestId: requestID, ClaimToken: claimToken,
 				Content: []byte(content), RecordOnly: recordOnly, PlanApproval: planApproval,
 			}, &response); err != nil {

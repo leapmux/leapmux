@@ -428,7 +428,7 @@ export function createRepoGitStore() {
     beginLoading()
     let writtenKey: RepoKey | undefined
     try {
-      const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
+      const resp = await workerRpc.getGitFileStatus(workerId, { path })
       if (probeGen.get(probeId) !== mine) {
         releaseStaleRefreshPins(mine, myKeys)
         return undefined

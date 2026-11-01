@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
@@ -39,7 +40,7 @@ func RunAgentSend(rawCtx any, args []string) error {
 			return nil
 		},
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			if err := callInnerRPC(ctx, c, workerID, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 				AgentId: agentID, InputId: id.Generate(), Text: message,
 				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 			}, nil); err != nil {
@@ -57,7 +58,7 @@ func RunAgentInterrupt(rawCtx any, args []string) error {
 			fs.StringVar(&reason, "reason", "", "audit reason")
 		},
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			if err := callInnerRPC(ctx, c, workerID, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID, Reason: reason}, nil); err != nil {
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: agentID, Reason: reason}, nil); err != nil {
 				return err
 			}
 			return control.EmitData(map[string]string{"agent_id": agentID})
@@ -67,14 +68,14 @@ func RunAgentInterrupt(rawCtx any, args []string) error {
 
 // RunAgentGet returns the worker-side agent record (settings, status,
 // available models). Resolution mirrors `agent send`: --worker-id wins,
-// then GetTab on the hub. Implementation reuses ListAgents with a
+// then LocateTab on the hub. Implementation reuses ListAgents with a
 // single tab id rather than introducing a new GetAgent RPC, since the
 // worker already filters by id and we only ever want one row.
 func RunAgentGet(rawCtx any, args []string) error {
 	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
 			var resp leapmuxv1.ListAgentsResponse
-			if err := callInnerRPC(ctx, c, workerID, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, &resp); err != nil {
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, &resp); err != nil {
 				return err
 			}
 			for _, a := range resp.GetAgents() {
@@ -107,7 +108,7 @@ func RunAgentProviders(rawCtx any, args []string) error {
 			return err
 		}
 		var resp leapmuxv1.ListAvailableProvidersResponse
-		if err := callInnerRPC(ctx, c, got.WorkerID, "ListAvailableProviders", &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
+		if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
 			return err
 		}
 		// Each row carries the canonical display name ("Claude Code") plus
@@ -169,7 +170,7 @@ func resolveProvider(ctx context.Context, raw string, list providerListerFn) (le
 		)
 	}
 	var resp leapmuxv1.ListAvailableProvidersResponse
-	if err := list(ctx, "ListAvailableProviders", &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
+	if err := list(ctx, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, &leapmuxv1.ListAvailableProvidersRequest{}, &resp); err != nil {
 		return 0, emitInnerRPCError(err)
 	}
 	switch providers := resp.GetProviders(); len(providers) {

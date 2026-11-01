@@ -16,7 +16,6 @@
     "notificationThreadWrapperType",
     "messageMetadataFields",
     "messageSupplementFields",
-    "rpcMethods",
     "modelSentinels",
     "notificationFields",
     "backgroundTaskStatusTokens",
@@ -93,17 +92,6 @@
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$"
         }
-      }
-    },
-    "rpcMethods": {
-      "type": "object",
-      "minProperties": 1,
-      "propertyNames": {
-        "pattern": "^[A-Z][A-Za-z0-9]*$"
-      },
-      "additionalProperties": {
-        "type": "string",
-        "pattern": "^[A-Z][A-Za-z0-9]*$"
       }
     },
     "_readme": {

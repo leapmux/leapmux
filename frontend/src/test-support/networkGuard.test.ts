@@ -149,10 +149,10 @@ describe('installNetworkGuard', () => {
     expect(await postDirectly(server)).toBe(401)
     moveDocumentTo(server)
 
-    const refused = fetch(`${server.origin}/leapmux.v1.UserService/GetTimeouts`, { method: 'POST' })
+    const refused = fetch(`${server.origin}/leapmux.v1.SystemService/GetTimeouts`, { method: 'POST' })
 
     await expect(refused).rejects.toBeInstanceOf(TypeError)
-    await expect(refused).rejects.toThrow(`refused POST ${server.origin}/leapmux.v1.UserService/GetTimeouts`)
+    await expect(refused).rejects.toThrow(`refused POST ${server.origin}/leapmux.v1.SystemService/GetTimeouts`)
     expect(await server.hits()).toBe(1)
   })
 
@@ -197,9 +197,9 @@ describe('installNetworkGuard', () => {
     const server = await startUnauthorizedServer()
     moveDocumentTo(server)
 
-    const refused = fetch('/leapmux.v1.UserService/GetTimeouts', { method: 'POST' })
+    const refused = fetch('/leapmux.v1.SystemService/GetTimeouts', { method: 'POST' })
 
-    await expect(refused).rejects.toThrow(`refused POST ${server.origin}/leapmux.v1.UserService/GetTimeouts`)
+    await expect(refused).rejects.toThrow(`refused POST ${server.origin}/leapmux.v1.SystemService/GetTimeouts`)
     expect(await server.hits()).toBe(0)
   })
 

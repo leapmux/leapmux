@@ -1,11 +1,11 @@
 /// <reference types="vitest/globals" />
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { sectionClient } from '~/api/clients'
+import { workspaceClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 vi.mock('~/api/clients', () => ({
-  sectionClient: {
+  workspaceClient: {
     moveWorkspace: vi.fn(),
   },
 }))
@@ -28,7 +28,7 @@ function makeDeps(items: { position: string }[] = []) {
 /** Lets a test resolve or reject the in-flight move RPC by hand. */
 function deferredMove() {
   let settle!: (err?: Error) => void
-  vi.mocked(sectionClient.moveWorkspace).mockReturnValue(
+  vi.mocked(workspaceClient.moveWorkspace).mockReturnValue(
     new Promise((resolve, reject) => {
       settle = err => (err
         ? reject(err)
@@ -41,7 +41,7 @@ function deferredMove() {
 describe('placeWorkspaceInSection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(sectionClient.moveWorkspace).mockResolvedValue({} as never)
+    vi.mocked(workspaceClient.moveWorkspace).mockResolvedValue({} as never)
   })
 
   it('refreshes without an RPC when there is no target section', async () => {
@@ -50,7 +50,7 @@ describe('placeWorkspaceInSection', () => {
     const deps = makeDeps()
     placeWorkspaceInSection(deps, 'ws-1', null)
 
-    expect(sectionClient.moveWorkspace).not.toHaveBeenCalled()
+    expect(workspaceClient.moveWorkspace).not.toHaveBeenCalled()
     expect(deps.loadWorkspaces).toHaveBeenCalledTimes(1)
   })
 
@@ -62,7 +62,7 @@ describe('placeWorkspaceInSection', () => {
     placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
 
     await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())
-    const arg = vi.mocked(sectionClient.moveWorkspace).mock.calls[0]?.[0]
+    const arg = vi.mocked(workspaceClient.moveWorkspace).mock.calls[0]?.[0]
     expect(arg).toMatchObject({ workspaceId: 'ws-1', sectionId: 'sec-1' })
     expect((arg?.position ?? '') > 'u', 'the new rank must sort after the last item').toBe(true)
   })
@@ -72,7 +72,7 @@ describe('placeWorkspaceInSection', () => {
     placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
 
     await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())
-    expect(vi.mocked(sectionClient.moveWorkspace).mock.calls[0]?.[0].position).not.toBe('')
+    expect(vi.mocked(workspaceClient.moveWorkspace).mock.calls[0]?.[0].position).not.toBe('')
   })
 
   it('warns when the move fails, and still refreshes', async () => {

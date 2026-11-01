@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseSidebarTabDragId, SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 describe('tabLeaf draggable ID format', () => {
   // TabLeaf builds the id; TabDragContext reads it back. This drives the REAL

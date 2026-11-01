@@ -1,16 +1,78 @@
 syntax = "proto3";
 package leapmux.v1;
 
-// PageRequest specifies pagination parameters.
-message PageRequest {
-  int32 limit = 1;
-  string cursor = 2;
+// --- Tabs and layout, shared by the hub, the CRDT and the Worker ---
+
+// TabType identifies the kind of workspace tab.
+enum TabType {
+  TAB_TYPE_UNSPECIFIED = 0;
+  TAB_TYPE_AGENT = 1;
+  TAB_TYPE_TERMINAL = 2;
+  TAB_TYPE_FILE = 3;
+  // A single image an agent returned inside a chat message, opened in its own
+  // tab. Holds no pixels: the tab addresses `(agent_id, seq, image_index)` and
+  // the client re-fetches the message. See ImageTabPayload.
+  TAB_TYPE_IMAGE = 4;
 }
 
-// PageResponse contains pagination metadata.
+// WorkspaceArchiveState identifies whether a workspace accepts mutations and
+// whether its Worker-hosted processes may run.
+enum WorkspaceArchiveState {
+  WORKSPACE_ARCHIVE_STATE_UNSPECIFIED = 0;
+  WORKSPACE_ARCHIVE_STATE_ACTIVE = 1;
+  WORKSPACE_ARCHIVE_STATE_ARCHIVED = 2;
+}
+
+// SplitDirection names the orientation of the divider line between
+// the two children of a SPLIT node. The convention matches tmux and
+// the `tile split --direction` CLI flag:
+//   HORIZONTAL = a horizontal divider (-) between two stacked panes.
+//   VERTICAL   = a vertical divider (|) between two side-by-side panes.
+enum SplitDirection {
+  SPLIT_DIRECTION_UNSPECIFIED = 0;
+  SPLIT_DIRECTION_HORIZONTAL = 1;
+  SPLIT_DIRECTION_VERTICAL = 2;
+}
+
+// TabIdent names one tab by type and id -- the pair that identifies a tab
+// wherever the workspace is not part of the address and the context implies
+// the tab's owner. A Worker stores no workspace id, so this is the only tab
+// address it understands.
+message TabIdent {
+  TabType tab_type = 1;
+  string tab_id = 2;
+}
+
+// TabRef is a tab plus its owner, for the one place where the owner varies:
+// WorkerTabState, the Hub's owned-tab list for a worker that can serve more
+// than one account.
+message TabRef {
+  TabIdent tab = 1;
+  // Owner of the tab, for the kinds whose id needs one.
+  //
+  // A FILE or IMAGE tab id is minted client-side and is unique only WITHIN one
+  // account, so the pair (tab_type, tab_id) does not identify such a tab on a
+  // worker that serves more than one. AGENT and TERMINAL ids are server-minted
+  // and globally unique, so a sender may leave this empty for them -- and every
+  // reader that matches those two ignores it.
+  //
+  // worker_tab_payloads is keyed (user_id, tab_id), so a write with a blank
+  // owner matches no row, and a predicate with a blank owner matches ANOTHER
+  // account's row.
+  string user_id = 2;
+}
+
+// --- Pagination ---
+
+// PageRequest asks for one page of a keyset-paginated listing.
+message PageRequest {
+  int32 limit = 1;   // 0 asks for the default page of 50; the hub caps it at 500.
+  string cursor = 2; // The previous page's next_cursor; empty reads the first page.
+}
+
+// PageResponse ends one page of a keyset-paginated listing.
 message PageResponse {
-  string next_cursor = 1;
-  bool has_more = 2;
+  string next_cursor = 1; // Pass it back to read the next page; empty means no more rows.
 }
 
 // WorktreeAction conveys the user's pre-close choice so the backend
@@ -32,30 +94,6 @@ enum WorktreeRemovalOutcome {
   WORKTREE_REMOVAL_OUTCOME_REMOVED = 1;           // This close was the last reference; worktree removed
   WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED = 2;  // Dropped this tab's link; other tabs still reference it
   WORKTREE_REMOVAL_OUTCOME_FAILED = 3;            // Last reference, but removal failed (failure_* populated)
-}
-
-// CloseTabResult carries the outcome shared by CloseAgentResponse and
-// CloseTerminalResponse.
-//
-// Partial failures (DB close failed, worktree directory couldn't be
-// removed) are returned as success-plus-failure-fields rather than as
-// an RPC error. This is intentional: the close RPCs are fire-and-forget
-// dispatches issued *after* the frontend has already committed the UI
-// tab removal synchronously, so there is nothing to "roll back" if the
-// backend hits a hiccup. Structured failure fields let the UI surface a
-// warn toast (with the worktree path, if relevant) while still honoring
-// the already-visible close. An RPC error would collapse the structured
-// info into a single string and imply the close didn't happen, neither
-// of which matches the async-close contract.
-message CloseTabResult {
-  string worktree_path = 1;   // Populated on worktree-remove failure so the user can clean up manually
-  string worktree_id = 2;     // Populated on worktree-remove failure alongside worktree_path
-  string failure_message = 3; // Short human title of a partial failure (empty = success)
-  string failure_detail = 4;  // Longer context (path, stderr, stack) for the failure
-  // What a REMOVE close did with the worktree. Lets the caller toast the
-  // real outcome (removed / still referenced elsewhere / failed) rather
-  // than optimistically assuming removal.
-  WorktreeRemovalOutcome worktree_removal = 5;
 }
 
 // --- Per-file git status ---

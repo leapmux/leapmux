@@ -1,22 +1,58 @@
+import type { DescMethod, MessageInitShape } from '@bufbuild/protobuf'
 import type { Page } from '@playwright/test'
+import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { SettingFeature } from './unsupportedConfiguration'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { create } from '@bufbuild/protobuf'
+import { Code } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectMissingSetting, SETTING_GROUP_NAMES, settingGroupMatches, settingNameKey } from './unsupportedConfiguration'
+import { AgentGoalAction, AgentProvider, AgentStatus, ListAgentMessagesResponseSchema, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { expectMissingSetting, expectUnsupportedGoalActions, SETTING_GROUP_NAMES, settingGroupMatches, settingNameKey } from './unsupportedConfiguration'
 
 /** The live state that the fakes of the browser and the Worker serve, one entry for each read. */
 const live = vi.hoisted(() => ({
   events: [] as string[],
   catalogs: [] as { id: string, label: string }[][],
   menus: [] as { id: string, label: string }[][],
+  callWorker: vi.fn<(workerId: string, method: DescMethod, request: { action?: number }) => Promise<unknown>>(),
 }))
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
-  return { ...actual, expect }
+  return {
+    ...actual,
+    expect: (value: unknown, message?: string) => {
+      // A fake goal action locator records the count that the helper requires.
+      if (typeof value === 'object' && value !== null && 'goalAction' in value && typeof value.goalAction === 'string') {
+        const word = value.goalAction
+        return {
+          toHaveCount: async (count: number) => {
+            live.events.push(`goal-action ${word} count:${count}`)
+          },
+        }
+      }
+      return expect(value, message)
+    },
+  }
 })
+
+vi.mock('./api', () => ({
+  getTestChannel: async () => ({ callWorker: live.callWorker }),
+}))
+
+vi.mock('./goalsAndTodos', () => ({
+  goalsAndTodosSection: () => ({
+    count: async () => 1,
+  }),
+  expandGoalsAndTodosSection: async () => {
+    live.events.push('expand')
+  },
+  goalAction: (_page: Page, word: string) => ({ goalAction: word }),
+  openGoalMenu: async () => {
+    live.events.push('goal-menu')
+  },
+}))
 
 vi.mock('./nativeScenario', () => ({
   currentNativeAgent: async () => {
@@ -24,7 +60,7 @@ vi.mock('./nativeScenario', () => ({
     const optionGroups = live.catalogs.shift()
     if (!optionGroups)
       throw new Error('The test supplied no catalog for this read.')
-    return { status: AgentStatus.ACTIVE, optionGroups }
+    return { id: 'goal-agent', status: AgentStatus.ACTIVE, optionGroups }
   },
 }))
 
@@ -78,6 +114,7 @@ beforeEach(() => {
   live.events = []
   live.catalogs = []
   live.menus = []
+  live.callWorker.mockReset()
 })
 
 describe('SETTING_GROUP_NAMES', () => {
@@ -248,5 +285,120 @@ describe('expectMissingSetting', () => {
       },
     })).rejects.toThrow('the native operation failed')
     expect(live.events).toEqual([])
+  })
+})
+
+describe('expectUnsupportedGoalActions', () => {
+  const goal = { objective: 'Ship the release' }
+
+  /** A context whose page holds the goal menu trigger and records each key press. */
+  function goalContext(): ManagedNativeScenarioContext {
+    const page = {
+      locator: () => ({
+        count: async () => 1,
+      }),
+      keyboard: {
+        press: async (key: string) => {
+          live.events.push(`press:${key}`)
+        },
+      },
+    } as unknown as Page
+    return {
+      ...fakeContext(),
+      page,
+      leapmuxServer: { hubUrl: 'http://hub.test', adminToken: 'token', workerId: 'worker-1' },
+    }
+  }
+
+  /** Answer each ListAgentMessages read with the next snapshot, and refuse each goal update as the Worker does. */
+  function worker(...snapshots: MessageInitShape<typeof ListAgentMessagesResponseSchema>[]) {
+    live.callWorker.mockImplementation(async (workerId, method, request) => {
+      expect(workerId).toBe('worker-1')
+      if (method === WorkerAgentService.method.listAgentMessages) {
+        live.events.push('snapshot')
+        const snapshot = snapshots.shift()
+        if (!snapshot)
+          throw new Error('The test supplied no snapshot for this read.')
+        return create(ListAgentMessagesResponseSchema, snapshot)
+      }
+      if (method === WorkerAgentService.method.updateAgentGoal) {
+        live.events.push(`update:${AgentGoalAction[request.action ?? 0]}`)
+        throw Object.assign(new Error('refused'), { source: 'rpc', code: Code.FailedPrecondition, message: 'this agent cannot perform that session-goal action' })
+      }
+      throw new Error(`The fake Worker has no method ${method.name}.`)
+    })
+  }
+
+  it('refuses each action that the goal snapshot omits, in the menu and at the Worker, and finds the goal unchanged', async () => {
+    live.catalogs = [MODEL_ONLY]
+    const snapshot = {
+      goal: {
+        goal,
+        supportedActions: [AgentGoalAction.SET],
+      },
+    }
+    worker(snapshot, snapshot)
+    await expectUnsupportedGoalActions(goalContext(), {
+      actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME],
+      relatedProof: async () => {
+        live.events.push('proof')
+      },
+    })
+    expect(live.events).toEqual([
+      'proof',
+      'catalog',
+      'snapshot',
+      'expand',
+      'goal-menu',
+      'goal-action pause count:0',
+      'update:PAUSE',
+      'goal-action resume count:0',
+      'update:RESUME',
+      'press:Escape',
+      'snapshot',
+    ])
+    expect(live.callWorker).toHaveBeenCalledWith('worker-1', WorkerAgentService.method.listAgentMessages, { agentId: 'goal-agent', limit: 1 })
+  })
+
+  it('fails when the Worker sends no goal snapshot, before it reads the menu', async () => {
+    live.catalogs = [MODEL_ONLY]
+    worker({})
+    await expect(expectUnsupportedGoalActions(goalContext(), {
+      actions: [AgentGoalAction.PAUSE],
+      relatedProof: async () => {},
+    })).rejects.toThrow('the Worker read the goal snapshot')
+    expect(live.events).not.toContain('goal-menu')
+  })
+
+  it('fails for an action that the goal snapshot lists as supported, and sends no update', async () => {
+    live.catalogs = [MODEL_ONLY]
+    worker({
+      goal: {
+        goal,
+        supportedActions: [AgentGoalAction.SET, AgentGoalAction.PAUSE],
+      },
+    })
+    await expect(expectUnsupportedGoalActions(goalContext(), {
+      actions: [AgentGoalAction.PAUSE],
+      relatedProof: async () => {},
+    })).rejects.toThrow('to not include 3')
+    expect(live.events).not.toContain('update:PAUSE')
+  })
+
+  it('fails when the goal differs after the probe', async () => {
+    live.catalogs = [MODEL_ONLY]
+    worker({
+      goal: { goal, supportedActions: [] },
+    }, {
+      goal: {
+        goal: { objective: 'Another objective' },
+        supportedActions: [],
+      },
+    })
+    await expect(expectUnsupportedGoalActions(goalContext(), {
+      actions: [AgentGoalAction.CLEAR],
+      relatedProof: async () => {},
+    })).rejects.toThrow('to deeply equal')
+    expect(live.events.at(-1)).toBe('snapshot')
   })
 })

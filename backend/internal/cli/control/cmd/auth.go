@@ -29,7 +29,6 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
-	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
@@ -525,74 +524,48 @@ func RunAuthCredentials(rawCtx any, args []string) error {
 	}
 	// Every page, not the first: an omitted limit resolves to a default on
 	// the hub, and a credential the listing never printed is one the operator
-	// cannot see to revoke.
-	// Keyed by id while assembling: a keyset boundary can repeat a row
-	// across two pages, and a stalled cursor makes the last page arrive
-	// twice. Neither should print the same credential as two live ones to
-	// somebody auditing what can reach their account.
-	seen := make(map[string]bool)
-	out := make([]map[string]any, 0)
-	cursor := ""
-	for range maxCredentialPages {
+	// cannot see to revoke. readAllPages keys the rows by id, so a keyset
+	// boundary never prints the same credential as two live ones to somebody
+	// auditing what can reach their account.
+	tokens, err := readAllPages(func(cursor string) ([]*leapmuxv1.MyAPIToken, string, error) {
 		resp, err := c.UserService().ListMyAPITokens(context.Background(), &leapmuxv1.ListMyAPITokensRequest{
-			Cursor: cursor,
-			Limit:  credentialPageSize,
+			Page: &leapmuxv1.PageRequest{Cursor: cursor, Limit: listPageSize},
 		})
-		if err != nil {
-			return control.EmitErrorWith("rpc_failed", err)
+		return resp.GetTokens(), resp.GetPage().GetNextCursor(), err
+	}, (*leapmuxv1.MyAPIToken).GetId)
+	if err != nil {
+		return control.EmitErrorWith("rpc_failed", err)
+	}
+	out := make([]map[string]any, 0, len(tokens))
+	for _, tok := range tokens {
+		row := map[string]any{
+			"id":                tok.GetId(),
+			"client_id":         tok.GetClientId(),
+			"client_name":       tok.GetClientName(),
+			"client_verified":   tok.GetClientVerified(),
+			"installation_name": tok.GetInstallationName(),
+			"granted_scopes":    tok.GetGrantedScopes(),
+			// True for the credential THIS command uses, so an operator
+			// does not revoke the device they work from.
+			"current": tok.GetCurrent(),
 		}
-		for _, tok := range resp.GetTokens() {
-			if seen[tok.GetId()] {
-				continue
-			}
-			seen[tok.GetId()] = true
-			row := map[string]any{
-				"id":                tok.GetId(),
-				"client_id":         tok.GetClientId(),
-				"client_name":       tok.GetClientName(),
-				"client_verified":   tok.GetClientVerified(),
-				"installation_name": tok.GetInstallationName(),
-				"granted_scopes":    tok.GetGrantedScopes(),
-				// True for the credential THIS command uses, so an operator
-				// does not revoke the device they work from.
-				"current": tok.GetCurrent(),
-			}
-			// putTime, like every other listing verb in this package: it
-			// omits an unset instant and renders the rest in the one layout
-			// the CLI's JSON uses, so `auth credentials` does not print
-			// timestamps in a shape of its own.
-			putTime(row, "created_at", tok.GetCreatedAt())
-			putTime(row, "last_used_at", tok.GetLastUsedAt())
-			putTime(row, "refresh_expires", tok.GetRefreshExpiresAt())
-			// The fixed-lifetime kind carries no refresh deadline, so its
-			// whole life is reported here instead. Exactly one of the two is
-			// ever set, and putTime omits the absent one -- so a credential
-			// with no deadline in this listing is one that never expires,
-			// rather than one whose deadline the CLI cannot state.
-			putTime(row, "expires", tok.GetExpiresAt())
-			out = append(out, row)
-		}
-		next := resp.GetNextCursor()
-		if next == "" || next == cursor {
-			break
-		}
-		cursor = next
+		// putTime, like every other listing verb in this package: it
+		// omits an unset instant and renders the rest in the one layout
+		// the CLI's JSON uses, so `auth credentials` does not print
+		// timestamps in a shape of its own.
+		putTime(row, "created_at", tok.GetCreatedAt())
+		putTime(row, "last_used_at", tok.GetLastUsedAt())
+		putTime(row, "refresh_expires", tok.GetRefreshExpiresAt())
+		// The fixed-lifetime kind carries no refresh deadline, so its
+		// whole life is reported here instead. Exactly one of the two is
+		// ever set, and putTime omits the absent one -- so a credential
+		// with no deadline in this listing is one that never expires,
+		// rather than one whose deadline the CLI cannot state.
+		putTime(row, "expires", tok.GetExpiresAt())
+		out = append(out, row)
 	}
 	return control.EmitData(out)
 }
-
-const (
-	// credentialPageSize is the hub's maximum page, READ from the hub's own
-	// constant rather than restated. Asking for it makes the listing one
-	// round trip for any real account; an omitted limit resolves to
-	// service.DefaultPageLimit, so the loop below took ten times the
-	// requests and covered a tenth of what its own limit claimed.
-	credentialPageSize = service.MaxPageLimit
-	// maxCredentialPages limits the listing loop. At credentialPageSize
-	// that covers a quarter of a million credentials, so it is a guard
-	// against a cursor that never advances, not a limit anybody reaches.
-	maxCredentialPages = 500
-)
 
 // RunAuthStatus answers "can this machine still reach my account" -- a
 // question about the HUB's truth, not the credential file's. The file's own
@@ -758,7 +731,7 @@ func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome 
 		&leapmuxv1.GetCurrentUserRequest{})
 	switch {
 	case callErr == nil:
-		return me.GetUser(), "", hubCheckConfirmed, nil
+		return me.GetSessionReport().GetUser(), "", hubCheckConfirmed, nil
 	case hubRefusedCredential(callErr):
 		return nil, "", hubCheckRefused,
 			fmt.Errorf("the hub refused this credential: %w", callErr)

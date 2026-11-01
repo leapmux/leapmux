@@ -23,10 +23,10 @@ export interface BeginQueueEditResult {
 }
 
 /**
- * Claims the edit lock on one queued input. `takeover` takes the lock away from
- * another client that holds it.
+ * Claims the edit lock on one queued input of `agentId`. `takeover` takes the
+ * lock away from another client that holds it.
  */
-export type BeginQueueEdit = (item: QueuedAgentInput, takeover: boolean) => Promise<BeginQueueEditResult>
+export type BeginQueueEdit = (agentId: string, item: QueuedAgentInput, takeover: boolean) => Promise<BeginQueueEditResult>
 
 /**
  * The attachment handles that the session drives. Every one of them is an
@@ -104,8 +104,8 @@ export interface QueueEditSession {
   markUpdateStarted: () => void
   /** The update RPC for the open edit failed. */
   markUpdateFailed: () => void
-  /** The update RPC for `item` succeeded. {@link handleAfterSend} closes the edit. */
-  markUpdateCompleted: (item: QueuedAgentInput) => void
+  /** The update RPC for `agentId`'s `item` succeeded. {@link handleAfterSend} closes the edit. */
+  markUpdateCompleted: (agentId: string, item: QueuedAgentInput) => void
   /** The editor finished the send that carried the update, and cleared its draft. */
   handleAfterSend: () => void
   /**
@@ -131,7 +131,9 @@ export interface QueueEditSession {
  * which states why the wiring takes two calls.
  */
 export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEditSession {
-  const [editingInput, setEditingInput] = createSignal<QueuedAgentInput>()
+  // The open edit, with the agent whose queue holds the input. A queued input
+  // states no agent, so the session records the one it loaded the edit for.
+  const [editingInput, setEditingInput] = createSignal<{ agentId: string, input: QueuedAgentInput }>()
   const [queueUpdateInFlight, setQueueUpdateInFlight] = createSignal(false)
   let completedQueueEdit: { agentId: string, inputId: string } | undefined
   let pendingQueueEditText: string | undefined
@@ -158,7 +160,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
   const activeEditingInput = () => {
     const editing = editingInput()
     return editing?.agentId === opts.agentId()
-      ? editing
+      ? editing.input
       : undefined
   }
   const attachmentDraftKey = () => {
@@ -191,7 +193,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     // actually belongs to: "is this still the load the panel is waiting for?"
     const loadToken = ++queueEditLoadToken
     queueEditRequests.add(requestKey)
-    const request = beginEdit(item, takeover)
+    const request = beginEdit(editAgentId, item, takeover)
     void request.then(async (response) => {
       if (loadToken !== queueEditLoadToken || untrack(opts.agentId) !== editAgentId)
         return
@@ -226,7 +228,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       }
       if (!restoreDraft)
         clearScheduleDraft(queueDraftKey)
-      setEditingInput(edited)
+      setEditingInput({ agentId: editAgentId, input: edited })
     }).catch(() => {}).finally(() => {
       queueEditRequests.delete(requestKey)
     })
@@ -322,7 +324,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       const completed = completedQueueEdit
       completedQueueEdit = undefined
       const current = activeEditingInput()
-      if (current?.agentId === completed.agentId && current.id === completed.inputId)
+      if (current && untrack(opts.agentId) === completed.agentId && current.id === completed.inputId)
         setEditingInput()
       setQueueUpdateInFlight(false)
     }
@@ -351,8 +353,8 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     clearQueueEditArtifacts,
     markUpdateStarted: () => setQueueUpdateInFlight(true),
     markUpdateFailed: () => setQueueUpdateInFlight(false),
-    markUpdateCompleted: (item) => {
-      completedQueueEdit = { agentId: item.agentId, inputId: item.id }
+    markUpdateCompleted: (agentId, item) => {
+      completedQueueEdit = { agentId, inputId: item.id }
     },
     handleAfterSend,
     takePendingText,

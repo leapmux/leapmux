@@ -260,7 +260,6 @@ for (const active of [true, false]) {
         const failed = queue.items.find(item => item.state === AgentInputState.FAILED)
         if (failed) {
           expect(active).toBe(false)
-          expect(queue.paused).toBe(true)
           expect(queue.pauseReason).toBe(AgentInputQueuePauseReason.DELIVERY_FAILED)
           expect(failed.text).toBe(note)
           expect(failed.error).toContain('subagent/followupTask')

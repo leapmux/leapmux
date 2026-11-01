@@ -50,7 +50,7 @@ func newNetworkService(t *testing.T, cfg *config.Config, listen service.ListenRe
 	require.NoError(t, bootstrap.Run(context.Background(), st, cfg.SoloMode))
 	set := servicetest.NewSettingsManager(t, st, nil)
 	return service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
-		Config: cfg, Settings: set, SoloGate: auth.NewSoloGate(cfg.SoloMode, st), Listen: listen,
+		Config: cfg, Settings: set, Listen: listen,
 	}), st, set
 }
 
@@ -96,20 +96,6 @@ func TestAdminNetworkService_CanonicalisesTheConfiguredAddresses(t *testing.T) {
 	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"*:4327", "[::]:9000"}, resp.GetConfigured())
-}
-
-func TestAdminNetworkService_ReportsWhetherTheAccountHoldsAPassword(t *testing.T) {
-	svc, st, _ := newNetworkService(t, &config.Config{SoloMode: true}, fakeListenReporter{})
-
-	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
-	require.NoError(t, err)
-	assert.False(t, resp.GetPasswordSet(),
-		"the bootstrapped account claims password_set with no hash behind it; the report must read the hash")
-
-	setSoloPasswordForTest(t, st)
-	resp, err = svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
-	require.NoError(t, err)
-	assert.True(t, resp.GetPasswordSet())
 }
 
 // The picker needs the machine's addresses, and it needs them stable: a list
@@ -173,7 +159,7 @@ func TestAdminNetworkService_ReportsAnInterfaceReadFailure(t *testing.T) {
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 	svc := service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
 		Config: &config.Config{SoloMode: true}, Settings: servicetest.NewSettingsManager(t, st, nil),
-		SoloGate: auth.NewSoloGate(true, st), Listen: fakeListenReporter{},
+		Listen:     fakeListenReporter{},
 		Interfaces: func() ([]net.Interface, error) { return nil, errors.New("no such device") },
 	})
 
@@ -202,7 +188,7 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(ctx, func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -273,7 +259,7 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -299,7 +285,7 @@ func TestGetSystemInfo_DoesNotReadTheSoloAccountOnAMultiUserHub(t *testing.T) {
 	deps.SoloGate = auth.NewSoloGate(false, counted)
 
 	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
-		_, callErr := service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		_, callErr := service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
@@ -162,4 +163,125 @@ func TestRegistry_DisabledJanitor_KeepsManagersForever(t *testing.T) {
 	mgr2, err := registry.Get(context.Background(), "user-x")
 	require.NoError(t, err)
 	assert.Same(t, mgr1, mgr2, "managers are stable across Get when janitor is disabled")
+}
+
+// workersChangedCount counts the workers_changed events among events.
+func workersChangedCount(events []*leapmuxv1.WatchUserEvent) int {
+	n := 0
+	for _, evt := range events {
+		if evt.GetWorkersChanged() != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRegistry_BroadcastWorkersChanged_NeverBootstrapsAManager pins the
+// loaded-only lookup: a user with no loaded manager has no live subscriber,
+// so the broadcast must not run the factory, which reads the journal.
+func TestRegistry_BroadcastWorkersChanged_NeverBootstrapsAManager(t *testing.T) {
+	var factoryCalls atomic.Int32
+	journal := newFakeJournal()
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		factoryCalls.Add(1)
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(context.Background()))
+		return mgr, nil
+	}
+	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	registry.BroadcastWorkersChanged("user-unloaded")
+	assert.Zero(t, factoryCalls.Load(), "a broadcast must not bootstrap a manager for a user nobody watches")
+	registry.BroadcastWorkersChanged("")
+	assert.Zero(t, factoryCalls.Load(), "a blank user has no manager to tell")
+
+	var absent *crdt.Registry
+	assert.NotPanics(t, func() { absent.BroadcastWorkersChanged("user-unloaded") },
+		"a nil registry, as a service built without one holds, broadcasts nothing")
+}
+
+// TestRegistry_BroadcastWorkersChanged_StampsNoActivity pins that a broadcast
+// is not the user's activity: a manager that only received broadcasts is still
+// idle, and the sweep evicts it. A real Get, by contrast, keeps its manager.
+//
+// Each manager reads a clock that reports a time two hours old until the test
+// switches it to the present. So the bootstrap stamps a stale time, and only a
+// call that stamps activity after the switch can make a manager look fresh.
+func TestRegistry_BroadcastWorkersChanged_StampsNoActivity(t *testing.T) {
+	var factoryCalls atomic.Int32
+	var present atomic.Bool
+	stale := time.Now().Add(-2 * time.Hour)
+	clock := func() time.Time {
+		if present.Load() {
+			return time.Now()
+		}
+		return stale
+	}
+	journal := newFakeJournal()
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		factoryCalls.Add(1)
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, clock)
+		require.NoError(t, mgr.Bootstrap(context.Background()))
+		return mgr, nil
+	}
+	// The janitor ticks every 20 minutes at this TTL, so only the explicit
+	// SweepIdle below evicts.
+	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(time.Hour))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	broadcastOnly, err := registry.Get(context.Background(), "user-broadcast")
+	require.NoError(t, err)
+	used, err := registry.Get(context.Background(), "user-used")
+	require.NoError(t, err)
+	require.EqualValues(t, 2, factoryCalls.Load())
+
+	present.Store(true)
+	registry.BroadcastWorkersChanged("user-broadcast")
+	_, err = registry.Get(context.Background(), "user-used")
+	require.NoError(t, err)
+
+	registry.SweepIdle()
+
+	usedAgain, err := registry.Get(context.Background(), "user-used")
+	require.NoError(t, err)
+	assert.Same(t, used, usedAgain, "control: a Get stamps activity, so its manager stays")
+	broadcastAgain, err := registry.Get(context.Background(), "user-broadcast")
+	require.NoError(t, err)
+	assert.NotSame(t, broadcastOnly, broadcastAgain, "a manager that only received a broadcast is evicted as idle")
+	assert.EqualValues(t, 3, factoryCalls.Load(), "only the evicted manager is built again")
+}
+
+// TestRegistry_BroadcastWorkersChanged_ReachesEverySubscriberOfTheUser pins
+// the unfiltered fan-out: the worker list belongs to the user, so a
+// subscriber whose filter admits no workspace hears the change as one that
+// admits a workspace does. Another user's subscriber hears nothing.
+func TestRegistry_BroadcastWorkersChanged_ReachesEverySubscriberOfTheUser(t *testing.T) {
+	journal := newFakeJournal()
+	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(context.Background()))
+		return mgr, nil
+	}
+	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	subscribe := func(userID string, filter crdt.SubscriberFilter) *captureSubscriber {
+		mgr, err := registry.Get(context.Background(), userID)
+		require.NoError(t, err)
+		listener := &captureSubscriber{}
+		_, unsub := mgr.Subscribe(&crdt.Subscriber{UserID: userID, Filter: filter, Send: listener.send})
+		t.Cleanup(unsub)
+		return listener
+	}
+	noWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}})
+	oneWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-1": true}})
+	otherUser := subscribe("user-2", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-2": true}})
+
+	// The fan-out calls each subscriber's Send before it returns.
+	registry.BroadcastWorkersChanged("user-1")
+
+	assert.Equal(t, 1, workersChangedCount(noWorkspace.snapshot()), "a subscriber that admits no workspace still hears it")
+	assert.Equal(t, 1, workersChangedCount(oneWorkspace.snapshot()))
+	assert.Zero(t, workersChangedCount(otherUser.snapshot()), "another user's subscriber hears nothing")
 }

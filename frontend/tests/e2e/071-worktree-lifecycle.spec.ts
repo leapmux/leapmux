@@ -2,12 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import {
-  OpenTerminalRequestSchema,
-  OpenTerminalResponseSchema,
+  WorkerTerminalService,
 } from '../../src/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 import { agentTabs, chooseGitMode, fillWorkspaceTitle, loginViaToken, openNewWorkspaceDialogAt, openWorkspace, submitNewWorkspaceDialog, waitForWorkspaceReady } from './helpers/ui'
@@ -99,15 +97,14 @@ test.describe('Worktree Lifecycle', () => {
     const channel = await getTestChannel(hubUrl, adminToken)
     const termResp2 = await channel.callWorker(
       workerId,
-      'OpenTerminal',
-      OpenTerminalRequestSchema,
-      OpenTerminalResponseSchema,
+      WorkerTerminalService.method.openTerminal,
       {
-        workerId,
         cols: 80,
         rows: 24,
         workingDir: repoDir,
-        useWorktreePath: worktreeDir,
+        gitSetup: {
+          mode: { case: 'useWorktreePath', value: worktreeDir },
+        },
       },
     )
     const terminalId = termResp2.terminalId

@@ -2,8 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { chooseGitMode, fillWorkspaceTitle, loginViaToken, menuOptionTexts, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, pickMenuOption, submitNewWorkspaceDialog, waitForActiveTabContext } from './helpers/ui'
@@ -181,7 +180,9 @@ test.describe('Worktree Git Modes', () => {
     // Create workspace with checkout_branch.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Switch API WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
-      checkoutBranch: 'api-switch-target',
+      gitSetup: {
+        mode: { case: 'checkoutBranch', value: 'api-switch-target' },
+      },
     })
 
     await expectRepoBranch(repoDir, 'api-switch-target')
@@ -222,7 +223,9 @@ test.describe('Worktree Git Modes', () => {
     // Create workspace using the use_worktree_path field.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Use WT API WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
-      useWorktreePath: worktreeDir,
+      gitSetup: {
+        mode: { case: 'useWorktreePath', value: worktreeDir },
+      },
     })
 
     // Verify the agent's working dir is the worktree path.
@@ -248,7 +251,9 @@ test.describe('Worktree Git Modes', () => {
 
     // Now open a second agent using "use existing worktree" pointing to the same managed worktree.
     const secondAgentId = await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
-      useWorktreePath: worktreeDir,
+      gitSetup: {
+        mode: { case: 'useWorktreePath', value: worktreeDir },
+      },
     })
 
     // Both agents must have FINISHED starting before the first is closed: the
@@ -281,7 +286,9 @@ test.describe('Worktree Git Modes', () => {
     // Create workspace using "use existing worktree" pointing to the unmanaged worktree.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Unmanaged WT WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
-      useWorktreePath: worktreeDir,
+      gitSetup: {
+        mode: { case: 'useWorktreePath', value: worktreeDir },
+      },
     })
 
     // Close the agent.
@@ -404,9 +411,12 @@ test.describe('Worktree Git Modes', () => {
     // Create workspace with worktree based on feature-base branch.
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Base Branch WS')
     await openAgentViaAPI({ hubUrl, adminToken, workerId }, workspaceId, repoDir, {
-      createWorktree: true,
-      worktreeBranch: 'derived-from-feature',
-      worktreeBaseBranch: 'feature-base',
+      gitSetup: {
+        mode: {
+          case: 'createWorktree',
+          value: { branch: 'derived-from-feature', baseBranch: 'feature-base' },
+        },
+      },
     })
     // The worktree is materialized during async startup, after OpenAgent answers.
     await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)

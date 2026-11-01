@@ -145,8 +145,7 @@ func finishPasskeyElevationClient(t *testing.T, m *Manager, handlerErr error, au
 func tryFinishPasskeyElevation(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
 	t.Helper()
 	_, err := client.FinishPasskeyElevation(context.Background(), &leapmuxv1.FinishPasskeyElevationRequest{
-		SessionId:      "wa-1",
-		CredentialJson: "{}",
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: "wa-1", CredentialJson: "{}"},
 	})
 	return err
 }
@@ -846,15 +845,9 @@ func TestElevationBudgetIsSharedByBothFactorPaths(t *testing.T) {
 	assert.Equal(t, 1, *passkeyCalls, "a denied attempt must not reach the handler")
 }
 
-// credentialBearingFields lists every request field through which a user
-// presents something the hub VERIFIES: a password, or a WebAuthn assertion
-// or attestation. Each one is a guess an attacker can repeat, so a procedure
-// carrying one must be rate limited.
-//
-// credential_json is on the list because it is what a passkey ceremony
-// finishes with, and every passkey procedure carries it. Without that entry
-// the walk covers ElevateSession alone -- and it would say so silently,
-// because a shorter walk still passes.
+// credentialBearingFields lists every request field, by name, through which a
+// user presents a password the hub VERIFIES or hashes. Each one is a guess an
+// attacker can repeat, so a procedure carrying one must be rate limited.
 //
 // `password` and `new_password` are on the list because a procedure that
 // ACCEPTS a password hashes it, and an Argon2 hash is expensive to repeat
@@ -863,16 +856,35 @@ func TestElevationBudgetIsSharedByBothFactorPaths(t *testing.T) {
 // neither name.
 var credentialBearingFields = map[string]bool{
 	"current_password": true,
-	"credential_json":  true,
 	"password":         true,
 	"new_password":     true,
 }
 
-// credentialWalkFiles are the proto files the walk covers. Both carry
-// procedures that verify or hash a secret, and a file left out of this list
-// is a whole service the tripwire cannot see. `auth.proto` was missing, which
-// is how SetInitialSoloPassword shipped unrouted.
-var credentialWalkFiles = []string{"leapmux/v1/user.proto", "leapmux/v1/auth.proto"}
+// credentialBearingMessages lists the message types that carry a WebAuthn
+// assertion or attestation: a request field of one of these types is
+// credential-bearing whatever the field is called. Every passkey ceremony
+// finishes with a WebAuthnCredential. Without this entry the walk covers
+// ElevateSession alone -- and it would say so silently, because a shorter
+// walk still passes.
+var credentialBearingMessages = map[protoreflect.FullName]bool{
+	"leapmux.v1.WebAuthnCredential": true,
+}
+
+// isCredentialBearing reports whether one request field carries something the
+// hub verifies.
+func isCredentialBearing(field protoreflect.FieldDescriptor) bool {
+	if credentialBearingFields[string(field.Name())] {
+		return true
+	}
+	return field.Message() != nil && credentialBearingMessages[field.Message().FullName()]
+}
+
+// credentialWalkFiles are the proto files the walk covers. Each carries
+// procedures that verify or hash a secret, or the hub's account-independent
+// surface beside them, and a file left out of this list is a whole service
+// the tripwire cannot see. `auth.proto` was missing, which is how
+// SetInitialSoloPassword shipped unrouted.
+var credentialWalkFiles = []string{"leapmux/v1/user.proto", "leapmux/v1/auth.proto", "leapmux/v1/system.proto"}
 
 // ceremonyFinishExemptions are the credential-bearing procedures that neither
 // a budget nor a captcha guards, and the reason each one needs neither.
@@ -910,7 +922,7 @@ func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
 			consumesSecret := false
 			fields := method.Input().Fields()
 			for j := 0; j < fields.Len(); j++ {
-				if credentialBearingFields[string(fields.Get(j).Name())] {
+				if isCredentialBearing(fields.Get(j)) {
 					consumesSecret = true
 					break
 				}
@@ -934,7 +946,7 @@ func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
 	// Non-vacuity: a walk that matched nothing would pass while covering
 	// nothing, which is what a renamed field would silently produce.
 	assert.GreaterOrEqual(t, covered, 8,
-		"the walk found fewer credential-bearing procedures than exist; check credentialBearingFields and credentialWalkFiles against the protos")
+		"the walk found fewer credential-bearing procedures than exist; check credentialBearingFields, credentialBearingMessages and credentialWalkFiles against the protos")
 }
 
 func TestValidateLimits(t *testing.T) {

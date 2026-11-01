@@ -185,10 +185,10 @@ func workerPlanRowCount[T any](rows []T, err error) (int, error) { return len(ro
 func seedWorkerPlanRows(t *testing.T, database *sql.DB, owner, prefix string, count int, createdAt time.Time, deletedAt any) {
 	t.Helper()
 	result, err := database.ExecContext(context.Background(), `
-INSERT INTO workers (id, auth_token, registered_by, created_at, public_key, mlkem_public_key, slhdsa_public_key, deleted_at)
+INSERT INTO workers (id, auth_token, registered_by, created_at, deleted_at)
 WITH digits AS (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
     UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9)
-SELECT CONCAT(?, LPAD(numbers.n, 6, '0')), CONCAT('token-', ?, numbers.n), ?, ?, X'', X'', X'', ?
+SELECT CONCAT(?, LPAD(numbers.n, 6, '0')), CONCAT('token-', ?, numbers.n), ?, ?, ?
 FROM (SELECT d0.n + 10*d1.n + 100*d2.n + 1000*d3.n + 10000*d4.n AS n
     FROM digits d0 CROSS JOIN digits d1 CROSS JOIN digits d2 CROSS JOIN digits d3 CROSS JOIN digits d4) numbers
 WHERE numbers.n < ?`, prefix, prefix, owner, createdAt, deletedAt, count)
@@ -243,8 +243,7 @@ ORDER BY ORDINAL_POSITION`)
 	require.NoError(t, rows.Err())
 	assert.Equal(t, []string{
 		"id", "auth_token", "registered_by", "created_at", "last_seen_at",
-		"deregistering_at", "public_key", "mlkem_public_key", "slhdsa_public_key",
-		"auto_registered", "deleted_at",
+		"deregistering_at", "auto_registered", "deleted_at",
 	}, columns, "state indexes must not add visible worker columns")
 }
 

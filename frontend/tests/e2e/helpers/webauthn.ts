@@ -68,9 +68,10 @@ type CeremonyMethod = 'startRegistration' | 'startAuthentication'
 /**
  * Run one Begin → browser ceremony → Finish chain inside `page` against the
  * raw Connect API. `procedure` values carry the service prefix (for example
- * `AuthService/BeginPasskeyLogin`). The Finish body merges
- * `{ sessionId, credentialJson }` with `finishExtra`. Returns the parsed
- * Finish response JSON.
+ * `AuthService/BeginPasskeyLogin`). The Begin response carries its
+ * `challenge`, and the Finish body merges
+ * `{ credential: { sessionId, credentialJson } }` with `finishExtra`. Returns
+ * the parsed Finish response JSON.
  */
 async function runCeremonyInPage(
   page: Page,
@@ -109,20 +110,23 @@ async function runCeremonyInPage(
     })
     if (!beginRes.ok)
       throw new Error(`${spec.beginProcedure} failed: ${beginRes.status} ${await beginRes.text()}`)
-    const begin = await beginRes.json() as { sessionId?: string, optionsJson?: string }
-    if (!begin.sessionId || !begin.optionsJson)
+    const begin = await beginRes.json() as { challenge?: { sessionId?: string, optionsJson?: string } }
+    const challenge = begin.challenge
+    if (!challenge?.sessionId || !challenge.optionsJson)
       throw new Error(`${spec.beginProcedure} returned incomplete payload`)
 
     const credential = await ceremony({
-      optionsJSON: unwrap(begin.optionsJson),
+      optionsJSON: unwrap(challenge.optionsJson),
     })
     const finishRes = await fetch(`${hubUrl}/leapmux.v1.${spec.finishProcedure}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({
-        sessionId: begin.sessionId,
-        credentialJson: JSON.stringify(credential),
+        credential: {
+          sessionId: challenge.sessionId,
+          credentialJson: JSON.stringify(credential),
+        },
         ...spec.finishExtra,
       }),
     })
@@ -175,8 +179,7 @@ export async function signUpWithPasskeyViaAPIInBrowser(
       username,
       displayName,
       email,
-      captchaPayload: captcha.captchaPayload,
-      honeypot: captcha.honeypot,
+      captcha,
     },
     ceremonyMethod: 'startRegistration',
     finishProcedure: 'AuthService/FinishPasskeySignUp',
@@ -194,7 +197,7 @@ export async function loginWithPasskeyViaAPIInBrowser(
   await page.goto(`${hubUrl}/login`)
   await runCeremonyInPage(page, hubUrl, {
     beginProcedure: 'AuthService/BeginPasskeyLogin',
-    beginBody: { username, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot },
+    beginBody: { username, captcha },
     ceremonyMethod: 'startAuthentication',
     finishProcedure: 'AuthService/FinishPasskeyLogin',
   })

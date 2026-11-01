@@ -84,7 +84,7 @@ func TestInterceptorPassesProcedureAction(t *testing.T) {
 	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		CaptchaPayload: "token",
+		Captcha: &leapmuxv1.CaptchaProof{Payload: "token"},
 	})
 	require.NoError(t, err)
 	assert.True(t, *called)
@@ -126,7 +126,7 @@ func TestInterceptorVerificationPrecedesRateLimitAdmission(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := client.Login(ctx, &leapmuxv1.LoginRequest{CaptchaPayload: "slow"})
+		_, err := client.Login(ctx, &leapmuxv1.LoginRequest{Captcha: &leapmuxv1.CaptchaProof{Payload: "slow"}})
 		done <- err
 	}()
 	select {
@@ -134,7 +134,7 @@ func TestInterceptorVerificationPrecedesRateLimitAdmission(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	_, err := client.Login(ctx, &leapmuxv1.LoginRequest{CaptchaPayload: "valid"})
+	_, err := client.Login(ctx, &leapmuxv1.LoginRequest{Captcha: &leapmuxv1.CaptchaProof{Payload: "valid"}})
 	assert.NoError(t, err, "pending verification must not occupy the login allowance")
 	assert.True(t, *called)
 	select {
@@ -157,9 +157,9 @@ func TestInterceptorAllowsVerifiedSubmission(t *testing.T) {
 	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		Username:       "user",
-		Password:       "pass",
-		CaptchaPayload: payload,
+		Username: "user",
+		Password: "pass",
+		Captcha:  &leapmuxv1.CaptchaProof{Payload: payload},
 	})
 	require.NoError(t, err)
 	assert.True(t, *called)
@@ -174,15 +174,20 @@ func TestInterceptorDeniesMissingOrInvalidPayload(t *testing.T) {
 	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed"))
 	for _, payload := range []string{"", "garbage"} {
 		_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-			CaptchaPayload: payload,
+			Captcha: &leapmuxv1.CaptchaProof{Payload: payload},
 		})
 		require.Error(t, err, "payload %q", payload)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	}
+	// A request that carries no proof at all reads as an empty payload, so
+	// it is denied exactly like one.
+	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{})
+	require.Error(t, err, "an absent proof")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.False(t, *called)
 	// Unsolvable payloads count as plain failures, never as replays: the
 	// labels split exactly on salt reuse.
-	assert.Equal(t, failedBefore+2, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed")))
+	assert.Equal(t, failedBefore+3, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed")))
 	assert.Equal(t, replayedBefore, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed")))
 }
 
@@ -192,8 +197,7 @@ func TestInterceptorDeniesHoneypotUniformly(t *testing.T) {
 	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		CaptchaPayload: payload,
-		Honeypot:       "http://spam.example",
+		Captcha: &leapmuxv1.CaptchaProof{Payload: payload, Honeypot: "http://spam.example"},
 	})
 	require.Error(t, err)
 	// Same code and message as a captcha failure: no oracle for which
@@ -210,13 +214,13 @@ func TestInterceptorDeniesReplay(t *testing.T) {
 	client, _ := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		CaptchaPayload: payload,
+		Captcha: &leapmuxv1.CaptchaProof{Payload: payload},
 	})
 	require.NoError(t, err)
 
 	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed"))
 	_, err = client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		CaptchaPayload: payload,
+		Captcha: &leapmuxv1.CaptchaProof{Payload: payload},
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -283,7 +287,7 @@ func TestInterceptorIgnoresOriginForTheSecureContextGate(t *testing.T) {
 	payload := freshVerifiedPayload(t, e)
 	okCtx, okInfo := connect.NewClientContext(context.Background())
 	okInfo.RequestHeader().Set("Origin", "http://a")
-	_, err := client.Login(okCtx, &leapmuxv1.LoginRequest{CaptchaPayload: payload})
+	_, err := client.Login(okCtx, &leapmuxv1.LoginRequest{Captcha: &leapmuxv1.CaptchaProof{Payload: payload}})
 	require.NoError(t, err)
 	assert.True(t, *called)
 }
@@ -306,7 +310,7 @@ func TestInterceptorStandsDownWhenTheHubCannotServeASecureContext(t *testing.T) 
 		"the interceptor must not persist captcha.enabled=false")
 
 	*called = false
-	honeypotReq := &leapmuxv1.LoginRequest{Honeypot: "http://spam.example"}
+	honeypotReq := &leapmuxv1.LoginRequest{Captcha: &leapmuxv1.CaptchaProof{Honeypot: "http://spam.example"}}
 	_, err = client.Login(context.Background(), honeypotReq)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -323,7 +327,7 @@ func TestInterceptorHoneypotRunsWhileCaptchaDisabled(t *testing.T) {
 
 	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed"))
 	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
-		Honeypot: "http://spam.example",
+		Captcha: &leapmuxv1.CaptchaProof{Honeypot: "http://spam.example"},
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -385,7 +389,7 @@ func TestInterceptorProtectsTheVerificationProcedures(t *testing.T) {
 
 	_, err = client.VerifyEmail(context.Background(), &leapmuxv1.VerifyEmailRequest{
 		VerificationToken: "AB2CDE",
-		CaptchaPayload:    payload,
+		Captcha:           &leapmuxv1.CaptchaProof{Payload: payload},
 	})
 	require.NoError(t, err)
 	assert.True(t, *verifyCalled)
@@ -399,7 +403,7 @@ func TestInterceptorProtectsTheVerificationProcedures(t *testing.T) {
 	assert.False(t, *resendCalled, "a payload-less resend must never reach the handler")
 
 	_, err = client.ResendVerificationEmail(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{
-		CaptchaPayload: secondPayload,
+		Captcha: &leapmuxv1.CaptchaProof{Payload: secondPayload},
 	})
 	require.NoError(t, err)
 	assert.True(t, *resendCalled)
@@ -417,21 +421,21 @@ func TestInterceptorPassesVerificationProcedureActions(t *testing.T) {
 
 	stub.body = `{"success":true,"action":"login"}`
 	_, err := client.VerifyEmail(context.Background(), &leapmuxv1.VerifyEmailRequest{
-		CaptchaPayload: "token",
+		Captcha: &leapmuxv1.CaptchaProof{Payload: "token"},
 	})
 	require.Error(t, err, "a token minted under a different action must be refused")
 	assert.False(t, *verifyCalled)
 
 	stub.body = `{"success":true,"action":"verify_email"}`
 	_, err = client.VerifyEmail(context.Background(), &leapmuxv1.VerifyEmailRequest{
-		CaptchaPayload: "token",
+		Captcha: &leapmuxv1.CaptchaProof{Payload: "token"},
 	})
 	require.NoError(t, err)
 	assert.True(t, *verifyCalled)
 
 	stub.body = `{"success":true,"action":"resend_verification"}`
 	_, err = client.ResendVerificationEmail(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{
-		CaptchaPayload: "token",
+		Captcha: &leapmuxv1.CaptchaProof{Payload: "token"},
 	})
 	require.NoError(t, err)
 	assert.True(t, *resendCalled)

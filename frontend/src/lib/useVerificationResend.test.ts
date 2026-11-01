@@ -3,7 +3,7 @@ import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { useVerificationResend } from './useVerificationResend'
@@ -37,8 +37,10 @@ describe('useVerificationResend', () => {
 
   it('starts a cooldown after a successful send', async () => {
     mockResend.mockResolvedValue({
-      emailSent: true,
-      nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 42_000)),
+      emailVerification: {
+        verificationEmailSent: true,
+        nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 42_000)),
+      },
     })
 
     await createRoot(async (dispose) => {
@@ -53,8 +55,10 @@ describe('useVerificationResend', () => {
 
   it('applies cooldown even when the email was not sent', async () => {
     mockResend.mockResolvedValue({
-      emailSent: false,
-      nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 60_000)),
+      emailVerification: {
+        verificationEmailSent: false,
+        nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 60_000)),
+      },
     })
 
     await createRoot(async (dispose) => {
@@ -63,6 +67,49 @@ describe('useVerificationResend', () => {
       expect(hook.status()).toContain('couldn\'t send')
       expect(hook.buttonLabel()).toBe('Resend code (1:00)')
       expect(hook.disabled()).toBe(true)
+      dispose()
+    })
+  })
+
+  // The reply nests the outcome in one EmailVerificationStatus. A reply
+  // without it reports no send and starts no cooldown.
+  it('reports no send and starts no cooldown when the reply carries no status', async () => {
+    mockResend.mockResolvedValue({})
+
+    await createRoot(async (dispose) => {
+      const hook = useVerificationResend()
+      await hook.resend()
+      expect(hook.status()).toContain('couldn\'t send')
+      expect(hook.buttonLabel()).toBe('Resend code')
+      expect(hook.disabled()).toBe(false)
+      dispose()
+    })
+  })
+
+  // Every protected request carries the proof as one `captcha` field.
+  it('sends the captcha proof as one field', async () => {
+    mockResend.mockResolvedValue({})
+
+    await createRoot(async (dispose) => {
+      const hook = useVerificationResend()
+      await hook.resend()
+      expect(mockResend).toHaveBeenCalledWith({
+        captcha: { payload: '', honeypot: '' },
+      })
+      dispose()
+    })
+  })
+
+  it('reports a refused request and keeps the button enabled', async () => {
+    mockResend.mockRejectedValue(new Error('hub unreachable'))
+
+    await createRoot(async (dispose) => {
+      const hook = useVerificationResend()
+      await hook.resend()
+      expect(hook.error()).toContain('hub unreachable')
+      expect(hook.status()).toBeNull()
+      expect(hook.resending()).toBe(false)
+      expect(hook.disabled()).toBe(false)
       dispose()
     })
   })
@@ -105,8 +152,10 @@ describe('useVerificationResend', () => {
 
   it('counts down toward zero', async () => {
     mockResend.mockResolvedValue({
-      emailSent: true,
-      nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 3_000)),
+      emailVerification: {
+        verificationEmailSent: true,
+        nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 3_000)),
+      },
     })
 
     await createRoot(async (dispose) => {

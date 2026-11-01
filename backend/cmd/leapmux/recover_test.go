@@ -517,16 +517,26 @@ func TestCLI_PasswordReset_MissingPassword(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a terminal")
 }
 
+// The refusal echoes the selector the operator typed, whichever flag held it.
 func TestCLI_PasswordReset_NotFound(t *testing.T) {
-	dir := setupTestDataDir(t)
+	for _, tc := range []struct {
+		flag, value string
+	}{
+		{"--id", "nonexistent-id"},
+		{"--username", "nobody"},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			dir := setupTestDataDir(t)
 
-	err := runPasswordReset(testCmdCtx, []string{
-		"--id", "nonexistent-id",
-		"--password", "NewPassword2!",
-		"--data-dir", dir,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+			err := runPasswordReset(testCmdCtx, []string{
+				tc.flag, tc.value,
+				"--password", "NewPassword2!",
+				"--data-dir", dir,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "user not found: "+tc.value)
+		})
+	}
 }
 
 func TestCLI_PasswordReset_ByUsername(t *testing.T) {
@@ -546,18 +556,42 @@ func TestCLI_PasswordReset_ByUsername(t *testing.T) {
 	assert.NotEqual(t, "placeholder", updated.PasswordHash)
 }
 
+// Both flags are refused before any lookup, even when they name two different
+// users, and neither user's password changes.
 func TestCLI_PasswordReset_IdAndUsernameMutuallyExclusive(t *testing.T) {
 	dir := setupTestDataDir(t)
-	user := createTestUser(t, dir, "alice")
+	alice := createTestUser(t, dir, "alice")
+	createTestUser(t, dir, "bob")
 
 	err := runPasswordReset(testCmdCtx, []string{
-		"--id", user.ID,
-		"--username", "alice",
+		"--id", alice.ID,
+		"--username", "bob",
 		"--password", "NewPassword2!",
 		"--data-dir", dir,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mutually exclusive")
+	assert.Contains(t, err.Error(), "--id and --username are mutually exclusive")
+
+	_, q := openTestDB(t, dir)
+	for _, username := range []string{"alice", "bob"} {
+		user, err := q.GetUserByUsername(context.Background(), username)
+		require.NoError(t, err)
+		assert.Equalf(t, "placeholder", user.PasswordHash, "%s's password must not change", username)
+	}
+}
+
+// With neither flag, resolveUser builds no selector, and the shared rule's
+// ErrNoUserSelector reaches the operator in flag words.
+func TestCLI_PasswordReset_RequiresASelector(t *testing.T) {
+	dir := setupTestDataDir(t)
+	createTestUser(t, dir, "alice")
+
+	err := runPasswordReset(testCmdCtx, []string{
+		"--password", "NewPassword2!",
+		"--data-dir", dir,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--id or --username is required")
 }
 
 func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {

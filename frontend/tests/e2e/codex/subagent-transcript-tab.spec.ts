@@ -6,7 +6,7 @@
  */
 import { expect } from '@playwright/test'
 import { extractItem } from '../../../src/components/chat/providers/codex/extractors/item'
-import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 import { codexTest } from '../codex-fixtures'
 import { getTestChannel } from '../helpers/api'
@@ -138,7 +138,7 @@ codexTest.describe('provider tool rendering', () => {
     const workerId = leapmuxServer.workerId
     if (!workerId)
       throw new Error('The empty native wait proof needs an online Worker ID.')
-    const response = await channel.callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId, limit: 200 })
+    const response = await channel.callWorker(workerId, WorkerAgentService.method.listAgentMessages, { agentId, limit: 200 })
     const completed = response.messages
       .filter(message => message.spanId === callId && message.spanType === 'collabAgentToolCall')
       .map((message) => {

@@ -35,13 +35,13 @@ func TestValidate_RootImmutable_FloatingWindow_RejectsRetargetingRoot(t *testing
 
 // TestValidate_RootImmutable_WorkspaceRoot_RejectsRetargetingRoot
 // covers Rule 16's workspace arm: once a workspace's root_node_id has
-// been populated, any further SetWorkspaceRootNodeOp is rejected.
+// been populated, any further CreateWorkspaceOp for it is rejected.
 func TestValidate_RootImmutable_WorkspaceRoot_RejectsRetargetingRoot(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := &leapmuxv1.CrdtOp{
 		OpId:         "op-retarget",
 		CanonicalHlc: hlcAt(10, 0, "a"),
-		Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "another",
 		}},
 	}
@@ -191,11 +191,11 @@ func TestValidate_RootNodeNotUnique_RejectsParentedCandidate(t *testing.T) {
 func TestValidate_IncompleteRecord_TabMissingWorker(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	tile := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tInc",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tInc"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a"))
 	pos := stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tInc",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tInc"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
 	}, hlcAt(10, 1, "a"))
 	// No worker_id op → the post-batch live tab is incomplete.
@@ -380,7 +380,7 @@ func TestValidate_PureDelete_OnlyPreWorkspacePermissionRequired(t *testing.T) {
 		Position: &leapmuxv1.LWWString{Value: "p", Hlc: hlcAt(1, 2, "seed")},
 	}
 	tomb := stamped(&leapmuxv1.TombstoneTabOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 	}, hlcAt(10, 0, "a"))
 	// Caller only has write on w1 (the pre-workspace). No other
 	// workspaces should be required.

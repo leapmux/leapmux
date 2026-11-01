@@ -1,11 +1,17 @@
+import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { clone, create, equals, fromBinary } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabRecordSchema, UserCrdtStateSchema, WorkspaceContentsRecordSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import { CrdtOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { applyOp, newState } from './apply'
 import { HLCClock, hlcCmp } from './hlc'
 import {
   generateId,
   newBatch,
   opTarget,
   opTargetKey,
+  reviveTab,
   setFloatingHeight,
   setFloatingRootNodeId,
   setFloatingWidth,
@@ -99,8 +105,11 @@ describe('tab op builders', () => {
     const ctx = newCtx()
     const tt = TabType.AGENT
     const tile = setTabTileId(ctx, tt, 'tab-1', 'tile-1')
-    expect((tile.body.value as { tabType: number }).tabType).toBe(tt)
-    expect((tile.body.value as { field: { case: string } }).field.case).toBe('tileId')
+    expect(tile.body.case).toBe('setTabRegister')
+    if (tile.body.case !== 'setTabRegister')
+      return
+    expect(tile.body.value.tab).toMatchObject({ tabType: tt, tabId: 'tab-1' })
+    expect(tile.body.value.field.case).toBe('tileId')
 
     expect((setTabPosition(ctx, tt, 't', 'V').body.value as { field: { case: string } }).field.case).toBe('position')
     expect((setTabWorkerId(ctx, tt, 't', 'w').body.value as { field: { case: string } }).field.case).toBe('workerId')
@@ -110,9 +119,9 @@ describe('tab op builders', () => {
     const ctx = newCtx()
     const op = tombstoneTab(ctx, TabType.TERMINAL, 'tab-x')
     expect(op.body.case).toBe('tombstoneTab')
-    const val = op.body.value as { tabType: number, tabId: string }
-    expect(val.tabType).toBe(TabType.TERMINAL)
-    expect(val.tabId).toBe('tab-x')
+    if (op.body.case !== 'tombstoneTab')
+      return
+    expect(op.body.value.tab).toMatchObject({ tabType: TabType.TERMINAL, tabId: 'tab-x' })
   })
 })
 
@@ -217,6 +226,45 @@ describe('opTarget', () => {
     expect(opTarget(tombstoneFloatingWindow(ctx, 'w1'))).toEqual({ case: 'entity', kind: 'fw', id: 'w1' })
   })
 
+  it('names the tab of a revive and the workspace of a create or a tombstone', () => {
+    expect(opTarget(reviveTab(ctx, TabType.AGENT, 't1'))).toEqual({ case: 'entity', kind: 'tab', id: 't1' })
+    expect(opTarget(create(CrdtOpSchema, {
+      body: {
+        case: 'createWorkspace',
+        value: { workspaceId: 'ws1', rootNodeId: 'root-1' },
+      },
+    }))).toEqual({ case: 'entity', kind: 'ws', id: 'ws1' })
+    expect(opTarget(create(CrdtOpSchema, {
+      body: {
+        case: 'tombstoneWorkspace',
+        value: { workspaceId: 'ws1' },
+      },
+    }))).toEqual({ case: 'entity', kind: 'ws', id: 'ws1' })
+  })
+
+  // A replayed op can carry no tab identity. It then targets the empty tab id,
+  // which apply refuses to create, rather than throwing on the absent field.
+  it('reports the empty tab id for a tab op with no tab identity', () => {
+    const bodies: CrdtOp['body'][] = [
+      create(CrdtOpSchema, {
+        body: {
+          case: 'setTabRegister',
+          value: {
+            field: { case: 'tileId', value: 'tile' },
+          },
+        },
+      }).body,
+      create(CrdtOpSchema, {
+        body: { case: 'tombstoneTab', value: {} },
+      }).body,
+      create(CrdtOpSchema, {
+        body: { case: 'reviveTab', value: {} },
+      }).body,
+    ]
+    for (const body of bodies)
+      expect(opTarget(create(CrdtOpSchema, { body })), body.case).toEqual({ case: 'entity', kind: 'tab', id: '' })
+  })
+
   it('reports an empty body as provably targeting nothing', () => {
     expect(opTarget({
       body: { case: undefined },
@@ -237,4 +285,197 @@ describe('opTarget', () => {
     expect(opTargetKey({ case: 'none' })).toBeNull()
     expect(opTargetKey({ case: 'unknown' })).toBeNull()
   })
+})
+
+// The ops a hub journal or this browser's IndexedDB checkpoint stored under the
+// previous CrdtOp numbering, hand-encoded with the old field layout (the same
+// bytes the hub's TestOldStoredOpsNeverApplyAsADifferentOp encodes). Each must
+// either fail to decode, or decode into an op that applies as a no-op: no record
+// under the empty tab id, and no workspace record removed.
+describe('ops stored under the old numbering', () => {
+  const workspaceId = 'Wk1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-abcdefg'
+  const OLD_OPS: Record<string, number[]> = {
+    // CrdtOp field 17 held SetWorkspaceRegisterOp{workspace_id}; 17 is now reviveTab.
+    'set_workspace_register at the old field 17': [
+      10,
+      6,
+      111,
+      108,
+      100,
+      45,
+      111,
+      112,
+      34,
+      7,
+      8,
+      100,
+      26,
+      3,
+      104,
+      117,
+      98,
+      138,
+      1,
+      50,
+      10,
+      48,
+      87,
+      107,
+      49,
+      97,
+      66,
+      99,
+      68,
+      101,
+      70,
+      103,
+      72,
+      105,
+      74,
+      107,
+      76,
+      109,
+      78,
+      111,
+      80,
+      113,
+      82,
+      115,
+      84,
+      117,
+      86,
+      119,
+      88,
+      121,
+      90,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      95,
+      45,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+    ],
+    // SetTabRegisterOp{tab_type=1 varint, tab_id=2, tile_id=10}.
+    'set_tab_register with a varint tab_type at field 1': [
+      10,
+      6,
+      111,
+      108,
+      100,
+      45,
+      111,
+      112,
+      34,
+      7,
+      8,
+      100,
+      26,
+      3,
+      104,
+      117,
+      98,
+      98,
+      18,
+      8,
+      1,
+      18,
+      2,
+      116,
+      49,
+      82,
+      10,
+      109,
+      111,
+      118,
+      101,
+      100,
+      45,
+      116,
+      105,
+      108,
+      101,
+    ],
+    // TombstoneTabOp{tab_type=1 varint, tab_id=2}.
+    'tombstone_tab with a varint tab_type at field 1': [
+      10,
+      6,
+      111,
+      108,
+      100,
+      45,
+      111,
+      112,
+      34,
+      7,
+      8,
+      100,
+      26,
+      3,
+      104,
+      117,
+      98,
+      106,
+      6,
+      8,
+      1,
+      18,
+      2,
+      116,
+      49,
+    ],
+  }
+
+  for (const [name, bytes] of Object.entries(OLD_OPS)) {
+    it(`never applies ${name} as a different op`, () => {
+      let op: CrdtOp
+      try {
+        op = fromBinary(CrdtOpSchema, new Uint8Array(bytes))
+      }
+      catch {
+        return // A loud decode failure is an accepted outcome.
+      }
+      // protobuf-es reads the old varint tab_type as a length and keeps the
+      // tab id that follows, but never a type. A tab identity is a type AND an
+      // id, so the op still names no tab.
+      const body = op.body
+      const tab = body.case === 'setTabRegister' || body.case === 'tombstoneTab' || body.case === 'reviveTab'
+        ? body.value.tab
+        : undefined
+      expect(tab !== undefined && tab.tabId !== '' && tab.tabType !== TabType.UNSPECIFIED).toBe(false)
+
+      const state = newState('user')
+      state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId, rootNodeId: 'root' })
+      state.tabs.t1 = create(TabRecordSchema, {
+        tabType: TabType.AGENT,
+        tabId: 't1',
+        tileId: {
+          value: 'root',
+          hlc: { physical: 1n, logical: 0n, clientId: 'a' },
+        },
+      })
+      const before = clone(UserCrdtStateSchema, state)
+
+      applyOp(state, op)
+
+      expect(state.tabs['']).toBeUndefined()
+      expect(state.workspaces[workspaceId]).toBeDefined()
+      expect(equals(TabRecordSchema, state.tabs.t1!, before.tabs.t1!)).toBe(true)
+      expect(equals(WorkspaceContentsRecordSchema, state.workspaces[workspaceId]!, before.workspaces[workspaceId]!)).toBe(true)
+      expect(Object.keys(state.tabs)).toEqual(Object.keys(before.tabs))
+      expect(Object.keys(state.workspaces)).toEqual(Object.keys(before.workspaces))
+    })
+  }
 })

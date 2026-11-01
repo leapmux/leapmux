@@ -11,7 +11,7 @@ import (
 
 // TestOpKindName_ClassifiesEveryCrdtOpBody pins that `events watch` renders
 // a snake_case label for every CrdtOp body kind. A new op body that the hub
-// broadcasts (e.g. the hub-only SetWorkspaceRegister / TombstoneWorkspace
+// broadcasts (e.g. the hub-only CreateWorkspace / TombstoneWorkspace
 // lifecycle ops) must get a real label here, not "unknown" — operators
 // filter `events watch` JSON by `type`, so an "unknown" label silently
 // breaks scripts watching the lifecycle path.
@@ -27,11 +27,11 @@ func TestOpKindName_ClassifiesEveryCrdtOpBody(t *testing.T) {
 		{"TombstoneTab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{}}}, "tombstone_tab"},
 		{"SetFloatingWindowRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: &leapmuxv1.SetFloatingWindowRegisterOp{}}}, "set_floating_window_register"},
 		{"TombstoneFloatingWindow", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneFloatingWindow{TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{}}}, "tombstone_floating_window"},
-		{"SetWorkspaceRootNode", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{}}}, "set_workspace_root_node"},
-		// The two hub-only lifecycle ops added when workspace create/delete
-		// moved onto the serialized submit pipeline — now broadcast to
-		// subscribers, so `events watch` must label them, not "unknown".
-		{"SetWorkspaceRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{}}}, "set_workspace_register"},
+		{"ReviveTab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_ReviveTab{ReviveTab: &leapmuxv1.ReviveTabOp{}}}, "revive_tab"},
+		// The two hub-only lifecycle ops that carry workspace create/delete on
+		// the serialized submit pipeline — broadcast to subscribers, so
+		// `events watch` must label them, not "unknown".
+		{"CreateWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{}}}, "create_workspace"},
 		{"TombstoneWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{}}}, "tombstone_workspace"},
 	}
 	for _, tc := range cases {
@@ -72,6 +72,7 @@ func TestEventToJSON_ClassifiesEveryWatchUserEventKind(t *testing.T) {
 		{"Renamed", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Renamed{Renamed: &leapmuxv1.WorkspaceRenamed{}}}, "workspace_renamed"},
 		{"Created", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Created{Created: &leapmuxv1.WorkspaceCreated{}}}, "workspace_created"},
 		{"Deleted", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Deleted{Deleted: &leapmuxv1.WorkspaceDeleted{}}}, "workspace_deleted"},
+		{"WorkersChanged", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}}}, "workers_changed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,5 +145,48 @@ func TestWorkspaceMapKeys_SortsTheIds(t *testing.T) {
 	t.Run("one workspace needs no comparison", func(t *testing.T) {
 		got := workspaceMapKeys(map[string]*leapmuxv1.WorkspaceContentsRecord{"ws-only": {}})
 		assert.Equal(t, []string{"ws-only"}, got)
+	})
+}
+
+// TestOpTargetSummary_PrintsTheCLITabTypeToken pins how `events watch` names
+// the tab that an op targets. Every tab op prints the CLI's own token
+// ("agent", "terminal"), the same one the removal and materialize lines
+// print, so one tab reads the same in every line of the stream. The shared
+// target JSON alone would print the proto enum name instead. An op that
+// targets no tab prints no tab_type at all.
+func TestOpTargetSummary_PrintsTheCLITabTypeToken(t *testing.T) {
+	agent := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}
+	terminal := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "term-1"}
+	tabCases := []struct {
+		name string
+		op   *leapmuxv1.CrdtOp
+		tab  *leapmuxv1.TabIdent
+		kind string
+	}{
+		{"set_tab_register", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: agent}}}, agent, "set_tab_register"},
+		{"tombstone_tab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{Tab: terminal}}}, terminal, "tombstone_tab"},
+		{"revive_tab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_ReviveTab{ReviveTab: &leapmuxv1.ReviveTabOp{Tab: agent}}}, agent, "revive_tab"},
+	}
+	for _, tc := range tabCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := opTargetSummary(tc.op)
+			removed := removedEntitySummary(&leapmuxv1.EntityRemoved{Entity: &leapmuxv1.EntityRemoved_Tab{Tab: tc.tab}})
+			assert.Equal(t, map[string]any{
+				"tab_id":   tc.tab.GetTabId(),
+				"tab_type": tabTypeName(tc.tab.GetTabType()),
+				"type":     tc.kind,
+			}, got)
+			assert.Equal(t, removed["tab_type"], got["tab_type"], "the op line and the removal line must name the tab type alike")
+			assert.NotEqual(t, tc.tab.GetTabType().String(), got["tab_type"], "the proto enum name must not leak into the stream")
+		})
+	}
+
+	t.Run("an op on a node prints no tab type", func(t *testing.T) {
+		got := opTargetSummary(&leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{NodeId: "node-1"}}})
+		assert.Equal(t, map[string]any{"node_id": "node-1", "type": "set_node_register"}, got)
+	})
+	t.Run("an op on a workspace prints no tab type", func(t *testing.T) {
+		got := opTargetSummary(&leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "ws-1"}}})
+		assert.Equal(t, map[string]any{"workspace_id": "ws-1", "type": "create_workspace"}, got)
 	})
 }

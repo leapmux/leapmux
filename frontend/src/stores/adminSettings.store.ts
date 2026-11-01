@@ -52,14 +52,27 @@ async function withSystemInfoRefresh(
 export function createAdminSettingsStore(enabled: Accessor<boolean>): SettingsStore {
   return createSettingsStore({
     list: () => adminSettingsClient.listSettings({}),
+    // The hub has one write verb and one reset verb, each over a list of
+    // keys. This store edits one key at a time, so each call lists one key
+    // and reads back its one value.
     update: (key, partialJson) => withSystemInfoRefresh(
-      async () => (await adminSettingsClient.updateSetting({ key, partialJson })).value,
+      async () => (await adminSettingsClient.updateSettings({
+        writes: [
+          { key, partialJson },
+        ],
+      })).values[0],
     ),
     updateSecret: (key, partialJson) => withSystemInfoRefresh(
-      async () => (await adminSettingsClient.updateSettingSecret({ key, partialJson })).value,
+      async () => (await adminSettingsClient.updateSettings({
+        writes: [
+          { key, secretPartialJson: partialJson },
+        ],
+      })).values[0],
     ),
     reset: key => withSystemInfoRefresh(
-      async () => (await adminSettingsClient.resetSetting({ key })).value,
+      async () => (await adminSettingsClient.resetSettings({
+        keys: [key],
+      })).values[0],
     ),
     enabled,
     guardMessage: 'admin settings require an administrator session',

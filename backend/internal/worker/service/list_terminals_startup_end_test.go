@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -36,7 +37,7 @@ func listTerminalsDuringGit(t *testing.T, d *channel.Dispatcher, terminalID stri
 	listed := make(chan struct{})
 	go func() {
 		defer close(listed)
-		dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, w)
+		dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, w)
 	}()
 	require.Eventually(t, func() bool { _, err := os.Stat(gitStarted); return err == nil }, inputQueueWait, 10*time.Millisecond,
 		"ListTerminals must reach the git status of its terminal")
@@ -102,7 +103,6 @@ func TestListTerminals_ReportsReadyWhenTheStartupEndsWhileGitRuns(t *testing.T) 
 
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), info.GetStatus().String(),
 		"a terminal whose startup ended during the call is READY in the reply")
-	assert.False(t, info.GetExited(), "the shell of that terminal runs")
 	assert.Empty(t, info.GetStartupMessage(), "the phase label of the startup must not outlive the startup")
 }
 
@@ -163,5 +163,5 @@ func TestListTerminals_ReportsExitedWhenTheShellExitsWhileGitRuns(t *testing.T) 
 		svc.Terminals.WaitForExit(id)
 	})
 
-	assert.True(t, info.GetExited(), "a shell that exited during the call is exited in the reply")
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, info.GetStatus(), "a shell that exited during the call is EXITED in the reply")
 }

@@ -362,7 +362,7 @@ func TestBroadcastTerminalSignal_CapsTheOSCTitle(t *testing.T) {
 }
 
 // A title that cleans to nothing is a NO-OP, not a clear. The same answer
-// UpdateTerminalTitle gives, and the answer the browser's own
+// RenameTerminal gives, and the answer the browser's own
 // `if (!value.title) return` already expects -- broadcasting "" would spend a
 // message to say nothing.
 func TestBroadcastTerminalSignal_DropsAnOSCTitleThatCleansToNothing(t *testing.T) {

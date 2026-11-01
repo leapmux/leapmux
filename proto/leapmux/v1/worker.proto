@@ -2,28 +2,38 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
+import "leapmux/v1/access.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
-import "leapmux/v1/workspace.proto";
 
 // WorkerConnectorService is called BY Worker instances on Hub via gRPC.
 // Handles registration and the main bidirectional communication stream.
 service WorkerConnectorService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Register this worker using a registration key obtained out-of-band
   // from the hub UI. The key travels in the Authorization: Bearer header
   // and is consumed atomically; on success the hub returns a long-lived
   // auth token that the worker uses for subsequent Connect calls.
-  rpc Register(RegisterRequest) returns (RegisterResponse);
-  // Main bidirectional stream for lifecycle notifications and E2EE channel management.
-  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse);
-}
-
-// WorkerReconcilerService is called BY Workers on Hub via ConnectRPC.
-// Authenticated by the worker's auth_token (the same bearer used for
-// Connect). Provides the periodic worker-side orphan reconciler with the
-// authoritative `workspace_tab_owned` view filtered to the calling worker.
-service WorkerReconcilerService {
-  rpc ListOwnedTabsForWorker(ListOwnedTabsForWorkerRequest) returns (ListOwnedTabsForWorkerResponse);
+  rpc Register(RegisterRequest) returns (RegisterResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Main bidirectional stream for lifecycle notifications and E2EE channel
+  // management. The worker's first message is always a WorkerHello.
+  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Provides the periodic worker-side orphan reconciler with the
+  // authoritative `workspace_tab_owned` view filtered to the calling worker.
+  //
+  // Public: the same worker auth_token as Connect, on a plain unary RPC rather
+  // than the stream, checked by the handler through AuthenticateWorkerBearer.
+  // The worker's orphan reconciler is the only caller, and it is what
+  // converges a worker after a close or a cross-workspace move that landed
+  // while the worker was offline -- so without public access the interceptor
+  // answers `unauthenticated` and the worker never learns a tab is gone.
+  rpc ListOwnedTabsForWorker(ListOwnedTabsForWorkerRequest) returns (ListOwnedTabsForWorkerResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
 }
 
 message ListOwnedTabsForWorkerRequest {}
@@ -49,50 +59,61 @@ message ListOwnedTabsForWorkerResponse {
 // the workspace that contains it is archived. It carries no workspace, tile,
 // or position because the Worker stores none of that placement state.
 message WorkerTabState {
-  TabType tab_type = 1;
-  string  tab_id   = 2;
-  // Owner of the row in workspace_tab_owned, which is keyed by
+  // The tab and the owner of its row in workspace_tab_owned, which is keyed by
   // (user_id, tab_id). FILE and IMAGE tab ids are unique only within a user, so
   // the worker's orphan reconciler needs the owner to match a hub row against
   // the right local worker_tab_payloads row -- without it, a row belonging to
   // another user misses the lookup and is reaped as an orphan. AGENT/TERMINAL
-  // ids are globally unique, so their reconciliation ignores this field.
-  string  user_id  = 3;
-  WorkspaceArchiveState archive_state = 4;
+  // ids are globally unique, so their reconciliation ignores the owner.
+  TabRef tab = 1;
+  WorkspaceArchiveState archive_state = 2;
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
 // Manages worker registration keys and listings. All RPCs require an
 // authenticated user session.
 service WorkerManagementService {
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Mint a new registration key. The key expires in 5 minutes and is
   // automatically extended by the frontend dialog while it stays open.
-  rpc CreateRegistrationKey(CreateRegistrationKeyRequest) returns (CreateRegistrationKeyResponse);
+  rpc CreateRegistrationKey(CreateRegistrationKeyRequest) returns (CreateRegistrationKeyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
+  }
   // Push a registration key's expires_at out by another 5 minutes. The
   // hub refuses extensions when more than 2 minutes remain (anti-spam)
   // and refuses to resurrect already-expired keys.
-  rpc ExtendRegistrationKey(ExtendRegistrationKeyRequest) returns (ExtendRegistrationKeyResponse);
-  // Soft-delete a registration key (sets expires_at into the past). The
-  // dialog calls this on close so the key cannot be used afterwards.
-  rpc DeleteRegistrationKey(DeleteRegistrationKeyRequest) returns (DeleteRegistrationKeyResponse);
+  rpc ExtendRegistrationKey(ExtendRegistrationKeyRequest) returns (ExtendRegistrationKeyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
+  }
+  // Revoke a registration key (soft delete: sets expires_at into the past).
+  // The dialog calls this on close so the key cannot be used afterwards.
+  rpc RevokeRegistrationKey(RevokeRegistrationKeyRequest) returns (RevokeRegistrationKeyResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
+  }
   // Email the registration command to the current user's verified email.
-  rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse);
+  rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
+  }
   // List registered workers for the authenticated user.
-  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
   // Get a single worker's details.
-  rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse);
+  rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
+  }
   // Deregister a worker (graceful shutdown with notification).
-  rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse);
+  rpc DeregisterWorker(DeregisterWorkerRequest) returns (DeregisterWorkerResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
+  }
 }
 
 // --- Registration messages ---
 
-message RegisterRequest {
-  string version = 1;
-  bytes public_key = 2;        // Worker's X25519 static public key for E2EE
-  bytes mlkem_public_key = 3;  // Worker's ML-KEM-1024 public key for post-quantum key encapsulation
-  bytes slhdsa_public_key = 4; // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
-}
+// RegisterRequest is empty: the registration key travels in the
+// Authorization header, and the worker announces its keys in the WorkerHello
+// of each Connect stream.
+message RegisterRequest {}
 
 message RegisterResponse {
   string worker_id = 1;
@@ -123,11 +144,11 @@ message ExtendRegistrationKeyResponse {
   google.protobuf.Timestamp expires_at = 1;
 }
 
-message DeleteRegistrationKeyRequest {
+message RevokeRegistrationKeyRequest {
   string registration_key = 1;
 }
 
-message DeleteRegistrationKeyResponse {}
+message RevokeRegistrationKeyResponse {}
 
 message EmailRegistrationInstructionsRequest {
   string registration_key = 1;
@@ -165,8 +186,8 @@ message DeregisterWorkerResponse {}
 message Worker {
   string id = 1;
   bool online = 2;
-  string created_at = 3;
-  string last_seen_at = 4;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp last_seen_at = 4; // unset = never seen
   string registered_by = 5;
   // True for the in-process worker auto-registered by the solo launcher
   // (Server.RegisterWorker). The deregister handler refuses these to
@@ -178,18 +199,28 @@ message Worker {
 
 // --- Bidirectional stream envelope messages ---
 
+// The first message a worker sends on every Connect stream. The hub reads it
+// before it lists the worker online and keeps it, unchanged, with that
+// connection; GetWorkerHandshakeParams answers from it alone.
+message WorkerHello {
+  WorkerPublicKeys keys = 1;
+  EncryptionMode encryption_mode = 2; // UNSPECIFIED is refused.
+}
+
 // ConnectRequest wraps all messages from Worker to Hub.
 message ConnectRequest {
   string request_id = 1;
   oneof payload {
+    // Handshake. Always the FIRST message on the stream (see WorkerHello).
+    WorkerHello hello = 10;
     // Lifecycle
-    DeregisterAck deregister_ack = 10;
-    WorkerTabInventory worker_tab_inventory = 11;
+    DeregisterAck deregister_ack = 11;
+    WorkerTabInventory worker_tab_inventory = 12;
     // E2EE channels
-    ChannelOpenResponse channel_open_resp = 12;
-    ChannelMessage channel_message_resp = 13;
+    ChannelOpenResponse channel_open_resp = 13;
+    ChannelMessage channel_message_resp = 14;
     // Health
-    Heartbeat heartbeat = 14;
+    Heartbeat heartbeat = 15;
   }
 }
 
@@ -207,7 +238,7 @@ message ConnectRequest {
 // The hub TOMBSTONES every owned tab this report omits, so an omission is a
 // deletion of the user's tabs. BuildTabSync is what must stay exhaustive.
 message WorkerTabInventory {
-  repeated TabRef tabs = 1;
+  repeated TabIdent tabs = 1;
 }
 
 // WorkerTabInventoryResponse acknowledges a tab-sync. It is deliberately EMPTY:
@@ -280,10 +311,15 @@ message ReconcileNudge {}
 // cross-tenant refusal.
 //
 // Re-delivered on every connect rather than once at registration, so a reconnect
-// re-establishes it and the worker never has to persist it.
+// re-establishes it and the worker never has to persist it. Also re-delivered on
+// a live connection whenever the owner's account changes, so the username below
+// follows a rename: the Hub sends it again for every user_info event of the owner.
 message WorkerIdentity {
   // User ID that registered this worker. Never empty.
   string registered_by = 1;
+  // The owner's username, which `leapmux control whoami` reports. Display only:
+  // nothing authorizes on it. Empty when the Hub could not read the account.
+  string registered_by_username = 2;
 }
 
 // --- Notification messages (used in bidi stream) ---
@@ -303,25 +339,6 @@ message HubShuttingDownNotification {
 
 // --- Common ---
 
-message Heartbeat {
-  int64 timestamp_ms = 1;
-  bytes public_key = 2;  // Worker's X25519 public key for E2EE channels (sent with first heartbeat)
-  bytes mlkem_public_key = 3;  // Worker's ML-KEM-1024 public key for post-quantum key encapsulation
-  bytes slhdsa_public_key = 4;  // Worker's SLH-DSA-SHAKE-256f public key for post-quantum authentication
-  EncryptionMode encryption_mode = 5;  // Worker's encryption mode
-}
-
-// --- Inner RPC messages (E2EE channel, Frontend ↔ Worker) ---
-
-message GetWorkerSystemInfoRequest {}
-
-message GetWorkerSystemInfoResponse {
-  string name = 1;     // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
-  string os = 2;
-  string arch = 3;
-  string home_dir = 4;
-  string version = 5;
-  string commit_hash = 6; // Optional short git commit ID injected at build time
-  string build_time = 7;  // Optional build timestamp injected at build time
-  string branch = 8;      // Optional git ref (branch or tag) injected at build time; empty for detached HEAD
-}
+// Heartbeat keeps the stream alive and updates the worker's last_seen. It
+// carries no value: the hub records its own receive time.
+message Heartbeat {}

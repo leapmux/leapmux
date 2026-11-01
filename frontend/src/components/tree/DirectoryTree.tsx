@@ -1115,7 +1115,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       const version = ++statVersion
       if (!workerId || !enabled)
         return
-      workerRpc.statFile(workerId, { workerId, path: root })
+      workerRpc.statFile(workerId, { path: root })
         .then((resp) => { // eslint-disable-line solid/reactivity -- one-shot async fetch
           if (version === statVersion && workerId === props.workerId && root === rootPath())
             setRootModTime(resp.info?.modTime ?? '')

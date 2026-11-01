@@ -68,10 +68,13 @@ export const AccountProfile: Component = () => {
     await action.run({
       fallback: 'Failed to update profile',
       work: async () => {
-        await userClient.updateProfile({ username: slug, displayName: sanitizedDisplayName })
-        // The hub sanitizes both fields again, so the form adopts what it
-        // stored rather than what the user typed.
-        await auth.refreshUser()
+        // Opened BEFORE the request leaves, so a reply that lands after an
+        // identity change re-reads the new identity instead of adopting this one.
+        const adopt = auth.openUserAdoption()
+        const resp = await userClient.updateProfile({ username: slug, displayName: sanitizedDisplayName })
+        // The hub sanitizes both fields again, so the form adopts the account
+        // it STORED, as the reply reports it, rather than what the user typed.
+        await adopt(resp.user)
         setDisplayName(auth.user()?.displayName ?? '')
         setUsername(auth.user()?.username ?? '')
         return 'Profile updated.'

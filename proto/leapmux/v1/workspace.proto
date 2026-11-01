@@ -1,29 +1,9 @@
 syntax = "proto3";
 package leapmux.v1;
 
-import "leapmux/v1/agent.proto";
+import "google/protobuf/timestamp.proto";
+import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
-import "leapmux/v1/terminal.proto";
-
-// TabType identifies the kind of workspace tab.
-enum TabType {
-  TAB_TYPE_UNSPECIFIED = 0;
-  TAB_TYPE_AGENT = 1;
-  TAB_TYPE_TERMINAL = 2;
-  TAB_TYPE_FILE = 3;
-  // A single image an agent returned inside a chat message, opened in its own
-  // tab. Holds no pixels: the tab addresses `(agent_id, seq, image_index)` and
-  // the client re-fetches the message. See ImageTabPayload.
-  TAB_TYPE_IMAGE = 4;
-}
-
-// WorkspaceArchiveState identifies whether a workspace accepts mutations and
-// whether its Worker-hosted processes may run.
-enum WorkspaceArchiveState {
-  WORKSPACE_ARCHIVE_STATE_UNSPECIFIED = 0;
-  WORKSPACE_ARCHIVE_STATE_ACTIVE = 1;
-  WORKSPACE_ARCHIVE_STATE_ARCHIVED = 2;
-}
 
 // WorkspaceService manages workspace metadata + read-only tab views.
 // Layout / tab mutations live on UserCRDT (see user_ops.proto). The
@@ -31,33 +11,51 @@ enum WorkspaceArchiveState {
 // events are broadcast on the `/ws/userevents` WebSocket subscription
 // (see backend/internal/hub/service/ws_userevents.go).
 service WorkspaceService {
-  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
-  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
-  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
-  rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
-  // SetWorkspaceArchiveState moves a workspace across the archive boundary and
-  // tells every Worker that hosts one of its tabs to reconcile now.
+  option (leapmux.v1.host) = SERVICE_HOST_HUB;
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
+  rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+  // MoveWorkspace puts a workspace in a section at a position. The section's
+  // type decides the archive state: the Archived section archives the
+  // workspace, any other workspace section makes it active. Every move nudges
+  // each worker that hosts one of its tabs (a repeat is the recovery path for
+  // a lost nudge). A delegation bearer may not make a move that crosses the
+  // archive boundary.
   //
   // The Worker fan-out is the Hub's, not the caller's. The Hub already holds
-  // the authoritative tab list and already nudges each affected Worker inside
-  // this call, and the Worker applies the state through the same code path a
+  // the authoritative tab list and nudges each affected Worker inside this
+  // call, and the Worker applies the state through the same code path a
   // reconcile pass uses. A second delivery path from the client would be a
   // duplicate of that one, reachable only from a browser session.
-  rpc SetWorkspaceArchiveState(SetWorkspaceArchiveStateRequest) returns (SetWorkspaceArchiveStateResponse);
-  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  rpc MoveWorkspace(MoveWorkspaceRequest) returns (MoveWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
+  }
   // ListTabs returns the materialized tab list across one or more
   // workspaces. Reads the rendered rows of `workspace_tab_owned`.
-  rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
-  // GetTab returns a single tab so callers can resolve the worker
-  // that owns it. Reads the rendered rows of `workspace_tab_owned`.
-  rpc GetTab(GetTabRequest) returns (GetTabResponse);
+  rpc ListTabs(ListTabsRequest) returns (ListTabsResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
   // LocateTab resolves a tab by (tab_type, tab_id) without requiring
   // workspace_id — the hub finds the tab across every
   // workspace the caller can access. Used by the `leapmux control` CLI
   // to derive the spawning tab's context (workspace, tile,
   // worker) from a single env-injected anchor (LEAPMUX_CONTROL_TAB_ID
   // + LEAPMUX_CONTROL_TAB_TYPE). Reads the rendered rows of `workspace_tab_owned`.
-  rpc LocateTab(LocateTabRequest) returns (LocateTabResponse);
+  rpc LocateTab(LocateTabRequest) returns (LocateTabResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
   // LocateTile resolves a tile by tile_id without requiring
   // workspace_id. The hub walks the user's accessible CRDT state
   // (from the in-memory `crdt.Manager` for the user), finds
@@ -65,7 +63,9 @@ service WorkspaceService {
   // the caller can read that workspace. Returns NotFound when the
   // tile isn't visible to the caller. Used by the `leapmux control`
   // CLI universal resolver when a script knows only a tile id.
-  rpc LocateTile(LocateTileRequest) returns (LocateTileResponse);
+  rpc LocateTile(LocateTileRequest) returns (LocateTileResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_READ };
+  }
 }
 
 // --- Workspace CRUD ---
@@ -78,13 +78,10 @@ message CreateWorkspaceResponse {
   string workspace_id = 1;
 }
 
-message ListWorkspacesRequest {
-  PageRequest page = 1;
-}
+message ListWorkspacesRequest {}
 
 message ListWorkspacesResponse {
   repeated Workspace workspaces = 1;
-  PageResponse page = 2;
 }
 
 message GetWorkspaceRequest {
@@ -99,7 +96,7 @@ message Workspace {
   string id = 1;
   string created_by = 2;
   string title = 3;
-  string created_at = 4;
+  google.protobuf.Timestamp created_at = 4;
 }
 
 // --- Workspace Rename & Delete ---
@@ -111,24 +108,15 @@ message RenameWorkspaceRequest {
 
 message RenameWorkspaceResponse {}
 
-message SetWorkspaceArchiveStateRequest {
+message MoveWorkspaceRequest {
   string workspace_id = 1;
-  WorkspaceArchiveState archive_state = 2;
-  // Where the workspace lands, for the ACTIVE direction. Empty means the
-  // built-in In progress section.
-  //
-  // It exists so that "Move to <custom section>" on an archived workspace is
-  // ONE transaction. Without it the client had to unarchive first and move
-  // second, which left the workspace resting in In progress whenever the
-  // second call failed, and threw away the position the user dropped it at.
-  // The Hub refuses a destination whose archived side disagrees with
-  // archive_state, so this cannot become a second way to archive.
-  string destination_section_id = 3;
-  // Lexorank inside destination_section_id. Empty appends at the end.
-  string position = 4;
+  string section_id = 2; // Required.
+  // Lexorank inside section_id. Empty keeps the current rank when the
+  // workspace already sits in section_id, and appends at the end otherwise.
+  string position = 3;
 }
 
-message SetWorkspaceArchiveStateResponse {
+message MoveWorkspaceResponse {
   // Empty on purpose. The Hub owns the Worker fan-out; see the rpc comment.
 }
 
@@ -155,18 +143,17 @@ message DeleteWorkspaceResponse {
 // WorkerTabs groups one worker's tabs for a fan-out.
 message WorkerTabs {
   string worker_id = 1;
-  repeated TabRef tabs = 2;
+  repeated TabIdent tabs = 2;
 }
 
 // --- Workspace Tabs (read-only views; mutations via UserCRDT) ---
 
 message WorkspaceTab {
-  TabType tab_type = 1;
-  string tab_id = 2;
-  string position = 3;
-  string tile_id = 4;
-  string worker_id = 5;
-  string workspace_id = 6;
+  TabIdent tab = 1;
+  string position = 2;
+  string tile_id = 3;
+  string worker_id = 4;
+  string workspace_id = 5;
 }
 
 message ListTabsRequest {
@@ -180,394 +167,9 @@ message ListTabsResponse {
   repeated WorkspaceTab tabs = 1;
 }
 
-// --- Tiling Layout shared types ---
-
-// SplitDirection names the orientation of the divider line between
-// the two children of a SPLIT node. The convention matches tmux and
-// the `tile split --direction` CLI flag:
-//   HORIZONTAL = a horizontal divider (-) between two stacked panes.
-//   VERTICAL   = a vertical divider (|) between two side-by-side panes.
-enum SplitDirection {
-  SPLIT_DIRECTION_UNSPECIFIED = 0;
-  SPLIT_DIRECTION_HORIZONTAL = 1;
-  SPLIT_DIRECTION_VERTICAL = 2;
-}
-
-// --- Worker Inner RPCs ---
-
-// TabRef names one tab by type and id -- the pair that identifies a tab
-// wherever the workspace is not part of the address. A Worker stores no
-// workspace id, so this is the only tab address it understands.
-message TabRef {
-  TabType tab_type = 1;
-  string tab_id = 2;
-  // Owner of the tab, for the kinds whose id needs one.
-  //
-  // A FILE or IMAGE tab id is minted client-side and is unique only WITHIN one
-  // account, so the pair (tab_type, tab_id) does not identify such a tab on a
-  // worker that serves more than one. AGENT and TERMINAL ids are server-minted
-  // and globally unique, so a sender may leave this empty for them -- and every
-  // reader that matches those two ignores it.
-  //
-  // Mirrors WorkerTabState.user_id, which states the same rule for the Hub's
-  // owned-tab list. A sender that fills one and drops the other is where a
-  // payload-backed tab stops being addressable: worker_tab_payloads is keyed
-  // (user_id, tab_id), so a write with a blank owner matches no row, and a
-  // predicate with a blank owner matches ANOTHER account's row.
-  string user_id = 3;
-}
-
-// CleanupWorkspaceRequest names the tabs a just-deleted workspace held on
-// the receiving Worker, so it can stop their processes and release their
-// worktrees.
-//
-// The Worker cannot derive the set itself: it tracks no workspace id. The set
-// comes from DeleteWorkspaceResponse.worker_tabs, which the Hub reads INSIDE the
-// delete transaction -- see the note there for why a caller must not resolve its
-// own list from the rendered rows instead. The Worker's orphan reconciler
-// still converges anything left over against workspace_tab_owned on its next
-// pass, so a dropped RPC costs latency rather than correctness.
-message CleanupWorkspaceRequest {
-  repeated TabRef tabs = 1;
-}
-
-message CleanupWorkspaceResponse {
-  // Deliberately empty. It carried a repeated WorktreeInfo that no worker ever
-  // populated -- handleCleanupWorkspace returns a zero-value response -- while
-  // the CLI read it and emitted a `worktrees` key that could never appear.
-  // Worktree reclamation happens through the orphan reconciler, which reports
-  // nothing back on this call.
-}
-
-// --- Event Streaming (per-agent / per-terminal) ---
-
-// WatchMode selects how much of an entity's traffic this channel receives.
-enum WatchMode {
-  // Treated as NOTIFY: an entry that says nothing about how much it wants gets
-  // the cheap half, never the expensive one.
-  WATCH_MODE_UNSPECIFIED = 0;
-  // Notification-class events only -- status changes, control requests and
-  // cancels, agent turn ends, terminal bells / notifications / titles /
-  // progress, terminal exits. Enough to keep a badge, a spinner, a title and a
-  // sound honest for a tab nobody is looking at, with none of the traffic only
-  // a rendered tab can use.
-  WATCH_MODE_NOTIFY = 1;
-  // Everything NOTIFY carries plus the entity's content: chat messages, stream
-  // deltas, to-do snapshots, terminal bytes -- and, on the transition INTO this
-  // mode, a catch-up replay.
-  WATCH_MODE_FULL = 2;
-}
-
-// WatchEventsRequest states the channel's WHOLE current interest, not an
-// increment. Entities the request omits are unsubscribed.
-//
-// The opening InnerRpcRequest carries the first one; every revision after that
-// rides an InnerStreamRequest on the SAME stream, so changing the set never
-// tears the subscription down and never re-replays entities that did not
-// change. The stream is retired by an InnerStreamRequest{cancel: true} or by
-// the channel closing -- an empty request now means "watching nothing" and
-// leaves the stream open.
-//
-// Revisions COALESCE: each states the whole interest, so the worker may apply
-// only the newest of a burst. A client applies only the ACK for its exact current update ID.
-message WatchEventsRequest {
-  repeated WatchAgentEntry agents = 1;
-  repeated WatchTerminalEntry terminals = 2;
-  // Echoed on WatchUpdateAck. Client-chosen, monotonic per stream; 0 is fine
-  // for a client that does not track revisions. "Per stream" here means per the
-  // client's logical subscription lifetime: a client that resets update_id on
-  // each fresh stream open MUST treat acks from prior stream generations as
-  // stale (the generation boundary does not by itself make a buffered ack from
-  // the prior stream current). Clients that keep a single monotonic counter for
-  // the whole subscription life (never resetting on reconnect) are immune; this
-  // is the stronger form both known clients (frontend and CLI) implement.
-  uint64 update_id = 3;
-}
-
-message WatchAgentEntry {
-  string agent_id = 1;
-  // History to replay when this FULL lifetime starts.
-  // A new replay_id starts another lifetime even when the registered mode stays FULL.
-  // Ignored for NOTIFY.
-  WatchReplayMode replay = 2;
-  // Exclusive sequence limit for AFTER_CURSOR replay (replay seq > cursor_seq).
-  // Ignored for LATEST or outside a FULL lifetime.
-  int64 cursor_seq = 3;
-  WatchMode mode = 4;
-  // The subscriber's loaded window tail, used ONLY as the base of the
-  // AFTER_CURSOR_OR_NONE skip decision: a windowed client re-anchors when the
-  // gap from its LOADED tail exceeds contracts.CatchUpGapLimit, and the resume
-  // cursor can lead that tail (frames the client observed but dropped while
-  // scrolled away). UNSET (the CLI, which never skips) keeps cursor_seq as the
-  // base. Never affects the replay query itself: that still pages after
-  // cursor_seq. Present 0 (an empty loaded window) is meaningful -- that client
-  // re-anchors on any gap past the limit.
-  optional int64 window_tail_seq = 5;
-  // Positive identity of this FULL lifetime. NOTIFY carries zero.
-  // Keep replay and cursor fields fixed while this identity remains FULL.
-  uint64 replay_id = 6;
-}
-
-message WatchTerminalEntry {
-  string terminal_id = 1;
-  // Resume cursor for the screen replay owed on the transition into
-  // WATCH_MODE_FULL. Ignored otherwise.
-  int64 after_offset = 2;
-  WatchMode mode = 3;
-}
-
-message WatchEventsResponse {
-  oneof event {
-    AgentEvent agent_event = 1;
-    TerminalEvent terminal_event = 2;
-    WatchUpdateAck update_ack = 3;
-  }
-}
-
-// WatchRejectionReason says WHY one entity in a WatchEventsRequest was not
-// subscribed. Modelled on ChannelOpenErrorCode (channel.proto) rather than on a
-// bare ConnectRPC code: what the client has to decide is settle-vs-retry, and a
-// status code loses that distinction the moment two causes map onto one code.
-enum WatchRejectionReason {
-  // Never sent. Present so an unrecognized reason is read as "unknown", which
-  // clients treat as DURABLE -- the safe direction, since a wrongly-settled
-  // entry is re-stated by the next real tab change while a wrongly-retried one
-  // loops forever.
-  WATCH_REJECTION_REASON_UNSPECIFIED = 0;
-  // DURABLE. This worker holds no live row with that id: closed, never created
-  // here, or living on a different worker. The client stops asking.
-  WATCH_REJECTION_REASON_NOT_FOUND = 1;
-  // TRANSIENT. The worker could not resolve the id at all, so this says
-  // NOTHING about whether the entity exists. Whatever the channel already had
-  // registered for it was left untouched. The client retries.
-  WATCH_REJECTION_REASON_LOOKUP_FAILED = 2;
-  // DURABLE. The credential that opened this channel was not granted the
-  // permission this entity kind needs: agent:read for an agent, terminal:read
-  // for a terminal. The client stops asking, and asking again with the same
-  // credential can never succeed.
-  //
-  // It is a PER-ENTITY reason rather than a whole-stream refusal because
-  // WatchEvents is a multiplexer: one request carries agents and terminals
-  // together, so a grant that covers one kind and not the other must subscribe
-  // what it covers and say precisely what it did not. Refusing the whole
-  // request would take away the half the account did grant.
-  WATCH_REJECTION_REASON_FORBIDDEN = 3;
-}
-
-// WatchRejection names one entity the worker did not subscribe, and why.
-message WatchRejection {
-  string entity_id = 1;
-  WatchRejectionReason reason = 2;
-}
-
-// Actual registered state for one agent after an interest update.
-message WatchAgentState {
-  string agent_id = 1;
-  WatchMode mode = 2;
-  // Positive for FULL and zero for NOTIFY.
-  uint64 replay_id = 3;
-}
-
-// WatchUpdateAck reports what one WatchEventsRequest actually subscribed. It is
-// sent for EVERY request, applied cleanly or not, and it never ends the stream.
-//
-// It is what makes a partial rejection recoverable. Registration is
-// replace-semantics, so an entity the worker cannot resolve is left
-// unsubscribed; without an ack that outcome was indistinguishable from success
-// and nothing ever retried it (issue #314). Carrying a REASON per entity --
-// rather than a bare id list plus a whole-request flag -- is what lets the
-// client settle a closed agent while retrying a transient fault, which is the
-// loop-vs-silence trade-off that kept #314 open. It also means a future per-id
-// or chunked lookup, the exact "transient rejection" #314 warns about, needs no
-// protocol change: it is already just another entity carrying LOOKUP_FAILED.
-message WatchUpdateAck {
-  uint64 update_id = 1;
-  repeated WatchRejection rejected_agents = 2;
-  repeated WatchRejection rejected_terminals = 3;
-  // Complete actual agent registration state for this channel.
-  // LOOKUP_FAILED returns the prior state because it does not apply the agent kind.
-  repeated WatchAgentState agent_states = 4;
-}
-
-message AgentEvent {
-  string agent_id = 1;
-
-  // Replay frames carry true. Live frames carry false.
-  // A client subscribes to live events before catch-up.
-  // The same stream can contain live and replay frames during catch-up.
-  // The client uses this field to suppress replay alerts.
-  // broadcastReplayAgentEvent sets this field.
-  bool replay = 14;
-  // FULL lifetime that produced this replay. Live frames carry zero.
-  uint64 replay_id = 16;
-  // The watched agent that produced this replay.
-  // Root goal and task projections can use a different destination agent_id.
-  // Live frames carry an empty string.
-  string replay_agent_id = 17;
-  oneof event {
-    AgentChatMessage agent_message = 2;
-    AgentStatusChange status_change = 3;
-    AgentControlRequest control_request = 4;
-    AgentControlCancelRequest control_cancel = 5;
-    CatchUpComplete catch_up_complete = 6;
-    AgentTodosChanged todos_changed = 7;
-    CatchUpStart catch_up_start = 8;
-    AgentTurnEnd turn_end = 9;
-    AgentBackgroundTasksChanged background_tasks_changed = 10;
-    AgentInputQueueChanged input_queue_changed = 11;
-    AgentGoalChanged goal_changed = 12;
-    AgentActivityChanged activity_changed = 13;
-    // Worker response state updates do not establish that the provider process is active.
-    AgentControlRequest control_response_changed = 15;
-  }
-}
-
-// AgentTurnEnd fires when the agent finishes a turn. NOTIFY-class, so a tab
-// nobody is looking at still rings and still badges -- which the turn-end
-// divider it accompanies cannot do, being a chat message only a rendered tab
-// receives.
-message AgentTurnEnd {
-  // Tool calls in the finished turn, when the provider reports one. Clients
-  // suppress the turn-end sound for a zero-tool turn, so a provider that cannot
-  // say leaves this UNSET rather than sending 0.
-  optional int32 num_tool_uses = 1;
-}
-
-// AgentActivityChanged carries the Worker's authoritative answer to "what is
-// this agent doing". The Worker derives it from the provider's own turn
-// bookkeeping, the background-task registry, the pending control requests and
-// the process state, so no client re-derives it from the transcript.
-//
-// EDGE-TRIGGERED: the Worker sends this only when the state CHANGES, never per
-// output line. NOTIFY-class, so the tab nobody is looking at still learns that
-// its agent settled -- which is the tab that most needs to ring and badge.
-//
-// The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
-// background task of this agent's is still running.
-//
-// EVERY instance of this message is a TRANSITION: the Worker sends it only where
-// its derived state differs from the one it last sent. The catch-up baseline is
-// a LEVEL and travels on CatchUpStart.activity_state instead. The two rode this
-// message together
-// once, and the
-// client could not
-// tell them apart.
-// It suppressed the
-// alert for the
-// whole catch-up
-// window, which
-// discarded each
-// genuine settle
-// that landed while
-// a tab replayed.
-//
-// A transition is not the same as news, so a client still compares against the
-// state it holds before it alerts. The Worker's "already sent" mark is per
-// process and per agent entry, and a worker
-// restart or a tab teardown drops it. The
-// first send afterwards then repeats a value
-// the client may already hold.
-message AgentActivityChanged {
-  AgentActivityState state = 1;
-  // Tool calls in the turn that this settle completes. The Worker records the
-  // count when a turn ends and spends it on the NEXT settle, so a turn that
-  // leaves a subagent running still reports its own count when the subagent
-  // finally settles the agent.
-  //
-  // UNSET when the agent starts working, when the provider reports no count,
-  // and when the settle follows no turn end at all -- a control request that
-  // arrives mid-turn, or a process exit. Clients suppress the sound for a
-  // zero-tool turn, so unset and 0 must stay distinguishable: unset means
-  // "ring", 0 means "this turn did nothing worth interrupting the user for".
-  optional int32 num_tool_uses = 2;
-}
-
-// CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
-// message replay burst. It carries the agent's authoritative live-tail seq and the
-// agent's derived activity, which are the two things a tab needs before it renders
-// the burst. A windowed
-// client that was disconnected reconciles against it FIRST -- dropping any loaded row
-// whose seq exceeds latest_seq (a tail deletion it missed while away) and clamping its
-// recorded live-tail -- so phantom rows are gone before the replay renders rather than
-// flashing until CatchUpComplete. CatchUpComplete repeats the reconcile as the final
-// authority after the burst.
-message CatchUpStart {
-  // The agent's authoritative live-tail seq at the moment replay began. Explicit
-  // presence: UNSET = the worker couldn't determine it (a DB error) and the client skips
-  // reconciliation; present 0 = the agent genuinely has no messages; present >0 = the
-  // authoritative MAX(seq).
-  optional int64 latest_seq = 1;
-  // What the agent is doing at the moment replay begins. A tab that just
-  // promoted to FULL then renders the right spinner and the right Interrupt
-  // button while the burst lands, rather than after it drains.
-  //
-  // A LEVEL, not a transition, which is why it rides this frame instead of
-  // AgentActivityChanged: the client rings on that message and must not ring for
-  // an agent that settled while it was away. The client seeds its store from
-  // this field and raises no alert. Under the WATCHED agent's own id, not the
-  // registry owner's -- a child tab's answer is its own registry row.
-  //
-  // The PUBLISHED state, which is what the live events carry, and not the exact
-  // derivation. The Worker debounces a settle, so the two differ for as long as
-  // one waits. A client seeded with the exact value would hold the
-  // settled state before the transition announcing it arrived, and
-  // would see no edge to ring on. See the Worker's AgentActivityPublished.
-  //
-  // UNSPECIFIED when the worker sends no opinion; the client then keeps whatever
-  // it holds rather than overwriting a fresher answer with a blank one.
-  AgentActivityState activity_state = 2;
-}
-
-message CatchUpComplete {
-  // The agent's authoritative live-tail seq at the moment replay completed. A windowed
-  // client can hold a stale tail if authoritative storage removed rows while it was
-  // disconnected. It drops any loaded row whose seq exceeds latest_seq and clamps its tail to this
-  // value, so its "new messages below" affordance can't stay stuck past a now-shorter
-  // history. Explicit presence: UNSET = the worker couldn't determine it (a DB error) and
-  // the client skips reconciliation; present 0 = the agent genuinely has no messages;
-  // present >0 = the authoritative MAX(seq).
-  optional int64 latest_seq = 1;
-  // The live-tail seq at the moment replay BEGAN (== CatchUpStart.latest_seq), repeated
-  // here so the reconcile can tell a deleted-during-replay phantom from a live arrival.
-  // The worker registers the watcher BEFORE reading latest_seq, so a message created and
-  // broadcast during catch-up can reach the client BEFORE this frame -- and its seq is
-  // necessarily ABOVE start_tail_seq (it didn't exist when replay began), while a
-  // deleted-during-replay phantom sits at-or-below it. So the client reaps only the
-  // (latest_seq, start_tail_seq] band and EXEMPTS rows above start_tail_seq (genuine live
-  // arrivals), instead of reaping everything above latest_seq (which would wrongly drop
-  // them). Same explicit presence as latest_seq; UNSET disables the band exemption (the
-  // client falls back to reaping above latest_seq, matching the pre-field behavior).
-  optional int64 start_tail_seq = 2;
-}
-
-message TerminalEvent {
-  string terminal_id = 1;
-  oneof event {
-    TerminalData data = 2;
-    TerminalClosed closed = 3;
-    TerminalStatusChange status_change = 4;
-    TerminalBell bell = 5;
-    TerminalNotification notification = 6;
-    TerminalTitleChanged title_changed = 7;
-    TerminalProgress progress = 8;
-  }
-}
-
-// --- GetTab (single-tab worker resolution) ---
-
-message GetTabRequest {
-  string workspace_id = 1;
-  string tab_id = 2;
-  TabType tab_type = 3;
-}
-
-message GetTabResponse {
-  WorkspaceTab tab = 1;
-}
-
 // --- LocateTab (cross-workspace single-tab lookup) ---
 //
-// Like GetTab but without a workspace_id filter: the hub looks for
+// Without a workspace_id filter: the hub looks for
 // the tab across every workspace the caller owns. Used when only the
 // tab id is known — `leapmux control` derives workspace / tile /
 // worker from this single hop. Returns NotFound when no accessible
@@ -590,16 +192,4 @@ message LocateTileRequest {
 
 message LocateTileResponse {
   string workspace_id = 1;
-}
-
-// --- Workspace lifecycle events (broadcast on `/ws/userevents`) ---
-
-message WorkspaceRenamed {
-  string workspace_id = 1;
-  string title = 2;
-}
-
-message WorkspaceDeleted {
-  string workspace_id = 1;
-  repeated string worker_ids = 2;
 }

@@ -329,22 +329,22 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().UpdateSetting(context.Background(), &leapmuxv1.UpdateSettingRequest{
+			updated, restart, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
 				Key: a.Rest[0], PartialJson: string(value),
 			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			out := settingValueJSON(resp.GetValue())
-			if resp.GetValue().GetEffectiveJson() != resp.GetValue().GetValueJson() {
+			out := settingValueJSON(updated)
+			if updated.GetEffectiveJson() != updated.GetValueJson() {
 				out["note"] = "the effective value differs from the stored value; see effective_json"
 			}
 			// The write itself reports the propagation class, so this reply
 			// already says whether the running hub applies the new value.
 			// Reading it back through a second ListSettings serialized
 			// every registered key to learn one boolean.
-			out["propagation"] = propagationName(resp.GetRestart())
-			if resp.GetRestart() {
+			out["propagation"] = propagationName(restart)
+			if restart {
 				out["note_restart"] = "this setting applies after a hub restart"
 			} else {
 				out["note_hot"] = "the hub that stored this setting applies it at once; a value written to the shared database outside the hub reaches it within its 30-second settings snapshot"
@@ -375,13 +375,13 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().UpdateSettingSecret(context.Background(), &leapmuxv1.UpdateSettingSecretRequest{
-				Key: a.Rest[0], PartialJson: a.Rest[1],
+			updated, _, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
+				Key: a.Rest[0], SecretPartialJson: a.Rest[1],
 			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.GetValue()))
+			return control.EmitData(settingValueJSON(updated))
 		},
 	})
 }
@@ -392,13 +392,11 @@ func RunAdminSettingsReset(rawCtx any, args []string) error {
 		Positionals: 1,
 		Usage:       "usage: leapmux control admin settings reset KEY",
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), &leapmuxv1.ResetSettingRequest{
-				Key: a.Rest[0],
-			})
+			value, err := resetOneSetting(c, a.Rest[0])
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.GetValue()))
+			return control.EmitData(settingValueJSON(value))
 		},
 	})
 }

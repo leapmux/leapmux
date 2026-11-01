@@ -743,7 +743,7 @@ func TestAgentResume_SkipsClosedAgents(t *testing.T) {
 
 // TestAgentResume_SkipsATabClosedSinceTheListing pins the snapshot race. The
 // candidate list is read once; a candidate at the back of a throttled queue is
-// reached much later, and a CloseAgent in between already ran that tab's whole
+// reached much later, and a CloseTab in between already ran that tab's whole
 // teardown. A process started for it then is one nothing will ever stop -- it
 // holds a CLI for the life of the worker under a tab no client can see.
 //
@@ -879,7 +879,7 @@ func TestAgentResume_WaitsForAWorkerOwner(t *testing.T) {
 
 	// setupTestService seeds an owner; clear it to model a worker whose Hub has
 	// not delivered WorkerIdentity yet.
-	svc.registeredBy.Store(&userid.UserID{})
+	svc.owner.Store(nil)
 	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
@@ -908,7 +908,7 @@ func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
 
-	svc.registeredBy.Store(&userid.UserID{})
+	svc.owner.Store(nil)
 	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()

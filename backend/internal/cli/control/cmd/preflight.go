@@ -113,17 +113,18 @@ func isPreflightDenied(err error) bool {
 }
 
 // listAccessibleWorkers fetches the set of workers the authenticated
-// user can use, indexed by worker_id. The error is returned raw, NOT
-// emitted as a JSON envelope: its only caller treats a failed lookup
-// as "unvalidated" and keeps going, so emitting here would print a
-// stray error envelope ahead of the command's real output.
+// user can use, indexed by worker_id. It reads every page: a worker past
+// the first page is still the caller's. The error is returned raw, NOT
+// emitted as a JSON envelope: its only caller decides how to report it,
+// so emitting here would print a stray error envelope ahead of the
+// command's real output.
 func listAccessibleWorkers(ctx context.Context, c *control.Client) (map[string]*leapmuxv1.Worker, error) {
-	var resp leapmuxv1.ListWorkersResponse
-	if err := hubCallUnary(ctx, c, "ListWorkers", &leapmuxv1.ListWorkersRequest{}, &resp); err != nil {
+	workers, err := listAllWorkers(ctx, c)
+	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*leapmuxv1.Worker, len(resp.GetWorkers()))
-	for _, w := range resp.GetWorkers() {
+	out := make(map[string]*leapmuxv1.Worker, len(workers))
+	for _, w := range workers {
 		out[w.GetId()] = w
 	}
 	return out, nil

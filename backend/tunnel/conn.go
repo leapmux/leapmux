@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/util/ctxutil"
@@ -62,6 +64,16 @@ type connRead struct {
 	// terminal latches the inbound stream's end (EOF, a stream error, or channel
 	// death). Read selects on its Done and returns its Err.
 	terminal latchedErr
+	// openSettled records that the open has its outcome: the worker's `opened`
+	// event arrived, or the stream ended before it. Only the stream callback
+	// touches it, and that callback runs on one goroutine. Once the stream has
+	// ended, terminal is set and the callback reads no further frame, so a frame
+	// that finds it set followed a successful open.
+	openSettled bool
+	// openResult carries the outcome of the open to dialTunnelContext: nil for
+	// the `opened` event, or the error that ended the stream before it. It is
+	// buffered so the stream callback never blocks on a dial that gave up.
+	openResult chan error
 	// credit batches the read-credit grants Read accrues and sends them to the
 	// worker off the read path. See readCredit.
 	credit *readCredit
@@ -105,8 +117,8 @@ type connWrite struct {
 	// window slot permanently -- this bound is what makes that unreachable.
 	acks chan *leapmuxv1.InnerRpcResponse
 	// writeErr latches the first terminal error the worker reports for a
-	// SendTunnelData frame -- an IsError SendTunnelDataResponse means the worker's
-	// write to the target failed. Once latched, Write and CloseWrite fail with it,
+	// SendTunnelData frame -- a SendTunnelData response that carries an error
+	// means the worker's write to the target failed. Once latched, Write and CloseWrite fail with it,
 	// surfacing a broken target to the local source the way TCP surfaces EPIPE on
 	// a later write, instead of Write reporting success for bytes the worker then
 	// silently drops. runAckLoop publishes it without the write lock, so only its
@@ -204,10 +216,11 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 			tc.endLife()
 		}
 	}()
-	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
-	reqID, err := ch.SendRPCNoWait(ctx, "OpenTunnelConn", openPayload, RPCHandlers{
-		Response: respCh,
-		Stream:   tc.onStreamMessage,
+	// OpenTunnelConn is server-streaming: the worker answers with an `opened`
+	// event and then the target's data, all on this request's correlation id,
+	// or with a stream error frame when it refuses or cannot connect.
+	reqID, err := ch.SendRPCNoWait(ctx, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, openPayload, RPCHandlers{
+		Stream: tc.onStreamMessage,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send: %w", err)
@@ -215,33 +228,18 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 	tc.reqID = reqID
 
 	select {
-	case resp := <-respCh:
-		ch.UnregisterPending(reqID)
+	case openErr := <-tc.openResult:
+		if openErr != nil {
+			// The stream ended before `opened`: the worker refused, could not
+			// connect, or broke the protocol. It holds no conn to close.
+			tc.unregister()
+			return nil, openErr
+		}
 		if err := ctx.Err(); err != nil {
 			tc.cancelRemoteOpen()
 			return nil, err
 		}
 		if err := ch.Context().Err(); err != nil {
-			tc.cancelRemoteOpen()
-			return nil, err
-		}
-		// No nil arm: recvLoop never delivers nil and respCh is never closed, so a
-		// channel torn down mid-open surfaces through the ch.Context().Err() check
-		// above rather than as a nil response (see Channel.Close).
-		if resp.GetIsError() {
-			tc.unregister()
-			return nil, fmt.Errorf("rpc error (code %d): %s", resp.GetErrorCode(), resp.GetErrorMessage())
-		}
-		var openResp leapmuxv1.OpenTunnelConnResponse
-		if err := proto.Unmarshal(resp.GetPayload(), &openResp); err != nil {
-			tc.cancelRemoteOpen()
-			return nil, fmt.Errorf("unmarshal response: %w", err)
-		}
-		if openResp.GetConnId() != connID {
-			tc.cancelRemoteOpen()
-			return nil, fmt.Errorf("open tunnel conn id mismatch: got %q, want %q", openResp.GetConnId(), connID)
-		}
-		if err := ctx.Err(); err != nil {
 			tc.cancelRemoteOpen()
 			return nil, err
 		}
@@ -265,7 +263,8 @@ func newConn(ch tunnelRPCChannel, connID, targetAddr string, targetPort uint32) 
 		ch:     ch,
 		connID: connID,
 		connRead: connRead{
-			readBuf: make(chan []byte, tunnelflow.ReadBufFrames),
+			readBuf:    make(chan []byte, tunnelflow.ReadBufFrames),
+			openResult: make(chan error, 1),
 		},
 		connWrite: connWrite{
 			sendWindow: tunnelflow.NewWindow(tunnelflow.WriteWindowFrames),
@@ -405,7 +404,7 @@ func (tc *Conn) sendCloseTunnelConn(seq uint64, forceful bool) {
 sendLoop:
 	for {
 		attempt++
-		_, err := tc.ch.SendRPCNoWait(ctx, "CloseTunnelConn", payload, RPCHandlers{})
+		_, err := tc.ch.SendRPCNoWait(ctx, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, payload, RPCHandlers{})
 		if err == nil {
 			return // delivered
 		}
@@ -461,22 +460,49 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 		return
 	default:
 	}
-	if msg.GetIsError() {
-		tc.terminal.Set(fmt.Errorf("tunnel stream: %s", msg.GetErrorMessage()))
+	if rpcErr := msg.GetError(); rpcErr != nil {
+		if tc.openSettled {
+			tc.terminal.Set(fmt.Errorf("tunnel stream: %s", rpcErr.GetMessage()))
+		} else {
+			tc.endStream(fmt.Errorf("rpc error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage()))
+		}
 		return
 	}
 
 	var event leapmuxv1.TunnelConnEvent
 	if err := proto.Unmarshal(msg.GetPayload(), &event); err != nil {
-		tc.terminal.Set(fmt.Errorf("decode tunnel event: %w", err))
+		tc.endStream(fmt.Errorf("decode tunnel event: %w", err))
 		return
 	}
-	if event.GetEof() {
+	switch event.GetEvent().(type) {
+	case *leapmuxv1.TunnelConnEvent_Opened:
+		if tc.openSettled {
+			tc.endStream(errors.New("tunnel protocol error: a second opened event"))
+			return
+		}
+		tc.openSettled = true
+		tc.openResult <- nil
+		return
+	case *leapmuxv1.TunnelConnEvent_Eof:
+		if !tc.openSettled {
+			tc.endStream(errors.New("tunnel protocol error: eof before opened"))
+			return
+		}
 		tc.terminal.Set(io.EOF)
 		return
-	}
-	if event.GetError() != "" {
-		tc.terminal.Set(fmt.Errorf("tunnel error: %s", event.GetError()))
+	case *leapmuxv1.TunnelConnEvent_Error:
+		tc.endStream(fmt.Errorf("tunnel error: %s", event.GetError()))
+		return
+	case *leapmuxv1.TunnelConnEvent_Data:
+		if !tc.openSettled {
+			tc.endStream(errors.New("tunnel protocol error: data before opened"))
+			return
+		}
+	default:
+		// A present event with no case selected carries nothing a reader could
+		// use. Reading it as empty data would hide a broken peer, so it ends the
+		// conn instead.
+		tc.endStream(errors.New("tunnel protocol error: an event that selects no case"))
 		return
 	}
 	if len(event.GetData()) > 0 {
@@ -514,6 +540,17 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 	}
 }
 
+// endStream ends the inbound stream with err. Before the `opened` event it
+// fails the pending dial instead, which then unregisters the conn; after it, it
+// latches err as the conn's terminal condition, which Read returns.
+func (tc *Conn) endStream(err error) {
+	if !tc.openSettled {
+		tc.openSettled = true
+		tc.openResult <- err
+	}
+	tc.terminal.Set(err)
+}
+
 // consumeFrame copies a frame just dequeued from readBuf into b, parks any
 // remainder in readPart, and replenishes one read-credit -- the frame left
 // readBuf, so a buffer slot (and the worker's matching read window) is free.
@@ -535,7 +572,7 @@ func (tc *Conn) sendReadCredit(ctx context.Context, credit uint64) {
 	if err != nil {
 		return
 	}
-	_, _ = tc.ch.SendRPCNoWait(ctx, "GrantTunnelReadCredit", payload, RPCHandlers{})
+	_, _ = tc.ch.SendRPCNoWait(ctx, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, payload, RPCHandlers{})
 }
 
 // Read implements net.Conn.
@@ -791,7 +828,7 @@ func (tc *Conn) sendFrameLocked(data []byte, closeWrite bool) error {
 	// when the worker's SendTunnelDataResponse arrives, and latch a NAK for the
 	// next write to surface. deliverResponse retires each one-shot registration,
 	// so no reqID has to be plumbed back here.
-	if _, err := tc.ch.SendRPCNoWait(ctx, "SendTunnelData", payload, RPCHandlers{Response: tc.acks}); err != nil {
+	if _, err := tc.ch.SendRPCNoWait(ctx, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, payload, RPCHandlers{Response: tc.acks}); err != nil {
 		return writeFailure(err, deadline)
 	}
 	tc.writeSeq = seq + 1
@@ -825,7 +862,7 @@ func writeFailure(err error, deadline *atomic.Bool) error {
 // back and latch a NAK off the write lock -- but one long-lived goroutine does
 // it for every frame.
 //
-// An IsError response means the worker's write to the target failed: latch it so
+// An error response means the worker's write to the target failed: latch it so
 // the next Write / CloseWrite surfaces the broken target the way TCP surfaces
 // EPIPE, instead of draining bytes the worker silently drops.
 //
@@ -837,9 +874,9 @@ func (tc *Conn) runAckLoop() {
 	for {
 		select {
 		case resp := <-tc.acks:
-			if resp.GetIsError() {
+			if rpcErr := resp.GetError(); rpcErr != nil {
 				tc.writeErr.Set(fmt.Errorf("tunnel write rejected (code %d): %s",
-					resp.GetErrorCode(), resp.GetErrorMessage()))
+					rpcErr.GetCode(), rpcErr.GetMessage()))
 			}
 			tc.sendWindow.Grant(1)
 		case <-tc.lifetime.Done():

@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -36,6 +36,9 @@ vi.mock('~/api/clients', () => ({
 // with it, which is exactly what these mocks exist to prevent.
 vi.mock('~/api/workerRpc', () => ({
   getGitInfo: vi.fn(async () => ({})),
+  // GitOptions lists both once the directory is a repository root.
+  listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
+  listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
   getWorkerSystemInfo: vi.fn(async () => ({})),
   statFile: vi.fn(async () => ({})),
   listDirectory: vi.fn(async () => ({
@@ -247,5 +250,58 @@ describe('NewAgentDialog title', () => {
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
     fireEvent.submit(document.querySelector('form')!)
     expect(openAgentMock).not.toHaveBeenCalled()
+  })
+})
+
+// The git mode reaches the worker as ONE git_setup. Outside a repository the
+// mode is the current state, which is the absent setup: the worker uses the
+// directory as it is.
+describe('NewAgentDialog git setup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({}) as never)
+  })
+
+  it('sends the create-branch setup with the typed name and the base branch', async () => {
+    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({
+      isGitRepo: true,
+      isRepoRoot: true,
+      repoRoot: '/tmp',
+      currentBranch: 'main',
+    }) as never)
+    renderDialog()
+
+    fireEvent.click(await screen.findByLabelText('Create new branch'))
+    fireEvent.input(await screen.findByPlaceholderText('feature-branch'), {
+      target: { value: 'feature-x' },
+    })
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openAgentMock).toHaveBeenCalledOnce())
+    expect(openAgentMock.mock.calls[0]?.[1].gitSetup).toEqual({
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feature-x', baseBranch: 'main' },
+      },
+    })
+  })
+
+  it('sends no git setup for a directory outside a repository', async () => {
+    renderDialog()
+
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openAgentMock).toHaveBeenCalledOnce())
+    const [workerId, req] = openAgentMock.mock.calls[0] ?? []
+    expect(workerId).toBe('w-1')
+    expect(req.workingDir).toBe('/tmp')
+    expect(req.gitSetup).toBeUndefined()
   })
 })

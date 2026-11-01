@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -80,7 +81,6 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	require.Equal(t, uint32(1), chMsg.GetProtocolVersion())
 
 	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
 	require.NoError(t, err)
@@ -136,9 +136,9 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 	respKind, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_Response)
 	require.True(t, ok, "expected InnerMessage_Response, got %T", envelope.GetKind())
 	resp := respKind.Response
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(13), resp.GetErrorCode()) // INTERNAL
-	assert.Contains(t, resp.GetErrorMessage(), "internal error")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(13), resp.GetError().GetCode()) // INTERNAL
+	assert.Contains(t, resp.GetError().GetMessage(), "internal error")
 }
 
 func TestDispatcher_UnknownMethod(t *testing.T) {
@@ -167,7 +167,6 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	require.Equal(t, uint32(1), chMsg.GetProtocolVersion())
 
 	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
 	require.NoError(t, err)
@@ -177,9 +176,9 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 	respKind, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_Response)
 	require.True(t, ok, "expected InnerMessage_Response, got %T", envelope.GetKind())
 	resp := respKind.Response
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(12), resp.GetErrorCode())
-	assert.Contains(t, resp.GetErrorMessage(), "unknown")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(12), resp.GetError().GetCode())
+	assert.Contains(t, resp.GetError().GetMessage(), "unknown")
 }
 
 // TestDispatcher_CtxPropagated pins the dispatcher → handler ctx hand-off
@@ -265,10 +264,90 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 	require.True(t, <-seenC, "handler must see ctx.Done() synchronously when parent is pre-cancelled")
 }
 
-// stubWriter is a minimal ResponseWriter for DispatchAsync tests that
-// don't care about encrypted round-trips. Captures send calls so a
-// future assertion can verify response shape if needed; today the
-// tests below only need the writer to satisfy the interface.
+// streamRecordingWriter records the stream frames a handler sends.
+type streamRecordingWriter struct {
+	stubWriter
+	mu     sync.Mutex
+	frames []*leapmuxv1.InnerStreamMessage
+}
+
+func (w *streamRecordingWriter) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frames = append(w.frames, msg)
+	return nil
+}
+
+// A streaming method answers a handler panic in the stream's own shape: one
+// frame that fails the stream with Internal and ends it.
+func TestDispatcher_PanicInAStreamHandlerSendsAStreamErrorFrame(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	d.RegisterStream("panicking-stream", func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		panic("test panic in a stream handler")
+	})
+
+	w := &streamRecordingWriter{}
+	require.NotPanics(t, func() {
+		d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "panicking-stream"}, w)
+	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.frames, 1)
+	frame := w.frames[0]
+	require.NotNil(t, frame.GetError())
+	assert.Equal(t, int32(codes.Internal), frame.GetError().GetCode())
+	assert.Equal(t, "internal error", frame.GetError().GetMessage())
+	assert.True(t, frame.GetEnd())
+	assert.Zero(t, w.sent.Load(), "a streaming method answers in-band, never with a unary error")
+}
+
+// A second registration for a method must fail loudly. A silent overwrite would
+// replace the first handler, with its owner gate and its reply shape, and
+// nothing would show it. Every registration function shares the check, so a
+// method that one of them registered is refused by each of the others.
+func TestDispatcher_HandlePanicsOnADuplicateMethod(t *testing.T) {
+	t.Parallel()
+
+	registrations := map[string]func(d *Dispatcher, method string, handler HandlerFunc){
+		"Register":        (*Dispatcher).Register,
+		"RegisterTracked": (*Dispatcher).RegisterTracked,
+		"RegisterStream":  (*Dispatcher).RegisterStream,
+		"Handle": func(d *Dispatcher, method string, handler HandlerFunc) {
+			d.Handle(method, Registration{Tracked: true, Streaming: true}, handler)
+		},
+	}
+	const method = "/leapmux.v1.WorkerSystemService/Ping"
+	for firstName, first := range registrations {
+		for secondName, second := range registrations {
+			t.Run(firstName+" then "+secondName, func(t *testing.T) {
+				d := NewDispatcher()
+				var firstCalls atomic.Int32
+				first(d, method, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+					firstCalls.Add(1)
+				})
+
+				assert.PanicsWithValue(t, "duplicate inner RPC handler: "+method, func() {
+					second(d, method, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+						t.Error("the refused handler must never run")
+					})
+				})
+
+				// The refusal left the first handler in place.
+				d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+					&leapmuxv1.InnerRpcRequest{Method: method}, &stubWriter{})
+				assert.Equal(t, int32(1), firstCalls.Load(), "the first handler still serves the method")
+				assert.Equal(t, []string{method}, d.Methods())
+			})
+		}
+	}
+}
+
+// stubWriter is a minimal ResponseWriter for the tests that do not need an
+// encrypted round trip. It counts the calls that send a reply.
 type stubWriter struct{ sent atomic.Int32 }
 
 func (s *stubWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error {

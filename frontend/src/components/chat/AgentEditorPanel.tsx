@@ -27,7 +27,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentActivityState, AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputQueuePauseReason, AgentProvider, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
@@ -104,13 +104,15 @@ export interface AgentEditorPanelProps {
    * Save the open edit. `scheduledAt` is undefined to keep the stored
    * schedule, empty to clear it, or the new wire schedule.
    */
-  onUpdateQueueItem?: (item: QueuedAgentInput, text: string, attachments: FileAttachment[], scheduledAt: string | undefined) => Promise<void>
-  onCancelQueueEdit?: (item: QueuedAgentInput) => Promise<void>
-  onDeleteQueueItem?: (item: QueuedAgentInput) => Promise<void>
-  onMoveQueueItem?: (item: QueuedAgentInput, beforeInputId: string) => Promise<void>
-  onRetryQueueItem?: (item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
-  onSteerQueueItem?: (item: QueuedAgentInput) => Promise<void>
-  onPreemptQueueItem?: (item: QueuedAgentInput) => Promise<void>
+  onUpdateQueueItem?: (agentId: string, item: QueuedAgentInput, text: string, attachments: FileAttachment[], scheduledAt: string | undefined) => Promise<void>
+  // Each queue command takes the agent beside the item, because a queued item
+  // states no agent: the snapshot that holds it belongs to one.
+  onCancelQueueEdit?: (agentId: string, item: QueuedAgentInput) => Promise<void>
+  onDeleteQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
+  onMoveQueueItem?: (agentId: string, item: QueuedAgentInput, beforeInputId: string) => Promise<void>
+  onRetryQueueItem?: (agentId: string, item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
+  onSteerQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
+  onPreemptQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
   onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
@@ -272,7 +274,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // two pause toggles state. ONE accessor answers the question for all four, so
   // a change to the source or to the default cannot reach three of them and
   // miss the fourth.
-  const queuePaused = () => props.inputQueue?.paused ?? false
+  // The worker pauses a queue exactly when it states a pause reason.
+  const queuePaused = () => (props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED) !== AgentInputQueuePauseReason.UNSPECIFIED
   // ONE in-flight mark for the pause RPC, shared by the two controls that fire
   // it: the banner's Resume and the composer's toggle. Neither updates
   // optimistically -- `queuePaused()` moves only when the Worker's snapshot
@@ -317,7 +320,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const preferences = usePreferences()
   // The retry confirmation belongs to the dialog below, not to the queue-edit
   // session: it holds the input the user asked to retry, and no edit is open.
-  const [uncertainRetry, setUncertainRetry] = createSignal<QueuedAgentInput>()
+  const [uncertainRetry, setUncertainRetry] = createSignal<{ agentId: string, item: QueuedAgentInput }>()
   // The queue-edit session owns the open edit and everything it holds. The
   // panel creates it BEFORE `useChatAttachments`, because `attachmentDraftKey`
   // is that hook's input, and calls `bindAttachments` below with that hook's
@@ -566,15 +569,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       try {
         const editing = queueEdit.activeEditingInput()
         if (editing && props.onUpdateQueueItem) {
+          // The edit belongs to the agent the panel shows now; the panel can
+          // move to another agent while the update is in flight.
+          const editAgentId = props.agentId
           queueEdit.markUpdateStarted()
           try {
-            await props.onUpdateQueueItem(editing, content, fileAttachments ?? [], editSchedule)
+            await props.onUpdateQueueItem(editAgentId, editing, content, fileAttachments ?? [], editSchedule)
           }
           catch (error) {
             queueEdit.markUpdateFailed()
             throw error
           }
-          queueEdit.markUpdateCompleted(editing)
+          queueEdit.markUpdateCompleted(editAgentId, editing)
         }
         else if (check.verdict === 'notFuture') {
           const retried = await props.onRetryPendingSend?.(content, fileAttachments ?? [], check.wire) ?? false
@@ -673,12 +679,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
    * panel shows: the branch chip's tooltip, the `[+]` menu's branch row, and
    * the info card's Directory and plan-file rows.
    *
-   * From the WORKER STORE, not from `props.agent.homeDir`. `agentTabToInfo`
-   * builds the `AgentInfo` from a Tab row, which carries no home directory, so
-   * that field is the empty string on every path that renders this panel --
-   * `tildify` then returns the absolute path and the sidebar row beside the
-   * chip shortens the SAME directory while the chip does not. `TileRenderer`
-   * already reads this route for `ChatView`.
+   * From the WORKER STORE, because `AgentInfo` carries no home directory: a
+   * worker reports its own once, through GetWorkerSystemInfo. `TileRenderer`
+   * reads the same route for `ChatView`, so the chip and the sidebar row beside
+   * it shorten the same directory alike.
    */
   const workerHomeDir = () => workerInfoStore.getHomeDir(props.agent?.workerId ?? '')
   /**
@@ -715,6 +719,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     get branchName() { return branchGitView()?.branchLabel },
     get gitView() { return branchGitView() },
     get homeDir() { return workerHomeDir() },
+    get workerName() { return workerInfoStore.getName(props.agent?.workerId ?? '') },
   })
   const modelContextWindow = createMemo(() =>
     selectedModelContextWindow(props.agent?.optionGroups, currentModel()) || undefined,
@@ -849,8 +854,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         />
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}
-          supportsSteering={props.agent?.supportsSteering ?? false}
-          supportsPreemption={props.agent?.supportsPreemption ?? false}
+          queueHeadDispatch={props.agent?.queueHeadDispatch ?? QueueHeadDispatch.NONE}
           {...(props.inputQueue !== undefined
             ? { snapshot: props.inputQueue }
             : {})}
@@ -864,20 +868,20 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             queueEdit.loadQueueEdit(item, takeover, false)
           }}
           onDelete={(item) => {
-            fireQueueRpc(props.onDeleteQueueItem?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)))
+            fireQueueRpc(props.onDeleteQueueItem?.(props.agentId, item).then(() => queueEdit.clearQueueEditArtifacts(item)))
           }}
           onCancelEdit={(item) => {
-            fireQueueRpc(props.onCancelQueueEdit?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)))
+            fireQueueRpc(props.onCancelQueueEdit?.(props.agentId, item).then(() => queueEdit.clearQueueEditArtifacts(item)))
           }}
-          onMove={(item, beforeInputId) => fireQueueRpc(props.onMoveQueueItem?.(item, beforeInputId))}
+          onMove={(item, beforeInputId) => fireQueueRpc(props.onMoveQueueItem?.(props.agentId, item, beforeInputId))}
           onRetry={(item, confirmUncertain) => {
             if (confirmUncertain)
-              setUncertainRetry(item)
+              setUncertainRetry({ agentId: props.agentId, item })
             else
-              fireQueueRpc(props.onRetryQueueItem?.(item, false))
+              fireQueueRpc(props.onRetryQueueItem?.(props.agentId, item, false))
           }}
-          onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(item))}
-          onPreempt={item => fireQueueRpc(props.onPreemptQueueItem?.(item))}
+          onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(props.agentId, item))}
+          onPreempt={item => fireQueueRpc(props.onPreemptQueueItem?.(props.agentId, item))}
         />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
@@ -1264,14 +1268,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         />
       </Show>
       <Show when={uncertainRetry()}>
-        {item => (
+        {retry => (
           <ConfirmDialog
             title="Retry uncertain input?"
             confirmLabel="Retry"
             onConfirm={() => {
-              const retryItem = item()
+              const { agentId, item } = retry()
               setUncertainRetry()
-              fireQueueRpc(props.onRetryQueueItem?.(retryItem, true))
+              fireQueueRpc(props.onRetryQueueItem?.(agentId, item, true))
             }}
             onCancel={() => setUncertainRetry()}
             data-testid="retry-uncertain-input-dialog"

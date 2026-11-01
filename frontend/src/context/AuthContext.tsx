@@ -1,6 +1,6 @@
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { ParentComponent } from 'solid-js'
-import type { EmailVerificationStatus, GetCurrentUserResponse, User } from '~/generated/proto/leapmux/v1/auth_pb'
+import type { EmailVerificationStatus, GetCurrentUserResponse, SessionReport, User } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromDate } from '@bufbuild/protobuf/wkt'
@@ -18,15 +18,59 @@ import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWit
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isAutoAuthenticated, isPasswordSetupGate, loadSystemInfo } from '~/lib/systemInfo'
-import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
+import { authenticateForChallenge, passkeyErrorMessage } from '~/lib/webauthn'
 
 const log = createLogger('auth')
 
+/**
+ * What a successful sign-in RPC led to.
+ *
+ * - `adopted`: the reply carried the account, and this document adopted it.
+ *   The caller navigates as it always did.
+ * - `recovering`: the sign-in succeeded but the reply carried no account.
+ *   Sign-in recovery reads it, and recovery owns the navigation that follows,
+ *   even when its first read succeeds at once. The caller does nothing.
+ * - `superseded`: a newer auth operation owns the state. The caller does
+ *   nothing.
+ */
+export type SignInOutcome = 'adopted' | 'recovering' | 'superseded'
+
+/** Where a sign-in was asked to continue, for the navigation recovery owns. */
+export interface SignInOptions {
+  /** The address to continue to, such as the CLI consent page; see `postAuthNavigate`. */
+  redirect?: string | undefined
+}
+
+/**
+ * A sign-in that succeeded but could not report its account. `SignInRecoveryGate`
+ * replaces every route while this is set.
+ */
+export interface SignInRecovery {
+  /** The last failed account read's message; null while a read is pending. */
+  error: string | null
+  /** The sign-in reported that the account must verify an email address. */
+  verificationRequired: boolean
+  /** The address the sign-in was asked to continue to. */
+  redirect?: string
+  /**
+   * The account read succeeded and the account is adopted. The gate now
+   * navigates to the destination and calls `finishSignInRecovery`.
+   */
+  completed: boolean
+}
+
 export interface AuthLoginResult {
+  outcome: SignInOutcome
   verificationRequired: boolean
   verificationEmailSent: boolean
   nextResendAvailableAt?: Timestamp
 }
+
+/**
+ * Adopts the user a mutation's response carried; see
+ * `AuthState.openUserAdoption`.
+ */
+export type UserAdoption = (user: User | undefined, verification?: EmailVerificationStatus) => Promise<void>
 
 export interface AuthState {
   user: () => User | null
@@ -86,31 +130,43 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
-  loginWithPasskey: (username: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
+  login: (username: string, password: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
+  loginWithPasskey: (username: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
   setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
   /**
-   * Adopt a NEW identity. Clears the elevation, because a window proven by the
-   * previous identity must not survive the transition.
+   * Adopt the session a sign-up, the OAuth completion or the first solo
+   * password established, from its `SessionReport`.
    *
-   * `elevation` is for the one reply that GRANTS an elevation in the same
-   * transaction that creates the session: `SetInitialSoloPassword`. Passing it
-   * keeps the client's elevation state derived from the answer that created
-   * it, instead of from a following refresh whose failure would prompt the
-   * operator for the password they just chose.
+   * It is the identity TRANSITION, so it clears the elevation the previous
+   * identity held, and then adopts the elevation the report carries: only
+   * `SetInitialSoloPassword` grants one, in the same transaction that creates
+   * the session. A report with no account starts sign-in recovery; see
+   * `SignInOutcome`.
    */
-  setAuth: (user: User, elevation?: Timestamp) => Promise<void>
+  setAuth: (report: SessionReport | undefined, opts?: SignInOptions) => Promise<SignInOutcome>
   /**
-   * Adopt a user the hub returned for the SESSION THAT IS ALREADY SIGNED IN.
-   *
-   * `setAuth` is the identity TRANSITION and clears the elevation with it.
-   * This one keeps the elevation, because the hub changed a field of the same
-   * account and touched no elevation column. `/verify-email` is the caller:
-   * its response carries the updated user, and clearing the window there made
-   * Preferences report a verified session as unverified.
+   * The sign-in recovery in progress, or null. See `SignInRecoveryGate`.
    */
-  adoptSameIdentityUser: (user: User) => Promise<void>
+  signInRecovery: () => SignInRecovery | null
+  /** Read the account again after a failed recovery read; nothing else repeats. */
+  retrySignInRecovery: () => Promise<void>
+  /**
+   * End a completed recovery. `SignInRecoveryGate` calls it once the router
+   * reached the destination, so the routes mount on the destination directly.
+   */
+  finishSignInRecovery: () => void
+  /**
+   * Open the adoption of a mutation's reply, BEFORE the mutation leaves.
+   *
+   * The returned function adopts the reply's user only while the identity and
+   * every local write are as they were when the mutation left, and only when
+   * the user is the same account. Otherwise it re-reads the account, so a
+   * reply that lands after a sign-out or a sign-in as someone else cannot put
+   * the old account back. It never writes the elevation: a mutation's reply
+   * carries none, so it cannot restore a window the user ended.
+   */
+  openUserAdoption: () => UserAdoption
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
 }
@@ -124,6 +180,28 @@ export const AuthProvider: ParentComponent = (props) => {
   const [bootstrapError, setBootstrapError] = createSignal<string | null>(null)
   const [verificationResendAvailableAt, setVerificationResendAvailableAtSignal] = createSignal<Timestamp | undefined>()
   const [elevationExpiresAt, setElevationExpiresAtSignal] = createSignal<Timestamp | undefined>()
+  const [signInRecovery, setSignInRecovery] = createSignal<SignInRecovery | null>(null)
+
+  /**
+   * Counts the auth OPERATIONS. A sign-in, a `setAuth`, a recovery retry, a
+   * session restore and a sign-out each take the next value when they start.
+   *
+   * Every write an operation makes AFTER an await -- the identity, the
+   * bootstrap error, the recovery state, the login error and the end of
+   * `loading` -- first checks that its value is still the newest, for a
+   * rejected read as well as a successful one. A superseded operation writes
+   * nothing: an older sign-in's late answer cannot overwrite a newer one's,
+   * its late failure cannot paint an error over a session that works, and its
+   * `finally` cannot end the `loading` a newer operation still holds.
+   *
+   * A separate count from `authGeneration`, which marks a READ of the account
+   * stale whenever any local write lands. That is a different question: a
+   * slide report from an unrelated request moves it, and must not cancel an
+   * operation.
+   */
+  let authOperation = 0
+  const beginOperation = () => ++authOperation
+  const isCurrent = (op: number) => op === authOperation
 
   /**
    * Counts the authoritative writes of the state a `GetCurrentUser` response
@@ -312,6 +390,8 @@ export const AuthProvider: ParentComponent = (props) => {
     // No await: the null branch takes none, so the signal still moves in this
     // turn. See `setUser`.
     void setUser(null)
+    // A recovery reads the account of a session, and this session has ended.
+    setSignInRecovery(null)
     setVerificationResendAvailableAt(undefined)
     // The elevation belongs to the session that just ended. Leaving it would
     // make /elevate redirect a signed-out visitor away immediately.
@@ -335,7 +415,8 @@ export const AuthProvider: ParentComponent = (props) => {
    * `readCurrentUser` is the only caller, and it decides whether the response
    * is still the newest before it gets here.
    */
-  const adoptCurrentUser = async (resp: GetCurrentUserResponse) => {
+  const adoptCurrentUser = async (resp: GetCurrentUserResponse): Promise<boolean> => {
+    const report = resp.sessionReport
     // EVERY write below belongs to `resp`, so none of them may run once a newer
     // identity has taken over. `setUser` is asynchronous now -- it reads the
     // account's stored rows before it publishes -- and a sign-in or a sign-out
@@ -343,29 +424,42 @@ export const AuthProvider: ParentComponent = (props) => {
     // elevation window then mirrors a dead session's deadline onto the live one,
     // which is what makes `/elevate` redirect a visitor it should have prompted.
     // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
-    if (!await setUser(resp.user ?? null))
-      return
-    setElevationExpiresAt(resp.elevationExpiresAt)
+    if (!await setUser(report?.user ?? null))
+      return false
+    setElevationExpiresAt(report?.elevationExpiresAt)
     // The only response the /verify-email page's own bootstrap reads. Seeding
     // the cooldown from it is what lets a hard reload of that page resume the
     // countdown instead of restarting at zero and letting the button send
     // repeated requests that the hub refuses with ResourceExhausted.
-    setVerificationResendAvailableAt(resp.emailVerification?.nextResendAvailableAt)
+    setVerificationResendAvailableAt(report?.emailVerification?.nextResendAvailableAt)
+    return true
   }
 
   /**
    * Read the account, and adopt the answer only while it is still the newest.
+   * Reports whether the answer was adopted or superseded; a failed read
+   * rejects.
    *
-   * The ONE caller of GetCurrentUser, so the staleness check cannot be
-   * forgotten at a new call site. See `authGeneration` for what a stale adopt
-   * costs.
+   * The staleness check lives here so a new call site cannot forget it. See
+   * `authGeneration` for what a stale adopt costs.
    */
-  const readCurrentUser = async () => {
+  const readCurrentUser = async (): Promise<'adopted' | 'superseded'> => {
     const generation = authGeneration
     const resp = await authClient.getCurrentUser({})
     if (generation !== authGeneration)
-      return
-    await adoptCurrentUser(resp)
+      return 'superseded'
+    return await adoptCurrentUser(resp)
+      ? 'adopted'
+      : 'superseded'
+  }
+
+  const refreshUser = async () => {
+    try {
+      await readCurrentUser()
+    }
+    catch {
+      // Ignore — user state unchanged.
+    }
   }
 
   /**
@@ -378,30 +472,131 @@ export const AuthProvider: ParentComponent = (props) => {
    * belongs to nobody in this document, redirects without prompting, and the
    * hub's consent gate then answers with a page that has no way forward.
    */
-  const adoptSignedInUser = async (u: User | null) => {
+  const adoptSignedInUser = async (u: User): Promise<boolean> => {
     // See `adoptCurrentUser`: nothing below may run for an identity a newer one
     // superseded during the hydration await.
     if (!await setUser(u))
-      return
+      return false
     setElevationExpiresAt(undefined)
     // Enter the shell checklist before AppShell mounts so login does not flash
     // the finished signed-out `ready` phase, then jump to `workspaces`.
-    if (u) {
+    setBootShell(true)
+    setBootPhase('workspaces')
+    return true
+  }
+
+  /**
+   * Read the account for sign-in recovery, under the operation `op`.
+   *
+   * The OPERATION decides staleness here, not `authGeneration`: that count
+   * moves on any local write, such as a late slide report from a request the
+   * previous identity sent, and a recovery read discarded for one would leave
+   * the gate waiting with no read in flight. A newer operation supersedes it.
+   *
+   * A success adopts the account and marks recovery completed; the gate then
+   * navigates and calls `finishSignInRecovery`. A failure records its message
+   * for the gate's Retry. A superseded read writes neither.
+   */
+  const readForRecovery = async (op: number) => {
+    try {
+      const resp = await authClient.getCurrentUser({})
+      if (!isCurrent(op) || !await adoptCurrentUser(resp) || !isCurrent(op))
+        return
       setBootShell(true)
       setBootPhase('workspaces')
+      loadTimeouts().catch(() => {})
+      setSignInRecovery(prev => prev && { ...prev, error: null, completed: true })
+    }
+    catch (err) {
+      if (!isCurrent(op))
+        return
+      // `prev &&`: a sign-out during the read ended recovery, and a late
+      // failure must not start it again.
+      setSignInRecovery(prev => prev && {
+        ...prev,
+        error: formatErrorMessage(err, 'Failed to load your account'),
+      })
     }
   }
 
   /**
-   * Adopt a user the hub returned for the session that is already signed in.
+   * Adopt what a SUCCESSFUL sign-in reported, under the operation that ran it.
+   * The one adoption both sign-in paths share: `runSignIn` (Login,
+   * FinishPasskeyLogin) and `setAuth` (the sign-ups, the OAuth completion and
+   * the first solo password).
    *
-   * The elevation SURVIVES, which is the whole difference from
-   * `adoptSignedInUser`. The hub changed a field of the same account and
-   * touched no elevation column, so clearing the mirror here reports a live
-   * window as closed.
+   * With an account, this is the identity transition `adoptSignedInUser`
+   * makes, then the verification cooldown, then the elevation the reply
+   * granted -- only `SetInitialSoloPassword` grants one.
+   *
+   * Without an account, the sign-in still SUCCEEDED: the session cookie now
+   * belongs to an account this page cannot read yet. The identity transition
+   * happens at once -- the previous identity, its elevation and, through the
+   * `user` effect, its pooled channels go -- and sign-in recovery starts.
+   * `SignInRecoveryGate` replaces every route while the account read runs, and
+   * recovery owns the navigation that follows.
    */
-  const adoptSameIdentityUser = async (u: User) => {
-    await setUser(u)
+  const adoptSignInReport = async (report: SessionReport | undefined, op: number, opts: SignInOptions): Promise<SignInOutcome> => {
+    if (!isCurrent(op))
+      return 'superseded'
+    const verification = report?.emailVerification
+    if (report?.user) {
+      if (!await adoptSignedInUser(report.user) || !isCurrent(op))
+        return 'superseded'
+      setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
+      // AFTER the adopt, which cleared it: this restores a window this
+      // document owns rather than one it inherited.
+      if (report.elevationExpiresAt)
+        setElevationExpiresAt(report.elevationExpiresAt)
+      // A newer sign-in that adopts its account ends whatever an older one
+      // left behind.
+      setSignInRecovery(null)
+      setBootstrapError(null)
+      loadTimeouts().catch(() => {})
+      return 'adopted'
+    }
+    setElevationExpiresAt(undefined)
+    void setUser(null)
+    setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
+    setBootstrapError(null)
+    setSignInRecovery({
+      error: null,
+      verificationRequired: verification?.verificationRequired ?? false,
+      completed: false,
+      ...(opts.redirect !== undefined
+        ? { redirect: opts.redirect }
+        : {}),
+    })
+    void readForRecovery(op)
+    return 'recovering'
+  }
+
+  const retrySignInRecovery = async () => {
+    if (!signInRecovery())
+      return
+    const op = beginOperation()
+    setSignInRecovery(prev => prev && { ...prev, error: null })
+    await readForRecovery(op)
+  }
+
+  const finishSignInRecovery = () => {
+    setSignInRecovery(null)
+  }
+
+  const openUserAdoption = (): UserAdoption => {
+    const generation = authGeneration
+    // A one-time snapshot on purpose: the identity as it stood when the
+    // mutation left, which the reply must still match.
+    const initialUserId = user()?.id
+    return async (next, verification) => {
+      if (next && initialUserId !== undefined && next.id === initialUserId && generation === authGeneration) {
+        await setUser(next)
+        if (verification)
+          setVerificationResendAvailableAt(verification.nextResendAvailableAt)
+        return
+      }
+      await refreshUser()
+    }
   }
 
   /**
@@ -460,12 +655,17 @@ export const AuthProvider: ParentComponent = (props) => {
    * than discards it. The two were previously indistinguishable; see
    * `AuthState.bootstrapError`.
    */
-  const restoreSession = async () => {
+  const restoreSession = async (op: number) => {
     try {
       await readCurrentUser()
-      loadTimeouts().catch(() => {})
+      if (isCurrent(op))
+        loadTimeouts().catch(() => {})
     }
     catch (err) {
+      // A newer operation, such as a sign-in, owns the state now; this
+      // restore's failure describes a session nobody is using.
+      if (!isCurrent(op))
+        return
       if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
         clearAuthUser()
       }
@@ -495,7 +695,8 @@ export const AuthProvider: ParentComponent = (props) => {
    * (authenticated AppShell). AppShell advances `tabs` → `ready`. A failure
    * leaves the checklist on the stage that failed, which is the truth.
    */
-  const bootstrap = async () => {
+  const bootstrap = async (): Promise<number> => {
+    const op = beginOperation()
     setBootstrapError(null)
     setBootShell(false)
     setBootPhase('system-info')
@@ -503,37 +704,42 @@ export const AuthProvider: ParentComponent = (props) => {
       await loadSystemInfo()
     }
     catch (err) {
-      const msg = formatErrorMessage(err)
-      log.warn('system info load failed', { error: msg })
-      setBootstrapError(msg)
-      return
+      if (isCurrent(op)) {
+        const msg = formatErrorMessage(err)
+        log.warn('system info load failed', { error: msg })
+        setBootstrapError(msg)
+      }
+      return op
     }
+    if (!isCurrent(op))
+      return op
     setBootPhase('session')
-    await restoreSession()
-    if (bootstrapError())
-      return
+    await restoreSession(op)
+    if (!isCurrent(op) || bootstrapError())
+      return op
     // The restricted TCP setup state is not a session and not the shell, so it
     // must not reveal the workspace rows.
     if (user() && !isPasswordSetupGate()) {
       setBootShell(true)
       setBootPhase('workspaces')
-      return
+      return op
     }
     setBootPhase('ready')
+    return op
   }
 
   onMount(async () => {
-    await bootstrap()
-    setLoading(false)
+    if (isCurrent(await bootstrap()))
+      setLoading(false)
   })
 
   const retryBootstrap = async () => {
     setLoading(true)
-    await bootstrap()
-    setLoading(false)
+    if (isCurrent(await bootstrap()))
+      setLoading(false)
   }
 
-  const loginResultFromResponse = (status: EmailVerificationStatus | undefined): AuthLoginResult => ({
+  const loginResultFromResponse = (status: EmailVerificationStatus | undefined): Omit<AuthLoginResult, 'outcome'> => ({
     verificationRequired: status?.verificationRequired ?? false,
     verificationEmailSent: status?.verificationEmailSent ?? false,
     ...(status?.nextResendAvailableAt !== undefined
@@ -543,68 +749,75 @@ export const AuthProvider: ParentComponent = (props) => {
 
   /**
    * The state machine both sign-in paths share: clear the banner, hold
-   * `loading` for the whole attempt, adopt the returned user, and report
-   * the verification status.
+   * `loading` for the whole attempt, adopt the reported session, and report
+   * the outcome and the verification status.
    *
    * `login` and `loginWithPasskey` were byte-identical apart from the RPC
    * in the middle and the fallback message, so a fix to the identity
    * transition below needed two edits. `runSignIn` passes `fallback` through
    * `passkeyErrorMessage`, which returns null for a dismissed passkey
    * prompt -- that is not a failure to report, so the banner stays empty.
+   *
+   * It never rejects for an absent account or a failed account read: those
+   * follow a SUCCESSFUL sign-in, and recovery handles them. A caller's
+   * `catch` sees only a failed sign-in RPC.
    */
   const runSignIn = async (
     fallback: string,
+    opts: SignInOptions,
     // Proto responses carry their optional fields as explicitly-undefined
     // keys, so the attempt result allows undefined alongside absence.
-    attempt: () => Promise<{ user?: User | undefined, emailVerification?: EmailVerificationStatus | undefined }>,
+    attempt: () => Promise<{ sessionReport?: SessionReport | undefined }>,
   ): Promise<AuthLoginResult> => {
+    const op = beginOperation()
     setError(null)
     setLoading(true)
     try {
       const resp = await attempt()
-      // Through adoptSignedInUser: setUser drives the eager release of the
+      // Through adoptSignInReport: setUser drives the eager release of the
       // previous user's pooled channels through the createEffect above,
       // rather than leaving them to the lazy per-request identity check
       // (which evicts one channel per request while the shared WebSocket
       // stays held for the old user) -- and it clears the elevation the
       // previous identity held.
-      await adoptSignedInUser(resp.user ?? null)
-      loadTimeouts().catch(() => {})
-      return loginResultFromResponse(resp.emailVerification)
+      const outcome = await adoptSignInReport(resp.sessionReport, op, opts)
+      return {
+        outcome,
+        ...loginResultFromResponse(resp.sessionReport?.emailVerification),
+      }
     }
     catch (e) {
-      setError(passkeyErrorMessage(e, fallback) ?? '')
+      if (isCurrent(op))
+        setError(passkeyErrorMessage(e, fallback) ?? '')
       // The login form's captcha.reset() (see createCaptchaForm) triggers
       // the system-info reload that converges a stale captcha snapshot
       // after a runtime enable/disable or provider switch.
       throw e
     }
     finally {
-      setLoading(false)
+      if (isCurrent(op))
+        setLoading(false)
     }
   }
 
-  const login = (username: string, password: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
-    runSignIn('Login failed', () => authClient.login(create(LoginRequestSchema, {
+  const login = (username: string, password: string, captcha?: CaptchaRequestFields, opts: SignInOptions = {}): Promise<AuthLoginResult> =>
+    runSignIn('Login failed', opts, () => authClient.login(create(LoginRequestSchema, {
       username,
       password,
       // The form sends the honeypot on every attempt; the payload is empty until
       // the widget verifies (the hub ignores it while captcha is
       // disabled — see createCaptchaForm's requirement gate).
-      captchaPayload: captcha?.captchaPayload ?? '',
-      honeypot: captcha?.honeypot ?? '',
+      captcha: captcha?.captcha ?? { payload: '', honeypot: '' },
     })))
 
-  const loginWithPasskey = (username: string, captcha?: CaptchaRequestFields): Promise<AuthLoginResult> =>
-    runSignIn('Passkey login failed', async () => {
+  const loginWithPasskey = (username: string, captcha?: CaptchaRequestFields, opts: SignInOptions = {}): Promise<AuthLoginResult> =>
+    runSignIn('Passkey login failed', opts, async () => {
       const begin = await authClient.beginPasskeyLogin({
         username,
-        captchaPayload: captcha?.captchaPayload ?? '',
-        honeypot: captcha?.honeypot ?? '',
+        captcha: captcha?.captcha ?? { payload: '', honeypot: '' },
       })
       return await authClient.finishPasskeyLogin({
-        sessionId: begin.sessionId,
-        credentialJson: await startAuthentication(begin.optionsJson),
+        credential: await authenticateForChallenge(begin.challenge),
       })
     })
 
@@ -613,6 +826,9 @@ export const AuthProvider: ParentComponent = (props) => {
     // solo or not, signs out normally.
     if (isAutoAuthenticated())
       return
+    // A sign-out supersedes every operation in flight, so none of them can
+    // adopt an account into the signed-out document.
+    beginOperation()
     try {
       await authClient.logout({})
     }
@@ -624,27 +840,15 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
-  const setAuth = async (u: User, elevation?: Timestamp) => {
-    // The same identity transition runSignIn makes: /auth/idp/complete-signup
-    // and the verify-email page both land a NEW user in a document that may
-    // still hold the previous one's elevation.
-    await adoptSignedInUser(u)
-    // AFTER the adopt, which cleared it. The only caller that passes one is the
-    // reply that granted the elevation inside the same transaction as the
-    // session, so this restores a window this document owns rather than one it
-    // inherited.
-    if (elevation)
-      setElevationExpiresAt(elevation)
-    setLoading(false)
-  }
-
-  const refreshUser = async () => {
-    try {
-      await readCurrentUser()
-    }
-    catch {
-      // Ignore — user state unchanged.
-    }
+  const setAuth = async (report: SessionReport | undefined, opts: SignInOptions = {}): Promise<SignInOutcome> => {
+    // The same identity transition runSignIn makes: the sign-ups, the OAuth
+    // completion and the first solo password all land a NEW identity in a
+    // document that may still hold the previous one's elevation.
+    const op = beginOperation()
+    const outcome = await adoptSignInReport(report, op, opts)
+    if (isCurrent(op))
+      setLoading(false)
+    return outcome
   }
 
   const state: AuthState = {
@@ -661,7 +865,10 @@ export const AuthProvider: ParentComponent = (props) => {
     setVerificationResendAvailableAt,
     logout,
     setAuth,
-    adoptSameIdentityUser,
+    signInRecovery,
+    retrySignInRecovery,
+    finishSignInRecovery,
+    openUserAdoption,
     refreshUser,
     bootstrapError,
     retryBootstrap,

@@ -166,7 +166,7 @@ test.describe('disconnecting an app', () => {
     installationName: string,
   ): Promise<void> {
     await callHub(hubUrl, 'AdminUserService/IssueAPIToken', {
-      userId,
+      user: { id: userId },
       clientId,
       installationName,
       ttlSeconds: '3600',

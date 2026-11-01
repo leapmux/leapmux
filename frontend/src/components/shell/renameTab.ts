@@ -3,7 +3,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { cleanName } from '~/lib/validate'
 import { tabDisplayLabel } from '~/stores/tab.helpers'
 
@@ -24,12 +24,12 @@ export interface RenameTabDeps {
  *
  * This is the ONE client-side write point for a tab title, so the tab strip and
  * the sidebar tree cannot rename a tab two different ways. Both used to inline
- * their own copy, and the sidebar's copy never called `updateTerminalTitle` —
+ * their own copy, and the sidebar's copy never called `renameTerminal` —
  * renaming a terminal there survived until the next reload and reached no other
  * client.
  *
  * `cleanName` is the same rule the worker applies at `RenameAgent` and
- * `UpdateTerminalTitle` (see `testdata/title_cleaning_conformance.json`), so
+ * `RenameTerminal` (see `testdata/title_cleaning_conformance.json`), so
  * the optimistic patch below holds exactly what the worker stores. Sending the
  * raw string instead left the tab showing a 400-byte title the worker had cut
  * to 128, with no error to say so.
@@ -69,7 +69,7 @@ export function renameTab(deps: RenameTabDeps, tab: Tab, typed: string): void {
     // ptyTitle, and tabDisplayLabel prefers title.
     deps.metadata.patch(tab.id, { title, ptyTitle: '' })
     const workerId = deps.view.getTerminalTab(tab.id)?.workerId ?? ''
-    workerRpc.updateTerminalTitle(workerId, { terminalId: tab.id, title }).catch((err) => {
+    workerRpc.renameTerminal(workerId, { terminalId: tab.id, title }).catch((err) => {
       showWarnToast('Failed to rename terminal', err)
     })
   }

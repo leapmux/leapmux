@@ -3,9 +3,10 @@ import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -14,6 +15,7 @@ import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import * as iconButtonStyles from '../common/IconButton.css'
 import { label as workingTreeLabel } from '../common/WorkingTree.css'
+import * as terminalStatusStyles from '../shell/terminalStatus.css'
 import { labelWithStats } from '../tree/sharedTree.css'
 import { WorkspaceTabTree } from './WorkspaceTabTree'
 import { buildTree } from './workspaceTabTree.model'
@@ -1751,6 +1753,27 @@ describe('WorkspaceTabTree interactions', () => {
       ])
       expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus)
         .toBe(String(TerminalStatus.EXITED))
+    })
+
+    // DISCONNECTED is the client's own status, not a worker value, and the
+    // row still shows it: the leaf states it, and the label fades.
+    it('picks up a flip to the client-side disconnected status', () => {
+      const term = {
+        ...bareAgent,
+        type: TabType.TERMINAL,
+        id: 't1',
+        title: 'zsh',
+        status: TerminalStatus.READY,
+      } as Tab
+      const setTabs = renderTabs([term])
+      const label = () => within(screen.getByTestId('tab-tree-leaf')).getByText('zsh')
+      expect(label()).not.toHaveClass(terminalStatusStyles.disconnected)
+
+      setTabs([
+        { ...term, status: TERMINAL_DISCONNECTED } as Tab,
+      ])
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus).toBe(TERMINAL_DISCONNECTED)
+      expect(label()).toHaveClass(terminalStatusStyles.disconnected)
     })
 
     /**

@@ -125,7 +125,6 @@ export function createTestSession(): { initiator: Session, responder: Session } 
 /** Encode a ChannelMessage into the wire format (4-byte length prefix + protobuf). */
 export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opts?: { close?: boolean, id?: number | bigint, flags?: number }): ArrayBuffer {
   const msg = create(ChannelMessageSchema, {
-    protocolVersion: 1,
     channelId,
     ciphertext,
     flags: opts?.close
@@ -399,7 +398,7 @@ export class ChannelManagerTestHarness {
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
     expect(inner.kind.case).toBe('request')
-    const resp = create(InnerRpcResponseSchema, { isError: false })
+    const resp = create(InnerRpcResponseSchema, {})
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
     })
@@ -473,7 +472,6 @@ export class ChannelManagerTestHarness {
     const pair = sessions.get(channelId)!
     const resp = create(InnerRpcResponseSchema, {
       payload,
-      isError: false,
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -486,9 +484,7 @@ export class ChannelManagerTestHarness {
   sendErrorResponseFromWorker(channelId: string, requestId: number, errorMessage: string) {
     const pair = sessions.get(channelId)!
     const resp = create(InnerRpcResponseSchema, {
-      isError: true,
-      errorMessage,
-      errorCode: 2,
+      error: { code: 2, message: errorMessage },
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -527,8 +523,7 @@ export class ChannelManagerTestHarness {
   sendStreamErrorFromWorker(channelId: string, requestId: number, errorMessage: string) {
     const pair = sessions.get(channelId)!
     const msg = create(InnerStreamMessageSchema, {
-      isError: true,
-      errorMessage,
+      error: { message: errorMessage },
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'stream', value: msg },
@@ -586,7 +581,7 @@ export class AutoOpenMockWebSocket extends EventTarget {
  * The Ping is each channel's first request, hence correlation id FIRST_REQUEST_ID.
  */
 export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
-  simulatePingResponseOnWs(ws, channelId, { isError: false })
+  simulatePingResponseOnWs(ws, channelId, {})
 }
 
 /**
@@ -594,13 +589,15 @@ export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: str
  * with an error, i.e. the session is proven NOT to work.
  */
 export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: string, message: string) {
-  simulatePingResponseOnWs(ws, channelId, { isError: true, errorMessage: message, errorCode: 2 })
+  simulatePingResponseOnWs(ws, channelId, {
+    error: { code: 2, message },
+  })
 }
 
 function simulatePingResponseOnWs(
   ws: AutoOpenMockWebSocket,
   channelId: string,
-  response: { isError: boolean, errorMessage?: string, errorCode?: number },
+  response: { error?: { code: number, message: string } },
 ): void {
   const resp = create(InnerRpcResponseSchema, response)
   const envelope = create(InnerMessageSchema, {

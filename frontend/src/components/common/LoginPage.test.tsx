@@ -5,11 +5,12 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
 import { fireCaptchaUnavailable, resetCaptchaMocks, setMockCaptchaPayload } from '~/test-support/captchaMocks'
 import { mockLoadOAuthProviders, mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { LoginPage } from './LoginPage'
+import { SignInRecoveryGate } from './SignInRecoveryGate'
 
 vi.mock('~/api/clients', () => ({
   authClient: {
@@ -39,6 +40,9 @@ const mockUser = vi.fn<() => { id: string, username: string } | null>(() => null
 // `loading` is a real signal so a test can hold the page in the pre-bootstrap
 // state and then release it, which is the whole shape of the race below.
 const [authLoading, setAuthLoading] = createSignal(false)
+// The sign-in recovery the gate renders; a test sets it when a login resolves
+// as `recovering`.
+const [signInRecovery, setSignInRecovery] = createSignal<{ error: string | null, verificationRequired: boolean, completed: boolean } | null>(null)
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
@@ -48,6 +52,9 @@ vi.mock('~/context/AuthContext', () => ({
     loginWithPasskey: mockLoginWithPasskey,
     logout: vi.fn(),
     setAuth: vi.fn(),
+    signInRecovery: () => signInRecovery(),
+    retrySignInRecovery: vi.fn(),
+    finishSignInRecovery: () => setSignInRecovery(null),
     setVerificationResendAvailableAt: mockSetVerificationResendAvailableAt,
     verificationResendAvailableAt: () => undefined,
     isAuthenticated: () => false,
@@ -59,7 +66,7 @@ function renderLoginPage(initialPath = '/login') {
   const history = createMemoryHistory()
   history.set({ value: initialPath, replace: true, scroll: false })
   return render(() => (
-    <MemoryRouter history={history}>
+    <MemoryRouter history={history} root={props => <SignInRecoveryGate>{props.children}</SignInRecoveryGate>}>
       <Route path="/login" component={LoginPage} />
       <Route path="/" component={() => <div data-testid="app-home" />} />
       <Route path="/verify-email" component={() => <div data-testid="verify-email-page" />} />
@@ -86,8 +93,9 @@ describe('LoginPage', () => {
     resetSystemInfoMock()
     resetCaptchaMocks()
     setAuthLoading(false)
-    mockLogin.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
-    mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
+    setSignInRecovery(null)
+    mockLogin.mockResolvedValue({ outcome: 'adopted', verificationRequired: false, verificationEmailSent: false })
+    mockLoginWithPasskey.mockResolvedValue({ outcome: 'adopted', verificationRequired: false, verificationEmailSent: false })
   })
 
   // A solo hub has exactly ONE account, named "solo". A free username field
@@ -365,7 +373,9 @@ describe('LoginPage', () => {
     mockLogin.mockImplementation(() => Promise.resolve())
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await vi.waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: 'ZmFrZS1wYXlsb2Fk', honeypot: '' })
+      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', {
+        captcha: { payload: 'ZmFrZS1wYXlsb2Fk', honeypot: '' },
+      }, { redirect: undefined })
     })
   })
 
@@ -452,14 +462,16 @@ describe('LoginPage', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await vi.waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: '', honeypot: 'http://spam.example' })
+      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', {
+        captcha: { payload: '', honeypot: 'http://spam.example' },
+      }, { redirect: undefined })
     })
   })
 
   it('keeps button disabled after successful login', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
-      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
+      return Promise.resolve({ outcome: 'adopted', verificationRequired: false, verificationEmailSent: false })
     })
 
     renderLoginPage()
@@ -490,45 +502,35 @@ describe('LoginPage', () => {
     expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
   })
 
-  it('re-enables the form when a login resolves without a user', async () => {
-    // A conforming server always populates user on success; a server
-    // regression or a response-shape change must not strand the form on a
-    // spinner with no error. The finally block re-enables submission.
+  // A login that SUCCEEDED but could not report its account recovers. The
+  // page routes nothing: SignInRecoveryGate replaces it, so the form does not
+  // come back for a second submit, and the recovery panel shows instead.
+  it('shows the recovery panel, not the re-enabled form, for a login with no account', async () => {
     mockLogin.mockImplementation(() => {
-      mockUser.mockReturnValue(null)
-      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
+      setSignInRecovery({ error: 'account read failed', verificationRequired: false, completed: false })
+      return Promise.resolve({ outcome: 'recovering', verificationRequired: false, verificationEmailSent: false })
     })
 
     renderLoginPage()
 
-    await vi.waitFor(() => {
-      expect(screen.getByLabelText('Username')).toBeInTheDocument()
-    })
-
-    fireEvent.input(screen.getByLabelText('Username'), {
+    fireEvent.input(await screen.findByLabelText('Username'), {
       target: { value: 'alice' },
     })
     fireEvent.input(screen.getByLabelText('Password'), {
       target: { value: 'secret' },
     })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
-    const button = screen.getByRole('button', { name: 'Sign in' })
-    fireEvent.click(button)
-
-    await vi.waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledOnce()
-    })
-    await new Promise(r => setTimeout(r, 0))
-
-    // The form recovers: the button is enabled and says 'Sign in' again.
-    const recovered = screen.getByRole('button', { name: 'Sign in' })
-    expect(recovered).toBeEnabled()
+    expect(await screen.findByTestId('signin-recovery')).toHaveTextContent('account read failed')
+    expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
+    expect(mockLogin).toHaveBeenCalledOnce()
   })
 
   it('redirects to / after successful login when no redirect param', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
-      return Promise.resolve({ verificationRequired: false, verificationEmailSent: false })
+      return Promise.resolve({ outcome: 'adopted', verificationRequired: false, verificationEmailSent: false })
     })
 
     renderLoginPage()
@@ -552,7 +554,7 @@ describe('LoginPage', () => {
   it('redirects to /verify-email when login reports verification required', async () => {
     mockLogin.mockImplementation(() => {
       mockUser.mockReturnValue({ id: 'u1', username: 'alice' })
-      return Promise.resolve({ verificationRequired: true, verificationEmailSent: true })
+      return Promise.resolve({ outcome: 'adopted', verificationRequired: true, verificationEmailSent: true })
     })
 
     renderLoginPage()
@@ -570,6 +572,57 @@ describe('LoginPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+  })
+
+  // The redirect rides the sign-in, because a sign-in that recovers hands the
+  // navigation to SignInRecoveryGate, which reads the redirect from there.
+  it('forwards the redirect to the sign-in and follows it after an adopted login', async () => {
+    renderLoginPage(`/login?redirect=${encodeURIComponent('/?from=cli')}`)
+
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(mockLogin).toHaveBeenCalledExactlyOnceWith('alice', 'secret', expect.any(Object), { redirect: '/?from=cli' })
+  })
+
+  it('forwards the redirect to a passkey sign-in', async () => {
+    renderLoginPage(`/login?redirect=${encodeURIComponent('/?from=cli')}`)
+
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with passkey' }))
+
+    expect(await screen.findByTestId('app-home')).toBeInTheDocument()
+    expect(mockLoginWithPasskey).toHaveBeenCalledExactlyOnceWith('alice', expect.any(Object), { redirect: '/?from=cli' })
+    expect(mockLogin).not.toHaveBeenCalled()
+  })
+
+  // A newer auth operation replaced this one, so the route belongs to it. The
+  // page navigates nowhere, and the form comes back for the user.
+  it('navigates nowhere for a superseded login', async () => {
+    mockLogin.mockResolvedValue({ outcome: 'superseded', verificationRequired: true, verificationEmailSent: false })
+    renderLoginPage()
+
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeEnabled()
+    expect(mockLogin).toHaveBeenCalledOnce()
+    expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('verify-email-page')).not.toBeInTheDocument()
   })
 
   it('shows the password and passkey method chooser when a ceremony can run', async () => {
@@ -650,7 +703,7 @@ describe('LoginPage', () => {
   })
 
   it('keeps Sign in disabled while a login is in flight', async () => {
-    let resolveLogin!: (value: { verificationRequired: boolean, verificationEmailSent: boolean }) => void
+    let resolveLogin!: (value: { outcome: string, verificationRequired: boolean, verificationEmailSent: boolean }) => void
     mockLogin.mockReturnValue(new Promise((resolve) => {
       resolveLogin = resolve
     }))
@@ -669,7 +722,7 @@ describe('LoginPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Signing in...' }))
     expect(mockLogin).toHaveBeenCalledOnce()
     mockUser.mockReturnValue({ id: '1', username: 'alice' })
-    resolveLogin({ verificationRequired: false, verificationEmailSent: false })
+    resolveLogin({ outcome: 'adopted', verificationRequired: false, verificationEmailSent: false })
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
   })
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -84,35 +87,36 @@ func TestExpandTilde(t *testing.T) {
 
 // dispatchOwnerOnlyProbe runs one request through a handler registered the way the
 // machine-scoped families are (ownerOnlyRegistrar), and reports whether the gate
-// admitted the caller. It exercises the REAL gate rather than calling
-// requireWorkerOwner directly, so an owner the Hub clobbered is observed exactly as
+// admitted the caller. It exercises the REAL gate, registered under a real
+// machine-scoped procedure, so an owner the Hub clobbered is observed exactly as
 // a file/git/tunnel RPC would observe it.
 func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 	d := channel.NewDispatcher()
 	admitted := false
-	newRegistrar(d, svc).ownerOnly().Register("Probe", leapmuxv1.Scope_SCOPE_WORKER_READ,
+	const probe = leapmuxv1connect.WorkerFileServiceStatFileProcedure
+	newRegistrar(d, svc).ownerOnly().Register(probe,
 		func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 			admitted = true
 		})
-	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew(userID)), &leapmuxv1.InnerRpcRequest{Method: "Probe"}, newTestWriter())
+	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew(userID)), &leapmuxv1.InnerRpcRequest{Method: probe}, newTestWriter())
 	return admitted
 }
 
 // An empty owner from the Hub must NOT clobber a good one.
 //
-// requireWorkerOwner refuses an empty owner, so storing "" would make the worker
+// The owner gate refuses an empty owner, so storing "" would make the worker
 // deny every machine-scoped RPC to its own legitimate user until the next
 // connect -- indistinguishably from a real cross-tenant refusal, which is the
 // exact failure the Hub-pushed owner exists to prevent. Keeping the previous
 // owner is the only safe direction: the Hub cannot legitimately un-own a live
 // worker (that is what deregistration is for).
-func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
+func TestApplyWorkerIdentityIgnoresEmptyOwner(t *testing.T) {
 	t.Parallel()
 
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
-	svc.UpdateRegisteredBy("")
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{})
 
 	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "an empty push must not clobber the owner")
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"),
@@ -122,7 +126,7 @@ func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
 // ...and the guard must not be so broad that it pins the first owner forever: a
 // genuine re-registration under a different user is the Hub's call, and the worker
 // converges on it.
-func TestUpdateRegisteredByAppliesOwnerChange(t *testing.T) {
+func TestApplyWorkerIdentityAppliesOwnerChange(t *testing.T) {
 	t.Parallel()
 
 	svc := &Service{}
@@ -130,20 +134,20 @@ func TestUpdateRegisteredByAppliesOwnerChange(t *testing.T) {
 
 	// The drift path (prev != "" && prev != new) warns and STILL stores: the Hub is
 	// the authority, so the warning is a breadcrumb, never a veto.
-	svc.UpdateRegisteredBy("user-2")
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2"})
 
 	assert.Equal(t, "user-2", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-2"), "the new owner is served")
 	assert.False(t, dispatchOwnerOnlyProbe(svc, "user-1"), "the previous owner is not")
 }
 
-// SetRegisteredBy answers a zero id the same way UpdateRegisteredBy answers a
+// SetRegisteredBy answers a zero id the same way ApplyWorkerIdentity answers a
 // blank one: keep the existing owner.
 //
 // The two used to disagree -- this one stored unconditionally, so a zero id
 // CLEARED the owner -- and the type change made the difference invisible rather
 // than removing it, because both now compile fine either way. If a future edit
-// drops the IsZero guard, requireWorkerOwner starts refusing the machine's real
+// drops the IsZero guard, the owner gate starts refusing the machine's real
 // owner after one stray zero set: every owner-only handler (ListDirectory,
 // ReadFile, git, tunnel) answers PERMISSION_DENIED to the legitimate user,
 // indistinguishably from a real cross-tenant refusal. Nothing pinned that.
@@ -161,16 +165,143 @@ func TestSetRegisteredByIgnoresZeroOwner(t *testing.T) {
 }
 
 // The first delivery on a worker with no seed populates the owner.
-func TestUpdateRegisteredByAppliesFirstOwner(t *testing.T) {
+func TestApplyWorkerIdentityAppliesFirstOwner(t *testing.T) {
 	t.Parallel()
 
 	svc := &Service{}
 	require.True(t, svc.RegisteredBy().IsZero(), "no owner before the Hub delivers one")
 
-	svc.UpdateRegisteredBy("user-1")
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1"})
 
 	assert.Equal(t, "user-1", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"))
+}
+
+// The Hub re-delivers the identity when the owner's account changes, so a
+// rename reaches the worker as a new username for the same owner.
+func TestApplyWorkerIdentityFollowsARename(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	owner := userid.MustNew("user-1")
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+	require.Equal(t, "alice", svc.OwnerUsername(owner))
+
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	assert.Equal(t, "alice2", svc.OwnerUsername(owner))
+	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "a rename keeps the owner")
+}
+
+// An empty username means the Hub could not read it. For the same owner the
+// worker keeps the name it holds; for a new owner it stores none, so the
+// previous owner's name never carries over.
+func TestApplyWorkerIdentityTreatsAnEmptyUsernameAsUnknown(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1"})
+	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")),
+		"a failed read on the Hub must not erase the owner's name")
+
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2"})
+	assert.Empty(t, svc.OwnerUsername(userid.MustNew("user-2")),
+		"a new owner must not inherit the previous owner's name")
+	assert.Empty(t, svc.OwnerUsername(userid.MustNew("user-1")), "the previous owner is no longer the owner")
+}
+
+// An empty owner is ignored as a whole frame: its username belongs to the owner
+// it failed to name.
+func TestApplyWorkerIdentityIgnoresTheUsernameOfAnEmptyOwner(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "mallory"})
+	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")))
+}
+
+// An absent identity names no owner, so it is ignored like an empty one, and
+// it must not panic on the connect loop's goroutine.
+func TestApplyWorkerIdentityIgnoresAnAbsentIdentity(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+
+	assert.NotPanics(t, func() { svc.ApplyWorkerIdentity(nil) })
+	assert.Equal(t, "user-1", svc.RegisteredBy().String())
+	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")))
+}
+
+// The owner's id and username are stored as one value, so a reader never pairs
+// one owner's id with another owner's username, even while the connect loop
+// stores a different owner on another goroutine. The race detector also checks
+// the accesses when the suite runs with -race.
+func TestApplyWorkerIdentityNeverPairsOneOwnersIDWithAnotherOwnersUsername(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	alice := userid.MustNew("user-1")
+	bob := userid.MustNew("user-2")
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+
+	const rounds = 500
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range rounds {
+			if i%2 == 0 {
+				svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2", RegisteredByUsername: "bob"})
+			} else {
+				svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+			}
+		}
+	}()
+
+	var mismatches atomic.Int64
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				// Each answer is the caller's own name or "", never the other one.
+				if name := svc.OwnerUsername(alice); name != "" && name != "alice" {
+					mismatches.Add(1)
+				}
+				if name := svc.OwnerUsername(bob); name != "" && name != "bob" {
+					mismatches.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Zero(t, mismatches.Load(), "a reader paired one owner's id with another owner's username")
+	// The writer's last store names alice, because rounds is even.
+	assert.Equal(t, "alice", svc.OwnerUsername(alice))
+	assert.Empty(t, svc.OwnerUsername(bob))
+}
+
+// OwnerUsername answers only for the owner. A seeded owner has no username
+// yet, and a worker with no owner answers no one, the zero id included.
+func TestOwnerUsernameAnswersOnlyTheOwner(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	assert.Empty(t, svc.OwnerUsername(userid.UserID{}), "no owner answers no one, not even the zero id")
+	assert.Empty(t, svc.OwnerUsername(userid.MustNew("user-1")))
+
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
+	assert.Empty(t, svc.OwnerUsername(userid.MustNew("user-1")), "a seed carries no username")
+
+	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")))
+	assert.Empty(t, svc.OwnerUsername(userid.MustNew("user-2")), "another user never sees the owner's name")
+	assert.Empty(t, svc.OwnerUsername(userid.UserID{}), "the zero id never matches the owner")
 }
 
 // TestLazyProtoJSON_RendersTheSameTextAsProtojson guards the wrapper
@@ -342,7 +473,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 
 // TestNew_EmptyRegisteredByLeavesOwnerUnset pins that omitting the field
 // means "the Hub is the authority", not "the owner is the empty string"
-// -- requireWorkerOwner refuses "" outright, so this must fail closed.
+// -- the owner gate refuses "" outright, so this must fail closed.
 func TestNew_EmptyRegisteredByLeavesOwnerUnset(t *testing.T) {
 	t.Parallel()
 

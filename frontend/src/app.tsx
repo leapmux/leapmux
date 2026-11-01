@@ -8,6 +8,7 @@ import { BootSplash } from '~/components/common/BootSplash'
 import { ElevationPromptHost } from '~/components/common/ElevationPromptHost'
 import { renderErrorFallback } from '~/components/common/ErrorFallback'
 import { SetupGate } from '~/components/common/SetupGate'
+import { SignInRecoveryGate } from '~/components/common/SignInRecoveryGate'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
@@ -288,10 +289,17 @@ export default function App() {
                                 the routes that exist today and the ones added
                                 later. See SetupGate for why the rule cannot live
                                 in the pages.
+
+                                SignInRecoveryGate wraps it, as the outermost route
+                                gate: while a sign-in that could not report its
+                                account recovers, it replaces every address, and
+                                no gate or route below it is mounted to navigate.
                               */}
-                              <SetupGate>
-                                {props.children}
-                              </SetupGate>
+                              <SignInRecoveryGate>
+                                <SetupGate>
+                                  {props.children}
+                                </SetupGate>
+                              </SignInRecoveryGate>
                             </ErrorBoundary>
                           </DesktopRouteChrome>
                         </Suspense>

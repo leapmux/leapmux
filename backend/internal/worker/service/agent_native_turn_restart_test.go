@@ -192,7 +192,7 @@ func TestNativeTurnRestartChecksOwnershipAfterLifecycleWait(t *testing.T) {
 			var pauseOnce sync.Once
 			writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "native-restart-lifecycle"}}
 			writer.onEvent = func(event *leapmuxv1.AgentEvent) {
-				if changed := event.GetInputQueueChanged(); changed != nil && changed.GetSnapshot().GetPaused() {
+				if changed := event.GetInputQueueChanged(); changed != nil && changed.GetSnapshot().GetPauseReason() != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
 					pauseOnce.Do(func() { close(paused) })
 				}
 			}

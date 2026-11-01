@@ -150,7 +150,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -166,11 +166,11 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 	consumed := outbox.consumedSnapshot()
 	require.Contains(t, consumed, rowID)
 
-	// The seed batch landed on the journal with a SetWorkspaceRegister op
-	// FIRST (seeding the WorkspaceContentsRecord map entry in the same
-	// atomic batch as the root node + root assignment — no out-of-band
-	// m.state mutation). This is the crux of the #269 fix: workspace
-	// lifecycle create flows through the serialized submit pipeline.
+	// The seed batch landed on the journal as exactly the payload's two ops:
+	// the root node, then the CreateWorkspace op that creates the record with
+	// that root -- one atomic batch, no op prepended, and no out-of-band
+	// m.state mutation. This is the crux of the #269 fix: workspace lifecycle
+	// create flows through the serialized submit pipeline.
 	var seedBatch *leapmuxv1.OpBatch
 	for _, b := range j.batches {
 		if b.GetBatchId() == "lifecycle-create-w1" {
@@ -179,10 +179,13 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 		}
 	}
 	require.NotNil(t, seedBatch, "lifecycle-create-w1 batch should be committed")
-	require.NotEmpty(t, seedBatch.GetOps())
-	_, isFirstSetWorkspaceRegister := seedBatch.GetOps()[0].GetBody().(*leapmuxv1.CrdtOp_SetWorkspaceRegister)
-	assert.True(t, isFirstSetWorkspaceRegister,
-		"seed batch's first op should be SetWorkspaceRegister; got %T", seedBatch.GetOps()[0].GetBody())
+	require.Len(t, seedBatch.GetOps(), 2, "the seed batch carries the payload's ops and nothing else")
+	_, isRootNode := seedBatch.GetOps()[0].GetBody().(*leapmuxv1.CrdtOp_SetNodeRegister)
+	assert.True(t, isRootNode, "seed batch's first op should create the root node; got %T", seedBatch.GetOps()[0].GetBody())
+	create, isCreate := seedBatch.GetOps()[1].GetBody().(*leapmuxv1.CrdtOp_CreateWorkspace)
+	require.True(t, isCreate, "seed batch's second op should be CreateWorkspace; got %T", seedBatch.GetOps()[1].GetBody())
+	assert.Equal(t, "w1", create.CreateWorkspace.GetWorkspaceId())
+	assert.Equal(t, "root-w1", create.CreateWorkspace.GetRootNodeId())
 
 	// State has w1 with rootNodeId pointing at root-w1.
 	mat := mgr.Materialized(crdt.SubscriberFilter{})
@@ -205,7 +208,7 @@ func TestLifecycleCreate_ThroughOutbox_SeedsRootAndBroadcasts(t *testing.T) {
 // TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent pins SWEEP-1-Create +
 // SWEEP-2: if the seed batch landed on a prior drain but the consume failed, and
 // the user then sees no lifecycle RPC for > DedupTTL, the next drain re-validates
-// the seed and the SetWorkspaceRootNode op rejects with ROOT_IMMUTABLE (the root
+// the seed and the CreateWorkspace op rejects with ROOT_IMMUTABLE (the root
 // is already set). That rejection must be treated as idempotent success -- the
 // create already happened -- rather than rolling back, because the rollback would
 // delete(state.Workspaces, wsID) while the DB row, root node, and any tabs the
@@ -246,7 +249,7 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -327,7 +330,7 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -413,7 +416,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -459,7 +462,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 // TestLifecycleCreate_SeedOpsReachExistingSubscriber pins the bug
 // discovered when investigating "new workspace shows in sidebar but
 // the just-opened agent tab never appears": the seed batch
-// (`SetNodeRegister` root LEAF + `SetWorkspaceRootNode`) broadcast
+// (`SetNodeRegister` root LEAF + `CreateWorkspace`) broadcast
 // from `applyLifecycleCreate` was filtered out for any subscriber
 // whose `Filter.WorkspaceIDs` was populated at connect time and
 // therefore did not yet contain the new workspace.
@@ -477,8 +480,8 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 //   - The SetNodeRegister(root LEAF) op surfaces as an
 //     EntityMaterialized (the node was previously invisible — pre→
 //     post visibility transition).
-//   - The SetWorkspaceRootNode op surfaces as a raw op so the
-//     frontend's `applySetWorkspaceRootNode` populates
+//   - The CreateWorkspace op surfaces as a raw op so the
+//     frontend's `applyCreateWorkspace` populates
 //     `workspaces[wsID].rootNodeId`.
 func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 	outbox := newControllableOutbox()
@@ -524,7 +527,7 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -553,9 +556,9 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 			}
 		case *leapmuxv1.WatchUserEvent_Batch:
 			for _, op := range e.Batch.GetOps() {
-				if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_SetWorkspaceRootNode); ok {
-					if body.SetWorkspaceRootNode.GetWorkspaceId() == "w1" &&
-						body.SetWorkspaceRootNode.GetRootNodeId() == "root-w1" {
+				if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_CreateWorkspace); ok {
+					if body.CreateWorkspace.GetWorkspaceId() == "w1" &&
+						body.CreateWorkspace.GetRootNodeId() == "root-w1" {
 						sawWorkspaceRootOp = true
 					}
 				}
@@ -569,7 +572,7 @@ func TestLifecycleCreate_SeedOpsReachExistingSubscriber(t *testing.T) {
 	assert.True(t, sawRootMaterialized,
 		"expected EntityMaterialized for the root LEAF — the frontend needs state.nodes[root-w1] populated to render the tile")
 	assert.True(t, sawWorkspaceRootOp,
-		"expected raw SetWorkspaceRootNode op — the frontend needs this to populate state.workspaces[w1].rootNodeId so seedTabIntoNewWorkspace's poll resolves")
+		"expected raw CreateWorkspace op — the frontend needs this to populate state.workspaces[w1].rootNodeId so seedTabIntoNewWorkspace's poll resolves")
 	assert.True(t, sawCreated,
 		"expected WorkspaceCreated event (sidebar refresh + lifecycle signal)")
 }
@@ -811,7 +814,7 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 
 	// Push a Delete lifecycle row — manager enumerates and tombstones.
 	delPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
-		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1", WorkerIDs: []string{"wkr-1"},
+		OpType: crdt.LifecycleOpDelete, WorkspaceID: "w1",
 	}, nil)
 	require.NoError(t, err)
 	outbox.push("user-1", crdt.LifecycleOpDelete, delPayload)
@@ -887,18 +890,13 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 		mgr.Stop()
 	})
 
-	// Seed w1's WorkspaceContentsRecord with NO root node (empty workspace)
-	// via SubmitInternal SetWorkspaceRegister — the lifecycle-create shape
-	// minus the root, keeping the manager goroutine the sole writer.
-	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-record-w1", Ops: []*leapmuxv1.CrdtOp{{
-			OpId: "seed-record-w1",
-			Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{
-				WorkspaceId: "w1",
-			}},
-		}}}},
+	// Seed w1's WorkspaceContentsRecord with NO root node (empty workspace).
+	// No valid op batch produces that state -- a CreateWorkspaceOp carries its
+	// root, and the validator refuses one that names no live root -- so the
+	// test-only seam writes it, still on the manager goroutine.
+	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
+		s.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1"}
 	})
-	require.NoError(t, err)
 	require.Contains(t, mgr.Materialized(crdt.SubscriberFilter{}).GetWorkspaces(), "w1")
 
 	delPayload, err := crdt.EncodeLifecyclePayload(crdt.LifecyclePayload{
@@ -976,7 +974,7 @@ func TestLifecycleCreate_TransientSubmitError_ContractsFilterAndLeavesRowPending
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "seed-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	}
@@ -1047,7 +1045,7 @@ func TestLifecycleDelete_ThenCreate_NewSeedSucceeds(t *testing.T) {
 			NodeId: "root-w1",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "w1-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "w1-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w1", RootNodeId: "root-w1",
 		}}},
 	})
@@ -1071,7 +1069,7 @@ func TestLifecycleDelete_ThenCreate_NewSeedSucceeds(t *testing.T) {
 			NodeId: "root-w2",
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "w2-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "w2-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "w2", RootNodeId: "root-w2",
 		}}},
 	})
@@ -1174,7 +1172,7 @@ func TestSubmitLifecycle_FailedRowDoesNotStrandIndependentWorkspaces(t *testing.
 			{OpId: ws + "-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 				NodeId: root, Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 			}}},
-			{OpId: ws + "-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			{OpId: ws + "-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 				WorkspaceId: ws, RootNodeId: root,
 			}}},
 		})
@@ -1268,7 +1266,7 @@ func TestSubmitLifecycle_ApplyFailureDedupsLogAcrossDrains(t *testing.T) {
 		{OpId: "wF-kind", Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 			NodeId: "root-wF", Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}}},
-		{OpId: "wF-register", Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+		{OpId: "wF-register", Body: &leapmuxv1.CrdtOp_CreateWorkspace{CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 			WorkspaceId: "wF", RootNodeId: "root-wF",
 		}}},
 	})

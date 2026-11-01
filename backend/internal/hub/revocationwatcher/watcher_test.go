@@ -171,12 +171,9 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(u.ID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(u.ID),
 	}))
 
 	return &envT{

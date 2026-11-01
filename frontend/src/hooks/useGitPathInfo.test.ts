@@ -70,7 +70,7 @@ describe('useGitPathInfo', () => {
         expect(getGitInfo).toHaveBeenCalledTimes(1)
         expect(getGitInfo.mock.calls[0]).toEqual([
           'A',
-          { workerId: 'A', path: '/repo' },
+          { path: '/repo' },
         ])
         expect(info.info().isGitRepo).toBe(true)
         expect(info.info().isRepoRoot).toBe(true)

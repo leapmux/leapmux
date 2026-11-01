@@ -5,8 +5,8 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { WorktreeCloseSummary } from '~/components/shell/closeResultToast'
 import type { LastTabCloseChoice, LastTabConfirmState } from '~/components/shell/LastTabCloseDialog'
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { createChatStore } from '~/stores/chat.store'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -22,8 +22,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { awaitCloseResult, summarizeWorktreeCloses, warnWorktreeUnreachable, worktreeRemovalToast } from '~/components/shell/closeResultToast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename, isAbsolute } from '~/lib/paths'
@@ -76,16 +75,6 @@ interface UseTabOperationsOpts {
   /** Answers "would closing this tab interrupt running work". */
   busyProbe: TabBusyProbe
   repoGitStore: ReturnType<typeof createRepoGitStore>
-}
-
-/**
- * The proto close responses carry `result` as present-but-undefined when the
- * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
- */
-function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined
-    ? {}
-    : { result: resp.result }
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
@@ -301,12 +290,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * action. Mirrors the shape of `agentOps.handleAgentClose` /
    * `termOps.handleTerminalClose` so every tab type follows the same pattern
    * (sync local cleanup + fire-and-forget worker RPC + toast on failure). The
-   * worker drives the unified closeTabCommon flow on its side; the
-   * revoke is keyed by tabId -- as every tab-close RPC now is, so it needs no
-   * workspaceId, and it needs no tab TYPE either: the worker reads the kind off
-   * the row it is about to delete.
+   * worker drives the unified closeTabCommon flow on its side. The close needs
+   * no workspaceId, and the type it sends is a fallback only: the worker reads
+   * the kind off the row it is about to delete.
    */
-  const handlePayloadTabClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
+  const handlePayloadTabClose = (tab: Pick<Tab, 'type' | 'id'>, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResponse | undefined> => {
     if (!workerId) {
       // No worker to send the revoke to. A REMOVE therefore can't
       // reach the worktree — surface it rather than letting the caller
@@ -314,7 +302,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       warnWorktreeUnreachable(worktreeAction)
       return Promise.resolve(undefined)
     }
-    return awaitCloseResult(workerRpc.revokeTabPayload(workerId, { tabId, worktreeAction }).then(closeResultView), 'Failed to close tab')
+    return awaitCloseResult(workerRpc.closeTab(workerId, {
+      tab: { tabType: tab.type, tabId: tab.id },
+      worktreeAction,
+    }), 'Failed to close tab')
   }
 
   /**
@@ -330,11 +321,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * removes the key in its `finally{}` right before calling this for
    * its commit phase, so adding here would leave the key set forever
    * for the normal close flow. The sidebar X button concurrent-click
-   * window is limited by handleAgentClose / handleTerminalClose /
-   * revokeTabPayload's own per-tab dedup on the worker side
+   * window is limited by the per-tab dedup of the worker's CloseTab
    * (idempotent close).
    */
-  const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
+  const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResponse | undefined> => {
     // A tab in a workspace that is not the one on screen (DeleteBranchDialog
     // opened on another workspace's branch row) closes through the SAME ladder
     // as any other. Only the two trailing layout steps are skipped, because
@@ -353,7 +343,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // getAgentTab / getTerminalTab read `byKey()`, which spans every workspace.
     const closesInactiveWorkspace = ownerWorkspaceFor(tab) !== null
 
-    let closeResult: Promise<CloseTabResult | undefined>
+    let closeResult: Promise<CloseTabResponse | undefined>
     if (tab.type === TabType.AGENT) {
       closeResult = agentOps.handleAgentClose(tab.id, worktreeAction)
     }
@@ -369,7 +359,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // the AGENT / TERMINAL last-close behavior.
       emitRemoveTab(tab.type, tab.id)
       if (tab.workerId) {
-        closeResult = handlePayloadTabClose(tab.id, tab.workerId, worktreeAction)
+        closeResult = handlePayloadTabClose(tab, tab.workerId, worktreeAction)
       }
       else {
         warnWorktreeUnreachable(worktreeAction)
@@ -570,7 +560,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // terminal close. The busy probe fails open on its own, so it needs no
       // branch in the catch below.
       const [status, busyReason] = await Promise.all([
-        workerRpc.inspectLastTabClose(workerId, { tabType: tab.type, tabId: tab.id }),
+        workerRpc.inspectLastTabClose(workerId, {
+          tab: { tabType: tab.type, tabId: tab.id },
+        }),
         closeOpts?.skipBusyConfirm
           ? Promise.resolve(null)
           : opts.busyProbe.probe(tab),
@@ -611,8 +603,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       }
       // The worker list positively reports this worker offline. We can't ask
       // it about worktree state, so skip the dialog and fall through to
-      // commit. The downstream worker RPCs (closeAgent / closeTerminal /
-      // revokeTabPayload) are already fire-and-forget — they'll fail the
+      // commit. The downstream worker CloseTab RPC is already
+      // fire-and-forget — it will fail the
       // same way, get caught, and just toast. The CRDT tombstone still runs
       // and removes the row; the worker's orphan reconciler stops the process
       // when it next learns the tab is gone.
