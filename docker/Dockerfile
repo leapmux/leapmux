@@ -33,7 +33,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 # Git supplies the spinner sources that Task requires.
 # Go tool dependencies reside in backend/go.mod and desktop/go/go.mod.
 # Task invokes them through go tool, so the build needs no separate go install step.
-RUN apk add --no-cache bash curl git libgcc libstdc++ rsync && \
+RUN apk add --no-cache bash curl git libatomic libgcc libstdc++ rsync && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
 
