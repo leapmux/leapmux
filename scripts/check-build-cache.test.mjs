@@ -89,10 +89,13 @@ function logs(dir) {
   return readdirSync(scratch).filter(name => name.startsWith('build-cache-')).map((name) => {
     const directory = join(scratch, name)
     const taskState = join(directory, 'task-state.log')
+    const taskStateContents = existsSync(taskState)
+      ? readFileSync(taskState, 'utf8')
+      : ''
     return {
       stdout: readFileSync(join(directory, 'stdout.log'), 'utf8'),
       stderr: readFileSync(join(directory, 'stderr.log'), 'utf8'),
-      taskState: existsSync(taskState) ? readFileSync(taskState, 'utf8') : '',
+      taskState: taskStateContents,
     }
   })
 }
