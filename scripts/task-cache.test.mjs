@@ -303,6 +303,23 @@ describe('Task tool contexts', () => {
         expect(task.vars?.[context], taskName).toEqual({ sh: command })
     }
   })
+
+  it('keys Renovate native output by its selected Node runtime', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    const task = config.tasks['build-renovate-re2']
+    expect(task.vars.BUN_CONTEXT.sh).toBe('bun --version')
+    expect(task.vars.RENOVATE_NODE_CONTEXT.sh).toBe('{{.RENOVATE_NODE | default "node"}} --version')
+    expect(task.vars.CACHE_CONTEXT).toContain('.RENOVATE_NODE_CONTEXT')
+    expect(task.vars.CACHE_CONTEXT).not.toContain('.JS_CONTEXT')
+    expect(JSON.stringify(task.cmds)).toContain('.RENOVATE_NODE')
+  })
+
+  it('tracks only the stable macOS alias native module output', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['prepare-dmg-tools'].vars.OUTPUTS).toEqual([
+      'frontend/node_modules/macos-alias/build/Release/volume.node',
+    ])
+  })
 })
 
 describe('task build cache', () => {

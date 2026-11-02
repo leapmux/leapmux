@@ -63,7 +63,7 @@ function validateInventory(inventory, files, read, log) {
   return { sourceCount: paths.size, pinCount: pins.length }
 }
 
-export async function extractRenovateInventory({ root = repoRoot, trusted = repoRoot, run = runWithTimeout, fullTree = false } = {}) {
+export async function extractRenovateInventory({ root = repoRoot, trusted = repoRoot, run = runWithTimeout, fullTree = false, node = process.env.RENOVATE_NODE ?? 'node' } = {}) {
   await initializeRenovateLogger()
   mkdirSync(resolve(root, '.tmp'), { recursive: true })
   const diagnostics = mkdtempSync(resolve(root, '.tmp/renovate-extraction-'))
@@ -115,7 +115,7 @@ export async function extractRenovateInventory({ root = repoRoot, trusted = repo
       LOG_LEVEL: 'debug',
     }
     for (const key of ['RENOVATE_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) delete env[key]
-    const result = await run('node', [
+    const result = await run(node, [
       resolve(trusted, '.github/renovate/node_modules/renovate/dist/renovate.js'),
     ], {
       cwd: fixture,

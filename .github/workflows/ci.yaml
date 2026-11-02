@@ -98,6 +98,17 @@ jobs:
         if: matrix.arch == 'amd64'
         run: task install-renovate-packages
 
+      - name: Setup Node.js for Renovate
+        if: matrix.arch == 'amd64'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The pinned Renovate release supports Node 24, while the app toolchain is testing Node 26.
+          node-version: 24
+
+      - name: Select Renovate Node.js
+        if: matrix.arch == 'amd64'
+        run: echo "RENOVATE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
       # Restore the compiled RE2 engine only after the package install: bun install replaces
       # a package directory that it installs anew, with the restored output in it. The archive
       # also holds the Task checksum and the task-state record of build-renovate-re2 (the record
@@ -111,15 +122,19 @@ jobs:
             .github/renovate/node_modules/re2/build/Release/re2.node
             .task/checksum/build-renovate-re2
             .task/artifacts/041ee1d9a6f1e20e6f63880ffd41e7502068f85f0c919c572e79d28cd36b3b68.sha256
-          key: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node${{ env.NODE_VERSION }}-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
-          restore-keys: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node${{ env.NODE_VERSION }}-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-
+          key: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
+          restore-keys: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-
           save: ${{ github.ref == 'refs/heads/main' }}
 
-      # The pinned Renovate CLI runs on the Node.js version in versions.env, so this
-      # step also validates a proposed Node.js runtime.
       - name: Validate Renovate dependency extraction
         if: matrix.arch == 'amd64'
         run: task renovate-extract
+
+      - name: Restore project Node.js
+        if: matrix.arch == 'amd64'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install frontend dependencies
         run: task prepare-frontend

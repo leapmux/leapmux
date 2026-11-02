@@ -56,8 +56,9 @@ function extracted(extra = [], removed = true) {
     ],
   }
 }
-function runner(inventory = extracted()) {
-  return async (_command, _args, { output }) => {
+function runner(inventory = extracted(), onRun = () => {}) {
+  return async (command, _args, { output }) => {
+    onRun(command)
     output.write(`${JSON.stringify({ msg: 'Extracted dependencies', packageFiles: inventory })}\n`)
     return { code: 0, timedOut: false, durationMs: 0 }
   }
@@ -108,6 +109,16 @@ describe('extractRenovateInventory', () => {
     })
     expect(result.inventory['github-actions'].some(file => file.packageFile === '.github/actions/build/linux/action.yaml')).toBe(true)
     expect(process.cwd()).toBe(originalCwd)
+  })
+  it('runs the CLI with the selected Node executable', async () => {
+    const directory = fixture()
+    let command
+    await extractRenovateInventory({
+      root: directory,
+      node: '/runtime/node',
+      run: runner(extracted(), executable => command = executable),
+    })
+    expect(command).toBe('/runtime/node')
   })
   it('removes each checkout while preserving per-run logs and the extracted inventory', async () => {
     const directory = fixture()
