@@ -327,6 +327,13 @@ describe('Task tool contexts', () => {
       exclude: 'frontend/node_modules/macos-alias/build/**/*',
     })
   })
+
+  it('excludes Python bytecode generated inside the installed node-gyp package', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['install-frontend-deps'].vars.OUTPUTS).toContainEqual({
+      exclude: 'frontend/node_modules/node-gyp/**/__pycache__/**/*',
+    })
+  })
 })
 
 describe('task build cache', () => {
@@ -396,6 +403,7 @@ describe('task build cache', () => {
 
   it.each([
     'frontend/node_modules/macos-alias/build/Release/.deps/Release/obj.target/volume/src/volume.o.d',
+    'frontend/node_modules/node-gyp/gyp/pylib/gyp/__pycache__/MSVSUtil.cpython-315.pyc',
     'frontend/node_modules/.nitro/vite/services/ssr/index.js',
     'frontend/node_modules/.vitest-cache/629580bea917285efd8a9d8aab80fc81222b2073',
   ])('ignores %s, which a later task writes, but still repairs changed dependencies', (generated) => {
