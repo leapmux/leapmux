@@ -11,13 +11,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [connectrpc.com/connect/v2 v2.0.2](#connectrpccomconnectv2-v202)
 - [dario.cat/mergo v1.0.2](#dariocatmergo-v102)
 - [filippo.io/edwards25519 v1.2.0](#filippoioedwards25519-v120)
-- [github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d](#githubcomaltcha-orgaltcha-lib-gov2-v200-20260725115309-2c4fc27a7b2d)
+- [github.com/altcha-org/altcha-lib-go/v2 v2.4.1](#githubcomaltcha-orgaltcha-lib-gov2-v241)
 - [github.com/aymanbagabas/go-pty v0.2.3](#githubcomaymanbagabasgo-pty-v023)
 - [github.com/aymerick/douceur v0.2.0](#githubcomaymerickdouceur-v020)
-- [github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c](#githubcomazurego-ansiterm-v000-20250102033503-faa5f7b0171c)
+- [github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4](#githubcomazurego-ansiterm-v000-20261006220739-8c912ac31dd4)
 - [github.com/beorn7/perks v1.0.1](#githubcombeorn7perks-v101)
 - [github.com/cenkalti/backoff/v4 v4.3.0](#githubcomcenkaltibackoffv4-v430)
-- [github.com/cenkalti/backoff/v7 v7.0.0](#githubcomcenkaltibackoffv7-v700)
+- [github.com/cenkalti/backoff/v7 v7.0.2](#githubcomcenkaltibackoffv7-v702)
 - [github.com/cespare/xxhash/v2 v2.3.0](#githubcomcesparexxhashv2-v230)
 - [github.com/cloudflare/circl v1.6.5](#githubcomcloudflarecircl-v165)
 - [github.com/coder/quartz v0.3.1](#githubcomcoderquartz-v031)
@@ -26,26 +26,26 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/containerd/errdefs/pkg v0.3.0](#githubcomcontainerderrdefspkg-v030)
 - [github.com/containerd/log v0.1.0](#githubcomcontainerdlog-v010)
 - [github.com/containerd/platforms v0.2.1](#githubcomcontainerdplatforms-v021)
-- [github.com/coreos/go-oidc/v3 v3.20.0](#githubcomcoreosgo-oidcv3-v3200)
+- [github.com/coreos/go-oidc/v3 v3.21.0](#githubcomcoreosgo-oidcv3-v3210)
 - [github.com/cpuguy83/dockercfg v0.3.2](#githubcomcpuguy83dockercfg-v032)
 - [github.com/creack/pty v1.1.24](#githubcomcreackpty-v1124)
 - [github.com/descope/virtualwebauthn v1.0.5](#githubcomdescopevirtualwebauthn-v105)
 - [github.com/distribution/reference v0.6.0](#githubcomdistributionreference-v060)
-- [github.com/docker/go-connections v0.7.0](#githubcomdockergo-connections-v070)
+- [github.com/docker/go-connections v0.8.2](#githubcomdockergo-connections-v082)
 - [github.com/docker/go-units v0.5.0](#githubcomdockergo-units-v050)
-- [github.com/dustin/go-humanize v1.0.1](#githubcomdustingo-humanize-v101)
-- [github.com/ebitengine/purego v0.10.2](#githubcomebitenginepurego-v0102)
+- [github.com/dustin/go-humanize v1.1.0](#githubcomdustingo-humanize-v110)
+- [github.com/ebitengine/purego v0.11.1](#githubcomebitenginepurego-v0111)
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
-- [github.com/fxamacker/cbor/v2 v2.9.3](#githubcomfxamackercborv2-v293)
+- [github.com/fxamacker/cbor/v2 v2.9.4](#githubcomfxamackercborv2-v294)
 - [github.com/go-jose/go-jose/v4 v4.1.6](#githubcomgo-josego-josev4-v416)
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
 - [github.com/go-ole/go-ole v1.3.0](#githubcomgo-olego-ole-v130)
-- [github.com/go-sql-driver/mysql v1.10.0](#githubcomgo-sql-drivermysql-v1100)
+- [github.com/go-sql-driver/mysql v1.10.1](#githubcomgo-sql-drivermysql-v1101)
 - [github.com/go-viper/mapstructure/v2 v2.5.0](#githubcomgo-vipermapstructurev2-v250)
-- [github.com/go-webauthn/webauthn v0.18.0](#githubcomgo-webauthnwebauthn-v0180)
-- [github.com/go-webauthn/x v0.3.0](#githubcomgo-webauthnx-v030)
+- [github.com/go-webauthn/webauthn v0.18.2](#githubcomgo-webauthnwebauthn-v0182)
+- [github.com/go-webauthn/x v0.3.1](#githubcomgo-webauthnx-v031)
 - [github.com/golang-jwt/jwt/v5 v5.3.1](#githubcomgolang-jwtjwtv5-v531)
 - [github.com/google/go-tpm v0.9.8](#githubcomgooglego-tpm-v098)
 - [github.com/google/uuid v1.6.0](#githubcomgoogleuuid-v160)
@@ -53,9 +53,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6](#githubcomjackcpgerrcode-v000-20250907135507-afb5586c32a6)
 - [github.com/jackc/pgpassfile v1.0.0](#githubcomjackcpgpassfile-v100)
 - [github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761](#githubcomjackcpgservicefile-v000-20240606120523-5a60cdf6a761)
-- [github.com/jackc/pgx/v5 v5.10.0](#githubcomjackcpgxv5-v5100)
-- [github.com/jackc/puddle/v2 v2.2.2](#githubcomjackcpuddlev2-v222)
-- [github.com/klauspost/compress v1.19.2](#githubcomklauspostcompress-v1192)
+- [github.com/jackc/pgx/v5 v5.11.0](#githubcomjackcpgxv5-v5110)
+- [github.com/jackc/puddle/v2 v2.2.3](#githubcomjackcpuddlev2-v223)
+- [github.com/klauspost/compress v1.20.3](#githubcomklauspostcompress-v1203)
 - [github.com/knadh/koanf/maps v0.1.3](#githubcomknadhkoanfmaps-v013)
 - [github.com/knadh/koanf/parsers/yaml v1.1.1](#githubcomknadhkoanfparsersyaml-v111)
 - [github.com/knadh/koanf/providers/confmap v1.0.1](#githubcomknadhkoanfprovidersconfmap-v101)
@@ -63,42 +63,42 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/knadh/koanf/providers/file v1.2.1](#githubcomknadhkoanfprovidersfile-v121)
 - [github.com/knadh/koanf/v2 v2.4.1](#githubcomknadhkoanfv2-v241)
 - [github.com/kylelemons/godebug v1.1.0](#githubcomkylelemonsgodebug-v110)
-- [github.com/lmittmann/tint v1.2.0](#githubcomlmittmanntint-v120)
+- [github.com/lmittmann/tint v1.2.1](#githubcomlmittmanntint-v121)
 - [github.com/magiconair/properties v1.8.10](#githubcommagiconairproperties-v1810)
 - [github.com/matoous/go-nanoid/v2 v2.1.0](#githubcommatoousgo-nanoidv2-v210)
 - [github.com/mattn/go-isatty v0.0.24](#githubcommattngo-isatty-v0024)
 - [github.com/mfridman/interpolate v0.0.2](#githubcommfridmaninterpolate-v002)
 - [github.com/microcosm-cc/bluemonday v1.0.27](#githubcommicrocosm-ccbluemonday-v1027)
-- [github.com/Microsoft/go-winio v0.6.2](#githubcommicrosoftgo-winio-v062)
+- [github.com/Microsoft/go-winio v0.6.4](#githubcommicrosoftgo-winio-v064)
 - [github.com/mitchellh/copystructure v1.2.0](#githubcommitchellhcopystructure-v120)
 - [github.com/mitchellh/reflectwalk v1.0.2](#githubcommitchellhreflectwalk-v102)
 - [github.com/moby/docker-image-spec v1.3.1](#githubcommobydocker-image-spec-v131)
 - [github.com/moby/go-archive v0.3.0](#githubcommobygo-archive-v030)
-- [github.com/moby/moby/api v1.55.0](#githubcommobymobyapi-v1550)
-- [github.com/moby/moby/client v0.5.0](#githubcommobymobyclient-v050)
+- [github.com/moby/moby/api v1.56.1](#githubcommobymobyapi-v1561)
+- [github.com/moby/moby/client v0.6.2](#githubcommobymobyclient-v062)
 - [github.com/moby/patternmatcher v0.6.1](#githubcommobypatternmatcher-v061)
 - [github.com/moby/sys/sequential v0.7.0](#githubcommobysyssequential-v070)
 - [github.com/moby/sys/user v0.4.1](#githubcommobysysuser-v041)
 - [github.com/moby/sys/userns v0.1.0](#githubcommobysysuserns-v010)
 - [github.com/moby/term v0.5.2](#githubcommobyterm-v052)
 - [github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822](#githubcommunnerzgoautoneg-v000-20191010083416-a7dc8b61c822)
-- [github.com/ncruces/go-strftime v1.0.0](#githubcomncrucesgo-strftime-v100)
+- [github.com/ncruces/go-strftime v1.1.0](#githubcomncrucesgo-strftime-v110)
 - [github.com/opencontainers/go-digest v1.0.0](#githubcomopencontainersgo-digest-v100)
 - [github.com/opencontainers/image-spec v1.1.1](#githubcomopencontainersimage-spec-v111)
 - [github.com/philhofer/fwd v1.2.0](#githubcomphilhoferfwd-v120)
-- [github.com/pressly/goose/v3 v3.27.3](#githubcompresslygoosev3-v3273)
-- [github.com/prometheus/client_golang v1.24.1](#githubcomprometheusclient_golang-v1241)
+- [github.com/pressly/goose/v3 v3.29.0](#githubcompresslygoosev3-v3290)
+- [github.com/prometheus/client_golang v1.25.0](#githubcomprometheusclient_golang-v1250)
 - [github.com/prometheus/client_model v0.6.3](#githubcomprometheusclient_model-v063)
-- [github.com/prometheus/common v0.70.1](#githubcomprometheuscommon-v0701)
-- [github.com/prometheus/procfs v0.21.1](#githubcomprometheusprocfs-v0211)
+- [github.com/prometheus/common v0.72.0](#githubcomprometheuscommon-v0720)
+- [github.com/prometheus/procfs v0.22.0](#githubcomprometheusprocfs-v0220)
 - [github.com/realclientip/realclientip-go v1.0.1-0.20260615104152-545b12e0e8c7](#githubcomrealclientiprealclientip-go-v101-020260615104152-545b12e0e8c7)
 - [github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec](#githubcomremyoudomphengbigfft-v000-20230129092748-24d4a6f8daec)
-- [github.com/sethvargo/go-retry v0.4.0](#githubcomsethvargogo-retry-v040)
-- [github.com/shirou/gopsutil/v4 v4.26.7](#githubcomshirougopsutilv4-v4267)
-- [github.com/sirupsen/logrus v1.10.1](#githubcomsirupsenlogrus-v1101)
+- [github.com/sethvargo/go-retry v0.5.0](#githubcomsethvargogo-retry-v050)
+- [github.com/shirou/gopsutil/v4 v4.26.9](#githubcomshirougopsutilv4-v4269)
+- [github.com/sirupsen/logrus v1.10.2](#githubcomsirupsenlogrus-v1102)
 - [github.com/stretchr/testify v1.12.1](#githubcomstretchrtestify-v1121)
 - [github.com/testcontainers/testcontainers-go v0.44.0](#githubcomtestcontainerstestcontainers-go-v0440)
-- [github.com/things-go/go-socks5 v0.1.3](#githubcomthings-gogo-socks5-v013)
+- [github.com/things-go/go-socks5 v0.1.4](#githubcomthings-gogo-socks5-v014)
 - [github.com/tinylib/msgp v1.6.4](#githubcomtinylibmsgp-v164)
 - [github.com/tklauser/go-sysconf v0.4.0](#githubcomtklausergo-sysconf-v040)
 - [github.com/tklauser/numcpus v0.12.0](#githubcomtklausernumcpus-v0120)
@@ -106,28 +106,29 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/x448/float16 v0.8.4](#githubcomx448float16-v084)
 - [github.com/yusufpapurcu/wmi v1.2.4](#githubcomyusufpapurcuwmi-v124)
 - [go.opentelemetry.io/auto/sdk v1.2.1](#goopentelemetryioautosdk-v121)
-- [go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0](#goopentelemetryiocontribinstrumentationnethttpotelhttp-v0690)
-- [go.opentelemetry.io/otel v1.44.0](#goopentelemetryiootel-v1440)
-- [go.opentelemetry.io/otel/metric v1.44.0](#goopentelemetryiootelmetric-v1440)
-- [go.opentelemetry.io/otel/trace v1.44.0](#goopentelemetryiooteltrace-v1440)
+- [go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0](#goopentelemetryiocontribinstrumentationnethttpotelhttp-v0720)
+- [go.opentelemetry.io/otel v1.47.0](#goopentelemetryiootel-v1470)
+- [go.opentelemetry.io/otel/log v1.47.0](#goopentelemetryiootellog-v1470)
+- [go.opentelemetry.io/otel/metric v1.47.0](#goopentelemetryiootelmetric-v1470)
+- [go.opentelemetry.io/otel/trace v1.47.0](#goopentelemetryiooteltrace-v1470)
 - [go.uber.org/multierr v1.11.0](#gouberorgmultierr-v1110)
 - [go.yaml.in/yaml/v3 v3.0.5](#goyamlinyamlv3-v305)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
-- [golang.org/x/crypto v0.57.0](#golangorgxcrypto-v0570)
-- [golang.org/x/mod v0.41.0](#golangorgxmod-v0410)
-- [golang.org/x/net v0.59.0](#golangorgxnet-v0590)
-- [golang.org/x/oauth2 v0.36.0](#golangorgxoauth2-v0360)
-- [golang.org/x/sync v0.23.0](#golangorgxsync-v0230)
-- [golang.org/x/sys v0.48.0](#golangorgxsys-v0480)
-- [golang.org/x/term v0.46.0](#golangorgxterm-v0460)
-- [golang.org/x/text v0.42.0](#golangorgxtext-v0420)
-- [golang.org/x/tools v0.50.0](#golangorgxtools-v0500)
-- [google.golang.org/grpc v1.83.2](#googlegolangorggrpc-v1832)
+- [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
+- [golang.org/x/mod v0.42.0](#golangorgxmod-v0420)
+- [golang.org/x/net v0.62.0](#golangorgxnet-v0620)
+- [golang.org/x/oauth2 v0.37.0](#golangorgxoauth2-v0370)
+- [golang.org/x/sync v0.24.0](#golangorgxsync-v0240)
+- [golang.org/x/sys v0.49.0](#golangorgxsys-v0490)
+- [golang.org/x/term v0.47.0](#golangorgxterm-v0470)
+- [golang.org/x/text v0.43.0](#golangorgxtext-v0430)
+- [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
+- [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
-- [modernc.org/libc v1.74.4](#moderncorglibc-v1744)
+- [modernc.org/libc v1.79.0](#moderncorglibc-v1790)
 - [modernc.org/mathutil v1.7.1](#moderncorgmathutil-v171)
-- [modernc.org/memory v1.12.0](#moderncorgmemory-v1120)
-- [modernc.org/sqlite v1.57.0](#moderncorgsqlite-v1570)
+- [modernc.org/memory v1.12.1](#moderncorgmemory-v1121)
+- [modernc.org/sqlite v1.61.0](#moderncorgsqlite-v1610)
 
 ### Rust Dependencies
 
@@ -1035,7 +1036,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d
+### github.com/altcha-org/altcha-lib-go/v2 v2.4.1
 
 ```
 MIT License
@@ -1113,7 +1114,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c
+### github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4
 
 ```
 The MIT License (MIT)
@@ -1189,7 +1190,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/cenkalti/backoff/v7 v7.0.0
+### github.com/cenkalti/backoff/v7 v7.0.2
 
 ```
 The MIT License (MIT)
@@ -2124,7 +2125,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/coreos/go-oidc/v3 v3.20.0
+### github.com/coreos/go-oidc/v3 v3.21.0
 
 ```
 Apache License
@@ -2616,7 +2617,7 @@ Apache License
    limitations under the License.
 ```
 
-### github.com/docker/go-connections v0.7.0
+### github.com/docker/go-connections v0.8.2
 
 ```
                                  Apache License
@@ -3006,7 +3007,7 @@ Apache License
    limitations under the License.
 ```
 
-### github.com/dustin/go-humanize v1.0.1
+### github.com/dustin/go-humanize v1.1.0
 
 ```
 Copyright (c) 2005-2008  Dustin Sallings <dustin@spy.net>
@@ -3032,7 +3033,7 @@ SOFTWARE.
 <http://www.opensource.org/licenses/mit-license.php>
 ```
 
-### github.com/ebitengine/purego v0.10.2
+### github.com/ebitengine/purego v0.11.1
 
 ```
                                  Apache License
@@ -3292,7 +3293,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/fxamacker/cbor/v2 v2.9.3
+### github.com/fxamacker/cbor/v2 v2.9.4
 
 ```
 MIT License
@@ -3962,7 +3963,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/go-sql-driver/mysql v1.10.0
+### github.com/go-sql-driver/mysql v1.10.1
 
 ```
 Mozilla Public License Version 2.0
@@ -4366,7 +4367,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### github.com/go-webauthn/webauthn v0.18.0
+### github.com/go-webauthn/webauthn v0.18.2
 
 ```
 Copyright (c) 2025 github.com/go-webauthn/webauthn authors.
@@ -4397,7 +4398,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/go-webauthn/x v0.3.0
+### github.com/go-webauthn/x v0.3.1
 
 ```
 Copyright (c) 2021-2023 github.com/go-webauthn authors.
@@ -4811,7 +4812,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/jackc/pgx/v5 v5.10.0
+### github.com/jackc/pgx/v5 v5.11.0
 
 ```
 Copyright (c) 2013-2021 Jack Christensen
@@ -4838,7 +4839,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/jackc/puddle/v2 v2.2.2
+### github.com/jackc/puddle/v2 v2.2.3
 
 ```
 Copyright (c) 2018 Jack Christensen
@@ -4865,7 +4866,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/klauspost/compress v1.19.2
+### github.com/klauspost/compress v1.20.3
 
 ```
 Copyright (c) 2012 The Go Authors. All rights reserved.
@@ -5536,7 +5537,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/lmittmann/tint v1.2.0
+### github.com/lmittmann/tint v1.2.1
 
 ```
 MIT License
@@ -5693,7 +5694,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/Microsoft/go-winio v0.6.2
+### github.com/Microsoft/go-winio v0.6.4
 
 ```
 The MIT License (MIT)
@@ -6183,7 +6184,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/moby/api v1.55.0
+### github.com/moby/moby/api v1.56.1
 
 ```
                                  Apache License
@@ -6389,7 +6390,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/moby/client v0.5.0
+### github.com/moby/moby/client v0.6.2
 
 ```
                                  Apache License
@@ -7639,7 +7640,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/ncruces/go-strftime v1.0.0
+### github.com/ncruces/go-strftime v1.1.0
 
 ```
 MIT License
@@ -8068,7 +8069,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/pressly/goose/v3 v3.27.3
+### github.com/pressly/goose/v3 v3.29.0
 
 ```
 MIT License
@@ -8095,7 +8096,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/prometheus/client_golang v1.24.1
+### github.com/prometheus/client_golang v1.25.0
 
 ```
                                  Apache License
@@ -8507,7 +8508,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/prometheus/common v0.70.1
+### github.com/prometheus/common v0.72.0
 
 ```
                                  Apache License
@@ -8713,7 +8714,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/prometheus/procfs v0.21.1
+### github.com/prometheus/procfs v0.22.0
 
 ```
                                  Apache License
@@ -8968,7 +8969,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/sethvargo/go-retry v0.4.0
+### github.com/sethvargo/go-retry v0.5.0
 
 ```
                                  Apache License
@@ -9174,7 +9175,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### github.com/shirou/gopsutil/v4 v4.26.7
+### github.com/shirou/gopsutil/v4 v4.26.9
 
 ```
 gopsutil is distributed under BSD license reproduced below.
@@ -9240,7 +9241,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/sirupsen/logrus v1.10.1
+### github.com/sirupsen/logrus v1.10.2
 
 ```
 The MIT License (MIT)
@@ -9318,7 +9319,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/things-go/go-socks5 v0.1.3
+### github.com/things-go/go-socks5 v0.1.4
 
 ```
 The MIT License (MIT)
@@ -9887,7 +9888,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
+### go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 
 ```
                                  Apache License
@@ -10123,7 +10124,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### go.opentelemetry.io/otel v1.44.0
+### go.opentelemetry.io/otel v1.47.0
 
 ```
                                  Apache License
@@ -10359,7 +10360,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### go.opentelemetry.io/otel/metric v1.44.0
+### go.opentelemetry.io/otel/log v1.47.0
 
 ```
                                  Apache License
@@ -10595,7 +10596,243 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### go.opentelemetry.io/otel/trace v1.44.0
+### go.opentelemetry.io/otel/metric v1.47.0
+
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+--------------------------------------------------------------------------------
+
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### go.opentelemetry.io/otel/trace v1.47.0
 
 ```
                                  Apache License
@@ -10941,7 +11178,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/crypto v0.57.0
+### golang.org/x/crypto v0.58.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10973,7 +11210,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/mod v0.41.0
+### golang.org/x/mod v0.42.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11005,7 +11242,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/net v0.59.0
+### golang.org/x/net v0.62.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11037,7 +11274,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/oauth2 v0.36.0
+### golang.org/x/oauth2 v0.37.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11069,7 +11306,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sync v0.23.0
+### golang.org/x/sync v0.24.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11101,7 +11338,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sys v0.48.0
+### golang.org/x/sys v0.49.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11133,7 +11370,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/term v0.46.0
+### golang.org/x/term v0.47.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11165,7 +11402,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/text v0.42.0
+### golang.org/x/text v0.43.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11197,7 +11434,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/tools v0.50.0
+### golang.org/x/tools v0.52.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11229,7 +11466,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### google.golang.org/grpc v1.83.2
+### google.golang.org/grpc v1.85.0
 
 ```
                                  Apache License
@@ -11467,7 +11704,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/libc v1.74.4
+### modernc.org/libc v1.79.0
 
 ```
 Copyright (c) 2017 The Libc Authors. All rights reserved.
@@ -11531,7 +11768,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/memory v1.12.0
+### modernc.org/memory v1.12.1
 
 ```
 Copyright (c) 2017 The Memory Authors. All rights reserved.
@@ -11563,7 +11800,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/sqlite v1.57.0
+### modernc.org/sqlite v1.61.0
 
 ```
 Copyright (c) 2017 The Sqlite Authors. All rights reserved.
