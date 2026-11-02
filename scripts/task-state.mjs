@@ -114,7 +114,8 @@ function outputStateDetails(root, patterns, context = '') {
       const linkData = JSON.stringify(['symlink', target])
       hash.update(linkData)
       fileHash.update(linkData)
-      manifest.push([path, fileHash.digest('hex')])
+      const linkFingerprint = fileHash.digest('hex')
+      manifest.push([path, linkFingerprint])
       continue
     }
     if (!stat.isFile())
@@ -133,7 +134,8 @@ function outputStateDetails(root, patterns, context = '') {
     finally {
       closeSync(fd)
     }
-    manifest.push([path, fileHash.digest('hex')])
+    const fileFingerprint = fileHash.digest('hex')
+    manifest.push([path, fileFingerprint])
   }
   return {
     fingerprint: hash.digest('hex'),
