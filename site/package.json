@@ -3,6 +3,6 @@
   "private": true,
   "description": "The locked tools that publish the LeapMux site",
   "devDependencies": {
-    "wrangler": "4.155.0"
+    "wrangler": "4.156.0"
   }
 }
