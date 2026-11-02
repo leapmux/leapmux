@@ -1,7 +1,7 @@
 // Run after `task build`, with the same environment and no intervening changes.
 // This check executes the native build. It fails if any task runs a command.
 import { spawnSync } from 'node:child_process'
-import { closeSync, createReadStream, mkdirSync, mkdtempSync, openSync } from 'node:fs'
+import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { createInterface } from 'node:readline'
@@ -39,6 +39,7 @@ async function main() {
   mkdirSync(scratch, { recursive: true })
   const directory = mkdtempSync(join(scratch, 'build-cache-'))
   const paths = ['stdout.log', 'stderr.log'].map(file => join(directory, file))
+  const taskStateLog = join(directory, 'task-state.log')
   const descriptors = []
   let result
   console.log(`Check the unchanged native build. Logs: ${directory}`)
@@ -54,6 +55,11 @@ async function main() {
       '--dry=false',
       'build',
     ], {
+      env: {
+        ...process.env,
+        LEAPMUX_TASK_STATE_DEBUG: '1',
+        LEAPMUX_TASK_STATE_DEBUG_LOG: taskStateLog,
+      },
       stdio: ['ignore', ...descriptors],
     })
   }
@@ -76,6 +82,10 @@ async function main() {
   }
   catch (error) {
     // Retain both complete logs and print them on failure for CI diagnostics.
+    if (existsSync(taskStateLog)) {
+      console.error(`Task state diagnostics: ${taskStateLog}`)
+      process.stderr.write(readFileSync(taskStateLog))
+    }
     for (const path of paths) {
       console.error(`Build log: ${path}`)
       await pipeline(createReadStream(path), process.stderr, { end: false })

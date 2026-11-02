@@ -2,7 +2,7 @@
 // A wildcard existence check alone cannot detect one missing generated file.
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 
@@ -129,11 +129,28 @@ export function outputState(root, patterns, context = '') {
 
 export function checkState(root, task, patterns, context = '') {
   try {
-    return readFileSync(statePath(root, task), 'utf8') === outputState(root, patterns, context)
+    const stored = readFileSync(statePath(root, task), 'utf8')
+    const current = outputState(root, patterns, context)
+    if (stored === current)
+      return true
+    logCacheMiss({
+      task,
+      reason: 'output fingerprint changed',
+      stored,
+      current,
+      outputs: patterns,
+    })
+    return false
   }
   catch (error) {
     if (error.code === 'EACCES' || error.code === 'EPERM')
       throw error
+    logCacheMiss({
+      task,
+      reason: error.message,
+      code: error.code,
+      outputs: patterns,
+    })
     return false
   }
 }
@@ -154,6 +171,17 @@ export function recordState(root, task, patterns, context = '') {
   finally {
     rmSync(temporary, { force: true })
   }
+}
+
+function logCacheMiss(details) {
+  if (process.env.LEAPMUX_TASK_STATE_DEBUG !== '1')
+    return
+  const message = `[task-state] cache miss: ${JSON.stringify(details)}\n`
+  const logPath = process.env.LEAPMUX_TASK_STATE_DEBUG_LOG
+  if (logPath)
+    appendFileSync(logPath, message)
+  else
+    console.error(message.trimEnd())
 }
 
 if (import.meta.main) {

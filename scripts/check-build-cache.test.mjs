@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
@@ -47,6 +47,7 @@ function fixture(change = () => {}) {
   writeFileSync(join(dir, 'schema'), 'first input')
   mkdirSync(join(dir, 'scripts'))
   cpSync(join(root, 'scripts/check-build-cache.mjs'), join(dir, 'scripts/check-build-cache.mjs'))
+  cpSync(join(root, 'scripts/task-state.mjs'), join(dir, 'scripts/task-state.mjs'))
   return dir
 }
 
@@ -85,10 +86,15 @@ function expectSuccess(result) {
 
 function logs(dir) {
   const scratch = join(dir, '.tmp')
-  return readdirSync(scratch).filter(name => name.startsWith('build-cache-')).map(name => ({
-    stdout: readFileSync(join(scratch, name, 'stdout.log'), 'utf8'),
-    stderr: readFileSync(join(scratch, name, 'stderr.log'), 'utf8'),
-  }))
+  return readdirSync(scratch).filter(name => name.startsWith('build-cache-')).map((name) => {
+    const directory = join(scratch, name)
+    const taskState = join(directory, 'task-state.log')
+    return {
+      stdout: readFileSync(join(directory, 'stdout.log'), 'utf8'),
+      stderr: readFileSync(join(directory, 'stderr.log'), 'utf8'),
+      taskState: existsSync(taskState) ? readFileSync(taskState, 'utf8') : '',
+    }
+  })
 }
 
 afterEach(() => {
@@ -142,6 +148,30 @@ describe('native build cache check', () => {
       : 'first input')
     expect(readFileSync(join(dir, 'executions'), 'utf8')).toBe('compiled\ncompiled\n')
     expect(logs(dir)).toHaveLength(1)
+  })
+
+  it('logs cache miss details for invalidated tasks', () => {
+    const dir = fixture((config) => {
+      const outputs = JSON.stringify(['generated'])
+      config.tasks.generate.status = [
+        `bun scripts/task-state.mjs check generate '${outputs}'`,
+      ]
+      config.tasks.generate.cmds = [
+        `bun scripts/task-state.mjs forget generate`,
+        'cp schema generated',
+        `bun scripts/task-state.mjs record generate '${outputs}'`,
+      ]
+    })
+    expectSuccess(run(dir, 'build'))
+    writeFileSync(join(dir, 'generated'), 'changed output')
+    const result = run(dir, 'check-build-cache')
+    expect(result.status).not.toBe(0)
+    const { taskState } = logs(dir)[0]
+    expect(taskState).toContain('[task-state] cache miss:')
+    expect(taskState).toContain('"task":"generate"')
+    expect(taskState).toContain('"reason":"output fingerprint changed"')
+    expect(taskState).toContain('"outputs":["generated"]')
+    expect(result.stderr).toContain('Task state diagnostics:')
   })
 
   it.each([
