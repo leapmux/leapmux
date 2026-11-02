@@ -151,7 +151,7 @@ describe('trusted Renovate configuration', () => {
     const source = `const {regexEngineStatus}=await import(${JSON.stringify(pathToFileURL(regex).href)}); console.log(JSON.stringify(regexEngineStatus))`
     const env = { ...process.env }
     delete env.RENOVATE_X_IGNORE_RE2
-    const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8', env })
+    const result = spawnSync(process.env.RENOVATE_NODE ?? 'node', ['--input-type=module', '-e', source], { encoding: 'utf8', env })
     expect(result.status, result.stderr).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({ type: 'available' })
   })
