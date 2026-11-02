@@ -48,17 +48,31 @@ export function outputState(root, patterns, context = '') {
   const exclusions = patterns.filter(p => typeof p !== 'string').map(({ exclude }) => {
     const segments = exclude.split('/')
     const wildcard = segments.findIndex(segment => /[*?[{]/.test(segment))
-    const fixedSegments = wildcard === -1 ? segments.slice(0, -1) : segments.slice(0, wildcard)
+    const fixedSegments = wildcard === -1
+      ? segments.slice(0, -1)
+      : segments.slice(0, wildcard)
     const rootPath = fixedSegments.join('/') || '.'
-    const pattern = (wildcard === -1 ? segments.slice(-1) : segments.slice(wildcard)).join('/')
+    const patternSegments = wildcard === -1
+      ? segments.slice(-1)
+      : segments.slice(wildcard)
+    const pattern = patternSegments.join('/')
     if (!existsSync(join(root, rootPath)))
       return new Set()
-    const prefix = rootPath === '.' ? '' : `${rootPath}/`
-    return new Set(
-      new Bun.Glob(pattern)
-        .scanSync({ cwd: join(root, rootPath), dot: true })
-        .map(path => `${prefix}${path.replaceAll('\\', '/')}`),
-    )
+    const prefix = rootPath === '.'
+      ? ''
+      : `${rootPath}/`
+    const excluded = new Set()
+    const glob = new Bun.Glob(pattern)
+    const cwd = join(root, rootPath)
+    const paths = glob.scanSync({
+      cwd,
+      dot: true,
+    })
+    for (const path of paths) {
+      const normalized = path.replaceAll('\\', '/')
+      excluded.add(`${prefix}${normalized}`)
+    }
+    return excluded
   })
   for (const pattern of patterns.filter(p => typeof p === 'string')) {
     let matches = 0
