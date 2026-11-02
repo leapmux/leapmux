@@ -480,8 +480,6 @@ tasks:
         - frontend/node_modules/**/*
         # prepare-dmg-tools owns the native macOS build directory.
         - exclude: frontend/node_modules/macos-alias/build/**/*
-        # node-gyp writes its dependency file under a hidden directory, which the broad glob skips.
-        - exclude: frontend/node_modules/macos-alias/build/Release/.deps/**/*
         - exclude: frontend/node_modules/.cache/**/*
         - exclude: frontend/node_modules/.vite/**/*
         - exclude: frontend/node_modules/.vite-temp/**/*

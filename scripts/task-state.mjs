@@ -2,7 +2,7 @@
 // A wildcard existence check alone cannot detect one missing generated file.
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 
@@ -45,11 +45,26 @@ export function taskRecipe(root, task) {
 
 export function outputState(root, patterns, context = '') {
   const files = new Map()
-  const exclusions = patterns.filter(p => typeof p !== 'string').map(p => new Bun.Glob(p.exclude))
+  const exclusions = patterns.filter(p => typeof p !== 'string').map(({ exclude }) => {
+    const segments = exclude.split('/')
+    const wildcard = segments.findIndex(segment => /[*?[{]/.test(segment))
+    const fixedSegments = wildcard === -1 ? segments.slice(0, -1) : segments.slice(0, wildcard)
+    const rootPath = fixedSegments.join('/') || '.'
+    const pattern = (wildcard === -1 ? segments.slice(-1) : segments.slice(wildcard)).join('/')
+    if (!existsSync(join(root, rootPath)))
+      return new Set()
+    const prefix = rootPath === '.' ? '' : `${rootPath}/`
+    return new Set(
+      new Bun.Glob(pattern)
+        .scanSync({ cwd: join(root, rootPath), dot: true })
+        .map(path => `${prefix}${path.replaceAll('\\', '/')}`),
+    )
+  })
   for (const pattern of patterns.filter(p => typeof p === 'string')) {
     let matches = 0
     for (const path of new Bun.Glob(pattern).scanSync({ cwd: root, dot: true, onlyFiles: false })) {
-      if (exclusions.some(glob => glob.match(path.replaceAll('\\', '/'))))
+      const normalized = path.replaceAll('\\', '/')
+      if (exclusions.some(excluded => excluded.has(normalized)))
         continue
       const stat = lstatSync(join(root, path))
       if (stat.isDirectory())
