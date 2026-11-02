@@ -174,6 +174,7 @@ describe('native build cache check', () => {
     expect(taskState).toContain('"task":"generate"')
     expect(taskState).toContain('"reason":"output fingerprint changed"')
     expect(taskState).toContain('"outputs":["generated"]')
+    expect(taskState).toContain('"modified":["generated"]')
     expect(result.stderr).toContain('Task state diagnostics:')
   })
 

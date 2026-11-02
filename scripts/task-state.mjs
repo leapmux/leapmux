@@ -14,6 +14,10 @@ function statePath(root, task) {
   return join(root, '.task', 'artifacts', `${digest(task)}.sha256`)
 }
 
+function manifestPath(root, task) {
+  return `${statePath(root, task)}.json`
+}
+
 // Include only this task and the global variables that its definition uses.
 // An edit to an unrelated task must not rebuild every artifact.
 export function taskRecipe(root, task) {
@@ -43,7 +47,7 @@ export function taskRecipe(root, task) {
   ]
 }
 
-export function outputState(root, patterns, context = '') {
+function outputStateDetails(root, patterns, context = '') {
   const files = new Map()
   const exclusions = patterns.filter(p => typeof p !== 'string').map(({ exclude }) => {
     const segments = exclude.split('/')
@@ -92,21 +96,25 @@ export function outputState(root, patterns, context = '') {
   const hash = createHash('sha256')
   hash.update(JSON.stringify([context, patterns]))
   const buffer = Buffer.allocUnsafe(256 * 1024)
+  const manifest = []
   for (const path of [
     ...files.keys(),
   ].sort()) {
     const absolute = join(root, path)
     const stat = files.get(path)
-    hash.update(JSON.stringify([
+    const metadata = JSON.stringify([
       path.replaceAll('\\', '/'),
       stat.mode & 0o777,
       stat.size,
-    ]))
+    ])
+    hash.update(metadata)
+    const fileHash = createHash('sha256').update(metadata)
     if (stat.isSymbolicLink()) {
-      hash.update(JSON.stringify([
-        'symlink',
-        readlinkSync(absolute),
-      ]))
+      const target = readlinkSync(absolute)
+      const linkData = JSON.stringify(['symlink', target])
+      hash.update(linkData)
+      fileHash.update(linkData)
+      manifest.push([path, fileHash.digest('hex')])
       continue
     }
     if (!stat.isFile())
@@ -117,29 +125,70 @@ export function outputState(root, patterns, context = '') {
         const count = readSync(fd, buffer)
         if (count === 0)
           break
-        hash.update(buffer.subarray(0, count))
+        const content = buffer.subarray(0, count)
+        hash.update(content)
+        fileHash.update(content)
       }
     }
     finally {
       closeSync(fd)
     }
+    manifest.push([path, fileHash.digest('hex')])
   }
-  return hash.digest('hex')
+  return {
+    fingerprint: hash.digest('hex'),
+    manifest,
+  }
+}
+
+export function outputState(root, patterns, context = '') {
+  return outputStateDetails(root, patterns, context).fingerprint
 }
 
 export function checkState(root, task, patterns, context = '') {
   try {
     const stored = readFileSync(statePath(root, task), 'utf8')
-    const current = outputState(root, patterns, context)
-    if (stored === current)
+    const current = outputStateDetails(root, patterns, context)
+    if (stored === current.fingerprint)
       return true
-    logCacheMiss({
+    const details = {
       task,
       reason: 'output fingerprint changed',
       stored,
-      current,
+      current: current.fingerprint,
       outputs: patterns,
-    })
+    }
+    if (process.env.LEAPMUX_TASK_STATE_DEBUG === '1') {
+      try {
+        const previousManifest = new Map(JSON.parse(readFileSync(manifestPath(root, task), 'utf8')))
+        const currentManifest = new Map(current.manifest)
+        const added = []
+        const removed = []
+        const modified = []
+        for (const [path, fingerprint] of currentManifest) {
+          if (!previousManifest.has(path))
+            added.push(path)
+          else if (previousManifest.get(path) !== fingerprint)
+            modified.push(path)
+        }
+        for (const path of previousManifest.keys()) {
+          if (!currentManifest.has(path))
+            removed.push(path)
+        }
+        details.fileChanges = {
+          added: added.slice(0, 40),
+          removed: removed.slice(0, 40),
+          modified: modified.slice(0, 40),
+          totalAdded: added.length,
+          totalRemoved: removed.length,
+          totalModified: modified.length,
+        }
+      }
+      catch {
+        details.fileChanges = 'Previous file manifest unavailable'
+      }
+    }
+    logCacheMiss(details)
     return false
   }
   catch (error) {
@@ -157,19 +206,25 @@ export function checkState(root, task, patterns, context = '') {
 
 export function forgetState(root, task) {
   rmSync(statePath(root, task), { force: true })
+  rmSync(manifestPath(root, task), { force: true })
 }
 
 export function recordState(root, task, patterns, context = '') {
-  const content = outputState(root, patterns, context)
+  const details = outputStateDetails(root, patterns, context)
   const path = statePath(root, task)
+  const manifest = manifestPath(root, task)
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}`
+  const temporaryManifest = `${manifest}.${process.pid}`
   try {
-    writeFileSync(temporary, content)
+    writeFileSync(temporary, details.fingerprint)
     renameSync(temporary, path)
+    writeFileSync(temporaryManifest, JSON.stringify(details.manifest))
+    renameSync(temporaryManifest, manifest)
   }
   finally {
     rmSync(temporary, { force: true })
+    rmSync(temporaryManifest, { force: true })
   }
 }
 
