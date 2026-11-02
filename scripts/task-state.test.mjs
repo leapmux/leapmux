@@ -83,6 +83,21 @@ describe('task output state', () => {
     expect(checkState(dir, 'build', selected)).toBe(true)
   })
 
+  it('ignores files under an explicitly excluded hidden directory', () => {
+    const dir = fixture()
+    const nested = join(dir, 'output', '.deps', 'Release')
+    mkdirSync(nested, { recursive: true })
+    const generated = join(nested, 'module.node.d')
+    writeFileSync(generated, 'first')
+    const selected = [
+      ...patterns,
+      { exclude: 'output/.deps/**/*' },
+    ]
+    recordState(dir, 'build', selected)
+    writeFileSync(generated, 'changed')
+    expect(checkState(dir, 'build', selected)).toBe(true)
+  })
+
   it.skipIf(process.platform === 'win32')('detects executable permission and symlink changes', () => {
     const dir = fixture()
     recordState(dir, 'build', patterns)

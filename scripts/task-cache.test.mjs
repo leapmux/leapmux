@@ -320,6 +320,13 @@ describe('Task tool contexts', () => {
       'frontend/node_modules/macos-alias/build/Release/volume.node',
     ])
   })
+
+  it('excludes node-gyp dependency files from installed frontend outputs', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['install-frontend-deps'].vars.OUTPUTS).toContainEqual({
+      exclude: 'frontend/node_modules/macos-alias/build/Release/.deps/**/*',
+    })
+  })
 })
 
 describe('task build cache', () => {
