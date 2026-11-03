@@ -112,9 +112,7 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
     : 'currentColor'
 
   const fills = createMemo(() => {
-    // eslint-disable-next-line solid/reactivity -- `active` is read by the Array.from mapper below, in this same memo evaluation
     const active = activeColor()
-    // eslint-disable-next-line solid/reactivity -- `lit` is read by the Array.from mapper below, in this same memo evaluation
     const lit = new Set(fillOrder.slice(0, filled()).map(([row, col]) => row * PIP_GRID_COLUMNS + col))
     return Array.from(
       { length: PIP_GRID_PIPS },

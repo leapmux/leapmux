@@ -755,7 +755,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Lingering ids resolved back to entries (stable references, so the fade-out
   // <For> keys correctly); a row windowed away mid-linger simply drops out.
   const lingeringSkeletonSlice = createMemo(() => {
-    // eslint-disable-next-line solid/reactivity -- `byId` is read by the `.map` below, in this same memo evaluation
     const byId = visibleEntryById()
     return [
       ...lingeringSkeletonIds(),

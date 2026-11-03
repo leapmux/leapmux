@@ -66,8 +66,8 @@ func TestZCodeSharedCalls_TheLastCallerToLeaveEndsTheCall(t *testing.T) {
 	require.ErrorIs(t, <-errs, context.Canceled)
 	require.Eventually(t, func() bool { return calls.waiting("key") == 1 }, 30*time.Second, time.Millisecond)
 	select {
-	case <-ended:
-		t.Fatal("one caller that leaves must not end the call for the other")
+	case err := <-ended:
+		t.Fatalf("one caller that leaves must not end the call for the other: %v", err)
 	default:
 	}
 

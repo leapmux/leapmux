@@ -219,8 +219,8 @@ func TestProcessOwnerCloseSharesOneCompletedResult(t *testing.T) {
 	require.NoError(t, completed.close())
 	go func() { results <- owner.Close() }()
 	select {
-	case <-results:
-		t.Fatal("Close returned before the held completion receipt")
+	case err := <-results:
+		t.Fatalf("Close returned before the held completion receipt: %v", err)
 	default:
 	}
 	releaseOnce.Do(func() { close(release) })

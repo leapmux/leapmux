@@ -10,6 +10,7 @@ package captcha
 import (
 	"fmt"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
@@ -104,6 +105,8 @@ func Effective(s *settings.Snapshot) (Config, string) {
 	}
 	cfg := Config{Provider: provider, Enabled: enabled}
 	switch provider {
+	case leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
+		return fallbackConfig(enabled), "captcha provider is unspecified"
 	case ProviderAltcha:
 		row := AltchaKey.Of(s)
 		cfg.Altcha = &row.AltchaSettings

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -205,7 +206,12 @@ func TestContextClearWaitsForAdmittedChildSubscription(t *testing.T) {
 					case err := <-clearPending:
 						require.NoError(t, err)
 						clearPending = nil
-					case <-actorPending:
+					case err := <-actorPending:
+						if logSubscription {
+							require.ErrorIs(t, err, agent.ErrChildRouteNotReady)
+						} else {
+							require.NoError(t, err)
+						}
 						actorPending = nil
 					case request := <-peer.requests:
 						replyMuseRetirement(t, a, request, &events)
@@ -299,8 +305,8 @@ func TestSessionSubscriptionWaitEndsWithItsOwningProcess(t *testing.T) {
 		// Channel waits are durable in synctest; sync.Mutex waits prevent this check.
 		synctest.Wait()
 		select {
-		case <-waiting:
-			t.Error("another registration bypassed the admitted operation")
+		case err := <-waiting:
+			t.Fatalf("another registration bypassed the admitted operation: %v", err)
 		default:
 		}
 		cancel()

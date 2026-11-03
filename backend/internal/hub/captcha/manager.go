@@ -225,9 +225,8 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 
 // verifyAltcha decodes a base64 ALTCHA payload and checks signature,
 // expiry, and solution, enforcing single use per salt. The checks run
-// cheapest-first so an unauthenticated flood of garbage payloads stops at
-// the CPU (the signature-only pre-check) before it can cause store reads,
-// and a replay stops at one indexed read before the memory-hard derivation.
+// in order: signature verification precedes store reads, and a replay stops
+// at one indexed read before the memory-hard derivation.
 func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload string) error {
 	var p altcha.Payload
 	if err := decodeAltchaPayload(payload, &p); err != nil {
@@ -242,37 +241,24 @@ func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload
 		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}
 
-	// Signature-only pre-check: VerifySolution with no DeriveKey and no
-	// key-signature secret runs exactly the expiry integer-compare and the
-	// challenge HMAC (microseconds, zero I/O) and never the KDF. Garbage
-	// payloads stop here; only a payload this hub actually signed proceeds
-	// to the store and the derivation below.
-	sigOK, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
-		Challenge:           p.Challenge,
-		Solution:            p.Solution,
-		HMACSignatureSecret: string(res.secret),
-	})
-	if err != nil || !sigOK.Verified {
-		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
-	}
-
-	// The salt ledger answers before the memory-hard derivation runs: a
-	// replayed solved payload then costs one indexed read instead of a
-	// full KDF re-derivation, and this unauthenticated path cannot turn
-	// one solved challenge into unlimited server work at line rate. The
-	// lookup is advisory — ConsumeAltchaSalt below stays the single-use
-	// authority — so a lookup error falls through to the full checks
-	// instead of failing open or closed on its own.
-	if used, err := m.st.AltchaSalts().HasAltchaSalt(ctx, p.Challenge.Parameters.Salt); err == nil && used {
-		return m.counted(ProviderAltcha, ResultReplayed, errReplayed)
-	}
-
 	result, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
 		Challenge:           p.Challenge,
 		Solution:            p.Solution,
-		DeriveKey:           deriveKey,
 		HMACSignatureSecret: string(res.secret),
+		DeriveKey: func(params altcha.ChallengeParameters, salt, password []byte) ([]byte, error) {
+			// ALTCHA verifies the signature and expiry before calling DeriveKey.
+			// Invalid signatures cause no store read, and replays stop before
+			// derivation. The lookup is advisory: ConsumeAltchaSalt below
+			// enforces single use even when the lookup fails or callers race.
+			if used, err := m.st.AltchaSalts().HasAltchaSalt(ctx, params.Salt); err == nil && used {
+				return nil, errReplayed
+			}
+			return deriveKey(params, salt, password)
+		},
 	})
+	if errors.Is(err, errReplayed) {
+		return m.counted(ProviderAltcha, ResultReplayed, errReplayed)
+	}
 	if err != nil || !result.Verified {
 		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}

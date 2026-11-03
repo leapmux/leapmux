@@ -174,7 +174,8 @@ func TestRunSocketServerSerializesSessions(t *testing.T) {
 	_ = first.Close()
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not exit after first session shut down")
 	}
@@ -216,7 +217,8 @@ func TestRunSocketServerLongSessionSurvivesIdleTimeout(t *testing.T) {
 	_ = conn.Close()
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.NoError(t, err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not exit after shutdown RPC")
 	}

@@ -520,7 +520,8 @@ func TestProvedChildControlWaitsForDispatcherRelease(t *testing.T) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cleanupCancel()
 		select {
-		case <-flushed:
+		case err := <-flushed:
+			t.Logf("child queue flush returned after dispatcher release: %v", err)
 		case <-cleanupCtx.Done():
 			t.Fatal("the child control callback did not finish after dispatcher release")
 		}

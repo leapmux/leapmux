@@ -324,8 +324,8 @@ func TestSendGateLifetimeUnwedgesParkedSender(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("send returned while the frame permit was held")
+	case err := <-done:
+		t.Fatalf("send returned while the frame permit was held: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -411,8 +411,8 @@ func TestSendGateWithFrameLifetimeAbortsParkedAcquire(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("WithFrame returned while the frame permit was held")
+	case err := <-done:
+		t.Fatalf("WithFrame returned while the frame permit was held: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

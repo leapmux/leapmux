@@ -254,7 +254,6 @@ export const AccountPasskeys: Component = () => {
   }
 
   const handleDeletePasskey = async () => {
-    // eslint-disable-next-line solid/reactivity -- user-invoked action: reads at invocation time
     const passkey = targetPasskey()
     if (!passkey)
       return
@@ -337,7 +336,6 @@ export const AccountPasskeys: Component = () => {
     try {
       const resp = await userClient.renamePasskey({
         id,
-        // eslint-disable-next-line solid/reactivity -- user-invoked action: reads at invocation time
         friendlyName: renameValue().trim() || 'Passkey',
       })
       cancelRename()

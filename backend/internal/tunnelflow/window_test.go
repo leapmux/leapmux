@@ -73,8 +73,8 @@ func TestWindowCloseWakesAcquire(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { result <- w.Acquire(context.Background()) }()
 	select {
-	case <-result:
-		t.Fatal("acquire returned with no credit available")
+	case err := <-result:
+		t.Fatalf("acquire returned with no credit available: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

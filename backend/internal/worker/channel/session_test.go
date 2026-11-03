@@ -2225,8 +2225,8 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 		done <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("parked")})
 	}()
 	select {
-	case <-done:
-		t.Fatal("second send returned while the frame permit was held")
+	case err := <-done:
+		t.Fatalf("second send returned while the frame permit was held: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

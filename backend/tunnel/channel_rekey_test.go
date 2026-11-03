@@ -873,8 +873,8 @@ func TestChannelRekeyMuSerializesEnsureAndSend(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("ensureRekeyed returned while rekeyMu was held")
+	case err := <-done:
+		t.Fatalf("ensureRekeyed returned while rekeyMu was held: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	// Do not Read on peerWS here: a cancelled Read can poison the websocket.

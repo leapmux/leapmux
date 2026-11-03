@@ -738,8 +738,8 @@ func TestConnWriteBlocksWhenSendWindowFull(t *testing.T) {
 		writeDone <- err
 	}()
 	select {
-	case <-writeDone:
-		t.Fatal("Write returned even though the send window was full")
+	case err := <-writeDone:
+		t.Fatalf("Write returned even though the send window was full: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -829,8 +829,8 @@ func TestConnWriteWindowUnblocksOnClose(t *testing.T) {
 		writeDone <- err
 	}()
 	select {
-	case <-writeDone:
-		t.Fatal("Write returned even though the send window was full")
+	case err := <-writeDone:
+		t.Fatalf("Write returned even though the send window was full: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1422,8 +1422,8 @@ func TestConnWriteDeadlineSetAfterParkWakesWindowParkedWrite(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-done:
-		t.Fatal("Write returned even though the send window was full")
+	case err := <-done:
+		t.Fatalf("Write returned even though the send window was full: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
