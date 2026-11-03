@@ -32,6 +32,7 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // delegationBearer is everything a /ws/userevents test needs to dial with a
@@ -66,6 +67,7 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))

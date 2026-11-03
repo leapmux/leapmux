@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -544,6 +545,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 				workerID := id.Generate()
 				require.NoError(t, tx.Workers().Create(ctx, store.CreateWorkerParams{
 					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+					PublicKeys: WorkerKeys(workerkeystest.SeededWorkerFill),
 				}))
 				_, err := tx.Workers().ForceDeregister(ctx, workerID)
 				require.NoError(t, err)

@@ -21,8 +21,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // ownedTabPollSpy counts the ownership-poll's point lookups.
@@ -110,6 +112,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 		ID:           workerID,
 		AuthToken:    workerAuthToken,
 		RegisteredBy: userid.MustNew(u.ID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	workspaceID := id.Generate()
@@ -266,6 +269,7 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 		ID:           otherWorkerID,
 		AuthToken:    otherAuthToken,
 		RegisteredBy: userid.MustNew(env.userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := mintRequest(t, env, otherAuthToken, map[string]any{
@@ -522,6 +526,7 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 		ID:           otherWorkerID,
 		AuthToken:    otherAuthToken,
 		RegisteredBy: userid.MustNew(env.userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := revokeRequest(t, env, otherAuthToken, map[string]any{"token_id": tokenID})

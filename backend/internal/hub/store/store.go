@@ -239,14 +239,14 @@ type SessionStore interface {
 type WorkerStore interface {
 	Create(ctx context.Context, p CreateWorkerParams) error
 	GetByID(ctx context.Context, id string) (*Worker, error)
-	// GetByIDIncludeDeleted returns the worker row even if it is
-	// soft-deleted. Use this only for admin tooling / audit paths that need
-	// to inspect deleted records; normal business logic should use GetByID.
+	// GetByIDIncludeDeleted returns the worker whatever its state; the caller
+	// decides what a deleted row means.
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
-	// GetByAuthToken returns an ACTIVE or DEREGISTERING worker: a
-	// deregistering worker must still connect, because connecting is how it
-	// is told to stop. A deleted worker is ErrNotFound.
-	GetByAuthToken(ctx context.Context, token string) (*Worker, error)
+	// GetByAuthTokenIncludeDeleted returns the worker with this token whatever
+	// its state, and the caller refuses a row with DeletedAt set. A
+	// deregistering worker must still be admitted: Connect is how it is told
+	// to stop, and its other calls keep working until then.
+	GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*Worker, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)

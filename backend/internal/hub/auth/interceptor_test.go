@@ -26,8 +26,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // setupInterceptorTestServer creates an httptest server with the AuthService
@@ -482,6 +484,7 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	// Seed a workspace owned by the user so the delegation's
 	// workspace_id is meaningful for downstream scope checks.
@@ -523,6 +526,7 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -562,6 +566,7 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{

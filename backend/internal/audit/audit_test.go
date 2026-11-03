@@ -138,6 +138,9 @@ func TestRepoInvariants(t *testing.T) {
 			case reachEstablishedChan:
 				// No structural claim: the id's provenance (an already-authorized
 				// channel record) is not visible in the signature.
+			case reachAdminGated:
+				// No structural claim: that the procedure is admin-only is an
+				// access-interceptor property, not one the signature states.
 			}
 		}
 	})

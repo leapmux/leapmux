@@ -54,7 +54,7 @@ The table below states the threat model. Treat what the Hub **can** see as data 
 | Account metadata: user names, emails, password hashes, OAuth tokens, session tokens, passkey credential metadata (friendly names, credential IDs, encrypted public keys) | Agent chat transcripts, tool-call arguments, or tool outputs |
 | Account and workspace records | Terminal I/O, shell history, or PTY state |
 | Workspace **titles**, tab positions, and tiling layout geometry | File contents, diffs, or git status |
-| Worker registration data (Worker ID, online status, last-seen time) and each connected Worker's composite public keys | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
+| Worker registration data (Worker ID, online status, last-seen time) and the composite public keys each Worker registered with | Worker hostname, OS, or filesystem paths (sent only inside the encrypted channel) |
 | Per-message transport metadata: channel ID, correlation ID, ciphertext size, timing | Any plaintext of Frontend↔Worker traffic |
 
 {{< callout type="warning" >}}
@@ -64,7 +64,7 @@ The table below states the threat model. Treat what the Hub **can** see as data 
 Four specifics matter:
 
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
-- **Worker public keys are visible; private keys never leave the Worker.** The Worker sends only its public composite key to the Hub, each time it connects. Its private halves stay in the Worker's local state.
+- **Worker public keys are visible; private keys never leave the Worker.** The Worker registers its public composite keys with the Hub once, and the Hub refuses a connection that presents other ones. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
 - **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
@@ -174,7 +174,7 @@ The Worker's check is defence in depth. The Hub already authorizes a channel to 
 
 ## Worker identity and TOFU pinning
 
-Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated on first run and stored in the Worker's local state. The Hub receives only the public halves, each time the Worker connects, and keeps them in memory for that connection.
+Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated on first run and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.
 
 The Frontend pins this identity **TOFU** ("trust on first use"). On the first connection to a Worker, the browser records the Worker's composite public key. On every later connection it compares the key the Hub hands over against the pinned one:
 
@@ -184,11 +184,23 @@ The Frontend pins this identity **TOFU** ("trust on first use"). On the first co
 
 This is what defeats a compromised Hub. Because the Hub is the party that tells your browser the Worker's key, a malicious Hub might try to substitute its own key and impersonate the Worker. TOFU pinning catches that: the substituted key won't match the pin, and you get an explicit prompt instead of a silent man-in-the-middle.
 
+The Hub pins the keys too, so a stolen Worker auth token alone cannot attach other keys to that Worker — not even for a client that has no pin yet. The Worker's public keys are public, though, so a holder of the token can still do these things:
+
+- Present the real keys and replace the live connection. That takes the Worker offline, because the clients' handshakes then fail.
+- Read the Worker's tab IDs.
+- Mint delegation tokens for the Worker's owner, up to the delegation ceiling.
+- Revoke the delegation tokens of the Worker's agents.
+- Send an empty tab inventory, which makes the Hub tombstone every tab of the owner that the Worker hosts.
+
+Treat `state.json` as a secret for that reason.
+
+The Hub cannot cut such a holder off at once: deregistering the Worker stops its token only when the Worker acknowledges the stop, or 7 days later. New keys need a new registration, which creates a new Worker ID, so a re-registered Worker is a different Worker to every client's pin.
+
 ### The "Worker public key changed" dialog
 
-When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key changed"**. The dialog identifies the Worker, and it states that the key changed since the last connection. It also states that the cause is either a legitimate key rotation or a security problem.
+When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key changed"**. The dialog identifies the Worker, and it states that the key differs from the key pinned for it at an earlier connection. It also states that a Worker keeps its keys for as long as it stays registered, so one of the two keys did not come from this Worker.
 
-It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and it tells you to reject the connection and to verify the Worker's identity out-of-band before you accept an unexpected change. Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
+It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and it tells you to reject the connection and to accept only after you confirm that the Actual fingerprint matches the one the Worker logs when it starts. Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
 
 {{< callout >}}
 The fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`). Every word is drawn from a fixed 256-word list and is exactly four letters, so a fingerprint is always the same shape and easy to read aloud. The wordlist is identical across the browser and the Worker, so you can read the fingerprint over a trusted out-of-band channel (a phone call, an in-person check) and confirm it matches before accepting a changed key.
@@ -196,8 +208,10 @@ The fingerprints are **4 dash-joined English words** derived from a hash of the 
 
 ### When to accept and when to reject
 
-- **Accept** only if you *expected* the change — for example, you deliberately re-generated the Worker's identity, or you wiped and re-registered the Worker. Verify the fingerprint out-of-band first.
-- **Reject** if the change is unexpected. A surprise key change on a Worker you didn't touch is exactly the signal TOFU pinning exists to surface.
+- **Reject by default.** No ordinary action causes a harmless key change on the same Worker ID: a Worker keeps its keys for as long as it stays registered, and a re-registered Worker arrives as a new Worker with no dialog.
+- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. Each entry point logs it as `key_fingerprint`: the standalone `leapmux worker` in its "starting worker" line, and solo mode and dev mode in the "solo worker registered" and "dev worker registered" lines.
+
+The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. The desktop app's own local Worker runs in the same process as its Hub, so a key change for it cannot come from the network: it means the app's stored pins or data changed.
 
 In the browser, the pin is kept for one year and refreshed on use, and pins are managed under **Preferences → Advanced → Trusted worker keys**. The non-browser clients have dedicated CLI pin stores, covered in [Managing Workers](/docs/admin/managing-workers/):
 
@@ -395,7 +409,7 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before the re-encryption migrated every row. The exact runbook is in [Encryption & Data](/docs/admin/encryption-and-data/).
 5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Run `leapmux hub` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/admin/managing-workers/).
-7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject unexpected changes and verify the 4-word fingerprint out-of-band before ever accepting.
+7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject a changed key, and accept only after the 4-word fingerprint matches the one the Worker logs when it starts.
 8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux control admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).
 
 ## Quick reference

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -25,9 +25,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
-	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // Tests in this file do NOT call t.Parallel(), unlike the rest of the package.
@@ -385,12 +385,16 @@ func TestStreamEndReason(t *testing.T) {
 func TestValidateWorkerHello(t *testing.T) {
 	t.Parallel()
 
-	x25519 := bytes.Repeat([]byte{1}, noise.EphemeralPublicKeySize)
-	mlkem := bytes.Repeat([]byte{2}, noise.MlkemPublicKeySize)
-	slhdsa := bytes.Repeat([]byte{3}, noise.SlhdsaPublicKeySize)
-	hello := func(mode leapmuxv1.EncryptionMode, x, m, s []byte) *leapmuxv1.ConnectRequest {
+	// A complete, valid set: every defect case below starts from it, so exactly
+	// one thing is wrong with each.
+	complete := workerkeystest.Keys(workerkeystest.SeededWorkerFill)
+	hello := func(mode leapmuxv1.EncryptionMode, mutate func(*leapmuxv1.WorkerPublicKeys)) *leapmuxv1.ConnectRequest {
+		keys := proto.Clone(complete).(*leapmuxv1.WorkerPublicKeys)
+		if mutate != nil {
+			mutate(keys)
+		}
 		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{
-			Keys:           &leapmuxv1.WorkerPublicKeys{X25519: x, Mlkem: m, Slhdsa: s},
+			Keys:           keys,
 			EncryptionMode: mode,
 		}}}
 	}
@@ -398,9 +402,8 @@ func TestValidateWorkerHello(t *testing.T) {
 	pq := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 
 	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
-		"classic with only x25519":    hello(classic, x25519, nil, nil),
-		"classic with every key":      hello(classic, x25519, mlkem, slhdsa),
-		"post-quantum with every key": hello(pq, x25519, mlkem, slhdsa),
+		"classic with every key":      hello(classic, nil),
+		"post-quantum with every key": hello(pq, nil),
 	} {
 		t.Run("accepts "+name, func(t *testing.T) {
 			got, err := validateWorkerHello(msg)
@@ -409,23 +412,64 @@ func TestValidateWorkerHello(t *testing.T) {
 		})
 	}
 
+	// A first message that is not a hello, or a mode that is not supported.
 	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
-		"a nil message":                   nil,
-		"a heartbeat":                     {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
-		"a hello with no keys":            {Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{EncryptionMode: classic}}},
-		"an unspecified mode":             hello(leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, x25519, mlkem, slhdsa),
-		"an unknown mode":                 hello(leapmuxv1.EncryptionMode(99), x25519, mlkem, slhdsa),
-		"a short x25519":                  hello(classic, x25519[:31], nil, nil),
-		"a long x25519":                   hello(classic, append(bytes.Clone(x25519), 0), nil, nil),
-		"post-quantum without mlkem":      hello(pq, x25519, nil, slhdsa),
-		"post-quantum without slhdsa":     hello(pq, x25519, mlkem, nil),
-		"post-quantum with a short mlkem": hello(pq, x25519, mlkem[:100], slhdsa),
-		"classic with a short mlkem":      hello(classic, x25519, mlkem[:100], nil),
-		"classic with a short slhdsa":     hello(classic, x25519, nil, slhdsa[:10]),
+		"a nil message":       nil,
+		"a heartbeat":         {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
+		"an unspecified mode": hello(leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, nil),
+		"an unknown mode":     hello(leapmuxv1.EncryptionMode(99), nil),
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
 			_, err := validateWorkerHello(msg)
 			require.Error(t, err)
+		})
+	}
+
+	t.Run("refuses a hello with no keys", func(t *testing.T) {
+		_, err := validateWorkerHello(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Hello{
+			Hello: &leapmuxv1.WorkerHello{EncryptionMode: classic},
+		}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing")
+	})
+
+	// Every key defect, each on an otherwise complete set, and each error must
+	// name the key that is wrong.
+	for name, tc := range map[string]struct {
+		msg *leapmuxv1.ConnectRequest
+		key string
+	}{
+		"classic with mlkem but no slhdsa": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }), key: "slhdsa",
+		},
+		"classic with slhdsa but no mlkem": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }), key: "mlkem",
+		},
+		"a short x25519": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:31] }), key: "x25519",
+		},
+		"a long x25519": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = append(k.X25519, 0) }), key: "x25519",
+		},
+		"a short mlkem": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = k.Mlkem[:100] }), key: "mlkem",
+		},
+		"a short slhdsa": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = k.Slhdsa[:10] }), key: "slhdsa",
+		},
+		"an mlkem key of the right size filled with 0xff": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) {
+				for i := range k.Mlkem {
+					k.Mlkem[i] = 0xFF
+				}
+			}),
+			key: "mlkem",
+		},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			_, err := validateWorkerHello(tc.msg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.key, "the error must identify the defective key")
 		})
 	}
 }

@@ -24,6 +24,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
 // TestNormalizePageParams pins the normalization every paginated admin handler
@@ -125,7 +126,7 @@ func (c *fakePurgeCleanup) HardDeleteExpiredRegistrationKeysBefore(_ context.Con
 
 func purgeRegistrationKeys(t *testing.T, cleanup *fakePurgeCleanup) (*leapmuxv1.PurgeExpiredRegistrationKeysResponse, error) {
 	t.Helper()
-	svc := NewAdminWorkerService(fakePurgeStore{cleanup: cleanup}, nil)
+	svc := NewAdminWorkerService(fakePurgeStore{cleanup: cleanup}, workermgr.New(workermgr.DenyAllReach()), nil)
 	return svc.PurgeExpiredRegistrationKeys(context.Background(),
 		&leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
 }

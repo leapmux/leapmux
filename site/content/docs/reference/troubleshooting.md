@@ -21,7 +21,7 @@ A Worker (`leapmux worker`) dials *out* to the Hub and holds a single bidirectio
 The Worker process prints an error and exits. The error says that the Worker is unregistered, and it tells you to pass a registration key from the hub UI.
 
 **Cause**
-The Worker has no saved credentials (no `state.json` in its data dir) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and controlled entirely by possessing a valid key.
+The Worker has no saved credentials (its `state.json` holds no Worker ID or auth token, because the Worker saves only its keypair before it registers) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and controlled entirely by possessing a valid key.
 
 **Fix**
 Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** (Register worker) button, and copy the generated command. It already includes the right Hub URL and key:
@@ -46,7 +46,7 @@ Mint a brand-new key from the **Register worker** dialog and run the Worker with
 ### The Worker refuses `--registration-key` because it is already registered
 
 **Symptom**
-The Worker prints an error and exits. The error says that the Worker is already registered, and it tells you to remove `--registration-key` or to wipe the local state.
+The Worker prints an error and exits. The error says that the Worker is already registered, and it tells you to remove `--registration-key`, or to deregister the Worker, delete its `state.json`, and register it again.
 
 **Cause**
 This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you do not waste a fresh key on a machine that's already configured.
@@ -66,12 +66,51 @@ The Worker process is alive and logging reconnection attempts, but it never show
 | Wrong Hub URL | Worker logs show repeated dial failures to the wrong host/port | Set `--hub` to the Hub's reachable URL. Default is `http://127.0.0.1:4327`; behind a reverse proxy use the public `https://` URL. The Worker accepts `http[s]://...`, `unix:<socket-path>` (Unix only), or `npipe:<pipe-name>` (Windows only). |
 | Hub not actually listening on a reachable address | `curl http://hub-host:4327/` from the Worker machine | Make sure the Hub binds an interface the Worker can reach. The Hub default is `:4327` (all interfaces); solo mode defaults to `127.0.0.1:4327` (loopback only — unreachable from another machine). See [Running LeapMux](/docs/admin/running-leapmux/). |
 | Firewall / NAT between Worker and Hub | Network tools on the Worker host | The Worker connects **outbound** (NAT-friendly), so the Worker needs outbound access to the Hub's port, not an inbound port. Open egress to the Hub. |
-| Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. Re-register against the correct Hub if it's pointed at the wrong one. |
-| Worker was deregistered server-side | Worker logs show `Unauthenticated` on reconnect, then exits | When the Hub deletes a Worker, the Worker clears its local state and exits on next connect. Register it again from the UI. |
+| Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. If the Worker's `--hub` points at another Hub, set `--hub` back to the Hub that registered the Worker. The Worker keeps its identity, because a Hub that does not know its token makes the Worker retry instead of deleting its state. If the Worker was registered with another Hub or by another user, deregister it there, delete its `state.json`, and register it with a key that the right user minted on the right Hub. |
+| Worker was deregistered or deleted | The Worker logs that it received a deregistration notification, or that the Hub reports it was deleted. A standalone Worker then exits, and an auto-registered Worker stops reconnecting. | A standalone Worker also clears its local state. Register it again with a fresh registration key from the UI. The launcher of an auto-registered Worker registers a fresh Worker at the next launch. |
 
 {{< callout type="info" >}}
-A Worker reconnects automatically with exponential backoff (1s up to 180s between attempts). If you just restarted the Hub, give the Worker up to ~3 minutes to reconnect, or restart the Worker to retry immediately.
+A Worker reconnects automatically with exponential backoff: 1 s, doubling to 180 s, with ±20% jitter, so one wait reaches at most about 3.6 minutes. If you just restarted the Hub, give the Worker up to that long to reconnect, or restart the Worker to retry immediately.
 {{< /callout >}}
+
+### A Worker keeps retrying, and each attempt fails as unauthenticated or permission denied
+
+**Symptom**
+The Worker never comes online, and each reconnection attempt logs an `unauthenticated` error, or `permission_denied` when a proxy answers 403.
+
+**Cause** — either the Hub has no record of the Worker's token, or something in front of the Hub refuses it:
+
+- The Worker was deleted more than 7 days ago, so the Hub hard-deleted its row.
+- The Worker points at the wrong Hub.
+- The Worker registered after the backup that a restored Hub database came from.
+- A proxy in front of the Hub answers 401 or 403 by itself.
+
+The Worker keeps its `state.json` for these errors, because a wrong `--hub` or a proxy must not destroy its identity.
+
+**Fix**
+Check `--hub` and the proxy. If neither is wrong, stop the Worker, delete its `state.json`, and register it again.
+
+### A Worker stops because the Hub refused its public keys
+
+**Symptom**
+The Worker logs that the Hub refused its public keys and stops. A standalone Worker exits, and its error says that the keys differ from the keys it registered with and tells you to deregister it, delete its `state.json`, and register it again.
+
+**Cause**
+Its saved keys differ from the keys it registered with. The Hub pins the keys a Worker registers with and refuses a hello that presents others, so this cannot be fixed by reconnecting.
+
+**Fix**
+Deregister the Worker, delete its `state.json`, and register it again. For an auto-registered Worker (solo mode, dev mode, or the desktop app), restart the app instead: at launch, the launcher finds that the saved keys differ from the pinned keys, retires the old Worker, and registers a fresh one. The fresh Worker has a new Worker ID, and the old Worker's tabs do not move to it.
+
+### A registered Worker exits at start because its keys are missing or unusable
+
+**Symptom**
+The error says that the Worker state is registered but its keypair is missing or unusable, gives the state file's path, and tells you to deregister the Worker, delete that file, and register it again.
+
+**Cause**
+A registered `state.json` with a missing or broken keypair.
+
+**Fix**
+The same as the entry above.
 
 ### Worker is "online" to the Hub but the sidebar shows it disconnected
 
@@ -91,14 +130,16 @@ LeapMux remembers each Worker's public key on first connection (trust-on-first-u
 ### The browser shows the "Worker public key changed" dialog
 
 **Symptom**
-A dialog titled **"Worker public key changed"** appears, stating that the Worker's public key differs from the one at the last connection, and showing an **Expected:** and **Actual:** 4-word fingerprint. The agent/terminal won't open until you choose.
+A dialog titled **"Worker public key changed"** appears, stating that the Worker's public key differs from the key pinned for it at an earlier connection, and showing an **Expected:** and **Actual:** 4-word fingerprint. The agent/terminal won't open until you choose.
 
 **Cause**
-The Worker's remembered key no longer matches the key the Worker is now presenting. Legitimate causes: the Worker's `state.json` was deleted/recreated (which regenerates its keypair), the data dir moved, or you reinstalled. The malicious cause this protects against: someone substituted a different Worker.
+A Worker cannot change its keys under the same Worker ID, because the Hub pins the keys it registered with. So one of the two keys did not come from this Worker: either someone substituted a different Worker, or the Hub handed over a key that is not the pinned one.
 
 **Fix**
-- If you expected this change (you wiped the Worker's state, reinstalled, etc.), verify the **Actual** fingerprint matches the new Worker out-of-band, then click **Accept**. The pin is overwritten with the new key.
-- If you did **not** expect it, click **Reject** (closing the dialog also counts as Reject) and investigate before reconnecting. The channel is not opened.
+- Click **Reject** (closing the dialog also counts as Reject) and investigate before reconnecting. The channel is not opened.
+- Click **Accept** only after you confirm, out of band, that the **Actual** fingerprint matches the one the Worker logs when it starts.
+
+A Worker whose `state.json` was wiped registers with a new Worker ID, so it shows no dialog at all.
 
 {{< callout type="warning" >}}
 Accepting overwrites the pinned key permanently. Only accept after confirming the new fingerprint really belongs to your Worker.
@@ -107,16 +148,16 @@ Accepting overwrites the pinned key permanently. Only accept after confirming th
 ### A `leapmux control` or Worker-to-Worker connection aborts on a key mismatch
 
 **Symptom**
-A CLI or cross-worker connection fails. The error identifies the Worker whose key no longer matches, and it gives a hint that tells you how to clear the pin.
+A CLI or cross-worker connection fails. The error identifies the Worker whose key no longer matches, states the pinned and the presented fingerprints, and its hint states the command that clears the pin.
 
 **Cause**
-Non-browser clients also pin Worker keys TOFU, but they cannot pop a dialog, so a mismatch aborts the connection. The hint tells you exactly how to clear the pin. There are two separate pin stores:
+Non-browser clients also pin Worker keys TOFU, but they cannot pop a dialog, so a mismatch aborts the connection. A Worker keeps its keys while it stays registered, so a mismatch means that one of the two keys did not come from this Worker. Clear the pin only after the presented fingerprint matches the one the Worker logs when it starts. There are two separate pin stores:
 
 - The **`leapmux control` CLI** keeps pins per Hub host.
 - A **Worker** keeps cross-worker pins for sibling Workers.
 
 **Fix**
-Clear the stale pin so the next connect re-pins the new key, then reconnect.
+Once the presented fingerprint matches the one the Worker logs when it starts, clear the stale pin so the next connect pins the presented key, then reconnect.
 
 For the control CLI:
 
@@ -510,7 +551,7 @@ docker run \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-The registration key is consumed on first run; once registered, the Worker reconnects with its saved state and you can drop `LEAPMUX_WORKER_REGISTRATION_KEY`. See [Managing Workers](/docs/admin/managing-workers/).
+The registration key is consumed on first run. Remove `LEAPMUX_WORKER_REGISTRATION_KEY` after that run: a registered Worker refuses to start while it is set, and its error states the remedy. See [Managing Workers](/docs/admin/managing-workers/).
 
 ### Non-SQLite storage configured via env vars is ignored
 
@@ -541,7 +582,7 @@ See [Configuration](/docs/admin/configuration/).
 Workspaces, accounts, agents, or terminals vanish after restarting the container or process.
 
 **Cause**
-The Hub's state lives in its data dir (SQLite DB at `<data_dir>/hub.db`, encryption key ring at `<data_dir>/encryption.key`); the Worker keeps `state.json` and `worker.db`. If the data dir isn't persisted, every restart starts fresh.
+The Hub's state lives in its data dir (SQLite DB at `<data_dir>/hub.db`, encryption key ring at `<data_dir>/encryption.key`); the Worker keeps `state.json` and `worker.db`. If the data dir isn't persisted, every restart starts fresh. A Worker that registered with a Hub whose data was lost keeps retrying, because the Hub has no record of its token; stop it, delete its `state.json`, and register it again.
 
 **Fix**
 - **Docker:** mount a volume at `/data`. Without `-v ...:/data`, state is lost when the container is removed. State lands under `/data/<mode>/`.

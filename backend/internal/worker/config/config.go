@@ -75,8 +75,9 @@ func ResolveStartupConcurrency(n int) int {
 type Config struct {
 	HubURL string `koanf:"hub" json:"hub_url"`
 	// RegistrationKey is the bearer credential the worker presents to
-	// WorkerConnectorService.Register. Required on first run; ignored on
-	// subsequent runs if the worker is already registered. Not persisted.
+	// WorkerConnectorService.Register. Required on first run. A worker that
+	// already has saved credentials refuses to start while it is set. Not
+	// persisted.
 	RegistrationKey      string `koanf:"registration_key" json:"-"`
 	Name                 string `koanf:"name" json:"name"`
 	DataDir              string `koanf:"data_dir" json:"data_dir"`
@@ -133,7 +134,80 @@ func (c *Config) applyDurationDefaults() {
 	}
 }
 
-// State holds the worker's persistent state (saved to disk after registration).
+// ErrUnusableRegisteredKeypair reports a saved state that holds credentials but
+// no usable keypair. Its message states only the fact: reregistrationAdvice is
+// the one source of the remedy.
+var ErrUnusableRegisteredKeypair = errors.New(
+	"the worker state is registered, but its keypair is missing or unusable")
+
+// KeyMaterial is the Worker's static key material as it is persisted: the three
+// PRIVATE halves, base64-encoded.
+//
+// Each public half is derivable (see noise.RestoreCompositeKeypair), so storing
+// it would be a second copy that can drift from the private half it belongs to
+// -- and a drifted copy is permanent once the Hub pins it.
+type KeyMaterial struct {
+	// X25519PrivateKey is the raw 32-byte X25519 scalar.
+	X25519PrivateKey string `json:"x25519_private_key,omitempty"`
+	// MlkemPrivateKey is the 64-byte ML-KEM-1024 decapsulation seed.
+	MlkemPrivateKey string `json:"mlkem_private_key,omitempty"`
+	// SlhdsaPrivateKey is the SLH-DSA private key, which embeds its public key.
+	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"`
+}
+
+// HasKeypair reports whether all three private halves are present.
+func (k KeyMaterial) HasKeypair() bool {
+	return k.X25519PrivateKey != "" && k.MlkemPrivateKey != "" && k.SlhdsaPrivateKey != ""
+}
+
+// GenerateKeypair generates a fresh composite keypair and stores its private
+// halves. It returns the keypair, so a caller that just generated one can use
+// it without a restore round trip.
+func (k *KeyMaterial) GenerateKeypair() (*noiseutil.CompositeKeypair, error) {
+	ck, err := noiseutil.GenerateCompositeKeypair()
+	if err != nil {
+		return nil, fmt.Errorf("generate composite keypair: %w", err)
+	}
+	slhdsaPriv, err := ck.SlhdsaPrivateKey.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshal slhdsa private key: %w", err)
+	}
+	k.X25519PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
+	k.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
+	k.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
+	return ck, nil
+}
+
+// CompositeKeypair decodes the saved private halves and restores the keypair,
+// public halves included.
+func (k KeyMaterial) CompositeKeypair() (*noiseutil.CompositeKeypair, error) {
+	x25519Priv, err := decode64("x25519_private_key", k.X25519PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	mlkemSeed, err := decode64("mlkem_private_key", k.MlkemPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	slhdsaPriv, err := decode64("slhdsa_private_key", k.SlhdsaPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	return noiseutil.RestoreCompositeKeypair(x25519Priv, mlkemSeed, slhdsaPriv)
+}
+
+// decode64 decodes one base64 field of the saved key material and states the
+// field in its error.
+func decode64(field, s string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", field, err)
+	}
+	return b, nil
+}
+
+// State holds the worker's persistent state. runWorker writes it when it
+// generates the keypair and again after registration.
 type State struct {
 	// PID is the process that wrote this file. It comes first in the JSON so
 	// a reader sees it before anything else, and it is stamped at write time
@@ -145,58 +219,36 @@ type State struct {
 	// (leapmuxv1.WorkerIdentity), so persisting a copy would be a second source of
 	// truth for the fact every machine-scoped gate keys on -- and a file that lost
 	// it left the worker denying its own legitimate owner, permanently.
-	PublicKey        string `json:"public_key,omitempty"`         // Base64-encoded X25519 public key
-	PrivateKey       string `json:"private_key,omitempty"`        // Base64-encoded X25519 private key
-	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`   // Base64-encoded ML-KEM-1024 decapsulation key
-	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`  // Base64-encoded SLH-DSA public key
-	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"` // Base64-encoded SLH-DSA private key
-	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`  // Base64-encoded ML-KEM-1024 decapsulation key (serialized)
+	KeyMaterial
 }
 
-// EnsureCompositeKeypair generates a composite keypair if one doesn't exist.
-// Returns true if a new keypair was generated (state needs saving).
-func (s *State) EnsureCompositeKeypair() (bool, error) {
-	if s.PublicKey != "" && s.PrivateKey != "" && s.MlkemPublicKey != "" && s.MlkemPrivateKey != "" && s.SlhdsaPublicKey != "" && s.SlhdsaPrivateKey != "" {
-		return false, nil
+// EnsureCompositeKeypair returns the state's keypair, generating one when it has
+// none. The bool reports whether it generated one, so the caller knows to save.
+//
+// A REGISTERED state (a token is present) whose keypair is missing or fails to
+// restore is an error: the Hub has already pinned keys this Worker cannot
+// reproduce, and nothing here may silently replace them. An UNREGISTERED state
+// with a broken or missing keypair regenerates, because nothing is pinned yet.
+func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, error) {
+	if s.HasKeypair() {
+		ck, err := s.CompositeKeypair()
+		if err == nil {
+			return ck, false, nil
+		}
+		if s.AuthToken != "" {
+			return nil, false, fmt.Errorf("%w: %w", ErrUnusableRegisteredKeypair, err)
+		}
+		// No token: nothing is pinned, so a broken keypair is replaced below.
+	} else if s.AuthToken != "" {
+		return nil, false, fmt.Errorf("%w: %w", ErrUnusableRegisteredKeypair,
+			errors.New("the keypair is missing"))
 	}
 
-	ck, err := noiseutil.GenerateCompositeKeypair()
+	ck, err := s.GenerateKeypair()
 	if err != nil {
-		return false, fmt.Errorf("generate composite keypair: %w", err)
+		return nil, false, err
 	}
-
-	slhdsaPub, err := ck.SlhdsaPublicKeyBytes()
-	if err != nil {
-		return false, fmt.Errorf("marshal slhdsa public key: %w", err)
-	}
-	slhdsaPriv, err := ck.SlhdsaPrivateKey.MarshalBinary()
-	if err != nil {
-		return false, fmt.Errorf("marshal slhdsa private key: %w", err)
-	}
-
-	s.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
-	s.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
-	s.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
-	s.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
-	s.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
-	s.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
-	return true, nil
-}
-
-// CompositeKeypair reconstructs the CompositeKeypair from persisted state.
-func (s *State) CompositeKeypair() (*noiseutil.CompositeKeypair, error) {
-	return noiseutil.RestoreCompositeKeypair(
-		mustDecode(s.PublicKey),
-		mustDecode(s.PrivateKey),
-		mustDecode(s.MlkemPrivateKey),
-		mustDecode(s.SlhdsaPublicKey),
-		mustDecode(s.SlhdsaPrivateKey),
-	)
-}
-
-func mustDecode(s string) []byte {
-	b, _ := base64.StdEncoding.DecodeString(s)
-	return b
+	return ck, true, nil
 }
 
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.

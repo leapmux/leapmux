@@ -7,10 +7,12 @@
 package noise
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"hash"
 	"sync/atomic"
@@ -131,21 +133,55 @@ func GenerateCompositeKeypair() (*CompositeKeypair, error) {
 	}, nil
 }
 
-// RestoreCompositeKeypair reconstructs a CompositeKeypair from serialized key bytes.
-func RestoreCompositeKeypair(x25519Pub, x25519Priv, mlkemPrivBytes, slhdsaPubBytes, slhdsaPrivBytes []byte) (*CompositeKeypair, error) {
-	mlkemDK, err := mlkem.NewDecapsulationKey1024(mlkemPrivBytes)
+// RestoreCompositeKeypair reconstructs a CompositeKeypair from the PRIVATE
+// halves of its key material: the X25519 scalar, the ML-KEM-1024 decapsulation
+// seed, and the SLH-DSA private key.
+//
+// Only the private halves are taken because each public half is derivable from
+// them: the X25519 public point from the scalar, the ML-KEM encapsulation key
+// from the seed, and the SLH-DSA public key from the private key, which embeds
+// it. A stored public half would be a second copy that can drift from the
+// private half it belongs to — and once the Hub pins that copy, the drift is
+// permanent.
+//
+// The SLH-DSA public key is RECOMPUTED, not trusted: circl's
+// PrivateKey.PublicKey() returns the copy embedded in the private key without
+// checking it, so a corrupt secret seed with an intact embedded public key
+// would pin a key the Worker cannot sign for. FIPS 205's slh_keygen (Section
+// 10.1, Algorithm 21) reads SK.seed, SK.prf and PK.seed in that order, so
+// replaying the private key's first three n-byte fields through GenerateKey
+// reproduces the keypair the private key was made from; the recomputed public
+// key must match the embedded one. This costs one top-tree computation, about a
+// twentieth of a signature. It cannot detect a corrupt SK.prf, which is harmless
+// because every signature carries its own randomizer R.
+func RestoreCompositeKeypair(x25519Priv, mlkemSeed, slhdsaPrivBytes []byte) (*CompositeKeypair, error) {
+	x25519Pub, err := X25519PublicFromSeed(x25519Priv)
 	if err != nil {
-		return nil, fmt.Errorf("parse ML-KEM decapsulation key: %w", err)
+		return nil, fmt.Errorf("restore X25519 public key: %w", err)
 	}
 
-	slhdsaPub := slhdsa.PublicKey{ID: slhdsa.SHAKE_256f}
-	if err := slhdsaPub.UnmarshalBinary(slhdsaPubBytes); err != nil {
-		return nil, fmt.Errorf("parse SLH-DSA public key: %w", err)
+	mlkemDK, err := mlkem.NewDecapsulationKey1024(mlkemSeed)
+	if err != nil {
+		return nil, fmt.Errorf("parse ML-KEM decapsulation key: %w", err)
 	}
 
 	slhdsaPriv := slhdsa.PrivateKey{ID: slhdsa.SHAKE_256f}
 	if err := slhdsaPriv.UnmarshalBinary(slhdsaPrivBytes); err != nil {
 		return nil, fmt.Errorf("parse SLH-DSA private key: %w", err)
+	}
+	slhdsaPub := slhdsaPriv.PublicKey()
+
+	// n is the byte length of each of the four n-byte fields the private key
+	// holds (SK.seed, SK.prf, PK.seed, PK.root), so it is half a public key's
+	// PK.seed||PK.root. circl exposes no accessor, and UnmarshalBinary has
+	// already refused any length but 4n.
+	n := SlhdsaPublicKeySize / 2
+	recomputed, _, err := slhdsa.GenerateKey(bytes.NewReader(slhdsaPrivBytes[:3*n]), slhdsa.SHAKE_256f)
+	if err != nil {
+		return nil, fmt.Errorf("recompute SLH-DSA public key: %w", err)
+	}
+	if !recomputed.Equal(slhdsaPub) {
+		return nil, errors.New("the SLH-DSA private key does not match its public key")
 	}
 
 	return &CompositeKeypair{

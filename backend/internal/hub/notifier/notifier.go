@@ -85,8 +85,11 @@ func New(st store.Store, wMgr workerRegistry, sender requestSender, apiTimeout f
 }
 
 // SendDeregister tells a worker to stop. The caller MUST call it after the
-// durable change committed: deregistering_at for a deregistration, or
-// deleted_at for a worker deleted with its user.
+// durable change committed: deregistering_at for a deregistration, deleted_at
+// for a worker deleted with its user, or deleted_at for Server.RetireLocalWorker's
+// plain retirement of an unusable bundled Worker. It is reached only through
+// WorkerDeregisterEffects.Apply, whose other three entries are the owner's
+// deregistration, the admin deregistration and the user-deletion cascade.
 //
 // It contains the current connection and tells it to stop. The notifier records
 // deletion after a valid acknowledgement. Every connected attempt ends that

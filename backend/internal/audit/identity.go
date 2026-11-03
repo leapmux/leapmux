@@ -193,4 +193,10 @@ var identityComparisonSites = map[string]string{
 	// owner's tab was due. BuildTabSync refuses an unminted owner outright rather
 	// than reporting every row on the machine.
 	"internal/worker/bootstrap.payloadTabIDsByType": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
+	// Not a grant: it decides whether a delivered identity replaced the owner and
+	// therefore starts a reconcile pass, whose cost is a ListOwnedTabsForWorker
+	// round trip. It appears here because the comparison is the same one, and
+	// because the zero-refusing comparison the service applies first is what keeps
+	// an undelivered (empty) owner from reading as a change.
+	"internal/worker/bootstrap.nudgeOnNewOwner": "TestNudgeOnNewOwner_NudgesOnlyWhenTheOwnerChanges",
 }

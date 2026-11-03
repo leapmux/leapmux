@@ -274,6 +274,16 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 // Wire runs, for the tests that care about one specific field.
 func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params)) (*Wiring, *hub.Client) {
 	t.Helper()
+	w, client, _ := wireForTestWithKeypair(t, mode, adjust)
+	return w, client
+}
+
+// wireForTestWithKeypair is wireForTestWith plus the keypair Wire was given, for
+// the tests that compare what the client advertises against its source.
+func wireForTestWithKeypair(
+	t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params),
+) (*Wiring, *hub.Client, *noiseutil.CompositeKeypair) {
+	t.Helper()
 
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -303,35 +313,52 @@ func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*P
 	adjust(&params)
 	w := Wire(params)
 	t.Cleanup(w.Shutdown)
-	return w, client
+	return w, client, key
 }
 
 // TestWire_AdvertisesPostQuantumKeysInEveryMode is the regression for a
 // silent identity change.
 //
 // The keys describe the worker, not the session's cipher: the handshake
-// picks its mode from EncryptionMode alone. The hub answers every channel's
-// handshake parameters from the worker's hello, so withholding them in
-// classic mode hands each client empty keys, and every client that had
-// pinned the worker then fails TOFU verification with a key mismatch it
-// cannot clear without manual intervention.
+// picks its mode from EncryptionMode alone. The Hub refuses a hello with an
+// incomplete key set, because it pins the complete set the worker registered
+// with, so withholding the post-quantum keys in classic mode would stop the
+// worker from connecting at all.
 func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
 	for _, mode := range []leapmuxv1.EncryptionMode{
 		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
-			_, client := wireForTest(t, mode)
+			_, client, key := wireForTestWithKeypair(t, mode, func(*Params) {})
+			slhdsa, err := key.SlhdsaPublicKeyBytes()
+			require.NoError(t, err)
 
-			assert.NotEmpty(t, client.PublicKey, "X25519 key must be advertised")
-			assert.NotEmpty(t, client.MlkemPublicKey,
-				"ML-KEM key must be advertised so the hello cannot break a client's pin with an empty key")
-			assert.NotEmpty(t, client.SlhdsaPublicKey,
-				"SLH-DSA key must be advertised so the hello cannot break a client's pin with an empty key")
+			require.NotNil(t, client.PublicKeys)
+			assert.Equal(t, key.X25519Public, client.PublicKeys.GetX25519())
+			assert.Equal(t, key.MlkemPublicKeyBytes(), client.PublicKeys.GetMlkem())
+			assert.Equal(t, slhdsa, client.PublicKeys.GetSlhdsa())
+			assert.Len(t, client.PublicKeys.GetX25519(), noiseutil.EphemeralPublicKeySize)
+			assert.Len(t, client.PublicKeys.GetMlkem(), noiseutil.MlkemPublicKeySize)
+			assert.Len(t, client.PublicKeys.GetSlhdsa(), noiseutil.SlhdsaPublicKeySize)
+			assert.NotEmpty(t, client.PublicKeys.GetMlkem(),
+				"ML-KEM key must be advertised: the Hub refuses a hello with an incomplete key set")
+			assert.NotEmpty(t, client.PublicKeys.GetSlhdsa(),
+				"SLH-DSA key must be advertised: the Hub refuses a hello with an incomplete key set")
 			assert.Equal(t, mode, client.EncryptionMode,
 				"the mode, not key presence, is what selects the handshake")
 		})
 	}
+}
+
+// A keypair Wire cannot describe as a complete key set is a wiring mistake, and
+// it fails before PrepareAgentDirs or the control IPC factory start anything.
+func TestWire_PanicsOnAKeypairWithoutKeys(t *testing.T) {
+	assert.Panics(t, func() {
+		wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) {
+			p.CompositeKey = &noiseutil.CompositeKeypair{}
+		})
+	})
 }
 
 // TestWire_PerformsEveryStepBothEntryPointsRelyOn pins the wiring steps

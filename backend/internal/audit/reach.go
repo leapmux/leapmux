@@ -32,6 +32,16 @@ const (
 	// service.WorkerReachAuthorizer. Valid ONLY for a row loaded that way --
 	// never for a bare id off the request.
 	reachStoreScoped
+	// reachAdminGated: the procedure is an ADMIN one. The access interceptor
+	// admits it only for an account with IsAdmin (enforceAdmin denies every
+	// admin.proto procedure by prefix), and only for a credential that holds its
+	// admin scope (SCOPE_ADMIN_WORKERS for AdminWorkerService.DeregisterWorker).
+	// Cross-tenant worker liveness is what that surface exists to report -- its
+	// listing already spans every owner -- so the bit is not an oracle for an
+	// ordinary user. Valid ONLY on an admin-only procedure: an owner-facing path
+	// reading another owner's worker by a bare id is an oracle however it is
+	// spelled.
+	reachAdminGated
 )
 
 // workerReachSites classifies every function IN THE REPOSITORY that reads the
@@ -65,8 +75,15 @@ var workerReachSites = map[string]workerReachKind{
 	"internal/hub/notifier.(*Notifier).DeliverOnConnect": reachServerInitiated,
 	// The deregistering FLAG is reached by worker id and no authorizer runs, so
 	// its writers are classified exactly like its readers. This one is entered
-	// from DeregisterWorker, which has already matched the row on
-	// (id, registered_by = caller) before the notifier is told anything.
+	// only through WorkerDeregisterEffects.Apply, after a server-side store change,
+	// from four entries: the owner's deregistration (the row matched on
+	// (id, registered_by = caller)), the admin deregistration, the user-deletion
+	// cascade, and Server.RetireLocalWorker. Each passes the id of the row whose
+	// store change it just committed: the owner's deregistration matched the
+	// requested id on registered_by = caller, the admin deregistration requires an
+	// administrator, the user-deletion cascade reads the ids from the deleted
+	// user's rows, and Server.RetireLocalWorker acts on the solo launcher's own
+	// state.
 	"internal/hub/notifier.(*Notifier).SendDeregister": reachServerInitiated,
 	// The reconcile nudge is raised by the CRDT commit path, and its worker id
 	// comes from the projection of the committing batch's OWN owner -- never from
@@ -81,6 +98,11 @@ var workerReachSites = map[string]workerReachKind{
 	// the owner's own identity to the owner's own workers and returns nothing,
 	// so it discloses no worker's liveness to anyone.
 	"internal/hub/service.(*WorkerConnectorService).RedeliverWorkerIdentity": reachServerInitiated,
+	// The bundled-Worker guard: an administrator's DeregisterWorker asks whether
+	// the row is connected before it refuses. The caller reached an admin-only
+	// procedure, so the liveness bit is one that surface exists to report; the
+	// refusal itself depends on that bit, which is the point.
+	"internal/hub/service.(*AdminWorkerService).DeregisterWorker": reachAdminGated,
 }
 
 // registryMethodKind names WHY one exported *workermgr.Manager method that

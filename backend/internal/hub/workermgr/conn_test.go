@@ -16,15 +16,17 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // testHello is the WorkerHello every Conn in this package's tests is built
-// with: a classic-mode worker with a fixed 32-byte X25519 key. workermgrtest
-// has its own copy, because it imports this package and this package's tests
-// cannot import it back.
+// with: a classic-mode worker presenting the complete key set from
+// workerkeystest. workermgrtest builds the same set from the same fixture,
+// because it imports this package and this package's tests cannot import it
+// back.
 func testHello() *leapmuxv1.WorkerHello {
 	return &leapmuxv1.WorkerHello{
-		Keys:           &leapmuxv1.WorkerPublicKeys{X25519: bytes.Repeat([]byte{0x42}, 32)},
+		Keys:           workerkeystest.Keys(workerkeystest.SeededWorkerFill),
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}
 }

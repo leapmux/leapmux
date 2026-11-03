@@ -119,7 +119,7 @@ After a successful registration, the Worker saves its credentials and keypair to
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
-If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI. If you pass `-registration-key` to a Worker that is already registered, it stops rather than consuming the key by accident; the error tells you to remove `-registration-key` or to wipe the local state.
+If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI. If you pass `-registration-key` to a Worker that is already registered, it stops rather than consuming the key by accident; the error tells you to remove `-registration-key`, or to deregister the Worker, delete its `state.json`, and register it again.
 
 For creating registration keys, approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 

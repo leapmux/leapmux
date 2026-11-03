@@ -37,6 +37,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
 // Params is everything Wire needs that an entry point already knows.
@@ -139,6 +140,16 @@ func (w *Wiring) Shutdown() {
 // Nothing the connect loop can reach is published until every handler is
 // registered behind it.
 func Wire(p Params) *Wiring {
+	// FIRST, before any side effect: PrepareAgentDirs starts a background sweep
+	// and the control IPC factory starts delegation.RunJanitor, so a keypair
+	// without a complete key set must fail before either can run. A restored or
+	// generated keypair always yields a complete set, so this is a wiring
+	// mistake, and Wire already panics on those.
+	keys, err := workerkeys.Of(p.CompositeKey)
+	if err != nil {
+		panic(fmt.Sprintf("bootstrap: %v", err))
+	}
+
 	// Built first because the service needs it for channel-session
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
@@ -229,7 +240,7 @@ func Wire(p Params) *Wiring {
 	// Only now is the manager reachable from the connect loop.
 	p.Client.SetChannelMgr(channelMgr)
 	p.Client.EncryptionMode = p.EncryptionMode
-	p.Client.PublicKey = p.CompositeKey.X25519Public
+	p.Client.PublicKeys = keys
 	// All three keys go out regardless of mode, because they are the
 	// worker's IDENTITY, not this session's cipher choice. What selects
 	// the handshake is EncryptionMode above, read on its own by
@@ -238,14 +249,9 @@ func Wire(p Params) *Wiring {
 	//
 	// Gating them on mode -- which the CLI did, and which unifying the
 	// two entry points spread to solo/desktop -- makes a classic worker's
-	// WorkerHello carry empty ML-KEM and SLH-DSA keys. The Hub answers
-	// GetWorkerHandshakeParams from that hello, so every client that had
-	// pinned the worker's keys then fails TOFU verification in
-	// pinStore.Verify and cannot open a channel until the pin is cleared
-	// by hand.
-	p.Client.MlkemPublicKey = p.CompositeKey.MlkemPublicKeyBytes()
-	slhdsaPub, _ := p.CompositeKey.SlhdsaPublicKeyBytes()
-	p.Client.SlhdsaPublicKey = slhdsaPub
+	// WorkerHello carry empty ML-KEM and SLH-DSA keys. The Hub refuses such a
+	// hello with InvalidArgument, because it pins the complete key set the
+	// worker registered with, so the worker could not connect at all.
 
 	// The Hub owns workers.registered_by and re-delivers it on every
 	// connect, so the worker never caches it. It arrives before any
@@ -467,7 +473,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// per-exit handler keeps the state for a possible relaunch).
 	svc.StartOrphanSweepLoop(p.Ctx)
 
-	StartRetentionLoops(p.Ctx, p.DB, p.DataDir)
+	startRetentionLoops(p.Ctx, p.DB, p.DataDir)
 
 	return resumer
 }
@@ -494,10 +500,8 @@ func nudgeOnNewOwner(svc *service.Service, nudge func()) func(*leapmuxv1.WorkerI
 	}
 }
 
-// StartRetentionLoops starts the two data-retention loops. It is exported
-// separately because worker.Run runs them even on its degenerate
-// no-composite-key path, where there is no service to wire at all.
-func StartRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) {
+// startRetentionLoops starts the two data-retention loops.
+func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) {
 	// Hard-delete agents and terminals closed for longer than the
 	// retention period.
 	service.StartCleanupLoop(ctx, db.New(sqlDB))

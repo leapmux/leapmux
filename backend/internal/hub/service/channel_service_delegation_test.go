@@ -21,11 +21,13 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 type bearerChannelEnv struct {
@@ -112,6 +114,7 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, w
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return userID, wsA, wsB, workerID
@@ -192,6 +195,7 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 		ID:           attackerWorkerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(attackerID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	bearer, _ = e.mintDelegation(t, victimID, attackerWorkerID, victimWS)

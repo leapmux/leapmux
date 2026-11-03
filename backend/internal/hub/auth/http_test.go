@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,32 +168,30 @@ func TestAuthenticateHTTPReportsAnInvalidPrefixedCookieRatherThanFallingBack(t *
 	assert.Nil(t, user, "a dead prefixed cookie must not fall back to a plantable one")
 }
 
-// workerTokenStore replaces Workers().GetByAuthToken with a fixed answer and
-// leaves the rest of the store real.
+// workerTokenStore replaces Workers().GetByAuthTokenIncludeDeleted with a fixed
+// answer and leaves the rest of the store real.
 type workerTokenStore struct {
 	store.Store
-	worker *store.Worker
-	err    error
+	err error
 }
 
 func (s workerTokenStore) Workers() store.WorkerStore {
-	return workerTokenLookup{WorkerStore: s.Store.Workers(), worker: s.worker, err: s.err}
+	return workerTokenLookup{WorkerStore: s.Store.Workers(), err: s.err}
 }
 
 type workerTokenLookup struct {
 	store.WorkerStore
-	worker *store.Worker
-	err    error
+	err error
 }
 
-func (l workerTokenLookup) GetByAuthToken(context.Context, string) (*store.Worker, error) {
-	return l.worker, l.err
+func (l workerTokenLookup) GetByAuthTokenIncludeDeleted(context.Context, string) (*store.Worker, error) {
+	return nil, l.err
 }
 
 // AuthenticateWorkerBearer answers a rejected credential with one of its
-// sentinels, and a store failure with an error that is none of them. A worker
-// told "unauthenticated" treats its token as revoked, so a failed lookup must
-// never read as a rejected token.
+// sentinels, and a store failure with an error that is none of them. Unauthenticated
+// tells the caller that its credential is bad, which a store fault does not
+// show, so a failed lookup must never read as a rejected token.
 func TestAuthenticateWorkerBearer(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -244,15 +241,6 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 		assert.False(t, auth.IsWorkerCredentialError(err), "a store failure must not read as a rejected token")
 	})
 
-	t.Run("refuses a worker the lookup returns deleted", func(t *testing.T) {
-		deletedAt := time.Now()
-		deleted := &store.Worker{ID: worker.ID, RegisteredBy: owner.ID, DeletedAt: &deletedAt}
-		got, err := auth.AuthenticateWorkerBearer(ctx, workerTokenStore{Store: st, worker: deleted}, "Bearer "+worker.AuthToken)
-		assert.ErrorIs(t, err, auth.ErrWorkerDeleted)
-		assert.Nil(t, got)
-		assert.True(t, auth.IsWorkerCredentialError(err))
-	})
-
 	t.Run("still resolves a deregistering worker", func(t *testing.T) {
 		leaving := storetest.SeedWorker(t, st, owner.ID)
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: leaving.ID, RegisteredBy: userid.MustNew(owner.ID)})
@@ -260,17 +248,18 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 		require.Equal(t, int64(1), n)
 
 		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+leaving.AuthToken)
-		require.NoError(t, err, "a deregistering worker connects to learn that it must stop")
+		require.NoError(t, err, "a deregistering worker keeps its calls until it is told to stop")
 		assert.Equal(t, leaving.ID, got.ID)
 	})
 
-	t.Run("refuses a deleted worker as an unknown token", func(t *testing.T) {
+	t.Run("refuses a deleted worker", func(t *testing.T) {
 		gone := storetest.SeedWorker(t, st, owner.ID)
 		require.NoError(t, st.Workers().MarkDeleted(ctx, gone.ID))
 
 		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+gone.AuthToken)
-		assert.ErrorIs(t, err, auth.ErrInvalidWorkerToken)
+		assert.ErrorIs(t, err, auth.ErrWorkerDeleted)
 		assert.Nil(t, got)
+		assert.True(t, auth.IsWorkerCredentialError(err))
 	})
 }
 

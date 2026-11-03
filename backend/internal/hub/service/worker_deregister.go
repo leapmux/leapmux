@@ -43,7 +43,11 @@ func NewWorkerDeregisterEffects(scopeCache *auth.DelegationScopeCache, n *notifi
 // worker's registrant, because the workers-changed notification is
 // addressed to the OWNER, not to the administrator who typed the command.
 //
-// Callers MUST run it AFTER the deregistering transaction commits.
+// Callers MUST run it AFTER the deregistering transaction commits: the owner's
+// WorkerManagementService.DeregisterWorker, AdminWorkerService.DeregisterWorker,
+// the user-deletion cascade, and Server.RetireLocalWorker (a plain MarkDeleted,
+// neither a deregistration nor a deletion with the user, for an offline bundled
+// Worker the solo launcher can no longer use).
 // SendDeregister persists nothing itself: it reads the committed row, moves
 // worker-manager state, and tells a connected worker to stop -- which can
 // complete the deletion at once, on the worker's acknowledgement. A rollback

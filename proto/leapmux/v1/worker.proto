@@ -110,10 +110,14 @@ service WorkerManagementService {
 
 // --- Registration messages ---
 
-// RegisterRequest is empty: the registration key travels in the
-// Authorization header, and the worker announces its keys in the WorkerHello
-// of each Connect stream.
-message RegisterRequest {}
+// RegisterRequest carries the public keys the worker will present in every
+// WorkerHello; the registration key travels in the Authorization header. The
+// hub pins the keys to the new worker and refuses a later hello whose keys
+// differ, so a stolen auth token alone cannot attach other keys to the
+// worker. New keys need a new registration, which creates a new worker.
+message RegisterRequest {
+  WorkerPublicKeys keys = 1; // All three keys, each at its exact size.
+}
 
 message RegisterResponse {
   string worker_id = 1;
@@ -190,10 +194,12 @@ message Worker {
   google.protobuf.Timestamp last_seen_at = 4; // unset = never seen
   string registered_by = 5;
   // True for the in-process worker auto-registered by the solo launcher
-  // (Server.RegisterWorker). The deregister handler refuses these to
-  // keep users from accidentally tearing down the bundled desktop
-  // worker; the frontend hides the Deregister... menu item for the same
-  // reason.
+  // (Server.RegisterWorker). The owner's deregistration path refuses to
+  // deregister these, and the admin path refuses one while it is connected, to
+  // keep users from accidentally tearing down the running bundled desktop
+  // worker; the frontend hides the Deregister... menu item for the same reason.
+  // An administrator can remove an offline one, such as the row that a launch
+  // leaves behind when its state file was lost.
   bool auto_registered = 6;
 }
 
@@ -202,9 +208,36 @@ message Worker {
 // The first message a worker sends on every Connect stream. The hub reads it
 // before it lists the worker online and keeps it, unchanged, with that
 // connection; GetWorkerHandshakeParams answers from it alone.
+//
+// Its keys must equal the keys the worker registered with (RegisterRequest).
+// The hub refuses a malformed hello with InvalidArgument, and other keys with
+// PermissionDenied and a WorkerConnectRefusal of KEYS_DIFFER.
 message WorkerHello {
   WorkerPublicKeys keys = 1;
   EncryptionMode encryption_mode = 2; // UNSPECIFIED is refused.
+}
+
+// WorkerConnectRefusal is the error detail the hub attaches to a Connect
+// refusal that reconnecting cannot fix. A worker acts only on an error that
+// carries it: a proxy in front of the hub can answer 401 or 403 by itself,
+// and a bare status code must never make a worker delete its state or stop.
+// A party that controls the hub's responses can forge it, but such a party can
+// already forge a DeregisterNotification (ConnectResponse.deregister) frame, so
+// the detail grants nothing new.
+message WorkerConnectRefusal {
+  WorkerConnectRefusalReason reason = 1;
+}
+
+enum WorkerConnectRefusalReason {
+  WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED = 0;
+  // The auth token belongs to a worker that was deleted. The hub sends it only
+  // for a row it holds, never for a token it does not know, so a worker
+  // pointed at the wrong hub keeps its identity. A worker that receives it
+  // stops connecting; a standalone worker also clears its state.
+  WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED = 1;
+  // The hello's keys differ from the keys the worker registered with. The
+  // worker stops and keeps its state; a new registration is the remedy.
+  WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER = 2;
 }
 
 // ConnectRequest wraps all messages from Worker to Hub.

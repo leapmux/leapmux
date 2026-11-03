@@ -21,7 +21,7 @@ import { FIRST_REQUEST_ID } from './channelRpc'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
 import { generateRekeyEphemeral } from './noise-hybrid'
 
-/** Accepting TOFU store for tests that pin on first use / accept key rotation. */
+/** Accepting TOFU store for tests that pin on first use / accept a changed key. */
 export function acceptingKeyPins(confirmKeyPin?: KeyPinConfirmFn): KeyPinStore {
   return new KeyPinStore({
     confirmKeyPin: confirmKeyPin ?? (async () => 'accept'),

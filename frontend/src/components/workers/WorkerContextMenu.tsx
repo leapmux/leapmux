@@ -14,8 +14,8 @@ import { dangerMenuItem } from '~/styles/shared.css'
 interface WorkerContextMenuProps extends ContextMenuTargetProps {
   workerInfo: WorkerInfo | null
   // True for the in-process worker the solo launcher auto-registers.
-  // The deregister handler refuses these (it would just re-register on
-  // next start), so the menu item would be a dead-end click.
+  // The owner's deregistration path refuses these (the next start would just
+  // register a fresh one), so the menu item would be a dead-end click.
   autoRegistered: boolean
   hasTunnels: boolean
   onAddTunnel: () => void

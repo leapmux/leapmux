@@ -27,7 +27,7 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 ## Where is my data stored?
 
-Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It keeps a connected Worker's public keys in memory only.
+Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It also stores the public keys each Worker registered with: they are public material, and the Hub pins them so a later connection cannot present other keys.
 
 Default locations:
 

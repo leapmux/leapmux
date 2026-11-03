@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
@@ -478,6 +479,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   store.WorkerPublicKeysFromProto(workerkeystest.Keys(workerkeystest.SeededWorkerFill)),
 	}))
 
 	tokenID := id.Generate()

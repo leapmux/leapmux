@@ -88,6 +88,11 @@ test.describe('Key Pinning', () => {
     const dialog = page.locator('[data-testid="key-pin-mismatch-dialog"]')
     await expect(dialog).toBeVisible()
 
+    // The dialog states WHY a mismatch can only come from outside this worker,
+    // and what to check before accepting.
+    await expect(dialog).toContainText('A worker keeps its keys for as long as it stays registered')
+    await expect(dialog).toContainText('Accept only after you confirm')
+
     // Verify the dialog shows different expected and actual fingerprints.
     const expectedFp = await page.locator('[data-testid="expected-fingerprint"]').textContent()
     const actualFp = await page.locator('[data-testid="actual-fingerprint"]').textContent()
@@ -144,6 +149,11 @@ test.describe('Key Pinning', () => {
     // The key pinning dialog should appear.
     const dialog = page.locator('[data-testid="key-pin-mismatch-dialog"]')
     await expect(dialog).toBeVisible()
+
+    // The dialog states WHY a mismatch can only come from outside this worker,
+    // and what to check before accepting.
+    await expect(dialog).toContainText('A worker keeps its keys for as long as it stays registered')
+    await expect(dialog).toContainText('Accept only after you confirm')
 
     // Click "Reject".
     await page.locator('[data-testid="key-pin-reject"]').click()

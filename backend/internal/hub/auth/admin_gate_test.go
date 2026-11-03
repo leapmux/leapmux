@@ -24,9 +24,11 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // adminGateFixture mounts the REAL AdminSettingsService (plus AuthService
@@ -223,6 +225,7 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: owner,
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tokenID := id.Generate()

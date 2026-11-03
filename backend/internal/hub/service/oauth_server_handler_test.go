@@ -32,9 +32,11 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // apiAuthEnv wires the OAuthServerHandler against an in-memory store with
@@ -2160,6 +2162,7 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(env.userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID = id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{

@@ -17,6 +17,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
@@ -225,6 +226,10 @@ type Server struct {
 	workerMgr         *workermgr.Manager
 	crdtRegistry      *crdt.Registry
 	revocationWatcher *revocationwatcher.Watcher
+	// workerEffects runs the out-of-database half of a worker's removal, for
+	// the admin surface, the user-deletion cascade and RetireLocalWorker. The
+	// per-user surface builds an equal instance from the same parts.
+	workerEffects *service.WorkerDeregisterEffects
 }
 
 // NewServer creates a new Hub server. It binds every address of the bind set
@@ -637,10 +642,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
 	scopeCache := auth.NewDelegationScopeCache(st)
-	// The post-deregister effects, shared by the per-user surface, the
-	// admin surface, and the user-deletion cascade -- so a worker torn down
-	// by any of the three is told to stop, loses its memoized delegation
-	// scope, and leaves its owner's client informed.
+	// The post-deregister effects, shared by the admin surface, the
+	// user-deletion cascade and Server.RetireLocalWorker -- so a worker torn
+	// down by any of the three is told to stop, loses its memoized delegation
+	// scope, and leaves its owner's client informed. The per-user surface
+	// builds an equal instance from the same scope cache, notifier and
+	// workers-changed hook.
 	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, crdtRegistry.BroadcastWorkersChanged, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
@@ -786,7 +793,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	})
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminUserSvc)
 
-	adminWorkerSvc := service.NewAdminWorkerService(st, workerEffects)
+	adminWorkerSvc := service.NewAdminWorkerService(st, wMgr, workerEffects)
 	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, adminWorkerSvc)
 
 	adminIdPSvc := service.NewAdminIdPService(st, ks, idpHandler)
@@ -1027,6 +1034,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		workerMgr:         wMgr,
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
+		workerEffects:     workerEffects,
 	}, nil
 }
 
@@ -1091,11 +1099,15 @@ type WorkerCredentials struct {
 // security. Outside solo mode, all worker registration must go
 // through WorkerConnectorService.Register with a real registration key.
 //
-// Rows created here are flagged auto_registered so the deregister
-// handler refuses them — re-registration on next launch would just
-// undo the user's action while the running worker process noisily
-// exits with "invalid auth token" in between.
-func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*WorkerCredentials, error) {
+// Rows created here are flagged auto_registered. The owner's deregistration
+// path refuses them, and the admin path refuses one while it is connected:
+// re-registration on next launch would just undo the user's action, and the
+// running worker would stop until that launch.
+//
+// The keys are the ones the co-located Worker will present in every
+// WorkerHello. The Hub pins them to the new row, exactly as Register does, so a
+// later hello that presents other keys is refused.
+func (s *Server) RegisterWorker(ctx context.Context, registeredBy string, keys *leapmuxv1.WorkerPublicKeys) (*WorkerCredentials, error) {
 	workerID := id.Generate()
 	authToken := id.Generate()
 
@@ -1111,6 +1123,7 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 			AuthToken:      authToken,
 			RegisteredBy:   registrantUID,
 			AutoRegistered: true,
+			PublicKeys:     store.WorkerPublicKeysFromProto(keys),
 		})
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
@@ -1122,8 +1135,21 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	}, nil
 }
 
-// GetWorkerOwner returns the id of the user who registered workerID, and returns
-// an error when the worker is unknown (or soft-deleted, which GetByID filters).
+// WorkerRegistration is what a launcher needs to decide whether its saved local
+// Worker state is still usable: who owns the row, what state the row is in, and
+// the keys the Hub pinned at registration.
+//
+// It exists rather than three separate reads so a launcher cannot pair a row
+// with keys from another, and so the status check it makes is the one the
+// pinned row reported.
+type WorkerRegistration struct {
+	Owner      string
+	Status     leapmuxv1.WorkerStatus
+	PublicKeys *leapmuxv1.WorkerPublicKeys
+}
+
+// GetWorkerRegistration returns the registration of workerID, and an error when
+// the worker is unknown (or soft-deleted, which GetByID filters).
 //
 // It returns the owner rather than just an existence check because workers.registered_by
 // is the AUTHORITY on who owns a worker -- it is NOT NULL, set at registration, and
@@ -1131,12 +1157,62 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 // the worker's id therefore never needs to source the owner from anywhere else, and
 // must not: a local state file can lag or lose it, and "whoever the admin is now" is
 // a different question that happens to share an answer on a fresh single-user install.
-func (s *Server) GetWorkerOwner(ctx context.Context, workerID string) (string, error) {
+//
+// The read is GetByID, not GetByIDIncludeDeleted, on purpose: the solo launcher's
+// not-found branch (and RetireLocalWorker's own rationale) relies on a soft-deleted
+// row reading as absent. Handing it over would send the launcher down the
+// unusable-state path and rename its state file to .corrupt-*.
+func (s *Server) GetWorkerRegistration(ctx context.Context, workerID string) (WorkerRegistration, error) {
 	w, err := s.store.Workers().GetByID(ctx, workerID)
 	if err != nil {
-		return "", err
+		return WorkerRegistration{}, err
 	}
-	return w.RegisteredBy, nil
+	return WorkerRegistration{
+		Owner:      w.RegisteredBy,
+		Status:     w.Status,
+		PublicKeys: w.PublicKeys.Proto(),
+	}, nil
+}
+
+// ErrNotAutoRegistered is RetireLocalWorker's refusal: the row exists but it is
+// not the solo launcher's bundled Worker, so the launcher has no standing to
+// remove it.
+var ErrNotAutoRegistered = errors.New("worker was not auto-registered")
+
+// RetireLocalWorker removes the solo launcher's unusable local worker row at
+// once, then runs the deregistration effects for it.
+//
+// MarkDeleted, not Deregister: the launcher owns the worker process and knows it
+// is not running, so the 7-day deregistration grace would only keep a token
+// valid that sits in the preserved .corrupt-* state file. A row that is already
+// gone is a no-op -- there is nothing to retire.
+//
+// The Apply error is logged, not returned. The row is already deleted, so a
+// returned error would fail the launch and keep state.json, and the next launch
+// would find no row and take the not-found branch -- the retry the error
+// promises never happens. At launch the retired Worker holds no connection, so a
+// failed Apply can skip only the owner's workers-changed broadcast, and the next
+// listing omits the deleted row anyway. See admin_user_service.go's DeleteUser
+// for the same rule.
+func (s *Server) RetireLocalWorker(ctx context.Context, workerID string) error {
+	w, err := s.store.Workers().GetByID(ctx, workerID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("read local worker %s to retire it: %w", workerID, err)
+	}
+	if !w.AutoRegistered {
+		return fmt.Errorf("retire local worker %s: %w", workerID, ErrNotAutoRegistered)
+	}
+	if err := s.store.Workers().MarkDeleted(ctx, workerID); err != nil {
+		return fmt.Errorf("retire local worker %s: %w", workerID, err)
+	}
+	if err := s.workerEffects.Apply(ctx, workerID, w.RegisteredBy); err != nil {
+		slog.Warn("retired a local worker but could not run its deregistration effects",
+			"worker_id", workerID, "error", err)
+	}
+	return nil
 }
 
 // GetAdminUser returns the ID of the user to attribute auto-registered

@@ -6,12 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/noise"
 
 	"github.com/leapmux/leapmux/internal/util/tofupins"
 )
@@ -108,6 +111,38 @@ func TestStore_VerifyMismatchReturnsHintWithWorkerID(t *testing.T) {
 	assert.Contains(t, err.Error(), "w-A", "error must surface worker_id so user knows what to clear")
 	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w-A",
 		"error must surface the configured clear-command hint")
+	// Both fingerprints, so an operator can compare them with the one the worker
+	// logs when it starts.
+	assert.Contains(t, err.Error(), "pinned "+noise.CompositeKeyFingerprint([]byte("x"), []byte("m"), []byte("sl")))
+	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x-NEW"), []byte("m"), []byte("sl")))
+	assert.True(t, strings.HasPrefix(err.Error(), "worker w-A key mismatch"),
+		"the error still starts with the worker and the fact: %v", err)
+}
+
+// A pin file that a hand-edit or a corrupt write left undecodable still produces
+// the mismatch error, with the posted fingerprint and no invented pinned one.
+func TestStore_VerifyMismatchReportsAnUnreadablePinnedKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pins.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+  "pins": {
+    "w-B": {
+      "x25519_public_key": "not!base64",
+      "mlkem_public_key": "bWxrZW0=",
+      "slhdsa_public_key": "c2xoZHNh",
+      "first_seen_at": "2024-01-01T00:00:00Z",
+      "last_used_at": "2024-01-01T00:00:00Z"
+    }
+  }
+}`), 0o600))
+	s := openStore(t, path)
+
+	err := s.Verify("w-B", []byte("x"), []byte("m"), []byte("sl"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pinned <unreadable>")
+	assert.Contains(t, err.Error(), "presented "+noise.CompositeKeyFingerprint([]byte("x"), []byte("m"), []byte("sl")))
+	assert.Contains(t, err.Error(), "test-cli pins remove --worker-id=w-B",
+		"the hint still carries the remedy")
 }
 
 func TestStore_VerifyMismatchOnSecondaryKeyTriggersError(t *testing.T) {

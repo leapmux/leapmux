@@ -19,6 +19,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 func setupStore(t *testing.T) store.Store {
@@ -420,6 +421,7 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		ID:           workerID,
 		AuthToken:    id.Generate(),
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 		GrantedScopes: "workspace:read workspace:write worker:read",

@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"google.golang.org/protobuf/proto"
 )
 
 // receiveBudget bounds every await in this file. Generous against what the
@@ -138,9 +139,7 @@ func connectAndPark(t *testing.T, server *httptest.Server) (client *Client, canc
 func TestConnect_SendsTheHelloFirst(t *testing.T) {
 	svc, server := startGreetThenSilentConnector(t)
 	client := newTestClient(t, server.URL)
-	client.PublicKey = bytes.Repeat([]byte{0x01}, 32)
-	client.MlkemPublicKey = bytes.Repeat([]byte{0x02}, 1568)
-	client.SlhdsaPublicKey = bytes.Repeat([]byte{0x03}, 64)
+	client.PublicKeys = workerkeystest.Keys(workerkeystest.SeededWorkerFill)
 	client.EncryptionMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -150,9 +149,7 @@ func TestConnect_SendsTheHelloFirst(t *testing.T) {
 	first := requireReceive(t, svc.first, "the hub never received the worker's first message")
 	hello := first.GetHello()
 	require.NotNil(t, hello, "the first message must be a hello, got %v", first)
-	assert.Equal(t, client.PublicKey, hello.GetKeys().GetX25519())
-	assert.Equal(t, client.MlkemPublicKey, hello.GetKeys().GetMlkem())
-	assert.Equal(t, client.SlhdsaPublicKey, hello.GetKeys().GetSlhdsa())
+	assert.True(t, proto.Equal(client.PublicKeys, hello.GetKeys()), "the hello carries the worker's configured key set")
 	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, hello.GetEncryptionMode())
 
 	cancel()

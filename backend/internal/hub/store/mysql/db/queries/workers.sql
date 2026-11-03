@@ -1,6 +1,7 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, auth_token, registered_by, auto_registered)
-VALUES (?, ?, ?, ?);
+INSERT INTO workers (id, auth_token, registered_by, auto_registered,
+                     x25519_public_key, mlkem_public_key, slhdsa_public_key)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
 SELECT * FROM workers WHERE id = ? AND deleted_at IS NULL;
@@ -8,9 +9,11 @@ SELECT * FROM workers WHERE id = ? AND deleted_at IS NULL;
 -- name: GetWorkerByIDIncludeDeleted :one
 SELECT * FROM workers WHERE id = ?;
 
--- name: GetWorkerByAuthToken :one
--- A deregistering worker must still connect: that is how it is told to stop.
-SELECT * FROM workers WHERE auth_token = ? AND deleted_at IS NULL;
+-- name: GetWorkerByAuthTokenIncludeDeleted :one
+-- The token read of AuthenticateWorkerBearer, which every worker credential
+-- check uses. It returns a deleted row too; AuthenticateWorkerBearer refuses
+-- one with ErrWorkerDeleted.
+SELECT * FROM workers WHERE auth_token = ?;
 
 -- Each functional index has its own hidden columns. MySQL substitutes the
 -- first matching indexed hidden column. USE INDEX keeps the predicate

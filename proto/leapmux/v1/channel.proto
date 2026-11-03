@@ -36,8 +36,9 @@ message GetWorkerHandshakeParamsRequest {
 }
 
 // WorkerPublicKeys is the key material a client needs to open a Noise_NK
-// channel to a worker. The worker announces it in its WorkerHello
-// (worker.proto).
+// channel to a worker. The worker registers it once (RegisterRequest,
+// worker.proto), the hub pins it, and the worker repeats it in each
+// WorkerHello.
 message WorkerPublicKeys {
   bytes x25519 = 1; // Static X25519 key for Noise_NK.
   bytes mlkem = 2;  // ML-KEM-1024 key for post-quantum encapsulation.

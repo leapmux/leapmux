@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // TestListWorkers_RejectsMalformedCursor pins the API-boundary contract: a
@@ -107,6 +108,7 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 			ID:           workerID,
 			AuthToken:    id.Generate(),
 			RegisteredBy: owner,
+			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 		ids = append(ids, workerID)
 	}

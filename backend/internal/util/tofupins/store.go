@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 )
 
@@ -141,7 +142,19 @@ func (s *Store) Verify(workerID string, public, mlkem, slhdsa []byte) error {
 	wall := now.UTC()
 	if existing, ok := s.pins[workerID]; ok {
 		if existing.X25519PublicKey != x || existing.MlkemPublicKey != m || existing.SlhdsaPublicKey != sl {
-			return fmt.Errorf("worker %s key mismatch — %s", workerID, fmt.Sprintf(s.opts.MismatchHintTmpl, workerID))
+			// Both fingerprints, so an operator can compare them with the one
+			// the worker logs when it starts. A hand-edited or corrupt pin file
+			// may not decode, and the mismatch stands either way.
+			pinnedFingerprint := "pinned <unreadable>"
+			pinnedX, xErr := base64.StdEncoding.DecodeString(existing.X25519PublicKey)
+			pinnedM, mErr := base64.StdEncoding.DecodeString(existing.MlkemPublicKey)
+			pinnedS, sErr := base64.StdEncoding.DecodeString(existing.SlhdsaPublicKey)
+			if xErr == nil && mErr == nil && sErr == nil {
+				pinnedFingerprint = "pinned " + noise.CompositeKeyFingerprint(pinnedX, pinnedM, pinnedS)
+			}
+			return fmt.Errorf("worker %s key mismatch: %s, presented %s — %s",
+				workerID, pinnedFingerprint, noise.CompositeKeyFingerprint(public, mlkem, slhdsa),
+				fmt.Sprintf(s.opts.MismatchHintTmpl, workerID))
 		}
 		prevBump, hadBump := s.lastBumpAt[workerID]
 		if !hadBump {

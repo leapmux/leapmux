@@ -34,10 +34,10 @@ import (
 // does NOT authenticate itself is an auth bypass.
 //
 // The credential differs by entry, so do not assume one mechanism: Register
-// consumes a registration KEY, Connect resolves a worker auth_token directly
-// through Workers().GetByAuthToken, and ListOwnedTabsForWorker goes through
-// AuthenticateWorkerBearer. The rationale map in the package's test specifies
-// the mechanism per entry, which is the check that keeps this list honest.
+// consumes a registration KEY, while Connect and ListOwnedTabsForWorker both
+// resolve a worker auth_token through AuthenticateWorkerBearer. The rationale
+// map in the package's test specifies the mechanism per entry, which is the
+// check that keeps this list honest.
 //
 // It is derived at init from procedureScopes: a HUB method whose
 // (leapmux.v1.access) option selects `public` is on it, and nothing else is.

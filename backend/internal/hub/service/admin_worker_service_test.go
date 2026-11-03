@@ -21,19 +21,39 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 type adminWorkerEnv struct {
-	client leapmuxv1connect.AdminWorkerServiceClient
-	st     store.Store
-	token  string
-	userID string
+	client   leapmuxv1connect.AdminWorkerServiceClient
+	st       store.Store
+	token    string
+	userID   string
+	presence *fakeWorkerPresence
+}
+
+// fakeWorkerPresence answers the admin service's one registry question from a set
+// the test controls. No Worker is online unless the test says so.
+type fakeWorkerPresence struct {
+	online map[string]bool
+}
+
+func (f *fakeWorkerPresence) OnlineForTrustedPath(workerID string) bool {
+	return f.online[workerID]
 }
 
 func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
+	t.Helper()
+	return setupAdminWorkerTestWith(t, &fakeWorkerPresence{online: map[string]bool{}})
+}
+
+// setupAdminWorkerTestWith is setupAdminWorkerTest with the registry the test
+// controls, for the bundled-Worker guard.
+func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *adminWorkerEnv {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -62,7 +82,8 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, service.NewAdminWorkerService(st, effects))
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer,
+		service.NewAdminWorkerService(st, presence, effects))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -71,10 +92,11 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	t.Cleanup(server.Close)
 
 	return &adminWorkerEnv{
-		client: leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
-		st:     st,
-		token:  session,
-		userID: admin.ID,
+		client:   leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
+		st:       st,
+		token:    session,
+		userID:   admin.ID,
+		presence: presence,
 	}
 }
 
@@ -326,6 +348,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 			ID:           id.Generate(),
 			AuthToken:    id.Generate(),
 			RegisteredBy: owner,
+			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 	}
 
@@ -343,4 +366,89 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, next.GetWorkers(), 1)
 	assert.Empty(t, next.GetPage().GetNextCursor())
+}
+
+// An administrator cannot deregister a CONNECTED bundled Worker: the app would
+// run with no local Worker until its next launch, which would then register a
+// fresh one anyway. An OFFLINE one is removable -- that is the only cleanup for
+// the ACTIVE row a launch leaves behind when the app's state file was lost -- and
+// a deleted one reads like any other inactive row.
+func TestAdminWorkerService_DeregisterOfABundledWorker(t *testing.T) {
+	t.Parallel()
+
+	createBundled := func(t *testing.T, env *adminWorkerEnv) string {
+		t.Helper()
+		workerID := id.Generate()
+		require.NoError(t, env.st.Workers().Create(context.Background(), store.CreateWorkerParams{
+			ID:             workerID,
+			AuthToken:      id.Generate(),
+			RegisteredBy:   userid.MustNew(env.userID),
+			AutoRegistered: true,
+			PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		}))
+		return workerID
+	}
+
+	t.Run("connected", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+		env.presence.online[workerID] = true
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "the bundled local worker is connected; deregister it only while it is offline")
+
+		row, err := env.st.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, row.Status,
+			"a refused request changes no row")
+	})
+
+	t.Run("offline", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.NoError(t, err)
+
+		row, err := env.st.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, row.Status)
+	})
+
+	t.Run("deleted", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+		require.NoError(t, env.st.Workers().MarkDeleted(context.Background(), workerID))
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "not found or not active")
+	})
+}
+
+// The bundled-Worker guard asks the registry whether a Worker is connected. A
+// missing registry must fail at construction: read as "every Worker is offline",
+// it would silently let an administrator stop a running bundled Worker.
+func TestNewAdminWorkerService_RequiresAWorkerRegistry(t *testing.T) {
+	t.Parallel()
+
+	const want = "service: NewAdminWorkerService requires a worker registry"
+	assert.PanicsWithValue(t, want, func() {
+		service.NewAdminWorkerService(nil, nil, nil)
+	}, "a nil registry")
+	assert.PanicsWithValue(t, want, func() {
+		service.NewAdminWorkerService(nil, (*workermgr.Manager)(nil), nil)
+	}, "a typed-nil registry is as missing as a nil one")
+	assert.NotPanics(t, func() {
+		service.NewAdminWorkerService(nil, workermgr.New(workermgr.DenyAllReach()), nil)
+	}, "the deregistration effects stay optional")
 }

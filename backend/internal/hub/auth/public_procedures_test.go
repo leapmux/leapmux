@@ -96,11 +96,11 @@ func TestPublicProceduresAreRationaleClassified(t *testing.T) {
 // It scans `internal/worker/hub`, the package holding the worker's OWN connection,
 // rather than scanning the hub's handlers for a credential-resolving call. The
 // handler-side scan this replaces matched one literal (AuthenticateWorkerBearer) on
-// one receiver shape in one directory, while interceptor.go itself names THREE
-// mechanisms -- a registration key, Workers().GetByAuthToken, and the bearer -- so
-// two of the three were held only by the hand-maintained rationale map above. A new
+// one receiver shape in one directory, while interceptor.go itself lists TWO
+// mechanisms -- a registration key and the worker bearer -- so one of the two was
+// held only by the hand-maintained rationale map above. A new
 // worker->hub RPC must be called from this package whatever mechanism it
-// authenticates with, so deriving from here covers all of them and any fourth.
+// authenticates with, so deriving from here covers all of them and any third.
 //
 // Deliberately NOT scanned: internal/worker/controlipc, whose HubBridge and
 // HubEventStreamer call hub RPCs on a USER's behalf with a delegation bearer. Those

@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,9 +35,68 @@ func (s *Suite) testWorkers(t *testing.T) {
 		user := SeedUser(t, st, "token-owner")
 		worker := SeedWorker(t, st, user.ID)
 
-		found, err := st.Workers().GetByAuthToken(ctx, worker.AuthToken)
+		found, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
+	})
+
+	t.Run("create stores the public keys", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "keys-owner")
+		workerID := id.Generate()
+		token := id.Generate()
+		keys := WorkerKeys(0x31)
+		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
+			ID:           workerID,
+			AuthToken:    token,
+			RegisteredBy: userid.MustNew(user.ID),
+			PublicKeys:   keys,
+		}))
+
+		byID, err := st.Workers().GetByID(ctx, workerID)
+		require.NoError(t, err)
+		assert.Equal(t, keys, byID.PublicKeys, "GetByID returns the pinned keys")
+
+		byIDIncludeDeleted, err := st.Workers().GetByIDIncludeDeleted(ctx, workerID)
+		require.NoError(t, err)
+		assert.Equal(t, keys, byIDIncludeDeleted.PublicKeys)
+
+		byToken, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+		require.NoError(t, err)
+		assert.Equal(t, keys, byToken.PublicKeys)
+
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			PageParams: store.PageParams{Limit: 10},
+		})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, keys, page.Rows[0].PublicKeys, "the admin listing returns the pinned keys")
+	})
+
+	t.Run("create refuses an incomplete key set", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "incomplete-keys-owner")
+		complete := WorkerKeys(0x31)
+		short := complete
+		short.X25519 = short.X25519[:31]
+
+		for name, keys := range map[string]store.WorkerPublicKeys{
+			"an absent set":      {},
+			"a short x25519 key": short,
+		} {
+			t.Run("refuses "+name, func(t *testing.T) {
+				workerID := id.Generate()
+				err := st.Workers().Create(ctx, store.CreateWorkerParams{
+					ID:           workerID,
+					AuthToken:    id.Generate(),
+					RegisteredBy: userid.MustNew(user.ID),
+					PublicKeys:   keys,
+				})
+				assert.ErrorIs(t, err, store.ErrInvalidArgument)
+				_, err = st.Workers().GetByIDIncludeDeleted(ctx, workerID)
+				assert.ErrorIs(t, err, store.ErrNotFound, "a refused row must not exist")
+			})
+		}
 	})
 
 	t.Run("get by id not found", func(t *testing.T) {
@@ -151,7 +211,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Equal(t, w1.ID, page.Rows[0].ID)
 	})
 
-	t.Run("get by auth token excluded after mark deleted", func(t *testing.T) {
+	t.Run("get by auth token returns a deleted row with its DeletedAt", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "token-del-user")
 		worker := SeedWorker(t, st, user.ID)
@@ -159,8 +219,11 @@ func (s *Suite) testWorkers(t *testing.T) {
 		err := st.Workers().MarkDeleted(ctx, worker.ID)
 		require.NoError(t, err)
 
-		_, err = st.Workers().GetByAuthToken(ctx, worker.AuthToken)
-		assert.ErrorIs(t, err, store.ErrNotFound)
+		gone, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
+		require.NoError(t, err, "the lookup returns every state; each caller refuses a deleted row")
+		assert.Equal(t, worker.ID, gone.ID)
+		require.NotNil(t, gone.DeletedAt)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, gone.Status)
 	})
 
 	t.Run("list by user id", func(t *testing.T) {
@@ -397,7 +460,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get by auth token not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		_, err := st.Workers().GetByAuthToken(ctx, "nonexistent-token")
+		_, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, "nonexistent-token")
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -628,6 +691,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 		err := st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: worker.ID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+			PublicKeys: WorkerKeys(workerkeystest.SeededWorkerFill),
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
@@ -848,9 +912,10 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Zero(t, n)
 	})
 
-	// A deregistering worker must still connect, because connecting is how it
-	// is told to stop; a deleted one must not.
-	t.Run("get by auth token admits active and deregistering and refuses deleted", func(t *testing.T) {
+	// The lookup returns every state, and each caller decides what a deleted row
+	// means: a deregistering worker must still connect, because connecting is how
+	// it is told to stop.
+	t.Run("get by auth token returns every state", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "token-status-user")
 		active := SeedWorker(t, st, user.ID)
@@ -860,14 +925,23 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, st.Workers().MarkDeleted(ctx, deleted.ID))
 
-		got, err := st.Workers().GetByAuthToken(ctx, active.AuthToken)
+		got, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, active.AuthToken)
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, got.Status)
-		got, err = st.Workers().GetByAuthToken(ctx, deregistering.AuthToken)
+		assert.Nil(t, got.DeletedAt)
+		assert.Equal(t, active.PublicKeys, got.PublicKeys)
+
+		got, err = st.Workers().GetByAuthTokenIncludeDeleted(ctx, deregistering.AuthToken)
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Status)
-		_, err = st.Workers().GetByAuthToken(ctx, deleted.AuthToken)
-		assert.ErrorIs(t, err, store.ErrNotFound)
+		assert.Nil(t, got.DeletedAt)
+		assert.Equal(t, deregistering.PublicKeys, got.PublicKeys)
+
+		got, err = st.Workers().GetByAuthTokenIncludeDeleted(ctx, deleted.AuthToken)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, got.Status)
+		assert.NotNil(t, got.DeletedAt)
+		assert.Equal(t, deleted.PublicKeys, got.PublicKeys)
 	})
 
 	// Every combination of the admin listing's two filters, paged one row at a

@@ -39,20 +39,22 @@ var (
 // or ErrWorkerDeleted, which IsWorkerCredentialError recognizes, so a caller
 // can answer it as unauthenticated. Any other error is a failure of the store,
 // which says nothing about the credential: a caller must answer it as an
-// internal error, because a worker told "unauthenticated" treats its token as
-// revoked.
+// internal error, because Unauthenticated tells the caller that its credential
+// is bad, which a store fault does not show.
 func AuthenticateWorkerBearer(ctx context.Context, st store.Store, headerValue string) (*store.Worker, error) {
 	bearer, ok := BearerToken(headerValue)
 	if !ok {
 		return nil, ErrMissingBearer
 	}
-	w, err := st.Workers().GetByAuthToken(ctx, bearer)
+	w, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, bearer)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrInvalidWorkerToken
 	}
 	if err != nil {
 		return nil, fmt.Errorf("look up worker auth token: %w", err)
 	}
+	// The one place a deleted worker is refused on every credential path, now
+	// that the lookup returns it too.
 	if w.DeletedAt != nil {
 		return nil, ErrWorkerDeleted
 	}

@@ -4,7 +4,6 @@ package solo
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -24,6 +24,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
 
@@ -677,9 +678,11 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	err = setupWorker(workerCtx)
 
 	// Bring-up is the only statement in this window with real work in it -- it
-	// reads and rewrites the state file, registers a worker (a DB write) and, on a
-	// first launch, generates an ML-KEM + SLH-DSA keypair, some ten milliseconds
-	// against microseconds for everything around it. So it is the window in which
+	// reads the state file and the worker's row; on a first launch, or when the
+	// saved state is unusable, it also registers a worker (a DB write), generates
+	// the keypair and writes the state file, and on a later launch it restores the
+	// keypair with an SLH-DSA top-tree recompute -- some milliseconds against
+	// microseconds for everything around it. So it is the window in which
 	// a teardown most plausibly lands, and the one place a startup that was already
 	// over would otherwise be reported as the Worker's fault: whichever trigger
 	// fired, the watcher cancels workerCtx, so bring-up comes back saying "context
@@ -733,16 +736,13 @@ type soloState struct {
 	// PID is the process that wrote this file: stamped at write time by
 	// persistState, and first in the JSON so a reader sees it before anything
 	// else.
-	PID              int    `json:"pid"`
-	WorkerID         string `json:"worker_id"`
-	AuthToken        string `json:"auth_token"`
-	RegisteredBy     string `json:"registered_by,omitempty"`
-	PublicKey        string `json:"public_key,omitempty"`
-	PrivateKey       string `json:"private_key,omitempty"`
-	MlkemPublicKey   string `json:"mlkem_public_key,omitempty"`
-	MlkemPrivateKey  string `json:"mlkem_private_key,omitempty"`
-	SlhdsaPublicKey  string `json:"slhdsa_public_key,omitempty"`
-	SlhdsaPrivateKey string `json:"slhdsa_private_key,omitempty"`
+	PID          int    `json:"pid"`
+	WorkerID     string `json:"worker_id"`
+	AuthToken    string `json:"auth_token"`
+	RegisteredBy string `json:"registered_by,omitempty"`
+	// The same private-halves-only material the standalone Worker saves. The
+	// public halves are derived from these, so a copy could only drift.
+	workerconfig.KeyMaterial
 }
 
 // errNoAdminYet means no admin user exists yet, so the local worker has nobody to
@@ -810,13 +810,13 @@ type workerBringUp struct {
 }
 
 // bringUpLocalWorker loads (or creates, then persists) the local worker's
-// registration state, ensures the composite E2EE keypair is present, and launches
-// the worker goroutine under work/drained. It returns errNoAdminYet if no admin
+// registration state, obtains the keypair that state reproduces, and launches the
+// worker goroutine under work/drained. It returns errNoAdminYet if no admin
 // user exists yet; the caller is expected to retry after the first /setup signup
 // completes. Callers must key on THAT sentinel, not on the store.ErrNotFound
 // underneath it, which also reaches here from lookups that are real failures.
 func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
-	state, err := loadOrCreateWorkerState(ctx, p.server, p.statePath, p.workerDataDir)
+	state, compositeKey, err := loadOrCreateWorkerState(ctx, p.server, p.statePath, p.workerDataDir)
 	if err != nil {
 		return err
 	}
@@ -827,55 +827,12 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 	snap := p.server.SettingsManager().Snapshot(ctx)
 	workerTimeouts := settings.KeyTimeouts
 
-	// Ensure composite keypair for E2EE.
-	if state.PublicKey == "" || state.PrivateKey == "" ||
-		state.MlkemPublicKey == "" || state.MlkemPrivateKey == "" ||
-		state.SlhdsaPublicKey == "" || state.SlhdsaPrivateKey == "" {
-		ck, kpErr := noiseutil.GenerateCompositeKeypair()
-		if kpErr != nil {
-			return fmt.Errorf("generate composite keypair: %w", kpErr)
-		}
-		slhdsaPub, _ := ck.SlhdsaPublicKeyBytes()
-		slhdsaPriv, _ := ck.SlhdsaPrivateKey.MarshalBinary()
-		state.PublicKey = base64.StdEncoding.EncodeToString(ck.X25519Public)
-		state.PrivateKey = base64.StdEncoding.EncodeToString(ck.X25519Private)
-		state.MlkemPublicKey = base64.StdEncoding.EncodeToString(ck.MlkemPublicKeyBytes())
-		state.MlkemPrivateKey = base64.StdEncoding.EncodeToString(ck.MlkemDecapsulationKey.Bytes())
-		state.SlhdsaPublicKey = base64.StdEncoding.EncodeToString(slhdsaPub)
-		state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(slhdsaPriv)
-		if err := persistState(p.statePath, state); err != nil {
-			slog.Warn("failed to save keypair", "error", err)
-		}
-	}
-
-	keyFields := []struct {
-		name  string
-		value string
-	}{
-		{"public_key", state.PublicKey},
-		{"private_key", state.PrivateKey},
-		{"mlkem_private_key", state.MlkemPrivateKey},
-		{"slhdsa_public_key", state.SlhdsaPublicKey},
-		{"slhdsa_private_key", state.SlhdsaPrivateKey},
-	}
-	decoded := make([][]byte, len(keyFields))
-	for i, f := range keyFields {
-		b, err := decode64(f.name, f.value)
-		if err != nil {
-			return fmt.Errorf("read saved worker keypair from %s: %w", p.statePath, err)
-		}
-		decoded[i] = b
-	}
-	compositeKey, ckErr := noiseutil.RestoreCompositeKeypair(
-		decoded[0], decoded[1], decoded[2], decoded[3], decoded[4],
-	)
-	if ckErr != nil {
-		return fmt.Errorf("restore composite keypair: %w", ckErr)
-	}
-
 	slog.Info(p.modeName+" worker registered",
 		"worker_id", state.WorkerID,
 		"local", p.listenURL,
+		// The same field the standalone Worker logs, so a desktop or solo user
+		// can check the key-change dialog's Actual fingerprint.
+		"key_fingerprint", compositeKey.Fingerprint(),
 	)
 
 	p.work.Add()
@@ -918,19 +875,29 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 }
 
 // workerRegistrar is the slice of *hub.Server that worker-state loading needs:
-// resolve a worker's owner, find the user to attribute a new local worker to, and
-// register one. Depending on the three methods rather than the whole Server lets
-// the state-file rules -- which owner wins, when to re-register -- be tested without
-// binding listeners and standing up a database.
+// resolve a worker's registration, find the user to attribute a new local worker
+// to, register one, and retire an auto-registered row the launcher can no longer
+// use. Depending on the four methods rather than the whole Server lets the
+// state-file rules -- which owner wins, when to re-register, when to retire -- be
+// tested without binding listeners and standing up a database.
 type workerRegistrar interface {
-	GetWorkerOwner(ctx context.Context, workerID string) (string, error)
+	GetWorkerRegistration(ctx context.Context, workerID string) (hub.WorkerRegistration, error)
 	GetAdminUser(ctx context.Context) (userID string, err error)
-	RegisterWorker(ctx context.Context, userID string) (*hub.WorkerCredentials, error)
+	RegisterWorker(ctx context.Context, userID string, keys *leapmuxv1.WorkerPublicKeys) (*hub.WorkerCredentials, error)
+	RetireLocalWorker(ctx context.Context, workerID string) error
 }
 
-func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, statePath, workerDataDir string) (*soloState, error) {
+// loadOrCreateWorkerState returns the local Worker's state and its keypair,
+// registering a fresh Worker when there is nothing usable to launch.
+//
+// A saved state with a worker ID and token is usable only when the row is
+// ACTIVE, the keypair restores, and the keys it yields equal the ones the Hub
+// pinned. Anything else retires the old row first -- a store error fails the
+// launch and keeps state.json, so the next launch can retry -- and only then is
+// the file preserved and a fresh Worker registered.
+func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, statePath, workerDataDir string) (*soloState, *noiseutil.CompositeKeypair, error) {
 	if err := os.MkdirAll(workerDataDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create worker data dir: %w", err)
+		return nil, nil, fmt.Errorf("create worker data dir: %w", err)
 	}
 
 	data, err := os.ReadFile(statePath)
@@ -951,25 +918,43 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 			// "whoever the admin is now" answers a different question that merely shares
 			// an answer on a fresh single-user install: on any install where the admin
 			// changed, it silently reassigned the machine to them.
-			owner, dbErr := server.GetWorkerOwner(ctx, s.WorkerID)
+			registration, dbErr := server.GetWorkerRegistration(ctx, s.WorkerID)
 			if dbErr == nil {
-				if owner == "" {
+				if registration.Owner == "" {
 					// Unreachable via the schema (NOT NULL, set at registration), so this
 					// means a hand-edited row or a mint path that dropped it. Re-register
 					// rather than launch an ownerless worker.
 					slog.Warn("saved worker has no recorded owner, re-registering", "worker_id", s.WorkerID)
+				} else if compositeKey, reason := usableLocalKeypair(&s, registration); reason != "" {
+					// The saved identity cannot be launched: the Hub pinned keys this
+					// state cannot reproduce, the keys it does reproduce are not the
+					// pinned ones, or an administrator retired the row while the app
+					// was offline. Retire the old row BEFORE touching the file: a
+					// store error must fail the launch and leave state.json in place
+					// so the next launch can retry, which is exactly what a
+					// transient owner-lookup error does.
+					slog.Error("saved worker state is unusable; retiring it and re-registering a fresh worker, which orphans the previous one",
+						"worker_id", s.WorkerID, "reason", reason)
+					if err := server.RetireLocalWorker(ctx, s.WorkerID); err != nil {
+						if !errors.Is(err, hub.ErrNotAutoRegistered) {
+							return nil, nil, fmt.Errorf("retire unusable local worker %q: %w", s.WorkerID, err)
+						}
+						slog.Warn("saved worker is not an auto-registered worker; leaving its row alone",
+							"worker_id", s.WorkerID, "error", err)
+					}
+					preserveCorruptState(statePath, data)
 				} else {
-					if s.RegisteredBy != owner {
+					if s.RegisteredBy != registration.Owner {
 						// The file disagreed with the DB (or predates the field). The DB wins;
 						// refresh the cache so the next launch matches without a second query.
-						s.RegisteredBy = owner
+						s.RegisteredBy = registration.Owner
 						if err := persistState(statePath, &s); err != nil {
 							// The in-memory correction still applies; a failed write only
 							// costs the cache and forces this DB lookup again next launch.
 							slog.Warn("failed to refresh worker state cache", "error", err)
 						}
 					}
-					return &s, nil
+					return &s, compositeKey, nil
 				}
 			} else if errors.Is(dbErr, store.ErrNotFound) {
 				// The worker row is genuinely gone (deleted, or never persisted):
@@ -981,7 +966,7 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 				// and re-register a brand-new identity, orphaning every workspace
 				// and tab still pointed at the old worker. Fail the launch so a
 				// retry can find the row intact.
-				return nil, fmt.Errorf("look up saved worker %q owner: %w", s.WorkerID, dbErr)
+				return nil, nil, fmt.Errorf("look up saved worker %q owner: %w", s.WorkerID, dbErr)
 			}
 		} else {
 			// The file exists but is not a usable worker state -- a partial write
@@ -1005,7 +990,7 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 			preserveCorruptState(statePath, data)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("read state: %w", err)
+		return nil, nil, fmt.Errorf("read state: %w", err)
 	}
 
 	userID, err := server.GetAdminUser(ctx)
@@ -1016,34 +1001,77 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 			// store.ErrNotFound from anywhere under bring-up -- a not-found from the
 			// registration below would otherwise be misread as "waiting for /setup",
 			// and the launch would report success and poll forever instead of failing.
-			return nil, fmt.Errorf("%w: %w", errNoAdminYet, err)
+			return nil, nil, fmt.Errorf("%w: %w", errNoAdminYet, err)
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
-	creds, err := server.RegisterWorker(ctx, userID)
+	// The keypair is generated only once an admin exists, so the dev-mode poller
+	// generates none while it waits for /setup.
+	state := &soloState{RegisteredBy: userID}
+	compositeKey, err := state.GenerateKeypair()
 	if err != nil {
-		return nil, fmt.Errorf("register worker for admin %q: %w", userID, err)
+		return nil, nil, err
+	}
+	keys, err := workerkeys.Of(compositeKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive the local worker's public keys: %w", err)
 	}
 
-	state := &soloState{
-		WorkerID:     creds.WorkerID,
-		AuthToken:    creds.AuthToken,
-		RegisteredBy: userID,
+	creds, err := server.RegisterWorker(ctx, userID, keys)
+	if err != nil {
+		return nil, nil, fmt.Errorf("register worker for admin %q: %w", userID, err)
 	}
+	state.WorkerID = creds.WorkerID
+	state.AuthToken = creds.AuthToken
 
 	if err := persistState(statePath, state); err != nil {
-		return nil, err
+		// The row is pinned to private keys that only this failed write would
+		// have kept, so it can never be used: retire it rather than leave an
+		// ACTIVE Worker nobody can launch.
+		retireErr := server.RetireLocalWorker(ctx, state.WorkerID)
+		if retireErr != nil {
+			return nil, nil, errors.Join(err, fmt.Errorf("retire the worker whose state could not be saved: %w", retireErr))
+		}
+		return nil, nil, err
 	}
 
-	return state, nil
+	return state, compositeKey, nil
+}
+
+// usableLocalKeypair returns the keypair of a saved local Worker state that can
+// be launched. When the state cannot be launched, it returns no keypair and a
+// reason for the log.
+//
+// The check has to restore the keypair to compare its keys with the pin, so it
+// returns that keypair: the restore recomputes the SLH-DSA public key, and a
+// caller that restored it again would pay that cost twice on every launch.
+func usableLocalKeypair(s *soloState, registration hub.WorkerRegistration) (*noiseutil.CompositeKeypair, string) {
+	if registration.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
+		return nil, "the worker row is " + registration.Status.String()
+	}
+	if !s.HasKeypair() {
+		return nil, "the keypair is missing"
+	}
+	compositeKey, err := s.CompositeKeypair()
+	if err != nil {
+		return nil, "the keypair does not restore: " + err.Error()
+	}
+	keys, err := workerkeys.Of(compositeKey)
+	if err != nil {
+		return nil, "the keypair yields no usable public keys: " + err.Error()
+	}
+	if !workerkeys.Equal(keys, registration.PublicKeys) {
+		return nil, "the saved keys differ from the keys the hub pinned"
+	}
+	return compositeKey, ""
 }
 
 // persistState writes the worker state file with the one encoding and mode
 // (pretty JSON, 0o600) every writer must agree on. Callers keep their own
-// error posture -- the keypair backfill and the RegisteredBy cache refresh log
-// and continue, the initial registration fails the launch -- but the file's
-// format contract lives here so a change cannot silently miss a write site.
+// error posture -- the RegisteredBy cache refresh logs and continues, the
+// initial registration fails the launch -- but the file's format contract
+// lives here so a change cannot silently miss a write site.
 //
 // The write is atomic (temp file in the same directory, then rename) so a
 // crash or power loss mid-write can never leave a half-written file behind.
@@ -1069,7 +1097,7 @@ func persistState(statePath string, s *soloState) error {
 	return nil
 }
 
-// preserveCorruptState renames an unreadable worker-state file aside so a
+// preserveCorruptState renames an unreadable or unusable worker-state file aside so a
 // later launch does not re-log the same orphaning and an operator can inspect
 // or re-link it. Best-effort: a failure leaves the bytes in place for the next
 // launch to warn about again, which is still better than silently overwriting.
@@ -1089,23 +1117,6 @@ func preserveCorruptState(statePath string, data []byte) {
 	if err := os.WriteFile(sidecar, data, 0o600); err != nil {
 		slog.Warn("could not preserve corrupt worker state for forensics", "sidecar", sidecar, "err", err)
 	}
-}
-
-// decode64 decodes a base64 field of the saved worker state, reporting which
-// field failed.
-//
-// It replaces a mustDecode64 that discarded the error and, despite the name,
-// never panicked. The keypair-repair guard above only fires on EMPTY fields, so a
-// non-empty but mangled key reached RestoreCompositeKeypair as truncated bytes and
-// failed the launch with an opaque parse error -- forever, since nothing
-// re-registers or preserves the file. Naming the field is what turns that into
-// something an operator can act on.
-func decode64(field, s string) ([]byte, error) {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, fmt.Errorf("decode %s: %w", field, err)
-	}
-	return b, nil
 }
 
 // shouldWarnNonLoopback reports whether solo.Start should emit the

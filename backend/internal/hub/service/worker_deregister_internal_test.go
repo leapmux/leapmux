@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // deletingAdminCtx carries the elevated administrator DeleteUser now
@@ -91,7 +92,7 @@ func TestAdminDeregisterNotifiesTheWorkersOwner(t *testing.T) {
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
 	recorder := &workersChangedRecorder{}
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, recorder.notify))
+	svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), NewWorkerDeregisterEffects(nil, nil, recorder.notify))
 
 	_, err := svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
@@ -113,7 +114,7 @@ func TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses(t *testing.T) {
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
 	recorder := &workersChangedRecorder{}
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, nil, recorder.notify))
+	svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), NewWorkerDeregisterEffects(nil, nil, recorder.notify))
 
 	// Already deregistered: ForceDeregister matches no ACTIVE row.
 	_, err := svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
@@ -423,6 +424,7 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 	err := s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: s.rolledBackID, AuthToken: id.Generate(), RegisteredBy: owner,
+			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
 		}
@@ -439,6 +441,7 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 	}
 	if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID: s.committedID, AuthToken: id.Generate(), RegisteredBy: owner,
+		PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}); err != nil {
 		return err
 	}
@@ -461,6 +464,7 @@ func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Contex
 	if owner.Matches(s.owner) && !s.inserted {
 		if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: s.workerID, AuthToken: id.Generate(), RegisteredBy: owner,
+			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
 		}
@@ -550,6 +554,7 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 			ID:           workerID,
 			AuthToken:    id.Generate(),
 			RegisteredBy: userid.MustNew(owner.ID),
+			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 		workerIDs = append(workerIDs, workerID)
 	}
@@ -609,7 +614,7 @@ func TestAdminDeregisterEvictsTheWorkersMemoizedScope(t *testing.T) {
 	require.True(t, scope.Allows(sibling.ID),
 		"an ACTIVE minter its user owns lends cross-worker reach")
 
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(scopeCache, nil, nil))
+	svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), NewWorkerDeregisterEffects(scopeCache, nil, nil))
 	_, err = svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: minter.ID,
 	}))
@@ -644,7 +649,7 @@ func TestAdminDeregisterEvictsOnlyTheDeregisteredWorker(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, scope.Allows(doomed.ID))
 
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(scopeCache, nil, nil))
+	svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), NewWorkerDeregisterEffects(scopeCache, nil, nil))
 	_, err = svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: doomed.ID,
 	}))
@@ -728,7 +733,7 @@ func TestAdminDeregisterReportsAFailedEffect(t *testing.T) {
 	worker := storetest.SeedWorker(t, st, owner.ID)
 
 	failing := failingWorkerReadStore{Store: st, failWorkerID: worker.ID}
-	svc := NewAdminWorkerService(st, NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing, newFlagRecordingRegistry(st)), nil))
+	svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing, newFlagRecordingRegistry(st)), nil))
 
 	_, err := svc.DeregisterWorker(ctx, connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
@@ -763,10 +768,15 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 			require.Error(t, err, "the RPC reports the failed effect")
 			assert.Contains(t, err.Error(), "send deregister")
 
-			row, err := st.Workers().GetByAuthToken(ctx, worker.AuthToken)
-			require.NoError(t, err, "a deregistering worker can still connect")
+			row, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
+			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, row.Status, "the intent is persisted")
 			require.NotNil(t, row.DeregisteringAt)
+			// The include-deleted lookup succeeds for every state, so admission is
+			// what the credential rule decides: a deregistering worker can still
+			// connect.
+			_, err = auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+worker.AuthToken)
+			require.NoError(t, err, "a deregistering worker can still connect")
 
 			switch recovery {
 			case "next connect":
@@ -812,7 +822,7 @@ func TestOwnerDeregisterRecoversWithoutTheNotifier(t *testing.T) {
 func TestAdminDeregisterRecoversWithoutTheNotifier(t *testing.T) {
 	assertDeregistrationRecovers(t, newDeregisterTestStore,
 		func(t *testing.T, st store.Store, effects *WorkerDeregisterEffects, _, workerID string) error {
-			svc := NewAdminWorkerService(st, effects)
+			svc := NewAdminWorkerService(st, workermgr.New(workermgr.DenyAllReach()), effects)
 			_, err := svc.DeregisterWorker(context.Background(), connectRequestForTest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 				Id: workerID,
 			}))

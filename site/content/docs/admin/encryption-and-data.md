@@ -25,6 +25,7 @@ LeapMux keeps three kinds of persistent state:
 | Hub settings secret halves (SMTP password, captcha provider keys) | Hub database | **Yes** — encrypted with the keystore key |
 | Passkey credential public keys and WebAuthn ceremony session data | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
 | API-token / delegation-token secrets | Hub database | No — stored as HMAC-SHA256 **hashes** (peppered), never as plaintext or reversible ciphertext |
+| Worker public keys (pinned at registration) | Hub database | No — public material, stored in the clear |
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
@@ -50,7 +51,7 @@ Exactly these secret types are encrypted at rest in the Hub database:
 
 Each passkey and WebAuthn session row uses its own row id as **additional authenticated data**, so ciphertext cannot be swapped between rows.
 
-The keystore loads its versioned key ring from `encryption.key` (highest version = active) and encrypts and decrypts only the columns listed above. Everything else is stored without the key: accounts, workspaces, Workers, hashed API-token secrets, and passkey metadata that is not the public key (friendly names, credential ids, sign counts). The Hub does not store Worker public keys: a Worker sends them each time it connects, and the Hub keeps them in memory for that connection only.
+The keystore loads its versioned key ring from `encryption.key` (highest version = active) and encrypts and decrypts only the columns listed above. Everything else is stored without the key: accounts, workspaces, Workers, Worker public keys, hashed API-token secrets, and passkey metadata that is not the public key (friendly names, credential ids, sign counts). The Worker's public keys are public material and are stored in the clear.
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
@@ -282,7 +283,7 @@ For a Hub:
 
 For each Worker:
 
-3. **`state.json`** (default `~/.config/leapmux/worker/state.json`). This holds the Worker's identity: its `worker_id`, Hub auth token, and its private E2EE keys (X25519, ML-KEM-1024, SLH-DSA). Losing it forces re-registration with a new registration key and a new key identity. The Worker sends its public keys to the Hub each time it connects, so a new identity triggers the Frontend's **"Worker public key changed"** dialog (the key-change dialog). See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
+3. **`state.json`** (default `~/.config/leapmux/worker/state.json`). This holds the Worker's identity: its `worker_id`, Hub auth token, and the private halves of its E2EE keys (X25519, ML-KEM-1024, SLH-DSA). Losing it forces re-registration with a new registration key and a new key identity. The Hub pins the public keys a Worker registers with, so re-registering creates a **new Worker ID**: deregister the old Worker entry, then register again. Clients pin the new Worker as a new one, so no key-change dialog appears. The old entry leaves the Worker list at once; the Hub deletes it when the Worker acknowledges the stop, or 7 days later, and until then its token still works. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 4. `worker.db` is transient agent/session state. It is not a secret, but back it up if you want to preserve agent transcripts and terminal history across a rebuild.
 
 {{< callout >}}
@@ -297,11 +298,13 @@ A correct, restorable backup of a single-machine Hub is: a consistent copy of `h
 4. Restore each Worker's `state.json` to its data dir.
 5. Start the Hub. It will apply any pending migrations automatically on open, then load the keystore.
 
+A Worker that registered after the backup the database came from has no row in the restored Hub, so its token is unknown there and it keeps retrying. Stop it, delete its `state.json`, and register it again. See [Troubleshooting](/docs/reference/troubleshooting/).
+
 ### Disaster-recovery notes
 
 - **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. A fresh file also gets a fresh token pepper, so every API and delegation token is invalidated and must be re-issued. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
-- **Lost a Worker's `state.json`:** re-register the Worker (a fresh registration key from the Hub UI). The first Frontend to reconnect after the identity changes sees the **"Worker public key changed"** dialog and must explicitly Accept the new key. See [Managing Workers](/docs/admin/managing-workers/).
+- **Lost a Worker's `state.json`:** deregister the old Worker entry, then register again with a fresh registration key from the Hub UI. That creates a new Worker ID, which clients pin as a new Worker, so no key-change dialog appears. See [Managing Workers](/docs/admin/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.
 
 ## Encryption modes (E2EE)

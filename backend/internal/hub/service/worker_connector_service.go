@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -23,10 +24,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/metrics"
-	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
 // CRDTRegistry is the subset of *crdt.Registry that
@@ -189,6 +190,25 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 	return wrappedConnectError(connect.CodeResourceExhausted, limitErr)
 }
 
+// newWorkerConnectRefusalError builds a Connect refusal that reconnecting
+// cannot fix, tagged with the WorkerConnectRefusal detail the worker acts on.
+//
+// The detail is what makes a refusal actionable: a proxy in front of the Hub can
+// answer 401 or 403 by itself and a non-200 response carries no details, so the
+// worker must never infer "I was deleted" from a status code alone.
+func newWorkerConnectRefusalError(
+	code connect.Code, reason leapmuxv1.WorkerConnectRefusalReason, message string,
+) *connect.Error {
+	connectErr := connect.NewError(code, message)
+	detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: reason})
+	if err != nil {
+		// Marshalling a one-field message this file owns cannot fail; a bare
+		// error still beats a panic in a request path.
+		return connectErr
+	}
+	return connectErr.WithDetail(detail)
+}
+
 // Register handles the worker → hub registration RPC.
 //
 // The session-cookie auth interceptor lets this RPC through (it's in the
@@ -204,6 +224,13 @@ func (s *WorkerConnectorService) Register(
 	regKey, ok := auth.BearerToken(info.RequestHeader().Get("Authorization"))
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, "registration key required")
+	}
+
+	// Before the registration key is read, let alone consumed: a malformed key
+	// set must not burn it. The keys are the Worker's identity, and the Hub pins
+	// them to the row this call creates.
+	if err := workerkeys.Validate(req.GetKeys()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
 
 	workerID := id.Generate()
@@ -249,6 +276,7 @@ func (s *WorkerConnectorService) Register(
 			ID:           workerID,
 			AuthToken:    authToken,
 			RegisteredBy: registrantUID,
+			PublicKeys:   store.WorkerPublicKeysFromProto(req.GetKeys()),
 		}); err != nil {
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 		}
@@ -398,21 +426,29 @@ func (s *WorkerConnectorService) Connect(
 	stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream,
 ) error {
 	info := serverCallInfo(ctx)
-	token, ok := auth.BearerToken(info.RequestHeader().Get("Authorization"))
-	if !ok {
-		return connect.Errorf(connect.CodeUnauthenticated, "auth_token required")
-	}
-
-	worker, err := s.store.Workers().GetByAuthToken(ctx, token)
+	// One credential rule for every worker path: AuthenticateWorkerBearer.
+	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		switch {
+		case errors.Is(err, auth.ErrMissingBearer):
+			return connect.Errorf(connect.CodeUnauthenticated, "auth_token required")
+		case errors.Is(err, auth.ErrInvalidWorkerToken):
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid auth token")
+		case errors.Is(err, auth.ErrWorkerDeleted):
+			// Positive proof only: the Hub holds a row with this token and its
+			// deleted_at is set. A token the Hub has never seen gets a bare
+			// Unauthenticated above, because a worker pointed at the wrong Hub, a
+			// Hub restored from an older backup, or a proxy that rewrote the
+			// Authorization header must not destroy the worker's identity.
+			return newWorkerConnectRefusalError(connect.CodeUnauthenticated,
+				leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+				"this worker was deleted")
+		default:
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
-		return wrappedConnectError(connect.CodeInternal, err)
 	}
-	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
-	// DELETED worker (`deleted_at IS NULL`), and a DEREGISTERING one must still
-	// be able to hold this stream -- that is how it receives the deregister
+	// A live row proceeds, whatever its state: a DEREGISTERING worker must still
+	// be able to hold this stream, because that is how it receives the deregister
 	// instruction and wipes its local state. Refusing it here would leave the
 	// machine running with nobody able to tell it to stop.
 
@@ -428,6 +464,22 @@ func (s *WorkerConnectorService) Connect(
 	if hello == nil {
 		slog.Info("worker closed the stream before its hello", "worker_id", worker.ID)
 		return nil
+	}
+
+	// The pin. A stolen auth token must not attach other keys to this worker:
+	// without this check it could replace the live connection and every client
+	// without a pin would trust the attacker's keys. Refusing here, before
+	// workermgr.NewConn, is what keeps the refused connection from replacing the
+	// live one.
+	pinned := worker.PublicKeys.Proto()
+	if !workerkeys.Equal(hello.GetKeys(), pinned) {
+		slog.Warn("refusing a worker whose hello keys differ from the keys it registered with",
+			"worker_id", worker.ID,
+			"registered_fingerprint", workerkeys.Fingerprint(pinned),
+			"presented_fingerprint", workerkeys.Fingerprint(hello.GetKeys()))
+		return newWorkerConnectRefusalError(connect.CodePermissionDenied,
+			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER,
+			"the worker's public keys differ from the keys it registered with")
 	}
 
 	// Register the connection. Replacement cancels this derived context to
@@ -447,7 +499,7 @@ func (s *WorkerConnectorService) Connect(
 		// Handing it to Register rather than sending it here is what makes
 		// that ordering impossible to get wrong.
 		//
-		// worker.RegisteredBy is already in hand from the GetByAuthToken above,
+		// worker.RegisteredBy is already in hand from Connect's AuthenticateWorkerBearer call,
 		// so neither it nor the owner handed to NewConn costs a query.
 		workerIdentityFrame(worker.RegisteredBy, greetedUsername),
 		hello,
@@ -458,10 +510,10 @@ func (s *WorkerConnectorService) Connect(
 			// This connection passed the shutdown interceptor a moment before
 			// the Hub began fencing. Unavailable, not Internal: nothing is
 			// wrong with the worker or the request, and a server that is going
-			// away is what the code means. Today's worker retries either way
-			// (ConnectWithReconnect gives up only on Unauthenticated), so this
-			// is for the operator reading logs and for any proxy or future
-			// client that does distinguish the two.
+			// away is what the code means. A worker retries every refusal that
+			// carries no WorkerConnectRefusal detail, this one included, so this
+			// is for the operator reading logs and for any proxy or client that
+			// distinguishes the two.
 			return wrappedConnectError(connect.CodeUnavailable, err)
 		}
 		if errors.Is(err, workermgr.ErrTooManyWorkers) {
@@ -759,38 +811,24 @@ func (s *WorkerConnectorService) receiveHello(
 }
 
 // validateWorkerHello checks that a Connect stream's first message is a
-// WorkerHello a client can open a channel with. The key sizes are the ones the
-// Noise handshake reads:
-//   - X25519 is required in both modes.
-//   - POST_QUANTUM also requires the ML-KEM and SLH-DSA keys.
-//   - CLASSIC ignores those two, but each must be empty or of its exact size,
-//     so a truncated key is refused rather than stored.
-//   - UNSPECIFIED and any unknown mode are refused.
+// WorkerHello a client can open a channel with.
+//
+// The key set must be COMPLETE whatever the mode. The three keys are the
+// Worker's identity, not this session's cipher choice, so a partial set can
+// never equal the set the Worker registered with and is refused here rather
+// than at the pin comparison. UNSPECIFIED and any unknown mode are refused: the
+// mode stays on the connection because it selects the handshake.
 func validateWorkerHello(msg *leapmuxv1.ConnectRequest) (*leapmuxv1.WorkerHello, error) {
 	hello := msg.GetHello()
 	if hello == nil {
 		return nil, errors.New("the first message on a Connect stream must be a hello")
 	}
-	keys := hello.GetKeys()
-	if n := len(keys.GetX25519()); n != noise.EphemeralPublicKeySize {
-		return nil, fmt.Errorf("hello x25519 key is %d bytes, want %d", n, noise.EphemeralPublicKeySize)
+	if err := workerkeys.Validate(hello.GetKeys()); err != nil {
+		return nil, err
 	}
-	mlkem, slhdsa := len(keys.GetMlkem()), len(keys.GetSlhdsa())
 	switch mode := hello.GetEncryptionMode(); mode {
-	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM:
-		if mlkem != noise.MlkemPublicKeySize {
-			return nil, fmt.Errorf("post-quantum hello mlkem key is %d bytes, want %d", mlkem, noise.MlkemPublicKeySize)
-		}
-		if slhdsa != noise.SlhdsaPublicKeySize {
-			return nil, fmt.Errorf("post-quantum hello slhdsa key is %d bytes, want %d", slhdsa, noise.SlhdsaPublicKeySize)
-		}
-	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
-		if mlkem != 0 && mlkem != noise.MlkemPublicKeySize {
-			return nil, fmt.Errorf("classic hello mlkem key is %d bytes, want 0 or %d", mlkem, noise.MlkemPublicKeySize)
-		}
-		if slhdsa != 0 && slhdsa != noise.SlhdsaPublicKeySize {
-			return nil, fmt.Errorf("classic hello slhdsa key is %d bytes, want 0 or %d", slhdsa, noise.SlhdsaPublicKeySize)
-		}
+	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
 	default:
 		return nil, fmt.Errorf("hello encryption mode %s is not supported", mode)
 	}
@@ -820,7 +858,7 @@ var errWorkerStreamClosed = errors.New("worker stream closed")
 // Returns a non-nil error to terminate the connection (e.g. invalid config).
 //
 // registeredBy is the worker's registrant, already in hand from Connect's
-// GetByAuthToken. It is threaded here purely for the tab-sync path, which needs
+// AuthenticateWorkerBearer call. It is threaded here purely for the tab-sync path, which needs
 // the owner axis workspace_tab_owned is keyed by.
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,

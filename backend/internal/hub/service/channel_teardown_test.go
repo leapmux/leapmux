@@ -21,10 +21,12 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // teardownEnv stands up a hub configured with bearer auth + the
@@ -83,6 +85,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 		ID:           workerID,
 		AuthToken:    workerAuthTok,
 		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return &teardownEnv{
@@ -238,6 +241,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	workerB := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID: workerB, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(env.userID),
+		PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	env.channelMgr.RegisterWithAuthInfo(chA, workerA, env.userID, channelmgr.AuthInfo{

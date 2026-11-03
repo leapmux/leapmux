@@ -2,11 +2,19 @@ package solo_test
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/stretchr/testify/assert"
@@ -303,4 +311,122 @@ func TestSoloStart_DoesNotAlsoLogANewServerFailure(t *testing.T) {
 	require.Error(t, startErr, "solo.Start should surface the bind failure")
 	assert.NotContains(t, out, "hub error",
 		"the failure Start returns must not also be logged; captured stderr:\n"+out)
+}
+
+// A solo or desktop launch restores the same Worker across restarts, and each
+// launch logs the fingerprint a user checks against the key-change dialog's
+// Actual value.
+//
+// This is the property the pin forces: a second launch has to reproduce the keys
+// the Hub pinned at the first, because a single key of difference would make the
+// state unusable and register a new Worker on every start.
+func TestSoloStart_KeepsItsWorkerAcrossRestarts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	// Once per test: startForTest sandboxes a NEW home on every call, which would
+	// move HOME out from under the first launch's saved state.
+	home := locallistentest.SandboxHome(t)
+	listenURL := uniqueListenURL(t)
+	t.Setenv("LEAPMUX_HUB_LISTEN", listenURL)
+
+	// Each launch's context is created OUTSIDE the capture. solo.Start's watcher
+	// shuts the instance down when its parent context ends, so a cancel deferred
+	// inside the captured call would tear the instance down at once.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Only each solo.Start call is captured: solo.Start runs logging.Setup, which
+	// installs a fresh default logger on stderr, so CaptureDefaultLogger cannot
+	// work here.
+	launch := func(t *testing.T) (*solo.Instance, string) {
+		t.Helper()
+		var inst *solo.Instance
+		var startErr error
+		out := testutil.CaptureStderr(t, func() {
+			inst, startErr = solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+		})
+		require.NoError(t, startErr, "solo.Start; captured stderr:\n"+out)
+		return inst, out
+	}
+
+	first, firstOut := launch(t)
+	firstID := requireOnlineWorkerID(t, listenURL)
+	firstFingerprint := requireRegisteredFingerprint(t, firstOut)
+	require.NoError(t, first.Stop())
+
+	second, secondOut := launch(t)
+	t.Cleanup(func() { _ = second.Stop() })
+	secondID := requireOnlineWorkerID(t, listenURL)
+	secondFingerprint := requireRegisteredFingerprint(t, secondOut)
+
+	assert.Equal(t, firstID, secondID, "a solo launch must keep its Worker across restarts")
+	assert.Equal(t, firstFingerprint, secondFingerprint,
+		"a restart must restore the same keys, which is what the dialog's Actual fingerprint shows")
+
+	matches, err := filepath.Glob(filepath.Join(home, ".config", "leapmux", "*", "worker", "state.json"))
+	require.NoError(t, err)
+	require.Len(t, matches, 1, "the launch must have written one worker state file")
+	corrupt, err := filepath.Glob(matches[0] + ".corrupt-*")
+	require.NoError(t, err)
+	assert.Empty(t, corrupt, "neither launch may treat the saved state as unusable")
+}
+
+// requireOnlineWorkerID waits until the local Hub reports one online Worker and
+// returns its id. The local socket admits a credential-free caller, so no token is
+// needed.
+func requireOnlineWorkerID(t *testing.T, listenURL string) string {
+	t.Helper()
+	client := localWorkerManagementClient(t, listenURL)
+	ctx := testutil.DeadlineContext(t)
+
+	var workerID string
+	require.Eventually(t, func() bool {
+		resp, listErr := client.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
+		if listErr != nil {
+			return false
+		}
+		for _, w := range resp.GetWorkers() {
+			if w.GetOnline() {
+				workerID = w.GetId()
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "the solo worker did not come online")
+	return workerID
+}
+
+// localWorkerManagementClient dials the Hub's local IPC socket.
+func localWorkerManagementClient(t *testing.T, listenURL string) leapmuxv1connect.WorkerManagementServiceClient {
+	t.Helper()
+	endpoint, err := hubtransport.New(listenURL)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	return leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(
+		endpoint.HTTP2OnlyClient(), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0))))
+}
+
+// requireRegisteredFingerprint reads a launch's "solo worker registered" JSON line
+// and returns its key_fingerprint.
+func requireRegisteredFingerprint(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil {
+			continue
+		}
+		if record["msg"] != "solo worker registered" {
+			continue
+		}
+		fingerprint, _ := record["key_fingerprint"].(string)
+		require.NotEmpty(t, fingerprint, "the registration log line must carry key_fingerprint")
+		return fingerprint
+	}
+	t.Fatalf("no \"solo worker registered\" line in the captured stderr:\n%s", out)
+	return ""
 }

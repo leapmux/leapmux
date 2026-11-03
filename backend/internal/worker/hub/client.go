@@ -42,8 +42,10 @@ type Client struct {
 	terminals      *terminal.Manager
 	channelMgr     *channel.Manager
 
-	// OnDeregister is called when the Hub sends a deregistration notification.
-	// The worker should clear its state and shut down gracefully.
+	// OnDeregister is called when the Hub tells this worker to stop for good: a
+	// deregistration notification on the stream (the Hub deletes the worker once
+	// it acknowledges), or a Connect refusal with WORKER_DELETED. The worker
+	// should clear its state and shut down gracefully.
 	OnDeregister func()
 
 	// OnReconcileNudge is called when the Hub asks this worker to run its
@@ -51,12 +53,12 @@ type Client struct {
 	// hosts. Unsolicited, like the heartbeat.
 	OnReconcileNudge func()
 
-	// OnTabSyncResponse is called when the Hub replies to the connect-
-	// time WorkerTabInventory with its orphan / reassignment
-	// classification. Wired by the runner to trigger an immediate
-	// orphan-reconciler pass so reconnects converge worker state with
-	// the hub's CRDT-derived `workspace_tab_owned` view without
-	// waiting for the periodic interval.
+	// OnTabSyncResponse is called when the Hub replies to the connect-time
+	// WorkerTabInventory. The reply is deliberately empty: it only signals that
+	// the Hub finished its side. Wired by the runner to trigger an immediate
+	// orphan-reconciler pass so reconnects converge worker state with the Hub's
+	// CRDT-derived `workspace_tab_owned` view without waiting for the periodic
+	// interval.
 	OnTabSyncResponse func(*leapmuxv1.WorkerTabInventoryResponse)
 
 	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
@@ -71,13 +73,10 @@ type Client struct {
 	// that could have gone missing.
 	OnWorkerIdentity func(identity *leapmuxv1.WorkerIdentity)
 
-	// PublicKey is the Worker's X25519 public key for E2EE channels.
-	// Sent to the Hub in the WorkerHello that opens every Connect stream.
-	PublicKey []byte
-	// MlkemPublicKey is the Worker's ML-KEM-1024 public key.
-	MlkemPublicKey []byte
-	// SlhdsaPublicKey is the Worker's SLH-DSA-SHAKE-256f public key.
-	SlhdsaPublicKey []byte
+	// PublicKeys is the Worker's static public key set, sent in the WorkerHello
+	// that opens every Connect stream. The Hub pinned it at registration and
+	// refuses a hello that presents any other key.
+	PublicKeys *leapmuxv1.WorkerPublicKeys
 	// EncryptionMode is the Worker's encryption mode.
 	EncryptionMode leapmuxv1.EncryptionMode
 
@@ -409,18 +408,21 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	// headers on the first Send(), and nothing else may enqueue until the writer
 	// is published.
 	//
-	// When the Hub refuses before that write finishes (fenced registry, worker
-	// cap, …), Send wraps io.EOF and Receive carries the real status — see
-	// connect.ClientStream.Send. Surface that status so reconnect logic
-	// sees Unavailable/ResourceExhausted instead of a bare Unknown/EOF.
+	// When the Hub refuses before it reads the hello (a missing, unknown or
+	// deleted token, or a Hub that is shutting down), this write can fail with an
+	// error that wraps io.EOF: connecthttp's duplexHTTPCall.Send maps a closed
+	// request pipe to io.EOF, and grpcClientConn.Receive reads the status.
+	// Surface that status, so that the reconnect loop sees the refusal and its
+	// WorkerConnectRefusal detail. A refusal after the hello read (a key
+	// mismatch, a fenced registry, the worker cap) cannot fail this write,
+	// because the transport takes the hello from the pipe before the Hub reads
+	// it. It can fail a later write with the same io.EOF error. The writer's
+	// give-up hook then leaves the connection to the receive loop, which returns
+	// the status.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Hello{
 			Hello: &leapmuxv1.WorkerHello{
-				Keys: &leapmuxv1.WorkerPublicKeys{
-					X25519: c.PublicKey,
-					Mlkem:  c.MlkemPublicKey,
-					Slhdsa: c.SlhdsaPublicKey,
-				},
+				Keys:           c.PublicKeys,
 				EncryptionMode: c.EncryptionMode,
 			},
 		},
@@ -444,17 +446,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		ControlReserve: sendq.DefaultControlReserve,
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
-		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
-			// Counted like every other sendq writer. The worker serves no
-			// /metrics of its own, but solo runs it in the Hub's process
-			// against the Hub's registry, so this is scrapeable there -- and
-			// an uncounted give-up is indistinguishable from one that never
-			// happened, which is the wrong answer to "why did that reconnect?"
-			metrics.CountSendqGiveUp(metrics.PoolWorkerClient, reason.Label())
-			slog.Warn("hub connect stream writer gave up; reconnecting",
-				"reason", reason.Label(), "error", err)
-			connCancel()
-		},
+		OnGiveUp:       c.connectWriterGiveUpHook(connCancel),
 		OnDiscard: func(frames int, bytes int64) {
 			slog.Debug("hub connect stream discarded queued frames",
 				"frames", frames, "bytes", bytes)
@@ -712,29 +704,47 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 // Used for dependency injection in tests.
 type connectFn func(ctx context.Context, authToken string) error
 
+// ErrKeysRefused reports that the Hub refused this Worker's public keys because
+// they differ from the keys it registered with. Reconnecting cannot help: the
+// remedy is a new registration, which creates a new Worker.
+var ErrKeysRefused = errors.New("the hub refused this worker's public keys")
+
 // ConnectWithReconnect wraps Connect with automatic reconnection using
 // exponential backoff. Starts at 1s, doubles up to 180s, and resets after a
 // connection lasts longer than resetThreshold.
-func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) {
-	c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
+//
+// It returns nil when ctx ends, and when the Hub tells this worker it was
+// deleted (after running OnDeregister). A refusal of the worker's keys returns
+// an error wrapping ErrKeysRefused. Every other refusal is retried, because a
+// bare status code -- a proxy's 401 or 403, a Hub that does not know the token
+// -- must never destroy the worker's identity or stop it.
+func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) error {
+	return c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
 }
 
-func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) {
+func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) error {
 	for {
 		start := c.clock.Now(hubReconnectTimeTag)
 		err := connect(ctx, authToken)
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
-		// If the Hub returns Unauthenticated, the worker has been deleted.
-		// Don't retry — call OnDeregister and exit.
-		if isCodeUnauthenticated(err) {
-			slog.Warn("authentication rejected by hub, worker may be deleted", "error", err)
+		// Only a refusal whose detail says reconnecting cannot help stops the
+		// loop. A bare code carries no such claim.
+		switch connectRefusalReason(err) {
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED:
+			// No detail: the refusal says nothing about whether reconnecting can
+			// help, so the loop backs off and tries again below.
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED:
+			slog.Warn("the hub reports that this worker was deleted; stopping", "error", err)
 			if c.OnDeregister != nil {
 				c.OnDeregister()
 			}
-			return
+			return nil
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER:
+			slog.Error("the hub refused this worker's public keys; stopping", "error", err)
+			return fmt.Errorf("%w: %w", ErrKeysRefused, err)
 		}
 
 		// If the Hub sent a shutdown notification with a retry delay,
@@ -743,7 +753,7 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		if delay := c.hubRetryDelay.Swap(0); delay > 0 {
 			slog.Info("hub requested reconnect delay", "delay_seconds", delay)
 			if !waitOrCancel(ctx, c.clock, time.Duration(delay)*time.Second, hubRequestedRetryTimerTag) {
-				return
+				return nil
 			}
 			bo.Reset()
 			continue
@@ -757,16 +767,80 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		interval := bo.Next()
 		slog.Warn("disconnected from hub, reconnecting...", "error", err, "backoff", interval)
 		if !waitOrCancel(ctx, c.clock, interval, hubReconnectTimerTag) {
-			return
+			return nil
 		}
 	}
 }
 
-// isCodeUnauthenticated checks if an error is a ConnectRPC Unauthenticated error.
-func isCodeUnauthenticated(err error) bool {
+// connectRefusalReason returns the WorkerConnectRefusal reason carried by err,
+// or UNSPECIFIED when it carries none. Only the detail counts: a bare
+// Unauthenticated, PermissionDenied or Canceled says nothing about whether
+// reconnecting can help.
+func connectRefusalReason(err error) leapmuxv1.WorkerConnectRefusalReason {
 	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
-		return connectErr.Code() == connect.CodeUnauthenticated
+	if !errors.As(err, &connectErr) {
+		return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
 	}
-	return false
+	fullName := string((&leapmuxv1.WorkerConnectRefusal{}).ProtoReflect().Descriptor().FullName())
+	for _, detail := range connectErr.Details() {
+		if detail.Type != fullName {
+			continue
+		}
+		var refusal leapmuxv1.WorkerConnectRefusal
+		if err := proto.Unmarshal(detail.Value, &refusal); err != nil {
+			continue
+		}
+		return refusal.GetReason()
+	}
+	return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+}
+
+// writerGiveUpCancelsConnection reports whether a writer give-up must end the
+// connection by cancelling it, or whether the peer already ended the stream and
+// the receive loop will report why.
+//
+// A write that fails because the Hub ended the stream wraps io.EOF:
+// connecthttp's duplexHTTPCall.Send maps a closed request pipe to io.EOF, and
+// grpcClientConn.Receive reads the status from the trailers or from a
+// trailers-only response. Cancelling in that case makes duplexHTTPCall.Read
+// check the context before it reads the response, so Receive returns a bare
+// Canceled and the Hub's status -- with its WorkerConnectRefusal detail -- is
+// lost. Leaving the stream to its reader is what surfaces it.
+//
+// That the reader still ends is not a hope: the request pipe closes only on
+// paths that also end the response read -- connect's CloseWrite after a response
+// error, closeStreamOnCancel, or net/http's HTTP/2 client through
+// abortStreamLocked on RST_STREAM, GOAWAY and connection loss, after which
+// processResetStream or cleanupWriteRequest also closes the response body, and
+// through abortRequestBodyWrite on a status above 299, which connecthttp's
+// grpcValidateResponse turns into the error Receive returns. A write can fail
+// with io.EOF before that error exists, but makeRequest stores it as responseErr
+// before it closes responseReady, and Receive waits for responseReady.
+func writerGiveUpCancelsConnection(reason sendq.GiveUpReason, err error) bool {
+	if reason == sendq.GiveUpWriteError && errors.Is(err, io.EOF) {
+		return false
+	}
+	return true
+}
+
+// connectWriterGiveUpHook builds the connect writer's OnGiveUp hook. It is a
+// method so a test can drive the production hook, and it counts every give-up
+// whether or not it cancels.
+func (c *Client) connectWriterGiveUpHook(connCancel context.CancelFunc) func(sendq.GiveUpReason, error) {
+	return func(reason sendq.GiveUpReason, err error) {
+		// Counted like every other sendq writer. The worker serves no /metrics
+		// of its own, but solo runs it in the Hub's process against the Hub's
+		// registry, so this is scrapeable there -- and an uncounted give-up is
+		// indistinguishable from one that never happened, which is the wrong
+		// answer to "why did that reconnect?"
+		metrics.CountSendqGiveUp(metrics.PoolWorkerClient, reason.Label())
+		if !writerGiveUpCancelsConnection(reason, err) {
+			slog.Debug("hub connect stream writer gave up because the hub ended the stream; the receive loop reports why",
+				"reason", reason.Label(), "error", err)
+			return
+		}
+		slog.Warn("hub connect stream writer gave up; reconnecting",
+			"reason", reason.Label(), "error", err)
+		connCancel()
+	}
 }

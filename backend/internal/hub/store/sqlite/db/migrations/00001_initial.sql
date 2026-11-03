@@ -133,6 +133,13 @@ CREATE TABLE workers (
     id            TEXT PRIMARY KEY,
     auth_token    TEXT NOT NULL UNIQUE,
     registered_by TEXT NOT NULL REFERENCES users(id),
+    -- The public keys the worker registered with. Connect refuses a hello
+    -- whose keys differ, so a stolen auth token cannot attach other keys to
+    -- this worker. No query updates them: new keys need a new registration,
+    -- which creates a new row.
+    x25519_public_key BLOB NOT NULL,
+    mlkem_public_key  BLOB NOT NULL,
+    slhdsa_public_key BLOB NOT NULL,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at  DATETIME,
     -- Set when the worker is deregistered; the persisted deregistration intent.
@@ -148,10 +155,11 @@ CREATE TABLE workers (
     deregistering_at DATETIME,
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
-    -- worker. The deregister handler refuses these so the user can't
-    -- accidentally tear down the bundled desktop worker -- it would just
-    -- re-register on next launch and the running process would noisily
-    -- exit with "invalid auth token" in between.
+    -- worker. The owner's deregistration path refuses these, and the admin
+    -- path refuses one while it is connected, so the user can't accidentally
+    -- tear down the running bundled desktop worker: the next launch would
+    -- just register a fresh worker, and the running worker would stop until
+    -- that launch.
     auto_registered INTEGER NOT NULL DEFAULT 0,
     deleted_at    DATETIME
 );

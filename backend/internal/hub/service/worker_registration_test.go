@@ -23,6 +23,7 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -38,11 +39,13 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 type regKeyEnv struct {
@@ -218,11 +221,18 @@ func (e *regKeyEnv) serveOverUnixSocket(t *testing.T, name string) *http.Client 
 
 func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*leapmuxv1.RegisterResponse, error) {
 	t.Helper()
+	return e.registerWithKeys(t, key, workerkeystest.Keys(0x31))
+}
+
+// registerWithKeys registers with an explicit key set, for the tests that must
+// present a malformed one or a second set.
+func (e *regKeyEnv) registerWithKeys(t *testing.T, key string, keys *leapmuxv1.WorkerPublicKeys) (*leapmuxv1.RegisterResponse, error) {
+	t.Helper()
 	ctx, info := connect.NewClientContext(context.Background())
 	if key != "" {
 		info.RequestHeader().Set("Authorization", "Bearer "+key)
 	}
-	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{})
+	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Keys: keys})
 }
 
 func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
@@ -751,6 +761,7 @@ func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
 		AuthToken:      "auto-token-1",
 		RegisteredBy:   userid.MustNew(env.adminID(t)),
 		AutoRegistered: true,
+		PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	_, err := env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
@@ -795,7 +806,9 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 		if key != "" {
 			info.RequestHeader().Set("Authorization", "Bearer "+key)
 		}
-		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{})
+		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{
+			Keys: workerkeystest.Keys(0x31),
+		})
 		return err
 	}
 
@@ -1361,7 +1374,7 @@ func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1
 }
 
 // authReadHookStore runs afterAuthRead once, right after the connector's
-// GetByAuthToken succeeds. That is the window between Connect's authentication
+// GetByAuthTokenIncludeDeleted succeeds. That is the window between Connect's authentication
 // read and the registration of the connection.
 type authReadHookStore struct {
 	store.Store
@@ -1377,8 +1390,8 @@ type authReadHookWorkers struct {
 	afterAuthRead func(*store.Worker)
 }
 
-func (w authReadHookWorkers) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
-	worker, err := w.WorkerStore.GetByAuthToken(ctx, token)
+func (w authReadHookWorkers) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
+	worker, err := w.WorkerStore.GetByAuthTokenIncludeDeleted(ctx, token)
 	if err == nil {
 		w.afterAuthRead(worker)
 	}
@@ -1543,8 +1556,8 @@ func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 }
 
 // A Connect handler can clear the shutdown interceptor -- a one-shot check --
-// microseconds before the Hub starts fencing, then spend a store round trip and
-// the greeting write getting to Register. The registry refuses it, and what the
+// microseconds before the Hub starts fencing, then spend store round trips, the
+// hello read and the key comparison getting to Register. The registry refuses it, and what the
 // worker sees has to be Unavailable rather than Internal: the manager-level
 // tests pin the refusal, but only this one pins the status code a real worker
 // observes, which is the part a later edit folding the branch back into the
@@ -1583,15 +1596,14 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ConnectRPC documents that when the server returns an error, the client's
-	// first Send may wrap io.EOF and Receive carries the real status. Fencing
-	// is the cheapest refuse path (no greeting enqueue), so on a fast runner
-	// the Hub often closes before the heartbeat envelope finishes writing —
-	// requiring Send to succeed flakes as "unknown: write envelope: EOF".
+	// The registry is fenced before this stream opens, and the Hub reads the
+	// hello before Register refuses the connection, so this Send normally
+	// succeeds. The test still accepts an error that wraps io.EOF, as the
+	// worker's hello path does, and reads the status from Receive.
 	err = stream.Send(helloRequest(classicHello(0x31)))
 	if err != nil {
 		require.ErrorIs(t, err, io.EOF,
-			"server may close before the first Send finishes; got %v", err)
+			"Send may fail only with an error that wraps io.EOF; got %v", err)
 	}
 
 	_, err = stream.Receive()
@@ -1649,7 +1661,8 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	// openStream starts a Connect stream and returns the Hub's first frame. The
 	// worker speaks first because ConnectRPC only sends headers on the first Send.
 	// When the Hub refuses immediately, Send may wrap io.EOF; Receive carries
-	// the status (the generated client stream's Send documents this).
+	// the status (connecthttp's duplexHTTPCall.Send maps a closed request pipe to
+	// io.EOF, and grpcClientConn.Receive reads the status).
 	openStream := func(t *testing.T, authToken string) (workerStream, *leapmuxv1.ConnectResponse, error) {
 		t.Helper()
 		streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -1877,20 +1890,22 @@ func TestConnectAndDisconnectNotifyTheOwnersUserEvents(t *testing.T) {
 	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 		env.serveOverUnixSocket(t, "hub-online-events"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 	ctx := testutil.DeadlineContext(t)
-	connectStream := func(fill byte) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+	connectStream := func(hello *leapmuxv1.WorkerHello) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
 		streamCtx, streamInfo := connect.NewClientContext(ctx)
 		streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
 		stream, err := connectorClient.Connect(streamCtx)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = stream.Close() })
-		require.NoError(t, stream.Send(helloRequest(classicHello(fill))))
+		require.NoError(t, stream.Send(helloRequest(hello)))
 		identity, err := stream.Receive()
 		require.NoError(t, err)
 		require.NotNil(t, identity.GetWorkerIdentity(), "the first frame after a valid hello is WorkerIdentity")
 		return stream
 	}
 
-	first := connectStream(0x41)
+	// Both connections present the ONE key set the worker registered, in two
+	// modes: the pin is about the keys, not the cipher choice.
+	first := connectStream(classicHello(0x31))
 	requireWorkersChanged(t, events, "the owner heard nothing when the worker came online")
 	// The hub announces after Register published the connection.
 	assert.True(t, env.wMgr.OnlineForTrustedPath(workerID), "a list read after the announcement shows the worker online")
@@ -1899,7 +1914,7 @@ func TestConnectAndDisconnectNotifyTheOwnersUserEvents(t *testing.T) {
 	// replacement's identity arrived, any announcement of its Register was
 	// already delivered. The superseded handler announces from its teardown,
 	// which ends before its stream does.
-	second := connectStream(0x42)
+	second := connectStream(postQuantumHello(0x31))
 	for {
 		if _, err := first.Receive(); err != nil {
 			break
@@ -1933,4 +1948,268 @@ func TestAWorkerListChangeSendsNothingOnChannelSockets(t *testing.T) {
 	// too.
 	requireWorkersChanged(t, events, "the user's /ws/userevents subscriber heard nothing about the new worker")
 	assert.Empty(t, channelFrames, "no channel socket may receive a worker-list change")
+}
+
+// workerConnectRefusalReason returns the WorkerConnectRefusal reason an error
+// carries, or UNSPECIFIED. The Hub sets it only on a refusal that reconnecting
+// cannot fix, and that detail is the only thing a worker acts on.
+func workerConnectRefusalReason(t *testing.T, err error) leapmuxv1.WorkerConnectRefusalReason {
+	t.Helper()
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	fullName := string((&leapmuxv1.WorkerConnectRefusal{}).ProtoReflect().Descriptor().FullName())
+	for _, detail := range connectErr.Details() {
+		if detail.Type != fullName {
+			continue
+		}
+		var refusal leapmuxv1.WorkerConnectRefusal
+		require.NoError(t, proto.Unmarshal(detail.Value, &refusal))
+		return refusal.GetReason()
+	}
+	return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+}
+
+// The registration pins the keys, which is the whole point: a stolen auth token
+// can no longer attach other keys to this worker.
+func TestRegisterPinsTheWorkersPublicKeys(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	keys := workerkeystest.Keys(0x31)
+
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), keys)
+	require.NoError(t, err)
+
+	row, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
+	require.NoError(t, err)
+	assert.Equal(t, store.WorkerPublicKeysFromProto(keys), row.PublicKeys,
+		"the new row must carry the keys the worker registered with, not the ones a later hello presents")
+}
+
+// A malformed key set is refused WITHOUT consuming the registration key: the
+// keys are checked before the key is read, so the operator can fix the worker and
+// retry with the same key.
+func TestRegisterRefusesAnIncompleteKeySetWithoutConsumingTheKey(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	complete := workerkeystest.Keys(0x31)
+	cloneWith := func(mutate func(*leapmuxv1.WorkerPublicKeys)) *leapmuxv1.WorkerPublicKeys {
+		out := proto.Clone(complete).(*leapmuxv1.WorkerPublicKeys)
+		mutate(out)
+		return out
+	}
+
+	for name, keys := range map[string]*leapmuxv1.WorkerPublicKeys{
+		"keys absent":        nil,
+		"a short x25519 key": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:16] }),
+		"ML-KEM absent":      cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }),
+		"SLH-DSA absent":     cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }),
+		"an oversized SLH-DSA key": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) {
+			k.Slhdsa = append(k.Slhdsa, 0)
+		}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+				&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+			require.NoError(t, err)
+
+			_, err = env.registerWithKeys(t, createResp.GetRegistrationKey(), keys)
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+			// The same key still registers a complete set.
+			resp, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), complete)
+			require.NoError(t, err, "a refused registration must not consume the key")
+			assert.NotEmpty(t, resp.GetWorkerId())
+		})
+	}
+}
+
+// A hello whose keys differ from the pinned ones is refused before the
+// connection is published, so it can never replace the live one; the registered
+// keys then connect.
+func TestConnectRefusesKeysThatDifferFromTheRegisteredKeys(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), workerkeystest.Keys(0x31))
+	require.NoError(t, err)
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-pin-mismatch"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx := testutil.DeadlineContext(t)
+
+	openStream := func(t *testing.T) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+		t.Helper()
+		streamCtx, streamInfo := connect.NewClientContext(ctx)
+		streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+		stream, err := connectorClient.Connect(streamCtx)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.Close() })
+		return stream
+	}
+
+	impostor := openStream(t)
+	require.NoError(t, impostor.Send(helloRequest(postQuantumHello(0x77))))
+	_, err = impostor.Receive()
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"the code tells a reader of logs what happened")
+	assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER,
+		workerConnectRefusalReason(t, err), "the detail is what the worker acts on")
+	assert.Nil(t, env.wMgr.ConnForTrustedPath(regResp.GetWorkerId()),
+		"a refused connection must never be published")
+
+	real := openStream(t)
+	require.NoError(t, real.Send(helloRequest(postQuantumHello(0x31))))
+	identity, err := real.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, identity.GetWorkerIdentity(), "the registered keys still connect")
+}
+
+// Only a row the Hub holds and has deleted is tagged WORKER_DELETED. A token the
+// Hub has never seen, or no token at all, gets a bare Unauthenticated, because a
+// wrong Hub, a restored backup or a proxy must not destroy the worker's identity.
+func TestConnectTagsOnlyADeletedWorkerAsPermanent(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	goneResp, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), workerkeystest.Keys(0x31))
+	require.NoError(t, err)
+	require.NoError(t, env.store.Workers().MarkDeleted(context.Background(), goneResp.GetWorkerId()))
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-refusal-details"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx := testutil.DeadlineContext(t)
+
+	openStream := func(t *testing.T, bearer string, sendHello bool) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+		t.Helper()
+		streamCtx, streamInfo := connect.NewClientContext(ctx)
+		if bearer != "" {
+			streamInfo.RequestHeader().Set("Authorization", "Bearer "+bearer)
+		}
+		stream, err := connectorClient.Connect(streamCtx)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.Close() })
+		if sendHello {
+			_ = stream.Send(helloRequest(postQuantumHello(0x31)))
+		} else {
+			require.NoError(t, stream.SendHeaders())
+		}
+		return stream
+	}
+
+	t.Run("a deleted worker is tagged", func(t *testing.T) {
+		stream := openStream(t, goneResp.GetAuthToken(), true)
+		_, err := stream.Receive()
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+			workerConnectRefusalReason(t, err))
+	})
+
+	t.Run("a deleted worker is tagged before any hello", func(t *testing.T) {
+		// Headers only: the refusal must not wait for the hello deadline,
+		// because the Hub reads nothing before it decides.
+		early, cancelEarly := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelEarly()
+		streamCtx, streamInfo := connect.NewClientContext(early)
+		streamInfo.RequestHeader().Set("Authorization", "Bearer "+goneResp.GetAuthToken())
+		stream, err := connectorClient.Connect(streamCtx)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.Close() })
+		require.NoError(t, stream.SendHeaders())
+
+		_, err = stream.Receive()
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+			workerConnectRefusalReason(t, err))
+	})
+
+	t.Run("an unknown token is bare", func(t *testing.T) {
+		stream := openStream(t, id.Generate(), true)
+		_, err := stream.Receive()
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED,
+			workerConnectRefusalReason(t, err), "no detail means retry, never destroy the state")
+	})
+
+	t.Run("a missing bearer is bare", func(t *testing.T) {
+		stream := openStream(t, "", true)
+		_, err := stream.Receive()
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED,
+			workerConnectRefusalReason(t, err))
+	})
+
+	t.Run("a deregistering worker still connects", func(t *testing.T) {
+		createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+			&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		leaving, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), workerkeystest.Keys(0x31))
+		require.NoError(t, err)
+		_, err = env.store.Workers().Deregister(context.Background(), store.DeregisterWorkerParams{
+			ID:           leaving.GetWorkerId(),
+			RegisteredBy: userid.MustNew(env.adminID(t)),
+		})
+		require.NoError(t, err)
+
+		stream := openStream(t, leaving.GetAuthToken(), true)
+		identity, err := stream.Receive()
+		require.NoError(t, err, "a deregistering worker must hold its stream to be told to stop")
+		require.NotNil(t, identity.GetWorkerIdentity())
+	})
+}
+
+// A store fault in the token read says nothing about the credential, so it must
+// answer Internal with no refusal detail: a bare Unauthenticated would make the
+// worker treat its token as revoked.
+func TestConnectAnswersAStoreFaultInTheTokenReadAsInternal(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return workerFaultStore{Store: st}
+	})
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-token-fault"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx := testutil.DeadlineContext(t)
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer anything")
+	stream, err := connectorClient.Connect(streamCtx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	_ = stream.Send(helloRequest(postQuantumHello(0x31)))
+
+	_, err = stream.Receive()
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED,
+		workerConnectRefusalReason(t, err), "a store fault must not read as a permanent refusal")
 }

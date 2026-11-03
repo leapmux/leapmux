@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -19,14 +20,28 @@ import (
 // per-user worker view lives in WorkerManagementService.
 type AdminWorkerService struct {
 	store store.Store
+	// workers answers whether a Worker is connected right now.
+	workers workerPresence
 	// deregisterEffects runs the out-of-database half of a deregistration.
-	// The same instance reaches WorkerManagementService, so an
-	// administrator's force-deregister does exactly what the owner's does.
+	// WorkerManagementService builds an equal instance from the same scope
+	// cache, notifier and workers-changed hook, so an administrator's
+	// force-deregister does exactly what the owner's does.
 	deregisterEffects *WorkerDeregisterEffects
 }
 
-func NewAdminWorkerService(st store.Store, deregisterEffects *WorkerDeregisterEffects) *AdminWorkerService {
-	return &AdminWorkerService{store: st, deregisterEffects: deregisterEffects}
+// workerPresence is the one registry question this service asks: whether a
+// Worker holds a connection. *workermgr.Manager satisfies it.
+type workerPresence interface {
+	OnlineForTrustedPath(workerID string) bool
+}
+
+func NewAdminWorkerService(st store.Store, workers workerPresence, deregisterEffects *WorkerDeregisterEffects) *AdminWorkerService {
+	// A missing registry must never read as "every Worker is offline": that
+	// would silently disable the bundled-Worker guard below.
+	if nilcheck.IsNilDependency(workers) {
+		panic("service: NewAdminWorkerService requires a worker registry")
+	}
+	return &AdminWorkerService{store: st, workers: workers, deregisterEffects: deregisterEffects}
 }
 
 func adminWorkerToProto(w store.WorkerWithOwner) *leapmuxv1.AdminWorker {
@@ -99,6 +114,18 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 			return nil, connect.Errorf(connect.CodeNotFound, "worker %s not found or not active", req.GetId())
 		}
 		return nil, storeConnectError(err, "deregister worker")
+	}
+	// A bundled (auto-registered) Worker is refused only while it is CONNECTED.
+	// Stopping a running one would leave the app with no local Worker until its
+	// next launch, and the app re-registers on that launch, so the user's action
+	// would be undone. An offline one is removable: that is the only cleanup for
+	// the ACTIVE row a launch leaves behind when the app's state file was lost
+	// (loadOrCreateWorkerState logs it as orphaning the previous one), and for a
+	// Worker whose process failed to start. A deleted bundled row falls through
+	// to the row-count refusal below, which reports it like an unknown id.
+	if w.AutoRegistered && w.DeletedAt == nil && s.workers.OnlineForTrustedPath(w.ID) {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"the bundled local worker is connected; deregister it only while it is offline")
 	}
 	n, err := s.store.Workers().ForceDeregister(ctx, req.GetId())
 	if err != nil {

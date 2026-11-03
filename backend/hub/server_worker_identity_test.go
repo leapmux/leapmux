@@ -29,7 +29,7 @@ func TestServer_ARenameReachesTheOwnersConnectedWorker(t *testing.T) {
 	srv := startTestServer(t, &config.Config{})
 	ctx := testutil.DeadlineContext(t)
 	owner := storetest.SeedUser(t, srv.store, "identity-owner")
-	credentials, err := srv.RegisterWorker(ctx, owner.ID)
+	credentials, err := srv.RegisterWorker(ctx, owner.ID, workermgrtest.TestHello().GetKeys())
 	require.NoError(t, err)
 
 	require.NotEmpty(t, srv.localListenURLs, "startTestServer always binds a local listener")

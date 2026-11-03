@@ -20,9 +20,11 @@ const (
 	maxOpBatchSweepBatches = 100
 	// deregisterGracePeriod is how long a deregistering worker may wait for
 	// its DEREGISTER instruction before the hub deletes it without telling
-	// it. A worker offline for longer is refused as Unauthenticated at its
-	// next connect, as a worker of a deleted user is, and it then clears its
-	// local state and exits.
+	// it. A worker offline for longer is refused with WORKER_DELETED at its next
+	// connect, as a worker of a deleted user is. The worker then stops
+	// connecting, and a standalone worker also clears its state. Once the row is
+	// hard-deleted (cleanupRetention later), the hub no longer knows the token,
+	// so a worker that connects after that retries until an operator stops it.
 	deregisterGracePeriod = 7 * 24 * time.Hour
 	// Limited like the sweeps above.
 	maxStaleDeregistrationBatches = 100

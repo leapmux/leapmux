@@ -283,7 +283,7 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 // unreachable or locked database would. It is not a missing row.
 type faultingWorkerStore struct{ store.WorkerStore }
 
-func (faultingWorkerStore) GetByAuthToken(context.Context, string) (*store.Worker, error) {
+func (faultingWorkerStore) GetByAuthTokenIncludeDeleted(context.Context, string) (*store.Worker, error) {
 	return nil, errors.New("database is locked")
 }
 
@@ -296,7 +296,8 @@ func (s workerFaultStore) Workers() store.WorkerStore {
 }
 
 // A store fault says nothing about the caller's credential, so it must not be
-// answered as `unauthenticated`: the worker would read that as a revoked token.
+// answered as `unauthenticated`: that code reports a bad credential, which a
+// store fault does not show.
 func TestListOwnedTabsForWorkerAnswersInternalOnAStoreFault(t *testing.T) {
 	t.Parallel()
 

@@ -678,3 +678,83 @@ func TestX25519PublicFromSeedRejectsBadSeed(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "X25519 seed")
 }
+
+// RestoreCompositeKeypair takes only the private halves and derives each public
+// one, so a keypair that survived a save/restore round trip is the one that was
+// generated. If it were not, the Worker would pin keys it cannot use.
+func TestRestoreCompositeKeypairRoundTripsAPrivateOnlyTriple(t *testing.T) {
+	generated, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPriv, err := generated.SlhdsaPrivateKey.MarshalBinary()
+	require.NoError(t, err)
+
+	restored, err := RestoreCompositeKeypair(
+		generated.X25519Private,
+		generated.MlkemDecapsulationKey.Bytes(),
+		slhdsaPriv,
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, generated.X25519Public, restored.X25519Public, "the public point is derived from the scalar")
+	assert.Equal(t, generated.X25519Private, restored.X25519Private)
+	assert.Equal(t, generated.MlkemPublicKeyBytes(), restored.MlkemPublicKeyBytes())
+	generatedSlhdsa, err := generated.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	restoredSlhdsa, err := restored.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	assert.Equal(t, generatedSlhdsa, restoredSlhdsa)
+	assert.Equal(t, generated.Fingerprint(), restored.Fingerprint())
+}
+
+func TestRestoreCompositeKeypairRefusesBadKeyMaterial(t *testing.T) {
+	generated, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	mlkemSeed := generated.MlkemDecapsulationKey.Bytes()
+	slhdsaPriv, err := generated.SlhdsaPrivateKey.MarshalBinary()
+	require.NoError(t, err)
+
+	// FIPS 205 slh_keygen reads SK.seed, SK.prf and PK.seed, so the private
+	// key is four n-byte fields in that order.
+	n := SlhdsaPublicKeySize / 2
+	require.Len(t, slhdsaPriv, 4*n)
+
+	alteredSeed := append([]byte(nil), slhdsaPriv...)
+	alteredSeed[0] ^= 0xFF
+	alteredRoot := append([]byte(nil), slhdsaPriv...)
+	alteredRoot[3*n] ^= 0xFF
+
+	for name, tc := range map[string]struct {
+		x25519Priv []byte
+		mlkemSeed  []byte
+		slhdsaPriv []byte
+		want       string
+	}{
+		"a short X25519 private key": {
+			x25519Priv: generated.X25519Private[:31], mlkemSeed: mlkemSeed, slhdsaPriv: slhdsaPriv,
+			want: "X25519",
+		},
+		"an ML-KEM seed of 63 bytes": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed[:63], slhdsaPriv: slhdsaPriv,
+			want: "ML-KEM",
+		},
+		"an SLH-DSA private key of 127 bytes": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: slhdsaPriv[:127],
+			want: "SLH-DSA",
+		},
+		"an SLH-DSA secret seed that does not match its embedded public key": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: alteredSeed,
+			want: "does not match its public key",
+		},
+		"an SLH-DSA PK.root that does not match the seeds": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: alteredRoot,
+			want: "does not match its public key",
+		},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			ck, err := RestoreCompositeKeypair(tc.x25519Priv, tc.mlkemSeed, tc.slhdsaPriv)
+			require.Error(t, err)
+			assert.Nil(t, ck)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}

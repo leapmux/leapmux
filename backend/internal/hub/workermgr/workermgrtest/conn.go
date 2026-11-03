@@ -3,7 +3,6 @@
 package workermgrtest
 
 import (
-	"bytes"
 	"context"
 	"sync"
 	"testing"
@@ -13,14 +12,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // TestHello returns the WorkerHello the fixtures here build every Conn with: a
-// classic-mode worker with a fixed 32-byte X25519 key. A test that registers a
-// Conn of its own passes it to workermgr.NewConn.
+// classic-mode worker presenting the COMPLETE key set, because the Hub refuses a
+// hello that carries only some of the three keys whatever its mode. The bytes
+// come from workerkeystest, so a test can register a row with the same set. A
+// test that registers a Conn of its own passes it to workermgr.NewConn.
 func TestHello() *leapmuxv1.WorkerHello {
 	return &leapmuxv1.WorkerHello{
-		Keys:           &leapmuxv1.WorkerPublicKeys{X25519: bytes.Repeat([]byte{0x42}, 32)},
+		Keys:           workerkeystest.Keys(workerkeystest.SeededWorkerFill),
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}
 }
