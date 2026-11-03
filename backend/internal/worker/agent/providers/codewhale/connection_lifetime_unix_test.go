@@ -50,7 +50,9 @@ func TestReclaimStoreEndsOnlyItsVerifiedRuntimeAndDetachedChild(t *testing.T) {
 	writeOwner(t, store, owner)
 	require.NoError(t, reclaimStore(context.Background(), store, quartz.NewReal()))
 	select {
-	case <-finished:
+	case err := <-finished:
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the reclaimed runtime root did not exit")
 	}

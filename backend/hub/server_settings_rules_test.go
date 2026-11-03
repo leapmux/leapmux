@@ -45,7 +45,7 @@ func startTestServer(t *testing.T, cfg *config.Config, opts ...ServerOption) *Se
 	go func() { served <- srv.Serve(serveCtx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-served
+		assert.NoError(t, <-served)
 	})
 	return srv
 }

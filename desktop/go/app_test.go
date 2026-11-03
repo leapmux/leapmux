@@ -75,7 +75,7 @@ func TestShutdownWaitsForAdmittedConfigPersistence(t *testing.T) {
 	select {
 	case err := <-shutdownDone:
 		app.configMu.Unlock()
-		<-setterDone
+		assert.NoError(t, <-setterDone)
 		t.Fatalf("Shutdown returned before admitted persistence completed: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
@@ -111,7 +111,8 @@ func TestShutdownBoundsCtxIgnoringOperation(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- app.Shutdown() }()
 	select {
-	case <-shutdownDone:
+	case err := <-shutdownDone:
+		require.NoError(t, err)
 		// Returned despite the still-blocked operation: the drain is bounded.
 	case <-time.After(2 * time.Second):
 		app.configMu.Unlock()
@@ -161,7 +162,8 @@ func TestShutdownBoundsWaitForStuckTransition(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- app.Shutdown() }()
 	select {
-	case <-shutdownDone:
+	case err := <-shutdownDone:
+		require.NoError(t, err)
 		// Returned while the transition is still stuck: the wait is bounded.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Shutdown blocked on the transition gate held by an un-cancellable operation")
@@ -469,8 +471,8 @@ func TestShutdownCancelsDistributedProbe(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		close(release)
-		<-connectDone
-		<-shutdownDone
+		assert.ErrorIs(t, <-connectDone, context.Canceled)
+		assert.NoError(t, <-shutdownDone)
 		t.Fatal("Shutdown did not cancel the in-flight Hub probe")
 	}
 	require.ErrorIs(t, <-connectDone, context.Canceled)
@@ -526,8 +528,8 @@ func TestConnectSoloDoesNotBlockLifecycleReadersDuringStartup(t *testing.T) {
 
 	// ConnectSolo is still parked in startSolo here.
 	select {
-	case <-connectDone:
-		t.Fatal("ConnectSolo returned before the simulated startup completed")
+	case err := <-connectDone:
+		t.Fatalf("ConnectSolo returned before the simulated startup completed: %v", err)
 	default:
 	}
 
@@ -573,8 +575,8 @@ func TestSwitchModeDoesNotBlockLifecycleReadersDuringSoloStop(t *testing.T) {
 
 	// SwitchMode is parked in solo.Stop() here.
 	select {
-	case <-switchDone:
-		t.Fatal("SwitchMode returned before the simulated solo stop completed")
+	case err := <-switchDone:
+		t.Fatalf("SwitchMode returned before the simulated solo stop completed: %v", err)
 	default:
 	}
 

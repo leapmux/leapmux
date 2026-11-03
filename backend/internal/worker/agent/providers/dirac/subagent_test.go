@@ -299,8 +299,8 @@ func TestDiracArchiveWaitKeepsArchiveCloseBeforeExitCleanup(t *testing.T) {
 	}
 	stopCall := stopTimer.MustWait(ctx)
 	select {
-	case <-waitDone:
-		t.Error("Wait returned before the child archive row closed")
+	case err := <-waitDone:
+		t.Fatalf("Wait returned before the child archive row closed: %v", err)
 	default:
 	}
 	stopCall.MustRelease(ctx)

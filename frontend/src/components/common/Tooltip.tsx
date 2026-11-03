@@ -583,7 +583,6 @@ export function Tooltip(props: TooltipProps) {
   })
 
   createEffect(() => {
-    // eslint-disable-next-line solid/reactivity -- the effect re-runs on targetEl and its cleanup detaches the old target
     const target = targetEl()
     if (!target)
       return
@@ -618,7 +617,6 @@ export function Tooltip(props: TooltipProps) {
   })
 
   createEffect(() => {
-    // eslint-disable-next-line solid/reactivity -- the effect re-runs on targetEl and its cleanup detaches the old target
     const target = targetEl()
     if (!target)
       return

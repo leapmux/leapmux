@@ -14,7 +14,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/altcha-org/altcha-lib-go/v2 v2.4.1](#githubcomaltcha-orgaltcha-lib-gov2-v241)
 - [github.com/aymanbagabas/go-pty v0.2.3](#githubcomaymanbagabasgo-pty-v023)
 - [github.com/aymerick/douceur v0.2.0](#githubcomaymerickdouceur-v020)
-- [github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4](#githubcomazurego-ansiterm-v000-20261006220739-8c912ac31dd4)
+- [github.com/Azure/go-ansiterm v0.0.0-20261013165250-51075c6ea6bc](#githubcomazurego-ansiterm-v000-20261013165250-51075c6ea6bc)
 - [github.com/beorn7/perks v1.0.1](#githubcombeorn7perks-v101)
 - [github.com/cenkalti/backoff/v4 v4.3.0](#githubcomcenkaltibackoffv4-v430)
 - [github.com/cenkalti/backoff/v7 v7.0.2](#githubcomcenkaltibackoffv7-v702)
@@ -24,7 +24,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/coder/websocket v1.8.15](#githubcomcoderwebsocket-v1815)
 - [github.com/containerd/errdefs v1.0.0](#githubcomcontainerderrdefs-v100)
 - [github.com/containerd/errdefs/pkg v0.3.0](#githubcomcontainerderrdefspkg-v030)
-- [github.com/containerd/log v0.1.0](#githubcomcontainerdlog-v010)
+- [github.com/containerd/log v0.2.0](#githubcomcontainerdlog-v020)
 - [github.com/containerd/platforms v0.2.1](#githubcomcontainerdplatforms-v021)
 - [github.com/coreos/go-oidc/v3 v3.21.0](#githubcomcoreosgo-oidcv3-v3210)
 - [github.com/cpuguy83/dockercfg v0.3.2](#githubcomcpuguy83dockercfg-v032)
@@ -34,10 +34,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/docker/go-connections v0.8.2](#githubcomdockergo-connections-v082)
 - [github.com/docker/go-units v0.5.0](#githubcomdockergo-units-v050)
 - [github.com/dustin/go-humanize v1.1.0](#githubcomdustingo-humanize-v110)
-- [github.com/ebitengine/purego v0.11.1](#githubcomebitenginepurego-v0111)
+- [github.com/ebitengine/purego v0.11.2](#githubcomebitenginepurego-v0112)
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
-- [github.com/fxamacker/cbor/v2 v2.9.4](#githubcomfxamackercborv2-v294)
+- [github.com/fxamacker/cbor/v2 v2.10.0](#githubcomfxamackercborv2-v2100)
 - [github.com/go-jose/go-jose/v4 v4.1.7](#githubcomgo-josego-josev4-v417)
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
@@ -64,7 +64,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/knadh/koanf/v2 v2.4.1](#githubcomknadhkoanfv2-v241)
 - [github.com/kylelemons/godebug v1.1.0](#githubcomkylelemonsgodebug-v110)
 - [github.com/lmittmann/tint v1.2.1](#githubcomlmittmanntint-v121)
-- [github.com/magiconair/properties v1.8.10](#githubcommagiconairproperties-v1810)
+- [github.com/magiconair/properties v1.18.12](#githubcommagiconairproperties-v11812)
 - [github.com/matoous/go-nanoid/v2 v2.1.0](#githubcommatoousgo-nanoidv2-v210)
 - [github.com/mattn/go-isatty v0.0.24](#githubcommattngo-isatty-v0024)
 - [github.com/mfridman/interpolate v0.0.2](#githubcommfridmaninterpolate-v002)
@@ -73,33 +73,34 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/mitchellh/copystructure v1.2.0](#githubcommitchellhcopystructure-v120)
 - [github.com/mitchellh/reflectwalk v1.0.2](#githubcommitchellhreflectwalk-v102)
 - [github.com/moby/docker-image-spec v1.3.1](#githubcommobydocker-image-spec-v131)
-- [github.com/moby/go-archive v0.3.0](#githubcommobygo-archive-v030)
+- [github.com/moby/go-archive v0.3.3](#githubcommobygo-archive-v033)
 - [github.com/moby/moby/api v1.56.1](#githubcommobymobyapi-v1561)
 - [github.com/moby/moby/client v0.6.2](#githubcommobymobyclient-v062)
 - [github.com/moby/patternmatcher v0.6.1](#githubcommobypatternmatcher-v061)
 - [github.com/moby/sys/sequential v0.7.0](#githubcommobysyssequential-v070)
-- [github.com/moby/sys/user v0.4.1](#githubcommobysysuser-v041)
-- [github.com/moby/sys/userns v0.1.0](#githubcommobysysuserns-v010)
+- [github.com/moby/sys/user v0.5.0](#githubcommobysysuser-v050)
+- [github.com/moby/sys/userns v0.2.1](#githubcommobysysuserns-v021)
 - [github.com/moby/term v0.5.2](#githubcommobyterm-v052)
 - [github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822](#githubcommunnerzgoautoneg-v000-20191010083416-a7dc8b61c822)
 - [github.com/ncruces/go-strftime v1.1.0](#githubcomncrucesgo-strftime-v110)
 - [github.com/opencontainers/go-digest v1.0.0](#githubcomopencontainersgo-digest-v100)
 - [github.com/opencontainers/image-spec v1.1.1](#githubcomopencontainersimage-spec-v111)
-- [github.com/philhofer/fwd v1.2.0](#githubcomphilhoferfwd-v120)
+- [github.com/pandatix/go-abnf v0.5.5](#githubcompandatixgo-abnf-v055)
+- [github.com/philhofer/fwd v1.2.1](#githubcomphilhoferfwd-v121)
 - [github.com/pressly/goose/v3 v3.29.0](#githubcompresslygoosev3-v3290)
 - [github.com/prometheus/client_golang v1.25.0](#githubcomprometheusclient_golang-v1250)
 - [github.com/prometheus/client_model v0.6.3](#githubcomprometheusclient_model-v063)
-- [github.com/prometheus/common v0.72.0](#githubcomprometheuscommon-v0720)
-- [github.com/prometheus/procfs v0.22.0](#githubcomprometheusprocfs-v0220)
+- [github.com/prometheus/common v0.73.1](#githubcomprometheuscommon-v0731)
+- [github.com/prometheus/procfs v0.23.0](#githubcomprometheusprocfs-v0230)
 - [github.com/realclientip/realclientip-go v1.0.1-0.20260615104152-545b12e0e8c7](#githubcomrealclientiprealclientip-go-v101-020260615104152-545b12e0e8c7)
 - [github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec](#githubcomremyoudomphengbigfft-v000-20230129092748-24d4a6f8daec)
 - [github.com/sethvargo/go-retry v0.5.0](#githubcomsethvargogo-retry-v050)
-- [github.com/shirou/gopsutil/v4 v4.26.9](#githubcomshirougopsutilv4-v4269)
+- [github.com/shirou/gopsutil/v4 v4.26.10](#githubcomshirougopsutilv4-v42610)
 - [github.com/sirupsen/logrus v1.10.2](#githubcomsirupsenlogrus-v1102)
 - [github.com/stretchr/testify v1.12.1](#githubcomstretchrtestify-v1121)
 - [github.com/testcontainers/testcontainers-go v0.44.0](#githubcomtestcontainerstestcontainers-go-v0440)
 - [github.com/things-go/go-socks5 v0.1.4](#githubcomthings-gogo-socks5-v014)
-- [github.com/tinylib/msgp v1.6.4](#githubcomtinylibmsgp-v164)
+- [github.com/tinylib/msgp v1.6.5](#githubcomtinylibmsgp-v165)
 - [github.com/tklauser/go-sysconf v0.4.0](#githubcomtklausergo-sysconf-v040)
 - [github.com/tklauser/numcpus v0.12.0](#githubcomtklausernumcpus-v0120)
 - [github.com/u-root/u-root v0.16.0](#githubcomu-rootu-root-v0160)
@@ -112,7 +113,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.opentelemetry.io/otel/metric v1.47.0](#goopentelemetryiootelmetric-v1470)
 - [go.opentelemetry.io/otel/trace v1.47.0](#goopentelemetryiooteltrace-v1470)
 - [go.uber.org/multierr v1.11.0](#gouberorgmultierr-v1110)
-- [go.yaml.in/yaml/v3 v3.0.5](#goyamlinyamlv3-v305)
+- [go.yaml.in/yaml/v3 v3.0.6](#goyamlinyamlv3-v306)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
 - [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
 - [golang.org/x/mod v0.42.0](#golangorgxmod-v0420)
@@ -125,10 +126,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
 - [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
-- [modernc.org/libc v1.79.0](#moderncorglibc-v1790)
+- [modernc.org/libc v1.79.1](#moderncorglibc-v1791)
 - [modernc.org/mathutil v1.7.1](#moderncorgmathutil-v171)
 - [modernc.org/memory v1.12.1](#moderncorgmemory-v1121)
-- [modernc.org/sqlite v1.61.0](#moderncorgsqlite-v1610)
+- [modernc.org/sqlite v1.61.1](#moderncorgsqlite-v1611)
 
 ### Rust Dependencies
 
@@ -1114,7 +1115,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4
+### github.com/Azure/go-ansiterm v0.0.0-20261013165250-51075c6ea6bc
 
 ```
 The MIT License (MIT)
@@ -1735,7 +1736,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/containerd/log v0.1.0
+### github.com/containerd/log v0.2.0
 
 ```
                                  Apache License
@@ -3033,7 +3034,7 @@ SOFTWARE.
 <http://www.opensource.org/licenses/mit-license.php>
 ```
 
-### github.com/ebitengine/purego v0.11.1
+### github.com/ebitengine/purego v0.11.2
 
 ```
                                  Apache License
@@ -3293,7 +3294,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### github.com/fxamacker/cbor/v2 v2.9.4
+### github.com/fxamacker/cbor/v2 v2.10.0
 
 ```
 MIT License
@@ -5563,7 +5564,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/magiconair/properties v1.8.10
+### github.com/magiconair/properties v1.18.12
 
 ```
 Copyright (c) 2013-2020, Frank Schroeder
@@ -5978,7 +5979,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/go-archive v0.3.0
+### github.com/moby/go-archive v0.3.3
 
 ```
                                  Apache License
@@ -6997,7 +6998,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/sys/user v0.4.1
+### github.com/moby/sys/user v0.5.0
 
 ```
                                  Apache License
@@ -7203,7 +7204,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/sys/userns v0.1.0
+### github.com/moby/sys/userns v0.2.1
 
 ```
                                  Apache License
@@ -8057,7 +8058,33 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/philhofer/fwd v1.2.0
+### github.com/pandatix/go-abnf v0.5.5
+
+```
+MIT License
+
+Copyright (c) 2024 Lucas TESSON - PandatiX <lucastesson@protonmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### github.com/philhofer/fwd v1.2.1
 
 ```
 Copyright (c) 2014-2015, Philip Hofer
@@ -8508,7 +8535,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/prometheus/common v0.72.0
+### github.com/prometheus/common v0.73.1
 
 ```
                                  Apache License
@@ -8714,7 +8741,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/prometheus/procfs v0.22.0
+### github.com/prometheus/procfs v0.23.0
 
 ```
                                  Apache License
@@ -9175,7 +9202,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### github.com/shirou/gopsutil/v4 v4.26.9
+### github.com/shirou/gopsutil/v4 v4.26.10
 
 ```
 gopsutil is distributed under BSD license reproduced below.
@@ -9344,7 +9371,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/tinylib/msgp v1.6.4
+### github.com/tinylib/msgp v1.6.5
 
 ```
 Copyright (c) 2014 Philip Hofer
@@ -11092,7 +11119,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### go.yaml.in/yaml/v3 v3.0.5
+### go.yaml.in/yaml/v3 v3.0.6
 
 ```
 This project is covered by two different licenses: MIT and Apache.
@@ -11704,7 +11731,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/libc v1.79.0
+### modernc.org/libc v1.79.1
 
 ```
 Copyright (c) 2017 The Libc Authors. All rights reserved.
@@ -11800,7 +11827,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/sqlite v1.61.0
+### modernc.org/sqlite v1.61.1
 
 ```
 Copyright (c) 2017 The Sqlite Authors. All rights reserved.

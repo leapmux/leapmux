@@ -752,8 +752,8 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	assert.Less(t, svc.agentAPITimeout(), svc.agentStartupTimeout(),
 		"a wait as long as the whole startup budget is the defect this assertion exists to prevent")
 	select {
-	case <-errCh:
-		require.FailNow(t, "refused while the startup was still in flight; the user's message had a process coming")
+	case err := <-errCh:
+		require.FailNow(t, "refused while the startup was still in flight; the user's message had a process coming", "error: %v", err)
 	default:
 	}
 

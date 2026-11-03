@@ -37,6 +37,8 @@ var captchaProviderEnumValues = func() []settings.EnumValue {
 		var ev settings.EnumValue
 		ev.Value = alias
 		switch p {
+		case leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
+			panic("captcha: supported provider is unspecified")
 		case ProviderAltcha:
 			ev.Label = "ALTCHA"
 			ev.Help = "Built-in proof-of-work challenges; no third party, no egress."
@@ -46,8 +48,6 @@ var captchaProviderEnumValues = func() []settings.EnumValue {
 		case ProviderTurnstile:
 			ev.Label = "Cloudflare Turnstile"
 			ev.Help = "Checkbox challenge rendered from Cloudflare's script."
-		case leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
-			continue
 		}
 		out = append(out, ev)
 	}
@@ -296,8 +296,6 @@ func SelectedConfigured(s *settings.Snapshot) error {
 	}
 	switch provider {
 	case ProviderAltcha, leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
-		// ALTCHA self-provisions; an unspecified provider cannot be selected
-		// through ParseProvider.
 		return nil
 	case ProviderRecaptchaV3:
 		if row := RecaptchaV3Key.Of(s); row.SiteKey == "" || row.SecretKey == "" {

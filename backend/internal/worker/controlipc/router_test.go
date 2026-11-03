@@ -587,7 +587,8 @@ func TestRouter_StreamInner_Cancellable(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-streamErr:
+	case err := <-streamErr:
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("StreamInner didn't return after ctx cancellation")
 	}
@@ -621,7 +622,8 @@ func TestRouter_CancelStream_ByClientRequestID(t *testing.T) {
 	}
 	r.CancelStream("req-cancel")
 	select {
-	case <-streamErr:
+	case err := <-streamErr:
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("CancelStream didn't unblock the streamer")
 	}
@@ -789,7 +791,8 @@ func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
 	// Drain the StreamInner goroutine.
 	require.Eventually(t, func() bool {
 		select {
-		case <-done:
+		case err := <-done:
+			assert.NoError(t, err)
 			return true
 		default:
 			return false

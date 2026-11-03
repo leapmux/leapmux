@@ -162,7 +162,6 @@ export const KeybindingsControl: Component = () => {
   }
 
   const captureKeydown = (e: KeyboardEvent) => {
-    // eslint-disable-next-line solid/reactivity -- keydown handler: reads at invocation time
     const command = capturing()
     if (command === null)
       return
@@ -176,7 +175,6 @@ export const KeybindingsControl: Component = () => {
     const chord = chordFromEvent(e)
     if (chord === null)
       return
-    // eslint-disable-next-line solid/reactivity -- keydown handler: reads at invocation time
     const row = rows().find(r => r.command === command)
     if (row === undefined) {
       setCapturing(null)

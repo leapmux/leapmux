@@ -1,6 +1,8 @@
 package msgcodec
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +10,34 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+func TestCompressDecompressConcurrentRoundTrips(t *testing.T) {
+	for _, size := range []int{1, 2, 64, 1 << 20} {
+		t.Run(fmt.Sprintf("%d bytes", size), func(t *testing.T) {
+			t.Parallel()
+			input := bytes.Repeat([]byte{0, 255, 1, 128}, (size+3)/4)[:size]
+			for range 8 {
+				compressed, compression := Compress(input)
+				decoded, err := Decompress(compressed, compression)
+				require.NoError(t, err)
+				require.Equal(t, input, decoded)
+			}
+		})
+	}
+}
+
+func TestDecompressRejectsInvalidFrames(t *testing.T) {
+	compressed, compression := Compress(bytes.Repeat([]byte("message content"), 1024))
+	for label, input := range map[string][]byte{
+		"invalid frame":   {1, 2, 3, 4},
+		"truncated frame": compressed[:len(compressed)/2],
+	} {
+		t.Run(label, func(t *testing.T) {
+			_, err := Decompress(input, compression)
+			require.Error(t, err)
+		})
+	}
+}
 
 func TestCompressDecompressRoundTrip(t *testing.T) {
 	inputs := []string{

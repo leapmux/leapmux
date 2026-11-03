@@ -262,8 +262,8 @@ func TestConnFlushWaitsForEveryQueuedFrame(t *testing.T) {
 	go func() { drainDone <- pump.Drain() }()
 
 	select {
-	case <-flushDone:
-		t.Fatal("Flush returned before any frame reached the transport")
+	case err := <-flushDone:
+		t.Fatalf("Flush returned before any frame reached the transport: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
 

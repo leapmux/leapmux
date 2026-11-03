@@ -458,8 +458,8 @@ func TestWriterEnqueueWaitParksAndResumes(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
-		t.Fatal("EnqueueWait returned while over budget")
+	case err := <-done:
+		t.Fatalf("EnqueueWait returned while over budget: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -778,8 +778,8 @@ func TestWriterFlushWaitsForTheLastWrite(t *testing.T) {
 
 	// The queue is empty but the frame has NOT reached the transport.
 	select {
-	case <-flushed:
-		t.Fatal("Flush returned while the popped frame was still being written")
+	case err := <-flushed:
+		t.Fatalf("Flush returned while the popped frame was still being written: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -1315,8 +1315,8 @@ func TestWriterFlushStaysParkedAcrossMultiFrameDrain(t *testing.T) {
 	go func() { drainDone <- w.Drain() }()
 
 	select {
-	case <-flushDone:
-		t.Fatal("Flush returned before all frames left the drain")
+	case err := <-flushDone:
+		t.Fatalf("Flush returned before all frames left the drain: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
 	assert.Equal(t, int32(0), wrote.Load())

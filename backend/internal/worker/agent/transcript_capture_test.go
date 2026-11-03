@@ -44,7 +44,7 @@ func TestCapturedTranscriptRejectsInFlightCopiesWithoutBlockingTheWriter(t *test
 	err := record.PersistTurnEnd()
 	if err != nil {
 		// The blocked baseline attempt exits before the test examines its copy.
-		<-nestedDone
+		nestedErr = <-nestedDone
 	}
 	require.NoError(t, err, "the outer writer must receive an immediate result from copied-record reentry")
 	require.ErrorIs(t, nestedErr, ErrCapturedTranscriptInFlight)

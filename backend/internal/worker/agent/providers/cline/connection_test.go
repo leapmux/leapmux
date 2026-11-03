@@ -495,8 +495,8 @@ func TestAwaitDaemonExitWaitsForTheVerifiedDaemon(t *testing.T) {
 	armedWait(t, ctx, deadline, poll)
 	advancePoll(t, ctx, clock)
 	select {
-	case <-done:
-		t.Fatal("the wait ended while the daemon ran")
+	case err := <-done:
+		t.Fatalf("the wait ended while the daemon ran: %v", err)
 	default:
 	}
 	proc.end(t)
@@ -573,8 +573,8 @@ func TestTheStaleHookWaitsForTheDaemonToEnd(t *testing.T) {
 	assert.Equal(t, []string{"/status", "/shutdown"}, d.hub.requestRoutes(), "the hook verifies the daemon, then asks it to shut down")
 	advancePoll(t, ctx, clock)
 	select {
-	case <-done:
-		t.Fatal("the hook returned while the daemon ran")
+	case err := <-done:
+		t.Fatalf("the hook returned while the daemon ran: %v", err)
 	default:
 	}
 	d.proc.end(t)
