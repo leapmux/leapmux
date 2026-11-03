@@ -303,9 +303,48 @@ describe('Task tool contexts', () => {
         expect(task.vars?.[context], taskName).toEqual({ sh: command })
     }
   })
+
+  it('keys Renovate native output by its selected Node runtime', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    const task = config.tasks['build-renovate-re2']
+    expect(task.vars.BUN_CONTEXT.sh).toBe('bun --version')
+    expect(task.vars.RENOVATE_NODE_CONTEXT.sh).toBe('{{.RENOVATE_NODE | default "node"}} --version')
+    expect(task.vars.CACHE_CONTEXT).toContain('.RENOVATE_NODE_CONTEXT')
+    expect(task.vars.CACHE_CONTEXT).not.toContain('.JS_CONTEXT')
+    expect(JSON.stringify(task.cmds)).toContain('.RENOVATE_NODE')
+  })
+
+  it('tracks only the stable macOS alias native module output', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['prepare-dmg-tools'].vars.OUTPUTS).toEqual([
+      'frontend/node_modules/macos-alias/build/Release/volume.node',
+    ])
+  })
+
+  it('excludes the macOS alias build directory from installed frontend outputs', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['install-frontend-deps'].vars.OUTPUTS).toContainEqual({
+      exclude: 'frontend/node_modules/macos-alias/build/**/*',
+    })
+  })
+
+  it('excludes Python bytecode generated inside the installed node-gyp package', () => {
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    expect(config.tasks['install-frontend-deps'].vars.OUTPUTS).toContainEqual({
+      exclude: 'frontend/node_modules/node-gyp/**/__pycache__/**/*',
+    })
+  })
 })
 
 describe('task build cache', () => {
+  it('keeps the macOS build cached when node-gyp writes hidden dependency files', () => {
+    const platform = platforms.find(({ os, arch }) => os === 'darwin' && arch === 'arm64')
+    const dir = fixture(platform)
+    run(dir, 'build')
+    write(dir, 'frontend/node_modules/macos-alias/build/Release/.deps/Release/obj.target/volume/src/volume.o.d')
+    expect(run(dir, 'build')).toEqual([])
+  })
+
   it.each(platforms)('reuses a complete $os/$arch build without other platforms\' files', (platform) => {
     const dir = fixture(platform)
     useGoCommandRecipes(dir, platform)
@@ -363,6 +402,8 @@ describe('task build cache', () => {
   })
 
   it.each([
+    'frontend/node_modules/macos-alias/build/Release/.deps/Release/obj.target/volume/src/volume.o.d',
+    'frontend/node_modules/node-gyp/gyp/pylib/gyp/__pycache__/MSVSUtil.cpython-315.pyc',
     'frontend/node_modules/.nitro/vite/services/ssr/index.js',
     'frontend/node_modules/.vitest-cache/629580bea917285efd8a9d8aab80fc81222b2073',
   ])('ignores %s, which a later task writes, but still repairs changed dependencies', (generated) => {

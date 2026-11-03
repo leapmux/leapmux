@@ -92,9 +92,9 @@ tasks:
     desc: Validate Renovate configuration with the pinned CLI
     cmds:
       - task: install-renovate
-      - node .github/renovate/node_modules/renovate/dist/config-validator.js --strict renovate.json
+      - '{{.RENOVATE_NODE | default "node"}} .github/renovate/node_modules/renovate/dist/config-validator.js --strict renovate.json'
       - bun scripts/renovate-prepare.mjs --local
-      - RENOVATE_TRUSTED_ROOT={{.ROOT_DIR | shellQuote}} node .github/renovate/node_modules/renovate/dist/config-validator.js --strict .github/renovate-config.cjs
+      - RENOVATE_TRUSTED_ROOT={{.ROOT_DIR | shellQuote}} {{.RENOVATE_NODE | default "node"}} .github/renovate/node_modules/renovate/dist/config-validator.js --strict .github/renovate-config.cjs
 
   build-dependency-imports:
     desc: Build the trusted Go module-path rewriter without generated packages
@@ -140,7 +140,7 @@ tasks:
       LOG_FORMAT: json
       LOG_LEVEL: debug
     cmds: &renovate_commands
-      - node scripts/run-renovate.mjs
+      - '{{.RENOVATE_NODE | default "node"}} scripts/run-renovate.mjs'
 
   renovate-extract:
     desc: Verify the real dependency inventory without credentials or registry lookups
@@ -437,13 +437,15 @@ tasks:
       - .github/renovate/node_modules/re2/lib/**/*
       - .github/renovate/node_modules/re2/vendor/**/*
     vars:
-      JS_CONTEXT:
-        sh: *js_context_command
+      BUN_CONTEXT:
+        sh: bun --version
+      RENOVATE_NODE_CONTEXT:
+        sh: '{{.RENOVATE_NODE | default "node"}} --version'
       # Leave CXX unquoted: a compiler command with options, such as `ccache c++`, is valid
       # for node-gyp and make, and must stay valid here.
       CXX_CONTEXT:
         sh: '${CXX:-c++} --version'
-      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.CXX_CONTEXT}}/{{OS}}/{{ARCH}}'
+      CACHE_CONTEXT: '{{.BUN_CONTEXT}}/{{.RENOVATE_NODE_CONTEXT}}/{{.CXX_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_build_renovate_re2
         - .github/renovate/node_modules/re2/build/Release/re2.node
     generates: *outputs_build_renovate_re2
@@ -451,8 +453,8 @@ tasks:
     cmds:
       - *forget_artifacts
       # Never run re2's install script: it downloads a prebuilt binary.
-      - cd .github/renovate/node_modules/re2 && node ../node-gyp/bin/node-gyp.js rebuild --jobs max
-      - cd .github/renovate && node -e "new (require('re2'))('.*').exec('test')"
+      - cd .github/renovate/node_modules/re2 && {{.RENOVATE_NODE | default "node"}} ../node-gyp/bin/node-gyp.js rebuild --jobs max
+      - cd .github/renovate && {{.RENOVATE_NODE | default "node"}} -e "new (require('re2'))('.*').exec('test')"
       - *record_artifacts
 
   # Scripts that need frontend/node_modules depend on this installation task.
@@ -478,6 +480,8 @@ tasks:
         - frontend/node_modules/**/*
         # prepare-dmg-tools owns the native macOS build directory.
         - exclude: frontend/node_modules/macos-alias/build/**/*
+        # node-gyp's Python scripts generate bytecode caches during native builds.
+        - exclude: frontend/node_modules/node-gyp/**/__pycache__/**/*
         - exclude: frontend/node_modules/.cache/**/*
         - exclude: frontend/node_modules/.vite/**/*
         - exclude: frontend/node_modules/.vite-temp/**/*
@@ -774,7 +778,7 @@ tasks:
         sh: xcrun clang --version && xcrun --show-sdk-version
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.SDK_CONTEXT}}/{{.MACOSX_DEPLOYMENT_TARGET | default ""}}'
       OUTPUTS: &outputs_prepare_dmg_tools
-        - frontend/node_modules/macos-alias/build/**/*
+        - frontend/node_modules/macos-alias/build/Release/volume.node
     generates: *outputs_prepare_dmg_tools
     status: *artifact_status
     cmds:
