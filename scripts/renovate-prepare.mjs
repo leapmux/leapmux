@@ -4,14 +4,53 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { alertedPackages, readAlerts } from './dependabot-alerts.mjs'
-import { renovateModule } from './renovate-engine.mjs'
+import { renovateModule, requireRenovate } from './renovate-engine.mjs'
 import { buildAuthorizedMap, defaultReaders, PREPARED_LOCKFILES } from './renovate-exemptions.mjs'
 import { dependencyIgnorePaths } from './renovate-inputs.mjs'
-import { dependencyLockfile, readLockedVersions, readWorkingFile } from './renovate-lockfile-versions.mjs'
+import { bunIdentity, dependencyLockfile, parseBunLock, readLockedVersions, readWorkingFile } from './renovate-lockfile-versions.mjs'
+import { isPublishedBy, publishTimeCutoff, releaseAgeMs } from './renovate-release-age.mjs'
+import { NPM_REGISTRY, readRegistryJson } from './renovate-registry.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
 import { assertTauriCompatibility, readTauriVersions, tauriAuthorizedRoots, tauriPairs } from './renovate-tauri.mjs'
 
+const semver = requireRenovate('semver')
+
 const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
+
+const SOLID_REFRESH_COMPATIBILITY = Object.freeze({
+  matchManagers: ['bun'],
+  matchFileNames: ['frontend/package.json'],
+  matchPackageNames: ['solid-refresh'],
+})
+
+export function solidRefreshCompatibilityRule(packument, { currentVersion, pluginVersionRange, policy, now = Date.now() }) {
+  const versions = packument?.versions
+  const times = packument?.time
+  if (!versions || typeof versions !== 'object' || !times || typeof times !== 'object')
+    throw new TypeError('Invalid vite-plugin-solid npm packument.')
+  const current = semver.valid(currentVersion)
+  const pluginRange = semver.validRange(pluginVersionRange)
+  if (!current || !pluginRange || !versions[current])
+    throw new Error('Cannot determine the current vite-plugin-solid compatibility range.')
+  const cutoff = publishTimeCutoff(releaseAgeMs(policy), now).getTime()
+  const proposed = Object.keys(versions)
+    .filter((version) => {
+      const parsed = semver.valid(version)
+      return parsed !== null
+        && semver.prerelease(parsed) === null
+        && semver.satisfies(parsed, pluginRange)
+        && semver.gt(parsed, current)
+        && isPublishedBy(Date.parse(times[version]), cutoff)
+    })
+    .sort(semver.rcompare)[0] ?? current
+  const range = versions[proposed]?.dependencies?.['solid-refresh']
+  if (typeof range !== 'string' || semver.validRange(range) === null)
+    throw new Error(`vite-plugin-solid@${proposed} has no valid solid-refresh dependency range.`)
+  return {
+    ...SOLID_REFRESH_COMPATIBILITY,
+    allowedVersions: range,
+  }
+}
 
 export function securityCompanions(targets, vulnerabilityAlerts) {
   const force = { ...vulnerabilityAlerts }
@@ -89,6 +128,23 @@ if (import.meta.main) {
     const root = resolve(import.meta.dirname, '..')
     const config = await Bun.file(resolve(root, 'renovate.json')).json()
     const local = process.argv.includes('--local')
+    const frontendManifest = JSON.parse(readWorkingFile(root, 'frontend/package.json'))
+    const frontendLock = parseBunLock(readWorkingFile(root, 'frontend/bun.lock'))
+    const pluginIdentity = bunIdentity(frontendLock.packages?.['vite-plugin-solid']?.[0])
+    if (!pluginIdentity)
+      throw new Error('Cannot determine the locked vite-plugin-solid version.')
+    const solidRefreshRules = local
+      ? []
+      : [
+          solidRefreshCompatibilityRule(
+            await readRegistryJson(`${NPM_REGISTRY}/vite-plugin-solid`, { description: 'vite-plugin-solid npm packument read' }),
+            {
+              currentVersion: pluginIdentity.version,
+              pluginVersionRange: frontendManifest.devDependencies?.['vite-plugin-solid'],
+              policy: config,
+            },
+          ),
+        ]
     const alerts = local
       ? []
       : await readAlerts(process.env.GH_TOKEN)
@@ -106,7 +162,10 @@ if (import.meta.main) {
     const importFiles = files.filter(file => /^(?:backend|desktop\/go|site)\//.test(file) && file.endsWith('.go') && !file.split('/').includes('generated'))
     mkdirSync(resolve(root, '.tmp'), { recursive: true })
     writeFileSync(resolve(root, '.tmp/renovate-prepared.json'), JSON.stringify({
-      packageRules: securityCompanions(securityTargets, config.vulnerabilityAlerts),
+      packageRules: [
+        ...securityCompanions(securityTargets, config.vulnerabilityAlerts),
+        ...solidRefreshRules,
+      ],
       securityTargets,
       importFiles,
       ignorePaths: await dependencyIgnorePaths(files, config),

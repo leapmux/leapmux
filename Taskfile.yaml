@@ -106,7 +106,7 @@ tasks:
       - cd backend && go build -o ../.tmp/leapmux-dependency-imports{{if eq OS "windows"}}.exe{{end}} ./cmd/leapmux-dependency-imports
 
   prepare-renovate:
-    desc: Prepare trusted security companions and import-file filters
+    desc: Prepare trusted dependency rules and import-file filters
     cmds:
       - task: install-renovate
       - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
