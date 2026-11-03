@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { prepareAuthorized, prepareTauriSecurity, securityCompanions } from './renovate-prepare.mjs'
+import { prepareAuthorized, prepareTauriSecurity, securityCompanions, solidRefreshCompatibilityRule } from './renovate-prepare.mjs'
 import { matchesCargoRequirement } from './renovate-tauri-releases.mjs'
 import { crateIndexResponse, isCrateIndexRead } from './test-support.mjs'
 
@@ -80,6 +80,64 @@ describe('securityCompanions', () => {
     ])
       expect(promoted).not.toContain(name)
     expect(securityCompanions({}, policy)).toEqual([])
+  })
+})
+
+describe('solidRefreshCompatibilityRule', () => {
+  const pluginVersionRange = '^2.11.14'
+  const currentVersion = '2.11.14'
+  const packument = (proposedRange, proposedVersion = '2.11.15', proposedTime = old) => ({
+    versions: {
+      [currentVersion]: {
+        dependencies: {
+          'solid-refresh': '^0.6.3',
+        },
+      },
+      [proposedVersion]: {
+        dependencies: {
+          'solid-refresh': proposedRange,
+        },
+      },
+    },
+    time: {
+      [proposedVersion]: proposedTime,
+    },
+  })
+  it('excludes solid-refresh 0.7 while the eligible plugin declares 0.6', () => {
+    const rule = solidRefreshCompatibilityRule(packument('^0.6.3'), {
+      currentVersion,
+      pluginVersionRange,
+      policy: config,
+      now,
+    })
+    expect(rule).toMatchObject({
+      matchManagers: ['bun'],
+      matchFileNames: ['frontend/package.json'],
+      matchPackageNames: ['solid-refresh'],
+      allowedVersions: '^0.6.3',
+    })
+    expect(Bun.semver.satisfies('0.6.4', rule.allowedVersions)).toBe(true)
+    expect(Bun.semver.satisfies('0.7.0', rule.allowedVersions)).toBe(false)
+  })
+  it('admits solid-refresh 0.7 when the eligible plugin declares it', () => {
+    const rule = solidRefreshCompatibilityRule(packument('^0.7.0'), {
+      currentVersion,
+      pluginVersionRange,
+      policy: config,
+      now,
+    })
+    expect(rule.allowedVersions).toBe('^0.7.0')
+    expect(Bun.semver.satisfies('0.7.8', rule.allowedVersions)).toBe(true)
+    expect(Bun.semver.satisfies('0.6.4', rule.allowedVersions)).toBe(false)
+  })
+  it('does not open the range for a plugin release that is younger than the policy', () => {
+    const rule = solidRefreshCompatibilityRule(packument('^0.7.0', '2.11.16', '2026-10-25T00:00:00Z'), {
+      currentVersion,
+      pluginVersionRange,
+      policy: config,
+      now,
+    })
+    expect(rule.allowedVersions).toBe('^0.6.3')
   })
 })
 
