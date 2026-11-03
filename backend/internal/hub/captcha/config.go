@@ -10,6 +10,7 @@ package captcha
 import (
 	"fmt"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
@@ -113,6 +114,7 @@ func Effective(s *settings.Snapshot) (Config, string) {
 	case ProviderTurnstile:
 		row := TurnstileKey.Of(s)
 		cfg.Turnstile = &TurnstileSettings{SiteKey: row.SiteKey}
+	case leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
 	}
 	if err := cfg.Validate(); err != nil {
 		return fallbackConfig(enabled), fmt.Sprintf("captcha settings for %s are invalid: %v", ProviderAlias(provider), err)

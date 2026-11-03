@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	connectrpc.com/connect/v2 v2.0.2
 	github.com/Microsoft/go-winio v0.6.4
-	github.com/altcha-org/altcha-lib-go/v2 v2.4.1
+	github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/cenkalti/backoff/v7 v7.0.2
 	github.com/cloudflare/circl v1.6.5

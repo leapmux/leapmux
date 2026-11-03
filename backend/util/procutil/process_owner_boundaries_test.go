@@ -183,8 +183,8 @@ func TestProcessOwnerPendingTerminationKeepsNativeWaitAndOneResult(t *testing.T)
 	require.NotNil(t, owner.ProcessState())
 	go func() { results <- owner.Terminate() }()
 	select {
-	case <-results:
-		t.Fatal("a termination caller returned before the held observer")
+	case err := <-results:
+		t.Fatalf("a termination caller returned before the held observer: %v", err)
 	default:
 	}
 	releaseOnce.Do(func() { close(release) })
@@ -246,8 +246,8 @@ func TestProcessOwnerTerminationRetainsAnInFlightFailedStartResult(t *testing.T)
 	go func() { close(closeStarted); closed <- owner.Close() }()
 	<-closeStarted
 	select {
-	case <-closed:
-		t.Fatal("Close returned before the failed Start result settled")
+	case err := <-closed:
+		t.Fatalf("Close returned before the failed Start result settled: %v", err)
 	default:
 	}
 	releaseOnce.Do(func() { close(command.waitRelease) })

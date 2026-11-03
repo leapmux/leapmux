@@ -3,6 +3,7 @@ package captcha
 import (
 	"fmt"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
@@ -45,6 +46,8 @@ var captchaProviderEnumValues = func() []settings.EnumValue {
 		case ProviderTurnstile:
 			ev.Label = "Cloudflare Turnstile"
 			ev.Help = "Checkbox challenge rendered from Cloudflare's script."
+		case leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
+			continue
 		}
 		out = append(out, ev)
 	}
@@ -286,13 +289,16 @@ func DescriptorFor(p Provider) settings.Descriptor {
 // nothing: its row self-provisions on first use.
 func SelectedConfigured(s *settings.Snapshot) error {
 	provider, err := ParseProvider(CaptchaSelectedKey.Of(s))
-	if err != nil || provider == ProviderAltcha {
+	if err != nil {
 		// An unparseable selection degrades at read time (validateSelected
-		// is the write-path guard for the alias itself); altcha has no
-		// completeness requirement.
+		// is the write-path guard for the alias itself).
 		return nil
 	}
 	switch provider {
+	case ProviderAltcha, leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED:
+		// ALTCHA self-provisions; an unspecified provider cannot be selected
+		// through ParseProvider.
+		return nil
 	case ProviderRecaptchaV3:
 		if row := RecaptchaV3Key.Of(s); row.SiteKey == "" || row.SecretKey == "" {
 			return fmt.Errorf("captcha.selected=%s requires its site key and secret to be configured first", ProviderAlias(provider))
