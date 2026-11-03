@@ -8,8 +8,8 @@ import { renovateModule, requireRenovate } from './renovate-engine.mjs'
 import { buildAuthorizedMap, defaultReaders, PREPARED_LOCKFILES } from './renovate-exemptions.mjs'
 import { dependencyIgnorePaths } from './renovate-inputs.mjs'
 import { bunIdentity, dependencyLockfile, parseBunLock, readLockedVersions, readWorkingFile } from './renovate-lockfile-versions.mjs'
-import { isPublishedBy, publishTimeCutoff, releaseAgeMs } from './renovate-release-age.mjs'
 import { NPM_REGISTRY, readRegistryJson } from './renovate-registry.mjs'
+import { isPublishedBy, publishTimeCutoff, releaseAgeMs } from './renovate-release-age.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
 import { assertTauriCompatibility, readTauriVersions, tauriAuthorizedRoots, tauriPairs } from './renovate-tauri.mjs'
 
@@ -87,8 +87,14 @@ export async function prepareTauriSecurity(alerts, config, baseline, { authorize
   return Object.fromEntries(targets.flatMap(({ pair, target }) => target.npm === pair.npmVersion && target.cargo === pair.cargoVersion
     ? []
     : [
-        [pair.npm, target.npm],
-        [pair.cargo, target.cargo],
+        [
+          pair.npm,
+          target.npm,
+        ],
+        [
+          pair.cargo,
+          target.cargo,
+        ],
       ]))
 }
 
