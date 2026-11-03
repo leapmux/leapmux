@@ -76,12 +76,15 @@ func RetryOnConflict(ctx context.Context, isRetryable func(error) bool, run func
 // finished. Full jitter over an exponential window: two writers that collide
 // must not wake together and collide again.
 func sleepBeforeConflictRetry(ctx context.Context, attempt int) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	window := ConflictRetryBaseDelay << attempt
 	timer := time.NewTimer(time.Duration(rand.Int64N(int64(window)) + 1))
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		return true
+		return ctx.Err() == nil
 	case <-ctx.Done():
 		return false
 	}

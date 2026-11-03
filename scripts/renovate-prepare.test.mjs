@@ -88,8 +88,16 @@ describe('solidRefreshCompatibilityRule', () => {
   const currentVersion = '2.11.14'
   const packument = (proposedRange, proposedVersion = '2.11.15', proposedTime = old) => ({
     versions: {
-      [currentVersion]: { dependencies: { 'solid-refresh': '^0.6.3' } },
-      [proposedVersion]: { dependencies: { 'solid-refresh': proposedRange } },
+      [currentVersion]: {
+        dependencies: {
+          'solid-refresh': '^0.6.3',
+        },
+      },
+      [proposedVersion]: {
+        dependencies: {
+          'solid-refresh': proposedRange,
+        },
+      },
     },
     time: {
       [proposedVersion]: proposedTime,
