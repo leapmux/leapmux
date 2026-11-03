@@ -40,7 +40,7 @@ func startTestServerIn(t *testing.T, cfg *config.Config, dataDir, localListen st
 	stop := func() {
 		once.Do(func() {
 			cancel()
-			<-served
+			assert.NoError(t, <-served)
 		})
 	}
 	t.Cleanup(stop)

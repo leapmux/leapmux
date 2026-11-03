@@ -144,8 +144,8 @@ func TestSwitchModeCancelsBlockedProxyRequest(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		app.cancel()
-		<-requestDone
-		<-switchDone
+		assert.ErrorIs(t, <-requestDone, context.Canceled)
+		assert.NoError(t, <-switchDone)
 		t.Fatal("SwitchMode did not cancel the connection-scoped proxy request")
 	}
 	require.ErrorIs(t, <-requestDone, context.Canceled)

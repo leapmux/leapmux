@@ -1149,7 +1149,11 @@ func TestManagerOwnedStartFailureSkipsUninvokedStarts(t *testing.T) {
 					})
 					completed <- err
 				}()
-				t.Cleanup(func() { releaseOnce(); <-completed; manager.StopAndWaitAgent("occupied-start") })
+				t.Cleanup(func() {
+					releaseOnce()
+					assert.NoError(t, <-completed)
+					manager.StopAndWaitAgent("occupied-start")
+				})
 				wait := testutil.DeadlineContext(t)
 				select {
 				case <-entered:

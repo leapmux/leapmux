@@ -639,7 +639,7 @@ func TestRPCSessionDisconnectInterruptsBlockedResponseWriter(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(250 * time.Millisecond):
 		_ = writer.Close()
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not interrupt a response writer after read-side EOF")
 	}
 }
@@ -678,7 +678,7 @@ func TestRPCSessionBurstDoesNotHidePeerDisconnect(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		require.NoError(t, app.Shutdown())
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("RPC saturation prevented the session from observing peer disconnect")
 	}
 	require.NoError(t, app.Shutdown())
@@ -724,7 +724,7 @@ func TestRPCSessionShutdownProceedsWithInFlightProxyHandlers(t *testing.T) {
 	case <-time.After(time.Second):
 		_ = clientConn.Close()
 		require.NoError(t, app.Shutdown())
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("in-flight proxy handlers blocked the shutdown request")
 	}
 	_ = clientConn.Close()
@@ -801,7 +801,7 @@ func TestRPCSessionDisconnectCancelsBlockedProxyHandler(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		require.NoError(t, app.Shutdown())
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not cancel its blocked handler after peer disconnect")
 	}
 	require.NoError(t, app.Shutdown())
@@ -842,7 +842,7 @@ func TestRPCSessionDisconnectCancelsDistributedProbe(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		require.NoError(t, app.Shutdown())
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not cancel its distributed probe after peer disconnect")
 	}
 	require.NoError(t, app.Shutdown())
@@ -887,7 +887,7 @@ func TestRPCSessionDisconnectCancelsTunnelHandshake(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		require.NoError(t, app.Shutdown())
-		<-runDone
+		assert.NoError(t, <-runDone)
 		t.Fatal("RPC session did not cancel its tunnel handshake after peer disconnect")
 	}
 	require.NoError(t, app.Shutdown())
@@ -931,8 +931,10 @@ func TestRPCSessionAdmitsEveryRequestWithoutExhaustion(t *testing.T) {
 		_ = clientConn.Close()
 		require.NoError(t, app.Shutdown())
 		select {
-		case <-runDone:
-		case <-time.After(2 * time.Second):
+		case err := <-runDone:
+			assert.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Error("RPC session did not finish during cleanup")
 		}
 	})
 
@@ -1012,7 +1014,8 @@ func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 	// sessionCtx, so without the hard cap teardown would hang forever.
 	require.NoError(t, clientConn.Close())
 	select {
-	case <-runDone:
+	case err := <-runDone:
+		require.NoError(t, err)
 		// Run returned within the hard cap instead of hanging on the wedged handler.
 	case <-time.After(time.Second):
 		t.Fatal("Run hung on a handler that ignores sessionCtx; the hard drain cap did not abandon it")

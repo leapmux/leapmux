@@ -44,7 +44,9 @@ func TestACPTerminalContextCancellationEndsOnlyItsDetachedChild(t *testing.T) {
 	second.RequirePong(t)
 	cancel()
 	select {
-	case <-finished:
+	case err := <-finished:
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the cancelled ACP terminal root did not exit")
 	}

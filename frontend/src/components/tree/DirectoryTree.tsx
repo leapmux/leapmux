@@ -440,7 +440,7 @@ const TreeNode: Component<{
         return
 
       if (!loaded()) {
-        doLoad().then((ok) => { // eslint-disable-line solid/reactivity -- one-shot async load
+        doLoad().then((ok) => {
           // A listing that failed leaves the node collapsed. Expanding it
           // would arm the re-fetch effect below against a request that fails
           // every time -- see `doLoad`.
@@ -1116,7 +1116,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       if (!workerId || !enabled)
         return
       workerRpc.statFile(workerId, { workerId, path: root })
-        .then((resp) => { // eslint-disable-line solid/reactivity -- one-shot async fetch
+        .then((resp) => {
           if (version === statVersion && workerId === props.workerId && root === rootPath())
             setRootModTime(resp.info?.modTime ?? '')
         })

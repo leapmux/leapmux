@@ -1930,8 +1930,8 @@ func TestTunnelConnReadCreditBlocksAndReleases(t *testing.T) {
 	acquired := make(chan error, 1)
 	go func() { acquired <- tc.credit.Acquire(context.Background()) }()
 	select {
-	case <-acquired:
-		t.Fatal("credit.Acquire returned though the read window was exhausted")
+	case err := <-acquired:
+		t.Fatalf("credit.Acquire returned though the read window was exhausted: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

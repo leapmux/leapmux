@@ -55,11 +55,9 @@ type soloInstance interface {
 // the instance down and reports the Hub's terminal error, if any.
 //
 // The deferred Stop is the SINGLE reporter of that error. Instance.Stop ends in
-// Wait(), and hubErr is assigned exactly once, so Stop hands back the identical
-// value the hubExited arm already observed -- returning it from the arm as well
-// would join the error with itself and print the message twice to the user (main's
-// handleRunError does a plain Fprintln of the joined error). Hence both select arms
-// return nil: they choose WHEN to stop, never WHAT to report.
+// Wait(), and hubErr is assigned exactly once, so Stop reports the same result.
+// The completion channel carries no error. Both select cases return nil to
+// keep the deferred Stop as the only place that reports the Hub's error.
 func waitSolo(ctx context.Context, inst soloInstance) (retErr error) {
 	defer func() {
 		stopErr := inst.Stop()
@@ -74,14 +72,16 @@ func waitSolo(ctx context.Context, inst soloInstance) (retErr error) {
 	}()
 
 	// Exit when the user signals or the Hub errors out.
-	hubExited := make(chan error, 1)
-	go func() { hubExited <- inst.Wait() }()
+	hubExited := make(chan struct{})
+	go func() {
+		// The deferred Stop reports the same error from the instance.
+		_ = inst.Wait()
+		close(hubExited)
+	}()
 	select {
 	case <-ctx.Done():
 		return nil
 	case <-hubExited:
-		// The error is deliberately dropped here: the deferred Stop re-reads the very
-		// same hubErr and reports it.
 		return nil
 	}
 }

@@ -432,8 +432,8 @@ func TestToolTranscriptTurnEndJoinsTheSupplementWorker(t *testing.T) {
 	}()
 	<-calling
 	select {
-	case <-ended:
-		t.Fatal("the turn end completed while an interim supplement pass still ran")
+	case err := <-ended:
+		t.Fatalf("the turn end completed while an interim supplement pass still ran: %v", err)
 	default:
 	}
 
@@ -1897,7 +1897,8 @@ func TestToolTranscriptHistoricalReadDoesNotWaitForAReentrantNativePass(t *testi
 	}
 	close(releaseRead)
 	if !joined {
-		<-finalDone
+		err := <-finalDone
+		assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
 	}
 	transcript.WaitForSupplementsForTest()
 	require.NoError(t, transcript.FinalizePending())

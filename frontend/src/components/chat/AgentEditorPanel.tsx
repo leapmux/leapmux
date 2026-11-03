@@ -287,7 +287,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // settles in milliseconds.
   const pauseInFlight = () => actionState().pauseInFlight()
   const setQueuePaused = (paused: boolean) => {
-    // eslint-disable-next-line solid/reactivity -- the request must unlock the tab that sent it, even after focus moves.
     const state = actionState()
     if (state.pauseInFlight())
       return

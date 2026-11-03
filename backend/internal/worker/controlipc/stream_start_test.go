@@ -31,7 +31,7 @@ func TestRouterRetainsAnUpdateBeforeControllerBinding(t *testing.T) {
 	controller.mu.Unlock()
 	require.Equal(t, [][]byte{[]byte("full interest")}, frames)
 	router.CancelStream("early-update")
-	<-done
+	require.NoError(t, <-done)
 }
 
 type delayedStreamBinding struct {
@@ -77,7 +77,11 @@ func TestRouterReplacementKeepsItsOwnController(t *testing.T) {
 			}
 			old, oldDone := start()
 			current, currentDone := start()
-			<-oldDone
+			if target == "local" {
+				require.NoError(t, <-oldDone)
+			} else {
+				require.ErrorIs(t, <-oldDone, context.Canceled)
+			}
 			oldController, currentController := &recordingStreamController{}, &recordingStreamController{}
 			releaseOld := old.bind(oldController)
 			require.NoError(t, router.UpdateStream("same", []byte("before current binding")))
@@ -94,7 +98,11 @@ func TestRouterReplacementKeepsItsOwnController(t *testing.T) {
 			require.Empty(t, oldFrames, "the old controller must not receive the replacement's frames")
 			require.Equal(t, [][]byte{[]byte("before current binding"), []byte("after current binding")}, currentFrames)
 			router.CancelStream("same")
-			<-currentDone
+			if target == "local" {
+				require.NoError(t, <-currentDone)
+			} else {
+				require.ErrorIs(t, <-currentDone, context.Canceled)
+			}
 		})
 	}
 }

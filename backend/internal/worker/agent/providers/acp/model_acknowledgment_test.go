@@ -72,7 +72,7 @@ func TestModelAcknowledgmentPrecedesAudioPreparation(t *testing.T) {
 	locked = false
 	require.NoError(t, <-modelDone)
 	if !inputJoined {
-		<-inputDone
+		assert.ErrorContains(t, <-inputDone, "does not accept audio attachments")
 	}
 	_, err := b.SendRequest("test/sync", nil, b.APITimeout())
 	require.NoError(t, err)
