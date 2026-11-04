@@ -110,4 +110,3 @@ message MoveSectionRequest {
 }
 
 message MoveSectionResponse {}
-

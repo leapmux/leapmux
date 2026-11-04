@@ -2557,7 +2557,8 @@ func TestReassembleTombstoneDoesNotConsumeCapSlot(t *testing.T) {
 	_, complete := ch.reassemble(overCapID, more, []byte("first"))
 	require.False(t, complete)
 	select {
-	case <-errs:
+	case err := <-errs:
+		assert.Contains(t, err.Error(), "too many incomplete chunked messages")
 	case <-time.After(2 * time.Second):
 		t.Fatal("the over-cap id must be errored")
 	}
