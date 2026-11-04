@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { DropdownTriggerProps } from './DropdownMenu'
-import MoreHorizontal from 'lucide-solid/icons/more-horizontal'
+import Ellipsis from 'lucide-solid/icons/ellipsis'
 import { menuTrigger } from '~/components/tree/sidebarActions.css'
 import { IconButton } from './IconButton'
 
@@ -31,7 +31,7 @@ export function moreHorizontalTrigger(
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {
   return triggerProps => (
     <IconButton
-      icon={MoreHorizontal}
+      icon={Ellipsis}
       size="md"
       {...(opts.class !== undefined
         ? { class: opts.class }

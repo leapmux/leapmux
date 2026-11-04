@@ -431,12 +431,7 @@ describe('LoadingMenu keyboard contract', () => {
   function openMenu(overrides: Partial<Parameters<typeof LoadingMenu>[0]> = {}) {
     const r = renderMenu({ options: LETTERS, ...overrides })
     const popover = screen.getByTestId(MENU)
-    // jsdom has no popover engine, so drive the state the component reads.
-    popover.setAttribute('data-open', 'true')
-    Object.defineProperty(popover, 'matches', {
-      configurable: true,
-      value: (sel: string) => sel === ':popover-open',
-    })
+    popover.showPopover()
     return { ...r, popover }
   }
 

@@ -173,6 +173,12 @@ type PopoverProto = HTMLElement & {
   togglePopover: () => boolean
 }
 if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'function') {
+  // jsdom hides closed popovers through its default stylesheet and refuses focus
+  // in hidden elements. Its selector engine cannot read the stub's open state.
+  // Its closed-popover rule overrides normal author styles, so this needs !important.
+  const popoverStyle = document.createElement('style')
+  popoverStyle.textContent = '[popover][data-popover-open] { display: block !important; }'
+  document.head.append(popoverStyle)
   const proto = HTMLElement.prototype as PopoverProto
   const beforeToggle = (element: HTMLElement, oldState: string, newState: string) => {
     const event = new Event('beforetoggle', { cancelable: newState === 'open' })

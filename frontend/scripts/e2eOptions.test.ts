@@ -542,6 +542,50 @@ describe('parseE2EOptions failed files', () => {
 })
 
 describe('parseE2EOptions Playwright option classification', () => {
+  it('combines additional reporters with the default reporter for the merged report', () => {
+    expect(parseE2EOptions(['--add-reporter=json', '--add-reporter', 'html'], 10).reporters)
+      .toBe('list,json,html')
+  })
+
+  it.each([
+    {
+      args: ['--reporter=dot', '--add-reporter=json'],
+    },
+    {
+      args: ['--add-reporter=json', '--reporter=dot'],
+    },
+  ])('combines additional reporters with an explicit reporter in either order: %j', ({ args }) => {
+    expect(parseE2EOptions(args, 10).reporters).toBe('dot,json')
+  })
+
+  it.each(['--add-reporter=', '--add-reporter'])('refuses an empty or absent additional reporter: %s', (option) => {
+    expect(() => parseE2EOptions([option], 10)).toThrow('requires')
+  })
+
+  it.each([
+    {
+      args: ['--add-reporter', 'json'],
+    },
+    {
+      args: ['--add-reporter=json'],
+    },
+    {
+      args: ['--shuffle'],
+    },
+    {
+      args: ['--shuffle', '0'],
+    },
+    {
+      args: ['--shuffle=0'],
+    },
+  ])('forwards reporting and shuffle options without treating their values as files: %j', ({ args }) => {
+    expect(parseE2EOptions(['--failed-files', ...args], 10)).toMatchObject({
+      failedFiles: true,
+      serial: false,
+      playwrightArgs: args,
+    })
+  })
+
   interface PlaywrightOption {
     readonly name: string
     readonly kind: 'flag' | 'value' | 'optional' | 'variadic'
@@ -636,6 +680,39 @@ describe('parseE2EOptions Playwright option classification', () => {
 })
 
 describe('shardSelectionArgs', () => {
+  it.each([
+    {
+      args: ['--shuffle', '--add-reporter=json', 'a.spec.ts'],
+      expected: ['a.spec.ts', '--shuffle'],
+    },
+    {
+      args: [
+        '--shuffle',
+        '0',
+        '--add-reporter=json',
+        'a.spec.ts',
+      ],
+      expected: ['--shuffle', '0', 'a.spec.ts'],
+    },
+    {
+      args: ['--shuffle=0', '--add-reporter=json', 'a.spec.ts'],
+      expected: ['--shuffle=0', 'a.spec.ts'],
+    },
+  ])('preserves file filters and a zero shuffle seed when removing a reporter: $args', ({ args, expected }) => {
+    expect(shardSelectionArgs(args)).toEqual(expected)
+  })
+
+  it('removes additional reporters so discovery and shards keep their private reporters', () => {
+    expect(shardSelectionArgs([
+      '--add-reporter=json',
+      '--add-reporter',
+      'html',
+      'a.spec.ts',
+    ]))
+      .toEqual(['a.spec.ts'])
+    expect(shardSelectionArgs(['--grep', '--add-reporter=json'])).toEqual(['--grep', '--add-reporter=json'])
+  })
+
   it.each(['--grep', '-g', '--grep-invert', '-G'])('preserves an output-like expression after %s', (option) => {
     expect(shardSelectionArgs([
       option,

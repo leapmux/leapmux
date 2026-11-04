@@ -56,6 +56,7 @@ const VALUE_OPTIONS = new Set([
   '--balance',
   '--failed-files-from',
   '--browser',
+  '--add-reporter',
   '--reporter',
   '--output',
   '--retries',
@@ -85,6 +86,7 @@ const VALUE_OPTIONS = new Set([
 const OPTIONAL_VALUE_OPTIONS = new Set([
   '--debug',
   '--only-changed',
+  '--shuffle',
   '--update-snapshots',
   '-u',
 ])
@@ -180,6 +182,7 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
   let workerOption = false
   let serial = environmentInspector()
   let reporters: string | undefined
+  const additionalReporters: string[] = []
   let outputDir: string | undefined
   let lastFailed = false
   let lastFailedFile: string | undefined
@@ -284,6 +287,11 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
         throw new Error('The E2E reporter option must appear only once.')
       reporters = value
     }
+    else if (option === '--add-reporter') {
+      if (!value)
+        throw new Error('The E2E --add-reporter option requires a nonempty value.')
+      additionalReporters.push(value)
+    }
     else if (option === '--output') {
       if (!value)
         throw new Error('The E2E output option requires a nonempty value.')
@@ -317,6 +325,8 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
       narrowing,
     })
   }
+  if (additionalReporters.length > 0)
+    reporters = [reporters ?? 'list', ...additionalReporters].join(',')
   return {
     workers: serial ? 1 : workers,
     playwrightArgs,
@@ -400,6 +410,7 @@ function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>
 export function shardSelectionArgs(args: readonly string[]): string[] {
   return withoutRunOptions(args, new Set([
     '--reporter',
+    '--add-reporter',
     '--output',
     '--last-failed',
     '--last-failed-file',

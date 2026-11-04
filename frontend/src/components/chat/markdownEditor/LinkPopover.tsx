@@ -1,6 +1,6 @@
 import type { Accessor, Component, Setter } from 'solid-js'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
-import Trash2 from 'lucide-solid/icons/trash-2'
+import Trash from 'lucide-solid/icons/trash'
 import { createEffect, createSignal } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -123,7 +123,7 @@ export const LinkPopover: Component<LinkPopoverProps> = (props) => {
               props.setOpen(false)
             }}
           >
-            <Icon icon={Trash2} size="xs" />
+            <Icon icon={Trash} size="xs" />
           </button>
         </Tooltip>
       </form>

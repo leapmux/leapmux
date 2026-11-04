@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem, BackgroundTaskKindFilter } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
-import CircleHelp from 'lucide-solid/icons/circle-help'
+import CircleQuestionMark from 'lucide-solid/icons/circle-question-mark'
 import Terminal from 'lucide-solid/icons/terminal'
 import WorkflowIcon from 'lucide-solid/icons/workflow'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
@@ -190,7 +190,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
             <Bot class={styles.taskIcon} size={14} />
           </Match>
           <Match when={item.kind === 'unknown'}>
-            <CircleHelp class={styles.taskIcon} size={14} />
+            <CircleQuestionMark class={styles.taskIcon} size={14} />
           </Match>
         </Switch>
         <div class={styles.taskBody}>
