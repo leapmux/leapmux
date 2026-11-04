@@ -8,7 +8,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -25,8 +24,8 @@ import (
 // concurrent Shutdown drains the close flow before it tears down the DB pool.
 // The frontend fires this RPC fire-and-forget after removing the tab from the
 // UI.
-func registerCloseTabHandler(r registrar, svc *Service) {
-	registerOwnerGuarded(r, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, dispatchTracked, svc.handleCloseTab)
+func registerCloseTabHandler(d ownerOnlyRegistrar, svc *Service) {
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, dispatchTracked, svc.handleCloseTab)
 }
 
 // handleCloseTab closes one tab of any type.
@@ -113,7 +112,8 @@ func (svc *Service) closePayloadTab(caller channel.Caller, sender channel.Respon
 // and its branch. The escalation happens here, at the action, so that a KEEP
 // close keeps needing only closeScope.
 func requireCloseScopes(sender channel.ResponseWriter, caller channel.Caller, closeScope leapmuxv1.Scope, action leapmuxv1.WorktreeAction) bool {
-	if !requireCallerScope(sender, caller, closeScope) {
+	// The refusal uses the words of the registrar's method-level check.
+	if refuseUngranted(sender, caller, closeScope) {
 		return false
 	}
 	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE && !caller.Allows(leapmuxv1.Scope_SCOPE_GIT_WRITE) {
@@ -121,17 +121,6 @@ func requireCloseScopes(sender channel.ResponseWriter, caller channel.Caller, cl
 		return false
 	}
 	return true
-}
-
-// requireCallerScope answers PermissionDenied unless the caller's grant holds
-// scope, in the words the registrar's method-level check uses, and reports
-// whether the caller passed.
-func requireCallerScope(sender channel.ResponseWriter, caller channel.Caller, scope leapmuxv1.Scope) bool {
-	if caller.Allows(scope) {
-		return true
-	}
-	sendPermissionDenied(sender, authscope.NotGrantedDenial(scope))
-	return false
 }
 
 // worktreeLinkPolicy decides what a non-REMOVE close does with the tab's
@@ -207,8 +196,8 @@ func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy wor
 // tabType is the tab's OWN kind, not a constant: the worktree_tabs link row
 // carries it, so closing an IMAGE tab as FILE would leave the link standing.
 //
-// Three entry points, each naming its own link policy: the CloseTab RPC
-// (dropWorktreeLink), CloseTabForReconcile (dropWorktreeLink), and
+// Three entry points call it, and each states its own link policy: the CloseTab
+// RPC (dropWorktreeLink), CloseTabForReconcile (dropWorktreeLink), and
 // closeTabForDeletedWorkspace (keepWorktreeLinkForReconciler). The last two
 // arrive through closeTabForConvergence.
 //
@@ -281,7 +270,7 @@ func (svc *Service) payloadTabWorkingDir(userID, tabID string) string {
 
 // closeTabCommon runs the shared tab-close flow for every tab type the CloseTab
 // handler closes. The handler is
-// registered as a tracked dispatcher method (RegisterTracked) so the
+// registered as a tracked dispatcher method (dispatchTracked) so the
 // dispatcher's bound Cleanup WaitGroup is Add(1)'d synchronously
 // BEFORE the dispatched goroutine launches — Shutdown.Wait can't slip
 // past an in-flight close. closeTabCommon itself stays free of

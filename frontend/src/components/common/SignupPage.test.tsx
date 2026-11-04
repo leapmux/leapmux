@@ -51,7 +51,6 @@ vi.mock('~/context/AuthContext', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     setAuth: (...args: unknown[]) => mockSetAuth(...args),
-    setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
@@ -131,6 +130,47 @@ describe('SignupPage routing', () => {
     await submitPasswordSignup()
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+  })
+
+  // Verification comes first, even over a redirect the sign-up asked for.
+  it('routes an adopted sign-up that must verify to /verify-email over a redirect', async () => {
+    mockSignUp.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1' },
+        emailVerification: { verificationRequired: true },
+      },
+    })
+    mockSetAuth.mockResolvedValue('adopted')
+    renderSignupRoutes(`/signup?redirect=${encodeURIComponent('/oauth/authorize?state=s1')}`)
+
+    await submitPasswordSignup()
+
+    expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+  })
+
+  // The consent address belongs to the hub's mux, so the page loads it as a
+  // full document rather than routing to the SPA's 404 page.
+  it('loads a hub-served redirect as a full document after an adopted sign-up', async () => {
+    const consent = '/oauth/authorize?client_id=leapmux-cli&state=s1'
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      mockSignUp.mockResolvedValue({
+        sessionReport: {
+          user: { id: 'u1' },
+        },
+      })
+      mockSetAuth.mockResolvedValue('adopted')
+      renderSignupRoutes(`/signup?redirect=${encodeURIComponent(consent)}`)
+
+      await submitPasswordSignup()
+
+      await vi.waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(consent))
+      expect(screen.queryByTestId('app-home')).not.toBeInTheDocument()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   // A recovering or superseded adoption is not this page's to route.

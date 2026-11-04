@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Show } from 'solid-js'
 import { BootSplash } from '~/components/common/BootSplash'
 import { useAuth } from '~/context/AuthContext'
+import { normalizeRoutePath } from '~/lib/postAuthNavigate'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { isSetupRequired, isSystemInfoLoaded } from '~/lib/systemInfo'
 
@@ -23,20 +24,6 @@ type SetupDecision
   = | { kind: 'render' }
     | { kind: 'wait' }
     | { kind: 'redirect', to: string }
-
-/**
- * `path` with any trailing slash removed, so one address is one string.
- *
- * The router and `useLocation` disagree here, and an exact compare picks the
- * wrong side. `<Route path="/setup">` MATCHES `/setup/` -- the matcher trims
- * the slash -- while `location.pathname` reports `/setup/` verbatim. So a hub
- * that is already set up served the first-run form to anyone who typed the
- * slash, because this gate saw an address that was not `/setup` and let it
- * through.
- */
-function withoutTrailingSlash(path: string): string {
-  return path.replace(/\/+$/, '')
-}
 
 /**
  * The sole owner of the rule "a hub with no account has exactly ONE usable
@@ -112,7 +99,11 @@ export const SetupGate: ParentComponent = (props) => {
    * already going to.
    */
   const decision = createMemo<SetupDecision>(() => {
-    const onSetupPage = withoutTrailingSlash(location.pathname) === SETUP_PATH
+    // Normalized, because `<Route path="/setup">` matches `/setup/` while
+    // `location.pathname` reports the slash verbatim. An exact compare served
+    // the first-run form of a hub that is already set up to anyone who typed
+    // the slash: this gate saw an address that was not `/setup`.
+    const onSetupPage = normalizeRoutePath(location.pathname) === SETUP_PATH
     // A session outranks the snapshot: it proves an account exists.
     if (auth.isAuthenticated())
       return { kind: 'render' }

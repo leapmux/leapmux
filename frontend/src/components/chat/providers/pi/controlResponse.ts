@@ -16,7 +16,7 @@ import type { ControlAnswerState, ControlResponseSender } from '../../controls/t
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION, PI_QUESTION_DIALOG } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
 import { label } from '../../persistedControlResponse'
@@ -63,7 +63,7 @@ export function piCancelResponse(requestId: string): PiCancelledResponse {
 export function piAskAnswerValue(answerState: ControlAnswerState, questions?: ControlQuestion[], payload?: Record<string, unknown>): string {
   const selections = answerState.selections()[0] ?? []
   if (selections.length) {
-    const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === '1,3')
+    const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === PI_QUESTION_DIALOG.MultiSelectPlaceholder)
     // The length test above pinned the first selection; `?? ''` is the type-level guard alone.
     return multiSelect
       ? selections.join(',')
@@ -74,7 +74,7 @@ export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Co
 
 /**
  * Send an extension_ui_response to Pi.
- * The control banner supplies onRespond, which calls workerRpc.sendControlResponse.
+ * The control banner supplies onRespond, which calls workerAgent.sendControlResponse.
  */
 export function sendPiExtensionResponse(
   onRespond: ControlResponseSender,

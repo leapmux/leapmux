@@ -34,32 +34,13 @@ enum SplitDirection {
   SPLIT_DIRECTION_VERTICAL = 2;
 }
 
-// TabIdent names one tab by type and id -- the pair that identifies a tab
+// TabIdent identifies one tab by type and id -- the pair that identifies a tab
 // wherever the workspace is not part of the address and the context implies
 // the tab's owner. A Worker stores no workspace id, so this is the only tab
 // address it understands.
 message TabIdent {
   TabType tab_type = 1;
   string tab_id = 2;
-}
-
-// TabRef is a tab plus its owner, for the one place where the owner varies:
-// WorkerTabState, the Hub's owned-tab list for a worker that can serve more
-// than one account.
-message TabRef {
-  TabIdent tab = 1;
-  // Owner of the tab, for the kinds whose id needs one.
-  //
-  // A FILE or IMAGE tab id is minted client-side and is unique only WITHIN one
-  // account, so the pair (tab_type, tab_id) does not identify such a tab on a
-  // worker that serves more than one. AGENT and TERMINAL ids are server-minted
-  // and globally unique, so a sender may leave this empty for them -- and every
-  // reader that matches those two ignores it.
-  //
-  // worker_tab_payloads is keyed (user_id, tab_id), so a write with a blank
-  // owner matches no row, and a predicate with a blank owner matches ANOTHER
-  // account's row.
-  string user_id = 2;
 }
 
 // --- Pagination ---

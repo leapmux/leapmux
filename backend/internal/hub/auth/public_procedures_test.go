@@ -138,7 +138,7 @@ func TestEveryWorkerBoundProcedureIsExempt(t *testing.T) {
 				return true
 			}
 			// A method invoked on a client field, e.g.
-			// c.connectorUnary.ListOwnedTabsForWorker(...).
+			// c.connector.ListOwnedTabsForWorker(...).
 			if recv, ok := sel.X.(*ast.SelectorExpr); ok && fields[recv.Sel.Name] {
 				called[sel.Sel.Name] = true
 			}

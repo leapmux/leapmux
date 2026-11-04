@@ -83,9 +83,9 @@ type Handle interface {
 //     socket.
 //
 // Both flows decode the same `WatchEventsResponse` payload off the
-// wire. By writing the cursor + reconnect logic against this
-// interface, callers (`agent messages --follow` and `events --include
-// agent,terminal`) share one implementation regardless of mode.
+// wire. The one caller of Transport, `agent messages --follow`, writes its
+// cursor and reconnect logic against this interface, so one implementation
+// serves both modes.
 type Transport interface {
 	// OpenWatchEvents starts a WatchEvents subscription with the
 	// given request. onFrame is called once per delivered
@@ -105,7 +105,7 @@ type Transport interface {
 // interface is exactly the subset the transport calls, no more.
 type channelLike interface {
 	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
-	SendStreamRequest(ctx context.Context, reqID uint64, payload []byte, cancel bool) error
+	SendStreamRequest(ctx context.Context, reqID uint64, payload []byte) error
 	CancelStream(ctx context.Context, reqID uint64) error
 	UnregisterStream(reqID uint64)
 	UnregisterPending(reqID uint64)
@@ -151,7 +151,7 @@ func (h *channelHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal WatchEventsRequest: %w", err)
 	}
-	return h.ch.SendStreamRequest(h.ctx, h.reqID, payload, false)
+	return h.ch.SendStreamRequest(h.ctx, h.reqID, payload)
 }
 
 func (h *channelHandle) Cancel() {
@@ -240,8 +240,8 @@ type LocalIPCTransport struct {
 	client leapmuxv1connect.ControlIPCServiceClient
 	// targetWorkerID is the worker the WatchEvents subscription is
 	// for. Local-IPC routes to the spawning worker by default; this
-	// lets `events --include agent,terminal` direct subscriptions to
-	// sibling workers via the router's cross-worker dispatch.
+	// lets `agent messages --follow` direct its subscription to a
+	// sibling worker via the router's cross-worker dispatch.
 	targetWorkerID string
 	logger         *slog.Logger
 }
@@ -281,7 +281,7 @@ func (h *localIPCHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 	}
 	_, err = h.client.UpdateStream(h.parentCtx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
-		Payload:         payload,
+		Action:          &leapmuxv1.UpdateStreamRequest_Payload{Payload: payload},
 	})
 	return err
 }
@@ -298,7 +298,7 @@ func (h *localIPCHandle) Cancel() {
 	defer cancel()
 	if _, err := h.client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
-		Cancel:          true,
+		Action:          &leapmuxv1.UpdateStreamRequest_Cancel{Cancel: &leapmuxv1.StreamCancel{}},
 	}); err != nil {
 		slog.Debug("localIPCHandle.Cancel failed", "error", err)
 	}

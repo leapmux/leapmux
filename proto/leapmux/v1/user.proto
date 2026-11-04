@@ -10,9 +10,18 @@ import "leapmux/v1/settings.proto";
 // UserService manages user profile and preferences.
 // Called by Frontend on Hub via ConnectRPC.
 //
-// The methods whose access is SCOPE_NEVER are the account's authenticators
-// and credentials, refused to every app: each of them ADDS a factor,
-// ENUMERATES the account's factors, or ends ANOTHER app's connection. See
+// The methods whose access is SCOPE_NEVER are the account's authenticator,
+// credential and elevation surface, refused to every app:
+//   - The email and verification calls (RequestEmailChange, VerifyEmail,
+//     ResendVerificationEmail), which move the address that recovers the
+//     account.
+//   - The session elevation calls, which an app cannot use because it holds
+//     no session.
+//   - The passkey and linked-provider calls, which add, list, change or
+//     remove a factor.
+//   - The calls that end another app's connection (DisconnectApp,
+//     RevokeMyAPIToken).
+// The rule behind the line is ScopeNever in internal/hub/auth. See also
 // SCOPE_NEVER in scope.proto.
 service UserService {
   option (leapmux.v1.host) = SERVICE_HOST_HUB;
@@ -182,7 +191,13 @@ message RequestEmailChangeRequest {
 }
 
 message RequestEmailChangeResponse {
-  bool verification_required = 1;
+  // The verification state after the request. When the hub sent a code, it
+  // carries the resend cooldown of that code.
+  EmailVerificationStatus email_verification = 1;
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 2;
 }
 
 message VerifyEmailRequest {
@@ -211,13 +226,23 @@ message ChangePasswordRequest {
   string new_password = 1;
 }
 
-message ChangePasswordResponse {}
+message ChangePasswordResponse {
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 1;
+}
 
 message UnlinkOAuthProviderRequest {
   string provider_id = 1;
 }
 
-message UnlinkOAuthProviderResponse {}
+message UnlinkOAuthProviderResponse {
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 1;
+}
 
 message ListUserSettingsRequest {}
 
@@ -256,6 +281,10 @@ message FinishPasskeyRegistrationRequest {
 
 message FinishPasskeyRegistrationResponse {
   PasskeyInfo passkey = 1;
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 2;
 }
 
 message ElevateSessionRequest {
@@ -330,14 +359,24 @@ message DeletePasskeyRequest {
   string new_password = 2;
 }
 
-message DeletePasskeyResponse {}
+message DeletePasskeyResponse {
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 1;
+}
 
 message DeactivatePasskeyAuthRequest {
   // Required only on a passkey-only account; see DeletePasskeyRequest.
   string new_password = 1;
 }
 
-message DeactivatePasskeyAuthResponse {}
+message DeactivatePasskeyAuthResponse {
+  // The STORED account after the mutation, as the complete projection
+  // GetCurrentUser reports. Absent when that projection could not be read;
+  // the client then reads GetCurrentUser.
+  User user = 1;
+}
 
 // MyAPIToken is one of the caller's own CLI credentials. It carries
 // metadata only -- no secret and no hash ever leaves the store layer.

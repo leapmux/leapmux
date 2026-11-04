@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -12,7 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hubrpc"
@@ -26,30 +30,56 @@ import (
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
 	expected := []string{
 		// WorkspaceService surface.
-		"LocateTab", "LocateTile", "ListTabs",
-		"ListWorkspaces", "GetWorkspace",
-		"CreateWorkspace", "RenameWorkspace", "DeleteWorkspace",
+		leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
+		leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
+		leapmuxv1connect.WorkspaceServiceListTabsProcedure,
+		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
+		leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
+		leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
+		leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
+		leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
 		// UserCRDT surface.
-		"SubmitOps", "UpdatePresence", "GetMaterialized",
+		leapmuxv1connect.UserCRDTSubmitOpsProcedure,
+		leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
+		leapmuxv1connect.UserCRDTGetMaterializedProcedure,
 		// WorkerManagementService surface.
-		"ListWorkers", "GetWorker",
+		leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
+		leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
 	}
-	for _, m := range expected {
-		_, err := hubrpc.Lookup(m)
-		assert.NoError(t, err, "method %q must be in Registry", m)
+	for _, procedure := range expected {
+		desc, err := hubrpc.Lookup(procedure)
+		if assert.NoError(t, err, "procedure %q must be in Registry", procedure) {
+			assert.Equal(t, procedure, desc.Procedure, "Lookup(%q) must dispatch to that procedure", procedure)
+		}
 	}
 	assert.Len(t, hubrpc.Registry, len(expected), "Registry size must match the documented method list — update both ends together")
 }
 
 func TestLookup_UnknownMethodReturnsTypedError(t *testing.T) {
-	_, err := hubrpc.Lookup("NotARealMethod")
+	_, err := hubrpc.Lookup("/leapmux.v1.WorkspaceService/NotARealMethod")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hub method not implemented")
-	assert.Contains(t, err.Error(), "NotARealMethod")
+	assert.Contains(t, err.Error(), "/leapmux.v1.WorkspaceService/NotARealMethod")
+}
+
+// A bare method name is not an address: the registry keys every method by its
+// full procedure path, so the name alone finds nothing, even for a method that
+// the registry holds.
+func TestLookup_RefusesABareMethodName(t *testing.T) {
+	_, err := hubrpc.Lookup("LocateTab")
+	require.ErrorContains(t, err, "hub method not implemented: LocateTab")
+}
+
+// The WatchUser stream is not a unary method, so it is not a Registry entry:
+// the worker's hub bridge streams it over /ws/userevents instead.
+func TestWatchUserStream_IsTheUserEventsRouteAndNoRegistryEntry(t *testing.T) {
+	assert.Equal(t, contracts.WSRouteUserEvents, hubrpc.WatchUserStream)
+	_, err := hubrpc.Lookup(hubrpc.WatchUserStream)
+	assert.Error(t, err)
 }
 
 func TestDescriptor_NewRequestAndNewResponseReturnFreshProtos(t *testing.T) {
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 
 	req1 := desc.NewRequest()
@@ -111,7 +141,7 @@ func TestInvoke_HappyPathRoundTripsRequestAndResponse(t *testing.T) {
 	svc := &fakeWorkspaceService{locateTabResp: &leapmuxv1.LocateTabResponse{Tab: tab}}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 	in := desc.NewRequest().(*leapmuxv1.LocateTabRequest)
 	in.TabId = "t-123"
@@ -134,7 +164,7 @@ func TestInvoke_AppliesProvidedClientOptions(t *testing.T) {
 	svc := &fakeWorkspaceService{locateTabResp: &leapmuxv1.LocateTabResponse{}}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 	in := desc.NewRequest().(*leapmuxv1.LocateTabRequest)
 	out := desc.NewResponse().(*leapmuxv1.LocateTabResponse)
@@ -166,7 +196,7 @@ func TestInvoke_PropagatesHubErrors(t *testing.T) {
 	svc := &fakeWorkspaceService{locateTabErr: connect.NewError(connect.CodeNotFound, "no such tab")}
 	baseURL := startFakeHub(t, svc)
 
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 	in := desc.NewRequest()
 	out := desc.NewResponse()
@@ -182,7 +212,7 @@ func TestInvoke_PropagatesHubErrors(t *testing.T) {
 func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 	// Construct a baseURL but never reach it — the descriptor must
 	// reject the wrong-shaped request BEFORE issuing the HTTP call.
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 	// Use a non-LocateTabRequest proto to provoke the type assertion.
 	wrongIn := &leapmuxv1.ListTabsRequest{}
@@ -196,7 +226,7 @@ func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 }
 
 func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
-	desc, err := hubrpc.Lookup("LocateTab")
+	desc, err := hubrpc.Lookup(leapmuxv1connect.WorkspaceServiceLocateTabProcedure)
 	require.NoError(t, err)
 	in := desc.NewRequest()
 	// Wrong-shaped response slot — should fail before any network IO.
@@ -208,28 +238,24 @@ func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
 	assert.Contains(t, err.Error(), "response type mismatch")
 }
 
-// TestInvoke_PreservesEachMethodsProcedureURL spot-checks that the
-// dispatch table maps every method to the correct procedure URL, so
-// SubmitOps doesn't end up routed at ListWorkers.
-func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
-	cases := map[string]string{
-		"LocateTab":       leapmuxv1connect.WorkspaceServiceLocateTabProcedure,
-		"LocateTile":      leapmuxv1connect.WorkspaceServiceLocateTileProcedure,
-		"ListTabs":        leapmuxv1connect.WorkspaceServiceListTabsProcedure,
-		"SubmitOps":       leapmuxv1connect.UserCRDTSubmitOpsProcedure,
-		"UpdatePresence":  leapmuxv1connect.UserCRDTUpdatePresenceProcedure,
-		"ListWorkspaces":  leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
-		"GetWorkspace":    leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
-		"CreateWorkspace": leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
-		"RenameWorkspace": leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
-		"DeleteWorkspace": leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure,
-		"ListWorkers":     leapmuxv1connect.WorkerManagementServiceListWorkersProcedure,
-		"GetWorker":       leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure,
-	}
-	for method, want := range cases {
-		desc, err := hubrpc.Lookup(method)
-		require.NoError(t, err, "Lookup(%q)", method)
-		assert.Equal(t, want, desc.Procedure, "method %q must dispatch to %s", method, want)
+// TestDescriptors_MessagesMatchTheProcedure checks each entry's request and
+// response types against the proto declaration of its procedure, so an entry
+// that pairs a procedure with another method's messages fails here instead of
+// on the wire.
+func TestDescriptors_MessagesMatchTheProcedure(t *testing.T) {
+	for procedure, desc := range hubrpc.Registry {
+		assert.Equal(t, procedure, desc.Procedure, "Registry must key %s by its procedure", desc.Procedure)
+		serviceName, methodName, ok := strings.Cut(strings.TrimPrefix(desc.Procedure, "/"), "/")
+		require.True(t, ok, "procedure %q must be /<service>/<method>", desc.Procedure)
+		found, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(serviceName))
+		require.NoError(t, err, "service %q of %q", serviceName, procedure)
+		service, ok := found.(protoreflect.ServiceDescriptor)
+		require.True(t, ok, "%q must be a service", serviceName)
+		declared := service.Methods().ByName(protoreflect.Name(methodName))
+		require.NotNil(t, declared, "%s must declare %s", serviceName, methodName)
+		assert.False(t, declared.IsStreamingClient() || declared.IsStreamingServer(), "%s must be unary", desc.Procedure)
+		assert.Equal(t, declared.Input().FullName(), desc.NewRequest().ProtoReflect().Descriptor().FullName(), "%s request type", desc.Procedure)
+		assert.Equal(t, declared.Output().FullName(), desc.NewResponse().ProtoReflect().Descriptor().FullName(), "%s response type", desc.Procedure)
 	}
 }
 
@@ -238,14 +264,17 @@ func TestInvoke_PreservesEachMethodsProcedureURL(t *testing.T) {
 // fields so the worker-bridge `proto.Unmarshal(payload, in)` overlay
 // starts from a clean slate.
 func TestDescriptors_NewRequestProducesEmptyProtos(t *testing.T) {
-	for method, desc := range hubrpc.Registry {
-		got := desc.NewRequest()
-		require.NotNil(t, got, "method %q NewRequest returned nil", method)
-		// Marshalling an empty proto yields the empty byte slice
-		// (encoding/wire-format property); any non-empty result
-		// indicates accidental field initialization.
-		b, err := proto.Marshal(got)
-		require.NoError(t, err, "marshal %q", method)
-		assert.Empty(t, b, "%q NewRequest should produce a zero-value proto (empty serialization)", method)
+	for procedure, desc := range hubrpc.Registry {
+		for kind, newMessage := range map[string]func() proto.Message{"NewRequest": desc.NewRequest, "NewResponse": desc.NewResponse} {
+			got := newMessage()
+			require.NotNil(t, got, "procedure %q %s returned nil", procedure, kind)
+			assert.NotSame(t, got, newMessage(), "procedure %q %s must return a fresh message on each call", procedure, kind)
+			// Marshalling an empty proto yields the empty byte slice
+			// (encoding/wire-format property); any non-empty result
+			// indicates accidental field initialization.
+			b, err := proto.Marshal(got)
+			require.NoError(t, err, "marshal %q %s", procedure, kind)
+			assert.Empty(t, b, "%q %s should produce a zero-value proto (empty serialization)", procedure, kind)
+		}
 	}
 }

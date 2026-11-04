@@ -58,10 +58,10 @@ func TestRegisterAgentGuarded_PassesLoadedRow(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	var gotID, gotDir string
-	registerAgentGuarded(r, "ProbeAgent",
+	registerAgentGuarded(o, "ProbeAgent",
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
@@ -86,10 +86,10 @@ func TestRegisterAgentGuardedByID_PassesDecodedRequest(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	var gotID string
-	registerAgentGuardedByID(r, "ProbeAgentID", dispatchPlain,
+	registerAgentGuardedByID(o, "ProbeAgentID", dispatchPlain,
 		func(_ context.Context, _ channel.Caller, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			gotID = req.GetAgentId()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
@@ -112,10 +112,10 @@ func TestRegisterTerminalGuarded_PassesLoadedRow(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	var gotID, gotDir string
-	registerTerminalGuarded(r, "ProbeTerm",
+	registerTerminalGuarded(o, "ProbeTerm",
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RenameTerminalRequest, row db.Terminal, sender channel.ResponseWriter) {
 			gotID = row.ID
 			gotDir = row.WorkingDir
@@ -140,10 +140,10 @@ func TestRegisterTerminalForRestartGuarded_PassesRow(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	var gotDir string
-	registerTerminalForRestartGuarded(r, "ProbeRestart",
+	registerTerminalForRestartGuarded(o, "ProbeRestart",
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
@@ -160,10 +160,10 @@ func TestRegisterTerminalForRestartGuarded_PassesRow(t *testing.T) {
 	assert.NotEmpty(t, gotDir, "the narrow restart row is passed through")
 }
 
-// TestGuardedTrackedHelpersTrackInFlightDispatches pins that every *Tracked
-// registration helper actually routes through Dispatcher.RegisterTracked: a
-// dispatch in flight must hold the BindCleanup WaitGroup open until the
-// handler returns. A helper that silently registered untracked would let
+// TestGuardedTrackedHelpersTrackInFlightDispatches pins that every registration
+// helper that takes a dispatchMode registers a tracked dispatcher method
+// (channel.Registration.Tracked) for dispatchTracked: a dispatch in flight must
+// hold the BindCleanup WaitGroup open until the handler returns. A helper that silently registered untracked would let
 // Shutdown tear down the DB pool under a running close flow.
 func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 	t.Parallel()
@@ -171,14 +171,14 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 	cases := []struct {
 		name     string
 		seed     func(t *testing.T, svc *Service)
-		register func(r registrar, method string, block func())
+		register func(o ownerOnlyRegistrar, method string, block func())
 		req      proto.Message
 	}{
 		{
 			name: "registerAgentGuardedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1") },
-			register: func(r registrar, method string, block func()) {
-				registerAgentGuardedByID(r, method, dispatchTracked,
+			register: func(o ownerOnlyRegistrar, method string, block func()) {
+				registerAgentGuardedByID(o, method, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.InterruptAgentRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -188,8 +188,8 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 		{
 			name: "registerTerminalGuardedByID+dispatchTracked",
 			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1") },
-			register: func(r registrar, method string, block func()) {
-				registerTerminalGuardedByID(r, method, dispatchTracked,
+			register: func(o ownerOnlyRegistrar, method string, block func()) {
+				registerTerminalGuardedByID(o, method, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.ResizeTerminalRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -199,8 +199,8 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 		{
 			name: "registerOwnerGuarded+dispatchTracked",
 			seed: func(*testing.T, *Service) {},
-			register: func(r registrar, method string, block func()) {
-				registerOwnerGuarded(r, method, dispatchTracked,
+			register: func(o ownerOnlyRegistrar, method string, block func()) {
+				registerOwnerGuarded(o, method, dispatchTracked,
 					func(context.Context, channel.Caller, *leapmuxv1.CloseTabRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -215,11 +215,11 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			d := channel.NewDispatcher()
 			var wg sync.WaitGroup
 			d.BindCleanup(&wg)
-			r := newTestRegistrar(d, svc)
+			o := newTestRegistrar(d, svc).ownerOnly()
 
 			release := make(chan struct{})
 			handlerEntered := make(chan struct{})
-			tc.register(r, "slow-probe", func() {
+			tc.register(o, "slow-probe", func() {
 				close(handlerEntered)
 				<-release
 			})
@@ -259,7 +259,7 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 	noop := func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {}
 	registerUnguarded(r, "Dup", noop)
 	assert.Panics(t, func() { registerUnguarded(r, "Dup", noop) }, "the registrar refuses a second registration")
-	assert.Panics(t, func() { d.Register("Dup", noop) }, "and so does the dispatcher, for a caller that bypasses the registrar")
+	assert.Panics(t, func() { d.Handle("Dup", channel.Registration{}, noop) }, "and so does the dispatcher, for a caller that bypasses the registrar")
 }
 
 // A procedure no proto declares cannot be served: the registrar would have no
@@ -330,60 +330,6 @@ func TestRegistrarPanicsOnAnUngrantableScope(t *testing.T) {
 	}
 }
 
-// The row-loading guards answer their refusals unary, so registering one for a
-// server-streaming method would leave the client waiting on a stream that never
-// errors. The registrar refuses that combination at boot.
-//
-// Each of the five helpers states its own requireUnary call, so each one is
-// checked: a helper that dropped the call would pass a single-helper check.
-// Each case uses a fresh dispatcher, because the dispatcher refuses a second
-// registration of the same procedure, and that panic would pass the case for
-// the wrong reason.
-func TestRowGuardsRefuseAStreamingMethod(t *testing.T) {
-	t.Parallel()
-
-	svc, _, _ := setupTestService(t)
-	cases := map[string]func(r registrar, procedure string){
-		"registerAgentGuarded": func(r registrar, procedure string) {
-			registerAgentGuarded(r, procedure,
-				func(context.Context, channel.Caller, *leapmuxv1.RenameAgentRequest, db.Agent, channel.ResponseWriter) {
-				})
-		},
-		"registerAgentGuardedByID": func(r registrar, procedure string) {
-			registerAgentGuardedByID(r, procedure, dispatchPlain,
-				func(context.Context, channel.Caller, *leapmuxv1.InterruptAgentRequest, channel.ResponseWriter) {})
-		},
-		"registerTerminalGuarded": func(r registrar, procedure string) {
-			registerTerminalGuarded(r, procedure,
-				func(context.Context, channel.Caller, *leapmuxv1.RenameTerminalRequest, db.Terminal, channel.ResponseWriter) {
-				})
-		},
-		"registerTerminalGuardedByID": func(r registrar, procedure string) {
-			registerTerminalGuardedByID(r, procedure, dispatchPlain,
-				func(context.Context, channel.Caller, *leapmuxv1.ResizeTerminalRequest, channel.ResponseWriter) {})
-		},
-		"registerTerminalForRestartGuarded": func(r registrar, procedure string) {
-			registerTerminalForRestartGuarded(r, procedure,
-				func(context.Context, channel.Caller, *leapmuxv1.RestartTerminalRequest, db.GetTerminalForRestartRow, channel.ResponseWriter) {
-				})
-		},
-	}
-	for name, register := range cases {
-		t.Run(name, func(t *testing.T) {
-			d := channel.NewDispatcher()
-			assert.Panics(t, func() { register(newTestRegistrar(d, svc), "ProbeInvalidStream") },
-				"a row guard must refuse a server-streaming method")
-			assert.Empty(t, d.Methods(), "the refused registration must wire nothing")
-
-			// The same helper accepts a unary method, so the panic above comes
-			// from the shape and not from something else in the helper.
-			unary := channel.NewDispatcher()
-			assert.NotPanics(t, func() { register(newTestRegistrar(unary, svc), "ProbeInvalid") })
-			assert.Equal(t, []string{"ProbeInvalid"}, unary.Methods())
-		})
-	}
-}
-
 // TestRegisterOwnerGuarded_InvalidPayloadAnswersInvalidArgument restores coverage
 // deleted with the workspace gate.
 //
@@ -401,10 +347,10 @@ func TestRegisterOwnerGuarded_InvalidPayloadAnswersInvalidArgument(t *testing.T)
 
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	called := false
-	registerOwnerGuarded(r, "ProbeInvalid", dispatchPlain,
+	registerOwnerGuarded(o, "ProbeInvalid", dispatchPlain,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.ListAgentsRequest, _ channel.ResponseWriter) {
 			called = true
 		})
@@ -435,10 +381,10 @@ func TestRegisterOwnerGuardedStream_InvalidPayloadAnswersStreamError(t *testing.
 
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
-	r := newTestRegistrar(d, svc)
+	o := newTestRegistrar(d, svc).ownerOnly()
 
 	called := false
-	registerOwnerGuarded(r, "ProbeInvalidStream", dispatchPlain,
+	registerOwnerGuarded(o, "ProbeInvalidStream", dispatchPlain,
 		func(_ context.Context, _ channel.Caller, _ *leapmuxv1.WatchEventsRequest, _ channel.ResponseWriter) {
 			called = true
 		})

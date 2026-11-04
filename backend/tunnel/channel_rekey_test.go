@@ -925,8 +925,8 @@ func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now()
 	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
-	ch.session.Send.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
-	peer.Receive.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
+	ch.session.Send.SetNonceForTest(contracts.SoftNonceLimit + 1)
+	peer.Receive.SetNonceForTest(contracts.SoftNonceLimit + 1)
 
 	done := make(chan error, 1)
 	go func() {

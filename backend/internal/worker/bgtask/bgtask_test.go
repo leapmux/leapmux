@@ -254,14 +254,6 @@ func TestItemToProto(t *testing.T) {
 	assert.NotEmpty(t, sp.GetEndedAt())
 }
 
-func TestItemsToProto(t *testing.T) {
-	items := []Item{{RowKey: "a"}, {RowKey: "b"}}
-	out := ItemsToProto(items)
-	assert.Len(t, out, 2)
-	assert.Equal(t, "a", out[0].GetId())
-	assert.Equal(t, "b", out[1].GetId())
-}
-
 // A snapshot is the whole registry, so it carries every row in order.
 func TestSnapshotToProto(t *testing.T) {
 	t.Parallel()
@@ -576,7 +568,7 @@ func TestCleanTitleRunes(t *testing.T) {
 // unrepaired version dropped every row from the sidebar, and kept dropping
 // them, because sqlite stores the bad bytes verbatim and the cold-start seed
 // reads them back on every worker boot.
-func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
+func TestSnapshotToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 	t.Parallel()
 
 	rows := []Item{
@@ -588,9 +580,10 @@ func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 		{RowKey: "ok-2", Title: "Also fine"},
 	}
 
-	out := ItemsToProto(rows)
-	_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: out})
+	snapshot := SnapshotToProto(rows)
+	_, err := proto.Marshal(snapshot)
 	require.NoError(t, err, "one bad field must not drop the whole registry broadcast")
+	out := snapshot.GetTasks()
 
 	require.Len(t, out, 3)
 	assert.Equal(t, "workflow:build", out[1].GetGroupKey(),
@@ -602,7 +595,7 @@ func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 	assert.Equal(t, "Ship the parser", out[0].GetTitle(), "a clean row is untouched")
 
 	// A U+FFFD the provider sent deliberately is valid UTF-8 and survives.
-	kept := ItemsToProto([]Item{{RowKey: "x", ActiveForm: "a�b"}})
+	kept := SnapshotToProto([]Item{{RowKey: "x", ActiveForm: "a�b"}}).GetTasks()
 	assert.Equal(t, "a�b", kept[0].GetActiveForm())
 }
 

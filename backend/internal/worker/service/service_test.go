@@ -116,7 +116,7 @@ func TestApplyWorkerIdentityIgnoresEmptyOwner(t *testing.T) {
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
-	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{})
+	assert.Equal(t, IdentityRefused, svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{}))
 
 	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "an empty push must not clobber the owner")
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"),
@@ -134,7 +134,7 @@ func TestApplyWorkerIdentityAppliesOwnerChange(t *testing.T) {
 
 	// The drift path (prev != "" && prev != new) warns and STILL stores: the Hub is
 	// the authority, so the warning is a breadcrumb, never a veto.
-	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2"})
+	assert.Equal(t, IdentityNewOwner, svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2"}))
 
 	assert.Equal(t, "user-2", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-2"), "the new owner is served")
@@ -171,10 +171,26 @@ func TestApplyWorkerIdentityAppliesFirstOwner(t *testing.T) {
 	svc := &Service{}
 	require.True(t, svc.RegisteredBy().IsZero(), "no owner before the Hub delivers one")
 
-	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1"})
+	assert.Equal(t, IdentityNewOwner, svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1"}),
+		"the first owner is a new owner")
 
 	assert.Equal(t, "user-1", svc.RegisteredBy().String())
 	assert.True(t, dispatchOwnerOnlyProbe(svc, "user-1"))
+}
+
+// A seeded owner is an owner: the Hub's first delivery of that owner is the same
+// owner, and a delivery of another owner replaces it.
+func TestApplyWorkerIdentityCountsASeededOwnerAsTheOwner(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{}
+	svc.SetRegisteredBy(userid.MustNew("user-1"))
+
+	assert.Equal(t, IdentitySameOwner,
+		svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"}))
+	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")), "the delivery adds the username the seed lacked")
+	assert.Equal(t, IdentityNewOwner,
+		svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2", RegisteredByUsername: "bob"}))
 }
 
 // The Hub re-delivers the identity when the owner's account changes, so a
@@ -187,7 +203,9 @@ func TestApplyWorkerIdentityFollowsARename(t *testing.T) {
 	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 	require.Equal(t, "alice", svc.OwnerUsername(owner))
 
-	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	assert.Equal(t, IdentitySameOwner,
+		svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"}),
+		"a rename is the same owner")
 	assert.Equal(t, "alice2", svc.OwnerUsername(owner))
 	assert.Equal(t, "user-1", svc.RegisteredBy().String(), "a rename keeps the owner")
 }
@@ -212,18 +230,18 @@ func TestApplyWorkerIdentityTreatsAnEmptyUsernameAsUnknown(t *testing.T) {
 }
 
 // An empty owner is ignored as a whole frame: its username belongs to the owner
-// it failed to name.
+// it failed to identify.
 func TestApplyWorkerIdentityIgnoresTheUsernameOfAnEmptyOwner(t *testing.T) {
 	t.Parallel()
 
 	svc := &Service{}
 	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
-	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "mallory"})
+	assert.Equal(t, IdentityRefused, svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "mallory"}))
 	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")))
 }
 
-// An absent identity names no owner, so it is ignored like an empty one, and
+// An absent identity states no owner, so it is ignored like an empty one, and
 // it must not panic on the connect loop's goroutine.
 func TestApplyWorkerIdentityIgnoresAnAbsentIdentity(t *testing.T) {
 	t.Parallel()
@@ -231,7 +249,9 @@ func TestApplyWorkerIdentityIgnoresAnAbsentIdentity(t *testing.T) {
 	svc := &Service{}
 	svc.ApplyWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
-	assert.NotPanics(t, func() { svc.ApplyWorkerIdentity(nil) })
+	assert.NotPanics(t, func() {
+		assert.Equal(t, IdentityRefused, svc.ApplyWorkerIdentity(nil))
+	})
 	assert.Equal(t, "user-1", svc.RegisteredBy().String())
 	assert.Equal(t, "alice", svc.OwnerUsername(userid.MustNew("user-1")))
 }
@@ -281,7 +301,7 @@ func TestApplyWorkerIdentityNeverPairsOneOwnersIDWithAnotherOwnersUsername(t *te
 	wg.Wait()
 
 	assert.Zero(t, mismatches.Load(), "a reader paired one owner's id with another owner's username")
-	// The writer's last store names alice, because rounds is even.
+	// The writer's last store holds alice, because rounds is even.
 	assert.Equal(t, "alice", svc.OwnerUsername(alice))
 	assert.Empty(t, svc.OwnerUsername(bob))
 }
@@ -396,9 +416,8 @@ func TestNoEagerProtojsonFormatInLogCalls(t *testing.T) {
 }
 
 // TestNew_CarriesEveryConfigField pins that Config is wired through
-// rather than partially applied. New has no coverage from the two
-// production entry points (cmd/leapmux's runWorker has no Go test at
-// all), so a field silently dropped here would only surface as a
+// rather than partially applied. No test of worker.Run reads these fields
+// back, so a field silently dropped here would only surface as a
 // mysterious runtime default.
 //
 // Service embeds Config, so the copy is structural and cannot drop a
@@ -548,7 +567,7 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	d.RegisterTracked("test.Tracked", func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+	d.Handle("test.Tracked", channel.Registration{Tracked: true}, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 		close(entered)
 		<-release
 	})
@@ -696,8 +715,8 @@ func TestSendProtoResponse_AnswersWhenTheChannelRefusesTheReply(t *testing.T) {
 // convergence pass from writing into a closing database.
 //
 // The orphan reconciler's teardowns are NOT registered with svc.Cleanup -- only
-// the dispatcher's tracked handlers are -- and the worker entry points call
-// Shutdown BEFORE cancelling the context the reconciler is bound to. So without
+// the dispatcher's tracked handlers are -- and a deregistered worker calls
+// Shutdown BEFORE the context the reconciler is bound to ends. So without
 // this hook a nudge-triggered pass could still be running its DB writes and
 // remote-IPC teardown when the caller closed the DB. Stop() blocks until the
 // in-flight pass returns, so it has to run first, ahead of the drains.

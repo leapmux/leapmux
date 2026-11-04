@@ -1,5 +1,7 @@
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
+import { equals } from '@bufbuild/protobuf'
 import { createSignal, getOwner, onCleanup, onMount } from 'solid-js'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { formatErrorMessage } from '~/lib/errors'
 import { createIdentityCache } from '~/lib/identityCache'
@@ -55,9 +57,12 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
   // Workers come back as freshly-deserialized proto objects on every
   // listWorkers() call, even when nothing has changed. Stabilize the
   // object identity by id so the dialog's <For> doesn't unmount and
-  // remount every row on each refresh.
+  // remount every row on each refresh. By value: `createdAt` and
+  // `lastSeenAt` are nested Timestamp messages that every reply decodes
+  // afresh, so the default shallow comparison never matched.
   const workerIdentity = createIdentityCache<Worker>({
     keyOf: w => w.id,
+    equals: (cached, fresh) => equals(WorkerSchema, cached, fresh),
   })
   const [workers, setWorkers] = createSignal<Worker[]>([])
   // singleWorkerId seeds workerId synchronously so dialogs locked to a

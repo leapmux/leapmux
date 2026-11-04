@@ -55,7 +55,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.confirmedState.nodes.n1).toBeUndefined()
   })
 
-  it('consumeRemote on an echoed batch drops it from pending and applies to confirmed', () => {
+  it('drops an echoed batch from pending and applies to confirmed in consumeRemote', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setNodeKind(ctx, 'n1', NodeKind.LEAF),
@@ -71,7 +71,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
   })
 
-  it('consumeRemote on a non-echoed batch applies to confirmed and recomputes speculative', () => {
+  it('applies a non-echoed batch to confirmed and recomputes speculative in consumeRemote', () => {
     const op = setNodeKind({
       originClientId: 'other',
       clock: new HLCClock('other'),
@@ -82,7 +82,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.speculativeState.nodes['remote-node']?.kind?.value).toBe(NodeKind.SPLIT)
   })
 
-  it('applyDelta folds the tail into confirmed WITHOUT a wholesale reset, advances the watermark, and keeps pendingBatches', () => {
+  it('folds the tail into confirmed through applyDelta WITHOUT a wholesale reset, advances the watermark, and keeps pendingBatches', () => {
     // Seed confirmed state + a watermark via bootstrap so applyDelta has a
     // baseline to fold onto (not replace).
     mgr.bootstrap({
@@ -135,7 +135,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.currentEpoch).toBe(5n)
   })
 
-  it('applyDelta observes delta.maxHlc into the clock so the local clock does not lag the resume high-water mark', () => {
+  it('observes delta.maxHlc into the clock during applyDelta so the local clock does not lag the resume high-water mark', () => {
     // The delta's max_hlc is the filtered tail's max op, which the hub reports
     // from the subscriber's allowed set. If the op that advanced the state's
     // true max sat in a filtered-out workspace, the tail's maxHlc still
@@ -180,7 +180,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.resumeWatermark?.physical).toBe(500n)
   })
 
-  it('applyDelta dedups a batch already applied (echo of a pending batch) by batch_id', () => {
+  it('deduplicates a batch already applied (echo of a pending batch) by batch_id in applyDelta', () => {
     mgr.bootstrap({
       userId: 'user',
       nodes: {},
@@ -219,7 +219,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.confirmedState.nodes.echoed?.kind?.value).toBe(NodeKind.LEAF)
   })
 
-  it('applyDelta evicts an entity via a removed frame and reports droppedPending', () => {
+  it('evicts an entity via a removed frame and reports droppedPending in applyDelta', () => {
     // #357: the resume delta now carries materialized/removed frames. A removed
     // frame evicts the entity from confirmedState AND drops any pending op on it
     // (otherwise a pending mutation would resurrect a redacted entity). applyDelta
@@ -269,7 +269,7 @@ describe('PendingOpsManager', () => {
     expect(result.droppedPending).toBe(true)
   })
 
-  it('applyDelta installs an entity via a materialized frame', () => {
+  it('installs an entity via a materialized frame in applyDelta', () => {
     // #357 symmetric case: an entity that crossed INTO the subscriber's allowed
     // set during the gap arrives as a materialized frame carrying the full
     // record (not a raw move op that would leak pre-state from a hidden
@@ -304,7 +304,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.confirmedState.tabs.tNew?.tabId).toBe('tNew')
   })
 
-  it('isConfirmedPopulated is false before bootstrap and true once any entity map holds a record', () => {
+  it('reports isConfirmedPopulated as false before bootstrap and true once any entity map holds a record', () => {
     // The resume refresh-guard uses this to decide whether a delta is safe to
     // fold onto existing state. It must count ANY top-level entity map as
     // populated (not just workspaces), so a state whose only record is, e.g.,
@@ -324,7 +324,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.isConfirmedPopulated()).toBe(true)
   })
 
-  it('consumeBatchCommitted replaces clientHlc with canonicalHlc and applies to confirmed', () => {
+  it('replaces clientHlc with canonicalHlc and applies to confirmed in consumeBatchCommitted', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setNodeKind(ctx, 'n1', NodeKind.GRID),
@@ -346,7 +346,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.pendingBatches.length).toBe(0)
   })
 
-  it('consumeBatchCommitted refreshes currentEpoch even when no pending batch matches (idx < 0)', () => {
+  it('refreshes currentEpoch in consumeBatchCommitted even when no pending batch matches (idx < 0)', () => {
     // Covers the EPOCH_REQUIRED-recovery branch: a batch reverted client-side
     // (or one that originated on another client) has no entry in pendingBatches,
     // but the hub's committed echo still carries the authoritative epoch. Skipping
@@ -368,7 +368,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.resumeWatermark).toBeUndefined()
   })
 
-  it('consumeBatchRejected drops the batch and reports retryable=false for non-retryable reasons', () => {
+  it('drops the batch and reports retryable=false in consumeBatchRejected for non-retryable reasons', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setNodeKind(ctx, 'n1', NodeKind.LEAF),
@@ -385,7 +385,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.speculativeState.nodes.n1).toBeUndefined()
   })
 
-  it('consumeBatchRejected reports retryable=true only for EPOCH_REQUIRED', () => {
+  it('reports retryable=true in consumeBatchRejected only for EPOCH_REQUIRED', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setNodeKind(ctx, 'n1', NodeKind.LEAF),
@@ -398,7 +398,7 @@ describe('PendingOpsManager', () => {
     expect(result.retryable).toBe(true)
   })
 
-  it('consumeBatchRejected fails safe: unknown and permanent reasons are NOT retryable', () => {
+  it('fails safe in consumeBatchRejected: unknown and permanent reasons are NOT retryable', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     // The retryable set is an allowlist, so a reason absent from it -- an
     // unspecified/transport code (0), a reason added to the proto later
@@ -473,7 +473,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.confirmedState.nodes.n1?.kind?.value).toBe(NodeKind.GRID)
   })
 
-  it('consumeEntityMaterialized installs a fresh tab record into confirmedState', () => {
+  it('installs a fresh tab record into confirmedState through consumeEntityMaterialized', () => {
     const tabRecord = {
       $typeName: 'leapmux.v1.TabRecord' as const,
       tabType: TabType.AGENT,
@@ -494,7 +494,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.confirmedState.tabs.tNew).toBeDefined()
   })
 
-  it('consumeEntityRemoved drops pending ops touching that tab', () => {
+  it('drops pending ops touching that tab in consumeEntityRemoved', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     const batch = newBatch([
       setTabTileId(ctx, TabType.AGENT, 'tDoomed', 'someTile'),
@@ -577,7 +577,7 @@ describe('PendingOpsManager', () => {
     expect(mgr.state.speculativeState.tabs.tA?.tileId?.value).toBe('A')
   })
 
-  it('tombstoneTab consumed remotely propagates to confirmed and speculative states', () => {
+  it('propagates a remotely consumed tombstoneTab to confirmed and speculative states', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
     // Seed tA via a remote batch so we have a confirmed record.
     const seedOp = setTabTileId(ctx, TabType.AGENT, 'tA', 'rootTile')
@@ -603,7 +603,7 @@ describe('PendingOpsManager', () => {
     // doesn't, a local op would silently pollute confirmedState and
     // the next remote echo would observe a "double-apply".
 
-    it('recomputeSpeculative aliases when pending is empty', () => {
+    it('aliases speculativeState to confirmedState in recomputeSpeculative when pending is empty', () => {
       // Constructor seeds distinct fresh maps; the alias is
       // established once recomputeSpeculative runs (which happens on
       // every mutating path: bootstrap, consumeRemote, etc.).
@@ -826,7 +826,7 @@ describe('PendingOpsManager', () => {
       expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
     })
 
-    it('recomputeSpeculative does not mutate op.canonicalHlc when re-folding pending batches', () => {
+    it('does not mutate op.canonicalHlc when recomputeSpeculative re-folds pending batches', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([
         setNodeKind(ctx, 'n1', NodeKind.LEAF),
@@ -846,7 +846,7 @@ describe('PendingOpsManager', () => {
       expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
     })
 
-    it('consumeBatchCommitted is the only path that stamps canonicalHlc on the persisted op', () => {
+    it('stamps canonicalHlc on the persisted op only through consumeBatchCommitted', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       const batch = newBatch([
         setNodeKind(ctx, 'n1', NodeKind.GRID),
@@ -1084,7 +1084,7 @@ describe('PendingOpsManager', () => {
       expect(mgr.state.confirmedState.nodes.replayed).toBeDefined()
     })
 
-    it('consumeBatchCommitted then the echoed consumeRemote record the own batch ONCE (no double-record)', () => {
+    it('records the own batch ONCE (no double-record) when consumeBatchCommitted is followed by the echoed consumeRemote', () => {
       // The hub broadcasts every committed batch to ALL subscribers including
       // the originator, so an originating client receives its own batch again
       // via consumeRemote. Without the dedup key, the own batch would land in

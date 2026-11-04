@@ -1,17 +1,17 @@
 import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { clone, create, equals, fromBinary } from '@bufbuild/protobuf'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabRecordSchema, UserCrdtStateSchema, WorkspaceContentsRecordSchema } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { CrdtOpSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
-import { applyOp, newState } from './apply'
 import { HLCClock, hlcCmp } from './hlc'
 import {
   generateId,
   newBatch,
+  opHasIdentity,
   opTarget,
   opTargetKey,
   reviveTab,
+  selectsNoRegister,
   setFloatingHeight,
   setFloatingRootNodeId,
   setFloatingWidth,
@@ -92,7 +92,7 @@ describe('node op builders', () => {
     expect((setNodeRows(ctx, 'n', 3).body.value as { field: { case: string } }).field.case).toBe('rows')
   })
 
-  it('tombstoneNode encodes the tombstone variant', () => {
+  it('encodes the tombstone variant in tombstoneNode', () => {
     const ctx = newCtx()
     const op = tombstoneNode(ctx, 'n')
     expect(op.body.case).toBe('tombstoneNode')
@@ -115,7 +115,7 @@ describe('tab op builders', () => {
     expect((setTabWorkerId(ctx, tt, 't', 'w').body.value as { field: { case: string } }).field.case).toBe('workerId')
   })
 
-  it('tombstoneTab includes tab_type so the validator can confirm uniqueness', () => {
+  it('includes tab_type in tombstoneTab so the validator can confirm uniqueness', () => {
     const ctx = newCtx()
     const op = tombstoneTab(ctx, TabType.TERMINAL, 'tab-x')
     expect(op.body.case).toBe('tombstoneTab')
@@ -137,7 +137,7 @@ describe('floating window op builders', () => {
     expect((setFloatingRootNodeId(ctx, w, 'r').body.value as { field: { case: string } }).field.case).toBe('rootNodeId')
   })
 
-  it('tombstoneFloatingWindow encodes the tombstone variant', () => {
+  it('encodes the tombstone variant in tombstoneFloatingWindow', () => {
     const ctx = newCtx()
     const op = tombstoneFloatingWindow(ctx, 'win-1')
     expect(op.body.case).toBe('tombstoneFloatingWindow')
@@ -226,7 +226,7 @@ describe('opTarget', () => {
     expect(opTarget(tombstoneFloatingWindow(ctx, 'w1'))).toEqual({ case: 'entity', kind: 'fw', id: 'w1' })
   })
 
-  it('names the tab of a revive and the workspace of a create or a tombstone', () => {
+  it('identifies the tab of a revive and the workspace of a create or a tombstone', () => {
     expect(opTarget(reviveTab(ctx, TabType.AGENT, 't1'))).toEqual({ case: 'entity', kind: 'tab', id: 't1' })
     expect(opTarget(create(CrdtOpSchema, {
       body: {
@@ -287,195 +287,134 @@ describe('opTarget', () => {
   })
 })
 
-// The ops a hub journal or this browser's IndexedDB checkpoint stored under the
-// previous CrdtOp numbering, hand-encoded with the old field layout (the same
-// bytes the hub's TestOldStoredOpsNeverApplyAsADifferentOp encodes). Each must
-// either fail to decode, or decode into an op that applies as a no-op: no record
-// under the empty tab id, and no workspace record removed.
-describe('ops stored under the old numbering', () => {
-  const workspaceId = 'Wk1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-abcdefg'
-  const OLD_OPS: Record<string, number[]> = {
-    // CrdtOp field 17 held SetWorkspaceRegisterOp{workspace_id}; 17 is now reviveTab.
-    'set_workspace_register at the old field 17': [
-      10,
-      6,
-      111,
-      108,
-      100,
-      45,
-      111,
-      112,
-      34,
-      7,
-      8,
-      100,
-      26,
-      3,
-      104,
-      117,
-      98,
-      138,
-      1,
-      50,
-      10,
-      48,
-      87,
-      107,
-      49,
-      97,
-      66,
-      99,
-      68,
-      101,
-      70,
-      103,
-      72,
-      105,
-      74,
-      107,
-      76,
-      109,
-      78,
-      111,
-      80,
-      113,
-      82,
-      115,
-      84,
-      117,
-      86,
-      119,
-      88,
-      121,
-      90,
-      48,
-      49,
-      50,
-      51,
-      52,
-      53,
-      54,
-      55,
-      56,
-      57,
-      95,
-      45,
-      97,
-      98,
-      99,
-      100,
-      101,
-      102,
-      103,
-    ],
-    // SetTabRegisterOp{tab_type=1 varint, tab_id=2, tile_id=10}.
-    'set_tab_register with a varint tab_type at field 1': [
-      10,
-      6,
-      111,
-      108,
-      100,
-      45,
-      111,
-      112,
-      34,
-      7,
-      8,
-      100,
-      26,
-      3,
-      104,
-      117,
-      98,
-      98,
-      18,
-      8,
-      1,
-      18,
-      2,
-      116,
-      49,
-      82,
-      10,
-      109,
-      111,
-      118,
-      101,
-      100,
-      45,
-      116,
-      105,
-      108,
-      101,
-    ],
-    // TombstoneTabOp{tab_type=1 varint, tab_id=2}.
-    'tombstone_tab with a varint tab_type at field 1': [
-      10,
-      6,
-      111,
-      108,
-      100,
-      45,
-      111,
-      112,
-      34,
-      7,
-      8,
-      100,
-      26,
-      3,
-      104,
-      117,
-      98,
-      106,
-      6,
-      8,
-      1,
-      18,
-      2,
-      116,
-      49,
-    ],
-  }
+// opHasIdentity mirrors the hub's EntityRef.HasIdentity over crdt.OpTarget. It is
+// the one rule that decides whether an op identifies an entity: the hub's
+// validator refuses an op that fails it, and applyOp ignores one.
+describe('opHasIdentity', () => {
+  const ctx = newCtx('c1')
 
-  for (const [name, bytes] of Object.entries(OLD_OPS)) {
-    it(`never applies ${name} as a different op`, () => {
-      let op: CrdtOp
-      try {
-        op = fromBinary(CrdtOpSchema, new Uint8Array(bytes))
-      }
-      catch {
-        return // A loud decode failure is an accepted outcome.
-      }
-      // protobuf-es reads the old varint tab_type as a length and keeps the
-      // tab id that follows, but never a type. A tab identity is a type AND an
-      // id, so the op still names no tab.
-      const body = op.body
-      const tab = body.case === 'setTabRegister' || body.case === 'tombstoneTab' || body.case === 'reviveTab'
-        ? body.value.tab
-        : undefined
-      expect(tab !== undefined && tab.tabId !== '' && tab.tabType !== TabType.UNSPECIFIED).toBe(false)
+  it('accepts an op of every kind that identifies its entity', () => {
+    expect(opHasIdentity(setNodePosition(ctx, 'n1', 'p'))).toBe(true)
+    expect(opHasIdentity(tombstoneNode(ctx, 'n1'))).toBe(true)
+    expect(opHasIdentity(setTabTileId(ctx, TabType.AGENT, 't1', 'tile'))).toBe(true)
+    expect(opHasIdentity(tombstoneTab(ctx, TabType.AGENT, 't1'))).toBe(true)
+    expect(opHasIdentity(reviveTab(ctx, TabType.AGENT, 't1'))).toBe(true)
+    expect(opHasIdentity(setFloatingX(ctx, 'w1', 1))).toBe(true)
+    expect(opHasIdentity(tombstoneFloatingWindow(ctx, 'w1'))).toBe(true)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: {
+        case: 'createWorkspace',
+        value: { workspaceId: 'ws1', rootNodeId: 'r' },
+      },
+    }))).toBe(true)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: {
+        case: 'tombstoneWorkspace',
+        value: { workspaceId: 'ws1' },
+      },
+    }))).toBe(true)
+  })
 
-      const state = newState('user')
-      state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId, rootNodeId: 'root' })
-      state.tabs.t1 = create(TabRecordSchema, {
-        tabType: TabType.AGENT,
-        tabId: 't1',
-        tileId: {
-          value: 'root',
-          hlc: { physical: 1n, logical: 0n, clientId: 'a' },
+  it('refuses a node, window or workspace op with an empty id', () => {
+    expect(opHasIdentity(setNodePosition(ctx, '', 'p'))).toBe(false)
+    expect(opHasIdentity(tombstoneNode(ctx, ''))).toBe(false)
+    expect(opHasIdentity(setFloatingX(ctx, '', 1))).toBe(false)
+    expect(opHasIdentity(tombstoneFloatingWindow(ctx, ''))).toBe(false)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: {
+        case: 'createWorkspace',
+        value: { workspaceId: '', rootNodeId: 'r' },
+      },
+    }))).toBe(false)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: {
+        case: 'tombstoneWorkspace',
+        value: { workspaceId: '' },
+      },
+    }))).toBe(false)
+  })
+
+  // A tab's identity is its type AND its id, so a tab op that lacks either, or
+  // carries no TabIdent at all, identifies no tab.
+  it('refuses a tab op with no tab id, no tab type or no tab', () => {
+    expect(opHasIdentity(setTabTileId(ctx, TabType.AGENT, '', 'tile'))).toBe(false)
+    expect(opHasIdentity(tombstoneTab(ctx, TabType.UNSPECIFIED, 't1'))).toBe(false)
+    expect(opHasIdentity(reviveTab(ctx, TabType.UNSPECIFIED, 't1'))).toBe(false)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: {
+        case: 'setTabRegister',
+        value: {
+          field: { case: 'tileId', value: 'tile' },
         },
-      })
-      const before = clone(UserCrdtStateSchema, state)
+      },
+    }))).toBe(false)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: { case: 'tombstoneTab', value: {} },
+    }))).toBe(false)
+    expect(opHasIdentity(create(CrdtOpSchema, {
+      body: { case: 'reviveTab', value: {} },
+    }))).toBe(false)
+  })
 
-      applyOp(state, op)
+  it('refuses an empty body and a body this build does not know', () => {
+    expect(opHasIdentity(create(CrdtOpSchema, {}))).toBe(false)
+    expect(opHasIdentity({
+      body: { case: 'someOpFromANewerBuild', value: {} },
+    } as never)).toBe(false)
+  })
+})
 
-      expect(state.tabs['']).toBeUndefined()
-      expect(state.workspaces[workspaceId]).toBeDefined()
-      expect(equals(TabRecordSchema, state.tabs.t1!, before.tabs.t1!)).toBe(true)
-      expect(equals(WorkspaceContentsRecordSchema, state.workspaces[workspaceId]!, before.workspaces[workspaceId]!)).toBe(true)
-      expect(Object.keys(state.tabs)).toEqual(Object.keys(before.tabs))
-      expect(Object.keys(state.workspaces)).toEqual(Object.keys(before.workspaces))
-    })
-  }
+// selectsNoRegister mirrors the hub's selectsNoRegister: a register op whose
+// field oneof selects nothing writes nothing.
+describe('selectsNoRegister', () => {
+  const ctx = newCtx('c1')
+
+  it('reports a register op of every family that selects no field', () => {
+    expect(selectsNoRegister(create(CrdtOpSchema, {
+      body: {
+        case: 'setNodeRegister',
+        value: { nodeId: 'n1' },
+      },
+    }))).toBe(true)
+    expect(selectsNoRegister(create(CrdtOpSchema, {
+      body: {
+        case: 'setTabRegister',
+        value: {
+          tab: { tabType: TabType.AGENT, tabId: 't1' },
+        },
+      },
+    }))).toBe(true)
+    expect(selectsNoRegister(create(CrdtOpSchema, {
+      body: {
+        case: 'setFloatingWindowRegister',
+        value: { windowId: 'w1' },
+      },
+    }))).toBe(true)
+  })
+
+  it('passes a register op that selects a field', () => {
+    expect(selectsNoRegister(setNodePosition(ctx, 'n1', 'p'))).toBe(false)
+    expect(selectsNoRegister(setTabTileId(ctx, TabType.AGENT, 't1', 'tile'))).toBe(false)
+    expect(selectsNoRegister(setFloatingX(ctx, 'w1', 1))).toBe(false)
+  })
+
+  it('passes every op that is not a register op', () => {
+    expect(selectsNoRegister(tombstoneNode(ctx, 'n1'))).toBe(false)
+    expect(selectsNoRegister(tombstoneTab(ctx, TabType.AGENT, 't1'))).toBe(false)
+    expect(selectsNoRegister(reviveTab(ctx, TabType.AGENT, 't1'))).toBe(false)
+    expect(selectsNoRegister(tombstoneFloatingWindow(ctx, 'w1'))).toBe(false)
+    expect(selectsNoRegister(create(CrdtOpSchema, {
+      body: {
+        case: 'createWorkspace',
+        value: { workspaceId: 'ws1', rootNodeId: 'r' },
+      },
+    }))).toBe(false)
+    expect(selectsNoRegister(create(CrdtOpSchema, {
+      body: {
+        case: 'tombstoneWorkspace',
+        value: { workspaceId: 'ws1' },
+      },
+    }))).toBe(false)
+    expect(selectsNoRegister(create(CrdtOpSchema, {}))).toBe(false)
+  })
 })

@@ -8,7 +8,6 @@ import (
 	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,10 +51,9 @@ const (
 // method requires must not start serving it, because the alternative is a
 // method that quietly reaches every app.
 
-// registrar wraps a dispatcher and records each method's gate kind and reply
-// shape.
+// registrar wraps a dispatcher and records each method's gate kind.
 //
-// It is passed by value; the maps are shared. register() panics on a
+// It is passed by value; the gate map is shared. register() panics on a
 // duplicate method, and so does the dispatcher.
 type registrar struct {
 	d   *channel.Dispatcher
@@ -65,24 +63,7 @@ type registrar struct {
 	// procedures.
 	lookup func(procedure string) (rpcaccess.Method, bool)
 	gates  map[string]methodGate
-	shapes map[string]methodShape
 }
-
-// methodShape states how a method ANSWERS, as methodGate states how it is
-// guarded. It is derived from the proto declaration and recorded so a test
-// can assert that what the dispatcher registered matches it.
-//
-// A method that answers with stream frames but is registered as unary still
-// compiles, still passes its tests, and fails only at runtime in the one way
-// nothing reports: the browser holds the correlation id as a stream, so a
-// unary error frame is dropped on arrival and the caller waits on a
-// subscription that will never carry anything and never errors.
-type methodShape int
-
-const (
-	shapeUnary  methodShape = iota // answers with an InnerRpcResponse
-	shapeStream                    // answers with InnerStreamMessage frames
-)
 
 func newRegistrar(d *channel.Dispatcher, svc *Service) registrar {
 	return newRegistrarWithLookup(d, svc, rpcaccess.Lookup)
@@ -94,12 +75,11 @@ func newRegistrarWithLookup(d *channel.Dispatcher, svc *Service, lookup func(str
 		svc:    svc,
 		lookup: lookup,
 		gates:  make(map[string]methodGate),
-		shapes: make(map[string]methodShape),
 	}
 }
 
-// dispatchMode selects whether in-flight invocations of a method gate
-// Shutdown. It is the one registration property the proto cannot state.
+// dispatchMode selects whether Shutdown waits for in-flight invocations of a
+// method. It is the one registration property the proto cannot state.
 type dispatchMode int
 
 const (
@@ -108,6 +88,12 @@ const (
 )
 
 // declaration is what the proto states about one worker method.
+//
+// streaming decides the reply shape of the method's dispatcher registration, and
+// the dispatcher then answers every SendError of the method in that shape (see
+// channel.Registration). A method that answers in the wrong shape still compiles
+// and passes every test that checks only the code of its refusals, so the shape
+// comes from the declaration and never from an argument of the registration.
 type declaration struct {
 	scope     leapmuxv1.Scope
 	streaming bool
@@ -131,39 +117,8 @@ func (r registrar) declared(procedure string) declaration {
 	return declaration{scope: req.Scope, streaming: m.ServerStreaming}
 }
 
-// scopeOf returns the scope a worker method requires. A guarded helper calls it
-// BEFORE building its wrapper, because the wrapper captures the scope.
-func (r registrar) scopeOf(procedure string) leapmuxv1.Scope {
-	return r.declared(procedure).scope
-}
-
-// requireUnary panics when a method is declared server-streaming. The
-// row-loading guards answer their refusals as unary errors (requireAgent,
-// requireTerminal, refuseArchivedWrite), so they serve unary methods only.
-func (r registrar) requireUnary(procedure string) {
-	if r.declared(procedure).streaming {
-		panic("worker method " + procedure + " is server-streaming; its guard answers only unary refusals")
-	}
-}
-
-// denyFunc refuses a call in the reply shape its method declares.
-type denyFunc func(sender channel.ResponseWriter, code codes.Code, message string)
-
-// denial returns the refusal for a method: a stream error frame for a
-// server-streaming method, a unary error otherwise. A unary InnerRpcResponse on
-// a correlation id the client holds as a stream is dropped on arrival and
-// leaves the caller waiting on something that never errors.
-func (r registrar) denial(procedure string) denyFunc {
-	if r.declared(procedure).streaming {
-		return sendStreamError
-	}
-	return func(sender channel.ResponseWriter, code codes.Code, message string) {
-		_ = sender.SendError(int32(code), message)
-	}
-}
-
-// register records a method's gate and reply shape, applies its scope check,
-// and wires it into the dispatcher with the shape the proto declares.
+// register records a method's gate, applies its scope check, and wires it into
+// the dispatcher with the reply shape the proto declares.
 func (r registrar) register(procedure string, gate methodGate, mode dispatchMode, handler channel.HandlerFunc) {
 	// The dispatcher panics on a duplicate too; checking here first keeps the
 	// gate map from recording a second entry for the same method.
@@ -171,17 +126,12 @@ func (r registrar) register(procedure string, gate methodGate, mode dispatchMode
 		panic("duplicate method registration: " + procedure)
 	}
 	decl := r.declared(procedure)
-	shape := shapeUnary
-	if decl.streaming {
-		shape = shapeStream
-	}
 	r.gates[procedure] = gate
-	r.shapes[procedure] = shape
 
 	r.d.Handle(procedure, channel.Registration{
 		Tracked:   mode == dispatchTracked,
 		Streaming: decl.streaming,
-	}, r.scopeGuard(decl.scope, r.denial(procedure), handler))
+	}, scopeGuard(decl.scope, handler))
 }
 
 // scopeGuard wraps a handler with its scope check.
@@ -189,19 +139,31 @@ func (r registrar) register(procedure string, gate methodGate, mode dispatchMode
 // It runs BEFORE the owner gate, and the order is the same rule the Hub's
 // interceptor follows: an app is refused for its own grant rather than told
 // whether the caller happens to be the worker's registrant.
-func (r registrar) scopeGuard(scope leapmuxv1.Scope, deny denyFunc, handler channel.HandlerFunc) channel.HandlerFunc {
+func scopeGuard(scope leapmuxv1.Scope, handler channel.HandlerFunc) channel.HandlerFunc {
 	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		if !caller.Allows(scope) {
-			deny(sender, codes.PermissionDenied, authscope.NotGrantedDenial(scope))
+		if refuseUngranted(sender, caller, scope) {
 			return
 		}
 		handler(ctx, caller, req, sender)
 	}
 }
 
+// refuseUngranted answers PermissionDenied unless the caller's grant holds
+// scope, and reports whether it answered. The denial states the scope in the
+// words authscope.NotGrantedDenial gives, so the method-level check and a
+// handler's own check (requireCloseScopes) read the same.
+func refuseUngranted(sender channel.ResponseWriter, caller channel.Caller, scope leapmuxv1.Scope) bool {
+	if caller.Allows(scope) {
+		return false
+	}
+	sendPermissionDenied(sender, authscope.NotGrantedDenial(scope))
+	return true
+}
+
 // decodedRequest constrains a request message to a proto.Message pointer whose
 // zero value the helper can allocate itself, so a handler never restates the
-// unmarshal — same idiom as connRequest / registerConnHandler in tunnel.go.
+// unmarshal. agentScopedRequest, terminalScopedRequest and connRequest
+// (tunnel.go) narrow it with the id each guard reads.
 type decodedRequest[T any] interface {
 	*T
 	proto.Message
@@ -224,28 +186,33 @@ type terminalScopedRequest[T any] interface {
 // registerOwnerGuarded registers an owner-guarded handler for a decoded request.
 // Wrapper: owner gate → unmarshal → INVALID_ARGUMENT "invalid request" → fn
 // with the decoded request. The gate is a property of WHERE the handler is
-// registered; every refusal takes the shape the method declares.
+// registered, and the dispatcher answers every refusal in the shape the method
+// declares.
+//
+// It registers every owner-only method that decodes its request and loads no
+// row first.
 func registerOwnerGuarded[T any, PT decodedRequest[T]](
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(procedure, mode, decodeInto[T, PT](r.denial(procedure), fn))
+	o.RegisterMode(procedure, mode, decodeInto[T, PT](fn))
 }
 
 // decodeInto builds the unmarshal → fn wrapper shared by the owner-guarded
-// helpers. A decode failure answers InvalidArgument through deny and never
-// reaches fn.
+// helpers. A decode failure answers InvalidArgument and never reaches fn.
+//
+// It is the one caller of unmarshalRequest in this package
+// (TestOnlyDecodeIntoUnmarshalsARequest), so the decode refusal exists once.
 func decodeInto[T any, PT decodedRequest[T]](
-	deny denyFunc,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var msg T
 		decoded := PT(&msg)
 		if err := unmarshalRequest(req, decoded); err != nil {
-			deny(sender, codes.InvalidArgument, "invalid request")
+			sendInvalidArgument(sender, "invalid request")
 			return
 		}
 		fn(ctx, caller, decoded, sender)
@@ -256,10 +223,15 @@ func decodeInto[T any, PT decodedRequest[T]](
 // workspace, and reports whether it answered. Read it as the one place the rule
 // "an archived workspace takes no mutation" lives on this side of the wire.
 //
-// The registrars call it rather than the handlers, so a new write handler is
-// refused by construction. The old per-handler guards missed write paths such
-// as RenameAgent, queue mutations, RenameTerminal, and the agent and terminal
-// closes.
+// The row-guard registrars call it rather than the handlers, so a new write
+// handler that one of them registers is refused by construction. The old
+// per-handler guards missed write paths such as RenameAgent, queue mutations,
+// RenameTerminal, and the agent and terminal closes.
+//
+// handleCloseTab is the one handler that calls it by hand. CloseTab requires
+// only worker:read, because the scope a close needs depends on the tab type, so
+// no registrar can apply the guard for it. Each case of its tab-type switch
+// applies the guard itself, and a new case must do the same.
 //
 // It keys on the SCOPE, not on the method, because the scope already states
 // whether a handler mutates. A read handler stays reachable, which is what
@@ -283,16 +255,15 @@ func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, a
 }
 
 // agentGuardedHandler builds the unmarshal → requireAgent → fn wrapper used by
-// registerAgentGuarded. Explicit type args sidestep constraint-inference edge
-// cases in nested generic calls (mirroring Dispatcher / ownerOnlyRegistrar
-// style).
+// registerAgentGuarded. The helpers pass explicit type arguments to it and to
+// decodeInto, which sidesteps constraint-inference edge cases in nested generic
+// calls.
 func agentGuardedHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
-	deny denyFunc,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return decodeInto[T, PT](deny, func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
+	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		row, ok := svc.requireAgent(sender, decoded.GetAgentId())
 		if !ok {
 			return
@@ -305,14 +276,14 @@ func agentGuardedHandler[T any, PT agentScopedRequest[T]](
 }
 
 // registerAgentGuarded registers a handler for a request that carries an agent id. fn
-// receives the loaded row so the body never double-fetches. Unary methods only.
+// receives the loaded row so the body never double-fetches.
 func registerAgentGuarded[T any, PT agentScopedRequest[T]](
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
-	r.requireUnary(procedure)
-	r.ownerOnly().Register(procedure, agentGuardedHandler[T, PT](r.svc, r.scopeOf(procedure), r.denial(procedure), fn))
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, agentGuardedHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // agentGuardedByIDHandler builds the unmarshal → requireAgentID → fn wrapper
@@ -322,10 +293,9 @@ func registerAgentGuarded[T any, PT agentScopedRequest[T]](
 func agentGuardedByIDHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
-	deny denyFunc,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return decodeInto[T, PT](deny, func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
+	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		archived, ok := svc.requireAgentID(sender, decoded.GetAgentId())
 		if !ok {
 			return
@@ -339,15 +309,15 @@ func agentGuardedByIDHandler[T any, PT agentScopedRequest[T]](
 
 // registerAgentGuardedByID registers a handler for a request that carries an agent id,
 // resolved through an id-only existence probe — no full-row load for a handler
-// that only needs "does this agent exist?". Unary methods only.
+// that only needs "does this agent exist?".
 func registerAgentGuardedByID[T any, PT agentScopedRequest[T]](
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.requireUnary(procedure)
-	r.ownerOnly().RegisterMode(procedure, mode, agentGuardedByIDHandler[T, PT](r.svc, r.scopeOf(procedure), r.denial(procedure), fn))
+	scope := o.r.declared(procedure).scope
+	o.RegisterMode(procedure, mode, agentGuardedByIDHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // terminalGuardedHandler builds the unmarshal → requireTerminal → fn wrapper
@@ -355,10 +325,9 @@ func registerAgentGuardedByID[T any, PT agentScopedRequest[T]](
 func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
-	deny denyFunc,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return decodeInto[T, PT](deny, func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
+	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		row, ok := svc.requireTerminal(sender, decoded.GetTerminalId())
 		if !ok {
 			return
@@ -371,15 +340,14 @@ func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 }
 
 // registerTerminalGuarded registers a handler for a request naming a terminal.
-// fn receives the loaded row so the body never double-fetches. Unary methods
-// only.
+// fn receives the loaded row so the body never double-fetches.
 func registerTerminalGuarded[T any, PT terminalScopedRequest[T]](
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
-	r.requireUnary(procedure)
-	r.ownerOnly().Register(procedure, terminalGuardedHandler[T, PT](r.svc, r.scopeOf(procedure), r.denial(procedure), fn))
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, terminalGuardedHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // terminalGuardedByIDHandler builds the unmarshal → requireTerminalID → fn
@@ -389,10 +357,9 @@ func registerTerminalGuarded[T any, PT terminalScopedRequest[T]](
 func terminalGuardedByIDHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
-	deny denyFunc,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
-	return decodeInto[T, PT](deny, func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
+	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		archived, ok := svc.requireTerminalID(sender, decoded.GetTerminalId())
 		if !ok {
 			return
@@ -404,33 +371,31 @@ func terminalGuardedByIDHandler[T any, PT terminalScopedRequest[T]](
 	})
 }
 
-// registerTerminalGuardedByID registers a handler for a request naming a
-// terminal, resolved through an id-only existence probe — no screen-BLOB load
+// registerTerminalGuardedByID registers a handler for a request that identifies
+// a terminal, resolved through an id-only existence probe — no screen-BLOB load
 // for a handler that only needs "does this terminal exist?" (SendInput and
-// ResizeTerminal fire per keystroke / per resize). Unary methods only.
+// ResizeTerminal fire per keystroke / per resize).
 func registerTerminalGuardedByID[T any, PT terminalScopedRequest[T]](
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.requireUnary(procedure)
-	r.ownerOnly().RegisterMode(procedure, mode, terminalGuardedByIDHandler[T, PT](r.svc, r.scopeOf(procedure), r.denial(procedure), fn))
+	scope := o.r.declared(procedure).scope
+	o.RegisterMode(procedure, mode, terminalGuardedByIDHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // registerTerminalForRestartGuarded is the sole user of
 // db.GetTerminalForRestartRow: unmarshal → requireTerminalForRestart → fn with
-// the narrow row (metadata + length(screen), no screen BLOB). Unary methods
-// only.
+// the narrow row (metadata + length(screen), no screen BLOB).
 func registerTerminalForRestartGuarded(
-	r registrar,
+	o ownerOnlyRegistrar,
 	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
 ) {
-	r.requireUnary(procedure)
-	scope := r.scopeOf(procedure)
-	registerOwnerGuarded(r, procedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
-		row, ok := r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, decodeInto[leapmuxv1.RestartTerminalRequest, *leapmuxv1.RestartTerminalRequest](func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
+		row, ok := o.r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
 		if !ok {
 			return
 		}
@@ -438,17 +403,7 @@ func registerTerminalForRestartGuarded(
 			return
 		}
 		fn(ctx, caller, decoded, row, sender)
-	})
-}
-
-// registerOwnerOnly records guardOwnerOnly and restricts the handler to the
-// worker's registered owner, reusing ownerOnlyRegistrar's gate. It exists for
-// methods that own their own unmarshal (the capability probes
-// ListAvailableShells / ListAvailableProviders, and WatchEvents, which reports
-// per-entity rejections in-band) rather than being registered wholesale
-// through ownerOnlyRegistrar as a family.
-func registerOwnerOnly(r registrar, procedure string, handler channel.HandlerFunc) {
-	r.ownerOnly().Register(procedure, handler)
+	}))
 }
 
 // ownerOnly is the single constructor for the owner gate, so the
@@ -460,7 +415,8 @@ func (r registrar) ownerOnly() ownerOnlyRegistrar {
 
 // registerUnguarded records gateNone and registers without wrapping. Reserved
 // for a probe that does no work and discloses nothing (Ping's liveness check);
-// anything that reads or enumerates machine state must use registerOwnerOnly.
+// anything that reads or enumerates machine state must register through
+// ownerOnlyRegistrar (registerOwnerGuarded, or a row guard above).
 func registerUnguarded(r registrar, procedure string, handler channel.HandlerFunc) {
 	r.register(procedure, gateNone, dispatchPlain, handler)
 }

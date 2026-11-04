@@ -9,6 +9,7 @@ import { useAuth } from '~/context/AuthContext'
 import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
+import { VERIFY_EMAIL_PATH } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import { useVerificationResend } from '~/lib/useVerificationResend'
 import { errorText, pageCard } from '~/styles/shared.css'
@@ -64,8 +65,8 @@ export const VerifyEmailPage: Component = () => {
       // already honors `?redirect=` (see LoginPage.tsx) — do NOT use a
       // different param name here.
       const next = urlCode
-        ? `/verify-email?code=${encodeURIComponent(urlCode)}`
-        : '/verify-email'
+        ? `${VERIFY_EMAIL_PATH}?code=${encodeURIComponent(urlCode)}`
+        : VERIFY_EMAIL_PATH
       navigate(`/login?redirect=${encodeURIComponent(next)}`, { replace: true })
       return
     }

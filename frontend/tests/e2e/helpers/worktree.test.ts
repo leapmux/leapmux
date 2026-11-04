@@ -37,7 +37,7 @@ describe('git repository helpers', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('initGitRepo pins every background writer off, sets an identity, and starts on main', () => {
+  it('pins every background writer off, sets an identity, and starts on main when initGitRepo runs', () => {
     const dir = join(root, 'pinned')
     initGitRepo(dir)
     expect(gitOutput(dir, ['config', '--local', 'core.fsmonitor'])).toBe('false')
@@ -48,7 +48,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['symbolic-ref', '--short', 'HEAD'])).toBe('main')
   })
 
-  it('ensureGitRepositoryRoot makes a plain directory the root of a repository of its own, with the README commit', () => {
+  it('makes a plain directory the root of a repository of its own, with the README commit, when ensureGitRepositoryRoot runs', () => {
     const dir = join(root, 'project')
     mkdirSync(dir)
     writeFileSync(join(dir, 'AGENTS.md'), 'project instructions\n')
@@ -60,7 +60,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['status', '--porcelain'])).toBe('?? AGENTS.md')
   })
 
-  it('ensureGitRepositoryRoot leaves a directory that is the root of a repository already', () => {
+  it('leaves a directory that is the root of a repository already when ensureGitRepositoryRoot runs', () => {
     const dir = gitRepositoryWorkingDir('agent-wd-')
     writeFileSync(join(dir, 'AGENTS.md'), 'project instructions\n')
     ensureGitRepositoryRoot(dir)
@@ -69,7 +69,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['status', '--porcelain'])).toBe('?? AGENTS.md')
   })
 
-  it('ensureGitRepositoryRoot leaves the root of a linked worktree, whose .git is a file', () => {
+  it('leaves the root of a linked worktree, whose .git is a file, when ensureGitRepositoryRoot runs', () => {
     const repo = createGitRepo(root, 'repo')
     const linked = addWorktree(repo, root, 'linked', 'feature/linked')
     ensureGitRepositoryRoot(linked)
@@ -78,7 +78,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(linked, ['log', '--pretty=%s'])).toBe('init')
   })
 
-  it('ensureGitRepositoryRoot makes a directory inside another repository the root of a repository of its own', () => {
+  it('makes a directory inside another repository the root of a repository of its own when ensureGitRepositoryRoot runs', () => {
     const repo = createGitRepo(root, 'outer')
     const nested = join(repo, 'nested')
     ensureGitRepositoryRoot(nested)
@@ -86,7 +86,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(nested, ['log', '--pretty=%s'])).toBe('init')
   })
 
-  it('createGitRepo commits the README on main', () => {
+  it('commits the README on main when createGitRepo runs', () => {
     const dir = createGitRepo(root, 'repo')
     expect(dir).toBe(join(root, 'repo'))
     expect(gitOutput(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main')
@@ -94,7 +94,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(dir, ['status', '--porcelain'])).toBe('')
   })
 
-  it('commitFile creates the parent directories and commits only that file', () => {
+  it('creates the parent directories and commits only that file when commitFile runs', () => {
     const dir = createGitRepo(root, 'repo')
     commitFile(dir, 'pkg/deep/tracked.txt', 'hello\n', 'add pkg')
     expect(readFileSync(join(dir, 'pkg/deep/tracked.txt'), 'utf8')).toBe('hello\n')
@@ -107,7 +107,7 @@ describe('git repository helpers', () => {
     ])).toBe('pkg/deep/tracked.txt')
   })
 
-  it('addWorktree adds a linked worktree on a new branch and returns its real path', () => {
+  it('adds a linked worktree on a new branch and returns its real path when addWorktree runs', () => {
     const dir = createGitRepo(root, 'repo')
     const worktree = addWorktree(dir, root, 'nested/wt', 'wt-branch')
     expect(worktree).toBe(realpathSync(join(root, 'nested/wt')))
@@ -115,13 +115,13 @@ describe('git repository helpers', () => {
     expect(branchExists(dir, 'wt-branch')).toBe(true)
   })
 
-  it('branchExists answers for an absent branch and passes a name that looks like a flag to git as a name', () => {
+  it('answers for an absent branch, and passes a name that looks like a flag to git as a name, when branchExists runs', () => {
     const dir = createGitRepo(root, 'repo')
     expect(branchExists(dir, 'absent-branch')).toBe(false)
     expect(branchExists(dir, '--all')).toBe(false)
   })
 
-  it('createGitRepoWithRemote gives the clone an upstream on main that the remote holds', () => {
+  it('gives the clone an upstream on main that the remote holds when createGitRepoWithRemote runs', () => {
     const { repoDir, bareDir } = createGitRepoWithRemote(root, 'cloned')
     expect(repoDir).toBe(join(root, 'cloned'))
     expect(bareDir).toBe(join(root, 'cloned-bare'))
@@ -131,7 +131,7 @@ describe('git repository helpers', () => {
     expect(gitOutput(repoDir, ['config', '--local', 'core.fsmonitor'])).toBe('false')
   })
 
-  it('managedWorktreePath places a worktree beside the MAIN repository, also from a linked worktree', () => {
+  it('places a worktree beside the MAIN repository, also from a linked worktree, when managedWorktreePath runs', () => {
     const dir = createGitRepo(root, 'repo')
     const expected = join(realpathSync(root), 'repo-worktrees', 'feature')
     expect(managedWorktreePath(dir, 'feature')).toBe(expected)
@@ -140,7 +140,7 @@ describe('git repository helpers', () => {
     expect(existsSync(expected)).toBe(false)
   })
 
-  it('createWorkspaceWithWorktreeViaAPI opens the agent with a git setup that creates the branch, and returns the managed worktree', async () => {
+  it('opens the agent with a git setup that creates the branch, and returns the managed worktree, when createWorkspaceWithWorktreeViaAPI runs', async () => {
     const repo = createGitRepo(root, 'repo')
     const expected = managedWorktreePath(repo, 'feature/new')
     api.createWorkspaceViaAPI.mockReset().mockResolvedValue('ws-1')

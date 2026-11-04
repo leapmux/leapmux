@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
@@ -78,7 +79,7 @@ func (d *renameDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req
 		_ = w.SendError(int32(codes.Internal), err.Error())
 		return
 	}
-	_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
+	_ = w.SendResponse(channelwire.NewPayloadResponse(payload))
 }
 
 func (d *renameDispatcher) called() []string {

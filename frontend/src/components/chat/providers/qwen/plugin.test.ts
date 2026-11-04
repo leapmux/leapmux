@@ -11,7 +11,9 @@ import { input } from '../testUtils'
 import './plugin'
 
 vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: vi.fn(),
+  workerAgent: {
+    updateAgentSettings: vi.fn(),
+  },
 }))
 
 /** Qwen's question dialog: a permission request that its `_meta` marks as one. */

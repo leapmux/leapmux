@@ -164,7 +164,9 @@ var identityComparisonSites = map[string]string{
 	// makes the decision.
 	"internal/worker/service.callerIsWorkerOwner": "TestOwnerGateRefusesEmptyIdentities",
 	// Not a grant: it decides whether the Hub pushed a DIFFERENT owner than the
-	// one already recorded, and only logs. It appears here because the comparison
+	// one already recorded. A different owner is logged, and its outcome makes
+	// bootstrap's nudgeOnNewOwner start a reconcile pass, whose cost is a
+	// ListOwnedTabsForWorker round trip. It appears here because the comparison
 	// is the same one, and because the guard that keeps it correct -- refusing an
 	// empty push rather than storing it -- is what stops the gate above from
 	// ever comparing against a blank owner.
@@ -193,10 +195,4 @@ var identityComparisonSites = map[string]string{
 	// owner's tab was due. BuildTabSync refuses an unminted owner outright rather
 	// than reporting every row on the machine.
 	"internal/worker/bootstrap.payloadTabIDsByType": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
-	// Not a grant: it decides whether a delivered identity replaced the owner and
-	// therefore starts a reconcile pass, whose cost is a ListOwnedTabsForWorker
-	// round trip. It appears here because the comparison is the same one, and
-	// because the zero-refusing comparison the service applies first is what keeps
-	// an undelivered (empty) owner from reading as a change.
-	"internal/worker/bootstrap.nudgeOnNewOwner": "TestNudgeOnNewOwner_NudgesOnlyWhenTheOwnerChanges",
 }

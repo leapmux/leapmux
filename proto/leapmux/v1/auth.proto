@@ -124,7 +124,7 @@ message CaptchaProof {
 }
 
 // The first half of a WebAuthn ceremony: the hub's options for the browser,
-// and the ceremony session that the second half names.
+// and the ceremony session that the second half identifies.
 message WebAuthnChallenge {
   string session_id = 1;
   string options_json = 2; // The PublicKeyCredential options, as JSON.
@@ -155,11 +155,14 @@ message EmailVerificationStatus {
   // fail-closed: when verification is required and the hub cannot send
   // mail, the RPC fails and no account remains. On resend paths, false
   // means the send failed and the frontend should surface a "couldn't
-  // send, try again" message; the hub cleared the pending row, so the
-  // client may retry immediately.
+  // send, try again" message. The hub keeps the pending address and drops
+  // only its code, and it opens a short failure window, so the client may
+  // retry once next_resend_available_at passes.
   bool verification_email_sent = 2;
   // Earliest time the client may request another verification email. The
-  // hub sets it only after a successful send.
+  // hub sets it after a successful send (the resend cooldown) and after a
+  // failed send (the shorter failure window). A request before it is refused
+  // with ResourceExhausted.
   google.protobuf.Timestamp next_resend_available_at = 3;
 }
 
@@ -309,6 +312,10 @@ message GetPendingOAuthSignupResponse {
   string email = 1;
   string display_name = 2;
   string provider_name = 3;
+  // The address that the sign-in which started this sign-up asked to continue
+  // to, such as the CLI consent page. The Hub sanitized it when the sign-in
+  // started. Empty when the sign-in gave none.
+  string redirect = 4;
 }
 
 message CompleteOAuthSignupRequest {

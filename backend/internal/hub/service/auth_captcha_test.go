@@ -54,7 +54,7 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (authTestClient, *keystore
 
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	mountAuthAndSystem(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -101,7 +101,8 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	set := servicetest.NewSettingsManager(t, st, nil)
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
@@ -113,7 +114,7 @@ func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	var info *leapmuxv1.GetSystemInfoResponse
 	_, err = callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
 		var callErr error
-		info, callErr = service.NewSystemService(authSvc).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		info, callErr = service.NewSystemService(authSvc, set).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -169,7 +170,7 @@ func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = service.NewSystemService(authSvc).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(authSvc, authDeps.Settings).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)

@@ -449,10 +449,13 @@ It also does not fire inside a [Quake terminal](/docs/using/terminals/#quake-mod
 | --- | --- | --- |
 | `worker list` | `--hub` | Accessible Workers |
 | `worker get` | `--worker-id` (or `--tab-id`) | Worker metadata |
+| `worker info` | `--worker-id` (or `--tab-id`) | What the Worker reports about itself: `{name, os, arch, home_dir, build}` |
 
 ```bash
 leapmux control worker list --hub https://leapmux.example.com
 ```
+
+The Hub answers `worker get`, so it also works while the Worker is offline. The Worker answers `worker info` itself, so that command needs an online Worker and otherwise fails with `channel_open_failed`.
 
 ### Worker TOFU pins
 
@@ -603,7 +606,7 @@ The first line is always the bootstrap snapshot (`{"kind":"materialized",...}`).
 | `workspace_renamed` | A workspace title changed |
 | `workspace_created` | A workspace was created |
 | `workspace_deleted` | A workspace was deleted |
-| `workers_changed` | Your Worker list changed: a Worker registered, deregistered, came online, or went offline. It arrives whatever `--workspace-id` you pass |
+| `workers_changed` | Your Worker list changed: a Worker registered, deregistered, came online, or went offline. It arrives whatever `--workspace-id` you pass, but only when your credential can list Workers (`worker:read`) |
 | `unknown` | An event the CLI doesn't project |
 
 The command runs until you interrupt it (SIGINT/SIGTERM) or the stream closes. Errors surface as `rpc_failed` or `stream_error`.
@@ -687,10 +690,12 @@ leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.soc
 | `invalid_request` | Bad/missing/conflicting flags; resolver could not satisfy a required ID |
 | `resolve_failed` | A derivation RPC failed while resolving entity IDs |
 | `not_found` | The referenced tab/Worker/pin/agent does not exist |
+| `channel_open_failed` | The Worker is offline or unreachable, so a command that the Worker must answer cannot run |
 | `self_target_refused` | The operation would destroy the calling tab (pass `--force`) |
 | `no_providers_installed` / `ambiguous_provider` | `tab open --type agent` with zero / more than one installed provider and no `--provider` |
 | `concurrent_modification` | `layout set` lost the retry race against a concurrent change |
 | `rpc_failed` / `stream_error` | `events watch` failed to open or the stream errored |
+| `rpc_error` | A Worker refused the request, or the CLI's encrypted channel rejected the Worker's response, for example because it was too large; the message starts with the error code, such as `not_found:` or `resource_exhausted:` |
 | `timeout` | `auth login` PKCE callback didn't arrive within 10 minutes |
 
 ## Security model

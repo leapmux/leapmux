@@ -82,13 +82,11 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 
 	require.Len(t, resp.GetTabStates(), 1, "a foreign owner's row must not be listed")
 	got := resp.GetTabStates()[0]
-	assert.Equal(t, userA.ID, got.GetTab().GetUserId())
-	assert.Equal(t, sharedTabID, got.GetTab().GetTab().GetTabId())
-	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTab().GetTab().GetTabType(),
-		"alice's row, not bob's identically-named one")
+	assert.Equal(t, sharedTabID, got.GetTab().GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTab().GetTabType())
 	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, got.GetArchiveState())
 	assert.Equal(t, userA.ID, resp.GetOwnerUserId(),
-		"the response must declare the owner it is authoritative for")
+		"the response must declare the owner it is authoritative for, which owns every row it lists")
 }
 
 // TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived pins the window
@@ -249,7 +247,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	resp, err := client.ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err, "a worker's own auth_token must reach the reconciler RPC")
 	require.Len(t, resp.GetTabStates(), 1)
-	assert.Equal(t, "agent-live", resp.GetTabStates()[0].GetTab().GetTab().GetTabId())
+	assert.Equal(t, "agent-live", resp.GetTabStates()[0].GetTab().GetTabId())
 	assert.Equal(t, owner.ID, resp.GetOwnerUserId())
 }
 

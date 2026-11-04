@@ -29,3 +29,21 @@ func TestGetWorkerSystemInfoReportsTheBuild(t *testing.T) {
 	assert.True(t, proto.Equal(version.BuildInfoProto(), resp.GetBuild()),
 		"the build is the running binary's: got %v", resp.GetBuild())
 }
+
+// GetWorkerSystemInfo reports the home directory the worker was configured
+// with, which is the one every path handler sanitizes against. The browser
+// learns the worker's home only from this reply: it shortens paths to `~/...`
+// with it and seeds the directory dialogs from it.
+func TestGetWorkerSystemInfoReportsTheConfiguredHomeDir(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	require.NotEmpty(t, svc.HomeDir, "fixture check: the test service has a home directory")
+	dispatch(d, leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure, &leapmuxv1.GetWorkerSystemInfoRequest{}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+
+	var resp leapmuxv1.GetWorkerSystemInfoResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Equal(t, svc.HomeDir, resp.GetHomeDir())
+}

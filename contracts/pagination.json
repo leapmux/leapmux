@@ -1,0 +1,5 @@
+{
+  "_readme": "Page limits of every keyset-paginated listing (PageRequest). The hub resolves an omitted or non-positive limit to defaultPageLimit and caps a larger limit at maxPageLimit. A client that reads every page (the browser's fetchAllPages, the CLI's readAllPages, the e2e helpers) asks for maxPageLimit, so one listing costs the fewest round trips; a client that restated the cap would silently read smaller pages, or ask for more than the hub returns, after the hub's value changed.",
+  "defaultPageLimit": 50,
+  "maxPageLimit": 500
+}

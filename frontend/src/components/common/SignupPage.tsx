@@ -6,7 +6,7 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
-import { postAuthNavigate } from '~/lib/postAuthNavigate'
+import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
 import { pageCard } from '~/styles/shared.css'
@@ -44,17 +44,15 @@ export const SignupPage: Component = () => {
       return
     // The signup RPC creates a session even when verification
     // is required, so the user can call the authenticated
-    // VerifyEmail RPC directly. Send them to the verify page to
+    // VerifyEmail RPC directly. Such an account goes to the verify page, to
     // click the email link or paste the code. The adoption already seeded
-    // the resend cooldown from the report.
-    if (resp.report?.emailVerification?.verificationRequired) {
+    // the resend cooldown from the report. Any other account follows the
+    // same redirect contract as login (see safeRedirect): a safe in-app path
+    // wins, anything else goes home.
+    const verificationRequired = resp.report?.emailVerification?.verificationRequired ?? false
+    if (verificationRequired)
       setVerificationSent(true)
-      navigate('/verify-email', { replace: true })
-      return
-    }
-    // Same redirect contract as login (see safeRedirect):
-    // a safe in-app path wins, anything else goes home.
-    postAuthNavigate(navigate, redirect, '/')
+    followDestination(navigate, postSignInDestination(verificationRequired, redirect))
   }
 
   return (

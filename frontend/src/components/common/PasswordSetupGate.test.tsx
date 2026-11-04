@@ -91,10 +91,8 @@ describe('PasswordSetupGate', () => {
 
     await vi.waitFor(() => {
       expect(mockSetInitialSoloPassword).toHaveBeenCalledWith({ password: 'correct-horse-battery-staple' })
-      // The elevation the SAME reply granted travels in its report, so the
-      // client's elevation state never depends on the follow-up refresh. That
-      // refresh swallows its own failure, so recovering the window from it
-      // would prompt the operator for the password they just chose.
+      // The account AND the elevation the same reply granted travel in its
+      // report, so neither depends on a second round trip that can fail.
       expect(mockSetAuth).toHaveBeenCalledWith({
         user: { id: 'solo-id', username: 'solo' },
         elevationExpiresAt: soloElevation,
@@ -102,13 +100,11 @@ describe('PasswordSetupGate', () => {
       // FORCED, because the gate reads exactly this snapshot: without it the
       // screen stays up over a hub that no longer needs it.
       expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
-      // BOTH copies of "does this account hold a password". The snapshot takes
-      // this screen down; the ACCOUNT is what Preferences -> Account renders
-      // its button and its solo warning from, and nothing else re-reads it for
-      // the life of the page. Without this the operator who just set the first
-      // password finds a screen offering to set one.
-      expect(mockRefreshUser).toHaveBeenCalled()
     })
+    // The report is the complete account projection, `passwordSet` included,
+    // so the gate does not read the account a second time before the snapshot
+    // read that takes it down.
+    expect(mockRefreshUser).not.toHaveBeenCalled()
   })
 
   // The password is stored, but the reply could not report the account. The

@@ -76,6 +76,7 @@ import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.s
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
 import { workerInfoStore } from '~/stores/workerInfo.store'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
 import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
@@ -138,14 +139,19 @@ export const AppShell: Component = () => {
   // it and `handleAgentSettled` reads it, so only the active client dings.
   const activeClient = createActiveClientStore()
 
-  // Late-bound reload trigger for workspace-lifecycle events. Bound once
-  // `useWorkspaceLoader` is instantiated further down; until then a lifecycle
-  // event is a no-op, which is safe because the loader's own `onMount` seeds
-  // the initial `listWorkspaces`.
-  let reloadWorkspacesOnLifecycle: () => void = () => {}
-  // Late-bound the same way: the worker section is built further down, and its
-  // own effect seeds the first `listWorkers`.
-  let refetchWorkersOnChange: () => void = () => {}
+  // Above the CRDT runtime, which calls the worker section and the loaders from
+  // its user events. Neither one reads anything that the runtime creates.
+  const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
+  const workerSection = useWorkerSection({
+    getUserId: () => userId(),
+    keyPinConfirmDialog,
+  })
+
+  // Workspace & section loading
+  const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
+    workspaceStore,
+    sectionStore,
+  })
 
   const {
     crdtState,
@@ -157,14 +163,22 @@ export const AppShell: Component = () => {
     userId: () => userId(),
     getWorkspaceId: () => workspace.activeWorkspaceId() ?? null,
     activeClient,
-    onWorkspaceLifecycleChanged: () => reloadWorkspacesOnLifecycle(),
-    onWorkersChanged: () => refetchWorkersOnChange(),
+    // Created/renamed/deleted events on the user WS stream refresh the sidebar
+    // without requiring a reconnect.
+    onWorkspaceLifecycleChanged: () => {
+      void loadWorkspaces()
+      void loadSections()
+    },
+    onWorkersChanged: workerSection.refetchWorkers,
   })
 
   // Stores for what the CRDT does NOT carry. Tab metadata is keyed by tab id —
   // globally unique across the account — so one flat store holds every
   // workspace's worker-sourced fields with no active/inactive split.
   const tabMetadata = createTabMetadataStore()
+  // The workers whose watch stream this client lost. `useWorkspaceConnection`
+  // writes it, and each surface that shows a terminal status reads it.
+  const workerOnline = createWorkerOnlineStore()
   // The quake store is built BEFORE the tab view, and the back-reference to the
   // view is filled in after. The order is load-bearing and the reverse does not
   // work: `createMemo` runs its body once at CREATION time to collect
@@ -183,6 +197,9 @@ export const AppShell: Component = () => {
   // which tab has focus, and a `const` read from there would be in its temporal
   // dead zone.
   let activeQuakeKeyIdRef: (() => string | null) | undefined
+  // The same kind of forward reference: `useWorkspaceConnection` runs before the
+  // terminal operations exist, and a reconnect can only come after this setup.
+  let resendUnsentSizesRef: ((workerId: string) => void) | undefined
   const quakeStore = createQuakeTerminalStore({
     metadata: tabMetadata,
     tabForKey: key => tabViewRef?.findTabInWorkingDir(key.workerId, key.workingDir),
@@ -262,7 +279,6 @@ export const AppShell: Component = () => {
   const confirmEmptyArchiveDialog = createDialogState<EmptyArchiveConfirmPayload>()
   const sectionNameDialog = createDialogState<SectionNamePayload>()
   const confirmDeleteSectionDialog = createDialogState<SectionConfirmPayload>()
-  const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const confirmLinkDialog = createDialogState<LinkConfirmState>()
   // ONE prompt for every untrusted link, whoever wrote it: an OSC 8 hyperlink
   // a program printed into a terminal, and an anchor an agent wrote into
@@ -296,12 +312,6 @@ export const AppShell: Component = () => {
   // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
   // not-yet-checked / non-macOS).
   const [cliPathInfo, setCliPathInfo] = createSignal<(CliPathStatus & { state: 'missing' | 'mismatch' }) | null>(null)
-
-  const workerSection = useWorkerSection({
-    getUserId: () => userId(),
-    keyPinConfirmDialog,
-  })
-  refetchWorkersOnChange = workerSection.refetchWorkers
 
   // Tell the channel manager who this page thinks it is, so an open the Hub
   // authenticates as someone else fails instead of silently driving that user's
@@ -359,15 +369,16 @@ export const AppShell: Component = () => {
   // agent record, terminal title) hasn't arrived yet. The hook fires
   // off one best-effort fetch per pending tab; see useTabHydrators for
   // the per-type predicates.
-  useTabHydrators({
+  const tabHydrators = useTabHydrators({
     view: tabView,
     metadata: tabMetadata,
     repoGitStore,
     agentActivityStore,
     // Worker liveness, so a worker coming back re-arms the tabs that gave up on
-    // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
-    // no other way to learn it, because a worker reconnecting changes nothing
-    // about the candidate set.
+    // it. The sidebar already tracks this through the worker list, which it
+    // fetches again on each `workersChanged` user event; hydration had no other
+    // way to learn it, because a worker reconnecting changes nothing about the
+    // candidate set.
     onlineWorkerIds: () => onlineWorkerIdSet(workerSection.workers()),
     // A worker coming back re-asks for its agent tabs, and that reply must not
     // land over a settings edit the user is making right now.
@@ -460,6 +471,7 @@ export const AppShell: Component = () => {
     quakeStore,
     settingsLoading,
     repoGitStore,
+    workerOnline,
     getActiveQuakeKeyId: () => activeQuakeKeyIdRef?.() ?? null,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     onAgentSettled: handleAgentSettled,
@@ -467,6 +479,13 @@ export const AppShell: Component = () => {
     // keeps the agent busy afterwards. The gate decides which turn end can
     // show in the tree the user sees, and collapses a burst of them.
     onTurnEndRefresh: turnEndRefresh.notify,
+    // The worker replays a status only for a terminal in FULL mode, so a
+    // background tab learns nothing of the outage from the watch stream. A resize
+    // during the outage also never reached the PTY.
+    onWorkerReconnected: (workerId) => {
+      tabHydrators.reaskWorkerTerminals(workerId)
+      resendUnsentSizesRef?.(workerId)
+    },
   })
 
   // Auto-open new workspace dialog from URL search params
@@ -555,19 +574,6 @@ export const AppShell: Component = () => {
       : {}),
   }))
   onCleanup(() => setTerminalScreenSink(null))
-
-  // Workspace & section loading
-  const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
-    workspaceStore,
-    sectionStore,
-  })
-  // Now that loadWorkspaces is in scope, wire it to the lifecycle
-  // event callback above. Created/renamed/deleted events on the user
-  // WS stream will refresh the sidebar without requiring a reconnect.
-  reloadWorkspacesOnLifecycle = () => {
-    void loadWorkspaces()
-    void loadSections()
-  }
 
   // Keep the active workspace pointed at one this user actually has. Runs on
   // load (nothing selected yet -> reopen where they left off) and whenever the
@@ -908,7 +914,9 @@ export const AppShell: Component = () => {
     setNewShellLoading,
     repoGitStore,
     isQuakeTerminal: terminalId => quakeStore.isQuakeTerminal(terminalId),
+    isWorkerStreamOnline: workerOnline.isOnline,
   })
+  resendUnsentSizesRef = termOps.resendUnsentSizes
 
   // Answers "would closing this tab interrupt running work". Reads the pushed
   // activity state for an agent and asks the worker for a terminal's process
@@ -1499,6 +1507,7 @@ export const AppShell: Component = () => {
       agentSessionStore,
       agentActivityStore,
       repoGitStore,
+      workerOnline,
     },
     taskScope,
     confirmLink,
@@ -1665,6 +1674,7 @@ export const AppShell: Component = () => {
     get workers() { return workerSection.workers() },
     get localSolo() { return localSolo() },
     workerInfoFn: workerSection.workerInfoFn,
+    isWorkerStreamOnline: workerOnline.isOnline,
     channelStatusFn: workerSection.channelStatusFn,
     onAddTunnel: workerSection.openAddTunnel,
     onDeregisterWorker: workerSection.openWorkerSettings,
@@ -1728,6 +1738,7 @@ export const AppShell: Component = () => {
       onResize={termOps.handleTerminalResize}
       onContentReady={id => tabMetadata.patch(id, { contentReady: true })}
       tabEditing={() => tabOps.isTabEditing()}
+      isWorkerStreamOnline={workerOnline.isOnline}
       confirmLink={confirmLink}
     />
   )

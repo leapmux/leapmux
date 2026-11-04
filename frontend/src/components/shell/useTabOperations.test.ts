@@ -32,10 +32,16 @@ const mockShowWarnToast = vi.fn()
 const mockShowInfoToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
-  inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
-  pushBranch: (...args: unknown[]) => mockPushBranch(...args),
-  registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
-  closeTab: (...args: unknown[]) => mockCloseTab(...args),
+  workerGit: {
+    inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
+    pushBranch: (...args: unknown[]) => mockPushBranch(...args),
+  },
+  workerPrivate: {
+    registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
+  },
+  workerTab: {
+    closeTab: (...args: unknown[]) => mockCloseTab(...args),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -209,7 +215,7 @@ describe('useTabOperations', () => {
   })
 
   describe('file-tab E2EE worker round-trip', () => {
-    it('handleFileOpen calls RegisterTabPayload with the local path and the originating tab\'s working dir', async () => {
+    it('makes handleFileOpen call RegisterTabPayload with the local path and the originating tab\'s working dir', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
@@ -239,7 +245,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleImageOpen registers a message reference, never the pixels', async () => {
+    it('registers a message reference, never the pixels, through handleImageOpen', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
@@ -283,7 +289,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleImageOpen focuses the existing tab instead of opening a second one', async () => {
+    it('makes handleImageOpen focus the existing tab instead of opening a second one', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -318,7 +324,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleImageOpen opens a separate tab for a different image of the same message', async () => {
+    it('makes handleImageOpen open a separate tab for a different image of the same message', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -347,7 +353,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleImageOpen rolls the tab back when the payload registration fails', async () => {
+    it('makes handleImageOpen roll the tab back when the payload registration fails', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -375,7 +381,7 @@ describe('useTabOperations', () => {
     // an image the agent read from disk is a downsample it sent to its model, so
     // a named path has to reach the FILE viewer instead -- same picture, full
     // resolution, straight off the Worker.
-    it('handleChatImageOpen opens the FILE itself when the provider named a path', async () => {
+    it('makes handleChatImageOpen open the FILE itself when the provider gives a path', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -411,7 +417,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleChatImageOpen opens an IMAGE tab when the image exists only in the transcript', async () => {
+    it('makes handleChatImageOpen open an IMAGE tab when the image exists only in the transcript', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -444,7 +450,7 @@ describe('useTabOperations', () => {
     // field the wire left blank produces one, and routing it to the FILE branch
     // would open a viewer on the empty path -- which the worker refuses, so the
     // user would get a broken tab instead of the picture they clicked.
-    it('handleChatImageOpen treats an empty path as no path', async () => {
+    it('makes handleChatImageOpen treat an empty path as no path', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -474,7 +480,7 @@ describe('useTabOperations', () => {
     // on the first click into an unfocused split the focused tile is still the
     // other one -- and registering the payload there writes it on a Worker that
     // has no such agent, leaving a tab that can never resolve.
-    it('handleChatImageOpen registers the image on the agent\'s worker, not the focused tile\'s', async () => {
+    it('makes handleChatImageOpen register the image on the agent\'s worker, not the focused tile\'s', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -503,7 +509,7 @@ describe('useTabOperations', () => {
     // Same rule on the FILE branch: the path the agent named lives on the
     // agent's machine, so opening it against the focused tile's Worker asks the
     // wrong host for a file it does not have.
-    it('handleChatImageOpen opens a named path on the agent\'s worker', async () => {
+    it('makes handleChatImageOpen open a provider-given path on the agent\'s worker', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -530,7 +536,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleFileOpen seeds the new tab with the originating tab\'s git group', async () => {
+    it('makes handleFileOpen seed the new tab with the originating tab\'s git group', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view, metadata } = setup()
@@ -558,7 +564,7 @@ describe('useTabOperations', () => {
     // file-tab path for the id either: the row (and its broadcast to peers)
     // would name a tab no tree holds, and only the hourly reconciler sweep
     // would remove it.
-    it('handleFileOpen registers no path and warns when placement refuses', async () => {
+    it('makes handleFileOpen register no path and warn when placement refuses', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup(DEFAULT_SCROLL_STATE, () => true, { unbootstrapped: true })
@@ -599,7 +605,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose on a FILE tab inspects then calls CloseTab with KEEP', async () => {
+    it('inspects then calls CloseTab with KEEP when handleTabClose runs on a FILE tab', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -752,7 +758,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose on a FILE tab opens the last-tab dialog when shouldPrompt=true', async () => {
+    it('opens the last-tab dialog when handleTabClose runs on a FILE tab and shouldPrompt=true', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -780,7 +786,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab close-anyway forwards WorktreeAction.KEEP to CloseTab', async () => {
+    it('forwards WorktreeAction.KEEP to CloseTab when handleTabClose gets close-anyway for a FILE tab', async () => {
       // Counterpart to the schedule-delete test below: the user chose
       // to close the last FILE tab but keep the worktree on disk.
       // CloseTab must still fire (the row + worktree link
@@ -811,7 +817,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab schedule-delete forwards WorktreeAction.REMOVE to CloseTab', async () => {
+    it('forwards WorktreeAction.REMOVE to CloseTab when handleTabClose gets schedule-delete for a FILE tab', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -842,7 +848,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleFileOpen rolls back the optimistic tab on RegisterTabPayload failure', async () => {
+    it('makes handleFileOpen roll back the optimistic tab on RegisterTabPayload failure', async () => {
       await createRoot(async (dispose) => {
         try {
           mockRegisterTabPayload.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
@@ -2018,7 +2024,7 @@ describe('useTabOperations.closeTabWithAction', () => {
     })
   })
 
-  it('closeWorktreeTabsAndReport toasts the worker REMOVED outcome', async () => {
+  it('makes closeWorktreeTabsAndReport toast the worker REMOVED outcome', async () => {
     await createRoot(async (dispose) => {
       const { view, ops, handleAgentClose } = setup()
       handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
@@ -2033,7 +2039,7 @@ describe('useTabOperations.closeTabWithAction', () => {
     })
   })
 
-  it('closeWorktreeTabsAndReport reports a tab with no definitive result as unconfirmed', async () => {
+  it('makes closeWorktreeTabsAndReport report a tab with no definitive result as unconfirmed', async () => {
     // awaitCloseResult resolves undefined when the close RPC rejects; the
     // fold must treat that as "outcome unknown" — NOT a clean no-op — so the
     // report says it could not confirm the removal rather than "not removed".
@@ -2050,7 +2056,7 @@ describe('useTabOperations.closeTabWithAction', () => {
     })
   })
 
-  it('closeWorktreeTabsAndReport lets a definitive REMOVED win over a sibling with no result', async () => {
+  it('makes closeWorktreeTabsAndReport let a definitive REMOVED win over a sibling with no result', async () => {
     // The fold is an OR across the whole group, not a single per-group verdict:
     // one tab's close removed the worktree while another's was indeterminate
     // (rejected RPC). Both flags are recorded, and the reporter's precedence
@@ -2072,7 +2078,7 @@ describe('useTabOperations.closeTabWithAction', () => {
     })
   })
 
-  it('closeWorktreeTabsAndReport with KEEP closes the tabs and states the worktree stays', async () => {
+  it('closes the tabs and states the worktree stays when closeWorktreeTabsAndReport receives KEEP', async () => {
     // The Delete branch dialog's escape hatch for a refused removal. KEEP asks
     // for no removal, so there is no removal outcome to report -- saying
     // "Worktree not removed" here would read as a failure rather than the

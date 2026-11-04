@@ -4,7 +4,6 @@ import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentActivityState, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -28,9 +27,15 @@ const mockListTerminals = vi.fn()
 const mockGetTabPayload = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
-  listAgents: (...a: unknown[]) => mockListAgents(...a),
-  listTerminals: (...a: unknown[]) => mockListTerminals(...a),
-  getTabPayload: (...a: unknown[]) => mockGetTabPayload(...a),
+  workerAgent: {
+    listAgents: (...a: unknown[]) => mockListAgents(...a),
+  },
+  workerTerminal: {
+    listTerminals: (...a: unknown[]) => mockListTerminals(...a),
+  },
+  workerPrivate: {
+    getTabPayload: (...a: unknown[]) => mockGetTabPayload(...a),
+  },
 }))
 
 beforeEach(() => {
@@ -173,6 +178,9 @@ function applyLiveTerminalStatus(
     s.view.getTerminalTab(terminalId),
     terminalId,
     create(TerminalStatusChangeSchema, { ...event }),
+    // The hook's exit transition for a terminal tab. These tests hold no quake
+    // terminal.
+    exitedId => markTerminalExited(s.metadata, exitedId),
     'w1',
   )
 }
@@ -891,33 +899,6 @@ describe('useTabHydrators', () => {
       d()
     })
 
-    // The worker-offline sweep writes DISCONNECTED onto a COMPANION's metadata
-    // row, and the READY event refuses to move a DISCONNECTED tab back -- this
-    // hydrator is the only thing that re-asks. Its candidate source used to be
-    // `view.all()`, which excludes the detached family by construction, so a
-    // companion stayed DISCONNECTED for the life of the page and
-    // `handleTerminalInput` dropped every keystroke into a live-looking panel.
-    it('re-asks for a companion terminal the offline sweep disconnected', async () => {
-      mockListTerminals.mockResolvedValue({
-        terminals: [
-          terminalInfo('q1', { title: 'zsh' }),
-        ],
-        verdicts: [],
-      })
-      const s = setupWithCompanion('q1')
-      const d = createRoot((dispose) => {
-        s.metadata.patch('q1', { terminalStatus: TERMINAL_DISCONNECTED })
-        s.mount()
-        return dispose
-      })
-      await flush()
-      await flush()
-
-      expect(mockListTerminals).toHaveBeenCalledTimes(1)
-      expect(mockListTerminals.mock.calls[0]?.[1]?.tabIds).toContain('q1')
-      d()
-    })
-
     it('writes the fetched terminal fields onto the tab', async () => {
       mockListTerminals.mockResolvedValue({
         terminals: [
@@ -940,6 +921,252 @@ describe('useTabHydrators', () => {
     })
   })
 
+  // The worker replays a status only for a terminal in FULL mode, so a background
+  // tab learns nothing of an outage from the watch stream. The connection hook
+  // calls `reaskWorkerTerminals` when the worker is reachable again.
+  describe('reaskWorkerTerminals', () => {
+    it('asks again for every terminal of the worker, the hydrated ones included', async () => {
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.READY }),
+          terminalInfo('q1', { status: TerminalStatus.READY }),
+        ],
+        verdicts: [],
+      })
+      const s = setupWithCompanion('q1')
+      let hydrators!: ReturnType<typeof s.mount>
+      const d = createRoot((dispose) => {
+        s.add(TabType.TERMINAL, 't1')
+        s.add(TabType.TERMINAL, 't-other', 'w2')
+        s.add(TabType.AGENT, 'a1')
+        s.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+        s.metadata.patch('q1', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+        s.metadata.patch('t-other', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+        s.metadata.patch('a1', { hydrated: true })
+        hydrators = s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+      expect(mockListTerminals, 'every terminal is hydrated, so nothing asks on its own').not.toHaveBeenCalled()
+
+      hydrators.reaskWorkerTerminals('w1')
+      await flush()
+      await flush()
+
+      expect(mockListTerminals).toHaveBeenCalledOnce()
+      expect(mockListTerminals.mock.calls[0]?.[0]).toBe('w1')
+      expect([...mockListTerminals.mock.calls[0]?.[1]?.tabIds].sort(), 'the quake terminal too, and no agent').toEqual(['q1', 't1'])
+      expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.READY)
+      expect(s.view.getTerminalTab('t-other')?.status, 'another worker keeps its answer').toBe(TerminalStatus.EXITED)
+      d()
+    })
+
+    it('asks once, so a second change of the tab asks nothing more', async () => {
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.EXITED }),
+        ],
+        verdicts: [],
+      })
+      const s = setup()
+      let hydrators!: ReturnType<typeof s.mount>
+      const d = createRoot((dispose) => {
+        s.add(TabType.TERMINAL, 't1')
+        s.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+        hydrators = s.mount()
+        return dispose
+      })
+      hydrators.reaskWorkerTerminals('w1')
+      await flush()
+      await flush()
+      expect(mockListTerminals).toHaveBeenCalledOnce()
+
+      s.metadata.patch('t1', { hasNotification: true })
+      await flush()
+      await flush()
+
+      expect(mockListTerminals, 'the answer clears the mark').toHaveBeenCalledOnce()
+      d()
+    })
+
+    // A failed ask keeps the mark, so the batch retry asks again once the
+    // worker answers.
+    it('asks again after a failed re-ask', async () => {
+      vi.useFakeTimers()
+      try {
+        mockListTerminals.mockRejectedValueOnce(new Error('worker unreachable'))
+        mockListTerminals.mockResolvedValue({
+          terminals: [
+            terminalInfo('t1', { status: TerminalStatus.READY }),
+          ],
+          verdicts: [],
+        })
+        const s = setup()
+        let hydrators!: ReturnType<typeof s.mount>
+        const d = createRoot((dispose) => {
+          s.add(TabType.TERMINAL, 't1')
+          s.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+          hydrators = s.mount()
+          return dispose
+        })
+        hydrators.reaskWorkerTerminals('w1')
+        await vi.advanceTimersByTimeAsync(0)
+        expect(mockListTerminals).toHaveBeenCalledOnce()
+        expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.EXITED)
+
+        await vi.advanceTimersByTimeAsync(10_000)
+
+        expect(mockListTerminals).toHaveBeenCalledTimes(2)
+        expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.READY)
+        d()
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+
+    /** Mount a hydrated terminal with `meta`, and answer a re-ask of its worker with `reply`. */
+    async function reask(meta: Record<string, unknown>, reply: Record<string, unknown>) {
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', reply),
+        ],
+        verdicts: [],
+      })
+      const s = setup()
+      let hydrators!: ReturnType<typeof s.mount>
+      const dispose = createRoot((d) => {
+        s.add(TabType.TERMINAL, 't1')
+        s.metadata.patch('t1', { hydrated: true, ...meta })
+        hydrators = s.mount()
+        return d
+      })
+      hydrators.reaskWorkerTerminals('w1')
+      await flush()
+      await flush()
+      expect(mockListTerminals).toHaveBeenCalledOnce()
+      return { s, dispose }
+    }
+
+    // A mounted xterm never paints a second screen, so a reply that moved the
+    // cursor forward made the replayed delta look already applied, and the
+    // output never reached the view.
+    it('keeps the cursor of a terminal when the reply ends ahead of it', async () => {
+      const held = new Uint8Array([1, 2, 3, 4])
+      const { s, dispose } = await reask(
+        { terminalStatus: TerminalStatus.READY, screen: held, lastOffset: 4 },
+        {
+          screen: new Uint8Array([1, 2, 3, 4, 5, 6]),
+          screenEndOffset: 6n,
+        },
+      )
+
+      expect(s.metadata.get('t1')?.lastOffset).toBe(4)
+      expect(s.view.getTerminalTab('t1')?.screen, 'the screen pairs with the cursor').toBe(held)
+      dispose()
+    })
+
+    // Live output can land while the request is pending, and a cursor moved
+    // backward replays bytes that the xterm already drew.
+    it('keeps the cursor of a terminal when the reply ends behind it', async () => {
+      const { s, dispose } = await reask(
+        { terminalStatus: TerminalStatus.READY, lastOffset: 9000 },
+        {
+          screen: new Uint8Array([1, 2]),
+          screenEndOffset: 2n,
+        },
+      )
+
+      expect(s.metadata.get('t1')?.lastOffset).toBe(9000)
+      expect(s.view.getTerminalTab('t1')?.screen, 'a screen with no cursor of its own stays out').toBeUndefined()
+      dispose()
+    })
+
+    it('keeps a cursor of zero', async () => {
+      const { s, dispose } = await reask(
+        { terminalStatus: TerminalStatus.READY, lastOffset: 0 },
+        {
+          screen: new Uint8Array([1, 2]),
+          screenEndOffset: 2n,
+        },
+      )
+
+      expect(s.metadata.get('t1')?.lastOffset).toBe(0)
+      dispose()
+    })
+
+    // A later restart sends the size that this tab holds, so a size from before
+    // the outage would start the new shell at the old size.
+    it('keeps the size that the client measured for an exited terminal', async () => {
+      const { s, dispose } = await reask(
+        { terminalStatus: TerminalStatus.EXITED, cols: 132, rows: 40 },
+        { status: TerminalStatus.EXITED, cols: 80, rows: 24 },
+      )
+
+      expect(s.view.getTerminalTab('t1')).toMatchObject({ cols: 132, rows: 40 })
+      dispose()
+    })
+
+    it('still heals the status of a terminal that holds a cursor and a size', async () => {
+      const { s, dispose } = await reask(
+        {
+          terminalStatus: TerminalStatus.EXITED,
+          lastOffset: 4,
+          cols: 132,
+          rows: 40,
+        },
+        {
+          status: TerminalStatus.READY,
+          title: 'zsh',
+          screen: new Uint8Array([1]),
+          screenEndOffset: 1n,
+        },
+      )
+
+      const tab = s.view.getTerminalTab('t1')
+      expect(tab?.status).toBe(TerminalStatus.READY)
+      expect(tab?.title, 'the worker owns the title').toBe('zsh')
+      expect(s.metadata.get('t1')?.lastOffset).toBe(4)
+      dispose()
+    })
+
+    it('fills a cursor, a screen and a size that the client does not hold', async () => {
+      const screen = new Uint8Array([104, 105])
+      const { s, dispose } = await reask(
+        { terminalStatus: TerminalStatus.READY },
+        {
+          screen,
+          screenEndOffset: 2n,
+          cols: 100,
+          rows: 30,
+        },
+      )
+
+      expect(s.metadata.get('t1')?.lastOffset).toBe(2)
+      expect(s.view.getTerminalTab('t1')).toMatchObject({ screen, cols: 100, rows: 30 })
+      dispose()
+    })
+
+    it('asks nothing for an empty worker id or a worker with no terminal', async () => {
+      const s = setup()
+      let hydrators!: ReturnType<typeof s.mount>
+      const d = createRoot((dispose) => {
+        s.add(TabType.TERMINAL, 't1')
+        s.metadata.patch('t1', { hydrated: true, terminalStatus: TerminalStatus.EXITED })
+        hydrators = s.mount()
+        return dispose
+      })
+      hydrators.reaskWorkerTerminals('')
+      hydrators.reaskWorkerTerminals('w-without-terminals')
+      await flush()
+      await flush()
+
+      expect(mockListTerminals).not.toHaveBeenCalled()
+      d()
+    })
+  })
+
   // The worker reads the state of a terminal when it builds the reply, and the
   // reply then travels behind the events that the worker broadcast meanwhile. A
   // client that watches the terminal applies those events first. A reply that
@@ -957,6 +1184,28 @@ describe('useTabHydrators', () => {
         s.mount()
         return d
       })
+      await flush()
+      await flush()
+      expect(mockListTerminals, 'the call is pending').toHaveBeenCalledTimes(1)
+      return { s, dispose }
+    }
+
+    /** Mount a hydrated terminal, and hold the reply of the re-ask after its worker came back. */
+    async function mountWithReaskHeld(tabId: string, reply: ReturnType<typeof heldReply>, status: TerminalStatus) {
+      mockListTerminals.mockReturnValue(reply.promise)
+      const s = setup()
+      let hydrators!: ReturnType<typeof s.mount>
+      const dispose = createRoot((d) => {
+        s.add(TabType.TERMINAL, tabId)
+        s.metadata.patch(tabId, { hydrated: true, terminalStatus: status })
+        hydrators = s.mount()
+        return d
+      })
+      await flush()
+      await flush()
+      expect(mockListTerminals, 'a hydrated tab asks for nothing on its own').not.toHaveBeenCalled()
+
+      hydrators.reaskWorkerTerminals('w1')
       await flush()
       await flush()
       expect(mockListTerminals, 'the call is pending').toHaveBeenCalledTimes(1)
@@ -1013,6 +1262,36 @@ describe('useTabHydrators', () => {
       expect(tab?.rows).toBe(40)
       expect(tab?.screen).toEqual(new Uint8Array([104, 105]))
       expect(s.metadata.get('t1')?.lastOffset).toBe(2)
+      dispose()
+    })
+
+    // The first reply follows one rule with every later one: the xterm can apply
+    // live output and measure its size before the reply lands.
+    it('keeps a cursor and a size that the client wrote while the first reply was pending', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithHeldReply(['t1'], reply)
+
+      s.metadata.patch('t1', { lastOffset: 700, cols: 132, rows: 40 })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', {
+            title: 'zsh',
+            cols: 80,
+            rows: 24,
+            screen: new Uint8Array([104, 105]),
+            screenEndOffset: 2n,
+          }),
+        ],
+        verdicts: [],
+      })
+      await flush()
+      await flush()
+
+      const tab = s.view.getTerminalTab('t1')
+      expect(s.metadata.get('t1')?.lastOffset).toBe(700)
+      expect(tab?.screen).toBeUndefined()
+      expect(tab).toMatchObject({ cols: 132, rows: 40, title: 'zsh' })
+      expect(s.metadata.get('t1')?.hydrated).toBe(true)
       dispose()
     })
 
@@ -1075,11 +1354,32 @@ describe('useTabHydrators', () => {
       dispose()
     })
 
-    // The catch-up marker that a watch sends on subscribe says READY for a shell
-    // that exited before the subscription, because it has no field for the exit.
-    // The reply is the only message that carries it. A tab that watches while it
-    // hydrates, as a reloaded page does, applies that marker first.
-    it('applies an EXITED reply after a newer READY event', async () => {
+    // The worker read the exit, and the restart reached the tab first. The reply
+    // holds the older answer, and nothing sends the status again, so a reply that
+    // won here would show a dead shell over one that runs.
+    it('keeps the READY of a restart over an older EXITED reply', async () => {
+      const reply = heldReply()
+      const { s, dispose } = await mountWithReaskHeld('t1', reply, TerminalStatus.EXITED)
+
+      applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
+      applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.EXITED }),
+        ],
+        verdicts: [],
+      })
+      await flush()
+      await flush()
+
+      expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.READY)
+      dispose()
+    })
+
+    // The other way that a READY can land beside an EXITED reply: the READY is the
+    // older one. The status queue of the worker sends `closed` behind it, so the
+    // tab reaches EXITED without the reply.
+    it('reaches EXITED through the close that follows a READY older than the reply', async () => {
       const reply = heldReply()
       const { s, dispose } = await mountWithHeldReply(['t1'], reply)
 
@@ -1092,32 +1392,9 @@ describe('useTabHydrators', () => {
       })
       await flush()
       await flush()
+      markTerminalExited(s.metadata, 't1')
 
-      expect(s.view.getTerminalTab('t1')?.status, 'a shell that is gone must not read READY').toBe(TerminalStatus.EXITED)
-      dispose()
-    })
-
-    // The READY event is refused for a DISCONNECTED tab, and the reply of the
-    // re-ask is what heals it. An event that wrote nothing must not hold the
-    // reply back.
-    it('applies the reply to a DISCONNECTED tab after a READY event that the tab refused', async () => {
-      const reply = heldReply()
-      const { s, dispose } = await mountWithHeldReply(['t1'], reply, (st) => {
-        st.metadata.patch('t1', { hydrated: true, terminalStatus: TERMINAL_DISCONNECTED })
-      })
-
-      applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
-      expect(s.view.getTerminalTab('t1')?.status, 'the live handler leaves DISCONNECTED alone').toBe(TERMINAL_DISCONNECTED)
-      reply.settle({
-        terminals: [
-          terminalInfo('t1', { status: TerminalStatus.READY }),
-        ],
-        verdicts: [],
-      })
-      await flush()
-      await flush()
-
-      expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.READY)
+      expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.EXITED)
       dispose()
     })
 
@@ -1165,14 +1442,11 @@ describe('useTabHydrators', () => {
 
     it('holds back a re-ask reply that a live event overtook', async () => {
       const reply = heldReply()
-      const { s, dispose } = await mountWithHeldReply(['t1'], reply, (st) => {
-        // The offline sweep marked the tab, so the hydrator asks again.
-        st.metadata.patch('t1', { hydrated: true, terminalStatus: TERMINAL_DISCONNECTED })
-      })
+      const { s, dispose } = await mountWithReaskHeld('t1', reply, TerminalStatus.EXITED)
 
       // The restart of the shell reaches the tab while the reply is pending.
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
-      expect(s.view.getTerminalTab('t1')?.status, 'a STARTING event moves a DISCONNECTED tab').toBe(TerminalStatus.STARTING)
+      expect(s.view.getTerminalTab('t1')?.status, 'a STARTING event moves an EXITED tab').toBe(TerminalStatus.STARTING)
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
       reply.settle({
         terminals: [
@@ -1365,75 +1639,6 @@ describe('useTabHydrators', () => {
       d()
     })
 
-    /**
-     * `hydrated` is write-once, so on its own it strands a terminal the
-     * worker-offline sweep marked DISCONNECTED: the reconnect's
-     * `statusChange{READY}` is deliberately ignored for a DISCONNECTED tab
-     * ("Preserve DISCONNECTED / EXITED"), and this hook is the only production
-     * caller of `listTerminals`. Without the second predicate clause the tab
-     * stays read-only — input dropped, restart gated on EXITED — until a full
-     * page reload.
-     */
-    it('re-asks for a terminal the worker marked DISCONNECTED', async () => {
-      mockListTerminals.mockResolvedValue({
-        terminals: [
-          terminalInfo('t1', { title: 'zsh' }),
-        ],
-        verdicts: [],
-      })
-      const s = setup()
-      const d = createRoot((dispose) => {
-        s.add(TabType.TERMINAL, 't1')
-        s.mount()
-        return dispose
-      })
-      await flush()
-      await flush()
-      expect(mockListTerminals).toHaveBeenCalledTimes(1)
-      expect(s.metadata.get('t1')?.hydrated).toBe(true)
-
-      // The worker goes offline: the sweep in `useWorkspaceConnection` marks
-      // every READY terminal on it DISCONNECTED.
-      s.metadata.patch('t1', { terminalStatus: TERMINAL_DISCONNECTED })
-      await flush()
-      await flush()
-
-      expect(mockListTerminals, 'the disconnected tab is asked about again').toHaveBeenCalledTimes(2)
-      expect(mockListTerminals.mock.calls[1]?.[1].tabIds).toEqual(['t1'])
-      d()
-    })
-
-    it('goes quiet again once the reply resolves the disconnected terminal', async () => {
-      mockListTerminals.mockResolvedValue({
-        terminals: [
-          terminalInfo('t1', { title: 'zsh' }),
-        ],
-        verdicts: [],
-      })
-      const s = setup()
-      const d = createRoot((dispose) => {
-        s.add(TabType.TERMINAL, 't1')
-        s.mount()
-        return dispose
-      })
-      await flush()
-      await flush()
-
-      s.metadata.patch('t1', { terminalStatus: TERMINAL_DISCONNECTED })
-      await flush()
-      await flush()
-      expect(mockListTerminals).toHaveBeenCalledTimes(2)
-      // The reply carries the worker's real status, which clears the trigger.
-      expect(s.view.getTerminalTab('t1')?.status).not.toBe(TERMINAL_DISCONNECTED)
-
-      // An unrelated change re-runs the dispatch effect; nothing more goes out.
-      s.metadata.patch('t1', { hasNotification: true })
-      await flush()
-      await flush()
-      expect(mockListTerminals).toHaveBeenCalledTimes(2)
-      d()
-    })
-
     // The local open paths hold the worker's own OpenAgent/OpenTerminal
     // response, so they record the hydration themselves. Without that a tab
     // this client just opened is re-asked immediately, and the reply is applied
@@ -1615,8 +1820,8 @@ describe('useTabHydrators', () => {
       }
     })
 
-    // A worker that was online through every WORKERS_CHANGED push has nothing
-    // to retry; only the OFF -> ON edge does.
+    // A worker that was online through every worker-list read has nothing to
+    // retry; only the OFF -> ON edge does.
     it('does not re-dispatch for a worker that was already online', async () => {
       const s = setup()
       const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
@@ -1639,10 +1844,9 @@ describe('useTabHydrators', () => {
     })
 
     /**
-     * An agent tab has no re-arm of its own. A terminal re-arms on DISCONNECTED,
-     * which is why a terminal repaired itself after an outage and an agent did
-     * not -- its title, status and option catalogs froze at whatever was true
-     * before the link dropped, for the life of the page.
+     * An agent tab has no re-arm of its own. Without this one, its title, status
+     * and option catalogs freeze at whatever was true before the link dropped,
+     * for the life of the page.
      */
     it('re-asks for an already hydrated agent when its worker comes back', async () => {
       const s = setup()

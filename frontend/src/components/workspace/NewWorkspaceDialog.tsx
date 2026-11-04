@@ -6,7 +6,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { generateSlug } from 'random-word-slugs'
 import { Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
@@ -137,7 +137,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       // enum 0.
       if (provider === undefined)
         throw new Error('No agent provider available')
-      const agentResp = await workerRpc.openAgent(wid, {
+      const agentResp = await workerAgent.openAgent(wid, {
         agentProvider: provider,
         // title omitted: worker picks "Agent <Name>" from the shared pool.
         workingDir: worker.workingDir(),

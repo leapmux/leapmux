@@ -61,7 +61,7 @@ describe('channelRelay', () => {
     vi.useRealTimers()
   })
 
-  it('ensureWebSocket opens, dedups concurrent dials, and send writes', async () => {
+  it('opens and dedups concurrent dials in ensureWebSocket, and send writes', async () => {
     const sock = new FakeSocket()
     const onFrame = vi.fn()
     const onCloseDrain = vi.fn()
@@ -93,7 +93,7 @@ describe('channelRelay', () => {
     expect(() => relay.send(new Uint8Array([1]))).toThrow(ChannelError)
   })
 
-  it('ensureWebSocket times out', async () => {
+  it('times out in ensureWebSocket', async () => {
     vi.useFakeTimers()
     const sock = new FakeSocket()
     const relay = new ChannelRelay({
@@ -258,7 +258,7 @@ describe('channelRelay', () => {
     expect(onFrame).toHaveBeenCalledOnce()
   })
 
-  it('ensureWebSocket rejects on socket error', async () => {
+  it('rejects on a socket error in ensureWebSocket', async () => {
     const sock = new FakeSocket()
     const relay = new ChannelRelay({
       createWebSocket: () => sock,
@@ -298,7 +298,7 @@ describe('channelRelay', () => {
     expect(onFrame.mock.calls[0]![0]).toBe('ch-view')
   })
 
-  it('closeWebSocket aborts an in-flight CONNECTING dial so onOpen cannot reinstall', async () => {
+  it('aborts an in-flight CONNECTING dial in closeWebSocket so onOpen cannot reinstall', async () => {
     const sock = new FakeSocket()
     const relay = new ChannelRelay({
       createWebSocket: () => sock,
@@ -339,7 +339,7 @@ describe('channelRelay', () => {
     sliceSpy.mockRestore()
   })
 
-  it('closeWebSocket nulls the socket', async () => {
+  it('clears the socket in closeWebSocket', async () => {
     const sock = new FakeSocket()
     const relay = new ChannelRelay({
       createWebSocket: () => sock,

@@ -479,6 +479,14 @@ type Subscriber struct {
 	// those IDs when ACLs change.
 	RequestedWorkspaceIDs map[string]bool
 	Filter                SubscriberFilter
+	// MayReadWorkers reports whether the subscriber's credential holds
+	// worker:read. BroadcastWorkersChanged reaches only such a subscriber: the
+	// event asks the client to call ListWorkers, which requires that scope, and
+	// the event's timing alone tells when the owner's workers register,
+	// connect, disconnect or deregister. The zero value reaches no worker-list
+	// event, so a producer that forgets the grant withholds the event rather
+	// than leaks it.
+	MayReadWorkers bool
 	// resumeSuppressThrough, when non-nil, is the register-time MaxHlc
 	// high-water for this subscription. Live batch broadcasts whose last-op HLC
 	// is <= this value are skipped for this subscriber, because they are
@@ -1024,7 +1032,8 @@ func (m *Manager) Submit(ctx context.Context, input SubmitInput) ([]*leapmuxv1.B
 
 // SubmitInternal is the in-process Go API for hub-driven ops
 // (lifecycle, worker reconciliation tombstones). The internal flag
-// skips the per-op auth check and gates CreateWorkspaceOp.
+// skips the per-op auth check and permits the hub-only
+// CreateWorkspaceOp and TombstoneWorkspaceOp.
 func (m *Manager) SubmitInternal(ctx context.Context, input SubmitInput) ([]*leapmuxv1.BatchResult, error) {
 	input.Internal = true
 	if input.PrincipalID == "" {

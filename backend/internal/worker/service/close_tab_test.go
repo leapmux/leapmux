@@ -1620,8 +1620,8 @@ func TestCloseTabWithoutWorkingDirDoesNotInspectWorkerCheckout(t *testing.T) {
 
 // CloseTabRequest carries the tab's type, which each of the three close RPCs it
 // replaced implied. A request that states no usable identity has no close to
-// run, so it is refused before any row is read, and the agent it names stays
-// open.
+// run, so it is refused before any row is read, and the agent it identifies
+// stays open.
 func TestCloseTab_RefusesAMalformedTab(t *testing.T) {
 	t.Parallel()
 

@@ -2,16 +2,21 @@ import type { Component } from 'solid-js'
 import type { KeyPinConfirmState } from './AppShellDialogs'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { DialogState } from '~/hooks/createDialogState'
+import { equals } from '@bufbuild/protobuf'
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
 import { channelManager, setConfirmKeyPin } from '~/api/workerRpc'
 import { AddTunnelDialog } from '~/components/workers/AddTunnelDialog'
 import { RegisterWorkerDialog } from '~/components/workers/RegisterWorkerDialog'
 import { WorkerSettingsDialog } from '~/components/workers/WorkerSettingsDialog'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createIdentityCache } from '~/lib/identityCache'
 import { listAllWorkers } from '~/lib/listAllWorkers'
+import { createLogger } from '~/lib/logger'
 import { createTunnelStore } from '~/stores/tunnel.store'
 import { createWorkerChannelStatusStore } from '~/stores/workerChannelStatus.store'
 import { workerInfoStore } from '~/stores/workerInfo.store'
+
+const log = createLogger('workerSection')
 
 /**
  * The worker registry: the list, its refresh triggers, and the three dialogs
@@ -67,9 +72,13 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
 
   // listAllWorkers() returns freshly-deserialized objects on every call.
   // Stabilize identity by id so the sidebar's <For> doesn't unmount and
-  // remount every worker row on each refresh / workersChanged push.
+  // remount every worker row on each refetch, which a `workersChanged` user
+  // event or a user-events bootstrap starts. By value: `createdAt` and
+  // `lastSeenAt` are nested Timestamp messages that every reply decodes afresh,
+  // so the default shallow comparison never matched.
   const workerIdentity = createIdentityCache<Worker>({
     keyOf: w => w.id,
+    equals: (cached, fresh) => equals(WorkerSchema, cached, fresh),
   })
 
   async function fetchWorkers() {
@@ -83,16 +92,19 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
           workerInfoStore.fetchWorkerInfo(w.id)
       }
     }
-    catch {
-      // Best effort — sidebar will show an empty workers list.
+    catch (err) {
+      // Best effort: a failed read keeps the last successful list, which is
+      // empty before the first one. The next `workersChanged` event or
+      // user-events bootstrap fetches again.
+      log.warn('Failed to list the workers; keeping the last list', err)
     }
   }
 
   // One fetch in flight plus at most one queued behind it. A burst of
   // `workersChanged` events -- a worker deregistering while another registers,
-  // or a bootstrap landing beside a live event -- then costs two `listWorkers`
-  // calls, and the second one still reads the state after every event in the
-  // burst.
+  // or a bootstrap landing beside a live event -- then costs two worker
+  // listings (`listAllWorkers` reads, one `listWorkers` call per page), and the
+  // second one still reads the state after every event in the burst.
   let fetchInFlight = false
   let fetchQueued = false
   function refetchWorkers(): void {

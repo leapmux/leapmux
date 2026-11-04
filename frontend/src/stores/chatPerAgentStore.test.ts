@@ -108,7 +108,7 @@ describe('createPerAgentStore', () => {
     })
   })
 
-  it('byAgent distinguishes an unset agent from one explicitly set to empty', () => {
+  it('makes byAgent distinguish an unset agent from one explicitly set to empty', () => {
     createRoot((dispose) => {
       const store = createPerAgentStore<number[]>([])
       // get() hides the difference behind the empty fallback; byAgent exposes it,
@@ -166,7 +166,7 @@ describe('createPerAgentStore', () => {
   // reconciles by REFERENCE, so a replace that hands over all-new objects tears
   // down and rebuilds every row on screen -- losing the tooltip under the
   // pointer and restarting each row's animation.
-  it('setReconciled keeps the identity of an entry that did not change', () => {
+  it('keeps the identity of an entry that did not change in setReconciled', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
       store.set('a', [
@@ -187,7 +187,7 @@ describe('createPerAgentStore', () => {
     })
   })
 
-  it('setReconciled adds, drops and reorders entries by key', () => {
+  it('adds, drops and reorders entries by key in setReconciled', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
       store.set('a', [
@@ -209,7 +209,7 @@ describe('createPerAgentStore', () => {
   // `reconcile` writes its diff THROUGH the store proxy into the object
   // underneath, and the empty value is one object shared by every unset agent.
   // Reconciling into it would give every other agent this agent's rows.
-  it('setReconciled leaves the shared empty value alone', () => {
+  it('leaves the shared empty value alone in setReconciled', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string }>('id')
       const empty = store.get('untouched')
@@ -237,7 +237,7 @@ describe('createPerAgentStore', () => {
   // one dataset, and a misspelling is a compile error rather than a silent fall
   // back to a positional merge -- which is worse than a rebuild, because a row
   // then keeps its DOM identity while its content shifts under the pointer.
-  it('setReconciled reconciles every write under the one key the store declares', () => {
+  it('reconciles every write under the one key the store declares in setReconciled', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
       store.set('a', [

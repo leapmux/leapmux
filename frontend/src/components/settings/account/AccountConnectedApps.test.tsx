@@ -370,8 +370,10 @@ describe('AccountConnectedApps', () => {
   })
 
   // A client loop whose only exit is a value the server chooses is a hang
-  // the server can cause. A cursor that never advances stops it.
-  it('stops when the cursor does not advance', async () => {
+  // the server can cause. A cursor that never advances stops it, and the stop
+  // fails the load: the rows read so far are not the listing, and drawing them
+  // would hide every credential past the stall from the owner.
+  it('reports a listing whose cursor does not advance instead of drawing part of it', async () => {
     mockList.mockResolvedValue({
       tokens: [laptop],
       page: { nextCursor: 'stuck' },
@@ -379,8 +381,10 @@ describe('AccountConnectedApps', () => {
 
     render(() => <AccountConnectedApps />)
 
-    expect(await screen.findByText('alice@laptop')).toBeInTheDocument()
+    expect(await screen.findByText('The hub did not end the listing: the next-page cursor did not advance.')).toBeInTheDocument()
     expect(mockList).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('alice@laptop')).not.toBeInTheDocument()
+    expect(screen.queryByText(/No connected apps/)).not.toBeInTheDocument()
   })
 
   // A failed load must not also claim the account owns nothing. This is the

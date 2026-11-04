@@ -252,11 +252,12 @@ func TestRegistry_BroadcastWorkersChanged_StampsNoActivity(t *testing.T) {
 	assert.EqualValues(t, 3, factoryCalls.Load(), "only the evicted manager is built again")
 }
 
-// TestRegistry_BroadcastWorkersChanged_ReachesEverySubscriberOfTheUser pins
-// the unfiltered fan-out: the worker list belongs to the user, so a
-// subscriber whose filter admits no workspace hears the change as one that
-// admits a workspace does. Another user's subscriber hears nothing.
-func TestRegistry_BroadcastWorkersChanged_ReachesEverySubscriberOfTheUser(t *testing.T) {
+// TestRegistry_BroadcastWorkersChanged_ReachesEveryWorkerReaderOfTheUser pins
+// the unfiltered fan-out: the worker list belongs to the user, so a worker
+// reader whose filter admits no workspace hears the change as one that admits a
+// workspace does. A subscriber that cannot read workers and another user's
+// subscriber hear nothing.
+func TestRegistry_BroadcastWorkersChanged_ReachesEveryWorkerReaderOfTheUser(t *testing.T) {
 	journal := newFakeJournal()
 	factory := func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
 		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
@@ -266,22 +267,29 @@ func TestRegistry_BroadcastWorkersChanged_ReachesEverySubscriberOfTheUser(t *tes
 	registry := crdt.NewRegistry(factory, nil, crdt.WithManagerIdleTTL(0))
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	subscribe := func(userID string, filter crdt.SubscriberFilter) *captureSubscriber {
+	subscribe := func(userID string, filter crdt.SubscriberFilter, mayReadWorkers bool) *captureSubscriber {
 		mgr, err := registry.Get(context.Background(), userID)
 		require.NoError(t, err)
 		listener := &captureSubscriber{}
-		_, unsub := mgr.Subscribe(&crdt.Subscriber{UserID: userID, Filter: filter, Send: listener.send})
+		_, unsub := mgr.Subscribe(&crdt.Subscriber{
+			UserID:         userID,
+			Filter:         filter,
+			MayReadWorkers: mayReadWorkers,
+			Send:           listener.send,
+		})
 		t.Cleanup(unsub)
 		return listener
 	}
-	noWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}})
-	oneWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-1": true}})
-	otherUser := subscribe("user-2", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-2": true}})
+	noWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}}, true)
+	oneWorkspace := subscribe("user-1", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-1": true}}, true)
+	nonReader := subscribe("user-1", crdt.SubscriberFilter{}, false)
+	otherUser := subscribe("user-2", crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{"ws-2": true}}, true)
 
 	// The fan-out calls each subscriber's Send before it returns.
 	registry.BroadcastWorkersChanged("user-1")
 
-	assert.Equal(t, 1, workersChangedCount(noWorkspace.snapshot()), "a subscriber that admits no workspace still hears it")
+	assert.Equal(t, 1, workersChangedCount(noWorkspace.snapshot()), "a worker reader that admits no workspace still hears it")
 	assert.Equal(t, 1, workersChangedCount(oneWorkspace.snapshot()))
+	assert.Zero(t, workersChangedCount(nonReader.snapshot()), "a subscriber that cannot read workers hears nothing")
 	assert.Zero(t, workersChangedCount(otherUser.snapshot()), "another user's subscriber hears nothing")
 }

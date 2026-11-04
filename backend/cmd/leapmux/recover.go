@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -360,18 +359,12 @@ func withRecoverConfig(cmd cmdCtx, args []string, setup func(fs *flag.FlagSet), 
 // online admin RPCs so the two surfaces cannot disagree about what a valid
 // selector is. The WORDING stays here: this one talks to a person at a
 // terminal, so it lists flags and echoes the selector they typed. The
-// selector holds one of the two values, so this function refuses both flags
-// itself before it builds one.
+// selector holds one of the two values, so service.SelectUserFromPair refuses
+// both flags, and this function states that refusal with its own flag names.
 func resolveUser(ctx context.Context, st store.Store, userID, username string) (*store.User, error) {
-	if userID != "" && username != "" {
+	sel, err := service.SelectUserFromPair(userID, username)
+	if err != nil {
 		return nil, fmt.Errorf("--id and --username are mutually exclusive")
-	}
-	var sel *leapmuxv1.UserSelector
-	switch {
-	case userID != "":
-		sel = service.SelectUserByID(userID)
-	case username != "":
-		sel = service.SelectUserByUsername(username)
 	}
 	user, err := service.ResolveUserSelector(ctx, st, sel)
 	if err == nil {

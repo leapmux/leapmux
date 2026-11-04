@@ -20,7 +20,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('addWindow emits a single 8-op creation batch and adds the projected window', () => {
+  it('emits a single 8-op creation batch and adds the projected window when addWindow runs', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const before = harness.pending.state.pendingBatches.length
@@ -70,7 +70,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('removeWindow tombstones the window and clears it from the projection', () => {
+  it('tombstones the window and clears it from the projection when removeWindow runs', () => {
     withTestBridge((_harness) => {
       const store = createTestFloatingWindowStore()
       const created = store.addWindow()
@@ -82,7 +82,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('removeWindow on an unknown id is a no-op (no batch enqueued)', () => {
+  it('makes removeWindow a no-op on an unknown id (no batch enqueued)', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const before = harness.pending.state.pendingBatches.length
@@ -192,7 +192,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('updateOpacityDebounced clamps the value into [0.2, 1.0] and emits a single-op batch', () => {
+  it('clamps the value into [0.2, 1.0] and emits a single-op batch when updateOpacityDebounced runs', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow()!
@@ -218,7 +218,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('updateOpacityDebounced at the same clamped value is a no-op', () => {
+  it('makes updateOpacityDebounced a no-op at the same clamped value', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow()!
@@ -235,7 +235,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     // override (no CRDT op); commitDragGeometry emits exactly ONE op batch on
     // drop. This cuts a per-drag op storm from ~60-120 (one per frame) down to 1.
 
-    it('updateDragResize moves the projected window WITHOUT emitting a batch', () => {
+    it('moves the projected window WITHOUT emitting a batch when updateDragResize runs', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const { windowId } = store.addWindow({
@@ -255,7 +255,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('commitDragGeometry emits a single batch on drop and clears the override', () => {
+    it('emits a single batch on drop and clears the override when commitDragGeometry runs', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const { windowId } = store.addWindow({
@@ -281,7 +281,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('commitDragGeometry is a no-op when no drag is in flight (bare click)', () => {
+    it('makes commitDragGeometry a no-op when no drag is in flight (bare click)', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const { windowId } = store.addWindow({
@@ -297,7 +297,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('commitDragGeometry is a no-op when the override matches the CRDT geometry (drag returned to start)', () => {
+    it('makes commitDragGeometry a no-op when the override matches the CRDT geometry (drag returned to start)', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const { windowId } = store.addWindow({
@@ -315,7 +315,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('cancelDragGeometry snaps the projection back to CRDT geometry without committing', () => {
+    it('snaps the projection back to CRDT geometry without committing when cancelDragGeometry runs', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const { windowId } = store.addWindow({
@@ -385,7 +385,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     })
 
     // Cancelling one gesture must not disturb the other's override.
-    it('cancelDragGeometry clears only the named window', () => {
+    it('clears only the window whose id is passed to cancelDragGeometry', () => {
       withTestBridge((_harness) => {
         const store = createTestFloatingWindowStore()
         const w1 = store.addWindow({
@@ -411,7 +411,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     })
   })
 
-  it('bringToFront reorders the projection without emitting a batch (z-order is local)', () => {
+  it('reorders the projection without emitting a batch when bringToFront runs (z-order is local)', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const w1 = store.addWindow()!.windowId
@@ -494,7 +494,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     // root is a workspace root or a floating-window root. These tests
     // pin the inner-tree mutators after the dedupe so a regression
     // (e.g. accidentally targeting the wrong tile id) surfaces here.
-    it('emitSplitTile path splits the floating window\'s inner tree', async () => {
+    it('splits the floating window\'s inner tree on the emitSplitTile path', async () => {
       await withTestBridge(async (harness) => {
         const store = createTestFloatingWindowStore()
         const created = store.addWindow()!
@@ -517,7 +517,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('emitMakeGrid path builds an R×C inner tree under the window\'s root', async () => {
+    it('builds an R×C inner tree under the window\'s root on the emitMakeGrid path', async () => {
       await withTestBridge(async (harness) => {
         const store = createTestFloatingWindowStore()
         const created = store.addWindow()!
@@ -538,7 +538,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       }, { rootTileId: 'main' })
     })
 
-    it('splitTile on an unknown window is a no-op (caller passed a stale windowId)', () => {
+    it('makes splitTile a no-op on an unknown window (caller passed a stale windowId)', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
         const before = harness.pending.state.pendingBatches.length
@@ -668,7 +668,7 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     // `state.windows` sees zero notifications across the no-op call.
     // The effect-count probe below is the most direct way to assert
     // that contract without instrumenting production code.
-    it('bringToFront on an already-topmost window does not trigger a projection rebuild', async () => {
+    it('does not trigger a projection rebuild when bringToFront runs on an already-topmost window', async () => {
       await withTestBridge(async (_harness) => {
         const store = createTestFloatingWindowStore()
         const a = store.addWindow()!
@@ -1421,7 +1421,7 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
     }, { rootTileId: 'main' })
   })
 
-  it('flushOpacity(id) flushes only that window, leaving another gesture armed', () => {
+  it('makes flushOpacity(id) flush only that window, leaving another gesture armed', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const a = store.addWindow({
@@ -1473,7 +1473,7 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
     }, { rootTileId: 'main' })
   })
 
-  it('flushOpacity emits the pending op immediately and clears the timer', () => {
+  it('emits the pending op immediately and clears the timer when flushAllOpacity runs', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow()!
@@ -1708,7 +1708,7 @@ describe('createKeyedOverrides', () => {
     })
   })
 
-  it('clearAll empties in one rebuild and no-ops on an already-empty map', () => {
+  it('empties in one rebuild and no-ops on an already-empty map when clearAll runs', () => {
     createRoot((dispose) => {
       const overrides = createKeyedOverrides<number>()
       overrides.set('a', 1)

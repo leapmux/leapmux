@@ -4,14 +4,18 @@ import * as solidDnd from '@thisbeyond/solid-dnd'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
+import * as terminalStatusStyles from '~/components/shell/terminalStatus.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { loadBrowserPrefs } from '~/lib/browserPreferences'
 import { localStorageClearForTests } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { tabKey } from '~/stores/tab.helpers'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { motion } from '~/styles/tokens'
 import { flush } from '~/test-support/async'
 import { pointerEvent } from '~/test-support/pointer'
@@ -203,6 +207,7 @@ function nthOf<T>(list: T[], index: number): T {
 const defaultProps = {
   tileId: 'tile-1',
   tabs: [] as any[],
+  isWorkerStreamOnline: () => true,
   activeTabKey: null,
   onSelect: noop,
   onClose: noop,
@@ -667,6 +672,51 @@ describe('tabBar row identity', () => {
  * readers too — so a terminal whose OSC title differs must not depend on the
  * label happening to overflow.
  */
+describe('TabBar terminal status', () => {
+  const terminal = (status: TerminalStatus): Tab => ({
+    ...makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    workerId: 'w-1',
+    status,
+  } as Tab)
+
+  function renderTab(tab: Tab, isWorkerStreamOnline: (workerId: string) => boolean) {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} isWorkerStreamOnline={isWorkerStreamOnline} tabs={[tab]} />
+      </PreferencesProvider>
+    ))
+    return () => screen.getByTestId('tab')
+  }
+
+  it('shows a READY terminal as disconnected for as long as its worker is offline', () => {
+    const workerOnline = createWorkerOnlineStore()
+    const row = renderTab(terminal(TerminalStatus.READY), workerOnline.isOnline)
+    const label = () => within(row()).getByText('Terminal Liam')
+    expect(row().dataset.terminalStatus).toBe(String(TerminalStatus.READY))
+    expect(label()).not.toHaveClass(terminalStatusStyles.disconnected)
+
+    workerOnline.setOnline('w-1', false)
+    expect(row().dataset.terminalStatus).toBe(TERMINAL_DISCONNECTED)
+    expect(label()).toHaveClass(terminalStatusStyles.disconnected)
+
+    workerOnline.setOnline('w-1', true)
+    expect(row().dataset.terminalStatus).toBe(String(TerminalStatus.READY))
+    expect(label()).not.toHaveClass(terminalStatusStyles.disconnected)
+  })
+
+  it('keeps a STARTING terminal of an offline worker as STARTING', () => {
+    const row = renderTab(terminal(TerminalStatus.STARTING), () => false)
+
+    expect(row().dataset.terminalStatus).toBe(String(TerminalStatus.STARTING))
+  })
+
+  it('publishes no terminal status for another tab kind', () => {
+    const row = renderTab(makeTab(TabType.AGENT, 'a1', 'Agent Olivia'), () => false)
+
+    expect(row().dataset.terminalStatus).toBeUndefined()
+  })
+})
+
 describe('tabBar tooltip mode', () => {
   beforeEach(() => {
     vi.useFakeTimers()

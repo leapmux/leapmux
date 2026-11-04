@@ -256,11 +256,14 @@ message RpcError {
   string message = 2;
 }
 
-// Unary response from Worker to Frontend (encrypted). A present `error` means
-// the call failed, and `payload` is then empty.
+// Unary response from Worker to Frontend (encrypted). It carries the
+// serialized response or the error, never both. A response that selects
+// neither is a success whose response message is empty.
 message InnerRpcResponse {
-  bytes payload = 1;  // Serialized protobuf response
-  RpcError error = 2;
+  oneof result {
+    bytes payload = 1;  // Serialized protobuf response
+    RpcError error = 2; // The call failed.
+  }
 }
 
 // Streaming response from Worker to Frontend (agent output, terminal I/O, watch
@@ -280,11 +283,20 @@ message InnerStreamMessage {
 // reached the worker -- so a subscription could only be retired by closing the
 // channel, or by a method-specific "whole current interest" re-request that
 // also forced a full replay.
+//
+// A frame carries a revision or a cancel, never both. The worker fails a live
+// stream whose frame selects neither.
 message InnerStreamRequest {
-  // Method-specific follow-up, in the same encoding the opening
-  // InnerRpcRequest.payload used. Empty on a pure cancel frame.
-  bytes payload = 1;
-  // The client is done. The worker releases the stream and answers with a
-  // terminal InnerStreamMessage{end: true}. No further client frames follow.
-  bool cancel = 2;
+  oneof action {
+    // Method-specific follow-up, in the same encoding the opening
+    // InnerRpcRequest.payload used. An empty payload is a revision too.
+    bytes payload = 1;
+    // The client is done. The worker releases the stream and answers with a
+    // final InnerStreamMessage{end: true}. No further client frames follow.
+    StreamCancel cancel = 2;
+  }
 }
+
+// StreamCancel selects the cancel action of InnerStreamRequest and of the
+// control-IPC UpdateStreamRequest. It carries no value.
+message StreamCancel {}

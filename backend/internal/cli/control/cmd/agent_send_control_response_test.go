@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -38,7 +39,7 @@ func (dispatcher *controlResponseDispatcher) DispatchWith(_ context.Context, _ c
 		_ = writer.SendError(int32(codes.Internal), err.Error())
 		return
 	}
-	_ = writer.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
+	_ = writer.SendResponse(channelwire.NewPayloadResponse(payload))
 }
 
 func TestRunAgentSendControlResponsePreservesIdentityAndChecksCompletion(t *testing.T) {

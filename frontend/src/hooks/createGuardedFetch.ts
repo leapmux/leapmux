@@ -15,9 +15,9 @@ const log = createLogger('createGuardedFetch')
  * Each run also gets a fresh `AbortSignal` that's aborted on supersede
  * or on `run(null)`. The signal is passed to `options.fetch`, so callers
  * whose underlying work supports cancellation (`fetch`, AbortController-
- * aware RPC transports — including `workerRpc.getGitInfo` /
- * `workerRpc.inspectBranchChange` / `workerRpc.inspectBranchDeletion` /
- * `workerRpc.inspectLastTabClose`, which thread the signal through the
+ * aware RPC transports — including `workerGit.getGitInfo` /
+ * `workerGit.inspectBranchChange` / `workerGit.inspectBranchDeletion` /
+ * `workerGit.inspectLastTabClose`, which thread the signal through the
  * E2EE channel manager and reject the pending promise on abort) can
  * stop waiting on the response on the way out, not just discard its
  * eventual result. The encrypted channel has no per-call cancellation

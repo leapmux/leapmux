@@ -1,6 +1,6 @@
 import type { QuestionPrompt } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_QUESTION_DIALOG, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { questionsFromRecords } from '../questionRecords'
 
@@ -147,7 +147,7 @@ export function piQuestionFromSource(dialog: Record<string, unknown>, source?: P
     }
     else if (method === PI_DIALOG_METHOD.Input) {
       valid = question.multiSelect
-        ? placeholder === '1,3' && title.startsWith(`${question.title}\n\n${lines.join('\n')}\n\n`)
+        ? placeholder === PI_QUESTION_DIALOG.MultiSelectPlaceholder && title.startsWith(`${question.title}\n\n${lines.join('\n')}\n\n`)
         : placeholder === '' && title.startsWith(`${question.title}\n\n`) && !title.startsWith(`${question.title}\n\n--- `)
     }
     if (!valid)

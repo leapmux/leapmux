@@ -313,8 +313,8 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	_ = stream.Close()
 }
 
-// A client retires its stream with UpdateStream{cancel: true}, through the
-// same service method that carries its revisions.
+// A client retires its stream with an UpdateStream that selects cancel,
+// through the same service method that carries its revisions.
 func TestServer_UpdateStreamCancelRetiresTheStream(t *testing.T) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -337,7 +337,10 @@ func TestServer_UpdateStreamCancelRetiresTheStream(t *testing.T) {
 	_, err = stream.Receive()
 	require.NoError(t, err)
 
-	_, err = client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{ClientRequestId: "req-retire", Cancel: true})
+	_, err = client.UpdateStream(ctx, &leapmuxv1.UpdateStreamRequest{
+		ClientRequestId: "req-retire",
+		Action:          &leapmuxv1.UpdateStreamRequest_Cancel{Cancel: &leapmuxv1.StreamCancel{}},
+	})
 	require.NoError(t, err)
 
 	for {

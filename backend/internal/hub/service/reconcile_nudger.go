@@ -36,10 +36,12 @@ func NewReconcileNudger(workers *workermgr.Manager, logger *slog.Logger) *Reconc
 // closed stream, or a send error all resolve to "not nudged", and the worker's
 // own tick or reconnect still converges it.
 //
-// Uses ConnForTrustedPath, not ConnForUser: workerID came from the CRDT
-// projection of the batch's own owner, not from a user request, so there is no
-// user-supplied id to authorize and no liveness oracle to leak. The signature
-// carries no principal for the same reason -- see crdt.ReconcileNudger.
+// Uses ConnForTrustedPath, not ConnForUser: workerID never comes from the
+// request. The CRDT commit path takes it from the projection of the batch's own
+// owner, and WorkspaceService.MoveWorkspace takes it from a tab row that the
+// store read for the caller. So there is no user-supplied id to authorize, and
+// a swallowed send error leaks no liveness. The signature carries no principal
+// for the same reason -- see crdt.ReconcileNudger.
 func (n *ReconcileNudger) NudgeReconcile(workerID string) {
 	if n == nil || n.workers == nil || workerID == "" {
 		return

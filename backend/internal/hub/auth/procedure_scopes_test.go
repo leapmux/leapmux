@@ -170,11 +170,11 @@ func unscopedCredential() *UserInfo {
 }
 
 // TestUnassignedProcedureIsDeniedByTheMapMiss is the direct analogue of
-// TestEnforceAdminDeniesByPrefixNotByMap, and it pins the POLARITY that makes
+// TestEnforceAdminDeniesByPrefix, and it pins the POLARITY that makes
 // the prefix trick unnecessary here.
 //
-// adminProcedures is an allowlist, so its miss fails OPEN -- which is why
-// enforceAdmin had to move to a name prefix. procedureScopes states a
+// A list of admin procedures would be an allowlist, whose miss fails OPEN --
+// which is why enforceAdmin denies by a name prefix (adminProcedurePrefix). procedureScopes states a
 // REQUIREMENT, so its miss is the strictest answer available: refused to every
 // scoped credential, admitted only to an unscoped one, which is the account
 // itself signed in.

@@ -64,9 +64,9 @@ enum WatchMode {
 // The opening InnerRpcRequest carries the first one; every revision after that
 // rides an InnerStreamRequest on the SAME stream, so changing the set never
 // tears the subscription down and never re-replays entities that did not
-// change. The stream is retired by an InnerStreamRequest{cancel: true} or by
-// the channel closing -- an empty request now means "watching nothing" and
-// leaves the stream open.
+// change. The stream is retired by an InnerStreamRequest that selects cancel,
+// or by the channel closing -- an empty request now means "watching nothing"
+// and leaves the stream open.
 //
 // Revisions COALESCE: each states the whole interest, so the worker may apply
 // only the newest of a burst. A client applies only the ACK for its exact current update ID.

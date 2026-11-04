@@ -21,7 +21,7 @@ import (
 )
 
 // registerAutoReviewApprovalHandler registers ApproveAutoReviewDenial.
-func registerAutoReviewApprovalHandler(d registrar, svc *Service) {
+func registerAutoReviewApprovalHandler(d ownerOnlyRegistrar, svc *Service) {
 	// ApproveAutoReviewDenial records authorization for an action that the automatic reviewer denied.
 	// Recording approval does not execute the action.
 	//

@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import { createEffect, createSignal, Match, on, Show, Switch } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerGit, workerTerminal } from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { PillGroup } from '~/components/common/PillGroup'
@@ -236,7 +236,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     switch (intent.mode) {
       case GitMode.SwitchBranch: {
         const target = intent.checkoutBranch
-        await workerRpc.checkoutBranch(props.workerId, { ...baseArgs, branch: target })
+        await workerGit.checkoutBranch(props.workerId, { ...baseArgs, branch: target })
         // checkoutBranchInDir on the worker resolves a remote ref like
         // "origin/foo" to the local branch "foo" before/while creating
         // it; the sidebar should reflect the local name. Look up the
@@ -249,7 +249,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
       }
       case GitMode.CreateBranch: {
         const newBranch = intent.createBranch
-        await workerRpc.createBranch(props.workerId, {
+        await workerGit.createBranch(props.workerId, {
           ...baseArgs,
           newBranch,
           baseBranch: intent.createBranchBase,
@@ -274,7 +274,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
           const provider = agentProvider()
           if (provider === undefined)
             throw new Error('No agent provider available')
-          const resp = await workerRpc.openAgent(props.workerId, {
+          const resp = await workerAgent.openAgent(props.workerId, {
             ...worktreeArgs,
             agentProvider: provider,
             // The CLEANED title, for the reason createTitleState.cleaned states.
@@ -290,7 +290,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
           }
           return
         }
-        const resp = await workerRpc.openTerminal(props.workerId, {
+        const resp = await workerTerminal.openTerminal(props.workerId, {
           ...worktreeArgs,
           cols: DEFAULT_TERMINAL_COLS,
           rows: DEFAULT_TERMINAL_ROWS,

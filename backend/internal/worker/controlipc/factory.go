@@ -91,7 +91,7 @@ type Factory struct {
 // `HubClient.CallInner(userID, ...)` calls into `CallHub(userID, ...)`
 // delegation-bearer-authenticated requests.
 type HubBridge interface {
-	CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
+	CallHub(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error)
 }
 
 // spawnCommon carries the union of fields AgentSpawning and
@@ -301,9 +301,9 @@ func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID stri
 // it is the whole scope the hub validates on /worker/delegation-tokens/mint.
 type hubBridgeAdapter struct{ b HubBridge }
 
-func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
 	if a.b == nil {
 		return nil, errors.New("hub bridge not configured")
 	}
-	return a.b.CallHub(ctx, userID, method, payload)
+	return a.b.CallHub(ctx, userID, procedure, payload)
 }

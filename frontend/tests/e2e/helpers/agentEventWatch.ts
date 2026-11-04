@@ -5,11 +5,11 @@
  * Cancel the stream if subscription fails.
  * Preserve a refusal or stream failure for the test's next assertion.
  */
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { AgentEvent, WatchEventsRequestSchema, WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { ServerInfo } from '../fixtures'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode, WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import { WatchMode, WatchReplayMode, WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { getTestChannel } from './api'
 
 /** The Worker that a watch subscribes on. */
@@ -18,11 +18,11 @@ export type AgentWatchServer = Pick<ServerInfo, 'hubUrl' | 'adminToken' | 'worke
 /** The update ID of the one subscription that each watch sends. */
 export const AGENT_WATCH_UPDATE_ID = 1n
 
-/** Encode the request that subscribes to the live events of one agent. */
-export function agentWatchRequest(agentId: string): Uint8Array {
+/** State the request that subscribes to the live events of one agent. */
+export function agentWatchRequest(agentId: string): MessageInitShape<typeof WatchEventsRequestSchema> {
   if (!agentId.trim())
     throw new Error('An agent event watch requires an agent ID.')
-  return toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, {
+  return {
     agents: [
       {
         agentId,
@@ -33,7 +33,7 @@ export function agentWatchRequest(agentId: string): Uint8Array {
       },
     ],
     updateId: AGENT_WATCH_UPDATE_ID,
-  }))
+  }
 }
 
 /**
@@ -50,22 +50,15 @@ export type AgentWatchFrame
     | { kind: 'ignored' }
 
 /**
- * Decode one `WatchEvents` frame for a watch of `agentId`.
+ * Read one `WatchEvents` response for a watch of `agentId`.
+ * The channel stream already decoded it, and reports malformed bytes through `onError`.
  *
  * Reject these failures:
- * - Malformed bytes.
  * - A refused subscription.
  * - An incorrect registered identity.
  * Include the watch label in each error message.
  */
-export function readAgentWatchFrame(payload: Uint8Array, agentId: string, label: string): AgentWatchFrame {
-  let response
-  try {
-    response = fromBinary(WatchEventsResponseSchema, payload)
-  }
-  catch (error) {
-    throw new Error(`The Worker sent an invalid ${label} frame.`, { cause: error })
-  }
+export function readAgentWatchFrame(response: WatchEventsResponse, agentId: string, label: string): AgentWatchFrame {
   if (response.event.case === 'updateAck') {
     const acknowledgement = response.event.value
     if (acknowledgement.updateId !== AGENT_WATCH_UPDATE_ID)
@@ -111,11 +104,11 @@ export class AgentEventCollector<T> {
     return this.failure
   }
 
-  accept(payload: Uint8Array): void {
+  accept(response: WatchEventsResponse): void {
     if (this.failure)
       return
     try {
-      const frame = readAgentWatchFrame(payload, this.agentId, this.label)
+      const frame = readAgentWatchFrame(response, this.agentId, this.label)
       if (frame.kind === 'acknowledged') {
         this.subscribed = true
         return
@@ -165,7 +158,7 @@ export async function watchAgentEvents<T>(
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const channelId = await channel.getOrOpenChannel(server.workerId)
   const watch = channel.stream(channelId, WorkerWatchService.method.watchEvents, request)
-  watch.onMessage(frame => collector.accept(frame.payload))
+  watch.onMessage(response => collector.accept(response))
   watch.onError(error => collector.fail(error))
   watch.onEnd(() => collector.fail(new Error(`The ${options.label} ended before its assertion.`)))
   try {

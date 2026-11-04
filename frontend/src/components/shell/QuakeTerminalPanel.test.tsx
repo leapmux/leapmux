@@ -72,6 +72,7 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
     <>
       <CapturePreferences />
       <QuakeTerminalPanel
+        isWorkerStreamOnline={() => true}
         quakeStore={quakeStore as never}
         view={view as never}
         metadata={metadata as never}
@@ -198,6 +199,7 @@ describe('QuakeTerminalPanel', () => {
     }
     const { queryByTestId } = render(withPreferences(() => (
       <QuakeTerminalPanel
+        isWorkerStreamOnline={() => true}
         quakeStore={quakeStore as never}
         view={{
           getTerminalTab: (id: string) => ({ id, type: 2 }),

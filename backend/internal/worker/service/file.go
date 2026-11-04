@@ -56,13 +56,7 @@ func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
 func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
-	d.Register(leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListFilesystemRootsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, _ *leapmuxv1.ListFilesystemRootsRequest, sender channel.ResponseWriter) {
 		// No path to sanitize and no directory to read, so there is nothing
 		// here that can fail: the roots are a property of the host, and both
 		// seams guarantee at least one.
@@ -71,13 +65,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register(leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListDirectoryRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListDirectoryRequest, sender channel.ResponseWriter) {
 		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
@@ -128,13 +116,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register(leapmuxv1connect.WorkerFileServiceReadFileProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ReadFileRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ReadFileRequest, sender channel.ResponseWriter) {
 		filePath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")
@@ -230,13 +212,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 	})
 
-	d.Register(leapmuxv1connect.WorkerFileServiceStatFileProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.StatFileRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerFileServiceStatFileProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.StatFileRequest, sender channel.ResponseWriter) {
 		filePath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
 		if err != nil {
 			sendPermissionDenied(sender, "access denied")

@@ -1,7 +1,7 @@
+import type { TabIdent } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
-import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   DoubleListSchema,
   FloatingWindowRecordSchema,
@@ -18,6 +18,7 @@ import {
   WorkspaceContentsRecordSchema,
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
+import { opHasIdentity, selectsNoRegister } from './ops'
 
 /**
  * NewState returns an empty UserCrdtState seeded with the given user id.
@@ -54,6 +55,12 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
   if (hlcCmp(canon, state.maxHlc) > 0) {
     state.maxHlc = hlcClone(canon)
   }
+  // The hub validator's own predicate (ValidateBatch step 0). A replayed op or
+  // a stored checkpoint skips that validator, so applyOp checks again: an op
+  // with an empty id would create a record under the empty key, which every
+  // reader treats as a real entity. Mirrors the hub's Apply.
+  if (!opHasIdentity(op) || selectsNoRegister(op))
+    return
   const body = op.body
   switch (body.case) {
     case 'setNodeRegister':
@@ -62,14 +69,16 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneNode':
       applyTombstoneNode(state, body.value.nodeId, canon)
       break
+    // opHasIdentity above admits a tab op only when it carries its TabIdent,
+    // so the three tab cases below cannot see an absent tab.
     case 'setTabRegister':
-      applySetTabRegister(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', body.value.field, canon)
+      applySetTabRegister(state, body.value.tab!, body.value.field, canon)
       break
     case 'tombstoneTab':
-      applyTombstoneTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
+      applyTombstoneTab(state, body.value.tab!, canon)
       break
     case 'reviveTab':
-      applyReviveTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
+      applyReviveTab(state, body.value.tab!, canon)
       break
     case 'setFloatingWindowRegister':
       applySetFloatingWindowRegister(state, body.value, canon)
@@ -229,10 +238,6 @@ const nodeRegisterHandlers: Record<string, NodeFieldHandler> = {
 // The structural op shapes below model the GENERATED oneof `field`, whose
 // "no member selected" variant carries `case: undefined` explicitly.
 function applySetNodeRegister(state: UserCrdtState, op: { nodeId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
-  // An op that selects no register writes nothing, so it creates no record.
-  // The hub refuses one, but a replayed op skips that check.
-  if (op.field.case === undefined)
-    return
   const rec = ensureNode(state, op.nodeId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -280,24 +285,12 @@ const tabRegisterHandlers: Record<string, TabFieldHandler> = {
   },
 }
 
-/**
- * Whether an op names a tab: a tab identity is a type AND an id. A replayed op,
- * or one stored under an older numbering, can carry neither -- protobuf-es reads
- * such an op as a tab id with no type -- and applying it would create a record
- * of no type, or one under the empty key, that every reader treats as a real
- * tab. Mirrors the hub's `tabIdentity` / `EntityRef.HasIdentity`.
- */
-function hasTabIdentity(tabType: number, tabId: string): boolean {
-  return tabId !== '' && tabType !== TabType.UNSPECIFIED
-}
+// applyOp admits a tab op only when its TabIdent carries both a type and an id
+// (opHasIdentity), so the tab apply functions below take the TabIdent as given.
 
-function applySetTabRegister(state: UserCrdtState, tabType: number, tabId: string, field: { case?: string | undefined, value?: unknown }, hlc: HLC): void {
-  // This guard is the only way into ensureTab. An op that selects no register
-  // writes nothing, so it creates no record either.
-  if (!hasTabIdentity(tabType, tabId) || field.case === undefined)
-    return
-  const rec = ensureTab(state, tabId, tabType)
-  if (rec.tabType !== tabType)
+function applySetTabRegister(state: UserCrdtState, tab: TabIdent, field: { case?: string | undefined, value?: unknown }, hlc: HLC): void {
+  const rec = ensureTab(state, tab.tabId, tab.tabType)
+  if (rec.tabType !== tab.tabType)
     return
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -305,9 +298,8 @@ function applySetTabRegister(state: UserCrdtState, tabType: number, tabId: strin
   tabRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
-function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
-  if (!hasTabIdentity(tabType, tabId))
-    return
+function applyTombstoneTab(state: UserCrdtState, tab: TabIdent, hlc: HLC): void {
+  const { tabType, tabId } = tab
   const existing = state.tabs[tabId]
   // The tombstone is a true LWW register over both tombstone and revive
   // writes: a tombstone applies only when its HLC is newer than the current
@@ -335,9 +327,8 @@ function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string,
  * later tombstone newer than the stale revive but older than the real one
  * cannot re-close a tab the user reopened.
  */
-function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
-  if (!hasTabIdentity(tabType, tabId))
-    return
+function applyReviveTab(state: UserCrdtState, tab: TabIdent, hlc: HLC): void {
+  const { tabType, tabId } = tab
   const existing = state.tabs[tabId]
   if (!existing) {
     state.tabs[tabId] = create(TabRecordSchema, {
@@ -391,11 +382,6 @@ const floatingWindowRegisterHandlers: Record<string, FloatingWindowFieldHandler>
 }
 
 function applySetFloatingWindowRegister(state: UserCrdtState, op: { windowId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
-  // An op that selects no register writes nothing, so it creates no record. A
-  // stored op that wrote workspace_id under its old field number, 9, decodes
-  // that way.
-  if (op.field.case === undefined)
-    return
   const rec = ensureFloatingWindow(state, op.windowId)
   if (!hlcIsZero(rec.tombstoneAt))
     return
@@ -445,8 +431,8 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
  * set-once root. The record is created when absent; an existing record keeps
  * any root it already holds and takes this one only when its root is empty, so
  * a re-drained create seed batch never clobbers a workspace the user has since
- * rooted or populated. An empty workspace id is ignored. Mirrors backend
- * `applyCreateWorkspace`.
+ * rooted or populated. applyOp never reaches it with an empty workspace id (see
+ * its identity check). Mirrors backend `applyCreateWorkspace`.
  *
  * Creating the record here, rather than waiting for one, matters to a
  * subscriber whose initial `UserMaterialized` predated the workspace:
@@ -454,8 +440,6 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
  * `state.workspaces[wsID].rootNodeId`, and would wait forever otherwise.
  */
 function applyCreateWorkspace(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
-  if (!workspaceId)
-    return
   let rec = state.workspaces[workspaceId]
   if (!rec) {
     rec = create(WorkspaceContentsRecordSchema, { workspaceId })
@@ -472,7 +456,5 @@ function applyCreateWorkspace(state: UserCrdtState, workspaceId: string, rootNod
  * `applyTombstoneWorkspace`.
  */
 function applyTombstoneWorkspace(state: UserCrdtState, workspaceId: string): void {
-  if (!workspaceId)
-    return
   delete state.workspaces[workspaceId]
 }

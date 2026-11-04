@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,11 +29,18 @@ import (
 // burst free. A per-message rejection (channel.ErrMessageRejected) does
 // NOT latch: the channel is healthy and the next event may well fit, so
 // treating it as fatal would abandon a replay over one oversized message.
+//
+// The watch session owns the sink, but a replayed terminal status is sent by
+// whichever goroutine drains that terminal's status queue (see
+// ReplayTerminalStatus). So the latch takes a lock. replayID stays the session's
+// alone: only the agent replay reads it.
 type replaySink struct {
 	sender   channel.ResponseWriter
 	replayID uint64
-	dead     error
 	onRetire func()
+
+	mu   sync.Mutex
+	dead error
 }
 
 // newReplaySink requires an explicit retirement callback. Only an ownerless replay passes nil.
@@ -43,7 +50,7 @@ func newReplaySink(sender channel.ResponseWriter, replayID uint64, onRetire func
 
 // send emits one event, or does nothing once the transport is known dead.
 func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
-	if s.dead != nil {
+	if !s.alive() {
 		return
 	}
 	err := broadcastWatchEvent(s.sender, resp)
@@ -65,22 +72,29 @@ func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
 // fail reports a replay preparation error and stops this exact stream.
 // Fix the failure before delivery so synchronous reentry cannot continue the burst.
 func (s *replaySink) fail(err error) {
-	if err == nil || s.dead != nil {
-		return
+	if s.retire(err) {
+		sendInternalError(s.sender, "failed to prepare transcript replay")
 	}
-	s.retire(err)
-	sendStreamError(s.sender, codes.Internal, "failed to prepare transcript replay")
 }
 
-// retire removes live interest before a failed replay can expose its ending frame.
-func (s *replaySink) retire(err error) {
-	if err == nil || s.dead != nil {
-		return
+// retire removes live interest before a failed replay can expose its ending
+// frame. It reports whether this call retired the sink. The lock covers the latch
+// alone, because onRetire can reenter the sink.
+func (s *replaySink) retire(err error) bool {
+	if err == nil {
+		return false
+	}
+	s.mu.Lock()
+	if s.dead != nil {
+		s.mu.Unlock()
+		return false
 	}
 	s.dead = err
+	s.mu.Unlock()
 	if s.onRetire != nil {
 		s.onRetire()
 	}
+	return true
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.
@@ -127,7 +141,11 @@ func marshalWatchEvent(resp *leapmuxv1.WatchEventsResponse, entityID string) ([]
 // alive reports whether sends are still reaching the client. Callers
 // check it between entities to skip the DB reads, git shell-outs and PTY
 // snapshots that would only feed sends nobody receives.
-func (s *replaySink) alive() bool { return s.dead == nil }
+func (s *replaySink) alive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dead == nil
+}
 
 // WatchEvents opens a long-lived bidirectional subscription. The opening
 // InnerRpcRequest carries the first WatchEventsRequest; every revision after
@@ -136,16 +154,14 @@ func (s *replaySink) alive() bool { return s.dead == nil }
 //
 // Dispatcher ctx is intentionally not threaded: the live stream outlives the
 // handler via watchSession.
-func handleWatchEvents(svc *Service) channel.HandlerFunc {
-	return func(_ context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.WatchEventsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendStreamError(sender, codes.InvalidArgument, "invalid request")
-			return
-		}
+//
+// registerOwnerGuarded decodes the opening request and refuses an undecodable
+// one with a stream error frame before this handler runs.
+func handleWatchEvents(svc *Service) func(context.Context, channel.Caller, *leapmuxv1.WatchEventsRequest, channel.ResponseWriter) {
+	return func(_ context.Context, caller channel.Caller, r *leapmuxv1.WatchEventsRequest, sender channel.ResponseWriter) {
 		s := newWatchSession(svc, caller, sender)
 		// Queue the opening request before BindStream can replay newer client frames.
-		s.submit(&r)
+		s.submit(r)
 		release, ok := sender.BindStream(s)
 		if !ok {
 			// BindStream refused — the transport has no revise/cancel path for
@@ -156,7 +172,7 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 			// its own ctrl here for the same reason).
 			s.svc.Watchers.UnwatchSession(s.channelID, s.sessionID)
 			s.cancel()
-			sendStreamError(sender, codes.FailedPrecondition, "stream binding unavailable")
+			sendFailedPrecondition(sender, "stream binding unavailable")
 			return
 		}
 		go s.run(release)
@@ -202,24 +218,14 @@ func (svc *Service) replayTerminalCatchUp(
 	// after the one-shot fire). The row comes from the access-control
 	// loop, so a failure that predates a worker restart still surfaces via
 	// the persisted startup_error column.
-	status, startupError, startupMessage := svc.deriveTerminalStatus(&row)
-	var termStatusChange *leapmuxv1.TerminalStatusChange
-	switch status {
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:
-		termStatusChange = buildTerminalStartingStatus(startupMessage, nil)
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED:
-		termStatusChange = buildTerminalFailedStatus(startupError)
-	case leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:
-		termStatusChange = buildTerminalExitedStatus()
-	default:
-		termStatusChange = buildTerminalReadyStatus()
-	}
-	sink.send(&leapmuxv1.WatchEventsResponse{
-		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{
-			TerminalEvent: &leapmuxv1.TerminalEvent{
-				TerminalId: termID,
-				Event:      &leapmuxv1.TerminalEvent_StatusChange{StatusChange: termStatusChange},
-			},
-		},
+	//
+	// This session registered for live events before the replay began. A status
+	// sent outside the terminal's status queue could therefore land after a
+	// newer live one, and the client would keep the older status: a tab stuck on
+	// EXITED over a restarted shell, or a spinner after a failed startup. The
+	// derive runs inside the queue's lock for the same reason. The screen data
+	// above stays outside, because the client orders it by offset.
+	svc.Watchers.ReplayTerminalStatus(termID, sink, func() *leapmuxv1.TerminalEvent {
+		return svc.derivedTerminalStatusEvent(&row)
 	})
 }

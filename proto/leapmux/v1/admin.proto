@@ -95,6 +95,10 @@ message ResetSettingsRequest {
 message ResetSettingsResponse {
   // The resulting value of every key the request listed, in request order.
   repeated SettingValue values = 1;
+  // The reset keys that are restart-class: the hub stores each reset, but the
+  // running hub keeps the previous value until it restarts. The caller says
+  // so instead of leaving the operator to compare the descriptors.
+  repeated string restart_keys = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +238,7 @@ service AdminUserService {
   // exactly once; they cannot be retrieved again.
   //
   // MINTS a bearer for any account on the hub, including the caller's own,
-  // which is why it needs a second bound the scope alone cannot give: the
+  // which is why it needs a second limit the scope alone cannot give: the
   // issued grant is NARROWED to the issuer's own (see resolveIssuedScopes),
   // so a credential can never mint one wider than itself. Without that, an
   // app granted admin:users alone could issue itself tunnel:open.

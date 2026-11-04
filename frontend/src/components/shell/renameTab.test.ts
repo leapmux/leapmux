@@ -9,8 +9,12 @@ const mockRenameTerminal = vi.fn().mockResolvedValue({})
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
-  renameAgent: (...args: unknown[]) => mockRenameAgent(...args),
-  renameTerminal: (...args: unknown[]) => mockRenameTerminal(...args),
+  workerAgent: {
+    renameAgent: (...args: unknown[]) => mockRenameAgent(...args),
+  },
+  workerTerminal: {
+    renameTerminal: (...args: unknown[]) => mockRenameTerminal(...args),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({

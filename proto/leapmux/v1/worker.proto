@@ -43,7 +43,7 @@ message ListOwnedTabsForWorkerResponse {
   // The single owner this response is authoritative for -- the calling
   // worker's registrant. The hub's query binds it (workspace_tab_owned is
   // keyed by (user_id, tab_id), so worker_id alone selects across tenants),
-  // which means `tabs` is a COMPLETE list for this owner and says NOTHING
+  // which means `tab_states` is a COMPLETE list for this owner and says NOTHING
   // about any other owner's tabs.
   //
   // The worker's orphan reconciler infers "absent from this list means
@@ -59,13 +59,15 @@ message ListOwnedTabsForWorkerResponse {
 // the workspace that contains it is archived. It carries no workspace, tile,
 // or position because the Worker stores none of that placement state.
 message WorkerTabState {
-  // The tab and the owner of its row in workspace_tab_owned, which is keyed by
-  // (user_id, tab_id). FILE and IMAGE tab ids are unique only within a user, so
-  // the worker's orphan reconciler needs the owner to match a hub row against
-  // the right local worker_tab_payloads row -- without it, a row belonging to
-  // another user misses the lookup and is reaped as an orphan. AGENT/TERMINAL
-  // ids are globally unique, so their reconciliation ignores the owner.
-  TabRef tab = 1;
+  // The tab. Its owner is the response's owner_user_id: the Hub's query binds
+  // that one owner, so every row of one response shares it. A FILE or IMAGE
+  // tab id is minted client-side and is unique only within one account, so the
+  // worker's orphan reconciler matches such a row against its local
+  // worker_tab_payloads row by (owner, tab_id) -- worker_tab_payloads is keyed
+  // (user_id, tab_id), and a blank owner would match no row on a write and
+  // another account's row on a read. AGENT and TERMINAL ids are server-minted
+  // and globally unique, so their reconciliation ignores the owner.
+  TabIdent tab = 1;
   WorkspaceArchiveState archive_state = 2;
 }
 
@@ -94,11 +96,13 @@ service WorkerManagementService {
   rpc EmailRegistrationInstructions(EmailRegistrationInstructionsRequest) returns (EmailRegistrationInstructionsResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_ADMIN };
   }
-  // List registered workers for the authenticated user.
+  // List registered workers for the authenticated user. A worker that is
+  // deregistering is not listed.
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
-  // Get a single worker's details.
+  // Get a single worker's details. A worker that is deregistering answers
+  // NotFound, as ListWorkers does not list it.
   rpc GetWorker(GetWorkerRequest) returns (GetWorkerResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
@@ -194,12 +198,11 @@ message Worker {
   google.protobuf.Timestamp last_seen_at = 4; // unset = never seen
   string registered_by = 5;
   // True for the in-process worker auto-registered by the solo launcher
-  // (Server.RegisterWorker). The owner's deregistration path refuses to
-  // deregister these, and the admin path refuses one while it is connected, to
-  // keep users from accidentally tearing down the running bundled desktop
-  // worker; the frontend hides the Deregister... menu item for the same reason.
-  // An administrator can remove an offline one, such as the row that a launch
-  // leaves behind when its state file was lost.
+  // (Server.RegisterWorker). Both deregistration paths refuse one while it is
+  // connected, to keep users from accidentally tearing down the running bundled
+  // desktop worker; the frontend hides the Deregister... menu item for the same
+  // reason. An owner or an administrator can remove an offline one, such as the
+  // row that a launch leaves behind when its state file was lost.
   bool auto_registered = 6;
 }
 

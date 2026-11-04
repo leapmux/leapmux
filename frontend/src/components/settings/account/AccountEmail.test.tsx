@@ -11,6 +11,14 @@ const mockRequestEmailChange = vi.fn()
 const mockResendVerificationEmail = vi.fn()
 const mockUser = vi.fn()
 const mockRefreshUser = vi.fn()
+// The adoption the surface opens before the write leaves. The order records when
+// it opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -23,6 +31,7 @@ vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
     refreshUser: mockRefreshUser,
+    openUserAdoption: mockOpenUserAdoption,
     verificationResendAvailableAt: () => undefined,
   }),
 }))
@@ -60,10 +69,14 @@ describe('AccountEmail', () => {
     resetSystemInfoMock()
     mockUser.mockReturnValue(verified)
     mockRefreshUser.mockResolvedValue(undefined)
-    mockRequestEmailChange.mockResolvedValue({ verificationRequired: false })
-    mockResendVerificationEmail.mockResolvedValue({
-      emailVerification: { verificationEmailSent: true, verificationRequired: true },
+    mockRequestEmailChange.mockResolvedValue({
+      emailVerification: { verificationRequired: false },
     })
+    mockResendVerificationEmail.mockResolvedValue({
+      emailVerification: { verificationEmailSent: true },
+    })
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
   })
 
   it('requests the change and reports what the hub did', async () => {
@@ -84,7 +97,7 @@ describe('AccountEmail', () => {
   // address and no pending change.
   it('keeps the control disabled until the cached account is current', async () => {
     const { promise, resolve } = deferred<void>()
-    mockRefreshUser.mockReturnValue(promise)
+    mockAdopt.mockReturnValue(promise)
 
     renderRouted()
     fireEvent.input(await screen.findByLabelText('New Email'), {
@@ -93,7 +106,7 @@ describe('AccountEmail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
 
     await vi.waitFor(() => {
-      expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+      expect(mockAdopt).toHaveBeenCalledTimes(1)
     })
     expect(screen.getByRole('button', { name: 'Requesting...' })).toBeDisabled()
 
@@ -103,8 +116,62 @@ describe('AccountEmail', () => {
     })
   })
 
+  // Opened before the request leaves, so a reply that lands after an identity
+  // change re-reads the new identity instead of adopting this one.
+  it('adopts the stored account through an adoption opened first', async () => {
+    const stored = { ...verified, email: 'new@example.com' }
+    const noVerification = { verificationRequired: false }
+    mockRequestEmailChange.mockImplementation(async () => {
+      callOrder.push('request')
+      return { emailVerification: noVerification, user: stored }
+    })
+    renderRouted()
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored, noVerification))
+    expect(callOrder).toEqual(['open', 'request'])
+    expect(await screen.findByText('Email updated.')).toBeInTheDocument()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+  })
+
+  // The reply states the cooldown of the code that the hub just minted, so the
+  // resend control counts from the hub's deadline with no account read.
+  it('hands the adoption the resend cooldown of the code that the hub minted', async () => {
+    const stored = { ...verified, pendingEmail: 'new@example.com' }
+    const status = { verificationRequired: true, verificationEmailSent: true }
+    mockRequestEmailChange.mockResolvedValue({ emailVerification: status, user: stored })
+    renderRouted()
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored, status))
+    expect(await screen.findByText(/Check your inbox/)).toBeInTheDocument()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+  })
+
+  // A refused request changed nothing, so nothing is adopted and the draft stays.
+  it('adopts nothing when the hub refuses the request', async () => {
+    mockRequestEmailChange.mockRejectedValue(new Error('email is already in use'))
+    renderRouted()
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'taken@example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
+
+    expect(await screen.findByText(/already in use/)).toBeInTheDocument()
+    expect(mockAdopt).not.toHaveBeenCalled()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+  })
+
   it('says that the hub sent the code when it verifies first', async () => {
-    mockRequestEmailChange.mockResolvedValue({ verificationRequired: true })
+    mockRequestEmailChange.mockResolvedValue({
+      emailVerification: { verificationEmailSent: true },
+    })
     renderRouted()
     fireEvent.input(await screen.findByLabelText('New Email'), {
       target: { value: 'new@example.com' },
@@ -173,7 +240,9 @@ describe('AccountEmail draft', () => {
     resetSystemInfoMock()
     mockUser.mockReturnValue(verified)
     mockRefreshUser.mockResolvedValue(undefined)
-    mockRequestEmailChange.mockResolvedValue({ verificationRequired: false })
+    mockRequestEmailChange.mockResolvedValue({
+      emailVerification: { verificationRequired: false },
+    })
     sessionStorageClearForTests()
     setStorageAccountForTests('user-1')
   })
@@ -242,7 +311,7 @@ describe('AccountEmail verification', () => {
     mockUser.mockReturnValue(unverified)
     mockRefreshUser.mockResolvedValue(undefined)
     mockResendVerificationEmail.mockResolvedValue({
-      emailVerification: { verificationEmailSent: true, verificationRequired: true },
+      emailVerification: { verificationEmailSent: true },
     })
   })
 

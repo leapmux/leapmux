@@ -240,6 +240,7 @@ export function createControlStore() {
       removeRequest(agentId, requestId, claimToken, ControlResponseState.COMPLETED)
     },
 
+    /** Cancel the provider prompt without discarding a delivered response that still needs recording. */
     cancelRequest(agentId: string, event: Pick<AgentControlCancelRequest, 'requestId' | 'claimToken' | 'responseState'>) {
       let retainForRecording = false
       setState(produce((s) => {

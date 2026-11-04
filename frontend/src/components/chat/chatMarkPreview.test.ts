@@ -529,7 +529,7 @@ describe('warmMarkPreview', () => {
     expect(getCachedMarkPreview('a1', -1n)).toBeUndefined()
   })
 
-  it('forgetMarkPreview drops one agent\'s entries and leaves other agents intact', () => {
+  it('drops one agent\'s entries and leaves other agents intact when forgetMarkPreview runs', () => {
     warmMarkPreview('a1', 5n, testMessageContext({
       messageBySeq: () => userMessage(5n, 'agent one'),
       fetchMessage: vi.fn(),

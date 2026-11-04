@@ -3,14 +3,14 @@ import type { TerminalTab } from '~/stores/tab.types'
 import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { createStore } from 'solid-js/store'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
+import { beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
 import { webglPool } from '~/lib/webglTerminalPool'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { compositionPreview } from '~/test-support/compositionPreview'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
@@ -38,6 +38,7 @@ vi.mock('~/lib/terminal', async () => {
 
 const {
   TerminalView,
+  addTerminalInstanceReadyListener,
   focusedTerminalId,
   getTerminalInstance,
   disposeTerminalInstance,
@@ -170,6 +171,7 @@ describe('TerminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             { id: 'vis-A', ...baseTab },
@@ -224,6 +226,7 @@ describe('TerminalView', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={terminals()}
           activeTerminalId="term-1"
@@ -269,6 +272,7 @@ describe('TerminalView', () => {
     const view = (confirmLink: () => Promise<boolean>) => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={confirmLink}
           terminals={[
             tab(),
@@ -313,6 +317,7 @@ describe('TerminalView', () => {
     const { findByTestId, findByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -345,6 +350,7 @@ describe('TerminalView', () => {
     const { findByTestId, findByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -376,6 +382,7 @@ describe('TerminalView', () => {
     const { queryByTestId, queryByText } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -404,9 +411,9 @@ describe('TerminalView', () => {
     expect(queryByText('Starting terminal…')).toBeNull()
   })
 
-  // DISCONNECTED is the client's own status for a terminal whose worker
-  // channel dropped. Its buffer is what the user can read, so it gets no
-  // "Starting terminal" overlay either, even with no screen bytes restored.
+  // A READY terminal of an offline worker shows DISCONNECTED, the client's own
+  // status. Its buffer is what the user can read, so it gets no "Starting
+  // terminal" overlay either, even with no screen bytes restored.
   it('does not show the startup overlay for a disconnected terminal without restored screen bytes', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
@@ -414,13 +421,15 @@ describe('TerminalView', () => {
     const { queryByTestId } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={workerId => workerId !== 'w-offline'}
           confirmLink={stubConfirmLink}
           terminals={[
             {
               id: 'term-disconnected-empty',
               type: TabType.TERMINAL,
               workspaceId: 'ws-1',
-              status: TERMINAL_DISCONNECTED,
+              workerId: 'w-offline',
+              status: TerminalStatus.READY,
               screen: new Uint8Array(),
             },
           ]}
@@ -439,6 +448,82 @@ describe('TerminalView', () => {
     })
 
     expect(queryByTestId('terminal-startup-overlay')).toBeNull()
+  })
+
+  // Only READY becomes DISCONNECTED. A shell that was still starting when the
+  // worker went away keeps the overlay that states what it waits for.
+  it('keeps the startup overlay of a STARTING terminal of an offline worker', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+
+    const { findByTestId } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          isWorkerStreamOnline={() => false}
+          confirmLink={stubConfirmLink}
+          terminals={[
+            {
+              id: 'term-starting-offline',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              workerId: 'w-offline',
+              status: TerminalStatus.STARTING,
+              screen: new Uint8Array(),
+            },
+          ]}
+          activeTerminalId="term-starting-offline"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await findByTestId('terminal-startup-overlay')
+  })
+
+  // A reconnect clears DISCONNECTED with no change to the tab, so the row must
+  // follow the store. Before the shell paints, the overlay is back.
+  it('follows the worker back online without a change to the tab', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const workerOnline = createWorkerOnlineStore()
+    workerOnline.setOnline('w-1', false)
+
+    const { findByTestId, queryByTestId } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          isWorkerStreamOnline={workerOnline.isOnline}
+          confirmLink={stubConfirmLink}
+          terminals={[
+            {
+              id: 'term-back-online',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              workerId: 'w-1',
+              status: TerminalStatus.READY,
+              screen: new Uint8Array(),
+            },
+          ]}
+          activeTerminalId="term-back-online"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => {
+      expect(instance.terminal.open).toHaveBeenCalled()
+    })
+    expect(queryByTestId('terminal-startup-overlay')).toBeNull()
+
+    workerOnline.setOnline('w-1', true)
+
+    await findByTestId('terminal-startup-overlay')
   })
 
   // Closing a single tab must dispose exactly that terminal's xterm
@@ -468,6 +553,7 @@ describe('TerminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={terminals()}
           activeTerminalId="dispose-test-A"
@@ -523,6 +609,7 @@ describe('TerminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             { id: 'switch-A', ...baseTab },
@@ -582,6 +669,7 @@ describe('TerminalView', () => {
       render(() => (
         <PreferencesProvider>
           <TerminalView
+            isWorkerStreamOnline={() => true}
             confirmLink={stubConfirmLink}
             terminals={[
               { id: 'theme-A', ...baseTab },
@@ -669,6 +757,7 @@ describe('TerminalView', () => {
       render(() => (
         <PreferencesProvider>
           <TerminalView
+            isWorkerStreamOnline={() => true}
             confirmLink={stubConfirmLink}
             terminals={[
               { id: 'themed-A', ...baseTab },
@@ -681,6 +770,7 @@ describe('TerminalView', () => {
             onContentReady={vi.fn()}
           />
           <TerminalView
+            isWorkerStreamOnline={() => true}
             confirmLink={stubConfirmLink}
             terminals={[
               { id: 'themed-B', ...baseTab },
@@ -739,6 +829,7 @@ describe('TerminalView', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -806,6 +897,7 @@ describe('TerminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={terminals}
           activeTerminalId="term-late-screen"
@@ -836,6 +928,50 @@ describe('TerminalView', () => {
     expect(writtenArg).toBe(initialPayload)
   })
 
+  // A ready listener flushes the frames that waited for this instance. The stored
+  // screen resets the terminal, so a frame flushed before it would be wiped from
+  // the view while the offset still claims that it was applied.
+  it('announces a new instance only after it applied the stored screen', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const writesAtReady: number[] = []
+    const stopListening = addTerminalInstanceReadyListener(() => {
+      writesAtReady.push((instance.terminal.write as any).mock.calls.length)
+    })
+    onTestFinished(stopListening)
+
+    const screen = new TextEncoder().encode('restored screen')
+    const [terminals] = createStore<TerminalTab[]>([
+      {
+        id: 'term-ready-order',
+        type: TabType.TERMINAL,
+        workspaceId: 'ws-1',
+        screen,
+      },
+    ])
+
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          isWorkerStreamOnline={() => true}
+          confirmLink={stubConfirmLink}
+          terminals={terminals}
+          activeTerminalId="term-ready-order"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => {
+      expect(writesAtReady).toHaveLength(1)
+    })
+    expect(writesAtReady).toEqual([1])
+  })
+
   // Counterpart: re-applying the snapshot every time props change would
   // double-paint the restored state on top of any subsequent live data.
   // The instance-level latch must keep the post-mount effect a one-shot.
@@ -857,6 +993,7 @@ describe('TerminalView', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={terminals}
           activeTerminalId="term-no-double-write"
@@ -919,6 +1056,7 @@ describe('disposeTerminalInstance scrollback capture', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -1031,6 +1169,7 @@ describe('TerminalView IME wiring', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             {
@@ -1230,6 +1369,7 @@ describe('TerminalView focus while a tab is being renamed', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             { id: 'focus-guard', ...baseTab },
@@ -1273,6 +1413,7 @@ describe('TerminalView focus while a tab is being renamed', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           confirmLink={stubConfirmLink}
           terminals={[
             { id: 'no-tabbar', ...baseTab },
@@ -1310,6 +1451,7 @@ describe('the focused terminal, by id', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
+          isWorkerStreamOnline={() => true}
           terminals={[
             {
               id,

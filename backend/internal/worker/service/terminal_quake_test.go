@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -640,7 +641,8 @@ func TestApplyTabArchiveState_ClosesTheQuakeTerminalOfAnArchivedDirectory(t *tes
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -670,7 +672,8 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -682,7 +685,8 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 	// Archive the second one too, and the directory loses its last reference.
 	_, err = svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"}}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"}},
 	)
 	require.NoError(t, err)
 
@@ -834,8 +838,8 @@ func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *tes
 //
 // This is what worker_tab_payloads.workspace_archived buys, and the flag needs
 // an OWNER: the table is keyed (user_id, tab_id) because a payload-backed tab
-// id is minted client-side and unique only within one account. TabRef.user_id
-// is what carries it.
+// id is minted client-side and unique only within one account. The owner
+// argument is what carries it.
 func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -850,9 +854,10 @@ func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *t
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{
-			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
-			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"}, UserId: "user-1"},
+		userid.MustNew("user-1"),
+		[]*leapmuxv1.TabIdent{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"},
 		},
 	)
 	require.NoError(t, err)
@@ -877,11 +882,12 @@ func TestApplyTabArchiveState_RefusesAPayloadTabWithNoOwner(t *testing.T) {
 
 	_, err := svc.ApplyTabArchiveState(context.Background(),
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"}}},
+		userid.UserID{},
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"}},
 	)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "user_id")
+	assert.Contains(t, err.Error(), "needs an owner")
 }
 
 // The archive sweep must act on the directories THIS request changed and no
@@ -905,7 +911,8 @@ func TestApplyTabArchiveState_LeavesAQuakeTerminalInAnUnrelatedDirectory(t *test
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -931,7 +938,8 @@ func TestApplyTabArchiveState_NoFlagChangeSweepsNothing(t *testing.T) {
 	// A tab id no row matches: persistArchiveFlags reports zero changes.
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-absent"}}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-absent"}},
 	)
 	require.NoError(t, err)
 

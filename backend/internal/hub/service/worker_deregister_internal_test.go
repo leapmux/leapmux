@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -547,8 +548,8 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 
 	// One worker MORE than a page holds, so a single-page collect is short
 	// by exactly one rather than by nothing.
-	workerIDs := make([]string, 0, MaxPageLimit+1)
-	for range MaxPageLimit + 1 {
+	workerIDs := make([]string, 0, contracts.MaxPageLimit+1)
+	for range contracts.MaxPageLimit + 1 {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:           workerID,
@@ -810,8 +811,7 @@ func TestOwnerDeregisterRecoversWithoutTheNotifier(t *testing.T) {
 			require.NoError(t, err)
 			set := settingsregistry.NewManager(st, ks)
 			require.NoError(t, set.Load(context.Background()))
-			svc := NewWorkerManagementService(st, workermgr.New(NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, set, nil)
-			svc.deregisterEffects = effects
+			svc := NewWorkerManagementService(st, workermgr.New(NewWorkerReachAuthorizer(st)), effects, mail.NewStubSender(), mail.Renderer{}, set)
 			ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
 			_, err = svc.DeregisterWorker(ownerCtx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: workerID})
 			return err

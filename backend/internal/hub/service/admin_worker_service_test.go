@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -261,8 +263,9 @@ func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-// An expired key has nothing left to revoke: the operator's revoke answers
-// NotFound and leaves its expiry, so the purge still deletes it on schedule.
+// An expired key has nothing left to revoke. The listing with expired keys still
+// shows the row, so the operator's revoke says that the key exists but is dead,
+// and leaves its expiry, so the purge still deletes it on schedule.
 func TestAdminWorkerService_RevokeRegistrationKeyRefusesAnExpiredKey(t *testing.T) {
 	env := setupAdminWorkerTest(t)
 	ctx := context.Background()
@@ -278,11 +281,95 @@ func TestAdminWorkerService_RevokeRegistrationKeyRefusesAnExpiredKey(t *testing.
 	_, err := env.client.RevokeRegistrationKey(authedReq(ctx,
 		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "registration key "+keyID+" is already revoked, consumed or expired")
 
 	got, err := env.st.RegistrationKeys().GetByID(ctx, keyID)
 	require.NoError(t, err)
 	assert.WithinDuration(t, expired, got.ExpiresAt, time.Second, "the refused revoke leaves the expiry")
+}
+
+// A live key revokes once. The second revoke finds the row dead, so a script can
+// tell it from a mistyped id.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesARevokedKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+	_, err := env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// A consumed key is one of the three dead states that the refusal states.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesAConsumedKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+	_, err := env.st.RegistrationKeys().Consume(ctx, keyID)
+	require.NoError(t, err)
+
+	_, err = env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// An id that the Hub does not know answers NotFound, so a script can tell a typo
+// from a dead key.
+func TestAdminWorkerService_RevokeRegistrationKeyAnswersNotFoundForAnUnknownKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+
+	_, err := env.client.RevokeRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: "no-such-key"}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "registration key not found: no-such-key")
+}
+
+// regKeyReadFailStore fails each registration key read by id.
+type regKeyReadFailStore struct {
+	store.Store
+}
+
+func (s regKeyReadFailStore) RegistrationKeys() store.RegistrationKeyStore {
+	return regKeyReadFailKeys{RegistrationKeyStore: s.Store.RegistrationKeys()}
+}
+
+type regKeyReadFailKeys struct {
+	store.RegistrationKeyStore
+}
+
+func (regKeyReadFailKeys) GetByID(context.Context, string) (*store.WorkerRegistrationKey, error) {
+	return nil, errors.New("registration key read failed")
+}
+
+// The read after a revoke that changed nothing can fail. That failure says
+// nothing about the key, so it answers Internal, not NotFound.
+func TestAdminWorkerService_RevokeRegistrationKeyReportsAFailedRead(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	svc := service.NewAdminWorkerService(regKeyReadFailStore{Store: env.st}, env.presence, nil)
+
+	_, err := svc.RevokeRegistrationKey(context.Background(),
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: "no-such-key"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
 
 // TestAdminWorkerService_GetWorkerReportsADeletedOwner pins the case
@@ -343,7 +430,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	ctx := context.Background()
 
 	owner := userid.MustNew(env.userID)
-	for range service.MaxPageLimit + 1 {
+	for range contracts.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:           id.Generate(),
 			AuthToken:    id.Generate(),
@@ -356,7 +443,7 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 		Page: &leapmuxv1.PageRequest{Limit: 100000},
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, page.GetWorkers(), service.MaxPageLimit,
+	assert.Len(t, page.GetWorkers(), contracts.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
 	require.NotEmpty(t, page.GetPage().GetNextCursor(), "a capped page says where the next one starts")
 

@@ -70,3 +70,7 @@ func (s *WorkerConnectorService) IdentityDeliveryLockHeldForTest(owner string) b
 	}
 	return true
 }
+
+// WorkerIdentityReadTimeoutForTest is the limit of each username read under
+// the owner's delivery lock, so a test advances a mock clock by exactly it.
+const WorkerIdentityReadTimeoutForTest = workerIdentityReadTimeout

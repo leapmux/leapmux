@@ -891,9 +891,10 @@ func admitsWorkspace(workspaceID string) subscriberAdmits {
 	return func(sub *Subscriber) bool { return sub.Filter.IsAllowed(workspaceID) }
 }
 
-// admitsEverySubscriber reaches every subscriber, whatever its Filter admits,
-// for an event about the user rather than about one workspace.
-func admitsEverySubscriber(*Subscriber) bool { return true }
+// admitsWorkerReaders reaches the subscribers whose credential holds
+// worker:read, whatever their Filter admits: the worker list belongs to the
+// user, not to one workspace. See Subscriber.MayReadWorkers.
+func admitsWorkerReaders(sub *Subscriber) bool { return sub.MayReadWorkers }
 
 // broadcastTo sends `evt` to every current subscriber whose Filter
 // admits `workspaceID`. The MarshaledEvent wrapper is built once so
@@ -936,12 +937,15 @@ func (m *Manager) fanOutFrame(admits subscriberAdmits, frame *broadcastFrame) {
 	}
 }
 
-// BroadcastWorkersChanged tells every subscriber that the user's worker list
-// changed, whatever workspaces its Filter admits: the worker list belongs to
-// the user, not to a workspace. The event carries no
-// data, so a client re-fetches the list.
+// BroadcastWorkersChanged tells every subscriber whose credential holds
+// worker:read that the user's worker list changed, whatever workspaces its
+// Filter admits: the worker list belongs to the user, not to a workspace. The
+// event carries no data, so a client re-fetches the list with ListWorkers,
+// which requires worker:read. A subscriber without that scope hears nothing,
+// because the event's timing alone would tell it when the owner's workers
+// register, connect, disconnect or deregister.
 func (m *Manager) BroadcastWorkersChanged() {
-	m.broadcastToAdmitted(admitsEverySubscriber, &leapmuxv1.WatchUserEvent{
+	m.broadcastToAdmitted(admitsWorkerReaders, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}},
 	})
 }
@@ -1135,7 +1139,7 @@ func (m *Manager) BroadcastWorkspaceCreated(ctx context.Context, workspaceID, ti
 // batch; BroadcastWorkspaceCreated does so inline) -- this does not re-issue the
 // read-ACL lookup.
 func (m *Manager) broadcastWorkspaceCreatedEvent(workspaceID, title, rootNodeID string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Created{
 			Created: &leapmuxv1.WorkspaceCreated{WorkspaceId: workspaceID, Title: title, RootNodeId: rootNodeID},
 		},
@@ -1143,7 +1147,7 @@ func (m *Manager) broadcastWorkspaceCreatedEvent(workspaceID, title, rootNodeID 
 }
 
 func (m *Manager) BroadcastWorkspaceRenamed(workspaceID, title string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Renamed{
 			Renamed: &leapmuxv1.WorkspaceRenamed{WorkspaceId: workspaceID, Title: title},
 		},
@@ -1151,16 +1155,9 @@ func (m *Manager) BroadcastWorkspaceRenamed(workspaceID, title string) {
 }
 
 func (m *Manager) BroadcastWorkspaceDeleted(workspaceID string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Deleted{
 			Deleted: &leapmuxv1.WorkspaceDeleted{WorkspaceId: workspaceID},
 		},
 	})
-}
-
-// broadcastWorkspaceLifecycle fans out `evt` to subscribers that admit
-// `workspaceID`. Thin wrapper preserved as a name-readable call site
-// in the Created/Renamed/Deleted helpers.
-func (m *Manager) broadcastWorkspaceLifecycle(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
-	m.broadcastTo(workspaceID, evt)
 }

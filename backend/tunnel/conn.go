@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
@@ -65,10 +66,11 @@ type connRead struct {
 	// death). Read selects on its Done and returns its Err.
 	terminal latchedErr
 	// openSettled records that the open has its outcome: the worker's `opened`
-	// event arrived, or the stream ended before it. Only the stream callback
-	// touches it, and that callback runs on one goroutine. Once the stream has
-	// ended, terminal is set and the callback reads no further frame, so a frame
-	// that finds it set followed a successful open.
+	// event arrived, or the stream ended before it. Only the stream callbacks
+	// (onStreamMessage and onStreamRejected) touch it, and the channel runs
+	// both on one goroutine. Once the stream has ended, terminal is set and the
+	// callbacks read no further frame, so a frame that finds it set followed a
+	// successful open.
 	openSettled bool
 	// openResult carries the outcome of the open to dialTunnelContext: nil for
 	// the `opened` event, or the error that ended the stream before it. It is
@@ -116,7 +118,7 @@ type connWrite struct {
 	// non-blockingly, so an overflow would silently drop an ack and leak a
 	// window slot permanently -- this bound is what makes that unreachable.
 	acks chan *leapmuxv1.InnerRpcResponse
-	// writeErr latches the first terminal error the worker reports for a
+	// writeErr latches the first final error the worker reports for a
 	// SendTunnelData frame -- a SendTunnelData response that carries an error
 	// means the worker's write to the target failed. Once latched, Write and CloseWrite fail with it,
 	// surfacing a broken target to the local source the way TCP surfaces EPIPE on
@@ -164,7 +166,6 @@ type connAddrs struct {
 type tunnelRPCChannel interface {
 	Context() context.Context
 	SendRPCNoWait(context.Context, string, []byte, RPCHandlers) (uint64, error)
-	UnregisterPending(uint64)
 	UnregisterStream(uint64)
 }
 
@@ -218,9 +219,14 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 	}()
 	// OpenTunnelConn is server-streaming: the worker answers with an `opened`
 	// event and then the target's data, all on this request's correlation id,
-	// or with a stream error frame when it refuses or cannot connect.
+	// or with a stream error frame when it refuses or cannot connect. A worker
+	// that refuses with a unary error reaches the same handler: the channel
+	// delivers an error response on a stream-only id as a stream error frame
+	// (see Channel.routeResponse). A frame that the channel itself rejects
+	// reaches onStreamRejected instead (see Channel.deliverRPCError).
 	reqID, err := ch.SendRPCNoWait(ctx, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, openPayload, RPCHandlers{
-		Stream: tc.onStreamMessage,
+		Stream:         tc.onStreamMessage,
+		StreamRejected: tc.onStreamRejected,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send: %w", err)
@@ -236,8 +242,9 @@ func dialTunnelContext(ctx context.Context, ch tunnelRPCChannel, targetAddr stri
 				// answers both before it stores a conn, so it holds none to close.
 				tc.unregister()
 			} else {
-				// The worker broke the protocol before `opened`. It stores the
-				// conn before it sends `opened`, so it may hold one: tell it to
+				// The worker broke the protocol before `opened`, or the channel
+				// rejected the worker's first frame. The worker stores the conn
+				// before it sends `opened`, so it may hold one: tell it to
 				// close, or the conn stays until the channel dies.
 				tc.cancelRemoteOpen()
 			}
@@ -446,8 +453,8 @@ sendLoop:
 		"conn_id", tc.connID, "mode", mode, "attempts", attempt, "error", lastErr)
 }
 
-// unregister detaches the conn from its channel: it drops the channel's handlers
-// and cancels the conn lifetime, releasing both background goroutines (the
+// unregister detaches the conn from its channel: it drops the conn's stream
+// handler and cancels the conn lifetime, releasing both background goroutines (the
 // read-credit batcher and the write-ack loop). Close routes through it, as does
 // every dialTunnelContext failure path that has a reqID to unregister -- those
 // abandon a conn that was never returned to a caller and so is never Closed, and
@@ -456,7 +463,6 @@ sendLoop:
 // pre-reqID exits with its own deferred endLife (see there).
 func (tc *Conn) unregister() {
 	tc.endLife()
-	tc.ch.UnregisterPending(tc.reqID)
 	tc.ch.UnregisterStream(tc.reqID)
 }
 
@@ -468,11 +474,11 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 		return
 	default:
 	}
-	if rpcErr := msg.GetError(); rpcErr != nil {
+	if err := channelwire.ErrorOf(msg.GetError()); err != nil {
 		if tc.openSettled {
-			tc.terminal.Set(fmt.Errorf("tunnel stream: %s", rpcErr.GetMessage()))
+			tc.terminal.Set(fmt.Errorf("tunnel stream: %w", err))
 		} else {
-			tc.endStream(&openRefusedError{code: rpcErr.GetCode(), message: rpcErr.GetMessage()})
+			tc.endStream(&openRefusedError{refusal: err})
 		}
 		return
 	}
@@ -497,9 +503,6 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 			return
 		}
 		tc.terminal.Set(io.EOF)
-		return
-	case *leapmuxv1.TunnelConnEvent_Error:
-		tc.endStream(fmt.Errorf("tunnel error: %s", event.GetError()))
 		return
 	case *leapmuxv1.TunnelConnEvent_Data:
 		if !tc.openSettled {
@@ -548,22 +551,38 @@ func (tc *Conn) onStreamMessage(msg *leapmuxv1.InnerStreamMessage) {
 	}
 }
 
-// openRefusedError is the error of an open that the worker answered with a
-// stream error frame: it refused the request or could not reach the target.
-// Any other end of the stream before `opened` is a protocol violation.
-type openRefusedError struct {
-	code    int32
-	message string
+// onStreamRejected ends the inbound stream with err, the error of a frame that
+// the channel rejected for this conn, such as one over the negotiated message
+// size. The worker refused nothing, so err is not an openRefusedError: a dial
+// that it fails tells the worker to close the conn that it may hold.
+func (tc *Conn) onStreamRejected(err error) {
+	select {
+	case <-tc.closed:
+		return
+	case <-tc.terminal.Done():
+		return
+	default:
+	}
+	tc.endStream(fmt.Errorf("tunnel stream: %w", err))
 }
 
-func (e *openRefusedError) Error() string {
-	return fmt.Sprintf("rpc error (code %d): %s", e.code, e.message)
-}
+// openRefusedError is the error of an open that the worker answered with a
+// stream error frame: it refused the request or could not reach the target.
+// Any other end of the stream before `opened` is a protocol violation or a
+// frame that the channel rejected (onStreamRejected). Its message is the
+// message of refusal, the *channelwire.RPCError that the worker answered, and
+// it unwraps to refusal, so a caller of DialTunnel can read the worker's code
+// with errors.As.
+type openRefusedError struct{ refusal error }
+
+func (e *openRefusedError) Error() string { return e.refusal.Error() }
+
+func (e *openRefusedError) Unwrap() error { return e.refusal }
 
 // endStream ends the inbound stream with err. Before the `opened` event it
 // fails the pending dial instead, which then unregisters the conn, and also
 // tells the worker to close it unless err is an openRefusedError; after it, it
-// latches err as the conn's terminal condition, which Read returns.
+// latches err as the conn's final error, which Read returns.
 func (tc *Conn) endStream(err error) {
 	if !tc.openSettled {
 		tc.openSettled = true
@@ -895,9 +914,8 @@ func (tc *Conn) runAckLoop() {
 	for {
 		select {
 		case resp := <-tc.acks:
-			if rpcErr := resp.GetError(); rpcErr != nil {
-				tc.writeErr.Set(fmt.Errorf("tunnel write rejected (code %d): %s",
-					rpcErr.GetCode(), rpcErr.GetMessage()))
+			if err := channelwire.ErrorOf(resp.GetError()); err != nil {
+				tc.writeErr.Set(fmt.Errorf("tunnel write rejected: %w", err))
 			}
 			tc.sendWindow.Grant(1)
 		case <-tc.lifetime.Done():

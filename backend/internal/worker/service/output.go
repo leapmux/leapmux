@@ -284,7 +284,11 @@ type OutputHandler struct {
 	// carry it, because the frontend applies the field on every full status it
 	// receives -- a status built without it turns the tab's Steer or Preempt
 	// action off for a provider that does support it.
-	queueHeadDispatch func(agentID string) leapmuxv1.QueueHeadDispatch
+	//
+	// It takes the row the caller already holds and whether the status it
+	// builds says the agent runs, so the answer cannot disagree with the status
+	// beside it and costs no second read of the row.
+	queueHeadDispatch func(row *db.Agent, running bool) leapmuxv1.QueueHeadDispatch
 
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
@@ -439,7 +443,7 @@ func (h *OutputHandler) cancelAllAutoRetries(agentID string) {
 
 // SetQueueHeadDispatchFunc wires the queue-head dispatch answer that every
 // full status change carries. Call before any agent output is processed.
-func (h *OutputHandler) SetQueueHeadDispatchFunc(fn func(agentID string) leapmuxv1.QueueHeadDispatch) {
+func (h *OutputHandler) SetQueueHeadDispatchFunc(fn func(row *db.Agent, running bool) leapmuxv1.QueueHeadDispatch) {
 	h.queueHeadDispatch = fn
 }
 

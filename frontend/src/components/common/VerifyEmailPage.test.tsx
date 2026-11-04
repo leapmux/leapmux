@@ -71,7 +71,6 @@ vi.mock('~/context/AuthContext', () => ({
     openUserAdoption: mockOpenUserAdoption,
     refreshUser: mockRefreshUser,
     verificationResendAvailableAt: () => mockVerificationResendAvailableAt(),
-    setVerificationResendAvailableAt: vi.fn(),
     isAuthenticated: () => mockUser() != null,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,

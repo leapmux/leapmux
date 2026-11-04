@@ -75,7 +75,10 @@ func (s *processScan) descendantsOf(shellPID int, limit int) ([]ProcessInfo, int
 //
 // A shell puts every job it runs -- foreground or background -- in a process
 // group of its own, and keeps its own bookkeeping in the group it already has.
-// So a descendant whose process group is the shell's own IS the shell: a
+// So a descendant whose process group is the shell's own IS the shell, with one
+// rare exception: Darwin can fail the two concurrent setpgid calls of a new job
+// with EPERM, and such a job stays in the shell's group and goes unreported. The
+// rest of that group is the shell's own work: a
 // `precmd` hook, a completion helper, a prompt theme shelling out for git state.
 // `mise activate zsh` installs exactly such a hook, and it forks before EVERY
 // prompt, so without this the close guard warned about an idle terminal -- a

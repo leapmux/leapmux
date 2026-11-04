@@ -499,7 +499,7 @@ describe('useChatScroll windowing trim', () => {
       })
     }))
 
-  it('keepNewest retains the older pre-fetch buffer ABOVE the viewport, beyond the base cap', () =>
+  it('passes a keepNewest that retains the older pre-fetch buffer ABOVE the viewport, beyond the base cap', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {

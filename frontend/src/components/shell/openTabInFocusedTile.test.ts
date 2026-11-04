@@ -157,7 +157,7 @@ describe('openTabInFocusedTile', () => {
   })
 
   /** The pre-RPC form of the refusals above, consulted by every tab-creation path. */
-  it('hasPlaceableTab answers whether placement is possible right now', () => {
+  it('answers from hasPlaceableTab whether placement is possible right now', () => {
     createRoot((dispose) => {
       const ready = setup()
       ready.layoutStore.setFocusedTile(ready.harness.rootTileId)

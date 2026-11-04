@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
@@ -838,9 +838,9 @@ describe('thinking message expansion preference', () => {
 describe('messageBubble rawJson', () => {
   it('copies consolidated content and received metadata without a history request', async () => {
     const history = [
-      vi.spyOn(workerRpc, 'listAgentMessages').mockRejectedValue(new Error('Copy must not request message history.')),
-      vi.spyOn(workerRpc, 'getAgentMessage').mockRejectedValue(new Error('Copy must not request a stored message.')),
-      vi.spyOn(workerRpc, 'getAgentSpanMessages').mockRejectedValue(new Error('Copy must not request a stored span.')),
+      vi.spyOn(workerAgent, 'listAgentMessages').mockRejectedValue(new Error('Copy must not request message history.')),
+      vi.spyOn(workerAgent, 'getAgentMessage').mockRejectedValue(new Error('Copy must not request a stored message.')),
+      vi.spyOn(workerAgent, 'getAgentSpanMessages').mockRejectedValue(new Error('Copy must not request a stored span.')),
     ]
     const contentText = '{"type":"notification_thread","old_seqs":[5,8],"messages":[{"type":"settings_changed","changes":{"model":{"old":"A","new":"B"}}},{"type":"interrupted"}]}'
     const supplementText = '{"provider":{"notification_entries":"provider-owned","native_literal":9007199254740993},"metadata":{"duration_ms":0,"opaque_records":[{"data_base64":"AP+A"}],"unrelated":{"key":"first","key":"second"}}}'
@@ -1493,7 +1493,7 @@ describe('askUserQuestion left border', () => {
 // ---------------------------------------------------------------------------
 
 describe('header-only renderers', () => {
-  it('enterPlanMode renders header only', () => {
+  it('renders header only for enterPlanMode', () => {
     const innerMsg = {
       type: 'assistant',
       message: {

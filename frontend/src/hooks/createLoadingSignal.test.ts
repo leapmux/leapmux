@@ -176,7 +176,7 @@ describe('createLoadingSignal', () => {
     })
   })
 
-  it('isPending(agentId) is scoped per-agent so one agent\'s change does not suppress another', () => {
+  it('scopes isPending(agentId) per agent so one agent\'s change does not suppress another', () => {
     // The statusChange handler must protect only the agent with a pending change.
     // A pending change for agent A must not suppress confirmed values for agent B.
     createRoot((dispose) => {
@@ -195,7 +195,7 @@ describe('createLoadingSignal', () => {
     })
   })
 
-  it('isPending tracks multiple concurrent agents independently', () => {
+  it('tracks multiple concurrent agents independently through isPending', () => {
     createRoot((dispose) => {
       const signal = createLoadingSignal()
       signal.start('agent-A')

@@ -289,6 +289,9 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 				}
 			}
 		},
+		StreamRejected: func(err error) {
+			openedCh <- fmt.Errorf("the channel rejected a frame: %w", err)
+		},
 	})
 	require.NoError(t, err)
 
@@ -431,6 +434,9 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 				case *leapmuxv1.TunnelConnEvent_Data:
 					dataCh <- event.GetData()
 				}
+			},
+			StreamRejected: func(err error) {
+				openedCh <- fmt.Errorf("the channel rejected a frame: %w", err)
 			},
 		})
 		if sendErr != nil {

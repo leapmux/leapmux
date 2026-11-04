@@ -418,7 +418,8 @@ func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, interna
 			}
 		}
 	case *leapmuxv1.CrdtOp_CreateWorkspace:
-		// CreateWorkspace and TombstoneWorkspace are hub-only (gated above).
+		// CreateWorkspace and TombstoneWorkspace are hub-only (isHubOnlyOp
+		// above refuses them from a client).
 		// The root a create carries is set-once: a create against a workspace
 		// that already has a root is refused rather than ignored, so a
 		// re-drained create can tell that the create already landed.
@@ -429,20 +430,6 @@ func validateSetOnce(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, interna
 		}
 	}
 	return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, ""
-}
-
-// selectsNoRegister reports whether op is a register op whose field oneof
-// selects no register.
-func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
-	switch body := op.GetBody().(type) {
-	case *leapmuxv1.CrdtOp_SetNodeRegister:
-		return body.SetNodeRegister.GetField() == nil
-	case *leapmuxv1.CrdtOp_SetTabRegister:
-		return body.SetTabRegister.GetField() == nil
-	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
-		return body.SetFloatingWindowRegister.GetField() == nil
-	}
-	return false
 }
 
 // valueDomainCheck rejects NaN/±∞/out-of-range values.

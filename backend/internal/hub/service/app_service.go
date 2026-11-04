@@ -23,10 +23,13 @@ import (
 // AppService is the app REGISTRATION surface: where an app comes from, as
 // opposed to what one account authorized.
 //
-// Every verb requires admin:apps, which each AppService method in app.proto
-// declares and the auth interceptor enforces, so this file never asks what an
-// app was granted. What it does ask, on every write, is who owns the
-// registration.
+// Each AppService method in app.proto declares admin:apps, and the auth
+// interceptor enforces it on a SCOPED credential, so this file never asks what
+// an app was granted. An unscoped first-party credential, such as a browser
+// session, passes the scope check whatever the account is. So a user who is
+// not an administrator reaches every verb here, and the ownership filters
+// below are what keep one user's registrations apart from another's. That is
+// what this file asks on every write: who owns the registration.
 //
 // Ownership travels INTO the statement rather than being checked here and
 // applied there. store.UpdateOAuthClientParams carries CallerUserID and
@@ -191,7 +194,7 @@ func (s *AppService) ListApps(
 	}
 	page, err := s.store.OAuthClients().List(ctx, params)
 	if err != nil {
-		return nil, pageListError(err, "list apps")
+		return nil, storeConnectError(err, "list apps")
 	}
 
 	// ONE round trip for the whole page's live counts, and one lookup per

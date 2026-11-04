@@ -57,17 +57,25 @@ function spaRoutePatterns(files: readonly string[]): RegExp[] {
 const SPA_ROUTE_PATTERNS = spaRoutePatterns(ROUTE_FILES)
 
 /**
- * The path of a target, without the query, the fragment or a trailing slash.
+ * A route path without its trailing slash, so one address is one string. The
+ * root stays `/`.
  *
- * The router trims a trailing slash before it matches, so `/login/` and
- * `/login` are one address to it and must be one address here.
+ * The router trims a trailing slash before it matches, so the route for
+ * `/login` also matches `/login/`. `useLocation().pathname` reports the
+ * address verbatim, slash included, so a caller that compares it with a path
+ * must normalize both sides through this function. An exact compare reads
+ * `/login/` and `/login` as two addresses where the router reads one.
  */
-function pathOf(target: string): string {
-  const path = target.split(/[?#]/, 1)[0] ?? ''
+export function normalizeRoutePath(path: string): string {
   const trimmed = path.replace(/\/+$/, '')
   return trimmed === ''
     ? '/'
     : trimmed
+}
+
+/** The path of a target, without the query, the fragment or a trailing slash. */
+function pathOf(target: string): string {
+  return normalizeRoutePath(target.split(/[?#]/, 1)[0] ?? '')
 }
 
 /**
@@ -120,12 +128,7 @@ export function postAuthNavigate(
   target: string | undefined,
   fallback: string,
 ): void {
-  const destination = postAuthDestination(target, fallback)
-  if (destination.kind === 'document') {
-    window.location.assign(destination.path)
-    return
-  }
-  navigate(destination.path, { replace: true })
+  followDestination(navigate, postAuthDestination(target, fallback))
 }
 
 /**
@@ -146,4 +149,37 @@ export function postAuthDestination(target: string | undefined, fallback: string
   return isServerRoute(safe)
     ? { kind: 'document', path: safe }
     : { kind: 'route', path: safe }
+}
+
+/** The page where a signed-in account verifies its email address. */
+export const VERIFY_EMAIL_PATH = '/verify-email'
+
+/**
+ * Where a successful sign-in or sign-up continues.
+ *
+ * An account that must verify its email address goes to `/verify-email`
+ * first, whatever the sign-in was asked to continue to. Otherwise the sign-in
+ * continues to `redirect`, such as the CLI consent page, through the same rule
+ * `postAuthNavigate` applies, and to `/` without one.
+ *
+ * ONE rule for every surface that signs somebody in, and for sign-in recovery,
+ * which navigates on behalf of a sign-in that could not report its account.
+ */
+export function postSignInDestination(verificationRequired: boolean, redirect: string | undefined): PostAuthDestination {
+  if (verificationRequired)
+    return { kind: 'route', path: VERIFY_EMAIL_PATH }
+  return postAuthDestination(redirect, '/')
+}
+
+/**
+ * Take a destination: a full-document load for an address the hub serves, and
+ * a client-side transition that replaces the current history entry for a
+ * route of this SPA.
+ */
+export function followDestination(navigate: Navigator, destination: PostAuthDestination): void {
+  if (destination.kind === 'document') {
+    window.location.assign(destination.path)
+    return
+  }
+  navigate(destination.path, { replace: true })
 }

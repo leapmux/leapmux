@@ -16,6 +16,7 @@ import {
   SESSION_KEY_HARD_CEILING_MS,
   SESSION_KEY_MAX_AGE_MS,
   SESSION_VERIFY_TIMEOUT_MS,
+  X25519_PUBLIC_KEY_SIZE,
 } from '~/generated/contracts/wire'
 import {
   ChannelMessageFlags,
@@ -29,7 +30,7 @@ import { frameBytes } from './channelFraming'
 import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'
 import { monotonicNow } from './monotonicNow'
-import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2, DH_LEN } from './noise'
+import { initiatorHandshake1 as classicHandshake1, initiatorHandshake2 as classicHandshake2 } from './noise'
 import {
   deriveRekeySecrets,
   encapsulateRekeyPQ,
@@ -403,7 +404,7 @@ export class ChannelSession {
       // to complete the fresh-DH agreement, then rotate both directions. Each
       // direction needs its own secret copies: rekeyWithSecret zeroes its
       // inputs, and both must mix identical entropy.
-      if (rm === null || responderPub === undefined || responderPub.length !== DH_LEN) {
+      if (rm === null || responderPub === undefined || responderPub.length !== X25519_PUBLIC_KEY_SIZE) {
         log.error('rekey ack missing local material or valid responder ephemeral; closing channel', {
           channel_id: ch.channelId,
           responder_pub_len: responderPub?.length ?? -1,

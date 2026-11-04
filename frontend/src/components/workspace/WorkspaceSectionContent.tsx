@@ -89,6 +89,8 @@ export interface WorkspaceSectionContentProps {
    * `~/lib/workerLocality`.
    */
   isLocalWorkerFn: (workerId: string) => boolean
+  /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   /** Open a new agent / terminal at one of a workspace's checkouts. */
   startActions?: WorkspaceStartActions
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
@@ -441,6 +443,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                           ? { isWorkerKnownOnline: props.isWorkerKnownOnline }
                           : {})}
                         isLocalWorkerFn={props.isLocalWorkerFn}
+                        isWorkerStreamOnline={props.isWorkerStreamOnline}
                         {...(props.branchActions !== undefined
                           ? { branchActions: props.branchActions }
                           : {})}

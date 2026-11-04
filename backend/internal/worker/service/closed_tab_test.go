@@ -1140,6 +1140,8 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 	}
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, req, w)
 	waitTerminalWatchCount(t, svc, "term-1", 1)
+	registered := svc.Watchers.terminals.senderFor("term-1", testChannelID)
+	require.NotNil(t, registered)
 
 	// Break ONLY the terminal lookup, so the agent half still verifies and
 	// the request does not fall into the everything-was-rejected branch --
@@ -1159,7 +1161,7 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 
 	assert.Equal(t, 1, svc.Watchers.terminals.count("term-1"),
 		"a failed lookup must not be read as 'watches no terminals'")
-	assert.Same(t, w, svc.Watchers.terminals.senderFor("term-1", testChannelID),
+	assertSameSender(t, registered, svc.Watchers.terminals.senderFor("term-1", testChannelID),
 		"the kept subscription must stay on the same stream")
 	ack := waitWatchUpdateAckWhere(t, w, func(a *leapmuxv1.WatchUpdateAck) bool {
 		return len(a.GetRejectedTerminals()) == 1
@@ -1323,7 +1325,7 @@ func TestPersistTerminalOnExit_PreservesClosedAt(t *testing.T) {
 // TestShutdown_RefusesNewTabs pins the precondition Shutdown's own comment
 // asserts but nothing used to enforce.
 //
-// Both worker entry points deliberately keep the Hub stream live ACROSS
+// worker.Run deliberately keeps the Hub stream live ACROSS
 // Shutdown, so its broadcasts can actually leave, and the dispatcher has no
 // gate of its own. An OpenTerminal arriving during the drains therefore spawned
 // a PTY that installed after BOTH disconnect-notice sweeps -- an orphaned shell

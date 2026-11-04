@@ -207,7 +207,7 @@ func TestValidate_CreateWorkspace_HubOnlyGate(t *testing.T) {
 	assert.Equal(t, "root1", working.GetWorkspaces()["w1"].GetRootNodeId())
 }
 
-// A create whose root names no live node cannot install a usable workspace:
+// A create whose root identifies no live node cannot install a usable workspace:
 // the root check refuses it rather than storing a record with a dangling root.
 func TestValidate_CreateWorkspace_RefusesARootThatIsNotALiveNode(t *testing.T) {
 	op := &leapmuxv1.CrdtOp{
@@ -368,7 +368,7 @@ func TestValidate_ValueDomain_RegisterOpWithNoField(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tc.op}, true, "p1", allowAll{})
 			assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason,
-				"a register op that names no register is refused")
+				"a register op that identifies no register is refused")
 			assert.Equal(t, tc.op.GetOpId(), res.OffendingOpID)
 		})
 	}
@@ -405,8 +405,8 @@ func TestValidate_ValueDomain_EmptyTargetID(t *testing.T) {
 			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: 0.5},
 		}, hlcAt(10, 2, "a"))},
 		{"tombstone node", stamped(&leapmuxv1.TombstoneNodeOp{NodeId: ""}, hlcAt(10, 3, "a"))},
-		// A tab identity is a type and an id, so a tab op with no type names no
-		// tab either.
+		// A tab identity is a type and an id, so a tab op with no type
+		// identifies no tab either.
 		{"untyped tab", stamped(&leapmuxv1.SetTabRegisterOp{
 			Tab:   &leapmuxv1.TabIdent{TabId: "t1"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},

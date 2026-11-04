@@ -479,29 +479,38 @@ func signupReq[T any, PT interface {
 	return ctx, (*T)(msg)
 }
 
-// insertPendingSignup creates a pending_oauth_signups row with encrypted tokens.
+// insertPendingSignup creates a pending_oauth_signups row with encrypted tokens
+// and no redirect.
 func insertPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, providerID, token, email, displayName, subject string, expiresAt time.Time) {
 	t.Helper()
-	encAccess, err := ks.Encrypt([]byte("mock-access-token"), keystore.AccessTokenAAD(token, providerID))
-	require.NoError(t, err)
-	encRefresh, err := ks.Encrypt([]byte("mock-refresh-token"), keystore.RefreshTokenAAD(token, providerID))
-	require.NoError(t, err)
-
-	err = st.PendingOAuthSignups().Create(context.Background(), store.CreatePendingOAuthSignupParams{
+	seedPendingSignup(t, st, ks, store.CreatePendingOAuthSignupParams{
 		Token:           token,
 		ProviderID:      providerID,
-		NonceHash:       hashNonceForTest(testSignupNonce),
 		ProviderSubject: subject,
 		Email:           email,
 		DisplayName:     displayName,
-		AccessToken:     encAccess,
-		RefreshToken:    encRefresh,
-		TokenType:       "bearer",
-		TokenExpiresAt:  time.Now().Add(1 * time.Hour).UTC(),
-		KeyVersion:      int64(ks.ActiveVersion()),
 		ExpiresAt:       expiresAt,
 	})
+}
+
+// seedPendingSignup creates the pending_oauth_signups row that p describes. It
+// fills what every seeded row shares, as the OAuth callback would: the
+// encrypted token pair, the token type and expiry, the active key version, and
+// the hash of testSignupNonce.
+func seedPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, p store.CreatePendingOAuthSignupParams) {
+	t.Helper()
+	encAccess, err := ks.Encrypt([]byte("mock-access-token"), keystore.AccessTokenAAD(p.Token, p.ProviderID))
 	require.NoError(t, err)
+	encRefresh, err := ks.Encrypt([]byte("mock-refresh-token"), keystore.RefreshTokenAAD(p.Token, p.ProviderID))
+	require.NoError(t, err)
+
+	p.NonceHash = hashNonceForTest(testSignupNonce)
+	p.AccessToken = encAccess
+	p.RefreshToken = encRefresh
+	p.TokenType = "bearer"
+	p.TokenExpiresAt = time.Now().Add(1 * time.Hour).UTC()
+	p.KeyVersion = int64(ks.ActiveVersion())
+	require.NoError(t, st.PendingOAuthSignups().Create(context.Background(), p))
 }
 
 // --- GetPendingOAuthSignup RPC tests ---
@@ -522,6 +531,34 @@ func TestGetPendingOAuthSignup_Success(t *testing.T) {
 	assert.Equal(t, "alice@example.com", resp.GetEmail())
 	assert.Equal(t, "Alice", resp.GetDisplayName())
 	assert.Equal(t, "Test GitHub", resp.GetProviderName())
+	assert.Empty(t, resp.GetRedirect(), "a sign-in that asked to continue nowhere carries no redirect")
+}
+
+// A first-time OAuth sign-up can start from a page that asked to continue
+// somewhere, such as the CLI consent page. The callback stores that address on
+// the pending sign-up, and the complete-signup page reads it back here, so the
+// browser can continue there once the account exists.
+func TestGetPendingOAuthSignup_ReturnsRedirect(t *testing.T) {
+	t.Parallel()
+
+	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+	seedPendingSignup(t, st, ks, store.CreatePendingOAuthSignupParams{
+		Token:           signupToken,
+		ProviderID:      providerID,
+		ProviderSubject: "sub-redirect",
+		Email:           "redirect@example.com",
+		DisplayName:     "Redirect",
+		RedirectURI:     "/oauth/authorize?client_id=cli",
+		ExpiresAt:       time.Now().Add(5 * time.Minute).UTC(),
+	})
+
+	resp, err := client.GetPendingOAuthSignup(signupReq(context.Background(), &leapmuxv1.GetPendingOAuthSignupRequest{
+		SignupToken: signupToken,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "/oauth/authorize?client_id=cli", resp.GetRedirect())
 }
 
 func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {

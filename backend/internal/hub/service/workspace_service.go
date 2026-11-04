@@ -325,8 +325,8 @@ func (s *WorkspaceService) RenameWorkspace(
 	return &leapmuxv1.RenameWorkspaceResponse{}, nil
 }
 
-// MoveWorkspace puts a workspace in a section at a position and nudges every
-// Worker that hosts one of its tabs.
+// MoveWorkspace puts a workspace in a section at a position. A move that crosses
+// the archive boundary also nudges every Worker that hosts one of its tabs.
 //
 // The destination section decides the archive state: the Archived section
 // archives the workspace, any other workspace section makes it active. One RPC
@@ -334,19 +334,26 @@ func (s *WorkspaceService) RenameWorkspace(
 // transaction -- the workspace never rests in In progress because a second
 // call failed, and it lands at the position the user dropped it at.
 //
+// The caller states the archive state it holds for the workspace
+// (expected_archive_state), and the move is refused with FailedPrecondition
+// when the stored state differs. No event tells other clients about a section
+// move, so without this check a drop from a stale sidebar would silently
+// archive or unarchive the workspace, and stop or resume its processes.
+//
 // The nudge IS the delivery. The Worker applies the Hub's authoritative state
 // through the same code its reconcile pass uses, so a client-side fan-out over
 // the tab list would be a second path to the same effect -- one that exists
 // only while a browser session is open, and that a move from any other client
 // would skip.
 //
-// Every move nudges, including one that stays on the same side of the archive
-// boundary. That is the recovery path: when a Worker misses its nudge -- a
-// refused control frame, a reconnect -- the caller's remedy is to ask again,
-// and a repeat that nudged nobody would do nothing, leaving those processes
-// running until the Worker's hourly tick. Every step is idempotent: the
-// Worker's UPDATE changes a row only when the flag differs, and the nudge is
-// best-effort by contract.
+// A move that stays on one side of the archive boundary nudges nobody. It changes
+// no archive state, so a Worker has nothing to apply, and a sidebar reorder costs
+// no tab read and no reconcile pass. A delegation bearer can make only such a
+// move, so its moves reach no Worker. A repeated move needs no nudge either:
+// every way to miss a nudge -- a Worker offline, a refused control frame, a
+// closed stream -- ends in a reconnect, and each reconnect runs a reconcile
+// pass. The nudge is therefore best-effort by contract, and the Worker's UPDATE
+// changes a row only when the flag differs.
 func (s *WorkspaceService) MoveWorkspace(
 	ctx context.Context,
 	req *leapmuxv1.MoveWorkspaceRequest,
@@ -365,6 +372,10 @@ func (s *WorkspaceService) MoveWorkspace(
 		if req.GetSectionId() == "" {
 			return connect.Errorf(connect.CodeInvalidArgument, "section_id is required")
 		}
+		expectedArchived, err := expectedArchivedState(req.GetExpectedArchiveState())
+		if err != nil {
+			return err
+		}
 		destination, err := requireOwnedSection(ctx, tx, user.ID, req.GetSectionId())
 		if err != nil {
 			return err
@@ -379,11 +390,20 @@ func (s *WorkspaceService) MoveWorkspace(
 		if err != nil {
 			return fmt.Errorf("read workspace archive state: %w", err)
 		}
+		// No event tells other clients that a workspace moved between
+		// sections, so the caller's archive state can be stale. The destination
+		// decides the archive state, so a move from a stale view would archive
+		// or unarchive the workspace without the user asking for it.
+		if currentlyArchived != expectedArchived {
+			return connect.Errorf(connect.CodeFailedPrecondition,
+				"the workspace was archived or unarchived elsewhere; reload the sidebar and try again")
+		}
 		destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
 		// Crossing the archive boundary stops or resumes every process of the
 		// workspace, which is a lifecycle change a delegation bearer may not
 		// make. A move that stays on one side only reorders the sidebar.
-		if currentlyArchived != destinationArchived {
+		crossed := currentlyArchived != destinationArchived
+		if crossed {
 			if err := rejectDelegationBearer(user, "workspace archive state change"); err != nil {
 				return err
 			}
@@ -403,6 +423,9 @@ func (s *WorkspaceService) MoveWorkspace(
 			Position:    position,
 		}); err != nil {
 			return fmt.Errorf("move workspace: %w", err)
+		}
+		if !crossed {
+			return nil
 		}
 
 		tabs, err := tx.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
@@ -431,10 +454,25 @@ func (s *WorkspaceService) MoveWorkspace(
 	return &leapmuxv1.MoveWorkspaceResponse{}, nil
 }
 
+// expectedArchivedState reads MoveWorkspaceRequest.expected_archive_state as
+// "the caller holds the workspace archived". Only ACTIVE and ARCHIVED state
+// something the hub can compare with the stored state, so any other value is
+// refused with InvalidArgument.
+func expectedArchivedState(state leapmuxv1.WorkspaceArchiveState) (bool, error) {
+	switch state {
+	case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:
+		return false, nil
+	case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
+		return true, nil
+	default:
+		return false, connect.Errorf(connect.CodeInvalidArgument, "expected_archive_state must be ACTIVE or ARCHIVED")
+	}
+}
+
 // defaultMovePosition answers where a move with no position puts the workspace.
-// A workspace that already sits in the destination keeps its rank, so a repeat
-// -- the recovery path for a lost nudge -- does not reorder the sidebar on
-// every retry. Any other workspace is appended after the destination's tail.
+// A workspace that already sits in the destination keeps its rank, so repeating
+// a move does not reorder the sidebar. Any other workspace is appended after the
+// destination's tail.
 func defaultMovePosition(items []store.WorkspaceSectionItem, workspaceID, destinationID string) string {
 	for _, item := range items {
 		if item.WorkspaceID == workspaceID && item.SectionID == destinationID {

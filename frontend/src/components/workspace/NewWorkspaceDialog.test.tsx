@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { generateSlug } from 'random-word-slugs'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceClient } from '~/api/clients'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerGit } from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { ListGitBranchesResponseSchema, ListGitWorktreesResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
@@ -62,15 +62,21 @@ vi.mock('~/stores/workerInfo.store', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  openAgent: vi.fn(),
-  getGitInfo: vi.fn(),
-  // GitOptions requests both lists on mount. A supplied path snapshot makes it mount immediately.
-  listGitBranches: vi.fn(async () => ({ branches: [] })),
-  listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
-  listDirectory: vi.fn(),
-  statFile: vi.fn(async () => ({
-    info: { modTime: '2026-01-01T00:00:00Z' },
-  })),
+  workerAgent: {
+    openAgent: vi.fn(),
+  },
+  workerGit: {
+    getGitInfo: vi.fn(),
+    // GitOptions requests both lists on mount. A supplied path snapshot makes it mount immediately.
+    listGitBranches: vi.fn(async () => ({ branches: [] })),
+    listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
+  },
+  workerFile: {
+    listDirectory: vi.fn(),
+    statFile: vi.fn(async () => ({
+      info: { modTime: '2026-01-01T00:00:00Z' },
+    })),
+  },
 }))
 
 // Mock seedTabIntoNewWorkspace through the same module that the dialog imports.
@@ -112,13 +118,13 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main' }))
-  vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, { worktrees: [] }))
+  vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main' }))
+  vi.mocked(workerGit.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, { worktrees: [] }))
   vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
     create(CreateWorkspaceResponseSchema, { workspaceId: NEW_WORKSPACE_ID }),
   )
   vi.mocked(workspaceClient.deleteWorkspace).mockResolvedValue(create(DeleteWorkspaceResponseSchema, {}))
-  vi.mocked(workerRpc.openAgent).mockResolvedValue(
+  vi.mocked(workerAgent.openAgent).mockResolvedValue(
     create(OpenAgentResponseSchema, { agent: AGENT }),
   )
   vi.mocked(seedTabIntoNewWorkspace).mockResolvedValue({ rootNodeId: 'root-1', position: 'n' })
@@ -161,9 +167,9 @@ describe('NewWorkspaceDialog', () => {
     await submitDialog()
 
     await waitFor(() => {
-      expect(workerRpc.openAgent).toHaveBeenCalledOnce()
+      expect(workerAgent.openAgent).toHaveBeenCalledOnce()
     })
-    expect(workerRpc.openAgent).toHaveBeenCalledWith(WORKER_ID, expect.objectContaining({
+    expect(workerAgent.openAgent).toHaveBeenCalledWith(WORKER_ID, expect.objectContaining({
       agentProvider: AgentProvider.CLAUDE_CODE,
       workingDir: WORKING_DIR,
     }))
@@ -334,7 +340,7 @@ describe('NewWorkspaceDialog', () => {
   })
 
   it('reports the workspace even when the worker returns no agent', async () => {
-    vi.mocked(workerRpc.openAgent).mockResolvedValue(create(OpenAgentResponseSchema, {}))
+    vi.mocked(workerAgent.openAgent).mockResolvedValue(create(OpenAgentResponseSchema, {}))
     const props = renderDialog()
 
     await submitDialog()
@@ -354,7 +360,7 @@ describe('NewWorkspaceDialog', () => {
    */
   describe('rollback', () => {
     it('deletes the workspace when the agent fails to open', async () => {
-      vi.mocked(workerRpc.openAgent).mockRejectedValue(new Error('worker exploded'))
+      vi.mocked(workerAgent.openAgent).mockRejectedValue(new Error('worker exploded'))
       const props = renderDialog()
 
       await submitDialog()
@@ -374,7 +380,7 @@ describe('NewWorkspaceDialog', () => {
 
       expect(await screen.findByText('quota exceeded')).toBeInTheDocument()
       expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
-      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      expect(workerAgent.openAgent).not.toHaveBeenCalled()
     })
 
     it('fails loudly, and without a rollback, when the response carries no workspace id', async () => {
@@ -388,7 +394,7 @@ describe('NewWorkspaceDialog', () => {
       await submitDialog()
 
       expect(await screen.findByText('No workspace ID in response')).toBeInTheDocument()
-      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      expect(workerAgent.openAgent).not.toHaveBeenCalled()
       expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
       expect(props.onCreated).not.toHaveBeenCalled()
     })
@@ -416,9 +422,9 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(createButton.disabled).toBe(false))
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[0]).toBe(WORKER_ID)
-      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1])
+      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[0]).toBe(WORKER_ID)
+      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1])
         .toMatchObject({ workingDir: REPO_DIR })
     })
 
@@ -433,8 +439,8 @@ describe('NewWorkspaceDialog', () => {
       expect(screen.getByLabelText('Use current state')).toBeChecked()
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1].gitSetup).toBeUndefined()
+      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1].gitSetup).toBeUndefined()
     })
 
     it.each([
@@ -459,8 +465,8 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(createButton.disabled).toBe(false))
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
+      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
         mode: { case: setupCase, value },
       })
     })
@@ -488,7 +494,7 @@ describe('NewWorkspaceDialog', () => {
       })
       expect(await screen.findByText(message, { exact: false })).toBeVisible()
       expect(submit).toBeDisabled()
-      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      expect(workerAgent.openAgent).not.toHaveBeenCalled()
       fireEvent.input(input, {
         target: { value: 'valid-new-branch' },
       })
@@ -516,7 +522,7 @@ describe('NewWorkspaceDialog', () => {
     })
 
     it.each(['Create new branch', 'Create new worktree'])('refuses an existing branch and accepts a new name in %s', async (mode) => {
-      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
+      vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
         branches: [
           { name: 'claimed-branch' },
         ],
@@ -539,12 +545,12 @@ describe('NewWorkspaceDialog', () => {
     })
 
     it.each(['Switch to branch', 'Use existing worktree'])('requires a selection in %s and clears that requirement in current mode', async (mode) => {
-      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
+      vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
         branches: [
           { name: 'other' },
         ],
       }))
-      vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, {
+      vi.mocked(workerGit.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, {
         worktrees: [
           { path: '/home/u/worktree', branch: 'other' },
         ],
@@ -554,7 +560,7 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(submit).toBeEnabled())
       fireEvent.click(await screen.findByLabelText(mode))
       await waitFor(() => expect(submit).toBeDisabled())
-      expect(workerRpc.openAgent).not.toHaveBeenCalled()
+      expect(workerAgent.openAgent).not.toHaveBeenCalled()
       fireEvent.click(screen.getByLabelText('Use current state'))
       await waitFor(() => expect(submit).toBeEnabled())
     })
@@ -581,7 +587,7 @@ describe('NewWorkspaceDialog', () => {
 
     it('remembers nothing when the submit fails', async () => {
       // A failed submission must not change the saved mode for the next dialog.
-      vi.mocked(workerRpc.openAgent).mockRejectedValue(new Error('worker exploded'))
+      vi.mocked(workerAgent.openAgent).mockRejectedValue(new Error('worker exploded'))
       renderDialog({ startPoint: REPO_START })
 
       const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
@@ -600,7 +606,7 @@ describe('NewWorkspaceDialog', () => {
 
       await submitDialog()
 
-      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
       expect(readStickyGitMode(gitModeStickyKey(WORKER_ID, WORKING_DIR))).toBeUndefined()
     })
   })

@@ -92,7 +92,7 @@ func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTrans
 	require.NoError(t, err)
 	ready := make(chan channel.ResponseWriter, 1)
 	dispatcher := channel.NewDispatcher()
-	dispatcher.Register("CaptureNotificationWriter", func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
+	dispatcher.Handle("CaptureNotificationWriter", channel.Registration{}, func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
 		ready <- writer
 	})
 	manager.SetDispatcher(dispatcher)

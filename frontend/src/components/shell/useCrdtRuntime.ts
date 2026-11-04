@@ -50,18 +50,13 @@ export interface UseCrdtRuntimeOpts {
    */
   activeClient: ReturnType<typeof createActiveClientStore>
   /**
-   * Called when a workspace is created / archived / deleted anywhere.
-   *
-   * Late-bound by the caller: `useWorkspaceLoader` is instantiated further down
-   * the component, so this fires into a no-op until then. That is safe because
-   * the loader's own `onMount` seeds the initial `listWorkspaces`.
+   * Called when a workspace is created / archived / deleted anywhere. The
+   * loader's own `onMount` seeds the initial `listWorkspaces`.
    */
   onWorkspaceLifecycleChanged: () => void
   /**
-   * Called when the user's worker list changes, and on every
-   * bootstrap. Late-bound by the caller for the same reason as
-   * onWorkspaceLifecycleChanged; the worker section's own effect seeds the
-   * first `listWorkers`.
+   * Called when the user's worker list changes, and on every bootstrap. The
+   * worker section's own effect seeds the first `listWorkers`.
    */
   onWorkersChanged: () => void
 }

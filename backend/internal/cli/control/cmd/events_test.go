@@ -148,7 +148,7 @@ func TestWorkspaceMapKeys_SortsTheIds(t *testing.T) {
 	})
 }
 
-// TestOpTargetSummary_PrintsTheCLITabTypeToken pins how `events watch` names
+// TestOpTargetSummary_PrintsTheCLITabTypeToken pins how `events watch` identifies
 // the tab that an op targets. Every tab op prints the CLI's own token
 // ("agent", "terminal"), the same one the removal and materialize lines
 // print, so one tab reads the same in every line of the stream. The shared
@@ -176,7 +176,7 @@ func TestOpTargetSummary_PrintsTheCLITabTypeToken(t *testing.T) {
 				"tab_type": tabTypeName(tc.tab.GetTabType()),
 				"type":     tc.kind,
 			}, got)
-			assert.Equal(t, removed["tab_type"], got["tab_type"], "the op line and the removal line must name the tab type alike")
+			assert.Equal(t, removed["tab_type"], got["tab_type"], "the op line and the removal line must state the tab type alike")
 			assert.NotEqual(t, tc.tab.GetTabType().String(), got["tab_type"], "the proto enum name must not leak into the stream")
 		})
 	}

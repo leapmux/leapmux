@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
@@ -46,19 +47,19 @@ func NewHubEventStreamer(endpoint *hubtransport.Endpoint, delegation crossworker
 	}
 }
 
-// StreamHub satisfies HubStreamer. `WatchUser` is the only supported
-// method: spawned-agent CLI invocations consume the user-scoped CRDT
-// stream by tunneling `/ws/userevents` through the same delegation-
+// StreamHub satisfies HubStreamer. hubrpc.WatchUserStream is the only
+// supported address: spawned-agent CLI invocations consume the user-scoped
+// CRDT stream by tunneling `/ws/userevents` through the same delegation-
 // token channel as unary calls.
-func (s *HubEventStreamer) StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error {
+func (s *HubEventStreamer) StreamHub(ctx context.Context, userID userid.UserID, procedure string, payload []byte, onPayload func([]byte) error) error {
 	if s.Delegation == nil {
 		return errors.New("controlipc: delegation store not configured")
 	}
-	switch method {
-	case "WatchUser":
+	switch procedure {
+	case hubrpc.WatchUserStream:
 		return s.watchUser(ctx, userID, payload, onPayload)
 	default:
-		return fmt.Errorf("controlipc: hub stream method not implemented: %s", method)
+		return fmt.Errorf("controlipc: hub stream method not implemented: %s", procedure)
 	}
 }
 

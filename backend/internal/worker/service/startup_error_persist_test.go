@@ -67,7 +67,9 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 }
 
 // TestDeriveTerminalStatus_AllBranches is the terminal analogue: registry >
-// DB > READY, where READY becomes EXITED once the manager holds no live shell.
+// READY while a shell runs > DB > EXITED.
+// TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError covers
+// the order of the two middle branches.
 func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +91,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "registry error", errStr)
 
-	// 3. Registry cleared → DB column drives STARTUP_FAILED.
+	// 3. Registry cleared, no live shell → DB column drives STARTUP_FAILED.
 	svc.TerminalStartup.cancelAndClear("term-1", keepWorktreeOnClose)
 	status, errStr, _ = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
@@ -109,28 +111,6 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	status, errStr, _ = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
 	assert.Empty(t, errStr)
-}
-
-// exitedTerminalStatus turns READY into EXITED for a shell that exited, and
-// leaves every startup status alone: a startup that has not ended, or that
-// failed, owns the status.
-func TestExitedTerminalStatus(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		status leapmuxv1.TerminalStatus
-		exited bool
-		want   leapmuxv1.TerminalStatus
-	}{
-		{leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, true, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED},
-		{leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, false, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY},
-		{leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, true, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING},
-		{leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, true, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED},
-		{leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, false, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING},
-	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, exitedTerminalStatus(c.status, c.exited), "status %v, exited %v", c.status, c.exited)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +401,68 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	info := listResp.GetTerminals()[0]
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, info.GetStatus())
 	assert.Contains(t, info.GetStartupError(), "pty no")
+}
+
+// RestartTerminal keeps the stopped previous shell in the manager when the
+// respawn fails, and the startup registry evicts the failure after
+// failedEntryTTL. ListTerminals must then read the failure from the persisted
+// startup_error column, as the WatchEvents replay does through
+// deriveTerminalStatus. Otherwise the list reports EXITED with no error while
+// the replay reports STARTUP_FAILED with the error.
+func TestListTerminals_ReportsThePersistedStartupErrorOfAnExitedShellTheManagerHolds(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	const id = "failed-restart"
+	startTestTerminal(t, svc, ctx, id)
+	svc.Terminals.StopTerminal(id)
+	svc.Terminals.WaitForExit(id)
+	require.True(t, svc.Terminals.HasTerminal(id), "precondition: the manager still holds the stopped shell")
+	svc.persistTerminalStartupError(id, "restart failed: no such shell")
+	_, _, _, inRegistry := svc.TerminalStartup.status(id)
+	require.False(t, inRegistry, "precondition: the registry holds no entry, as after the eviction")
+
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{id}}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	info := resp.GetTerminals()[0]
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED.String(), info.GetStatus().String())
+	assert.Equal(t, "restart failed: no such shell", info.GetStartupError())
+	assert.Empty(t, info.GetStartupMessage())
+
+	// The replay reads the same row through deriveTerminalStatus, and the two
+	// answers must agree.
+	row, err := svc.Queries.GetTerminal(ctx, id)
+	require.NoError(t, err)
+	status, startupError, _ := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, info.GetStatus().String(), status.String())
+	assert.Equal(t, info.GetStartupError(), startupError)
+}
+
+// A running shell proves that the last startup of its terminal succeeded:
+// every failure path leaves no new shell, and RestartTerminal refuses a
+// terminal whose shell runs. A persisted startup_error beside a live shell is
+// therefore stale, such as a row read before the success cleared the column.
+// The terminal reads READY with no error, as deriveAgentStatus reads a running
+// agent ACTIVE over its persisted error.
+func TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "live")
+	row, err := svc.Queries.GetTerminal(ctx, "live")
+	require.NoError(t, err)
+	row.StartupError = "stale failure"
+
+	status, startupError, startupMessage := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), status.String())
+	assert.Empty(t, startupError, "a live shell must suppress a stale persisted error")
+	assert.Empty(t, startupMessage)
 }
 
 // TestDeriveAgentStatus_ActiveClearsLingeringDBError verifies that once a

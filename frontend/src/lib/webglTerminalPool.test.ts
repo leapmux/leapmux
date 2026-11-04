@@ -392,7 +392,7 @@ describe('createWebglTerminalPool', () => {
     expect(pool.size()).toBe(0)
   })
 
-  it('disposeAll detaches live contexts and clears all state', async () => {
+  it('detaches live contexts and clears all state in disposeAll', async () => {
     const pool = makePool(2)
     pool.acquire('a', fakeInstance())
     pool.acquire('b', fakeInstance())

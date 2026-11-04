@@ -689,6 +689,30 @@ func TestReceiverTypeOf_AcceptsBothReceiverForms(t *testing.T) {
 	assert.Empty(t, receiverTypeOf("NewManager"), "a plain function has no receiver")
 }
 
+// TestServesAdminProtoMethod pins the structural claim behind reachAdminOnly:
+// only the hub's handler for a method that admin.proto declares runs behind
+// enforceAdmin. A same-named method on an owner-facing service, on the worker's
+// service package, or on a value receiver is not such a handler, and neither is
+// a method that the admin service does not declare.
+func TestServesAdminProtoMethod(t *testing.T) {
+	cases := []struct {
+		site string
+		want bool
+	}{
+		{"internal/hub/service.(*AdminWorkerService).DeregisterWorker", true},
+		{"internal/hub/service.(*WorkerManagementService).DeregisterWorker", false},
+		{"internal/worker/service.(*AdminWorkerService).DeregisterWorker", false},
+		{"internal/hub/service.(*AdminWorkerService).NoSuchMethod", false},
+		{"internal/hub/service.(AdminWorkerService).DeregisterWorker", false},
+		{"internal/hub/service.(*AdminWorkerService)", false},
+		{"internal/hub/service.(*).DeregisterWorker", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, servesAdminProtoMethod(tc.site), "%q", tc.site)
+	}
+}
+
 // TestIntraPackageCallees_FindsTheHelpersAFactCanHideBehind pins the transitive
 // half of the registry scan. Reading the facts from a method body alone meant a
 // delegating accessor -- the most natural way to add one -- touched neither

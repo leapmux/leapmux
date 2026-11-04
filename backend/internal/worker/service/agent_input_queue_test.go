@@ -321,18 +321,25 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 	assert.Equal(t, queueHeadNone, svc.buildAgentActiveStatus(&cold, nil).GetQueueHeadDispatch())
 }
 
-// The output handler asks the adapter by agent id. An id with no row has no
-// running provider, so the answer is NONE, never UNSPECIFIED: every full status
-// change states one of the three values, and UNSPECIFIED is reserved for a
-// partial change, where it means "no update".
-func TestQueueHeadDispatchAnswersNoneForAnUnknownAgent(t *testing.T) {
+// The output handler passes the row it holds and whether its status says the
+// agent runs. A row with no running provider answers NONE, never UNSPECIFIED,
+// whatever the status says: every full status change states one of the three
+// values, and UNSPECIFIED is reserved for a partial change, where it means "no
+// update".
+func TestQueueHeadDispatchAnswersNoneForAnAgentWithNoProcess(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	adapter := &agentInputQueueAdapter{svc: svc}
-
-	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch("no-such-agent"))
-	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch(""))
+	for name, row := range map[string]*db.Agent{
+		"an unknown agent": {ID: "no-such-agent"},
+		"an empty id":      {},
+		"an unknown child": {ID: "no-such-child", ParentAgentID: sql.NullString{String: "no-such-root", Valid: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, queueHeadNone, svc.queueHeadDispatch(row, true), "a status that says the agent runs")
+			assert.Equal(t, queueHeadNone, svc.queueHeadDispatch(row, false), "a status that says the agent does not run")
+		})
+	}
 }
 
 // TestLiveStatusChangePublishesPreemptionCapability covers the LIVE pushes for

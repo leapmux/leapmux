@@ -109,7 +109,7 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMy
 		PageParams: pageParams(req.GetPage()),
 	})
 	if err != nil {
-		return nil, pageListError(err, "list api tokens")
+		return nil, storeConnectError(err, "list api tokens")
 	}
 	currentTokenID := callerAPITokenID(userInfo)
 	tokens := make([]*leapmuxv1.MyAPIToken, 0, len(page.Rows))

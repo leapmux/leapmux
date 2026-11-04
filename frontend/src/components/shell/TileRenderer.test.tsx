@@ -21,6 +21,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { makeMessage, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
@@ -65,12 +66,24 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
 const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
 const renameTerminal = vi.hoisted(() => vi.fn(async () => ({})))
 const enqueueAgentInput = vi.hoisted(() => vi.fn(async () => ({ snapshot: undefined })))
-vi.mock('~/api/workerRpc', async importOriginal => ({
-  ...(await importOriginal<typeof import('~/api/workerRpc')>()),
-  renameAgent,
-  renameTerminal,
-  enqueueAgentInput,
-}))
+vi.mock('~/api/workerRpc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/workerRpc')>()
+  return {
+    ...actual,
+    workerAgent: {
+      ...actual.workerAgent,
+      renameAgent,
+    },
+    workerTerminal: {
+      ...actual.workerTerminal,
+      renameTerminal,
+    },
+    workerAgentInput: {
+      ...actual.workerAgentInput,
+      enqueueAgentInput,
+    },
+  }
+})
 
 vi.mock('~/components/terminal/TerminalView', () => ({
   TerminalView: (props: { terminals: Array<{ id: string }> }) => (
@@ -141,6 +154,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
+        workerOnline: createWorkerOnlineStore(),
       },
       // The shell builds this once and shares it with the close guard, so the
       // chip and the prompt cannot scope "this tab's rows" differently.

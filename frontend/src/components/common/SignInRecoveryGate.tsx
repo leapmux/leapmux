@@ -1,36 +1,19 @@
 import type { ParentComponent } from 'solid-js'
-import type { SignInRecovery } from '~/context/AuthContext'
-import type { PostAuthDestination } from '~/lib/postAuthNavigate'
 import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createSignal, on, Show, untrack } from 'solid-js'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
-import { postAuthDestination } from '~/lib/postAuthNavigate'
+import { followDestination, normalizeRoutePath, postSignInDestination } from '~/lib/postAuthNavigate'
 import { centeredFull } from '~/styles/shared.css'
 
-/** Where a recovered sign-in goes when the account must verify an address. */
-const VERIFY_EMAIL_PATH = '/verify-email'
-
 /**
- * Where a completed recovery navigates: `/verify-email` when the sign-in
- * reported that the account must verify an address, and otherwise the
- * address the sign-in was asked to continue to, as `postAuthNavigate` reads
- * it -- which keeps the CLI consent redirect.
- */
-function recoveryDestination(recovery: SignInRecovery): PostAuthDestination {
-  if (recovery.verificationRequired)
-    return { kind: 'route', path: VERIFY_EMAIL_PATH }
-  return postAuthDestination(recovery.redirect, '/')
-}
-
-/**
- * Whether the router's location is the address `target` names. The router
- * matches `/a/` as `/a`, so a trailing slash does not make two addresses.
+ * Whether the router's location is the address that `target` identifies. The
+ * router matches `/a/` as `/a`, so a trailing slash does not make two
+ * addresses.
  */
 function isAtAddress(pathname: string, search: string, target: string): boolean {
   const url = new URL(target, 'http://leapmux.invalid')
-  const trim = (path: string) => path.replace(/\/+$/, '') || '/'
-  return trim(url.pathname) === trim(pathname) && url.search === search
+  return normalizeRoutePath(url.pathname) === normalizeRoutePath(pathname) && url.search === search
 }
 
 /**
@@ -44,12 +27,17 @@ function isAtAddress(pathname: string, search: string, target: string): boolean 
  * no `SetupGate` navigator is mounted. Nothing else can navigate, and the
  * source page cannot submit its sign-in a second time.
  *
+ * The same placement hides the user menu, so a read that keeps failing would
+ * hold the visitor on this screen. The failure screen therefore offers Sign
+ * out beside Retry: it ends the session, and the context ends recovery with
+ * it.
+ *
  * Recovery owns the ONE navigation that follows, in this order:
  *
- * 1. The context adopts the account it read and marks recovery completed.
- * 2. This gate navigates to the destination. A destination the hub serves is
- *    a full-document load, and the document leaves, so recovery is never
- *    cleared on that path.
+ * 1. The context adopts the account it read and marks the read completed.
+ * 2. This gate navigates to the destination that `postSignInDestination`
+ *    gives. A destination the hub serves is a full-document load, and the
+ *    document leaves, so recovery is never cleared on that path.
  * 3. For a client-side route, this gate clears recovery once the router's
  *    location IS the destination. The children then mount directly on the
  *    destination route, and the source route never remounts.
@@ -61,18 +49,16 @@ export const SignInRecoveryGate: ParentComponent = (props) => {
   // The client-side destination this gate navigated to, until the router
   // reaches it.
   const [arriving, setArriving] = createSignal<string | null>(null)
+  const [signingOut, setSigningOut] = createSignal(false)
 
-  createEffect(on(() => auth.signInRecovery()?.completed ?? false, (completed) => {
+  createEffect(on(() => auth.signInRecovery()?.read.kind === 'completed', (completed) => {
     const recovery = untrack(auth.signInRecovery)
     if (!completed || !recovery)
       return
-    const destination = recoveryDestination(recovery)
-    if (destination.kind === 'document') {
-      window.location.assign(destination.path)
-      return
-    }
-    setArriving(destination.path)
-    navigate(destination.path, { replace: true })
+    const destination = postSignInDestination(recovery.verificationRequired, recovery.redirect)
+    if (destination.kind === 'route')
+      setArriving(destination.path)
+    followDestination(navigate, destination)
   }))
 
   createEffect(() => {
@@ -83,31 +69,55 @@ export const SignInRecoveryGate: ParentComponent = (props) => {
     auth.finishSignInRecovery()
   })
 
+  // The failed read, narrowed so the failure screen reads its message without
+  // deriving the discriminant again in the JSX.
+  const failure = () => {
+    const read = auth.signInRecovery()?.read
+    return read?.kind === 'failed'
+      ? read
+      : undefined
+  }
+
+  const signOut = () => {
+    setSigningOut(true)
+    void (async () => {
+      try {
+        await auth.logout()
+      }
+      finally {
+        setSigningOut(false)
+      }
+    })()
+  }
+
   return (
     <Show when={auth.signInRecovery()} fallback={props.children}>
-      {recovery => (
-        <div class={centeredFull}>
-          <Show
-            when={recovery().error}
-            fallback={(
-              <div role="status" data-testid="signin-recovery-pending">
-                <Spinner size="md" />
-                <p>Loading your account…</p>
-              </div>
-            )}
-          >
-            {error => (
-              <div role="alert" data-testid="signin-recovery">
-                <p>You are signed in, but your account could not be loaded.</p>
-                <p>{error()}</p>
-                <button type="button" onClick={() => void auth.retrySignInRecovery()}>
-                  Retry
-                </button>
-              </div>
-            )}
-          </Show>
-        </div>
-      )}
+      <div class={centeredFull}>
+        <Show
+          when={failure()}
+          fallback={(
+            <div role="status" data-testid="signin-recovery-pending">
+              <Spinner size="md" />
+              <p>Loading your account…</p>
+            </div>
+          )}
+        >
+          {failed => (
+            <div role="alert" data-testid="signin-recovery">
+              <p>You are signed in, but your account could not be loaded.</p>
+              <p>{failed().message}</p>
+              <button type="button" disabled={signingOut()} onClick={() => void auth.retrySignInRecovery()}>
+                Retry
+              </button>
+              <button type="button" disabled={signingOut()} onClick={signOut} data-testid="signin-recovery-sign-out">
+                {signingOut()
+                  ? 'Signing out...'
+                  : 'Sign out'}
+              </button>
+            </div>
+          )}
+        </Show>
+      </div>
     </Show>
   )
 }

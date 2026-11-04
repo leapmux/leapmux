@@ -106,7 +106,7 @@ type Service struct {
 
 	// ---- Mutable runtime state: everything that changes over the worker's
 	// life, touched concurrently by the handler goroutines DispatchAsync
-	// spawns. The fields mutated in place (registeredBy, Cleanup, the two
+	// spawns. The fields mutated in place (owner, Cleanup, the two
 	// cleanup registries, the sync.Maps) each carry their own
 	// synchronisation. The pointer fields are assigned once but own the
 	// mutable state behind them -- the startup registries and PrivateEvents
@@ -166,7 +166,7 @@ type Service struct {
 
 	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
 	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
-	// teardown hygiene. registerAllClassified stops any prior manager before
+	// teardown hygiene. registerAllWithGuards stops any prior manager before
 	// reassigning this field, so a re-registration (production reconnect, or a
 	// test that re-runs RegisterAll to inspect the gate map on a throwaway
 	// dispatcher) cannot orphan the prior manager's reaper goroutine -- its Stop
@@ -174,7 +174,7 @@ type Service struct {
 	// prevent.
 	//
 	// It is an atomic.Pointer (not a plain field) for the same reason
-	// registeredBy is: the connect loop / a reconnect can re-run RegisterAll on
+	// owner is: the connect loop / a reconnect can re-run RegisterAll on
 	// one goroutine while a signal-driven Shutdown reads it on another, with no
 	// lock ordering them in code. The bootstrap sequence makes that race latent
 	// today, but a plain field would be a data race under -race and a torn/nil
@@ -198,8 +198,9 @@ type Service struct {
 	shuttingDown atomic.Bool
 
 	// stopBackgroundLoops stops the service's background loops -- the orphan
-	// reconciler and the boot-time agent resume sweep -- and blocks until an
-	// in-flight pass returns. Assigned by bootstrap after the loops start, read
+	// reconciler, the boot-time agent resume sweep and the periodic retention and
+	// sweep loops -- and blocks until an in-flight pass returns. Assigned by
+	// bootstrap after the loops start, read
 	// by Shutdown. See SetStopBackgroundLoops for why it cannot be part of
 	// Config.
 	//
@@ -610,7 +611,7 @@ func New(cfg Config) *Service {
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
-	svc.Output.SetQueueHeadDispatchFunc(queueAdapter.QueueHeadDispatch)
+	svc.Output.SetQueueHeadDispatchFunc(svc.queueHeadDispatch)
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
@@ -993,24 +994,25 @@ func (svc *Service) Shutdown() {
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
 
-	// Stop the background loops before the drains below. There are two
-	// of them: the orphan reconciler and the boot-time agent resume sweep.
+	// Stop the background loops before the drains below: the orphan reconciler,
+	// the boot-time agent resume sweep and the periodic retention and sweep loops.
 	//
-	// Both run work that svc.Cleanup does not cover, because only the
+	// They run work that svc.Cleanup does not cover, because only the
 	// dispatcher's tracked handlers are registered with it. The reconciler runs
 	// teardowns of its own (Close*TabForReconcile -> closeTabCommon), and the
 	// resume sweep starts agent processes and registers a remote-IPC cleanup for
-	// each one. The worker entry points run Shutdown BEFORE they cancel the
-	// context those loops are bound to, so without this stop a nudge-triggered
-	// pass -- or a sweep still working through its candidates -- runs DB writes
-	// straight into the deferred sqlDB.Close().
+	// each one. A deregistered worker runs Shutdown BEFORE the context those
+	// loops are bound to ends, and a canceled loop still finishes its current
+	// pass. So without this stop a nudge-triggered pass -- or a sweep still
+	// working through its candidates -- runs DB writes straight into the
+	// deferred sqlDB.Close().
 	//
-	// stop() blocks until both loops are quiet: the reconciler until its
-	// in-flight pass returns, and the sweep until it joins the resumes it already
-	// handed off. That second wait is not an added cost. Those resumes are
-	// registered with svc.AgentStartup, so WaitForInFlight below waits for
-	// exactly the same startups; joining here only moves the wait earlier, to the
-	// point where the sweep can still be observed as running.
+	// stop() blocks until every loop is quiet: the reconciler and the periodic
+	// loops until an in-flight pass returns, and the sweep until it joins the
+	// resumes it already handed off. The wait for the sweep is not an added cost.
+	// Those resumes are registered with svc.AgentStartup, so WaitForInFlight below
+	// waits for exactly the same startups; joining here only moves the wait
+	// earlier, to the point where the sweep can still be observed as running.
 	if stop := svc.stopBackgroundLoops; stop != nil {
 		stop()
 	}
@@ -1226,47 +1228,42 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 // may call -- which, since the Worker stopped tracking workspaces, is every
 // handler except Ping.
 //
-// It exists so a family cannot register an ungated handler by accident: it is
-// handed this instead of the raw *channel.Dispatcher, so the gate is a property
-// of where the handler is registered rather than a line each author must
-// remember. Every entry point wraps the handler -- gating only one would leave
-// a silent hole (git uses both plain and tracked). Each registration also
-// records guardOwnerOnly on the shared registrar so
-// TestEveryRegisteredMethodIsClassified sees the method without replaying the
-// family register functions.
+// It exists so a family cannot register an ungated handler by accident: every
+// family except Ping's is handed this instead of the raw *channel.Dispatcher or
+// the registrar, and so is every helper it registers through
+// (registerOwnerGuarded, the row guards in registrar.go, registerConnHandler).
+// The gate is a property of the type the family receives rather than a line
+// each author must remember. Both entry points (Register and RegisterMode) wrap
+// the handler -- restricting only one would leave a silent hole (git registers
+// both plain and tracked methods). Each registration also records
+// guardOwnerOnly on the shared registrar so TestEveryRegisteredMethodIsClassified
+// sees the method without replaying the family register functions.
 type ownerOnlyRegistrar struct {
 	r registrar
 }
 
-// gate restricts a handler to the worker's owner. The refusal takes the reply
-// shape the method declares -- a stream frame for a server-streaming method,
-// so the receiver has an End to terminate on (see sendStreamError).
-func (o ownerOnlyRegistrar) gate(procedure string, handler channel.HandlerFunc) channel.HandlerFunc {
-	deny := o.r.denial(procedure)
+// gate restricts a handler to the worker's owner. The dispatcher answers the
+// refusal in the reply shape the method declares.
+func (o ownerOnlyRegistrar) gate(handler channel.HandlerFunc) channel.HandlerFunc {
 	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		if !callerIsWorkerOwner(o.r.svc, caller.UserID) {
-			deny(sender, codes.PermissionDenied, workerOwnerDenial)
+			sendPermissionDenied(sender, workerOwnerDenial)
 			return
 		}
 		handler(ctx, caller, req, sender)
 	}
 }
 
-// Register registers a plain owner-gated handler.
+// Register registers a plain owner-only handler.
 func (o ownerOnlyRegistrar) Register(procedure string, handler channel.HandlerFunc) {
 	o.RegisterMode(procedure, dispatchPlain, handler)
 }
 
-// RegisterTracked registers an owner-gated handler whose in-flight calls
-// Shutdown waits for.
-func (o ownerOnlyRegistrar) RegisterTracked(procedure string, handler channel.HandlerFunc) {
-	o.RegisterMode(procedure, dispatchTracked, handler)
-}
-
-// RegisterMode is Register/RegisterTracked selected by an argument, so a gated
-// helper can take the dispatch mode as a parameter instead of existing twice.
+// RegisterMode registers an owner-only handler in the given dispatch mode, so
+// a helper restricted to the owner can take the mode as a parameter instead of
+// existing twice. dispatchTracked makes Shutdown wait for the in-flight calls.
 func (o ownerOnlyRegistrar) RegisterMode(procedure string, mode dispatchMode, handler channel.HandlerFunc) {
-	o.r.register(procedure, guardOwnerOnly, mode, o.gate(procedure, handler))
+	o.r.register(procedure, guardOwnerOnly, mode, o.gate(handler))
 }
 
 // workerOwner is the account that registered this worker, as the Hub last
@@ -1311,14 +1308,29 @@ func (svc *Service) SetStopBackgroundLoops(stop func()) {
 	svc.stopBackgroundLoops = stop
 }
 
+// IdentityOutcome is what ApplyWorkerIdentity did with one WorkerIdentity.
+type IdentityOutcome int
+
+const (
+	// IdentityRefused: the identity carried no owner, so nothing was stored.
+	// It is the zero value, so an outcome that nobody set reads as a refusal.
+	IdentityRefused IdentityOutcome = iota
+	// IdentitySameOwner: the identity carried the owner that the worker held,
+	// and the worker stored it again with its username.
+	IdentitySameOwner
+	// IdentityNewOwner: the worker held no owner, or a different one, and it
+	// stored the identity's owner.
+	IdentityNewOwner
+)
+
 // ApplyWorkerIdentity applies the owner the Hub delivered: on every connect,
-// and again on a live connection when the owner's account changes.
+// and again on a live connection when the owner's account changes. It reports
+// what it did, so the caller can tell a refused identity from an applied one,
+// and an owner that arrived or changed from the same owner delivered again.
 //
-// Both worker entry points (worker.Run's connect loop and the standalone
-// `leapmux worker` command) wire this as their OnWorkerIdentity handler, so the
-// compare/warn/store policy lives once next to the state it guards rather than
-// being copy-pasted per entry point -- which is exactly how one of them would end
-// up missing the empty guard below.
+// bootstrap.Wire wires this for every worker, through nudgeOnNewOwner, which
+// also starts a reconciler pass when the owner changes. The compare/warn/store
+// policy therefore lives once next to the state it guards.
 //
 // An empty owner is refused rather than stored: the owner gate denies an empty
 // owner, so clobbering a good owner with "" would make the worker deny its own
@@ -1328,30 +1340,33 @@ func (svc *Service) SetStopBackgroundLoops(stop func()) {
 // un-own a live worker (deregistration flows through OnDeregister instead), so an
 // empty push is a bug or a truncated payload, never an instruction. The whole
 // frame is ignored then, because its username belongs to the owner it failed to
-// name.
+// identify.
 //
 // A username is never empty, so an empty one means the Hub could not read it.
 // For the same owner, the worker then keeps the username it holds. For a
 // different owner, it stores none: the previous owner's name must not carry over.
-func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) {
+func (svc *Service) ApplyWorkerIdentity(identity *leapmuxv1.WorkerIdentity) IdentityOutcome {
 	uid, ok := userid.New(identity.GetRegisteredBy())
 	if !ok {
 		slog.Warn("hub delivered an empty worker owner, keeping current",
 			"current", svc.RegisteredBy())
-		return
+		return IdentityRefused
 	}
 	next := &workerOwner{id: uid, username: identity.GetRegisteredByUsername()}
+	outcome := IdentityNewOwner
 	if prev := svc.owner.Load(); prev != nil && !prev.id.IsZero() {
-		sameOwner := prev.id.MatchesUser(uid)
-		if !sameOwner {
+		if prev.id.MatchesUser(uid) {
+			outcome = IdentitySameOwner
+			if next.username == "" {
+				next.username = prev.username
+			}
+		} else {
 			slog.Warn("hub reported a different worker owner",
 				"previous", prev.id, "current", uid)
 		}
-		if sameOwner && next.username == "" {
-			next.username = prev.username
-		}
 	}
 	svc.owner.Store(next)
+	return outcome
 }
 
 // RegisteredBy returns the user who registered this worker, or the zero UserID
@@ -1421,17 +1436,20 @@ const workerOwnerDenial = "only the worker owner may use this"
 // Every method records a methodGate at registration time (default-deny: a
 // method with no recorded gate fails TestEveryRegisteredMethodIsClassified):
 //
-//   - guardOwnerOnly — everything, via ownerOnlyRegistrar directly (the
-//     machine-scoped file/git/sysinfo/tunnel families) or via the typed
-//     registerOwnerGuarded / registerAgentGuarded / registerTerminalGuarded helpers
-//     that layer an unmarshal and a row load on top of the same gate. The
-//     ByID variants resolve the tab through an id-only existence probe for
-//     handlers that never read the row.
+//   - guardOwnerOnly — everything except Ping, through ownerOnlyRegistrar.
+//     A handler that decodes its request registers through the typed
+//     registerOwnerGuarded helper, which layers the unmarshal on the gate,
+//     or through registerAgentGuarded / registerTerminalGuarded, which also
+//     load the row. The ByID variants resolve the tab through an id-only
+//     existence probe for handlers that never read the row. The tunnel
+//     family registers through registerConnHandler, which builds on
+//     registerOwnerGuarded. Only GetWorkerSystemInfo, which reads no
+//     request, registers through ownerOnlyRegistrar.Register directly.
 //   - gateNone      — Ping; a liveness probe that does no work and discloses
 //     nothing, ungated by design.
 //
-// RegisterAll also binds svc.Cleanup as the drain every RegisterTracked
-// dispatch requires, so a dispatcher cannot carry this service's tracked
+// RegisterAll also binds svc.Cleanup as the drain every dispatchTracked
+// registration requires, so a dispatcher cannot carry this service's tracked
 // handlers without the WaitGroup Shutdown waits on. Both objects are
 // already arguments here, which is what makes the binding derivable from
 // the call rather than a second one an entry point has to remember: a
@@ -1448,28 +1466,24 @@ func RegisterAll(d *channel.Dispatcher, svc *Service) {
 // registerAllWithGuards is the registration body shared by RegisterAll and
 // tests that need the gate map. Production call sites use RegisterAll; tests
 // call this on a throwaway dispatcher so the gate map and Methods() come from
-// the same function production runs — replay drift is impossible.
-func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]methodGate {
-	gates, _ := registerAllClassified(d, svc)
-	return gates
-}
-
-// registerAllClassified is registerAllWithGuards plus the reply-shape map, so a
-// test can assert that every classification came from the one function
-// production runs. Each method's scope is read from its proto declaration
+// the same function production runs — replay drift is impossible. Each
+// method's scope and reply shape are read from its proto declaration
 // (rpcaccess), not recorded here.
-func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]methodGate, map[string]methodShape) {
+func registerAllWithGuards(d *channel.Dispatcher, svc *Service) map[string]methodGate {
 	r := newRegistrar(d, svc)
+	// Ping is the one method that is not owner-only (gateNone), so its family
+	// is the one that receives the registrar itself.
 	registerPingHandler(r, svc)
-	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
+	// Every other family is owner-only by construction: it receives only the
+	// owner gate (see ownerOnlyRegistrar).
 	ownerOnly := r.ownerOnly()
 	registerFileHandlers(ownerOnly, svc)
 	registerGitHandlers(ownerOnly, svc)
-	registerTerminalHandlers(r, svc)
-	registerAgentHandlers(r, svc)
-	registerAgentSessionHandlers(r, svc)
-	registerCloseTabHandler(r, svc)
-	registerCleanupHandlers(r, svc)
+	registerTerminalHandlers(ownerOnly, svc)
+	registerAgentHandlers(ownerOnly, svc)
+	registerAgentSessionHandlers(ownerOnly, svc)
+	registerCloseTabHandler(ownerOnly, svc)
+	registerCleanupHandlers(ownerOnly, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	tunnels := registerTunnelHandlers(ownerOnly)
 	// Swap in the new manager and Stop the prior one it displaced. A
@@ -1481,11 +1495,11 @@ func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]meth
 	// whose sweeper never started (the common case for re-registration before any
 	// half-close). The Swap is atomic so a concurrent Shutdown.Load sees either
 	// the prior or the new manager, never a torn pointer -- the same reason
-	// registeredBy is an atomic.Pointer.
+	// owner is an atomic.Pointer.
 	if prior := svc.tunnels.Swap(tunnels); prior != nil {
 		prior.Stop()
 	}
-	return r.gates, r.shapes
+	return r.gates
 }
 
 // optionGroupLabelInGroups returns the display label of the option group with the
@@ -1585,7 +1599,7 @@ func sendProtoResponse(sender channel.ResponseWriter, msg proto.Message) {
 		_ = sender.SendError(int32(codes.Internal), "internal: marshal response")
 		return
 	}
-	if err := sender.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: data}); err != nil {
+	if err := sender.SendResponse(channelwire.NewPayloadResponse(data)); err != nil {
 		// A rejected message is the one send failure worth answering: the
 		// channel refused THIS payload on its own terms (it is over the
 		// size cap), so the transport is fine and a small reply will get
@@ -1636,22 +1650,6 @@ func sendPermissionDenied(sender channel.ResponseWriter, msg string) {
 // sendInvalidArgument sends an InvalidArgument error response.
 func sendInvalidArgument(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.InvalidArgument), msg)
-}
-
-// sendStreamError reports a terminal failure on a STREAMING method.
-//
-// The sender helpers above emit an InnerRpcResponse, which the frontend routes
-// through pendingRequests. A streaming call's correlation id lives in
-// streamListeners instead. That frame is not lost -- deliverResponse has a branch
-// that hands a unary ERROR on a stream id to the listener's onError -- but it
-// carries no End flag, so a receiver cannot terminate on it generically, and the
-// sibling non-error case IS dropped. Streaming handlers therefore report failure
-// in-band, as an InnerStreamMessage with an error, so one reply shape covers
-// every outcome on the stream. The frame also sets End (see
-// channelwire.NewStreamError); the browser checks the error before End (see
-// deliverStream), so it still reports the error rather than a clean close.
-func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string) {
-	_ = sender.SendStream(channelwire.NewStreamError(int32(code), msg))
 }
 
 // refuseIfShuttingDown rejects a tab-opening request once Shutdown has begun,

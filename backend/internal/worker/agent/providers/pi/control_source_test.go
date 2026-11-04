@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -57,7 +58,7 @@ func TestPiQuestionIndexRejectsDifferentAndAmbiguousDialogs(t *testing.T) {
 func TestPiQuestionIndexMatchesMultiSelectAndCustomInput(t *testing.T) {
 	t.Parallel()
 	args := json.RawMessage(`{"questions":[{"question":"Choose","header":"Layout","multiSelect":true,"options":[{"label":"A","description":"first"}]},{"question":"Explain","options":[{"label":"B","description":"second"}]}]}`)
-	index, matches := piQuestionIndex(piQuestionDialog{Method: "input", Title: "[Layout] Choose\n\n1. A — first\n\nLocalized instructions", Placeholder: "1,3"}, args)
+	index, matches := piQuestionIndex(piQuestionDialog{Method: "input", Title: "[Layout] Choose\n\n1. A — first\n\nLocalized instructions", Placeholder: contracts.PiQuestionDialogMultiSelectPlaceholder}, args)
 	assert.True(t, matches)
 	assert.Equal(t, 0, index)
 	index, matches = piQuestionIndex(piQuestionDialog{Method: "input", Title: "Explain\n\nLocalized custom answer prompt"}, args)

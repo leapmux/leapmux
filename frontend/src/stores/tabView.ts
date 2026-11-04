@@ -62,8 +62,8 @@ export interface CreateTabViewOpts {
    * drain, the resize handler, the bell and notification helpers -- and every
    * one of them must resolve a quake terminal or the panel receives no bytes and
    * swallows every keystroke. `detachedTerminalTabs` is the same family as a
-   * LIST, for the callers that must sweep it: the hydrators, whose retry keeps
-   * a quake terminal's status moving, and the worker-offline sweep. `get`/`getById`
+   * LIST, for the callers that must walk it: the hydrators, whose retry keeps
+   * a quake terminal's status moving, and the quake panel. `get`/`getById`
    * are the PLACEMENT-shaped lookups that selection, tile drag and tile move
    * read, and a quake terminal must stay invisible to all of those. Do not "fix"
    * the inconsistency by widening one of THOSE.

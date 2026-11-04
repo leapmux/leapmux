@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFile } from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { readWorkerFile } from './readWorkerFile'
 
 vi.mock('~/api/workerRpc', () => ({
-  readFile: vi.fn(),
+  workerFile: {
+    readFile: vi.fn(),
+  },
 }))
-const read = vi.mocked(readFile)
+const read = vi.mocked(workerFile.readFile)
 
 /** The page size the reader asks for, and the window it keeps in flight. */
 const PAGE = 48 * 1024

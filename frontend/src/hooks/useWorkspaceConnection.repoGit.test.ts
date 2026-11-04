@@ -1,7 +1,6 @@
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -14,7 +13,10 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { terminalDisplayStatus } from '~/stores/tab.helpers'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -22,9 +24,12 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
   return {
     ...actual,
-    // The tail-reconcile effect asks for the newest page of every agent tab.
-    // Answered with an empty page so the hook's own promise chains settle.
-    listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    workerAgent: {
+      ...actual.workerAgent,
+      // The tail-reconcile effect asks for the newest page of every agent tab.
+      // Answered with an empty page so the hook's own promise chains settle.
+      listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    },
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
       hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
@@ -114,10 +119,12 @@ function mountConnection() {
     gitStatusSeen: true,
   })
 
+  const workerOnline = createWorkerOnlineStore()
   let dispose!: () => void
   createRoot((d) => {
     dispose = d
     useWorkspaceConnection({
+      workerOnline,
       chatStore,
       agentInputQueueStore: createAgentInputQueueStore(),
       view,
@@ -139,6 +146,7 @@ function mountConnection() {
     chatStore,
     view,
     metadata,
+    workerOnline,
   }
 }
 
@@ -212,11 +220,11 @@ describe('useWorkspaceConnection worker-offline sweep', () => {
   })
 
   it('still disconnects the worker\'s running terminals', () => {
-    const { dispose, view } = mountConnection()
+    const { dispose, view, workerOnline } = mountConnection()
     try {
       streamOpts().onWorkerOnline(WORKER, false)
 
-      expect(view.getTerminalTab('t1')?.status).toBe(TERMINAL_DISCONNECTED)
+      expect(terminalDisplayStatus(view.getTerminalTab('t1')!, workerOnline.isOnline)).toBe(TERMINAL_DISCONNECTED)
     }
     finally {
       dispose()

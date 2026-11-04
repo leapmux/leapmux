@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -439,31 +438,36 @@ func TestApplyIgnoresARegisterOpWithNoField(t *testing.T) {
 	assert.Empty(t, state.FloatingWindows, "a window op with no field creates no window")
 }
 
-// SetFloatingWindowRegisterOp.workspace_id moved from field 9 to field 16, so
-// its payload oneof runs from 10 with no hole and fields 10-15 keep their
-// meaning. A stored op that wrote field 9 now decodes with no field selected,
-// and applying it changes nothing.
-func TestApplyIgnoresAStoredFloatingWindowOpOfTheOldNumbering(t *testing.T) {
-	var stored []byte
-	stored = protowire.AppendTag(stored, 1, protowire.BytesType)
-	stored = protowire.AppendString(stored, "fw1")
-	stored = protowire.AppendTag(stored, 9, protowire.BytesType)
-	stored = protowire.AppendString(stored, "w1")
-
-	var op leapmuxv1.SetFloatingWindowRegisterOp
-	require.NoError(t, proto.Unmarshal(stored, &op))
-	assert.Equal(t, "fw1", op.GetWindowId())
-	assert.Nil(t, op.GetField(), "the old field 9 is no field of the new numbering")
-
+// An op that identifies no entity is one the validator refuses, but bootstrap
+// replays journal ops without the validator, so Apply must hold the same rule:
+// a node or window op with an empty id must not create a record under the empty
+// key, which every reader would then treat as a real entity. The op still
+// advances MaxHlc, as every op that the validator admits does, so a replayed
+// journal reaches the same high-water mark whichever ops it holds.
+func TestApplyIgnoresAnOpThatIdentifiesNoEntity(t *testing.T) {
 	state := crdt.NewState("user-1")
-	crdt.Apply(state, stamped(&op, hlcAt(10, 0, "a")))
+	last := hlcAt(13, 0, "a")
+
+	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{
+		Field: &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneNodeOp{}, hlcAt(11, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
+		Field: &leapmuxv1.SetFloatingWindowRegisterOp_X{X: 1},
+	}, hlcAt(12, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneFloatingWindowOp{}, last))
+
+	assert.NotContains(t, state.Nodes, "", "a node op with no node id creates no node")
+	assert.NotContains(t, state.FloatingWindows, "", "a window op with no window id creates no window")
+	assert.Empty(t, state.Nodes)
 	assert.Empty(t, state.FloatingWindows)
+	assert.True(t, proto.Equal(last, state.GetMaxHlc()), "an ignored op still advances MaxHlc")
 }
 
-// A replayed journal op bypasses the validator, and an old stored op can decode
-// with no tab id at all. Apply must not create a record under the empty key,
-// which every reader would then treat as a real tab. An op whose tab identity
-// is absent altogether is the same case.
+// A replayed journal op bypasses the validator, so Apply must not trust a tab
+// op to carry a tab id. It must not create a record under the empty key, which
+// every reader would then treat as a real tab. An op whose tab identity is
+// absent altogether is the same case.
 func TestApplyIgnoresATabOpWithNoTabID(t *testing.T) {
 	state := crdt.NewState("user-1")
 	typedOnly := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
@@ -486,8 +490,7 @@ func TestApplyIgnoresATabOpWithNoTabID(t *testing.T) {
 }
 
 // A tab identity is a type and an id. A tab op that carries an id but no type
-// is not one this build wrote -- protobuf-es decodes an op stored under the
-// older numbering that way -- so apply ignores it instead of creating a tab of
+// is not one this build wrote, so apply ignores it instead of creating a tab of
 // no type, or tombstoning one it cannot type.
 func TestApplyIgnoresATabOpWithNoTabType(t *testing.T) {
 	state := crdt.NewState("user-1")

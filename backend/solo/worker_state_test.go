@@ -39,6 +39,9 @@ type fakeRegistrar struct {
 
 	retireErr  error
 	retiredIDs []string
+	// retireCtxErrs records the context error each retire ran under, so a test
+	// can tell a retire that the launch's cancellation would have stopped.
+	retireCtxErrs []error
 }
 
 func (f *fakeRegistrar) GetWorkerRegistration(context.Context, string) (hub.WorkerRegistration, error) {
@@ -62,8 +65,9 @@ func (f *fakeRegistrar) RegisterWorker(_ context.Context, _ string, keys *leapmu
 	return &c, nil
 }
 
-func (f *fakeRegistrar) RetireLocalWorker(_ context.Context, workerID string) error {
+func (f *fakeRegistrar) RetireLocalWorker(ctx context.Context, workerID string) error {
 	f.retiredIDs = append(f.retiredIDs, workerID)
+	f.retireCtxErrs = append(f.retireCtxErrs, ctx.Err())
 	return f.retireErr
 }
 
@@ -105,6 +109,15 @@ func readState(t *testing.T, path string) soloState {
 	var s soloState
 	require.NoError(t, json.Unmarshal(data, &s))
 	return s
+}
+
+// preservedState reads the one state file that a launch set aside.
+func preservedState(t *testing.T, path string) soloState {
+	t.Helper()
+	matches, err := filepath.Glob(path + ".corrupt-*")
+	require.NoError(t, err)
+	require.Len(t, matches, 1, "a discarded state must be preserved exactly once")
+	return readState(t, matches[0])
 }
 
 // activeRegistration is the registration of a row a launcher can use.
@@ -289,6 +302,33 @@ func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorker(t *testing.T) {
 	}
 }
 
+// The retire that compensates for a failed write must run even when the launch
+// is cancelled meanwhile, as solo cancels the bring-up when the Hub stops. A
+// retire under the cancelled context would fail its store read, and the new row
+// would stay ACTIVE for ever, pinned to private keys that exist nowhere and
+// counted against the owner's worker limit.
+func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorkerAfterACancel(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	path := filepath.Join(blocked, "state.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := &fakeRegistrar{
+		adminID:   "admin-1",
+		newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok"},
+		onRegister: func() {
+			require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
+			cancel()
+		},
+	}
+
+	_, _, err := loadOrCreateWorkerState(ctx, reg, path, filepath.Join(dir, "data"))
+	require.Error(t, err, "a failed write must fail the launch")
+	require.Equal(t, []string{"w-new"}, reg.retiredIDs, "the row whose keys were lost must be retired")
+	assert.NoError(t, reg.retireCtxErrs[0], "the compensating retire must not inherit the launch's cancellation")
+}
+
 // The DB is the authority on worker ownership: workers.registered_by is NOT NULL and
 // is the fact every machine-scoped gate keys on, so a state file that disagrees with
 // it loses -- and gets refreshed rather than silently re-read next launch.
@@ -346,6 +386,7 @@ func TestLoadOrCreateWorkerState_UnknownWorkerReRegisters(t *testing.T) {
 	assert.Equal(t, "w-new", got.WorkerID)
 	assert.Equal(t, "admin-1", got.RegisteredBy, "a NEW worker is attributed to the admin user")
 	assert.Equal(t, "w-new", readState(t, path).WorkerID, "the new state must be persisted")
+	assert.Equal(t, "gone", preservedState(t, path).WorkerID, "the discarded state must be preserved")
 }
 
 // A transient store failure (for example a disk I/O error) is NOT a missing
@@ -376,7 +417,8 @@ func TestLoadOrCreateWorkerState_TransientLookupErrorDoesNotReRegister(t *testin
 // it means a hand-edited row or a mint path that dropped it. Re-register rather than
 // launch a worker whose every machine-scoped family is permanently dead for its own
 // legitimate user -- a fail-closed outage indistinguishable from a real cross-tenant
-// refusal.
+// refusal. It is one more unusable state, so the row is retired and the file is
+// preserved, as for every other unusable state.
 func TestLoadOrCreateWorkerState_OwnerlessRowReRegisters(t *testing.T) {
 	dir := t.TempDir()
 	// ACTIVE with the seeded keys, so the row fails for the owner alone.
@@ -391,9 +433,134 @@ func TestLoadOrCreateWorkerState_OwnerlessRowReRegisters(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, reg.registered, "an ownerless worker row must not be launched as-is")
-	assert.Empty(t, reg.retiredIDs, "an ownerless row takes the re-register branch, not the retire one")
+	assert.Equal(t, []string{"w1"}, reg.retiredIDs, "an ownerless row is retired like every unusable row")
 	assert.Equal(t, "admin-1", got.RegisteredBy)
 	assert.NotEmpty(t, got.RegisteredBy, "a solo worker must never launch without an owner")
+	assert.Equal(t, "w1", preservedState(t, path).WorkerID, "the discarded state must be preserved")
+}
+
+// A file that lacks the worker ID identifies no row that this launch may retire,
+// so it is only preserved.
+func TestLoadOrCreateWorkerState_AStateWithNoIdentityIsOnlyPreserved(t *testing.T) {
+	t.Parallel()
+
+	for name, saved := range map[string]soloState{
+		"no worker id": {AuthToken: "tok", RegisteredBy: "admin-1"},
+		"neither":      {RegisteredBy: "admin-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := writeState(t, dir, saved)
+			reg := &fakeRegistrar{
+				adminID:   "admin-1",
+				newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
+			}
+
+			got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+			require.NoError(t, err)
+
+			assert.Empty(t, reg.retiredIDs, "the file identifies no row to retire")
+			assert.Equal(t, "w-new", got.WorkerID)
+			assert.Equal(t, saved.WorkerID, preservedState(t, path).WorkerID, "the discarded state must be preserved")
+		})
+	}
+}
+
+// A file with a worker ID and no token identifies a row that no launch can connect
+// as. Left alone, that row stays ACTIVE and offline for good.
+func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
+	t.Parallel()
+
+	newRegistrar := func() *fakeRegistrar {
+		return &fakeRegistrar{
+			registration: activeRegistration("admin-1", workerkeystest.Keys(0x77)),
+			adminID:      "admin-1",
+			newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
+		}
+	}
+	saved := soloState{WorkerID: "w-old", RegisteredBy: "admin-1"}
+
+	t.Run("the row is retired and the file is preserved", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := writeState(t, dir, saved)
+		reg := newRegistrar()
+
+		got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"w-old"}, reg.retiredIDs)
+		assert.Equal(t, "w-new", got.WorkerID)
+		assert.Equal(t, "w-old", preservedState(t, path).WorkerID, "the discarded state must be preserved")
+	})
+
+	t.Run("a row that is gone leaves nothing to retire", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := writeState(t, dir, saved)
+		reg := newRegistrar()
+		reg.registrationErr = store.ErrNotFound
+
+		got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		require.NoError(t, err)
+
+		assert.Empty(t, reg.retiredIDs, "the store does not know this row")
+		assert.Equal(t, "w-new", got.WorkerID)
+		assert.Equal(t, "w-old", preservedState(t, path).WorkerID, "the discarded state must be preserved")
+	})
+
+	t.Run("a failed lookup fails the launch and keeps the file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := writeState(t, dir, saved)
+		boom := errors.New("disk I/O error")
+		reg := newRegistrar()
+		reg.registrationErr = boom
+
+		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+
+		require.ErrorIs(t, err, boom)
+		assert.Empty(t, reg.retiredIDs)
+		assert.Zero(t, reg.registered, "a failed lookup must not proceed to register")
+		assert.Equal(t, "w-old", readState(t, path).WorkerID, "state.json must stay in place for a retry")
+	})
+
+	t.Run("a failed retire fails the launch and keeps the file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := writeState(t, dir, saved)
+		boom := errors.New("database is locked")
+		reg := newRegistrar()
+		reg.retireErr = boom
+
+		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+
+		require.ErrorIs(t, err, boom)
+		assert.Zero(t, reg.registered, "a failed retire must not proceed to register")
+		assert.Equal(t, "w-old", readState(t, path).WorkerID, "state.json must stay in place for a retry")
+	})
+}
+
+// A retire failure fails the launch whichever reason made the state unusable, so
+// the ownerless row keeps its file for a retry as every other unusable row does.
+func TestLoadOrCreateWorkerState_ARetireFailureOnAnOwnerlessRowKeepsTheFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path, keys := seedUsableState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok", RegisteredBy: "someone"})
+	boom := errors.New("database is locked")
+	reg := &fakeRegistrar{
+		registration: activeRegistration("", keys),
+		retireErr:    boom,
+		adminID:      "admin-1",
+		newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
+	}
+
+	_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+
+	require.ErrorIs(t, err, boom)
+	assert.Zero(t, reg.registered, "a failed retire must not proceed to register")
+	assert.Equal(t, "w1", readState(t, path).WorkerID, "state.json must stay in place for a retry")
 }
 
 // A corrupt worker-state file (a partial write from a crash or power loss before
@@ -418,7 +585,7 @@ func TestLoadOrCreateWorkerState_CorruptStateReRegistersLoudlyAndPreserves(t *te
 	require.NoError(t, err, "a corrupt file has no recoverable identity, so re-register is the only path")
 
 	assert.Equal(t, 1, reg.registered, "the unreadable identity must be replaced with a fresh worker")
-	assert.Empty(t, reg.retiredIDs, "an unparseable file names no row to retire")
+	assert.Empty(t, reg.retiredIDs, "an unparseable file identifies no row to retire")
 	assert.Equal(t, "w-new", got.WorkerID)
 	assert.Equal(t, "w-new", readState(t, path).WorkerID, "the fresh identity must be persisted")
 
@@ -511,13 +678,13 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 // exactly where the next load reads it, and dev mode's poller re-enters that path
 // every tick until somebody completes /setup -- re-logging the orphaning and
 // writing a fresh sidecar each time, without bound.
-func TestPreserveCorruptState_MovesTheFileAsideSoTheNextLoadCannotSeeIt(t *testing.T) {
+func TestPreserveDiscardedState_MovesTheFileAsideSoTheNextLoadCannotSeeIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	require.NoError(t, os.WriteFile(path, []byte("{ this is not json"), 0o600))
 
-	preserveCorruptState(path, []byte("{ this is not json"))
+	preserveDiscardedState(path, []byte("{ this is not json"))
 
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist,

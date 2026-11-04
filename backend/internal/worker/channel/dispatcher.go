@@ -34,15 +34,19 @@ type ResponseWriter interface {
 }
 
 // errorQueuer is implemented by response writers that can hand an error to a
-// drainer instead of sending it inline. DispatchAsync's unknown-method arm runs
-// on the worker's shared Connect receive goroutine, where an inline send takes
-// the session's encryption gate and can park behind a handler that is itself
-// parked on the connection writer's byte budget -- wedging the ONE receive
-// loop that serves every channel on this worker. Queuing keeps that loop free;
-// writers that are not on the shared receive path (the local-IPC router) keep
-// the inline SendError fallback.
+// drainer instead of sending it inline. DispatchAsync's own refusals (an unknown
+// method, a stream it cannot prepare) run on the worker's shared Connect receive
+// goroutine, where an inline send takes the session's encryption gate and can
+// park behind a handler that is itself parked on the connection writer's byte
+// budget -- wedging the ONE receive loop that serves every channel on this
+// worker. Queuing keeps that loop free; writers that are not on the shared
+// receive path (the local-IPC router) keep the inline send (see queueRefusal).
 type errorQueuer interface {
+	// QueueError queues a unary error, an InnerRpcResponse.
 	QueueError(code int32, message string)
+	// QueueStreamError queues a stream error frame, an InnerStreamMessage that
+	// carries the error and ends the stream.
+	QueueStreamError(code int32, message string)
 }
 
 // Prepare the stream before dispatch can race a client update or cancellation.
@@ -69,11 +73,12 @@ type streamPreparer interface {
 // forget post-response work that must outlive the request should keep
 // using `bgCtx()`.
 //
-// `sender` is the dispatcher's writer, handed over by identity rather
-// than wrapped. A handler MAY retain it past return -- WatchEvents does
-// exactly that, parking it in the watcher registry to carry live events
-// for the rest of the channel's life. That is only sound because every
-// transport mints a FRESH writer per inbound request (see the
+// `sender` is the transport's writer for this request. A unary method receives
+// it by identity. A streaming method receives it inside shapedWriter, which adds
+// the declared reply shape and no other state. A handler MAY retain it past
+// return -- WatchEvents does exactly that, parking it in the watcher registry to
+// carry live events for the rest of the channel's life. That is only sound
+// because every transport mints a FRESH writer per inbound request (see the
 // boundSender built in HandleMessage, and controlipc's per-call
 // collectors): the writer carries the request's correlation id, so a
 // retained one keeps addressing the stream it was created for. A
@@ -89,11 +94,8 @@ type registered struct {
 	fn      HandlerFunc
 	tracked bool
 	// streaming records that this method answers with InnerStreamMessage
-	// frames rather than a single InnerRpcResponse. invoke needs it to
-	// report a panic in a shape the caller is actually listening for: a
-	// streaming call's correlation id is registered as a stream on the
-	// client, and an InnerRpcResponse on a stream id is dropped with no
-	// pending request to receive it.
+	// frames rather than a single InnerRpcResponse. Every error reply takes this
+	// shape, whoever sends it (see shapedWriter).
 	streaming bool
 }
 
@@ -121,8 +123,8 @@ func NewDispatcher() *Dispatcher {
 
 // Registration states how the dispatcher runs one method.
 type Registration struct {
-	// Tracked makes in-flight invocations gate Shutdown via the WaitGroup
-	// bound by BindCleanup. Use it for any destructive mutation whose
+	// Tracked makes Shutdown wait for in-flight invocations, through the
+	// WaitGroup that BindCleanup binds. Use it for any destructive mutation whose
 	// half-applied state would leak if Shutdown returned mid-flight -- e.g. a
 	// multi-step git mutation that has run the first command but not the
 	// second, or a worktree teardown that has removed the directory but not
@@ -140,9 +142,10 @@ type Registration struct {
 	Tracked bool
 	// Streaming marks a server-streaming method, whose replies are
 	// InnerStreamMessage frames rather than one InnerRpcResponse. The
-	// dispatcher prepares the stream before the handler runs, and reports a
-	// panic as a stream frame; a unary InnerRpcResponse on a stream id would be
-	// dropped, leaving the caller waiting with no events and no error.
+	// dispatcher prepares the stream before the handler runs, and every error
+	// reply of the method is a stream error frame: the dispatcher's own
+	// refusals (a stream it cannot prepare, a handler panic), and each SendError
+	// of the handler (see shapedWriter).
 	Streaming bool
 }
 
@@ -154,25 +157,6 @@ func (d *Dispatcher) Handle(method string, reg Registration, handler HandlerFunc
 		panic("duplicate inner RPC handler: " + method)
 	}
 	d.handlers[method] = registered{fn: handler, tracked: reg.Tracked, streaming: reg.Streaming}
-}
-
-// Register adds a plain handler. The method runs fire-and-forget on
-// Shutdown: in-flight calls are NOT awaited. Use this for read-only probes
-// whose results are safe to drop on teardown.
-func (d *Dispatcher) Register(method string, handler HandlerFunc) {
-	d.Handle(method, Registration{}, handler)
-}
-
-// RegisterTracked adds a handler whose in-flight invocations gate Shutdown.
-// See Registration.Tracked.
-func (d *Dispatcher) RegisterTracked(method string, handler HandlerFunc) {
-	d.Handle(method, Registration{Tracked: true}, handler)
-}
-
-// RegisterStream adds a handler for a server-streaming method. See
-// Registration.Streaming.
-func (d *Dispatcher) RegisterStream(method string, handler HandlerFunc) {
-	d.Handle(method, Registration{Streaming: true}, handler)
 }
 
 // Methods returns every registered method name, unordered.
@@ -228,6 +212,8 @@ func (d *Dispatcher) DispatchWith(ctx context.Context, caller Caller, req *leapm
 	h, ok := d.handlers[req.GetMethod()]
 	if !ok {
 		slog.Warn("unknown inner RPC method", "method", req.GetMethod())
+		// An unknown method has no registration to state a reply shape, so its
+		// refusal is unary.
 		_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
 		return
 	}
@@ -264,11 +250,9 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, caller Caller, req *leap
 		// IPC) keep the inline path, which is correct there: they are not on
 		// the shared receive goroutine.
 		slog.Warn("unknown inner RPC method", "method", req.GetMethod())
-		if q, ok := w.(errorQueuer); ok {
-			q.QueueError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
-		} else {
-			_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
-		}
+		// An unknown method has no registration to state a reply shape, so its
+		// refusal is unary.
+		queueRefusal(w, false, codes.Unimplemented, "unknown method: "+req.GetMethod())
 		return
 	}
 	var releaseUnbound func()
@@ -277,9 +261,7 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, caller Caller, req *leap
 			var prepared bool
 			releaseUnbound, prepared = preparer.prepareStream()
 			if !prepared {
-				if queue, ok := w.(errorQueuer); ok {
-					queue.QueueError(int32(codes.FailedPrecondition), "the stream request is closed or its ID is already in use")
-				}
+				queueRefusal(w, h.streaming, codes.FailedPrecondition, "the stream request is closed or its ID is already in use")
 				return
 			}
 		}
@@ -304,6 +286,9 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, caller Caller, req *leap
 // entry points. This is the real decorator choke point for handler
 // invocations.
 func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, w ResponseWriter, h registered) {
+	// Before the deferred recover, so that the panic refusal takes the shape of
+	// every other error of this method.
+	w = withReplyShape(w, h.streaming)
 	// Recover from handler panics so the goroutine doesn't die silently,
 	// which would leave the frontend waiting until its 30s timeout fires.
 	defer func() {
@@ -313,13 +298,52 @@ func (d *Dispatcher) invoke(ctx context.Context, caller Caller, req *leapmuxv1.I
 				"panic", r,
 				"stack", string(debug.Stack()),
 			)
-			if h.streaming {
-				// Report handler failures with the stream's normal response envelope.
-				_ = w.SendStream(channelwire.NewStreamError(int32(codes.Internal), "internal error"))
-				return
-			}
 			_ = w.SendError(int32(codes.Internal), "internal error")
 		}
 	}()
 	h.fn(ctx, caller, req, w)
+}
+
+// shapedWriter makes the reply shape of a server-streaming method a property of
+// its registration. SendError answers with one stream error frame that also ends
+// the stream, so no handler or helper can choose the wrong shape.
+//
+// A unary error is the wrong shape for a stream. The browser holds a streaming
+// call's correlation id in streamListeners. deliverResponse hands a unary ERROR
+// on that id to the listener's onError, but the frame carries no End flag, so a
+// receiver cannot end the stream on it generically. A unary non-error payload on
+// that id is dropped. The browser checks the error before End (see
+// deliverStream), so a frame with both reports the error rather than a clean
+// close.
+type shapedWriter struct {
+	ResponseWriter
+}
+
+// SendError sends the error as a stream frame instead of a unary response.
+func (w shapedWriter) SendError(code int32, message string) error {
+	return w.SendStream(channelwire.NewStreamError(code, message))
+}
+
+// withReplyShape returns the writer that answers in a method's declared shape.
+// A unary method keeps the transport's writer, which already answers unary.
+func withReplyShape(w ResponseWriter, streaming bool) ResponseWriter {
+	if streaming {
+		return shapedWriter{ResponseWriter: w}
+	}
+	return w
+}
+
+// queueRefusal sends a refusal decided on the shared receive goroutine, in the
+// reply shape of the method. It hands the refusal to the writer's error queue
+// when the writer offers one (see errorQueuer), and sends it inline otherwise.
+func queueRefusal(w ResponseWriter, streaming bool, code codes.Code, message string) {
+	queue, ok := w.(errorQueuer)
+	switch {
+	case !ok:
+		_ = withReplyShape(w, streaming).SendError(int32(code), message)
+	case streaming:
+		queue.QueueStreamError(int32(code), message)
+	default:
+		queue.QueueError(int32(code), message)
+	}
 }

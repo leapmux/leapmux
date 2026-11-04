@@ -1,7 +1,9 @@
 /// <reference types="vitest/globals" />
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
+import { timestampFromMs } from '@bufbuild/protobuf/wkt'
 import { createRoot } from 'solid-js'
+import { unwrap } from 'solid-js/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
@@ -138,6 +140,60 @@ describe('useWorkspaceLoader', () => {
 
     expect(workspaceStore.state.error).toBeNull()
     expect(workspaceStore.state.workspaces.map(w => w.id)).toEqual(['w1'])
+  })
+
+  // Each reply decodes a FRESH created time, a nested Timestamp message. A
+  // cache that compared it by reference replaced every workspace object on
+  // every reload, and with it every sidebar row that reads one.
+  it('keeps the object of a workspace whose reload carries the same created time', async () => {
+    mockListWorkspaces.mockImplementation(async () => ({
+      workspaces: [
+        create(WorkspaceSchema, {
+          id: 'w1',
+          title: 'w1',
+          createdAt: timestampFromMs(1_700_000_000_000),
+        }),
+      ],
+    }))
+    const { workspaceStore, loader } = mount()
+    await settle()
+    const first = unwrap(workspaceStore.state.workspaces[0])
+    expect(first?.createdAt, 'the reply carries a created time').toBeDefined()
+
+    await loader.loadWorkspaces()
+
+    expect(mockListWorkspaces).toHaveBeenCalledTimes(2)
+    expect(unwrap(workspaceStore.state.workspaces[0])).toBe(first)
+  })
+
+  it('replaces the object of a workspace whose created time changed', async () => {
+    mockListWorkspaces.mockResolvedValueOnce({
+      workspaces: [
+        create(WorkspaceSchema, {
+          id: 'w1',
+          title: 'w1',
+          createdAt: timestampFromMs(1_700_000_000_000),
+        }),
+      ],
+    })
+    const { workspaceStore, loader } = mount()
+    await settle()
+    const first = unwrap(workspaceStore.state.workspaces[0])
+
+    mockListWorkspaces.mockResolvedValueOnce({
+      workspaces: [
+        create(WorkspaceSchema, {
+          id: 'w1',
+          title: 'w1',
+          createdAt: timestampFromMs(1_700_000_001_000),
+        }),
+      ],
+    })
+    await loader.loadWorkspaces()
+
+    const second = unwrap(workspaceStore.state.workspaces[0])
+    expect(second).not.toBe(first)
+    expect(second?.createdAt?.seconds).toBe(1_700_000_001n)
   })
 
   // loadWorkspaces is fired from at least four places (mount, the workspace

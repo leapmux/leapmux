@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -14,16 +15,28 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/version"
 )
 
-func TestNewSystemServiceRequiresAnAuthService(t *testing.T) {
+func TestNewSystemServiceRequiresBothDependencies(t *testing.T) {
 	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	authSvc := service.NewAuthService(
+		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+
 	assert.PanicsWithValue(t, "service: NewSystemService requires an AuthService", func() {
-		service.NewSystemService(nil)
+		service.NewSystemService(nil, set)
 	})
+	assert.PanicsWithValue(t, "service: NewSystemService requires a settings manager", func() {
+		service.NewSystemService(authSvc, nil)
+	})
+	assert.NotPanics(t, func() { service.NewSystemService(authSvc, set) })
 }
 
 // GetTimeouts reports the configured API timeout to an authenticated caller,
@@ -35,7 +48,7 @@ func TestSystemService_GetTimeouts(t *testing.T) {
 	set := servicetest.NewSettingsManager(t, st, nil)
 	require.NoError(t, set.Update(context.Background(), settings.KeyTimeouts, json.RawMessage(`{"api_seconds":11}`)))
 	svc := service.NewSystemService(service.NewAuthService(
-		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))))
+		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u-timeouts")})
 	resp, err := svc.GetTimeouts(ctx, &leapmuxv1.GetTimeoutsRequest{})
@@ -88,8 +101,9 @@ func TestSystemService_GetTimeoutsReportsTheDefaultWhenUnset(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
 	svc := service.NewSystemService(service.NewAuthService(servicetest.AuthServiceDeps(
-		st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))))
+		st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u-default-timeouts")})
 	resp, err := svc.GetTimeouts(ctx, &leapmuxv1.GetTimeoutsRequest{})
@@ -104,6 +118,42 @@ func TestSystemService_GetSystemInfoNeverRequiresSetupInSolo(t *testing.T) {
 	t.Parallel()
 
 	info := systemInfoForSolo(t, fakeListenReporter{primary: "127.0.0.1:4327"}, tcpCtx("127.0.0.1"), false)
-	assert.True(t, info.GetSoloMode())
+	assert.NotEqual(t, leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED, info.GetSoloAccess(), "a solo hub reports a solo access state")
 	assert.False(t, info.GetSetupRequired())
+}
+
+// A failed read of the enabled OAuth providers degrades: the sign-in page
+// hides the provider buttons rather than failing the whole system
+// information. The failure must still reach the log, or an operator has no
+// trace of why the buttons are gone.
+//
+// Not parallel: it captures slog's process-global default logger.
+func TestSystemService_GetSystemInfoLogsAFailedProviderRead(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	svc := service.NewSystemService(service.NewAuthService(servicetest.AuthServiceDeps(
+		failingProviderListStore{st}, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
+
+	info, err := svc.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+	require.NoError(t, err, "a failed provider read degrades rather than failing the request")
+	assert.False(t, info.GetOauthEnabled(), "an unread provider list reports OAuth as off")
+	assert.Contains(t, logs.String(), "level=WARN")
+	assert.Contains(t, logs.String(), errProviderListFailed.Error(), "the log carries the read's error")
+}
+
+var errProviderListFailed = errors.New("provider list read failed")
+
+// failingProviderListStore fails every read of the enabled OAuth providers.
+type failingProviderListStore struct{ store.Store }
+
+func (s failingProviderListStore) OAuthProviders() store.OAuthProviderStore {
+	return failingProviderList{s.Store.OAuthProviders()}
+}
+
+type failingProviderList struct{ store.OAuthProviderStore }
+
+func (failingProviderList) ListEnabled(context.Context) ([]store.OAuthProviderSummary, error) {
+	return nil, errProviderListFailed
 }

@@ -14,9 +14,9 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState } from '~/api/platformBridge'
+import { queueHeadAction } from '~/components/chat/agentInputQueueDrop'
 import { openPreferences } from '~/components/shell/UserMenuState'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
-import { QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { launchExternalApp, loadExternalApps, resolvePreferredExternalApp } from '~/lib/externalApps'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
@@ -288,22 +288,21 @@ export function useShortcuts(props: UseShortcutsProps): void {
     // and could still be a tick stale at dispatch.
     if (tab?.type !== TabType.AGENT)
       return
-    // Index 0 and never a scan: the worker marks `canSteer` and `canPreempt`
-    // on the head alone, so a search for a steerable item answers a different
-    // question from the one the worker enforces.
-    const head = props.getAgentInputQueue(tab.id)?.items[0]
-    if (tab.queueHeadDispatch === QueueHeadDispatch.STEER) {
-      if (!head?.canSteer)
-        return
-      // RETURNED, not discarded: `executeCommand` attaches a catch to a
-      // returned promise, and `runQueueRpc` rethrows after it toasts.
-      return props.steerQueueItem(tab.id, head)
-    }
+    // The head and its action come from the rule the queue panel's head row
+    // reads: the first input that does not await its echo, which is the item
+    // the worker marks `canSteer` and `canPreempt` on. A search for a
+    // steerable item would answer a different question from the one the
+    // worker enforces.
+    const offered = queueHeadAction(tab.queueHeadDispatch, props.getAgentInputQueue(tab.id)?.items ?? [])
+    if (!offered)
+      return
+    // RETURNED, not discarded: `executeCommand` attaches a catch to a
+    // returned promise, and `runQueueRpc` rethrows after it toasts.
     // Preemption is the same chord on a provider that can only interrupt: the
     // turn is cancelled and the head follows as the next dispatch.
-    if (tab.queueHeadDispatch !== QueueHeadDispatch.PREEMPT || !head?.canPreempt)
-      return
-    return props.preemptQueueItem(tab.id, head)
+    return offered.action === 'steer'
+      ? props.steerQueueItem(tab.id, offered.head)
+      : props.preemptQueueItem(tab.id, offered.head)
   }, 'Chat')
 
   /**

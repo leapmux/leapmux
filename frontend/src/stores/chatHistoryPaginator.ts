@@ -2,7 +2,7 @@ import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
 import type { AgentChatMessage, ListAgentMessagesResponse, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
-import { listAgentMessages } from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
 import { exceedsCatchUpGapLimit } from './chatLiveTail'
@@ -62,7 +62,7 @@ export function linkWatchSignal(controller: AbortController, watchSignal?: Abort
  * drift on the anchor + page-size wiring.
  */
 function listMessagesAfter(workerId: string, agentId: string, cursorSeq: bigint) {
-  return listAgentMessages(workerId, {
+  return workerAgent.listAgentMessages(workerId, {
     agentId,
     anchor: MessagePageAnchor.AFTER,
     cursorSeq,
@@ -184,7 +184,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
       let resp
       try {
-        resp = await listAgentMessages(workerId, {
+        resp = await workerAgent.listAgentMessages(workerId, {
           agentId,
           anchor: MessagePageAnchor.LATEST,
           limit: MESSAGE_PAGE_LIMIT,
@@ -232,7 +232,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       return
     }
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
-      const resp = await listAgentMessages(workerId, {
+      const resp = await workerAgent.listAgentMessages(workerId, {
         agentId,
         anchor: MessagePageAnchor.BEFORE,
         cursorSeq: firstSeq,
@@ -643,7 +643,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       const liveSeqAtEntry = deps.liveTail.get(agentId)
       // Always re-anchor on a fresh latest page so the window is contiguous
       // up to the tail regardless of how far it had drifted.
-      const latest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
+      const latest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
       if (signal.aborted)
         return
       applyLatestPage(agentId, latest)
@@ -669,7 +669,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    */
   async function jumpToOldestMessages(workerId: string, agentId: string): Promise<void> {
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
-      const oldest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+      const oldest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
       if (signal.aborted)
         return
       // applyMessages sets hasMoreOlder from its `hasMore` argument and
@@ -716,8 +716,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       let before, after
       try {
         [before, after] = await Promise.all([
-          listAgentMessages(workerId, beforeRequest, { signal }),
-          listAgentMessages(workerId, {
+          workerAgent.listAgentMessages(workerId, beforeRequest, { signal }),
+          workerAgent.listAgentMessages(workerId, {
             agentId,
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: seq,

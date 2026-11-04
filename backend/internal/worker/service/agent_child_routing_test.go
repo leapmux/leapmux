@@ -692,11 +692,12 @@ func TestChildQueueHeadDispatchFollowsItsOwnersSteering(t *testing.T) {
 
 	ctx := context.Background()
 	svc, _, childID, rootID := setupChildAgentTest(t)
-	adapter := &agentInputQueueAdapter{svc: svc}
-	assert.Equal(t, queueHeadNone, adapter.QueueHeadDispatch(childID),
+	child, err := svc.Queries.GetAgentByID(ctx, childID)
+	require.NoError(t, err)
+	assert.Equal(t, queueHeadNone, svc.queueHeadDispatch(&child, true),
 		"a child whose owner does not run has no turn to join")
 
-	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: rootID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
@@ -704,9 +705,9 @@ func TestChildQueueHeadDispatchFollowsItsOwnersSteering(t *testing.T) {
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(rootID) })
 	require.True(t, svc.Agents.SupportsSteering(rootID), "the mock owner must expose regular steering")
 
-	assert.Equal(t, queueHeadSteer, adapter.QueueHeadDispatch(childID))
-	child, err := svc.Queries.GetAgentByID(ctx, childID)
-	require.NoError(t, err)
+	assert.Equal(t, queueHeadSteer, svc.queueHeadDispatch(&child, true))
+	assert.Equal(t, queueHeadNone, svc.queueHeadDispatch(&child, false),
+		"a status that says the child does not run offers no dispatch")
 	assert.Equal(t, queueHeadSteer, svc.agentToProto(&child, agentLiveness{running: true}, nil).GetQueueHeadDispatch(),
 		"the listing states the same dispatch the status changes carry")
 }

@@ -435,8 +435,8 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
     setLoading(true)
     setLoadFailed(false)
     try {
-      // EVERY page through the shared fetchAllPages, at the sibling panel's
-      // constants: an administrator with open registration on can pass a
+      // EVERY page through the shared fetchAllPages, which asks for the hub's
+      // maximum page: an administrator with open registration on can pass a
       // smaller page size without lifting a finger, and a registration the
       // panel never drew was one whose Edit and Retire controls did not exist.
       // The hub's own switch rides the listing; the last page's value is the

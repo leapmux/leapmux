@@ -3,7 +3,6 @@ package controlipc
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +25,7 @@ type LocalDispatcher interface {
 
 // CrossWorkerClient sends remote procedure calls (RPCs) through the hub's end-to-end encrypted channel relay.
 // The delegation bearer applies to one user and minting worker. The channel pool key contains the target and user.
+// CallInner returns an error that the sibling worker's handler answers in-band as a *channelwire.RPCError, which keeps its code.
 // StreamInner supplies a controller for revisions and cancellation on the dedicated stream channel.
 type CrossWorkerClient interface {
 	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error)
@@ -33,15 +33,17 @@ type CrossWorkerClient interface {
 }
 
 // HubClient sends hub requests for the spawning user with a delegation token.
+// procedure is the full procedure path of the hub method.
 // The hub enforces the token's grant through auth.CeilingFor. A channel.Caller grant here would add an unenforced second authority.
 type HubClient interface {
-	CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
+	CallInner(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error)
 }
 
 // HubStreamer forwards a server-streaming hub RPC with the spawning user's delegation token.
+// procedure is the stream's address, hubrpc.WatchUserStream for the one stream that the hub serves.
 // payload contains the serialized request protobuf. onPayload receives serialized response protobufs.
 type HubStreamer interface {
-	StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error
+	StreamHub(ctx context.Context, userID userid.UserID, procedure string, payload []byte, onPayload func([]byte) error) error
 }
 
 // LocalStreams releases subscriptions for a synthetic local stream ID.
@@ -52,12 +54,16 @@ type LocalStreams interface {
 
 // Router dispatches local-IPC requests to the appropriate backend.
 //
-// Method names are namespaced:
+// Method names are namespaced, and both namespaces address a method by its
+// full procedure path:
 //   - "worker.<procedure>", such as
 //     "worker./leapmux.v1.WorkerAgentService/OpenAgent": the local worker's
 //     inner-RPC dispatcher when target_worker_id is empty or this worker's id,
 //     and a cross-worker channel for any other id.
-//   - "hub.<Service>/<Method>": the hub-bound client.
+//   - "hub.<procedure>", such as "hub./leapmux.v1.WorkspaceService/LocateTab":
+//     the hub-bound client, which resolves the procedure through
+//     internal/hubrpc. The streamed "hub./ws/userevents"
+//     (hubrpc.WatchUserStream) goes through HubStreams instead.
 //
 // The router never reads a payload to choose the destination.
 type Router struct {
@@ -94,10 +100,17 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 			return nil, connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
 		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, bare, payload)
+		// The sibling's handler answered the call with an error. Keep it
+		// in-band with its code, as dispatchLocal keeps a local handler's: the
+		// caller reads a Connect error as a failure to reach the worker.
+		var siblingErr *channelwire.RPCError
+		if errors.As(err, &siblingErr) {
+			return channelwire.NewErrorResponse(siblingErr.Code, siblingErr.Message), nil
+		}
 		if err != nil {
 			return nil, relayError(err)
 		}
-		return &leapmuxv1.InnerRpcResponse{Payload: out}, nil
+		return channelwire.NewPayloadResponse(out), nil
 	case namespaceHub:
 		if r.Hub == nil {
 			return nil, connect.Errorf(connect.CodeUnimplemented, "hub client not configured")
@@ -106,21 +119,37 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if err != nil {
 			return nil, relayError(err)
 		}
-		return &leapmuxv1.InnerRpcResponse{Payload: out}, nil
+		return channelwire.NewPayloadResponse(out), nil
 	default:
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
 }
 
-// relayError preserves Connect error codes from the hub or a sibling worker.
-// Callers use these codes to distinguish missing resources from unavailable workers.
-// These failures carry a nil response. They do not use dispatchLocal's in-band error.
+// relayError preserves the Connect error code of a failure to reach the hub or a
+// sibling worker, such as a channel that cannot open or a hub that refuses the
+// call. Callers use these codes to distinguish missing resources from
+// unavailable workers. These failures carry a nil response. An error that a
+// worker's handler answers stays in-band instead, as dispatchLocal's does.
 func relayError(err error) error {
 	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
-	if code := connect.CodeOf(err); code != connect.CodeUnknown {
-		return connect.NewError(code, err.Error()).WithCause(err)
+	code := connect.CodeOf(err)
+	if code == connect.CodeUnknown {
+		code = connect.CodeInternal
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return connect.NewError(code, relayMessage(err)).WithCause(err)
+}
+
+// relayMessage returns the text of err for a new Connect error. The text of a
+// Connect error starts with its code, and connect.NewError prints the code in
+// front of its message, so the relay carries the Connect error's own message
+// instead. The text that a wrapper added stays, because it says which step of
+// the relay failed.
+func relayMessage(err error) string {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return err.Error()
+	}
+	return strings.Replace(err.Error(), connectErr.Error(), connectErr.Message(), 1)
 }
 
 // withLocalStream creates one synthetic stream ID and releases its subscriptions after dispatch.
@@ -147,8 +176,20 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 	return collector.toResponse()
 }
 
-// StreamInner runs a server-streaming inner RPC.
+// StreamInner runs a server-streaming inner RPC. A stream that ends with an
+// error that a worker's handler answered in-band returns it as a Connect error
+// with the same code, so the caller reads the code that CallInner keeps
+// in-band for a unary call.
 func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) error {
+	err := r.streamInner(ctx, info, method, payload, targetWorkerID, clientReqID, onMsg)
+	var refusal *channelwire.RPCError
+	if errors.As(err, &refusal) {
+		return refusal.ConnectError()
+	}
+	return err
+}
+
+func (r *Router) streamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.InnerStreamMessage) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var entry *streamCancelEntry
@@ -156,8 +197,7 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 		entry = &streamCancelEntry{cancel: cancel}
 		if previous, loaded := r.StreamCancellers.Swap(clientReqID, entry); loaded {
 			if old, ok := previous.(*streamCancelEntry); ok {
-				old.inbox.Cancel()
-				old.cancel()
+				old.retire()
 			}
 		}
 		defer func() {
@@ -215,39 +255,54 @@ func (entry *streamCancelEntry) bind(ctrl channel.StreamController) bool {
 	return entry != nil && entry.inbox.Bind(ctrl)
 }
 
-// UpdateStream delivers a revision to the stream that clientReqID identifies,
-// or retires that stream when cancel is set. An unknown or empty id is a no-op:
-// the stream already ended, and its entry went with it.
+// UpdateStream applies the action of request to the stream that its
+// client_request_id identifies: a revision goes to the stream, and a cancel
+// retires it. An unknown or empty id is a no-op: the stream already ended, and
+// its entry went with it. An update that selects no action fails with
+// InvalidArgument, because it states nothing that the router could apply.
 //
 // A revision waits in the stream's inbox until its controller is ready. An
-// inbox that overflows CANCELS the stream, and the caller reports
+// inbox that overflows CANCELS the stream, and UpdateStream fails with
 // ResourceExhausted. Dropping the frame instead would leave the client believing
 // its revision landed, and reading the wrong events for as long as the stream
 // lives. The cancel is what makes the loss visible: the client's handle closes,
 // and its next update opens a fresh stream that carries the current interest.
-func (r *Router) UpdateStream(clientReqID string, payload []byte, cancel bool) error {
-	if clientReqID == "" {
-		return nil
-	}
-	if cancel {
+func (r *Router) UpdateStream(request *leapmuxv1.UpdateStreamRequest) error {
+	clientReqID := request.GetClientRequestId()
+	switch action := request.GetAction().(type) {
+	case *leapmuxv1.UpdateStreamRequest_Cancel:
 		if value, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
 			if entry, ok := value.(*streamCancelEntry); ok {
-				entry.inbox.Cancel()
-				entry.cancel()
+				entry.retire()
 			}
 		}
 		return nil
-	}
-	if value, ok := r.StreamCancellers.Load(clientReqID); ok {
-		if entry, ok := value.(*streamCancelEntry); ok {
-			if err := entry.inbox.Deliver(payload); err != nil {
-				entry.cancel()
-				entry.inbox.Cancel()
-				return err
-			}
+	case *leapmuxv1.UpdateStreamRequest_Payload:
+		value, ok := r.StreamCancellers.Load(clientReqID)
+		if !ok {
+			return nil
 		}
+		entry, ok := value.(*streamCancelEntry)
+		if !ok {
+			return nil
+		}
+		if err := entry.inbox.Deliver(action.Payload); err != nil {
+			entry.retire()
+			return connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
+		}
+		return nil
+	default:
+		return connect.NewError(connect.CodeInvalidArgument, "the update selects neither a revision nor a cancel")
 	}
-	return nil
+}
+
+// retire ends the stream that entry belongs to. It cancels the inbox, which
+// calls OnCancel on a bound controller and refuses a later binding, and then
+// cancels the stream's context. The order does not matter for correctness; one
+// method keeps the three retirement sites alike.
+func (entry *streamCancelEntry) retire() {
+	entry.inbox.Cancel()
+	entry.cancel()
 }
 
 // --- ResponseWriter implementations ---
@@ -358,8 +413,8 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		c.settle(nil)
 		return nil
 	}
-	if rpcErr := resp.GetError(); rpcErr != nil {
-		c.settle(fmt.Errorf("rpc error: %s", rpcErr.GetMessage()))
+	if err := channelwire.ErrorOf(resp.GetError()); err != nil {
+		c.settle(err)
 		return nil
 	}
 	// SendResponse can complete a stream with a final payload. Forward that payload before completion.
@@ -379,7 +434,7 @@ func (c *streamCollector) SendError(code int32, msg string) error {
 	if !c.claim() {
 		return nil
 	}
-	c.settle(fmt.Errorf("rpc error %d: %s", code, msg))
+	c.settle(&channelwire.RPCError{Code: code, Message: msg})
 	return nil
 }
 
@@ -390,13 +445,13 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	err := c.onMsg(m)
 
 	// End and error frames complete the collector, as SendResponse and SendError do.
-	rpcErr := m.GetError()
-	if m.GetEnd() || rpcErr != nil {
+	streamErr := channelwire.ErrorOf(m.GetError())
+	if m.GetEnd() || streamErr != nil {
 		if c.claim() {
 			// Preserve delivery failures on a clean End. An explicit provider error takes precedence.
 			outcome := err
-			if rpcErr != nil {
-				outcome = fmt.Errorf("rpc error %d: %s", rpcErr.GetCode(), rpcErr.GetMessage())
+			if streamErr != nil {
+				outcome = streamErr
 			}
 			c.settle(outcome)
 		}

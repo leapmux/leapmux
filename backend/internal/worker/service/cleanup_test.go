@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/db"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -521,4 +523,28 @@ func TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained(t *testing.T) {
 		_, err := queries.GetAgentByID(ctx, id)
 		assert.NoError(t, err, "%s must survive: it shares its root's retention fate", id)
 	}
+}
+
+// Shutdown cancels a retention pass in progress and waits for it. A query that the
+// cancel ended is the stop working, so it is no failure to report. A query that
+// fails on a live context still is.
+//
+// Not parallel: it captures the process-global default logger.
+func TestCleanupStep_LogsAFailureOnlyWhenTheContextIsLive(t *testing.T) {
+	const failureLog = "cleanup step failed"
+	failing := func() (sql.Result, error) { return nil, errors.New("disk I/O error") }
+
+	t.Run("a live context", func(t *testing.T) {
+		logs := testutil.CaptureDefaultLogger(t)
+		cleanupStep(context.Background(), "agents", failing)
+		assert.Contains(t, logs.String(), failureLog)
+	})
+
+	t.Run("a canceled context", func(t *testing.T) {
+		logs := testutil.CaptureDefaultLogger(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		cleanupStep(ctx, "agents", func() (sql.Result, error) { return nil, ctx.Err() })
+		assert.NotContains(t, logs.String(), failureLog)
+	})
 }

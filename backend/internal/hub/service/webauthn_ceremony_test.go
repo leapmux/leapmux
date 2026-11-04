@@ -113,7 +113,7 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)

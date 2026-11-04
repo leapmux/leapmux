@@ -284,10 +284,7 @@ func (r EntityRef) ToJSON() map[string]any {
 // every later resume.
 //
 // A tab's identity is its type AND its id. Every tab op a client builds carries
-// both, and an op that lacks the type is not a tab op this build wrote: protobuf
-// decoders differ in how leniently they read a stored op of an older numbering,
-// and one of them reads such an op as a tab id with no type. Apply refuses the
-// same ops (tabIdentity), so a replayed journal op cannot slip past.
+// both. The validator refuses an op that lacks either, and Apply ignores one.
 func (r EntityRef) HasIdentity() bool {
 	switch r.Kind {
 	case EntityKindNode:
@@ -339,4 +336,20 @@ func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.TombstoneWorkspace.GetWorkspaceId()}
 	}
 	return EntityRef{}
+}
+
+// selectsNoRegister reports whether op is a register op whose field oneof
+// selects no register. Such an op writes nothing, so the validator refuses it
+// and Apply ignores it, together with an op whose target has no identity
+// (EntityRef.HasIdentity).
+func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
+	switch body := op.GetBody().(type) {
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
+		return body.SetNodeRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetTabRegister:
+		return body.SetTabRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
+		return body.SetFloatingWindowRegister.GetField() == nil
+	}
+	return false
 }

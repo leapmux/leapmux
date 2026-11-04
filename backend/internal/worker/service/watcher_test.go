@@ -155,9 +155,9 @@ func TestCapturedWatcherPanicReleasesTheFIFOClaimWithoutLosingLaterEvents(t *tes
 	assert.Equal(t, int64(1), writer.streamCount.Load(), "the next drain must deliver the retained event")
 	manager.BroadcastAgentEvent("agent-panic", testAgentEvent("agent-panic"))
 	assert.Equal(t, int64(2), writer.streamCount.Load(), "a watcher panic must not hold the publication claim")
-	manager.publicationMu.Lock()
-	_, retained := manager.publications["agent-panic"]
-	manager.publicationMu.Unlock()
+	manager.agentEvents.mu.Lock()
+	_, retained := manager.agentEvents.queues["agent-panic"]
+	manager.agentEvents.mu.Unlock()
 	assert.False(t, retained, "the completed queue must release its event bodies")
 }
 
@@ -206,6 +206,17 @@ func (r *watcherRegistry) senderFor(entityID, channelID string) channel.Response
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.byEntity[entityID][channelID].sender
+}
+
+// assertSameSender fails unless got is the writer that a registration held
+// earlier. It compares the interface values instead of pointers, because the
+// dispatcher hands a streaming handler its writer inside a value that keeps the
+// declared reply shape.
+func assertSameSender(t *testing.T, want, got channel.ResponseWriter, msgAndArgs ...any) {
+	t.Helper()
+	if want != got {
+		assert.Fail(t, "the registration holds a different sender", msgAndArgs...)
+	}
 }
 
 func testAgentEvent(agentID string) *leapmuxv1.AgentEvent {
@@ -1118,12 +1129,10 @@ func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
 	base := newTestWriter()
 	retired := 0
 	var sink *replaySink
-	writer := &replayIdentityWriter{testResponseWriter: base, onSend: func(message *leapmuxv1.InnerStreamMessage) {
-		if message.GetError() != nil {
-			assert.Equal(t, 1, retired)
-			assert.False(t, sink.alive())
-			sink.fail(errors.New("reentrant failure"))
-		}
+	writer := &replayIdentityWriter{testResponseWriter: base, onError: func() {
+		assert.Equal(t, 1, retired)
+		assert.False(t, sink.alive())
+		sink.fail(errors.New("reentrant failure"))
 	}}
 	sink = newReplaySink(writer, 0, func() {
 		retired++
@@ -1136,8 +1145,7 @@ func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
 	sink.fail(errors.New("projection failed"))
 	sink.fail(errors.New("duplicate failure"))
 	assert.Equal(t, 1, retired)
-	require.Len(t, base.streamsSnapshot(), 1)
-	assert.NotNil(t, base.streamsSnapshot()[0].GetError())
+	require.Len(t, base.rejections(), 1, "the failure must reach the client once")
 }
 
 // TestTransportDead_ClassifiesEachFailureKind pins the one place two

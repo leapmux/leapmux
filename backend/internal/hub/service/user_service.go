@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -115,7 +114,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *leapmuxv1.UpdatePr
 
 	// The STORED account, read back after the write, so the reply reports
 	// what the hub holds rather than what this request asked for.
-	return &leapmuxv1.UpdateProfileResponse{User: storedUserProto(ctx, s.store, user.ID)}, nil
+	return &leapmuxv1.UpdateProfileResponse{User: storedUserProto(ctx, s.store, user.ID, "profile update")}, nil
 }
 
 func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.RequestEmailChangeRequest) (*leapmuxv1.RequestEmailChangeResponse, error) {
@@ -233,28 +232,38 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.Req
 		s.lifecycle.UserInfoInvalidated(user.ID)
 		slideElevation(ctx, s.store, userInfo, s.now())
 		return &leapmuxv1.RequestEmailChangeResponse{
-			VerificationRequired: false,
+			EmailVerification: emailVerificationToProto(verificationOutcome{}),
+			User:              storedUserProto(ctx, s.store, user.ID, "email change"),
 		}, nil
 	}
 
 	// On a send failure the helper drops the undelivered code and keeps the
 	// pending address, so Resend retries the same change; the failure
 	// window's deadline is what the clear leaves behind.
-	if sent, _ := deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, pendingEmailDelivery{
+	sent, nextResend := deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, pendingEmailDelivery{
 		userID:          user.ID,
 		email:           newEmail,
 		code:            storedCode,
 		mintUnblockedAt: mintedUnblockedAt,
 		failureCooldown: mailFailureCooldown(ctx, s.set),
 		now:             s.now,
-	}); !sent {
+	})
+	if !sent {
 		return nil, connect.NewError(connect.CodeUnavailable,
 			"the hub could not send the verification email")
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
+	// Required follows the rule GetCurrentUser reports with, as it does in
+	// ResendVerificationEmail: a verified account stays fully active while its
+	// new address waits. EmailSent is what states that a code went out.
 	return &leapmuxv1.RequestEmailChangeResponse{
-		VerificationRequired: true,
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              !auth.EmailVerificationFactsFromUser(user).Satisfied(verificationRequired),
+			EmailSent:             true,
+			NextResendAvailableAt: nextResend,
+		}),
+		User: storedUserProto(ctx, s.store, user.ID, "email change"),
 	}, nil
 }
 
@@ -274,8 +283,9 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
+	verificationRequired := settings.EmailVerificationEffective(s.set.Snapshot(ctx))
 	targetEmail := full.PendingEmail
-	if targetEmail == "" && full.Email != "" && !full.EmailVerified && settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
+	if targetEmail == "" && full.Email != "" && !full.EmailVerified && verificationRequired {
 		// An administrator enabled SMTP after a signup with no verification: the
 		// user has a primary email but never received a pending row. Seed one now.
 		targetEmail = full.Email
@@ -301,10 +311,14 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.
 	// and after a refused one from the failure stamp the clear writes -- a
 	// response that reports no cooldown would invite the retry the hub then
 	// refuses for the failure window.
-	// A resend runs only for a pending address, so verification is required.
+	//
+	// Required follows the rule GetCurrentUser reports with
+	// (reportedVerificationStatus), not the pending address: a verified
+	// account that changes its address, an administrator, and any account on
+	// a hub without SMTP may all use the hub while the pending address waits.
 	return &leapmuxv1.ResendVerificationEmailResponse{
 		EmailVerification: emailVerificationToProto(verificationOutcome{
-			Required:              true,
+			Required:              !auth.EmailVerificationFactsFromUser(full).Satisfied(verificationRequired),
 			EmailSent:             sent,
 			NextResendAvailableAt: nextResend,
 		}),
@@ -334,18 +348,11 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *leapmuxv1.VerifyEmai
 
 	// The verification committed, so a failed projection omits user rather
 	// than failing the RPC; the client then reads GetCurrentUser.
-	resp := &leapmuxv1.VerifyEmailResponse{
+	return &leapmuxv1.VerifyEmailResponse{
+		User: committedUserProto(ctx, s.store, updatedUser, "email verification"),
 		EmailVerification: emailVerificationToProto(reportedVerificationStatus(
 			updatedUser, settings.EmailVerificationEffective(s.set.Snapshot(ctx)), s.now())),
-	}
-	userProto, err := completeUserProto(ctx, s.store, updatedUser)
-	if err != nil {
-		slog.WarnContext(ctx, "the email verification succeeded, but its account projection could not be read",
-			"user_id", updatedUser.ID, "err", err)
-	} else {
-		resp.User = userProto
-	}
-	return resp, nil
+	}, nil
 }
 
 // ChangePassword sets or replaces the caller's password.
@@ -412,7 +419,9 @@ func (s *UserService) ChangePassword(ctx context.Context, req *leapmuxv1.ChangeP
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return &leapmuxv1.ChangePasswordResponse{}, nil
+	return &leapmuxv1.ChangePasswordResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "password change"),
+	}, nil
 }
 
 func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.UnlinkOAuthProviderRequest) (*leapmuxv1.UnlinkOAuthProviderResponse, error) {
@@ -537,7 +546,9 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.Un
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
-	return &leapmuxv1.UnlinkOAuthProviderResponse{}, nil
+	return &leapmuxv1.UnlinkOAuthProviderResponse{
+		User: storedUserProto(ctx, s.store, user.ID, "provider unlink"),
+	}, nil
 }
 
 // enabledProviderIDs reports whether each configured OAuth provider is

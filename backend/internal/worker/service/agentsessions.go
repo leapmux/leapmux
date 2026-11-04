@@ -37,7 +37,7 @@ const maxListedSessions = 50
 // machine-scoped state -- which sessions exist on this host, and what they are
 // called -- so a non-owner channel, notably a delegation bearer minted for a
 // different user, must not reach it.
-func registerAgentSessionHandlers(d registrar, svc *Service) {
+func registerAgentSessionHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, dispatchPlain,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ListAgentSessionsRequest, sender channel.ResponseWriter) {
 			workingDir, err := validate.SanitizePath(r.GetWorkingDir(), svc.HomeDir)

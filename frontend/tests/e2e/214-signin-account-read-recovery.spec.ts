@@ -113,6 +113,31 @@ test.describe('sign-in account read recovery', () => {
     expectOneInjectedFailureThenARecoveredRead(injection)
   })
 
+  // A read that keeps failing would hold the visitor on the recovery screen,
+  // which replaces every route and the user menu with them. Sign out is the
+  // exit: it ends the session on the hub, and the routes come back.
+  test('signs out from a failed recovery, and the hub keeps no session', async ({ page }) => {
+    const injection = await injectAccountReadFailure(page)
+
+    await signUpViaUI(page, `recover-signout-${Date.now()}`, 'password123')
+
+    const panel = page.getByTestId('signin-recovery')
+    await expect(panel).toBeVisible()
+    await panel.getByRole('button', { name: 'Sign out' }).click()
+
+    // The sign-up page comes back at its own address, signed out.
+    await expect(panel).toBeHidden()
+    await expect(page).toHaveURL(/\/signup(?:\?.*)?$/)
+    await expect(page.getByRole('button', { name: 'Sign up' })).toBeVisible()
+    expect(injection.reads.filter(read => read.injected)).toHaveLength(1)
+    expect(injection.signUps()).toBe(1)
+
+    // The hub ended the session too: a fresh load of the app asks for a
+    // sign-in instead of restoring the account.
+    await page.goto('/')
+    await expect(page).toHaveURL(/\/login(?:\?.*)?$/)
+  })
+
   test('recovers to /verify-email when the account must verify its address', async ({ page, leapmuxServer }) => {
     await withCaptureSmtp(leapmuxServer, async () => {
       const injection = await injectAccountReadFailure(page)

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
@@ -68,7 +69,7 @@ func recordAttrs(r slog.Record) map[string]any {
 type fakeChannel struct {
 	cb           func(*leapmuxv1.InnerStreamMessage)
 	streamOnSend *leapmuxv1.InnerStreamMessage
-	// method is the procedure that the opening SendRPCNoWait named.
+	// method is the procedure that the opening SendRPCNoWait specified.
 	method string
 	// respCh receives the response handler, so a test can deliver the terminal
 	// error envelope a server sends instead of a stream frame.
@@ -81,7 +82,6 @@ type fakeChannel struct {
 type streamRequestRecord struct {
 	reqID   uint64
 	payload []byte
-	cancel  bool
 }
 
 func (f *fakeChannel) SendRPCNoWait(_ context.Context, method string, _ []byte, handlers tunnel.RPCHandlers) (uint64, error) {
@@ -93,8 +93,8 @@ func (f *fakeChannel) SendRPCNoWait(_ context.Context, method string, _ []byte, 
 	}
 	return 1, nil
 }
-func (f *fakeChannel) SendStreamRequest(_ context.Context, reqID uint64, payload []byte, cancel bool) error {
-	f.streamRequests = append(f.streamRequests, streamRequestRecord{reqID: reqID, payload: payload, cancel: cancel})
+func (f *fakeChannel) SendStreamRequest(_ context.Context, reqID uint64, payload []byte) error {
+	f.streamRequests = append(f.streamRequests, streamRequestRecord{reqID: reqID, payload: payload})
 	return nil
 }
 func (f *fakeChannel) CancelStream(_ context.Context, reqID uint64) error {
@@ -205,9 +205,7 @@ func TestChannelTransport_LogsEndingErrorEnvelope(t *testing.T) {
 	require.NotNil(t, fc.respCh)
 
 	// The worker rejects the subscription instead of streaming.
-	fc.respCh <- &leapmuxv1.InnerRpcResponse{
-		Error: &leapmuxv1.RpcError{Code: 7, Message: "only the worker owner can watch events"},
-	}
+	fc.respCh <- channelwire.NewErrorResponse(7, "only the worker owner can watch events")
 
 	select {
 	case <-handle.Done():
@@ -216,7 +214,7 @@ func TestChannelTransport_LogsEndingErrorEnvelope(t *testing.T) {
 	}
 
 	records := h.snapshot()
-	require.Len(t, records, 1, "the terminal error must be logged, not discarded")
+	require.Len(t, records, 1, "the final error must be logged, not discarded")
 	require.Equal(t, slog.LevelError, records[0].Level)
 	require.Contains(t, records[0].Message, "server error")
 	// The reason is the part an operator acts on, so the record must carry the
@@ -254,9 +252,10 @@ func TestChannelTransport_AStreamFrameWithAnErrorEndsTheSubscription(t *testing.
 
 	fc.cb(&leapmuxv1.InnerStreamMessage{Error: &leapmuxv1.RpcError{Code: 5, Message: "the agent is gone"}})
 
+	ctx := testutil.DeadlineContext(t)
 	select {
 	case <-handle.Done():
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("an error frame must end the subscription")
 	}
 	assert.Zero(t, frames, "an error frame carries no event")
@@ -301,7 +300,7 @@ func TestChannelTransport_UpdateSendsStreamRequest(t *testing.T) {
 	}
 	require.NoError(t, handle.Update(req))
 	require.Len(t, fc.streamRequests, 1)
-	assert.False(t, fc.streamRequests[0].cancel)
+	assert.Empty(t, fc.cancelledStreams, "a revision is not a cancel")
 	assert.NotEmpty(t, fc.streamRequests[0].payload)
 }
 
@@ -332,13 +331,8 @@ func TestChannelTransport_UpdateAfterCancelReturnsError(t *testing.T) {
 	})
 	require.Error(t, err)
 	// Only the cancel-stream from Cancel landed — the trailing Update sent nothing.
-	streamSends := 0
-	for _, r := range fc.streamRequests {
-		if !r.cancel {
-			streamSends++
-		}
-	}
-	assert.Equal(t, 0, streamSends, "Update after Cancel must not send on the wire")
+	assert.Equal(t, []uint64{1}, fc.cancelledStreams)
+	assert.Empty(t, fc.streamRequests, "Update after Cancel must not send on the wire")
 }
 
 // TestChannelTransport_CancelAfterParentCancelled pins WithoutCancel: tearing
@@ -491,7 +485,7 @@ func (h *endingIPCHandler) StreamInner(ctx context.Context, _ *leapmuxv1.StreamI
 }
 
 func (h *endingIPCHandler) UpdateStream(ctx context.Context, request *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
-	if !request.GetCancel() {
+	if request.GetCancel() == nil {
 		return &leapmuxv1.UpdateStreamResponse{}, nil
 	}
 	close(h.finish)
@@ -591,9 +585,9 @@ func TestLocalIPCTransport_CancelRetiresItsOwnStream(t *testing.T) {
 	handle.Cancel()
 	select {
 	case update := <-handler.update:
-		assert.True(t, update.GetCancel(), "a retirement sets the cancel flag")
+		assert.NotNil(t, update.GetCancel(), "a retirement selects the cancel action")
 		assert.Equal(t, opening.GetClientRequestId(), update.GetClientRequestId())
-		assert.Empty(t, update.GetPayload(), "a retirement carries no revision")
+		assert.Nil(t, update.GetPayload(), "a retirement carries no revision")
 	case <-ctx.Done():
 		t.Fatal("Cancel sent no retirement")
 	}
@@ -734,7 +728,8 @@ func TestSubscriptionReplayIdentityBothTransportsPreserveActualRequestBytes(t *t
 		select {
 		case update := <-handler.update:
 			assert.Equal(t, opening.ClientRequestId, update.ClientRequestId)
-			assertPayload(t, update.Payload)
+			assert.Nil(t, update.GetCancel(), "a revision is not a cancel")
+			assertPayload(t, update.GetPayload())
 		case <-ctx.Done():
 			t.Fatal("the IPC handler received no update request")
 		}

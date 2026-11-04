@@ -83,7 +83,7 @@ describe('command registry', () => {
     expect(getCommand('test.cmd')!.title).toBe('Test 2')
   })
 
-  it('getAllCommands returns all registered commands', () => {
+  it('returns all registered commands from getAllCommands', () => {
     registerCommand({
       id: 'a',
       title: 'A',

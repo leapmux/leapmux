@@ -23,8 +23,7 @@ type AdminWorkerService struct {
 	// workers answers whether a Worker is connected right now.
 	workers workerPresence
 	// deregisterEffects runs the out-of-database half of a deregistration.
-	// WorkerManagementService builds an equal instance from the same scope
-	// cache, notifier and workers-changed hook, so an administrator's
+	// WorkerManagementService holds the same instance, so an administrator's
 	// force-deregister does exactly what the owner's does.
 	deregisterEffects *WorkerDeregisterEffects
 }
@@ -115,17 +114,8 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 		}
 		return nil, storeConnectError(err, "deregister worker")
 	}
-	// A bundled (auto-registered) Worker is refused only while it is CONNECTED.
-	// Stopping a running one would leave the app with no local Worker until its
-	// next launch, and the app re-registers on that launch, so the user's action
-	// would be undone. An offline one is removable: that is the only cleanup for
-	// the ACTIVE row a launch leaves behind when the app's state file was lost
-	// (loadOrCreateWorkerState logs it as orphaning the previous one), and for a
-	// Worker whose process failed to start. A deleted bundled row falls through
-	// to the row-count refusal below, which reports it like an unknown id.
-	if w.AutoRegistered && w.DeletedAt == nil && s.workers.OnlineForTrustedPath(w.ID) {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition,
-			"the bundled local worker is connected; deregister it only while it is offline")
+	if err := refuseConnectedBundledWorker(&w.Worker, s.workers.OnlineForTrustedPath(w.ID)); err != nil {
+		return nil, err
 	}
 	n, err := s.store.Workers().ForceDeregister(ctx, req.GetId())
 	if err != nil {
@@ -171,9 +161,26 @@ func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *lea
 		return nil, storeConnectError(err, "revoke registration key")
 	}
 	if n == 0 {
-		return nil, connect.Errorf(connect.CodeNotFound, "registration key not found: %s", req.GetId())
+		return nil, s.deadRegistrationKeyError(ctx, req.GetId())
 	}
 	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
+}
+
+// deadRegistrationKeyError answers a revoke that changed no row. The revoke
+// query matches only a live key, so the row is either absent or dead, and this
+// read tells a mistyped id from a key that an operator can still see in the
+// listing with expired keys. The owner's revoke keeps both cases as one answer,
+// because there the difference would disclose that another owner's key exists.
+// This surface has no ownership filter, so it has nothing to hide.
+func (s *AdminWorkerService) deadRegistrationKeyError(ctx context.Context, keyID string) error {
+	if _, err := s.store.RegistrationKeys().GetByID(ctx, keyID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return connect.Errorf(connect.CodeNotFound, "registration key not found: %s", keyID)
+		}
+		return storeConnectError(err, "revoke registration key")
+	}
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"registration key %s is already revoked, consumed or expired", keyID)
 }
 
 // maxRegistrationKeyPurgeBatches is the runaway limit on one purge, not

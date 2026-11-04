@@ -10,8 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -19,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
@@ -319,7 +322,6 @@ type closeTunnelConnRecorder struct {
 }
 
 func (c *closeTunnelConnRecorder) Context() context.Context { return c.ctx }
-func (*closeTunnelConnRecorder) UnregisterPending(uint64)   {}
 func (*closeTunnelConnRecorder) UnregisterStream(uint64)    {}
 func (c *closeTunnelConnRecorder) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
 	if method == leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure {
@@ -400,7 +402,6 @@ type failNTimesThenSucceedRecorder struct {
 }
 
 func (f *failNTimesThenSucceedRecorder) Context() context.Context { return f.ctx }
-func (*failNTimesThenSucceedRecorder) UnregisterPending(uint64)   {}
 func (*failNTimesThenSucceedRecorder) UnregisterStream(uint64)    {}
 func (f *failNTimesThenSucceedRecorder) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
 	if method != leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure {
@@ -562,6 +563,9 @@ func TestConnWriteAckCyclesDoNotGrowGoroutines(t *testing.T) {
 type scriptedOpenChannel struct {
 	ctx    context.Context
 	frames []*leapmuxv1.InnerStreamMessage
+	// rejection, when set, reaches the stream's StreamRejected after the
+	// frames, as a frame that the channel rejected would.
+	rejection error
 
 	mu           sync.Mutex
 	unregistered bool
@@ -572,7 +576,6 @@ type scriptedOpenChannel struct {
 }
 
 func (c *scriptedOpenChannel) Context() context.Context { return c.ctx }
-func (c *scriptedOpenChannel) UnregisterPending(uint64) {}
 func (c *scriptedOpenChannel) UnregisterStream(uint64) {
 	c.mu.Lock()
 	c.unregistered = true
@@ -595,6 +598,9 @@ func (c *scriptedOpenChannel) SendRPCNoWait(_ context.Context, method string, _ 
 	}
 	for _, frame := range c.frames {
 		handlers.Stream(frame)
+	}
+	if c.rejection != nil {
+		handlers.StreamRejected(c.rejection)
 	}
 	return 1, nil
 }
@@ -646,16 +652,22 @@ func TestDialTunnelDeliversDataAfterTheOpenedEvent(t *testing.T) {
 	assert.Equal(t, "hello", string(buf[:n]))
 }
 
+// The bubble lets the test wait until every goroutine that the failed dial
+// started is durably blocked or gone: a close is sent from a goroutine of its
+// own, so checking right after the dial returns would miss one.
 func TestDialTunnelFailsOnAStreamErrorBeforeTheOpenedEvent(t *testing.T) {
-	conn, ch, err := dialScripted(t, channelwire.NewStreamError(13, "dial example.test:443: connection refused"))
-	require.Error(t, err)
-	assert.Nil(t, conn)
-	assert.Contains(t, err.Error(), "connection refused")
-	assert.Contains(t, err.Error(), "code 13")
-	ch.mu.Lock()
-	defer ch.mu.Unlock()
-	assert.True(t, ch.unregistered, "a failed dial releases its stream registration")
-	assert.Empty(t, ch.other, "the worker holds no conn after a refusal, so the dial sends no close")
+	synctest.Test(t, func(t *testing.T) {
+		conn, ch, err := dialScripted(t, channelwire.NewStreamError(13, "dial example.test:443: connection refused"))
+		require.Error(t, err)
+		assert.Nil(t, conn)
+		assert.Contains(t, err.Error(), "connection refused")
+		assert.Contains(t, err.Error(), "code 13")
+		synctest.Wait()
+		ch.mu.Lock()
+		defer ch.mu.Unlock()
+		assert.True(t, ch.unregistered, "a failed dial releases its stream registration")
+		assert.Empty(t, ch.other, "the worker holds no conn after a refusal, so the dial sends no close")
+	})
 }
 
 // Each frame that cannot precede `opened` fails the dial with an error that
@@ -677,10 +689,6 @@ func TestDialTunnelFailsOnAProtocolViolationBeforeTheOpenedEvent(t *testing.T) {
 			wantErr: "tunnel protocol error: an event that selects no case",
 		},
 		"an undecodable frame": {frame: &leapmuxv1.InnerStreamMessage{Payload: []byte{0xff}}, wantErr: "decode tunnel event"},
-		"a target error": {
-			frame:   tunnelEventFrame(t, &leapmuxv1.TunnelConnEvent{Event: &leapmuxv1.TunnelConnEvent_Error{Error: "reset"}}),
-			wantErr: "tunnel error: reset",
-		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -716,11 +724,13 @@ func TestConnReadReportsWhyTheStreamEndedAfterTheOpen(t *testing.T) {
 		},
 		"a stream error frame": {
 			end:     channelwire.NewStreamError(13, "denied"),
-			wantErr: "tunnel stream: denied",
+			wantErr: "tunnel stream: rpc error (code 13): denied",
 		},
-		"a target error": {
-			end:     tunnelEventFrame(t, &leapmuxv1.TunnelConnEvent{Event: &leapmuxv1.TunnelConnEvent_Error{Error: "reset"}}),
-			wantErr: "tunnel error: reset",
+		// The worker ends a failed target read with a stream error frame
+		// (Unavailable, 14), because a failure is not a TunnelConnEvent.
+		"a failed target read": {
+			end:     channelwire.NewStreamError(14, "read tunnel target: connection reset"),
+			wantErr: "tunnel stream: rpc error (code 14): read tunnel target: connection reset",
 		},
 		"an undecodable frame": {
 			end:     &leapmuxv1.InnerStreamMessage{Payload: []byte{0xff}},
@@ -751,6 +761,35 @@ func TestConnReadReportsWhyTheStreamEndedAfterTheOpen(t *testing.T) {
 	}
 }
 
+// A frame that the channel rejects after the open ends the conn: data that
+// arrived before it is still read first, and then Read reports the rejection
+// with its code.
+func TestConnReadReportsAFrameThatTheChannelRejectedAfterTheOpen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch := &scriptedOpenChannel{
+		ctx:       ctx,
+		frames:    []*leapmuxv1.InnerStreamMessage{openedFrame(t), dataFrame(t, "before")},
+		rejection: &channelwire.RPCError{Code: errCodeResourceExhausted, Message: "message too large"},
+		sent:      make(chan string, 8),
+	}
+	conn, err := dialTunnelContext(ctx, ch, "example.test", 443)
+	require.NoError(t, err, "the rejection came after the open, so the dial succeeds")
+	t.Cleanup(func() { _ = conn.Close() })
+
+	buf := make([]byte, 16)
+	n, err := conn.Read(buf)
+	require.NoError(t, err)
+	assert.Equal(t, "before", string(buf[:n]))
+
+	n, err = conn.Read(buf)
+	assert.Zero(t, n)
+	require.ErrorContains(t, err, "tunnel stream: rpc error (code 8): message too large")
+	var rpcErr *channelwire.RPCError
+	require.ErrorAs(t, err, &rpcErr, "Read keeps the code of the rejection")
+	assert.Equal(t, errCodeResourceExhausted, rpcErr.Code)
+}
+
 // Once the stream has ended, a peer that keeps sending changes nothing: its
 // data is not read and its error does not replace the end that came first.
 func TestConnIgnoresFramesAfterTheStreamEnded(t *testing.T) {
@@ -778,7 +817,6 @@ type silentOpenChannel struct {
 }
 
 func (c *silentOpenChannel) Context() context.Context { return c.ctx }
-func (*silentOpenChannel) UnregisterPending(uint64)   {}
 func (c *silentOpenChannel) UnregisterStream(uint64)  { c.unregistered.Store(true) }
 
 func (c *silentOpenChannel) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
@@ -828,21 +866,27 @@ func TestDialTunnelClosesTheRemoteConnWhenItsContextEndsBeforeTheOpenedEvent(t *
 }
 
 // A dial whose channel ends before `opened` fails with the channel's error. The
-// channel took the worker's state with it, so the dial sends no close.
+// channel took the worker's state with it, so the dial sends no close. The
+// bubble lets the test wait until every goroutine that the failed dial started
+// is durably blocked or gone: a close is sent from a goroutine of its own, so
+// checking right after the dial returns would miss one.
 func TestDialTunnelFailsWhenTheChannelEndsBeforeTheOpenedEvent(t *testing.T) {
-	channelCtx, cancelChannel := context.WithCancel(context.Background())
-	cancelChannel()
-	ch := &silentOpenChannel{ctx: channelCtx, closeRequests: make(chan string, 1)}
+	synctest.Test(t, func(t *testing.T) {
+		channelCtx, cancelChannel := context.WithCancel(context.Background())
+		cancelChannel()
+		ch := &silentOpenChannel{ctx: channelCtx, closeRequests: make(chan string, 1)}
 
-	conn, err := dialTunnelContext(context.Background(), ch, "example.test", 443)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, conn)
-	assert.True(t, ch.unregistered.Load(), "the failed dial releases its stream registration")
-	select {
-	case connID := <-ch.closeRequests:
-		t.Fatalf("a dial on a dead channel sent a close for %q", connID)
-	default:
-	}
+		conn, err := dialTunnelContext(context.Background(), ch, "example.test", 443)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, conn)
+		assert.True(t, ch.unregistered.Load(), "the failed dial releases its stream registration")
+		synctest.Wait()
+		select {
+		case connID := <-ch.closeRequests:
+			t.Fatalf("a dial on a dead channel sent a close for %q", connID)
+		default:
+		}
+	})
 }
 
 // After the open, an event that selects no case is a broken peer, not empty
@@ -864,4 +908,119 @@ func TestConnEndsOnASecondOpenedEvent(t *testing.T) {
 	_, err = conn.Read(make([]byte, 8))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "second opened")
+}
+
+// readPeerRequest reads the next inner RPC request off the peer socket of a
+// pairedRekeyChannel and returns its correlation id.
+func readPeerRequest(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn) (uint64, *leapmuxv1.InnerRpcRequest) {
+	t.Helper()
+	message, err := channelwire.ReadChannelMessage(testutil.DeadlineContext(t), peerWS)
+	require.NoError(t, err)
+	plaintext, err := peer.Decrypt(message.GetCiphertext())
+	require.NoError(t, err)
+	var envelope leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plaintext, &envelope))
+	request := envelope.GetRequest()
+	require.NotNil(t, request, "expected an inner RPC request, got %T", envelope.GetKind())
+	return message.GetCorrelationId(), request
+}
+
+// writePeerMessage sends one inner message from the peer of a
+// pairedRekeyChannel, on correlationID.
+func writePeerMessage(t *testing.T, peer *noiseutil.Session, peerWS *websocket.Conn, correlationID uint64, envelope *leapmuxv1.InnerMessage) {
+	t.Helper()
+	plaintext, err := proto.Marshal(envelope)
+	require.NoError(t, err)
+	ciphertext, err := peer.Encrypt(plaintext)
+	require.NoError(t, err)
+	require.NoError(t, channelwire.WriteChannelMessage(testutil.DeadlineContext(t), peerWS,
+		channelwire.NewChannelMessage("rekey-test", correlationID, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, ciphertext)))
+}
+
+// A worker can refuse OpenTunnelConn with a unary error, as it does for a
+// method that it cannot dispatch, on the correlation id that the dial holds as a
+// stream. The channel routes that error to the stream handler, so the dial
+// reports the refusal at once instead of waiting until its context ends.
+func TestDialTunnelReportsAUnaryRefusalOfTheOpen(t *testing.T) {
+	ch, peer, peerWS := pairedRekeyChannel(t)
+	ctx := testutil.DeadlineContext(t)
+	type dialResult struct {
+		conn *Conn
+		err  error
+	}
+	dialed := make(chan dialResult, 1)
+	go func() {
+		conn, err := DialTunnelContext(ctx, ch, "example.test", 443)
+		dialed <- dialResult{conn: conn, err: err}
+	}()
+
+	correlationID, request := readPeerRequest(t, peer, peerWS)
+	require.Equal(t, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, request.GetMethod())
+	writePeerMessage(t, peer, peerWS, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{
+			Response: channelwire.NewErrorResponse(12, "unknown method: "+request.GetMethod()),
+		},
+	})
+
+	select {
+	case got := <-dialed:
+		require.Error(t, got.err)
+		assert.Nil(t, got.conn)
+		var refused *openRefusedError
+		require.ErrorAs(t, got.err, &refused, "the dial must report the worker's refusal, not its own timeout")
+		assert.Contains(t, got.err.Error(), "unknown method")
+		var rpcErr *channelwire.RPCError
+		require.ErrorAs(t, got.err, &rpcErr, "a caller reads the worker's code through channelwire.RPCError")
+		assert.Equal(t, int32(12), rpcErr.Code)
+	case <-ctx.Done():
+		t.Fatal("the dial never reported the worker's refusal")
+	}
+}
+
+// A frame that the channel itself rejects before `opened`, such as one over the
+// negotiated message size, is not a refusal from the worker: the worker sent a
+// frame and believes the open succeeded. The worker stores its conn before it
+// sends `opened`, so it may hold one, and the failed dial must tell it to close
+// that conn. Without the close, the conn stays on the worker until the channel
+// dies.
+func TestDialTunnelClosesTheConnAfterTheChannelRejectsTheFirstFrame(t *testing.T) {
+	const limit = 512
+	ch, peer, peerWS := pairedRekeyChannel(t, func(ch *Channel) { ch.maxReassembled = limit })
+	ctx := testutil.DeadlineContext(t)
+	dialed := make(chan error, 1)
+	go func() {
+		conn, err := DialTunnelContext(ctx, ch, "example.test", 443)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		dialed <- err
+	}()
+
+	correlationID, request := readPeerRequest(t, peer, peerWS)
+	require.Equal(t, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, request.GetMethod())
+	var open leapmuxv1.OpenTunnelConnRequest
+	require.NoError(t, proto.Unmarshal(request.GetPayload(), &open))
+	oversized, err := proto.Marshal(&leapmuxv1.TunnelConnEvent{
+		Event: &leapmuxv1.TunnelConnEvent_Data{Data: make([]byte, 2*limit)},
+	})
+	require.NoError(t, err)
+	writePeerMessage(t, peer, peerWS, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Stream{Stream: &leapmuxv1.InnerStreamMessage{Payload: oversized}},
+	})
+
+	select {
+	case err := <-dialed:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "message too large")
+		assert.NotErrorAs(t, err, new(*openRefusedError), "a frame that the channel rejected is not a refusal from the worker")
+	case <-ctx.Done():
+		t.Fatal("the dial never failed")
+	}
+
+	_, closeRequest := readPeerRequest(t, peer, peerWS)
+	require.Equal(t, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, closeRequest.GetMethod(),
+		"the failed dial must tell the worker to close the conn that it may hold")
+	var closeConn leapmuxv1.CloseTunnelConnRequest
+	require.NoError(t, proto.Unmarshal(closeRequest.GetPayload(), &closeConn))
+	assert.Equal(t, open.GetConnId(), closeConn.GetConnId(), "the close addresses the conn that the dial opened")
 }

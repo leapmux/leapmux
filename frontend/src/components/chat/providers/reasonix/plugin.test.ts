@@ -7,7 +7,9 @@ import { providerFor } from '../registry'
 import './plugin'
 
 vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: vi.fn(),
+  workerAgent: {
+    updateAgentSettings: vi.fn(),
+  },
 }))
 
 describe('reasonix provider', () => {

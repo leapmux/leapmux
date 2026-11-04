@@ -692,7 +692,10 @@ describe('ChannelManager encryption modes', () => {
     const callPromise = classicMgr.call(channelId, 'TestMethod', new Uint8Array([1, 2]))
 
     const resp = create(InnerRpcResponseSchema, {
-      payload: new Uint8Array([3, 4]),
+      result: {
+        case: 'payload',
+        value: new Uint8Array([3, 4]),
+      },
     })
     const respEnv = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -703,7 +706,7 @@ describe('ChannelManager encryption modes', () => {
     classicWs.simulateMessage(encodeWireMessage(channelId, respCt, { id: 2 }))
 
     const result = await callPromise
-    expect(result.payload).toEqual(new Uint8Array([3, 4]))
+    expect(result).toEqual(new Uint8Array([3, 4]))
 
     classicMgr.closeAll()
   })
@@ -813,7 +816,7 @@ describe('ChannelManager open-time verification', () => {
       // call() still permits 'opening' so the verification Ping can complete;
       // stream() requires verified and must reject here.
       const raced = cm.call('ch-1', 'Test', new Uint8Array())
-      expect(() => cm.stream('ch-1', WorkerWatchService.method.watchEvents, new Uint8Array())).toThrow('channel not open')
+      expect(() => cm.stream('ch-1', WorkerWatchService.method.watchEvents, {})).toThrow('channel not open')
 
       let openErr: unknown
       let racedErr: unknown

@@ -29,16 +29,18 @@ const retryQueuedAgentInput = vi.hoisted(() => vi.fn())
 const steerQueuedAgentInput = vi.hoisted(() => vi.fn())
 const preemptQueuedAgentInput = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', () => ({
-  enqueueAgentInput,
-  deleteQueuedAgentInput,
-  beginQueuedAgentInputEdit,
-  updateQueuedAgentInput,
-  setAgentInputQueuePaused,
-  cancelQueuedAgentInputEdit,
-  moveQueuedAgentInput,
-  retryQueuedAgentInput,
-  steerQueuedAgentInput,
-  preemptQueuedAgentInput,
+  workerAgentInput: {
+    enqueueAgentInput,
+    deleteQueuedAgentInput,
+    beginQueuedAgentInputEdit,
+    updateQueuedAgentInput,
+    setAgentInputQueuePaused,
+    cancelQueuedAgentInputEdit,
+    moveQueuedAgentInput,
+    retryQueuedAgentInput,
+    steerQueuedAgentInput,
+    preemptQueuedAgentInput,
+  },
 }))
 
 const showWarnToast = vi.hoisted(() => vi.fn())
@@ -165,7 +167,7 @@ describe('createAgentInputQueueOperations queue commands', () => {
     expect(store.get('agent-1')).toBeUndefined()
   })
 
-  it('routes a command to the Worker of the agent it names, not of the focused agent', async () => {
+  it('routes a command to the Worker of the agent it targets, not of the focused agent', async () => {
     const { ops } = setup({
       workerByAgent: { 'agent-1': 'worker-1', 'agent-2': 'worker-2' },
       focusedAgentId: 'agent-1',

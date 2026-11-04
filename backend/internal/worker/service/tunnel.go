@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
@@ -543,9 +544,7 @@ var halfCloseIdleTimeout time.Duration = 60 * time.Second
 var halfCloseSweepInterval time.Duration = 10 * time.Second
 
 // connRequest constrains a tunnel request message to the shape every tunnel
-// handler's prelude needs: a proto.Message pointer that names a conn. The *T
-// element lets registerConnHandler allocate the zero value itself, so a handler
-// never restates the unmarshal.
+// handler's prelude needs: a decodedRequest that identifies a conn.
 type connRequest[T any] interface {
 	*T
 	proto.Message
@@ -553,7 +552,8 @@ type connRequest[T any] interface {
 }
 
 // registerConnHandler registers a tunnel handler behind the conn_id prelude every
-// one of them shares: unmarshal, then refuse an empty conn_id.
+// one of them shares: registerOwnerGuarded decodes the request, then this
+// refuses an empty conn_id.
 //
 // It exists for the same reason ownerOnlyRegistrar does (see service.go): the
 // prelude was previously hand-written per handler, so the conn_id contract was a
@@ -566,16 +566,9 @@ func registerConnHandler[T any, PT connRequest[T]](
 	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, r PT, sender channel.ResponseWriter),
 ) {
-	deny := d.r.denial(procedure)
-	d.Register(procedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var msg T
-		r := PT(&msg)
-		if err := unmarshalRequest(req, r); err != nil {
-			deny(sender, codes.InvalidArgument, "invalid request")
-			return
-		}
+	registerOwnerGuarded[T, PT](d, procedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r PT, sender channel.ResponseWriter) {
 		if r.GetConnId() == "" {
-			deny(sender, codes.InvalidArgument, "conn_id is required")
+			sendInvalidArgument(sender, "conn_id is required")
 			return
 		}
 		fn(ctx, caller, r, sender)
@@ -604,13 +597,13 @@ func registerTunnelHandlers(d ownerOnlyRegistrar) *tunnelManager {
 
 // openConn dials the target address and streams the conn back: an `opened`
 // event first, then the target's data. OpenTunnelConn is server-streaming, so
-// every refusal and dial failure is a stream error frame.
+// the dispatcher sends every refusal and dial failure as a stream error frame.
 func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTunnelConnRequest, sender channel.ResponseWriter) {
 	connID := r.GetConnId()
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	if !m.beginOpen(connID, dialCancel) {
 		dialCancel()
-		sendStreamError(sender, codes.InvalidArgument, "conn_id is canceled or already in use")
+		sendInvalidArgument(sender, "conn_id is canceled or already in use")
 		return
 	}
 	defer func() {
@@ -621,11 +614,11 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 	targetAddr := r.GetTargetAddr()
 	targetPort := r.GetTargetPort()
 	if targetAddr == "" {
-		sendStreamError(sender, codes.InvalidArgument, "target_addr is required")
+		sendInvalidArgument(sender, "target_addr is required")
 		return
 	}
 	if targetPort == 0 || targetPort > 65535 {
-		sendStreamError(sender, codes.InvalidArgument, "target_port must be 1-65535")
+		sendInvalidArgument(sender, "target_port must be 1-65535")
 		return
 	}
 
@@ -635,7 +628,7 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 	conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		slog.Error("failed to dial tunnel target", "addr", addr, "error", err)
-		sendStreamError(sender, codes.Internal, fmt.Sprintf("dial %s: %v", addr, err))
+		sendInternalError(sender, fmt.Sprintf("dial %s: %v", addr, err))
 		return
 	}
 
@@ -989,9 +982,11 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 				return
 			}
 			slog.Error("tunnel target read error", "conn_id", connID, "error", err)
-			if sendErr := sendTunnelEvent(tc.sender, &leapmuxv1.TunnelConnEvent{
-				Event: &leapmuxv1.TunnelConnEvent_Error{Error: err.Error()},
-			}); sendErr != nil {
+			// A failure is not a TunnelConnEvent: the stream error frame ends
+			// the stream, and the client reads its code as it reads every
+			// other stream error after `opened`.
+			if sendErr := tc.sender.SendStream(channelwire.NewStreamError(int32(codes.Unavailable),
+				"read tunnel target: "+err.Error())); sendErr != nil {
 				slog.Log(context.Background(), sendFailureLevel(sendErr),
 					"failed to relay target read error; closing tunnel conn",
 					"conn_id", connID, "read_error", err, "send_error", sendErr)

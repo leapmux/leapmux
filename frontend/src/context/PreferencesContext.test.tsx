@@ -360,7 +360,7 @@ describe('PreferencesContext — revealAfterDownload (default-on)', () => {
     expect('terminalOsNotifications' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('showComposerStatusBar defaults to true and round-trips through browser prefs', () => {
+  it('defaults showComposerStatusBar to true and round-trips it through browser prefs', () => {
     const ctx = captureContext()
     expect(ctx.get().showComposerStatusBar()).toBe(true)
 
@@ -484,7 +484,7 @@ describe('PreferencesContext — per-key account writes', () => {
     })
   })
 
-  it('setCustomKeybindings writes the whole array through the keybindings key', async () => {
+  it('writes the whole array through the keybindings key when setCustomKeybindings runs', async () => {
     updateUserSetting.mockResolvedValue({
       value: settingValue('keybindings', '[{"key":"F9","command":"app.newAgent"}]', true),
     })
@@ -503,7 +503,7 @@ describe('PreferencesContext — per-key account writes', () => {
     })
   })
 
-  it('resetUserSetting applies the returned default and rejects without changing the value', async () => {
+  it('applies the returned default in resetUserSetting and rejects without changing the value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
       values: [
@@ -858,7 +858,7 @@ describe('PreferencesContext — an undeclared account key', () => {
 // Every browser-only boolean stores the value that DIFFERS from its
 // default, so a preference left alone costs no bytes.
 describe('PreferencesContext — browser-only booleans', () => {
-  it('showHiddenMessages defaults to off and stores only the opt-in', () => {
+  it('defaults showHiddenMessages to off and stores only the opt-in', () => {
     const ctx = captureContext()
     expect(ctx.get().showHiddenMessages()).toBe(false)
     expect('showHiddenMessages' in loadBrowserPrefs()).toBe(false)
@@ -872,7 +872,7 @@ describe('PreferencesContext — browser-only booleans', () => {
     expect('showHiddenMessages' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('expandAgentThoughts defaults to on and stores only the opt-out', () => {
+  it('defaults expandAgentThoughts to on and stores only the opt-out', () => {
     const ctx = captureContext()
     expect(ctx.get().expandAgentThoughts()).toBe(true)
     expect('expandAgentThoughts' in loadBrowserPrefs()).toBe(false)

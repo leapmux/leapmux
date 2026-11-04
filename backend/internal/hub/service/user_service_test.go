@@ -152,6 +152,23 @@ func (e *userTestEnv) elevated(t *testing.T) *userTestEnv {
 
 func setupUserTest(t *testing.T) *userTestEnv {
 	t.Helper()
+	return setupUserTestOver(t, nil)
+}
+
+// serviceStoreOver wraps st for the UserService alone, so a test can act inside
+// one of its store calls. A nil wrap leaves st as it is. The env and the auth
+// interceptor keep reading st.
+func serviceStoreOver(st store.Store, wrap func(store.Store) store.Store) store.Store {
+	if wrap == nil {
+		return st
+	}
+	return wrap(st)
+}
+
+// setupUserTestOver is setupUserTest with a wrapper for the store that the
+// UserService reads; see serviceStoreOver.
+func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTestEnv {
+	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -176,7 +193,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	// Passkeys need a hub URL; ListPasskeys reports availability through
 	// the same derivation the handlers use.
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
-	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
+	userSvc := service.NewUserService(serviceStoreOver(st, wrap), testConfig(), set, auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -221,6 +238,13 @@ func setupUserTest(t *testing.T) *userTestEnv {
 // setupOAuthUserTest creates a test env with an OAuth-only user (PasswordSet=false).
 func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	t.Helper()
+	return setupOAuthUserTestOver(t, nil)
+}
+
+// setupOAuthUserTestOver is setupOAuthUserTest with a wrapper for the store that
+// the UserService reads; see serviceStoreOver.
+func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTestEnv {
+	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -229,7 +253,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	err = st.Migrator().Migrate(context.Background())
 	require.NoError(t, err)
 
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
+	userSvc := service.NewUserService(serviceStoreOver(st, wrap), testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
 	// Same bearer rung as setupUserTest, so bearerFor works on either env.
@@ -808,7 +832,7 @@ func TestRequestEmailChange_Success(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 	// Admin users get immediate change (no verification required).
-	assert.False(t, resp.GetVerificationRequired())
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired())
 
 	// Verify that the change reached the DB.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
@@ -899,7 +923,7 @@ func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
 		NewEmail: "admin-new@example.com",
 	}, env.token))
 	require.NoError(t, err)
-	assert.False(t, resp.GetVerificationRequired())
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired())
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
@@ -945,7 +969,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 		NewEmail: "new@example.com",
 	}, userToken))
 	require.NoError(t, err)
-	assert.False(t, resp.GetVerificationRequired())
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired())
 
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
@@ -1079,6 +1103,35 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	return client, st, token
 }
 
+// An account that never verified an address stays held back, and the change does
+// not lift that. The reply reports the same state that GetCurrentUser reports.
+func TestRequestEmailChange_UnverifiedAccountStaysRequired(t *testing.T) {
+	t.Parallel()
+
+	client, st, _ := setupVerificationUserTestServer(t, true)
+	userID := id.Generate()
+	hash, _ := password.Hash("userpass")
+	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
+		ID:                    userID,
+		Username:              "unverifieduser",
+		PasswordHash:          hash,
+		DisplayName:           "Unverified User",
+		Email:                 "old@example.com",
+		FirstCredentialExempt: true,
+	}))
+	userToken, _, _, err := auth.Login(context.Background(), st, "unverifieduser", "userpass", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	elevateSession(t, st, userToken, userID)
+
+	resp, err := client.RequestEmailChange(authedReq(context.Background(), &leapmuxv1.RequestEmailChangeRequest{
+		NewEmail: "pending@example.com",
+	}, userToken))
+	require.NoError(t, err)
+
+	assert.True(t, resp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
+}
+
 func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	t.Parallel()
 
@@ -1115,7 +1168,12 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 		NewEmail: "pending@example.com",
 	}, userToken))
 	require.NoError(t, err)
-	assert.True(t, resp.GetVerificationRequired())
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired(),
+		"a verified account stays fully active while its new address waits")
+	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
+	// The reply carries the cooldown of the code that it minted, so the client
+	// needs no account read to count down the resend control.
+	assert.NotNil(t, resp.GetEmailVerification().GetNextResendAvailableAt())
 
 	// New flow: the email column stays pinned to the existing verified
 	// address until the user submits the code. The new email lands in
@@ -1129,6 +1187,11 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	require.NotNil(t, user.PendingEmailExpiresAt)
 	assert.True(t, user.PendingEmailExpiresAt.After(time.Now()),
 		"expires_at should be in the future for a fresh code")
+
+	// The reply reports what the store holds: the pending address, beside the
+	// verified one that stays in force until the user submits the code.
+	assert.Equal(t, "old@example.com", resp.GetUser().GetEmail())
+	assert.Equal(t, "pending@example.com", resp.GetUser().GetPendingEmail())
 
 	_ = adminToken
 }
@@ -1338,8 +1401,18 @@ func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
 // --- ResendVerificationEmail ---
 
 // setupResendUserTest provisions a UserService backed by a mailSenderDouble
-// so tests can assert the resent email's recipient + body.
+// so tests can assert the resent email's recipient + body. SMTP is
+// configured, so the hub requires a verified address, as it does wherever a
+// resend can send mail.
 func setupResendUserTest(t *testing.T) (*userTestEnv, *mailSenderDouble) {
+	t.Helper()
+	return setupResendUserTestWith(t, seedSMTP)
+}
+
+// setupResendUserTestWith is setupResendUserTest with a caller-chosen
+// settings seed; nil leaves SMTP unconfigured, which turns the verification
+// requirement off.
+func setupResendUserTestWith(t *testing.T, seed regKeySeed) (*userTestEnv, *mailSenderDouble) {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -1348,7 +1421,11 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *mailSenderDouble) {
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
 
 	rec := &mailSenderDouble{}
-	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	if seed != nil {
+		seed(t, set)
+	}
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -2969,6 +3046,60 @@ func TestResendVerificationEmail_NextResendAvailableAt(t *testing.T) {
 	nextAt := resp.GetEmailVerification().GetNextResendAvailableAt().AsTime()
 	assert.True(t, nextAt.After(before.Add(59*time.Second)))
 	assert.True(t, nextAt.Before(before.Add(61*time.Second)))
+}
+
+// A resend reports whether the hub requires verification by the rule that
+// GetCurrentUser reports it with. A verified account that is changing its
+// address may use the hub, so the resend for the new address does not report
+// verification as required.
+func TestResendVerificationEmail_ReportsAVerifiedAccountAsNotRequired(t *testing.T) {
+	t.Parallel()
+
+	env, rec := setupResendUserTest(t)
+	require.NoError(t, env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
+		ID: env.userID, Email: "old@example.com", EmailVerified: true,
+	}))
+	seedElapsedPendingEmail(t, env, "new@example.com")
+
+	resp, err := env.client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.NoError(t, err)
+	status := resp.GetEmailVerification()
+	assert.True(t, status.GetVerificationEmailSent(), "the pending address still gets its code")
+	assert.False(t, status.GetVerificationRequired(),
+		"a verified account may use the hub while it changes its address")
+	require.NotNil(t, rec.last())
+	assert.Equal(t, "new@example.com", rec.last().To)
+}
+
+// With SMTP unconfigured the hub requires no verification, so a resend for an
+// address that was pending before SMTP went away reports none as required,
+// as GetCurrentUser does.
+func TestResendVerificationEmail_ReportsNoRequirementWithoutSMTP(t *testing.T) {
+	t.Parallel()
+
+	env, _ := setupResendUserTestWith(t, nil)
+	seedElapsedPendingEmail(t, env, "u@example.com")
+
+	resp, err := env.client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired(),
+		"the hub requires no verification while SMTP is unconfigured")
+}
+
+// seedElapsedPendingEmail gives the env's user a pending address whose resend
+// cooldown has already elapsed.
+func seedElapsedPendingEmail(t *testing.T, env *userTestEnv, address string) {
+	t.Helper()
+	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
+		ID:                      env.userID,
+		PendingEmail:            address,
+		PendingEmailUnblockedAt: time.Now().Add(-5 * time.Minute).UTC(),
+		PendingEmailToken:       verifycode.Generate(),
+		PendingEmailExpiresAt:   ptrTime(time.Now().Add(25 * time.Minute).UTC()),
+		Now:                     time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.True(t, minted)
 }
 
 // A failed send reports the FAILURE window it leaves behind: the response

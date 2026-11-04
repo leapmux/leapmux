@@ -6,9 +6,11 @@ package controlipc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -61,7 +63,7 @@ func TestStreamCollector_TerminalFrameFinishesTheStream(t *testing.T) {
 
 	t.Run("a clean end frame reports its delivery failure, like SendResponse does", func(t *testing.T) {
 		// The asymmetry this pins: SendResponse assigned onMsg's error straight to
-		// its terminal outcome, while SendStream looked only at the frame's error
+		// its final outcome, while SendStream looked only at the frame's error
 		// -- so a clean End frame whose delivery FAILED settled as success and the caller
 		// was told the stream completed. Which of two equivalent reply shapes the
 		// handler happened to use decided the outcome.
@@ -133,8 +135,10 @@ func TestStreamCollector_TerminalFrameFinishesTheStream(t *testing.T) {
 
 		assert.Same(t, frame, forwarded)
 		requireSettled(t, c)
-		require.Error(t, c.outcome())
-		assert.Equal(t, "rpc error 7: denied", c.outcome().Error())
+		var rpcErr *channelwire.RPCError
+		require.ErrorAs(t, c.outcome(), &rpcErr, "the outcome keeps the frame's code")
+		assert.Equal(t, int32(7), rpcErr.Code)
+		assert.EqualError(t, c.outcome(), "rpc error (code 7): denied")
 	})
 
 	t.Run("an error frame reports its own error over a delivery failure", func(t *testing.T) {
@@ -156,8 +160,8 @@ func TestStreamCollector_TerminalFrameFinishesTheStream(t *testing.T) {
 }
 
 // A streaming handler can also end its stream with a unary error response. The
-// collector settles with that error and forwards nothing: the response's
-// payload, if any, belongs to a failed call.
+// collector settles with that error, as a *channelwire.RPCError that keeps its
+// code, and forwards nothing.
 func TestStreamCollector_SendResponseWithAnErrorFinishesWithIt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -167,18 +171,77 @@ func TestStreamCollector_SendResponseWithAnErrorFinishesWithIt(t *testing.T) {
 		return nil
 	})
 
-	resp := channelwire.NewErrorResponse(9, "refused")
-	resp.Payload = []byte("must not be forwarded")
-	require.NoError(t, c.SendResponse(resp))
+	require.NoError(t, c.SendResponse(channelwire.NewErrorResponse(9, "refused")))
 
 	requireSettled(t, c)
-	require.Error(t, c.outcome())
-	assert.Equal(t, "rpc error: refused", c.outcome().Error())
+	var rpcErr *channelwire.RPCError
+	require.ErrorAs(t, c.outcome(), &rpcErr)
+	assert.Equal(t, int32(9), rpcErr.Code, "the outcome keeps the handler's code")
+	assert.EqualError(t, c.outcome(), "rpc error (code 9): refused")
 	assert.Zero(t, forwarded, "an error response forwards no frame")
 
 	// The collector settles once. A later frame neither forwards nor changes
 	// the outcome.
-	require.NoError(t, c.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("late")}))
+	require.NoError(t, c.SendResponse(channelwire.NewPayloadResponse([]byte("late"))))
 	assert.Zero(t, forwarded)
-	assert.Equal(t, "rpc error: refused", c.outcome().Error())
+	assert.EqualError(t, c.outcome(), "rpc error (code 9): refused")
+}
+
+// relayError keeps the code of a failure and carries its text once. The text of
+// a Connect error already starts with its code, and connect.NewError adds the
+// code again, so the local-IPC output read "not_found: not_found: worker not
+// found". A wrapper's context stays, because it says which step of the relay
+// failed. A plain error has no code, so it becomes Internal.
+func TestRelayError(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		code    connect.Code
+		message string
+	}{
+		{
+			name:    "connect error",
+			err:     connect.NewError(connect.CodeNotFound, "worker not found"),
+			code:    connect.CodeNotFound,
+			message: "worker not found",
+		},
+		{
+			name:    "wrapped connect error",
+			err:     fmt.Errorf("get worker handshake params: %w", connect.NewError(connect.CodeUnavailable, "worker is offline")),
+			code:    connect.CodeUnavailable,
+			message: "get worker handshake params: worker is offline",
+		},
+		{
+			name: "connect error with an empty message",
+			err:  connect.NewError(connect.CodePermissionDenied, ""),
+			code: connect.CodePermissionDenied,
+		},
+		{
+			name:    "connect error with the unknown code",
+			err:     connect.NewError(connect.CodeUnknown, "no code to keep"),
+			code:    connect.CodeInternal,
+			message: "no code to keep",
+		},
+		{
+			name:    "plain error",
+			err:     errors.New("boom"),
+			code:    connect.CodeInternal,
+			message: "boom",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			relayed := relayError(tc.err)
+
+			var connectErr *connect.Error
+			require.ErrorAs(t, relayed, &connectErr)
+			assert.Equal(t, tc.code, connectErr.Code())
+			assert.Equal(t, tc.message, connectErr.Message())
+			assert.ErrorIs(t, relayed, tc.err, "the original error stays the cause")
+		})
+	}
+}
+
+func TestRelayError_PrintsTheCodeOnce(t *testing.T) {
+	relayed := relayError(connect.NewError(connect.CodeNotFound, "worker not found"))
+	assert.Equal(t, "not_found: worker not found", relayed.Error())
 }

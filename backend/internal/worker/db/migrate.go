@@ -25,7 +25,7 @@ var migrations embed.FS
 // two halves of the codebase no longer disagree about how to run a migration.
 //
 // Takes the caller's ctx (as sqlutil.GooseMigrator.Migrate does) rather than
-// making its own: both entry points hold a cancellable one, and a migration
+// making its own: worker.Run holds a cancellable one, and a migration
 // that rewrites a large table on a busy worker DB would otherwise be
 // uninterruptible -- Ctrl-C would be ignored until it finished.
 func Migrate(ctx context.Context, db *sql.DB) error {

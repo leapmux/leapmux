@@ -7,7 +7,9 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 
 const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  getGitFileStatus: (...args: unknown[]) => mockGetGitFileStatus(...args),
+  workerGit: {
+    getGitFileStatus: (...args: unknown[]) => mockGetGitFileStatus(...args),
+  },
 }))
 
 beforeEach(() => {

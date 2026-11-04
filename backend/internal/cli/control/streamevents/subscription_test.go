@@ -1753,7 +1753,7 @@ func (channel *replayIdentityChannel) SendRPCNoWait(ctx context.Context, method 
 	return channel.fakeChannel.SendRPCNoWait(ctx, method, payload, handlers)
 }
 
-func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte, cancel bool) error {
+func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte) error {
 	channel.mu.Lock()
 	channel.revisions = append(channel.revisions, append([]byte(nil), payload...))
 	fail := channel.failNextUpdate
@@ -1762,7 +1762,7 @@ func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id 
 	if fail {
 		return errors.New("the channel refused the update")
 	}
-	return channel.fakeChannel.SendStreamRequest(ctx, id, payload, cancel)
+	return channel.fakeChannel.SendStreamRequest(ctx, id, payload)
 }
 
 func (channel *replayIdentityChannel) requests(t *testing.T, opening bool) []*leapmuxv1.WatchEventsRequest {

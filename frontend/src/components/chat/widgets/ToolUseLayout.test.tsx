@@ -162,7 +162,7 @@ describe('ToolUseLayout', () => {
     expect(screen.getByTestId('body-content')).toBeInTheDocument()
   })
 
-  it('alwaysVisible bypasses expand gating', () => {
+  it('bypasses the expanded state when alwaysVisible is set', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <ToolUseLayout
@@ -248,7 +248,7 @@ describe('ToolUseLayout', () => {
     expect(bodyWrapper).toHaveAttribute('data-span-body-line')
   })
 
-  it('renderIcon overrides the lucide icon', () => {
+  it('lets renderIcon override the lucide icon', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <ToolUseLayout

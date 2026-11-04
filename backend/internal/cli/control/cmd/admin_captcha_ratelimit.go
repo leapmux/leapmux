@@ -63,15 +63,20 @@ func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmu
 }
 
 // resetOneSetting removes ONE key's row through ResetSettings, the hub's only
-// reset verb, and returns the key's resulting value.
-func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, error) {
+// reset verb, and returns the key's resulting value and whether the key is
+// restart-class.
+func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
 	resp, err := c.AdminSettingsService().ResetSettings(context.Background(), &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{key},
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return onlySettingValue(resp.GetValues())
+	value, err := onlySettingValue(resp.GetValues())
+	if err != nil {
+		return nil, false, err
+	}
+	return value, slices.Contains(resp.GetRestartKeys(), key), nil
 }
 
 // onlySettingValue reads the one value a single-key request answers. The hub
@@ -96,10 +101,10 @@ func adminUpdateSettingScalar[T bool | int64 | float64 | string](c *control.Clie
 	return updateSettingJSON(c, key, value)
 }
 
-// No single-key secret helper lives here. The one verb that writes a
-// secret (`captcha set`) also writes the row it belongs to, and both
-// halves travel in ONE UpdateSettings write so they land together or not
-// at all. `settings set-secret` sends its secret half through updateOneSetting.
+// Secrets need no helper of their own, because updateOneSetting takes a
+// whole SettingWrite. `settings set-secret` sends its secret half through
+// it. `captcha set` sends both halves of a row in ONE UpdateSettings write,
+// so a site key and its secret land together or not at all.
 
 // defaultIfZero substitutes a family default for a value the operator
 // passed as 0.
@@ -698,7 +703,7 @@ func RunAdminRateLimitReset(rawCtx any, args []string) error {
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			value, err := resetOneSetting(c, target.Key)
+			value, _, err := resetOneSetting(c, target.Key)
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}

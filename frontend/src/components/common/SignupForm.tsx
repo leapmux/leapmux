@@ -108,8 +108,27 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     return { slug, sanitizedDisplayName, email: trimmedEmail }
   }
 
+  const emailRequired = () => isEmailEnabled()
+
+  const canSubmit = () => {
+    if (!username() || (emailRequired() && !email().trim()) || captcha.blocksSubmit())
+      return false
+    if (effectiveMethod() === 'passkey')
+      return true
+    return passwordCanSubmit(pwProps)
+  }
+
+  /** Whether a submit must not start a sign-up now. The button and the handler both read it. */
+  const submitBlocked = () => submitting() || !canSubmit()
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
+    // The same rule as the button. A password manager can submit the form
+    // itself, past a disabled button. While the system info is pending, the
+    // form cannot tell whether the hub requires a captcha, so a sign-up sent
+    // then can arrive without a captcha that the hub requires.
+    if (submitBlocked())
+      return
     const fields = validateCommonFields()
     if (!fields)
       return
@@ -156,16 +175,6 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
   }
 
   const captchaAction = methodSelection.captchaAction
-
-  const emailRequired = () => isEmailEnabled()
-
-  const canSubmit = () => {
-    if (!username() || (emailRequired() && !email().trim()) || captcha.blocksSubmit())
-      return false
-    if (effectiveMethod() === 'passkey')
-      return true
-    return passwordCanSubmit(pwProps)
-  }
 
   return (
     <>
@@ -218,7 +227,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           <div class={errorText}>{error()}</div>
         </Show>
         <div class={actionsFooter}>
-          <button type="submit" disabled={submitting() || !canSubmit()}>
+          <button type="submit" disabled={submitBlocked()}>
             <Show when={submitting()}><Spinner /></Show>
             {submitting()
               ? props.submittingLabel

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TERMINAL_DISCONNECTED, terminalStatusClassList } from './terminalStatus'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
+import { terminalStatusClassList } from './terminalStatus'
 import * as styles from './terminalStatus.css'
 
 describe('TERMINAL_DISCONNECTED', () => {

@@ -26,7 +26,7 @@ vi.mock('~/api/clients', () => ({
     logout: vi.fn().mockResolvedValue({}),
   },
   systemClient: {
-    getSystemInfo: vi.fn().mockResolvedValue({ signupEnabled: false, soloMode: false }),
+    getSystemInfo: vi.fn().mockResolvedValue({ signupEnabled: false }),
   },
   userClient: {},
 }))
@@ -43,6 +43,18 @@ vi.mock('~/lib/elevation', async () => {
     elevateWithPassword: (...a: [string]) => mockElevateWithPassword(...a),
     elevateWithPasskey: () => mockElevateWithPasskey(),
     dropElevation: () => mockDropElevation(),
+  }
+})
+
+// The hub's API timeouts, which a session loads once it has an account. The
+// rest of the transport stays real, so the slide-report interceptor below still
+// reaches the adoption opener that the context registers.
+const mockLoadTimeouts = vi.fn<() => Promise<void>>(() => Promise.resolve())
+vi.mock('~/api/transport', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/transport')>()
+  return {
+    ...actual,
+    loadTimeouts: () => mockLoadTimeouts(),
   }
 })
 
@@ -138,6 +150,14 @@ function reportFor(user: Record<string, unknown> | undefined, extra: Record<stri
       : {}),
     ...extra,
   } as unknown as SessionReport
+}
+
+/** The message of the failed recovery read, or null when the read did not fail. */
+function recoveryFailure(auth: () => AuthState): string | null {
+  const read = auth().signInRecovery()?.read
+  return read?.kind === 'failed'
+    ? read.message
+    : null
 }
 
 function TestConsumer() {
@@ -335,7 +355,7 @@ describe('AuthContext', () => {
     expect(mockGetCurrentUser).not.toHaveBeenCalled()
   })
 
-  it('retryBootstrap recovers from a system-info failure', async () => {
+  it('recovers from a system-info failure when retryBootstrap runs', async () => {
     mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
     const { auth } = renderWithAuthCapture()
 
@@ -358,7 +378,7 @@ describe('AuthContext', () => {
     expect(screen.getByTestId('bootstrap-error')).toHaveTextContent('none')
   })
 
-  it('retryBootstrap re-attempts and clears the error on recovery', async () => {
+  it('re-attempts and clears the error on recovery when retryBootstrap runs', async () => {
     mockGetCurrentUser.mockRejectedValue(
       new ConnectError('connection refused', Code.Unavailable),
     )
@@ -716,13 +736,14 @@ describe('AuthContext', () => {
     })
 
     /**
-     * The resend cooldown moves without any read of the account: the
-     * `/verify-email` page records the deadline the hub minted with the code.
-     * A read that left before that mint answers the previous cooldown -- often
-     * none at all -- and adopting it re-enables Resend at once. The button then
-     * sends a second request that the hub refuses with ResourceExhausted.
+     * The resend cooldown moves without any read of the account: a
+     * same-identity reply, such as the `/verify-email` one, carries the
+     * deadline the hub minted. A read that left before that mint answers the
+     * previous cooldown -- often none at all -- and adopting it re-enables
+     * Resend at once. The button then sends a second request that the hub
+     * refuses with ResourceExhausted.
      */
-    it('does not revert a cooldown a resend recorded while it was out', async () => {
+    it('does not revert a cooldown a same-identity reply recorded while it was out', async () => {
       const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
       mockGetCurrentUser.mockResolvedValue({
         sessionReport: {
@@ -736,7 +757,11 @@ describe('AuthContext', () => {
       mockGetCurrentUser.mockReturnValue(inFlight.promise)
       const refreshing = auth().refreshUser()
 
-      auth().setVerificationResendAvailableAt(resend)
+      await auth().openUserAdoption()(
+        { id: 'u1', username: 'alice', isAdmin: false } as unknown as User,
+        { nextResendAvailableAt: resend } as unknown as EmailVerificationStatus,
+      )
+      expect(auth().verificationResendAvailableAt()).toBe(resend)
 
       inFlight.resolve({
         sessionReport: {
@@ -1088,10 +1113,13 @@ describe('AuthContext sign-in recovery', () => {
     const result = await auth().login('alice', 'pw')
 
     expect(result.outcome).toBe('recovering')
-    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
     expect(auth().user()?.username).toBe('alice')
     expect(auth().loading()).toBe(false)
-    expect(auth().signInRecovery()?.error).toBeNull()
+    // The recovered account enters the shell exactly as an adopted sign-in
+    // does, and its session loads the hub's timeouts.
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
+    expect(mockLoadTimeouts).toHaveBeenCalledOnce()
 
     auth().finishSignInRecovery()
     expect(auth().signInRecovery()).toBeNull()
@@ -1103,19 +1131,25 @@ describe('AuthContext sign-in recovery', () => {
     mockGetCurrentUser.mockRejectedValueOnce(new ConnectError('down', Code.Unavailable))
 
     await auth().login('alice', 'pw')
-    await untilTrue(() => auth().signInRecovery()?.error != null)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'failed')
     expect(auth().user()).toBeNull()
-    expect(auth().signInRecovery()?.error).toContain('down')
+    expect(recoveryFailure(auth)).toContain('down')
 
-    mockGetCurrentUser.mockResolvedValueOnce({
+    const retryRead = deferred<unknown>()
+    mockGetCurrentUser.mockReturnValueOnce(retryRead.promise)
+    const retrying = auth().retrySignInRecovery()
+    // Retry replaces the failure at once, so the gate shows the pending
+    // screen while the new read runs.
+    expect(auth().signInRecovery()?.read).toEqual({ kind: 'reading' })
+    retryRead.resolve({
       sessionReport: {
         user: { id: 'u1', username: 'alice', isAdmin: false },
       },
     })
-    await auth().retrySignInRecovery()
+    await retrying
 
     expect(auth().user()?.username).toBe('alice')
-    expect(auth().signInRecovery()?.completed).toBe(true)
+    expect(auth().signInRecovery()?.read.kind).toBe('completed')
     expect(mockLogin).toHaveBeenCalledOnce()
   })
 
@@ -1141,7 +1175,7 @@ describe('AuthContext sign-in recovery', () => {
     expect(auth().elevationExpiresAt()).toBeUndefined()
     expect(auth().user()).toBeNull()
     await vi.waitFor(() => expect(mockCloseAll).toHaveBeenCalled())
-    await untilTrue(() => auth().signInRecovery()?.error != null)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'failed')
     expect(auth().user()).toBeNull()
   })
 
@@ -1155,10 +1189,15 @@ describe('AuthContext sign-in recovery', () => {
     })
     mockGetCurrentUser.mockReturnValue(new Promise(() => {}))
 
-    await auth().login('alice', 'pw')
+    // The result states the outcome and the verification requirement, and
+    // nothing else: the context owns the cooldown it just seeded.
+    expect(await auth().login('alice', 'pw')).toEqual({ outcome: 'recovering', verificationRequired: true })
 
     expect(auth().verificationResendAvailableAt()).toBe(resend)
-    expect(auth().signInRecovery()?.verificationRequired).toBe(true)
+    expect(auth().signInRecovery()).toEqual({
+      read: { kind: 'reading' },
+      verificationRequired: true,
+    })
   })
 
   // Recovery owns the navigation after the read, so it keeps the address the
@@ -1199,7 +1238,7 @@ describe('AuthContext sign-in recovery', () => {
 
     expect(outcome).toBe('recovering')
     expect(auth().signInRecovery()?.redirect).toBe('/settings')
-    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
     expect(auth().user()?.username).toBe('alice')
   })
 
@@ -1237,9 +1276,8 @@ describe('AuthContext sign-in recovery', () => {
     hydration.release()
 
     expect((await login).outcome).toBe('recovering')
-    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
     expect(auth().user()?.username).toBe('alice')
-    expect(auth().signInRecovery()?.error).toBeNull()
   })
 
   // The same refusal can meet the recovery read itself. Its operation is still
@@ -1262,13 +1300,13 @@ describe('AuthContext sign-in recovery', () => {
     await elevationDeadlineInterceptor(async () => reportingSlide(new Date(Date.now() + 60 * 60 * 1000)))({ stream: false } as never)
     hydration.release()
 
-    await untilTrue(() => auth().signInRecovery()?.error != null)
-    expect(auth().signInRecovery()?.error).toContain('changed while it was loading')
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'failed')
+    expect(recoveryFailure(auth)).toContain('changed while it was loading')
     expect(auth().user()).toBeNull()
 
     await auth().retrySignInRecovery()
     expect(auth().user()?.username).toBe('alice')
-    expect(auth().signInRecovery()?.completed).toBe(true)
+    expect(auth().signInRecovery()?.read.kind).toBe('completed')
   })
 
   // The recovery read's adoption can also lose to a NEWER sign-in, which moves
@@ -1296,15 +1334,14 @@ describe('AuthContext sign-in recovery', () => {
     await settle()
 
     expect(auth().user()).toBeNull()
-    expect(auth().signInRecovery()?.error).toBeNull()
-    expect(auth().signInRecovery()?.completed).toBe(false)
+    expect(auth().signInRecovery()?.read).toEqual({ kind: 'reading' })
 
     bobRead.resolve({
       sessionReport: {
         user: { id: 'u2', username: 'bob', isAdmin: false },
       },
     })
-    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
     expect(auth().user()?.username).toBe('bob')
   })
 
@@ -1338,8 +1375,9 @@ describe('AuthContext sign-in recovery', () => {
   })
 
   // The recovery read keys its staleness on the operation, not on the count
-  // that every local write moves. A cooldown write during the read must not
-  // discard the read and leave the gate waiting with no read in flight.
+  // that every local write moves. A slide report that lands during the read
+  // must not discard the read and leave the gate waiting with no read in
+  // flight.
   it('adopts the account although an unrelated write landed during the read', async () => {
     const auth = await bootSignedOut()
     const read = deferred<unknown>()
@@ -1347,14 +1385,15 @@ describe('AuthContext sign-in recovery', () => {
     mockGetCurrentUser.mockReturnValueOnce(read.promise)
     await auth().login('alice', 'pw')
 
-    auth().setVerificationResendAvailableAt(timestampFromDate(new Date(Date.now() + 60 * 1000)))
+    await elevationDeadlineInterceptor(async () => reportingSlide(new Date(Date.now() + 60 * 60 * 1000)))({ stream: false } as never)
+    expect(auth().elevationExpiresAt()).toBeDefined()
     read.resolve({
       sessionReport: {
         user: { id: 'u1', username: 'alice', isAdmin: false },
       },
     })
 
-    await untilTrue(() => auth().signInRecovery()?.completed === true)
+    await untilTrue(() => auth().signInRecovery()?.read.kind === 'completed')
     expect(auth().user()?.username).toBe('alice')
   })
 })
@@ -1446,6 +1485,36 @@ describe('AuthContext operation ownership', () => {
 
     expect(auth().bootstrapError()).toBeNull()
     expect(auth().user()?.username).toBe('bob')
+  })
+
+  // A sign-in supersedes the bootstrap restore, but the restore's read still
+  // adopts the account, because a read decides staleness by the account
+  // state and not by the operation. That account needs the hub's timeouts,
+  // and a sign-in that then fails loads none of its own.
+  it('loads the timeouts for an account the restore adopted after a sign-in superseded it', async () => {
+    const restore = deferred<unknown>()
+    mockGetCurrentUser.mockReturnValueOnce(restore.promise)
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(mockGetCurrentUser).toHaveBeenCalledOnce())
+
+    const signIn = deferred<never>()
+    mockLogin.mockReturnValueOnce(signIn.promise)
+    const login = auth().login('alice', 'pw')
+    restore.resolve({
+      sessionReport: {
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      },
+    })
+    await untilTrue(() => auth().user() !== null)
+    await settle()
+
+    signIn.reject(new ConnectError('invalid credentials', Code.Unauthenticated))
+    await expect(login).rejects.toThrow('invalid credentials')
+    await settle()
+
+    expect(auth().user()?.username).toBe('alice')
+    expect(mockLoadTimeouts).toHaveBeenCalledOnce()
+    expect(auth().loading()).toBe(false)
   })
 
   // A's sign-in RPC fails only after B adopted its account. The failure
@@ -1565,8 +1634,8 @@ describe('AuthContext openUserAdoption', () => {
     expect(auth().elevationExpiresAt()).toBeUndefined()
   })
 
-  // A newer elevation landed while the write was out. The adoption re-reads
-  // rather than adopting, and the newer deadline stands.
+  // A newer elevation landed while the write was out. The adoption adopts the
+  // reply, which carries no elevation, so the newer deadline stands.
   it('keeps a newer elevation that landed in the meantime', async () => {
     const auth = await bootAs({
       user: { id: 'u1', username: 'alice', isAdmin: false },
@@ -1575,18 +1644,116 @@ describe('AuthContext openUserAdoption', () => {
     const newer = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
     mockElevateWithPassword.mockResolvedValue(newer)
     await auth().elevateWithPassword('pw')
-    mockGetCurrentUser.mockResolvedValue({
-      sessionReport: {
-        user: { id: 'u1', username: 'alice', isAdmin: false },
-        elevationExpiresAt: newer,
-      },
-    })
 
-    await adopt({ id: 'u1', username: 'alice', displayName: 'stale' } as unknown as User)
+    await adopt({ id: 'u1', username: 'alice', displayName: 'Renamed' } as unknown as User)
 
     expect(auth().elevationExpiresAt()).toBe(newer)
-    expect(auth().user()?.displayName).not.toBe('stale')
+    expect(auth().user()?.displayName).toBe('Renamed')
+    expect(mockGetCurrentUser).not.toHaveBeenCalled()
+  })
+
+  // The identity signed out while the write was out. The reply belongs to an
+  // account this document no longer holds, so the adoption reads instead,
+  // and the signed-out read leaves the document signed out.
+  it('re-reads instead of adopting after a sign-out', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    await auth().logout()
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('no session', Code.Unauthenticated))
+
+    await adopt({ id: 'u1', username: 'alice', displayName: 'Reply' } as unknown as User)
+
+    expect(auth().user()).toBeNull()
     expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+  })
+
+  // The reply is the hub's account AFTER the mutation. A local write that
+  // leaves the identity alone must not discard it: the read that would replace
+  // it can fail, and the page then shows the account as it stood before the
+  // mutation -- `/verify-email` lands home with the address still unverified.
+  it.each([
+    {
+      write: 'an elevation',
+      land: async (auth: () => AuthState) => {
+        mockElevateWithPassword.mockResolvedValue(timestampFromDate(new Date(Date.now() + 60 * 60 * 1000)))
+        await auth().elevateWithPassword('pw')
+      },
+    },
+    {
+      write: 'a refresh with a cooldown',
+      land: async (auth: () => AuthState) => {
+        mockGetCurrentUser.mockResolvedValueOnce({
+          sessionReport: {
+            user: {
+              id: 'u1',
+              username: 'alice',
+              emailVerified: false,
+              isAdmin: false,
+            },
+            emailVerification: {
+              nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 60 * 1000)),
+            },
+          },
+        })
+        await auth().refreshUser()
+      },
+    },
+  ])('adopts a same-identity reply although $write landed while the mutation was out', async ({ land }) => {
+    const auth = await bootAs({
+      user: {
+        id: 'u1',
+        username: 'alice',
+        emailVerified: false,
+        isAdmin: false,
+      },
+    })
+    const adopt = auth().openUserAdoption()
+    await land(auth)
+    const readsBeforeReply = mockGetCurrentUser.mock.calls.length
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('down', Code.Unavailable))
+
+    await adopt({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
+
+    expect(auth().user()?.emailVerified).toBe(true)
+    expect(mockGetCurrentUser).toHaveBeenCalledTimes(readsBeforeReply)
+  })
+
+  // `setUser` refuses a reply when a local write lands while the account's
+  // rows load. The reply is then stale, so none of it may land -- its cooldown
+  // included -- and the adoption reads the account instead.
+  it('re-reads instead of adopting a reply that a local write displaced mid-hydration', async () => {
+    const auth = await bootAs({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
+    const adopt = auth().openUserAdoption()
+    mockGetCurrentUser.mockResolvedValue({
+      sessionReport: {
+        user: {
+          id: 'u1',
+          username: 'alice',
+          displayName: 'Read',
+          isAdmin: false,
+        },
+      },
+    })
+    const hydration = holdNextHydration()
+
+    const adopting = adopt(
+      { id: 'u1', username: 'alice', displayName: 'Reply' } as unknown as User,
+      {
+        nextResendAvailableAt: timestampFromDate(new Date(Date.now() + 60 * 1000)),
+      } as unknown as EmailVerificationStatus,
+    )
+    await hydration.entered
+    await elevationDeadlineInterceptor(async () => reportingSlide(new Date(Date.now() + 60 * 60 * 1000)))({ stream: false } as never)
+    hydration.release()
+    await adopting
+
+    expect(mockGetCurrentUser).toHaveBeenCalledOnce()
+    expect(auth().user()?.displayName).toBe('Read')
+    expect(auth().verificationResendAvailableAt()).toBeUndefined()
   })
 
   // The identity changed while the write was out. The reply belongs to the old

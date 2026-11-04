@@ -1,8 +1,12 @@
 /// <reference types="vitest/globals" />
+import { create } from '@bufbuild/protobuf'
+import { timestampFromMs } from '@bufbuild/protobuf/wkt'
 import { createComponent, createRoot, createSignal } from 'solid-js'
 import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createDialogState } from '~/hooks/createDialogState'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { useWorkerSection } from './useWorkerSection'
 
 const mockListWorkers = vi.fn()
@@ -48,8 +52,12 @@ vi.mock('~/stores/tunnel.store', () => ({
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
+/**
+ * A decoded Worker, as the hub client hands one over. A plain object would
+ * not exercise the cache's comparison, which reads the message schema.
+ */
 function worker(id: string, online = true) {
-  return { id, online, name: id }
+  return create(WorkerSchema, { id, online })
 }
 
 beforeEach(() => {
@@ -147,6 +155,63 @@ describe('useWorkerSection', () => {
 
       expect(mockListWorkers).toHaveBeenCalledTimes(2)
       expect(s.workers()[0], 'same reference, so the sidebar row is not re-created').toBe(first)
+      dispose()
+    })
+  })
+
+  // A decoded Worker carries its created and last-seen times as nested
+  // Timestamp messages, fresh on every reply. The sidebar keys its rows by
+  // object, so a cache that compared those by reference re-created every
+  // worker row on every refetch, and an open row menu closed with it.
+  it('keeps the object of a worker whose refetch carries the same times', async () => {
+    await createRoot(async (dispose) => {
+      mockListWorkers.mockImplementation(async () => ({
+        workers: [
+          create(WorkerSchema, {
+            id: 'w1',
+            online: true,
+            createdAt: timestampFromMs(1_700_000_000_000),
+            lastSeenAt: timestampFromMs(1_700_000_500_000),
+          }),
+        ],
+      }))
+      const s = mount()
+      await flush()
+      const first = s.workers()[0]
+      expect(first?.createdAt, 'the reply carries a created time').toBeDefined()
+
+      s.refetchWorkers()
+      await flush()
+
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
+      expect(s.workers()[0]).toBe(first)
+      dispose()
+    })
+  })
+
+  it('replaces the object of a worker whose last-seen time changed', async () => {
+    await createRoot(async (dispose) => {
+      const lastSeen = { ms: 1_700_000_500_000 }
+      mockListWorkers.mockImplementation(async () => ({
+        workers: [
+          create(WorkerSchema, {
+            id: 'w1',
+            online: true,
+            createdAt: timestampFromMs(1_700_000_000_000),
+            lastSeenAt: timestampFromMs(lastSeen.ms),
+          }),
+        ],
+      }))
+      const s = mount()
+      await flush()
+      const first = s.workers()[0]
+
+      lastSeen.ms += 60_000
+      s.refetchWorkers()
+      await flush()
+
+      expect(s.workers()[0]).not.toBe(first)
+      expect(s.workers()[0]?.lastSeenAt?.seconds).toBe(1_700_000_560n)
       dispose()
     })
   })
@@ -319,13 +384,43 @@ describe('useWorkerSection', () => {
   })
 
   it('survives a failed listWorkers with an empty list', async () => {
-    await createRoot(async (dispose) => {
-      mockListWorkers.mockRejectedValue(new Error('offline'))
-      const s = mount()
-      await flush()
-      expect(s.workers()).toEqual([])
-      dispose()
-    })
+    const logs = captureLoggerOutput()
+    try {
+      await createRoot(async (dispose) => {
+        mockListWorkers.mockRejectedValue(new Error('offline'))
+        const s = mount()
+        await flush()
+        expect(s.workers()).toEqual([])
+        dispose()
+      })
+    }
+    finally {
+      logs.restore()
+    }
+  })
+
+  // A failed read keeps the last list, and says so in the log: the sidebar
+  // shows nothing to explain a worker that is missing from it.
+  it('logs a failed listing and keeps the last successful list', async () => {
+    const logs = captureLoggerOutput()
+    try {
+      await createRoot(async (dispose) => {
+        const s = mount()
+        await flush()
+        expect(logs.messages('warn', 'workerSection')).toEqual([])
+
+        mockListWorkers.mockRejectedValueOnce(new Error('page 2 unavailable'))
+        s.refetchWorkers()
+        await flush()
+
+        expect(logs.messages('warn', 'workerSection')).toEqual(['Failed to list the workers; keeping the last list'])
+        expect(s.workers().map(w => w.id)).toEqual(['w1'])
+        dispose()
+      })
+    }
+    finally {
+      logs.restore()
+    }
   })
 
   /**

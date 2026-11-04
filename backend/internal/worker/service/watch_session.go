@@ -9,7 +9,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -162,7 +161,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	}
 	if err != nil {
 		s.OnCancel()
-		sendStreamError(s.sender, codes.InvalidArgument, err.Error())
+		sendInvalidArgument(s.sender, err.Error())
 		return
 	}
 	if termResult.applied {

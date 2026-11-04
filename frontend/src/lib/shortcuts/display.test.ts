@@ -133,12 +133,12 @@ describe('formatShortcut', () => {
       expect(getShortcutHintsText('app.nope')).toBeUndefined()
     })
 
-    it('shortcutHint embeds the shortcut after the label', () => {
+    it('embeds the shortcut after the label in shortcutHint', () => {
       getBindingsForCommand.mockReturnValue(['$mod+n'])
       expect(shortcutHint('New Agent', 'app.newAgent')).toBe('New Agent (Ctrl+N)')
     })
 
-    it('shortcutHint returns plain text when no binding exists', () => {
+    it('returns plain text from shortcutHint when no binding exists', () => {
       expect(shortcutHint('New Agent', 'app.nope')).toBe('New Agent')
     })
   })

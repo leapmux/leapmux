@@ -225,10 +225,7 @@ func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*
 		return nil, err
 	}
 
-	resp := &leapmuxv1.LoginResponse{
-		SessionReport: signInReport(ctx, s.store, user,
-			emailVerificationToProto(s.loginVerificationOutcome(ctx, user)), nil),
-	}
+	resp := &leapmuxv1.LoginResponse{SessionReport: s.loginSessionReport(ctx, user)}
 	s.setSessionCookie(ctx, info.ResponseHeader(), token, expiresAt)
 	return resp, nil
 }
@@ -387,9 +384,10 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *leapmuxv1.GetCurr
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	// The complete projection, whose rules completeUserProto states. Its one
-	// error is the link read of an account that elevates only through a
-	// provider, which has no other factor to fall back on.
+	// The complete projection, whose rules completeUserProto states. It fails
+	// in two cases: the row has a blank id, or the account elevates only
+	// through a provider, has no other factor to fall back on, and its link
+	// read failed.
 	userProto, err := completeUserProto(ctx, s.store, user)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
@@ -689,6 +687,8 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.
 		Email:        pending.Email,
 		DisplayName:  pending.DisplayName,
 		ProviderName: providerName,
+		// beginOAuthFlow sanitized it before the callback stored it here.
+		Redirect: pending.RedirectURI,
 	}, nil
 }
 

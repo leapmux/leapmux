@@ -106,7 +106,7 @@ func RunWorkspaceList(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.ListWorkspacesResponse
-		return hubCallUnaryEmitOn(ctx, c, "ListWorkspaces",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 			&leapmuxv1.ListWorkspacesRequest{}, &resp,
 			func() any {
 				rows := make([]map[string]any, 0, len(resp.GetWorkspaces()))
@@ -132,7 +132,7 @@ func RunWorkspaceGet(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.GetWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 			&leapmuxv1.GetWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp,
 			func() any { return workspaceToMap(resp.GetWorkspace()) })
 	})
@@ -171,7 +171,7 @@ func RunWorkspaceCreate(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.CreateWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "CreateWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
 			&leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": resp.GetWorkspaceId()} })
 	})
@@ -194,7 +194,7 @@ func RunWorkspaceRename(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.RenameWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "RenameWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
 			&leapmuxv1.RenameWorkspaceRequest{WorkspaceId: got.WorkspaceID, Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": got.WorkspaceID} })
 	})
@@ -225,7 +225,7 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 			return err
 		}
 		var resp leapmuxv1.DeleteWorkspaceResponse
-		if err := hubCallUnary(ctx, c, "DeleteWorkspace", &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
+		if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
 			return control.EmitErrorWith(classifyHubError(err), err)
 		}
 

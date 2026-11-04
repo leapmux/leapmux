@@ -59,7 +59,7 @@ describe('createProgrammaticScrollGuard', () => {
     expect(g.isEcho()).toBe(false)
   })
 
-  it('consumeEcho clears the matched marker but spares a fresher one armed mid-handler', () => {
+  it('clears the matched marker but spares a fresher one armed mid-handler when consumeEcho runs', () => {
     const el = fakeEl(0)
     const clock = fakeClock()
     const g = createProgrammaticScrollGuard(() => el, undefined, clock.now)

@@ -668,8 +668,8 @@ func (m *Manager) setComplete(ctx context.Context, desc Descriptor, v any, write
 // would be stored and then dropped from every snapshot AND from every
 // cross-key candidate: a durable row that no reader can ever get back, that
 // no rule can refuse, and that warns once per process that it belongs to an
-// unknown key. Removing the row again needs direct SQL, because the reset
-// verbs refuse the same unregistered name.
+// unknown key. Removing the row again needs direct SQL, because ResetMany
+// refuses the same unregistered name.
 //
 // It compares NAMES, not descriptor identity, which is how the whole package
 // resolves a key (Snapshot.ValueOf, Key.Of, the row keys themselves).
@@ -680,24 +680,19 @@ func (m *Manager) requireRegistered(desc Descriptor) error {
 	return nil
 }
 
-// Reset removes the key's row, returning it to its code default. The
-// cross-key rules run against the post-reset view first — the same
+// ResetMany removes the rows of one or more keys ATOMICALLY, returning each
+// key to its code default: one transaction, and ONE cross-key validation over
+// the whole post-reset state. It is the only reset verb; a single key is a
+// one-element slice.
+//
+// The cross-key rules run against the post-reset view first — the same
 // contract every write path holds — so a reset cannot store a combination
 // an update refuses (for example, clearing a captcha provider secret while
 // that provider stays selected).
-func (m *Manager) Reset(ctx context.Context, desc Descriptor) error {
-	if err := m.ResetMany(ctx, []Descriptor{desc}); err != nil {
-		return fmt.Errorf("reset setting %q: %w", desc.Name(), err)
-	}
-	return nil
-}
-
-// ResetMany removes several keys' rows ATOMICALLY: one transaction, and
-// ONE cross-key validation over the whole post-reset state.
 //
 // A caller that must clear more than one key cannot express that as a
 // sequence of single-key resets, for the reason UpdateMany states: each
-// Reset validates against the state the previous one left, so an
+// single-key reset validates against the state the previous one left, so an
 // intermediate state a cross-key rule refuses blocks the sequence
 // part-way, and a failure after the first delete leaves stored state the
 // caller was told it never reached. The captcha verbs pay both costs when
@@ -834,12 +829,14 @@ func (m *Manager) UpdateMany(ctx context.Context, writes []KeyWrite) error {
 			}
 		}
 		// The secret half must specify at least one SECRET field. Without
-		// this, a secret half merges any declared field, so a caller could
-		// rewrite the SMTP host or the ALTCHA cost through the half whose whole
-		// purpose is the encrypted fields. It runs AFTER the empty-document
-		// check: partialNamesSecret finds no secret field in an empty document,
-		// so the reverse order would answer an omitted document with this
-		// message.
+		// this, a secret half could hold public fields alone, so a caller
+		// could rewrite the SMTP host or the ALTCHA cost through a half that
+		// writes no encrypted field at all. The check asks for one secret
+		// field, not for secret fields only: a public field beside a secret
+		// one merges as usual, as it would through the public half. It runs
+		// AFTER the empty-document check: partialNamesSecret finds no secret
+		// field in an empty document, so the reverse order would answer an
+		// omitted document with this message.
 		if len(w.Secret) > 0 && !partialNamesSecret(w.Desc, w.Secret) {
 			return Invalidf("settings key %q: the secret document must specify at least one of %v",
 				name, w.Desc.SecretFieldNames())

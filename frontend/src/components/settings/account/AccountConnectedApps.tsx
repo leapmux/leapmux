@@ -76,8 +76,10 @@ export const AccountConnectedApps: Component = () => {
    *
    * The loop does NOT trust the cursor to end it. A client loop whose only
    * exit is a value the server chooses is a hang the server can cause, so it
-   * also stops when the cursor fails to advance and when it read MAX_PAGES.
-   * Both limits are far above any real account.
+   * also stops when the cursor fails to advance and after MAX_PAGES pages.
+   * Either stop fails the load, as a failed page read does, so the panel never
+   * draws part of the listing as all of it. MAX_PAGES is far above any real
+   * account.
    */
   const refresh = async () => {
     setLoading(true)

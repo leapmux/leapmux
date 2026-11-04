@@ -1,8 +1,9 @@
 import type { PageRequestInit } from './fetchAllPages'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
+import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { PageResponseSchema } from '~/generated/proto/leapmux/v1/common_pb'
-import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
+import { fetchAllPages, MAX_PAGES } from './fetchAllPages'
 
 function page(items: string[], nextCursor: string) {
   return Promise.resolve({
@@ -29,8 +30,8 @@ describe('fetchAllPages', () => {
     // Every request asks for the hub's maximum page, so an omitted limit
     // never shrinks the listing to the hub's default.
     expect(requests).toEqual([
-      { limit: PAGE_SIZE, cursor: '' },
-      { limit: PAGE_SIZE, cursor: 'c1' },
+      { limit: MAX_PAGE_LIMIT, cursor: '' },
+      { limit: MAX_PAGE_LIMIT, cursor: 'c1' },
     ])
     expect(rows).toEqual(['a', 'b', 'c'])
   })
@@ -59,9 +60,12 @@ describe('fetchAllPages', () => {
     expect(rows).toEqual([])
   })
 
-  it('stops when the cursor fails to advance instead of looping', async () => {
+  // The hub ends every listing with an empty cursor, so a guard that stops the
+  // loop means a fault in the hub. The rows read so far are not the listing,
+  // and a caller that drew them would present part of it as all of it.
+  it('rejects when the cursor fails to advance instead of looping', async () => {
     let calls = 0
-    const rows = await fetchAllPages(
+    await expect(fetchAllPages(
       async () => {
         calls++
         return page(['a'], 'stuck')
@@ -70,17 +74,35 @@ describe('fetchAllPages', () => {
         maxPages: 10,
         keyOf: x => x,
       },
-    )
+    )).rejects.toThrow('The hub did not end the listing: the next-page cursor did not advance.')
     expect(calls).toBe(2)
-    expect(rows).toEqual(['a'])
   })
 
-  it('stops at maxPages even if the server keeps answering', async () => {
+  it('rejects after maxPages pages when the server keeps answering', async () => {
+    let calls = 0
+    await expect(fetchAllPages(
+      async () => {
+        calls++
+        return page([`row-${calls}`], `c${calls}`)
+      },
+      {
+        maxPages: 3,
+        keyOf: x => x,
+      },
+    )).rejects.toThrow('The hub did not end the listing: it continued past 3 pages.')
+    expect(calls).toBe(3)
+  })
+
+  // The boundary of the guard above: the last allowed page may end the
+  // listing, and that listing is complete.
+  it('resolves a listing that ends on the last allowed page', async () => {
     let calls = 0
     const rows = await fetchAllPages(
       async () => {
         calls++
-        return page([`row-${calls}`], `c${calls}`)
+        return page([`row-${calls}`], calls === 3
+          ? ''
+          : `c${calls}`)
       },
       {
         maxPages: 3,
@@ -91,22 +113,20 @@ describe('fetchAllPages', () => {
     expect(rows).toEqual(['row-1', 'row-2', 'row-3'])
   })
 
-  // The guard counts pages read, so a limit of zero or below reads none.
-  it('reads no page when maxPages is zero or negative', async () => {
-    for (const maxPages of [0, -1]) {
-      const fetchPage = vi.fn(async () => page(['a'], ''))
-      const rows = await fetchAllPages(fetchPage, {
-        maxPages,
-        keyOf: x => x,
-      })
-      expect(fetchPage, String(maxPages)).not.toHaveBeenCalled()
-      expect(rows, String(maxPages)).toEqual([])
-    }
+  // A limit that admits no page cannot read the listing, so it cannot answer
+  // one either. An empty result would read as an empty listing.
+  it.each([0, -1, Number.NaN, 1.5])('rejects maxPages %s without reading a page', async (maxPages) => {
+    const fetchPage = vi.fn(async () => page(['a'], ''))
+    await expect(fetchAllPages(fetchPage, {
+      maxPages,
+      keyOf: x => x,
+    })).rejects.toThrow(RangeError)
+    expect(fetchPage).not.toHaveBeenCalled()
   })
 
-  it('stops at MAX_PAGES when the caller gives no maxPages', async () => {
+  it('rejects after MAX_PAGES pages when the caller gives no maxPages', async () => {
     let calls = 0
-    await fetchAllPages(
+    await expect(fetchAllPages(
       async () => {
         calls++
         return page([`row-${calls}`], `c${calls}`)
@@ -114,7 +134,7 @@ describe('fetchAllPages', () => {
       {
         keyOf: x => x,
       },
-    )
+    )).rejects.toThrow(`The hub did not end the listing: it continued past ${MAX_PAGES} pages.`)
     expect(calls).toBe(MAX_PAGES)
   })
 
@@ -158,8 +178,7 @@ describe('fetchAllPages', () => {
     )).rejects.toThrow('offline')
   })
 
-  it('carries the runaway-guard constants the listings share', () => {
-    expect(PAGE_SIZE).toBe(500)
+  it('carries the runaway guard that the listings share', () => {
     expect(MAX_PAGES).toBe(500)
   })
 })

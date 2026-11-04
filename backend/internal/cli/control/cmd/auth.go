@@ -527,11 +527,9 @@ func RunAuthCredentials(rawCtx any, args []string) error {
 	// cannot see to revoke. readAllPages keys the rows by id, so a keyset
 	// boundary never prints the same credential as two live ones to somebody
 	// auditing what can reach their account.
-	tokens, err := readAllPages(func(cursor string) ([]*leapmuxv1.MyAPIToken, string, error) {
-		resp, err := c.UserService().ListMyAPITokens(context.Background(), &leapmuxv1.ListMyAPITokensRequest{
-			Page: &leapmuxv1.PageRequest{Cursor: cursor, Limit: listPageSize},
-		})
-		return resp.GetTokens(), resp.GetPage().GetNextCursor(), err
+	tokens, err := readAllPages(func(page *leapmuxv1.PageRequest) ([]*leapmuxv1.MyAPIToken, *leapmuxv1.PageResponse, error) {
+		resp, err := c.UserService().ListMyAPITokens(context.Background(), &leapmuxv1.ListMyAPITokensRequest{Page: page})
+		return resp.GetTokens(), resp.GetPage(), err
 	}, (*leapmuxv1.MyAPIToken).GetId)
 	if err != nil {
 		return control.EmitErrorWith("rpc_failed", err)

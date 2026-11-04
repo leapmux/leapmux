@@ -146,9 +146,9 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// Lazy-mint races the tab's creation: an agent may invoke
 	// `leapmux control ...` the moment its process starts, which can be
 	// before the SubmitOps batch that adds its tab has committed at the
-	// hub. Poll with bounded backoff instead of failing immediately so
-	// the common case ("agent acts before its tab lands") doesn't
-	// surface as a hard 403.
+	// hub. Poll with a capped backoff, up to the deadline, instead of
+	// failing immediately so the common case ("agent acts before its tab
+	// lands") doesn't surface as a hard 403.
 	tabFound, lookupErr := h.waitForTabOwnership(r.Context(), uid, req.IssuedForTabID, worker.ID)
 	if lookupErr != nil {
 		http.Error(w, "list tabs failed", http.StatusInternalServerError)

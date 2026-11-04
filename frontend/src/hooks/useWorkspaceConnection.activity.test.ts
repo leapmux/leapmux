@@ -16,6 +16,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -23,9 +24,12 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
   return {
     ...actual,
-    // The tail-reconcile effect asks for the newest page of every agent tab.
-    // Return an empty page so the hook completes its history request.
-    listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    workerAgent: {
+      ...actual.workerAgent,
+      // The tail-reconcile effect asks for the newest page of every agent tab.
+      // Return an empty page so the hook completes its history request.
+      listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    },
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
       hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
@@ -102,6 +106,7 @@ function mountConnection() {
   createRoot((d) => {
     dispose = d
     useWorkspaceConnection({
+      workerOnline: createWorkerOnlineStore(),
       chatStore: createChatStore(),
       agentInputQueueStore: createAgentInputQueueStore(),
       view,

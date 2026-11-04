@@ -1,5 +1,4 @@
 import type { Component } from 'solid-js'
-import type { SignInOutcome } from '~/context/AuthContext'
 import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -47,16 +46,22 @@ export const PasswordSetupGate: Component = () => {
       return
     setBusy(true)
     setMessage(null)
-    let outcome: SignInOutcome
     try {
       const response = await authClient.setInitialSoloPassword({
         password: password(),
       })
-      // The elevation travels WITH the reply's report. The transaction that
-      // stored the password created this session and elevated it, so the
-      // deadline is known here and needs no second round trip; `setAuth`
-      // adopts it after it clears the previous identity's.
-      outcome = await auth.setAuth(response.sessionReport)
+      // The report is the COMPLETE account projection, built from the account
+      // row that the transaction stored with the new password, so the adopted
+      // `passwordSet` is already true. Preferences -> Account renders its
+      // button and its solo warning from that copy, and it needs no second
+      // round trip. The elevation travels in the same report: the transaction
+      // that stored the password created this session and elevated it, and
+      // `setAuth` adopts that window after it clears the previous identity's.
+      //
+      // Whatever the outcome, the account is not this gate's to re-read. A
+      // report with no account recovers, and SignInRecoveryGate owns the
+      // account read; a superseded adoption belongs to the newer operation.
+      await auth.setAuth(response.sessionReport)
     }
     catch (e) {
       setMessage({
@@ -66,22 +71,6 @@ export const PasswordSetupGate: Component = () => {
       setBusy(false)
       return
     }
-    // The password is stored whatever the outcome, but only an adopted account
-    // is this gate's to re-read. A report with no account recovers, and
-    // SignInRecoveryGate owns the account read; a superseded adoption belongs
-    // to the newer operation.
-    //
-    // The ACCOUNT is the other copy of this fact, and it does not follow the
-    // snapshot. `auth.user().passwordSet` is what Preferences -> Account renders
-    // its button and its solo warning from, and nothing re-reads it for the life
-    // of the page: `readCurrentUser` runs once, at bootstrap. Without this the
-    // operator who just set the first password finds a screen that offers to set
-    // one. It runs BEFORE the snapshot below, because that read is what takes
-    // this screen down. `refreshUser` swallows its own failure, so it can never
-    // report a stored password as a failed write. The two other surfaces that
-    // offer this same password already refresh both copies.
-    if (outcome === 'adopted')
-      await auth.refreshUser()
     // OUTSIDE the catch above, because the password is stored by now. Forced,
     // because this snapshot is exactly what the gate reads: without it the
     // screen stays up over a hub that no longer needs it. That holds for every

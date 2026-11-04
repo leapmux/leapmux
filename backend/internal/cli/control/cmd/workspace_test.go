@@ -301,7 +301,7 @@ func TestRunWorkspaceList_InsideWorkerSpawn(t *testing.T) {
 	// The whole row, so a field that the explicit map drops or renames fails
 	// here. The stub sends no created_at, and an absent instant is omitted.
 	assert.Equal(t, map[string]any{"id": "ws-1", "created_by": "u-spawn", "title": "First"}, env.Data[0])
-	assert.Equal(t, []string{"ListWorkspaces"}, hub.called(),
+	assert.Equal(t, []string{leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure}, hub.called(),
 		"a session-scoped list must cost exactly one hub call; no entity-id env var may add another")
 }
 

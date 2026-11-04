@@ -1,5 +1,5 @@
 /** Each agent-event handler receives explicit stores and runs independently of the connection hook. */
-import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { AgentSettledEventDetail } from '~/lib/agentSettledEvent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -729,11 +729,6 @@ export function handleAgentInactive(
   // onTurnEndRefresh owns the git and directory-tree refresh after a turn ends.
 }
 
-/** Cancel the provider prompt without discarding a delivered response that still needs recording. */
-export function handleControlCancellation(agentId: string, request: AgentControlCancelRequest, controlStore: ReturnType<typeof createControlStore>): void {
-  controlStore.cancelRequest(agentId, request)
-}
-
 /** Apply a request or response-state snapshot. Replay retains recoverable responses without a new notification. */
 export function handleControlRequest(
   agentId: string,
@@ -898,7 +893,8 @@ export function handleAgentStatusChange(
   catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore>, repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
-  setWorkerOnline: (online: boolean) => void,
+  /** Report the agent's worker online. Takes no argument: a status never reports a worker offline. */
+  markWorkerOnline: () => void,
   streamWorkerId = '',
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
@@ -906,7 +902,7 @@ export function handleAgentStatusChange(
   // A sparse event (a git refresh, a catalog confirmation) leaves the online
   // state alone, as it leaves the other fields it does not carry.
   if (hasStatus)
-    setWorkerOnline(true)
+    markWorkerOnline()
 
   // Skip an event that supplies none of these fields:
   // - An explicit status.

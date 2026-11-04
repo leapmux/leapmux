@@ -1,6 +1,6 @@
 import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
-import type { TerminalDisplayStatus } from '~/components/shell/terminalStatus'
 import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
 import { createEffect, createMemo } from 'solid-js'
@@ -42,8 +42,8 @@ import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
  * storing it a second time is precisely what `reconcileFromProjection` existed
  * to repair. A kind PARAMETER on `patch` was the alternative; it would make a
  * mis-targeted write a compile error at ~72% of call sites, but the discriminant
- * would be a caller-supplied literal with nothing tying it to the tab id, and
- * `patchMatching` cannot take one at all. The worst outcome of a mis-targeted
+ * would be a caller-supplied literal with nothing tying it to the tab id. The
+ * worst outcome of a mis-targeted
  * write today is a field no `assemble` branch reads back -- dead, not corrupting.
  */
 
@@ -72,8 +72,8 @@ export interface SharedMeta {
    * already, so omitting the flag puts a tab this client just opened straight
    * back into the hydration candidate set: a redundant round-trip whose reply
    * is applied with none of the live handlers' guards, which drags a running
-   * terminal back to STARTING, rewinds `lastOffset` (replaying bytes xterm has
-   * already drawn) and overwrites an in-flight optimistic agent-settings edit.
+   * terminal back to STARTING and overwrites an in-flight optimistic
+   * agent-settings edit.
    */
   hydrated?: boolean | undefined
   /**
@@ -123,7 +123,7 @@ export interface AgentMeta {
 }
 
 export interface TerminalMeta {
-  terminalStatus?: TerminalDisplayStatus | undefined
+  terminalStatus?: TerminalStatus | undefined
   shellStartDir?: string | undefined
   screen?: Uint8Array | undefined
   /**
@@ -131,8 +131,10 @@ export interface TerminalMeta {
    * Seeded at hydration from the backend's `screen_end_offset` (the offset at
    * the end of `screen`, which equals `screen.length` before the ring wraps and
    * is larger once bytes fall off), then advanced monotonically as TerminalData
-   * events arrive. Echoed back as `WatchTerminalEntry.after_offset` on
-   * resubscribe so the handler skips bytes we already have.
+   * events arrive. A later `ListTerminals` reply never moves it: see
+   * `withoutClientHeldTerminalFields`. Echoed back as
+   * `WatchTerminalEntry.after_offset` on resubscribe so the handler skips bytes
+   * we already have.
    *
    * Read from HERE, never through the assembled `Tab` -- and that is the point.
    * The worker emits one `TerminalEvent_Data` per `ptmx.Read` with no
@@ -573,22 +575,6 @@ export function createTabMetadataStore() {
         if (!existing)
           return
         mergeDefined(existing, fields)
-      }))
-    },
-
-    /**
-     * Merge `fields` into every tab whose metadata matches. This is how a branch
-     * rename or a worker-offline sweep reaches EVERY workspace at once — under
-     * the old split it had to be a per-workspace fan-out across the active store
-     * plus each registry snapshot.
-     */
-    patchMatching(predicate: (meta: TabMetadata, tabId: string) => boolean, fields: TabMetadata) {
-      setState(produce((s) => {
-        for (const [tabId, meta] of Object.entries(s.byTabId)) {
-          if (!predicate(meta, tabId))
-            continue
-          mergeDefined(meta, fields)
-        }
       }))
     },
 

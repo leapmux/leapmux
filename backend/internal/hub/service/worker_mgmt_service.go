@@ -12,7 +12,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
-	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -41,9 +40,9 @@ type WorkerManagementService struct {
 	set       *settings.Manager
 	// deregisterEffects is the shared post-deregister effect set: the
 	// delegation-scope eviction, the worker's stop notification, and the
-	// owner's workers-changed broadcast. It OWNS all three collaborators, so
-	// this surface and the admin surface run exactly the same effects, and
-	// this struct keeps no second handle on any of them.
+	// owner's workers-changed broadcast. It OWNS all three collaborators, and
+	// the admin surface holds the same instance, so both surfaces run exactly
+	// the same effects, and this struct keeps no second handle on any of them.
 	deregisterEffects *WorkerDeregisterEffects
 }
 
@@ -58,20 +57,18 @@ type WorkerManagementService struct {
 // absent form: a nil mgr would report every worker offline and a nil set
 // would refuse every instruction email, so tolerating them would return a
 // WRONG answer for a wiring bug instead of failing the startup that made it.
-// That is why they differ from the effect collaborators below, and the
-// refusal is loud at construction so a new caller cannot forget one.
+// That is why they differ from deregisterEffects, and the refusal is loud at
+// construction so a new caller cannot forget one.
 //
-// notifyWorkersChanged (the CRDT registry's BroadcastWorkersChanged) and n
-// only carry post-deregister EFFECTS, so each is nil-tolerant
-// through WorkerDeregisterEffects (a test that exercises the store half
-// alone passes nil) -- the same rule auth.CredentialLifecycleEffects holds.
-// renderer is a value type; it carries the hub URL used in the registration
-// email's footer. scopeCache may be nil (tests); the constructor builds a
-// private cache then, so the effects always hold one -- production passes the
-// instance shared with CRDTService so the eviction reaches the cache
-// SubmitOps resolves through, and the containment takes effect immediately
-// rather than after the cache TTL.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, notifyWorkersChanged func(userID string), n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+// deregisterEffects only carries post-deregister EFFECTS, so it is
+// nil-tolerant: a test that exercises the store half alone passes nil, the
+// same rule auth.CredentialLifecycleEffects holds. Production passes the
+// instance it also gives AdminWorkerService, whose scope cache is the one
+// CRDTService shares, so the eviction reaches the cache SubmitOps resolves
+// through and the containment takes effect immediately rather than after the
+// cache TTL. renderer is a value type; it carries the hub URL used in the
+// registration email's footer.
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, deregisterEffects *WorkerDeregisterEffects, sender mail.Sender, renderer mail.Renderer, set *settings.Manager) *WorkerManagementService {
 	if st == nil {
 		panic("service: NewWorkerManagementService requires a store")
 	}
@@ -84,12 +81,9 @@ func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, notifyWo
 	if sender == nil {
 		panic("service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)")
 	}
-	if scopeCache == nil {
-		scopeCache = auth.NewDelegationScopeCache(st)
-	}
 	return &WorkerManagementService{
 		store: st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
-		deregisterEffects: NewWorkerDeregisterEffects(scopeCache, n, notifyWorkersChanged),
+		deregisterEffects: deregisterEffects,
 	}
 }
 
@@ -295,7 +289,7 @@ func (s *WorkerManagementService) ListWorkers(
 		PageParams:   pageParams(req.GetPage()),
 	})
 	if err != nil {
-		return nil, pageListError(err, "list workers")
+		return nil, storeConnectError(err, "list workers")
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
@@ -309,6 +303,13 @@ func (s *WorkerManagementService) ListWorkers(
 	}, nil
 }
 
+// GetWorker returns one of the caller's workers. It follows ListWorkers: a
+// worker whose owner deregistered it is absent from the listing, so it reads as
+// NotFound here too. The Worker message carries no deregistering state, so
+// returning the row would present a worker on its way out as a normal one.
+//
+// The check lives here rather than in Workers().GetOwned, because
+// DeregisterWorker reads GetOwned and must keep seeing the row.
 func (s *WorkerManagementService) GetWorker(
 	ctx context.Context,
 	req *leapmuxv1.GetWorkerRequest,
@@ -328,6 +329,9 @@ func (s *WorkerManagementService) GetWorker(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
+	if worker.DeregisteringAt != nil {
+		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
+	}
 
 	return &leapmuxv1.GetWorkerResponse{
 		Worker: s.workerToProto(worker),
@@ -343,11 +347,6 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, err
 	}
 
-	// Refuse the auto-registered local worker. The solo launcher would
-	// just re-register it on next start, so honoring the deregister
-	// would only produce a transient outage and a confusing reappearing
-	// row. The frontend already hides the menu item; this is the
-	// defense-in-depth check against a hand-crafted RPC call.
 	worker, err := s.store.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 		UserID:   user.ID,
 		WorkerID: req.GetWorkerId(),
@@ -358,8 +357,8 @@ func (s *WorkerManagementService) DeregisterWorker(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-	if worker.AutoRegistered {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition, "the bundled local worker cannot be deregistered")
+	if err := refuseConnectedBundledWorker(worker, s.workerMgr.OnlineForTrustedPath(worker.ID)); err != nil {
+		return nil, err
 	}
 
 	rows, err := s.store.Workers().Deregister(ctx, store.DeregisterWorkerParams{

@@ -25,7 +25,7 @@ beforeAll(() => {
   HTMLElement.prototype.togglePopover = vi.fn()
 })
 
-function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
+function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean, online?: boolean }) {
   const onAddTunnel = vi.fn()
   const onDeleteAllTunnels = vi.fn()
   const onDeregister = vi.fn()
@@ -43,6 +43,7 @@ function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
         updatedAt: Date.now(),
       }}
       autoRegistered={opts?.autoRegistered ?? false}
+      online={opts?.online ?? true}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}
       onDeleteAllTunnels={onDeleteAllTunnels}
@@ -90,16 +91,26 @@ describe('WorkerContextMenu', () => {
     expect(onAddTunnel).toHaveBeenCalled()
   })
 
-  it('"deregister..." visible for manually-registered workers', () => {
-    renderMenu({ autoRegistered: false })
+  it.each([
+    ['online', true],
+    ['offline', false],
+  ])('"deregister..." visible for a manually-registered %s worker', (_label, online) => {
+    renderMenu({ autoRegistered: false, online })
     expect(screen.getByText('Deregister...')).toBeInTheDocument()
   })
 
-  it('"deregister..." hidden for the auto-registered local worker', () => {
-    // Tearing down the bundled worker would just trigger a re-register
-    // on next launch — the menu item would be a dead-end click.
-    renderMenu({ autoRegistered: true })
+  it('"deregister..." hidden for a connected bundled worker', () => {
+    // The hub refuses this request while the bundled worker is connected, so
+    // the menu item would always fail.
+    renderMenu({ autoRegistered: true, online: true })
     expect(screen.queryByText('Deregister...')).not.toBeInTheDocument()
+  })
+
+  it('"deregister..." visible for an offline bundled worker', () => {
+    // An orphan from a lost solo state file stays offline for ever, and this
+    // item is the only way that the browser can remove it.
+    renderMenu({ autoRegistered: true, online: false })
+    expect(screen.getByText('Deregister...')).toBeInTheDocument()
   })
 
   describe('copying worker info', () => {

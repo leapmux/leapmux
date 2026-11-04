@@ -21,8 +21,10 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
+	"github.com/leapmux/leapmux/worker"
 )
 
 // testLoadOptions builds the options Start would pass, through the PRODUCTION
@@ -1217,6 +1219,103 @@ func TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied(t *testing.T
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
 	assert.NotContains(t, err.Error(), "auto-register worker", "got: "+err.Error())
+}
+
+// A local Worker that the Hub stops for good ends while solo keeps running, and
+// nothing restarts it, so the log must state the remedy. A local failure ends the
+// Worker the same way, but the next launch fails again, so it logs only its own
+// error. A Worker that ends because solo stops is an ordinary shutdown and logs
+// no remedy.
+func TestBringUpLocalWorker_StatesTheRemedyWhenTheWorkerStopsForGood(t *testing.T) {
+	const remedy = "the local worker stopped and will not reconnect; restart LeapMux to register a new local worker"
+	keysRefused := fmt.Errorf("%w: permission denied", workerhub.ErrKeysRefused)
+	localFailure := errors.New("open worker db: disk I/O error")
+
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context) error
+		// stopsAlone marks a Run that returns with its context live.
+		stopsAlone bool
+		wantRemedy bool
+		wantLogged string
+	}{
+		{
+			name:       "a deleted worker returns nil with a live context",
+			run:        func(context.Context) error { return nil },
+			stopsAlone: true,
+			wantRemedy: true,
+		},
+		{
+			name:       "a key refusal returns an error with a live context",
+			run:        func(context.Context) error { return keysRefused },
+			stopsAlone: true,
+			wantRemedy: true,
+			wantLogged: keysRefused.Error(),
+		},
+		{
+			// The next launch fails the same way, so a restart is no remedy.
+			name:       "a local failure returns an error with a live context",
+			run:        func(context.Context) error { return localFailure },
+			stopsAlone: true,
+			wantLogged: localFailure.Error(),
+		},
+		{
+			name: "a canceled context is an ordinary shutdown",
+			run: func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+		},
+		{
+			name: "a failure during a shutdown states no remedy",
+			run: func(ctx context.Context) error {
+				<-ctx.Done()
+				return localFailure
+			},
+			wantLogged: localFailure.Error(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := soloStartEnv(t, false)
+			d := newTestDeps()
+			workerID := make(chan string, 1)
+			d.runWorker = func(ctx context.Context, rc worker.RunConfig) error {
+				workerID <- rc.WorkerID
+				return tc.run(ctx)
+			}
+
+			// Stderr, not slog.Default(): Start's own logging.Setup installs a
+			// fresh default logger.
+			logged := testutil.CaptureStderr(t, func() {
+				ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+				defer cancel()
+				inst, err := start(ctx, cfg, d.deps)
+				require.NoError(t, err)
+				// A Worker that stops by itself must finish before Stop cancels
+				// its context, or this test would read as an ordinary shutdown.
+				if tc.stopsAlone {
+					inst.workerWork.Wait(soloTestTimeout, "the worker goroutine did not end")
+				}
+				require.NoError(t, inst.Stop())
+			})
+
+			if tc.wantLogged != "" {
+				assert.Contains(t, logged, tc.wantLogged)
+			}
+			if !tc.wantRemedy {
+				assert.NotContains(t, logged, remedy)
+				return
+			}
+			assert.Equal(t, 1, strings.Count(logged, remedy), logged)
+			id := <-workerID
+			for line := range strings.SplitSeq(logged, "\n") {
+				if strings.Contains(line, remedy) {
+					assert.Contains(t, line, `"level":"ERROR"`)
+					assert.Contains(t, line, `"worker_id":"`+id+`"`)
+				}
+			}
+		})
+	}
 }
 
 // The over-reach guard on the gate above, and the first coverage of the switch's

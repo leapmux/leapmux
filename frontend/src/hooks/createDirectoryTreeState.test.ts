@@ -25,7 +25,7 @@ describe('createDirectoryTreeState', () => {
     })
   })
 
-  it('refreshTree increments treeKey on each call', () => {
+  it('increments treeKey on each refreshTree call', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       state.refreshTree()
@@ -37,7 +37,7 @@ describe('createDirectoryTreeState', () => {
     })
   })
 
-  it('refreshTree calls handle.refresh() when a tree handle is set', () => {
+  it('calls handle.refresh() when refreshTree runs with a tree handle set', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       const handle = makeHandle()
@@ -48,7 +48,7 @@ describe('createDirectoryTreeState', () => {
     })
   })
 
-  it('refreshTree is safe when no tree handle has been registered (no throw, key still increments)', () => {
+  it('keeps refreshTree safe when no tree handle has been registered (no throw, key still increments)', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       expect(() => state.refreshTree()).not.toThrow()
@@ -79,7 +79,7 @@ describe('createDirectoryTreeState', () => {
     })
   })
 
-  it('setTreeRef replaces the previous handle (later refresh hits only the new one)', () => {
+  it('replaces the previous handle when setTreeRef is called again (later refresh hits only the new one)', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       const first = makeHandle()
@@ -93,7 +93,7 @@ describe('createDirectoryTreeState', () => {
     })
   })
 
-  it('expandTreePath forwards the path to the handle', () => {
+  it('forwards the path to the handle when expandTreePath runs', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       const handle = makeHandle()
@@ -106,7 +106,7 @@ describe('createDirectoryTreeState', () => {
 
   // The picker calls this from a click handler, which can run before the tree
   // mounts and hands its handle over.
-  it('expandTreePath is a no-op while no tree handle is set', () => {
+  it('makes expandTreePath a no-op while no tree handle is set', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       expect(() => state.expandTreePath('/home/alice')).not.toThrow()
@@ -116,7 +116,7 @@ describe('createDirectoryTreeState', () => {
 
   // Unlike refreshTree, this does NOT bump treeKey: opening one directory
   // invalidates no branch or worktree list.
-  it('expandTreePath leaves treeKey alone', () => {
+  it('leaves treeKey alone when expandTreePath runs', () => {
     createRoot((dispose) => {
       const state = createDirectoryTreeState()
       state.setTreeRef(makeHandle())

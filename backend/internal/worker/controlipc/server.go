@@ -35,8 +35,6 @@ type Server struct {
 	url      string
 	listener net.Listener
 	httpSrv  *http.Server
-	router   *Router
-	tokens   *TokenStore
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 }
@@ -96,8 +94,6 @@ func Listen(opts Options) (*Server, error) {
 		url:      opts.SocketURL,
 		listener: ln,
 		httpSrv:  srv,
-		router:   opts.Router,
-		tokens:   tokens,
 	}
 	s.wg.Add(1)
 	go func() {
@@ -327,10 +323,8 @@ func (h *handler) StreamInner(ctx context.Context, req *leapmuxv1.StreamInnerReq
 }
 
 func (h *handler) UpdateStream(ctx context.Context, req *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
-	if id := req.GetClientRequestId(); id != "" {
-		if err := h.router.UpdateStream(id, req.GetPayload(), req.GetCancel()); err != nil {
-			return nil, connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
-		}
+	if err := h.router.UpdateStream(req); err != nil {
+		return nil, err
 	}
 	return &leapmuxv1.UpdateStreamResponse{}, nil
 }

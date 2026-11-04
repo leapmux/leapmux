@@ -50,7 +50,7 @@ describe('draftPersistence', () => {
     expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}${AGENT}`)).toBeUndefined()
   })
 
-  it('clearDraft removes any persisted draft', async () => {
+  it('removes any persisted draft through clearDraft', async () => {
     saveDraft(AGENT, 'persisted text', 5)
     clearDraft(AGENT)
     expect(await loadDraft(AGENT)).toEqual({ content: '', cursor: -1 })

@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
@@ -25,7 +27,6 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
-	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
@@ -538,7 +539,7 @@ func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
 
 // TestUserFilterRefusesBothFlagsBeforeTheDial pins the listing filter. The
 // hub's selector holds an id OR a username, so the pair cannot even be sent:
-// the CLI must refuse it, before the dial, naming the flags. Neither flag is
+// the CLI must refuse it, before the dial, stating the flags. Neither flag is
 // "every user" and passes, as does either flag alone.
 func TestUserFilterRefusesBothFlagsBeforeTheDial(t *testing.T) {
 	for _, tc := range []struct {
@@ -564,33 +565,81 @@ func TestUserFilterRefusesBothFlagsBeforeTheDial(t *testing.T) {
 	}
 }
 
-// TestUserFilterFlagsSelector pins the selector each flag builds: none for
-// neither flag, which lists every user, and the one value otherwise.
+// TestUserFilterFlagsBind pins the pair that bind declares. The three
+// listings that take the filter share its help text, so bind states it once.
+func TestUserFilterFlagsBind(t *testing.T) {
+	var f userFilterFlags
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	f.bind(fs)
+
+	require.NoError(t, fs.Parse([]string{"--user-id", "usr_1", "--username", "amy"}))
+	assert.Equal(t, "usr_1", f.ID)
+	assert.Equal(t, "amy", f.Username)
+	require.NotNil(t, fs.Lookup("user-id"))
+	assert.Contains(t, fs.Lookup("user-id").Usage, "soft-deleted users included",
+		"the help states that an id finds a soft-deleted owner too")
+	assert.Contains(t, fs.Lookup("user-id").Usage, "empty = all users")
+}
+
+// TestUserFilterFlagsSelector pins the selector that resolve builds for each
+// flag: none for neither flag, which lists every user, and the one value
+// otherwise.
 func TestUserFilterFlagsSelector(t *testing.T) {
-	assert.Nil(t, (&userFilterFlags{}).selector())
+	none := &userFilterFlags{}
+	require.NoError(t, none.resolve(adminArgs{}))
+	assert.Nil(t, none.Selector())
 
-	byID := (&userFilterFlags{ID: "usr_1"}).selector()
-	assert.Equal(t, "usr_1", byID.GetId())
-	assert.Empty(t, byID.GetUsername(), "an id filter carries no username")
+	byID := &userFilterFlags{ID: "usr_1"}
+	require.NoError(t, byID.resolve(adminArgs{}))
+	assert.Equal(t, "usr_1", byID.Selector().GetId())
+	assert.Empty(t, byID.Selector().GetUsername(), "an id filter carries no username")
 
-	byName := (&userFilterFlags{Username: "amy"}).selector()
-	assert.Equal(t, "amy", byName.GetUsername())
-	assert.Empty(t, byName.GetId(), "a username filter carries no id")
+	byName := &userFilterFlags{Username: "amy"}
+	require.NoError(t, byName.resolve(adminArgs{}))
+	assert.Equal(t, "amy", byName.Selector().GetUsername())
+	assert.Empty(t, byName.Selector().GetId(), "a username filter carries no id")
+}
+
+// A nil filter means every user, so a listing that forgot to resolve its flags
+// must fail loudly. Sending nil would print every user's rows for a command
+// that asked for one user's.
+func TestUserFilterFlagsSelectorPanicsBeforeResolve(t *testing.T) {
+	assert.Panics(t, func() { (&userFilterFlags{ID: "usr_1"}).Selector() })
 }
 
 // TestUserSelectorFlagsSelector pins the selector that a verb addressing ONE
-// user sends. resolve already refused an empty or ambiguous pair, so exactly
-// one handle is set, and the selector carries that handle alone.
+// user sends. resolve refuses an empty or ambiguous pair, so exactly one handle
+// is set, and the selector carries that handle alone.
 func TestUserSelectorFlagsSelector(t *testing.T) {
-	byID := (&userSelectorFlags{ID: "usr_1"}).selector()
-	require.NotNil(t, byID)
-	assert.Equal(t, "usr_1", byID.GetId())
-	assert.Empty(t, byID.GetUsername())
+	byID := &userSelectorFlags{ID: "usr_1", idFlag: "id"}
+	require.NoError(t, byID.resolve(adminArgs{}))
+	require.NotNil(t, byID.Selector)
+	assert.Equal(t, "usr_1", byID.Selector.GetId())
+	assert.Empty(t, byID.Selector.GetUsername())
 
-	byName := (&userSelectorFlags{Username: "amy"}).selector()
-	require.NotNil(t, byName)
-	assert.Equal(t, "amy", byName.GetUsername())
-	assert.Empty(t, byName.GetId())
+	byName := &userSelectorFlags{Username: "amy", idFlag: "id"}
+	require.NoError(t, byName.resolve(adminArgs{}))
+	require.NotNil(t, byName.Selector)
+	assert.Equal(t, "amy", byName.Selector.GetUsername())
+	assert.Empty(t, byName.Selector.GetId())
+}
+
+// A refused pair builds no selector for either type, so no verb can send one
+// half of an ambiguous pair.
+func TestUserFlagsBuildNoSelectorForARefusedPair(t *testing.T) {
+	withCapturedStdout(t, func() {
+		required := &userSelectorFlags{ID: "usr_1", Username: "amy", idFlag: "id"}
+		require.Error(t, required.resolve(adminArgs{}))
+		assert.Nil(t, required.Selector)
+
+		empty := &userSelectorFlags{idFlag: "id"}
+		require.Error(t, empty.resolve(adminArgs{}))
+		assert.Nil(t, empty.Selector)
+
+		filter := &userFilterFlags{ID: "usr_1", Username: "amy"}
+		require.Error(t, filter.resolve(adminArgs{}))
+		assert.Panics(t, func() { filter.Selector() }, "a refused pair resolves nothing")
+	})
 }
 
 // TestOnlySettingValue pins the count check on a single-key reply. The hub
@@ -615,15 +664,15 @@ func TestOnlySettingValue(t *testing.T) {
 }
 
 // TestAdminPageFlagsRequest pins the page that a listing verb sends. The verb
-// framework refuses a limit outside [1, service.MaxPageLimit] before the
+// framework refuses a limit outside [1, contracts.MaxPageLimit] before the
 // dial, so the narrowing to int32 must keep the largest legal limit intact.
 func TestAdminPageFlagsRequest(t *testing.T) {
 	page := (&adminPageFlags{Limit: 7, Cursor: "c1"}).request()
 	assert.EqualValues(t, 7, page.GetLimit())
 	assert.Equal(t, "c1", page.GetCursor())
 
-	page = (&adminPageFlags{Limit: service.MaxPageLimit}).request()
-	assert.EqualValues(t, service.MaxPageLimit, page.GetLimit(), "the largest legal limit survives the narrowing")
+	page = (&adminPageFlags{Limit: contracts.MaxPageLimit}).request()
+	assert.EqualValues(t, contracts.MaxPageLimit, page.GetLimit(), "the largest legal limit survives the narrowing")
 	assert.Empty(t, page.GetCursor(), "no cursor reads the first page")
 }
 

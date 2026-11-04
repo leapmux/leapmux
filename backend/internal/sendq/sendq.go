@@ -1223,7 +1223,9 @@ func (w *Writer[T]) QueuedLen() int {
 	return len(w.queue)
 }
 
-// IsClosed reports whether Close (or an over-budget kill) has run. For tests.
+// IsClosed reports whether Close (or an over-budget kill) has run. A sender
+// uses it to tell a writer that is gone from one whose reserve is full, because
+// a failed enqueue on a closed writer needs no recovery.
 func (w *Writer[T]) IsClosed() bool {
 	return w.isClosed()
 }

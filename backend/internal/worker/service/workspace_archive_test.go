@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -25,12 +26,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// testTabOwner owns every tab that a test hands to ApplyTabArchiveState, the
+// way one hub response's owner_user_id owns every tab it lists.
+var testTabOwner = userid.MustNew("user-1")
+
 // applyArchive drives the lifecycle operation the way its one production
 // caller does -- the orphan reconciler, through the ApplyArchiveState hook.
 // There is no RPC for it: the Hub nudges, and the reconcile pass applies.
-func applyArchive(t *testing.T, svc *Service, state leapmuxv1.WorkspaceArchiveState, tabs ...*leapmuxv1.TabRef) []string {
+func applyArchive(t *testing.T, svc *Service, state leapmuxv1.WorkspaceArchiveState, tabs ...*leapmuxv1.TabIdent) []string {
 	t.Helper()
-	resumeAgentIDs, err := svc.ApplyTabArchiveState(context.Background(), state, tabs)
+	resumeAgentIDs, err := svc.ApplyTabArchiveState(context.Background(), state, testTabOwner, tabs)
 	require.NoError(t, err)
 	return resumeAgentIDs
 }
@@ -172,9 +177,9 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 
 	applyArchive(t, svc,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}},
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID}},
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file"}, UserId: "user-1"})
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file"})
 
 	assert.False(t, svc.Agents.HasAgent(agentID))
 	assert.False(t, svc.Terminals.IsRunning(terminalID))
@@ -213,7 +218,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	})
 	require.ErrorIs(t, err, inputqueue.ErrConflict, "an archived agent refuses a new retry")
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 	queueSnapshot, err = svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
 	assert.Empty(t, queueSnapshot.Items, "the unarchived agent has no retry to resume")
@@ -241,7 +246,7 @@ func TestWorkspaceArchive_StopsAnAgentThatOwnsNoProcess(t *testing.T) {
 
 	applyArchive(t, svc,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
@@ -269,7 +274,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	agentIDs := []string{"multi-agent-1", "multi-agent-2", "multi-agent-3"}
 	terminalIDs := []string{"multi-terminal-1", "multi-terminal-2"}
-	tabs := make([]*leapmuxv1.TabRef, 0, len(agentIDs)+len(terminalIDs))
+	tabs := make([]*leapmuxv1.TabIdent, 0, len(agentIDs)+len(terminalIDs))
 	for _, agentID := range agentIDs {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 			ID: agentID, WorkingDir: t.TempDir(),
@@ -281,7 +286,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 		}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 		require.NoError(t, err)
 		require.True(t, svc.Agents.HasAgent(agentID))
-		tabs = append(tabs, &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
+		tabs = append(tabs, &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 	}
 	for _, terminalID := range terminalIDs {
 		terminalDir := t.TempDir()
@@ -294,7 +299,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 		}, svc.makeTerminalOutputFn(terminalID), svc.makeTerminalExitFn()))
 		testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 		require.True(t, svc.Terminals.IsRunning(terminalID))
-		tabs = append(tabs, &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID}})
+		tabs = append(tabs, &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID})
 	}
 
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs...)
@@ -331,7 +336,7 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	var firstCleanup atomic.Bool
 	svc.agentCleanups.register(agentID, func() { firstCleanup.Store(true) })
 
-	tab := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
+	tab := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 	require.True(t, firstCleanup.Load(), "the first archive runs the teardown")
 	firstQueue, err := svc.InputQueue.Snapshot(ctx, agentID)
@@ -373,9 +378,9 @@ func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
 	require.NoError(t, err)
 	_, _, _, err = svc.InputQueue.BeginEdit(ctx, agentID, "queued", "client-1", false)
 	require.NoError(t, err)
-	tab := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
+	tab := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
 	archived, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
@@ -383,7 +388,7 @@ func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
 	assert.False(t, archived.ActiveTurn)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, archived.PauseReason)
 
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
 	active, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
@@ -406,11 +411,11 @@ func TestWorkspaceArchive_PreservesAManualQueuePause(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.InputQueue.SetPaused(ctx, agentID, true)
 	require.NoError(t, err)
-	tab := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
+	tab := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
 	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
@@ -431,11 +436,11 @@ func TestWorkspaceArchive_PreservesAnExistingAgentStoppedPause(t *testing.T) {
 	}))
 	_, err := svc.InputQueue.Pause(ctx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
 	require.NoError(t, err)
-	tab := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
+	tab := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, []*leapmuxv1.TabIdent{tab})
 	require.NoError(t, err)
 	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
 	require.NoError(t, err)
@@ -476,7 +481,7 @@ func TestWorkspaceArchive_CancelsAnInFlightStartup(t *testing.T) {
 	}()
 
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
+		&leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 
 	select {
 	case <-settled:
@@ -548,15 +553,15 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	tabs := []*leapmuxv1.TabRef{
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "eligible"}},
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "startup-failed"}},
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "never-started"}},
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "closed"}},
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "terminal-exited"}},
+	tabs := []*leapmuxv1.TabIdent{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "eligible"},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "startup-failed"},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "never-started"},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "closed"},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "terminal-exited"},
 	}
 	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx,
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
 	require.NoError(t, err)
 	resumer.Schedule(ctx, resumeAgentIDs)
 	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 }, "eligible unarchive resume")
@@ -564,7 +569,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 	assert.False(t, svc.Terminals.HasTerminal("terminal-exited"), "unarchive never restarts a terminal shell")
 
 	resumeAgentIDs, err = svc.ApplyTabArchiveState(ctx,
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
 	require.NoError(t, err)
 	resumer.Schedule(ctx, resumeAgentIDs)
 	assert.EventuallyWithT(t, func(collect *assert.CollectT) {
@@ -597,7 +602,8 @@ END`)
 	require.NoError(t, err)
 
 	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}})
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
 
 	require.Error(t, err)
 	assert.True(t, svc.Agents.HasAgent(agentID),
@@ -620,12 +626,14 @@ func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 	// BEFORE it calls, so these refusals are a backstop for a future caller
 	// that forgets that filter. Each must refuse before it writes anything.
 	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}}})
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "archive_state must be ACTIVE or ARCHIVED")
 
 	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, TabId: "agent-1"}}})
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, TabId: "agent-1"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unspecified type")
 
@@ -634,40 +642,39 @@ func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 	assert.False(t, row.WorkspaceArchived, "a refused request writes nothing")
 }
 
-// archiveTabIDs reads the type and the id from the TabRef's TabIdent, and the
-// owner from the TabRef itself. It skips an entry that addresses no tab,
-// collapses a repeated tab, and keys a payload-backed tab by its owner and its
-// id, because a client-minted id is unique only within one account.
+// archiveTabIDs sorts each tab by the table that stores it. It skips an entry
+// that addresses no tab, collapses a repeated tab, and keys a payload-backed
+// tab by the owner and its id, because a client-minted id is unique only within
+// one account.
 func TestArchiveTabIDs(t *testing.T) {
 	t.Parallel()
 
-	ref := func(tabType leapmuxv1.TabType, tabID, userID string) *leapmuxv1.TabRef {
-		return &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}, UserId: userID}
+	tab := func(tabType leapmuxv1.TabType, tabID string) *leapmuxv1.TabIdent {
+		return &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}
 	}
+	owner := userid.MustNew("user-a")
 
 	t.Run("sorts each tab by the table that stores it", func(t *testing.T) {
-		set, err := archiveTabIDs([]*leapmuxv1.TabRef{
+		set, err := archiveTabIDs(owner, []*leapmuxv1.TabIdent{
 			nil,
-			{UserId: "user-1"},
-			ref(leapmuxv1.TabType_TAB_TYPE_AGENT, "", ""),
-			ref(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", ""),
-			ref(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", ""),
-			ref(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1", ""),
-			ref(leapmuxv1.TabType_TAB_TYPE_FILE, "tab-1", "user-a"),
-			ref(leapmuxv1.TabType_TAB_TYPE_IMAGE, "tab-1", "user-a"),
-			ref(leapmuxv1.TabType_TAB_TYPE_FILE, "tab-1", "user-b"),
+			{},
+			tab(leapmuxv1.TabType_TAB_TYPE_AGENT, ""),
+			tab(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1"),
+			tab(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1"),
+			tab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1"),
+			tab(leapmuxv1.TabType_TAB_TYPE_FILE, "tab-1"),
+			tab(leapmuxv1.TabType_TAB_TYPE_IMAGE, "tab-1"),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []string{"agent-1"}, set.agents, "a repeated agent is listed once")
 		assert.Equal(t, []string{"term-1"}, set.terminals)
 		assert.Equal(t, []payloadTabRef{
 			{userID: "user-a", tabID: "tab-1"},
-			{userID: "user-b", tabID: "tab-1"},
-		}, set.payloads, "one id under two owners is two tabs, and one owner's id is one row")
+		}, set.payloads, "one owner's id is one row, whatever its payload kind")
 	})
 
 	t.Run("an empty request selects nothing", func(t *testing.T) {
-		set, err := archiveTabIDs(nil)
+		set, err := archiveTabIDs(owner, nil)
 		require.NoError(t, err)
 		assert.Empty(t, set.agents)
 		assert.Empty(t, set.terminals)
@@ -676,17 +683,27 @@ func TestArchiveTabIDs(t *testing.T) {
 
 	t.Run("refuses a payload-backed tab without an owner", func(t *testing.T) {
 		for _, tabType := range []leapmuxv1.TabType{leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE} {
-			_, err := archiveTabIDs([]*leapmuxv1.TabRef{
-				ref(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1", ""),
-				ref(tabType, "tab-1", ""),
+			_, err := archiveTabIDs(userid.UserID{}, []*leapmuxv1.TabIdent{
+				tab(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1"),
+				tab(tabType, "tab-1"),
 			})
 			require.Error(t, err, tabType.String())
-			assert.Contains(t, err.Error(), "needs a user_id", tabType.String())
+			assert.Contains(t, err.Error(), "needs an owner", tabType.String())
 		}
 	})
 
+	t.Run("needs no owner for tabs whose ids are globally unique", func(t *testing.T) {
+		set, err := archiveTabIDs(userid.UserID{}, []*leapmuxv1.TabIdent{
+			tab(leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-1"),
+			tab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "term-1"),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"agent-1"}, set.agents)
+		assert.Equal(t, []string{"term-1"}, set.terminals)
+	})
+
 	t.Run("refuses a type it cannot classify", func(t *testing.T) {
-		_, err := archiveTabIDs([]*leapmuxv1.TabRef{ref(leapmuxv1.TabType(99), "tab-1", "user-1")})
+		_, err := archiveTabIDs(owner, []*leapmuxv1.TabIdent{tab(leapmuxv1.TabType(99), "tab-1")})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported type")
 	})
@@ -718,9 +735,10 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{
-			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}},
-			{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
 		})
 	require.NoError(t, err)
 
@@ -838,7 +856,8 @@ func TestWorkspaceArchive_CloseTabOfAFileTabStaysAllowed(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}})
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
 	require.NoError(t, err)
 	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
 		UserID: "user-1", TabID: "file-1", Payload: fileTabPayload(filepath.Join(dir, "file"), dir),
@@ -882,11 +901,11 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 	_, err := svc.Queries.CloseAgent(ctx, closedAgent)
 	require.NoError(t, err)
 
-	tabs := []*leapmuxv1.TabRef{
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: closedAgent}},
-		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: openAgent}},
+	tabs := []*leapmuxv1.TabIdent{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: closedAgent},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: openAgent},
 	}
-	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, tabs)
 	require.NoError(t, err)
 
 	closedRow, err := svc.Queries.GetAgentByID(ctx, closedAgent)
@@ -897,7 +916,7 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 	assert.True(t, openRow.WorkspaceArchived)
 
 	// The unarchive must not offer the closed row as a resume candidate.
-	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
 	require.NoError(t, err)
 	assert.Equal(t, []string{openAgent}, resumeAgentIDs,
 		"a closed row must not spend a resume permit only to be skipped")
@@ -935,7 +954,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
 
-	tabs := []*leapmuxv1.TabRef{{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}}
+	tabs := []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
 
 	// Park the archive inside its drain, holding the agent's lifecycle lock.
 	releaseAgent := svc.Agents.LockAgent(agentID)
@@ -943,7 +962,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	go func() {
 		defer close(archiveDone)
 		_, archiveErr := svc.ApplyTabArchiveState(ctx,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs)
+			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, tabs)
 		assert.NoError(t, archiveErr)
 	}()
 
@@ -956,7 +975,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	unarchiveDone := make(chan []string, 1)
 	go func() {
 		resumeIDs, unarchiveErr := svc.ApplyTabArchiveState(ctx,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
 		assert.NoError(t, unarchiveErr)
 		unarchiveDone <- resumeIDs
 	}()
@@ -1002,7 +1021,7 @@ func TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree(t *testing.T) {
 
 	ctx := context.Background()
 	svc, _, childID, rootID := setupChildAgentTest(t)
-	rootTab := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}}
+	rootTab := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}
 
 	// The child is inside a turn, so its queue HOLDS the input below instead of
 	// dispatching it. Without the turn the enqueue dispatches at once, fails on

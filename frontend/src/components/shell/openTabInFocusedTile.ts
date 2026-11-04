@@ -65,7 +65,7 @@ export function hasPlaceableTab(
  *
  * The empty answer is a refusal, not a failure mode to ignore: while the
  * projection has no tree for this workspace, placement resolves to the
- * locally-minted placeholder leaf. A tab op placed on that leaf names a
+ * locally-minted placeholder leaf. A tab op placed on that leaf identifies a
  * node the hub has never heard of, and it rejects the batch — after the
  * caller has already created the agent or terminal on the worker, so the
  * result is an orphaned resource with no tab.

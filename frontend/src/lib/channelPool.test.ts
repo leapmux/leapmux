@@ -11,7 +11,7 @@ function ch(partial: Partial<PooledChannel> & Pick<PooledChannel, 'channelId' | 
 }
 
 describe('channelPool', () => {
-  it('identityMismatch treats undefined expected as no check and empty as mismatch', () => {
+  it('treats undefined expected as no check and empty as mismatch in identityMismatch', () => {
     const pool = new ChannelPool()
     expect(pool.identityMismatch(undefined, 'u1')).toBe(false)
     expect(pool.identityMismatch('u1', 'u1')).toBe(false)
@@ -19,7 +19,7 @@ describe('channelPool', () => {
     expect(pool.identityMismatch('', 'u1')).toBe(true)
   })
 
-  it('identityDrift mirrors identityMismatch against the pooled userId', () => {
+  it('mirrors identityMismatch in identityDrift against the pooled userId', () => {
     const pool = new ChannelPool()
     const verified = ch({ channelId: 'c1', workerId: 'w1', userId: 'user-a' })
     expect(pool.identityDrift(verified, undefined)).toBe(false)
@@ -28,7 +28,7 @@ describe('channelPool', () => {
     expect(pool.identityDrift(verified, '')).toBe(true)
   })
 
-  it('hasOpenChannel skips opening and identity-drifted channels', () => {
+  it('skips opening and identity-drifted channels in hasOpenChannel', () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', state: 'opening' }))
     expect(pool.hasOpenChannel('w1', 'user-a')).toBe(false)
@@ -44,7 +44,7 @@ describe('channelPool', () => {
     expect(pool.hasOpenChannelForWorker('w1')).toBe(true)
   })
 
-  it('getOrOpenChannel reuses a verified channel', async () => {
+  it('reuses a verified channel in getOrOpenChannel', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const openChannel = vi.fn(async () => 'new')
@@ -60,7 +60,7 @@ describe('channelPool', () => {
     expect(openChannel).not.toHaveBeenCalled()
   })
 
-  it('getOrOpenChannel skips opening channels and dedups via openChannel', async () => {
+  it('skips opening channels and dedups via openChannel in getOrOpenChannel', async () => {
     const pool = new ChannelPool()
     pool.set('c-open', ch({ channelId: 'c-open', workerId: 'w1', state: 'opening' }))
     let resolveOpen!: (id: string) => void
@@ -91,7 +91,7 @@ describe('channelPool', () => {
     expect(await b).toBe('c-new')
   })
 
-  it('getOrOpenChannel closes and reopens on identity drift', async () => {
+  it('closes and reopens on identity drift in getOrOpenChannel', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', userId: 'user-a' }))
     const closeChannel = vi.fn(async () => {
@@ -114,7 +114,7 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('getOrOpenChannel closes and reopens past hard ceiling', async () => {
+  it('closes and reopens past hard ceiling in getOrOpenChannel', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const closeChannel = vi.fn(async () => {
@@ -133,7 +133,7 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('getOrOpenChannel falls through to reopen when ensureRekeyed rejects', async () => {
+  it('falls through to reopen in getOrOpenChannel when ensureRekeyed rejects', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const openChannel = vi.fn(async () => 'c2')
@@ -152,7 +152,7 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('getOrOpenChannel reopens when ensureRekeyed leaves the channel unverified', async () => {
+  it('reopens in getOrOpenChannel when ensureRekeyed leaves the channel unverified', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const openChannel = vi.fn(async () => 'c2')
@@ -171,7 +171,7 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('clearOpening drops in-flight dedup so a later open may dial again', async () => {
+  it('drops in-flight dedup in clearOpening so a later open may dial again', async () => {
     const pool = new ChannelPool()
     let resolveOpen!: (id: string) => void
     const openPromise = new Promise<string>((resolve) => {
@@ -206,7 +206,7 @@ describe('channelPool', () => {
     expect(second).toBe('c-fresh')
   })
 
-  it('bumpCloseGeneration increments the fence', () => {
+  it('increments the fence through bumpCloseGeneration', () => {
     const pool = new ChannelPool()
     expect(pool.closeGeneration).toBe(0)
     expect(pool.bumpCloseGeneration()).toBe(1)
@@ -218,7 +218,7 @@ describe('channelPool', () => {
     expect(pool.closeGeneration).toBe(1)
   })
 
-  it('getOrOpenChannel re-scans after close so a concurrent verified channel is reused', async () => {
+  it('re-scans after close in getOrOpenChannel so a concurrent verified channel is reused', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', userId: 'user-a' }))
     let releaseClose!: () => void
@@ -245,7 +245,7 @@ describe('channelPool', () => {
     expect(openChannel).not.toHaveBeenCalled()
   })
 
-  it('getOrOpenChannel re-scans after rekey so a concurrent verified channel is reused', async () => {
+  it('re-scans after rekey in getOrOpenChannel so a concurrent verified channel is reused', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     let releaseRekey!: () => void
@@ -272,7 +272,7 @@ describe('channelPool', () => {
     expect(openChannel).not.toHaveBeenCalled()
   })
 
-  it('dedupeOpen single-flights without consulting the verified cache', async () => {
+  it('single-flights without consulting the verified cache in dedupeOpen', async () => {
     const pool = new ChannelPool()
     pool.set('existing', ch({ channelId: 'existing', workerId: 'w1', state: 'verified' }))
     let resolveOpen!: (id: string) => void
@@ -290,7 +290,7 @@ describe('channelPool', () => {
     expect(pool.get('existing')?.channelId).toBe('existing')
   })
 
-  it('isOpen reflects map state', () => {
+  it('reflects the map state in isOpen', () => {
     const pool = new ChannelPool()
     expect(pool.isOpen('c1')).toBe(false)
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))

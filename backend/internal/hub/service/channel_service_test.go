@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,7 +92,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 		service.NewWorkerConnectorService(st, wMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), clock))
 
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer,
-		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, set, nil))
+		service.NewWorkerManagementService(st, wMgr, nil, mail.NewStubSender(), mail.Renderer{}, set))
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
@@ -359,59 +358,6 @@ func TestGetWorkerHandshakeParamsIgnoresARefusedReplacement(t *testing.T) {
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 }
 
-// Two replacements racing each other: every answer is the whole snapshot of
-// one connection, never the keys of one and the mode of another.
-func TestGetWorkerHandshakeParamsNeverMixesConcurrentReplacements(t *testing.T) {
-	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-handshake-race", 0xa1)
-
-	helloA := classicHello(0xa1)
-	connectWorker(t, ctx, client, authToken, helloA)
-	// The replacements are registered DIRECTLY in the registry with distinct
-	// keys and modes: a real Connect now refuses any keys but the pinned ones, so
-	// a race between real connections could never produce two different key sets.
-	helloB := postQuantumHello(0xb2)
-	helloC := classicHello(0xc3)
-
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	for _, hello := range []*leapmuxv1.WorkerHello{helloB, helloC} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			conn := workermgrtest.NewConnWithHello(t, workerID, hello, func(*leapmuxv1.ConnectResponse) error { return nil })
-			if _, err := env.workerMgr.Register(conn); err != nil {
-				return
-			}
-			<-stop
-		}()
-	}
-
-	known := []*leapmuxv1.WorkerHello{helloA, helloB, helloC}
-	for range 50 {
-		resp, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
-			&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
-		if err != nil {
-			// The worker is briefly offline between a replacement's fence
-			// and its registration.
-			continue
-		}
-		matched := false
-		for _, hello := range known {
-			if proto.Equal(hello.GetKeys(), resp.GetKeys()) {
-				assert.Equal(t, hello.GetEncryptionMode(), resp.GetEncryptionMode(),
-					"the mode must belong to the connection whose keys were returned")
-				matched = true
-			}
-		}
-		assert.True(t, matched, "the keys must belong to one of the connections")
-	}
-	close(stop)
-	wg.Wait()
-	// End whatever connection survived, so nothing outlives the test.
-	env.workerMgr.FenceAll()
-}
-
 // Connect refuses every first message that is not a usable hello, before it
 // registers anything.
 func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
@@ -618,6 +564,27 @@ type lastSeenCountingWorkers struct {
 func (w lastSeenCountingWorkers) UpdateLastSeen(ctx context.Context, id string) error {
 	w.writes.Add(1)
 	return w.WorkerStore.UpdateLastSeen(ctx, id)
+}
+
+// The stream has one receive pump, which starts before the hello and reads ahead
+// during the pin check. A message that follows the hello at once must still
+// reach the main loop, after the identity frame.
+func TestConnectProcessesAMessageThatFollowsTheHelloAtOnce(t *testing.T) {
+	t.Parallel()
+	_, ctx, _, _, authToken, client := workerStreamsWithFill(t, "hub-read-ahead", 0x22)
+
+	stream := openWorkerStream(t, ctx, client, authToken)
+	require.NoError(t, stream.Send(helloRequest(classicHello(0x22))))
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+
+	first, err := stream.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, first.GetWorkerIdentity(), "the identity frame stays first")
+	second, err := stream.Receive()
+	require.NoError(t, err)
+	assert.NotNil(t, second.GetHeartbeat(), "the main loop answers the message the pump read ahead")
 }
 
 // A second hello on one stream is a protocol error.

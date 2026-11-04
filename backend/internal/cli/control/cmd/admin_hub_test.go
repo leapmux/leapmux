@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
@@ -47,11 +48,12 @@ type fakeAdminHub struct {
 	// values and descriptors answer ListSettings.
 	values      []*leapmuxv1.SettingValue
 	descriptors []*leapmuxv1.SettingDescriptor
-	// restart makes UpdateSettings report every written key as
-	// restart-class.
+	// restart makes UpdateSettings and ResetSettings report every written
+	// key as restart-class.
 	restart bool
-	// restartKeys, when non-nil, replaces restart: UpdateSettings reports
-	// exactly these keys as restart-class, whatever the request wrote.
+	// restartKeys, when non-nil, replaces restart: UpdateSettings and
+	// ResetSettings report exactly these keys as restart-class, whatever the
+	// request wrote.
 	restartKeys []string
 	// rewriteValues, when set, rewrites the values that UpdateSettings and
 	// ResetSettings answer, so a test can send a reply of the wrong length.
@@ -69,6 +71,7 @@ type fakeAdminHub struct {
 
 	listCalls        int
 	updatedMany      []*leapmuxv1.UpdateSettingsRequest
+	updatedUsers     []*leapmuxv1.UpdateUserRequest
 	resetKeys        [][]string
 	setAdmin         []*leapmuxv1.SetUserAdminRequest
 	resetPasswords   []*leapmuxv1.ResetPasswordRequest
@@ -120,14 +123,20 @@ func (h *fakeAdminHub) ResetSettings(
 	if h.resetErr != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetErr.Error()).WithCause(h.resetErr)
 	}
-	values := make([]*leapmuxv1.SettingValue, 0, len(req.GetKeys()))
+	resp := &leapmuxv1.ResetSettingsResponse{}
 	for _, key := range req.GetKeys() {
-		values = append(values, &leapmuxv1.SettingValue{Key: key})
+		resp.Values = append(resp.Values, &leapmuxv1.SettingValue{Key: key})
+		if h.restart {
+			resp.RestartKeys = append(resp.RestartKeys, key)
+		}
+	}
+	if h.restartKeys != nil {
+		resp.RestartKeys = h.restartKeys
 	}
 	if h.rewriteValues != nil {
-		values = h.rewriteValues(values)
+		resp.Values = h.rewriteValues(resp.Values)
 	}
-	return &leapmuxv1.ResetSettingsResponse{Values: values}, nil
+	return resp, nil
 }
 
 // The four listing handlers below record the request and answer with one row
@@ -177,6 +186,15 @@ func (h *fakeAdminHub) recordList(req proto.Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.listRequests = append(h.listRequests, req)
+}
+
+func (h *fakeAdminHub) UpdateUser(
+	_ context.Context, req *leapmuxv1.UpdateUserRequest,
+) (*leapmuxv1.UpdateUserResponse, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.updatedUsers = append(h.updatedUsers, req)
+	return &leapmuxv1.UpdateUserResponse{User: &leapmuxv1.AdminUser{Id: "u-7", Username: "amy"}}, nil
 }
 
 func (h *fakeAdminHub) SetUserAdmin(
@@ -259,6 +277,14 @@ func (h *fakeAdminHub) takeResets() [][]string {
 	defer h.mu.Unlock()
 	out := h.resetKeys
 	h.resetKeys = nil
+	return out
+}
+
+func (h *fakeAdminHub) takeUpdatedUsers() []*leapmuxv1.UpdateUserRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := h.updatedUsers
+	h.updatedUsers = nil
 	return out
 }
 
@@ -506,6 +532,8 @@ func TestAdminSettingsSetSecret_SendsTheDocumentInTheSecretHalf(t *testing.T) {
 	data := envelopeData(t, out)
 	assert.Equal(t, "smtp", data["key"], "the verb prints the value that the hub answers")
 	assert.NotContains(t, string(out), "hunter2", "the verb prints the hub's reply, never its own request")
+	assert.Equal(t, "hot", data["propagation"], "a write states when the running hub applies it")
+	assert.Contains(t, data, "note_hot")
 }
 
 // `settings reset KEY` resets that one key in one ResetSettings call, and
@@ -519,7 +547,43 @@ func TestAdminSettingsReset_ResetsTheOneKey(t *testing.T) {
 	})
 
 	assert.Equal(t, [][]string{{"theme"}}, hub.takeResets())
-	assert.Equal(t, "theme", envelopeData(t, out)["key"])
+	data := envelopeData(t, out)
+	assert.Equal(t, "theme", data["key"])
+	assert.Equal(t, "hot", data["propagation"])
+	assert.Contains(t, data, "note_hot")
+	assert.NotContains(t, data, "note_restart")
+}
+
+// A reset of a restart-class key is stored at once, but the running hub keeps
+// its previous value until it restarts, so the reply must say so, exactly as
+// `settings set` does.
+func TestAdminSettingsReset_ReportsARestartClassKey(t *testing.T) {
+	hub := &fakeAdminHub{restart: true}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "queue_budget"}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "restart", data["propagation"])
+	assert.Contains(t, data, "note_restart")
+	assert.NotContains(t, data, "note_hot", "a restart-class key must not claim the reset is already live")
+}
+
+// The restart class belongs to the key that the verb reset. A reply that lists
+// a different key as restart-class says nothing about this one.
+func TestAdminSettingsReset_IgnoresTheRestartClassOfAnotherKey(t *testing.T) {
+	hub := &fakeAdminHub{restartKeys: []string{"queue_budget"}}
+	url := startAdminHub(t, hub)
+
+	out := withCapturedStdout(t, func() {
+		require.NoError(t, RunAdminSettingsReset(fakeCmdCtx{}, []string{"--hub", url, "theme"}))
+	})
+
+	data := envelopeData(t, out)
+	assert.Equal(t, "hot", data["propagation"], "only the reset key's own class counts")
+	assert.NotContains(t, data, "note_restart")
 }
 
 // `rate-limit reset --operation X` resets the settings key of that operation
@@ -634,7 +698,7 @@ func TestAdminUserList_PrintsAnEmptyCursorAfterTheLastPage(t *testing.T) {
 	require.Len(t, requests, 1)
 	req, ok := requests[0].(*leapmuxv1.ListUsersRequest)
 	require.True(t, ok, "unexpected request type %T", requests[0])
-	assert.EqualValues(t, service.DefaultPageLimit, req.GetPage().GetLimit())
+	assert.EqualValues(t, contracts.DefaultPageLimit, req.GetPage().GetLimit())
 	assert.Empty(t, req.GetPage().GetCursor())
 }
 
@@ -680,7 +744,7 @@ func TestAdminOwnerFilteredLists_SendTheOwnerSelector(t *testing.T) {
 				require.Len(t, requests, 1)
 				req, ok := requests[0].(ownerFilteredRequest)
 				require.True(t, ok, "unexpected request type %T", requests[0])
-				assert.EqualValues(t, service.DefaultPageLimit, req.GetPage().GetLimit())
+				assert.EqualValues(t, contracts.DefaultPageLimit, req.GetPage().GetLimit())
 				if filter.id == "" && filter.username == "" {
 					assert.Nil(t, req.GetUser(), "neither flag must send no selector, which lists every owner")
 					return
@@ -1034,6 +1098,35 @@ func TestAdminUserSetAdmin_CarriesForceToTheHub(t *testing.T) {
 	require.Len(t, calls, 2)
 	assert.True(t, calls[0].GetForce())
 	assert.False(t, calls[1].GetForce(), "the flag is not set by default")
+}
+
+// `user update` runs its selector check LAST, after it builds the request, so
+// the selector must still reach that request. A verb that read the selector
+// before the check would send none, and the hub would refuse every update.
+func TestAdminUserUpdate_CarriesTheSelectorToTheHub(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want *leapmuxv1.UserSelector
+	}{
+		{"by id", []string{"--id", "u-7"}, service.SelectUserByID("u-7")},
+		{"by username", []string{"--username", "amy"}, service.SelectUserByUsername("amy")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := &fakeAdminHub{}
+			url := startAdminHub(t, hub)
+
+			withCapturedStdout(t, func() {
+				require.NoError(t, RunAdminUserUpdate(fakeCmdCtx{},
+					append([]string{"--hub", url, "--display-name", "Amy"}, tc.args...)))
+			})
+
+			calls := hub.takeUpdatedUsers()
+			require.Len(t, calls, 1)
+			assert.True(t, proto.Equal(tc.want, calls[0].GetUser()), "got %v", calls[0].GetUser())
+			assert.Equal(t, "Amy", calls[0].GetDisplayName())
+		})
+	}
 }
 
 // `user reset-password` prints four fields, and the reply is the ONLY

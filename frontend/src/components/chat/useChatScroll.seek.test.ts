@@ -235,7 +235,7 @@ describe('useChatScroll jump to seq', () => {
       })
     }))
 
-  it('cancelPendingSeek (a fresh thumb re-grab) abandons an in-flight out-of-window landing', async () =>
+  it('abandons an in-flight out-of-window landing when cancelPendingSeek runs (a fresh thumb re-grab)', async () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -346,7 +346,7 @@ describe('useChatScroll jump to seq', () => {
       }))
   })
 
-  it('previewScrollTo writes a clamped programmatic scroll for in-window drag', () =>
+  it('writes a clamped programmatic scroll for in-window drag through previewScrollTo', () =>
     createRoot((dispose) => {
       const div = makeFakeScrollDiv()
       div.setScrollHeight(5000)

@@ -1,6 +1,9 @@
+import { create } from '@bufbuild/protobuf'
+import { timestampFromMs } from '@bufbuild/protobuf/wkt'
 import { createRoot } from 'solid-js'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerClient } from '~/api/clients'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createWorkerDialogContext } from '~/hooks/createWorkerDialogContext'
 import { settle } from '~/test-support/async'
 
@@ -39,7 +42,9 @@ vi.mock('~/stores/workerInfo.store', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: vi.fn(),
+  workerGit: {
+    getGitInfo: vi.fn(),
+  },
 }))
 
 interface FakeWorker {
@@ -230,6 +235,71 @@ describe('createWorkerDialogContext worker auto-selection', () => {
   })
 })
 
+// A decoded Worker carries its created and last-seen times as nested
+// Timestamp messages, fresh on every reply. The dialog keys its rows by
+// object, so the cache must compare those by value.
+describe('createWorkerDialogContext worker identity', () => {
+  function decodedWorker(lastSeenMs: number) {
+    return create(WorkerSchema, {
+      id: 'w-1',
+      online: true,
+      createdAt: timestampFromMs(1_700_000_000_000),
+      lastSeenAt: timestampFromMs(lastSeenMs),
+    })
+  }
+
+  it('keeps the object of a worker whose refresh carries the same times', async () => {
+    vi.mocked(workerClient.listWorkers)
+      .mockResolvedValueOnce({
+        workers: [
+          decodedWorker(1_700_000_500_000),
+        ],
+      } as never)
+      .mockResolvedValueOnce({
+        workers: [
+          decodedWorker(1_700_000_500_000),
+        ],
+      } as never)
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext()
+      await settle()
+      const first = state.workers()[0]
+      expect(first?.createdAt, 'the reply carries a created time').toBeDefined()
+
+      await state.refreshWorkers()
+
+      expect(workerClient.listWorkers).toHaveBeenCalledTimes(2)
+      expect(state.workers()[0]).toBe(first)
+      dispose()
+    })
+  })
+
+  it('replaces the object of a worker whose last-seen time changed', async () => {
+    vi.mocked(workerClient.listWorkers)
+      .mockResolvedValueOnce({
+        workers: [
+          decodedWorker(1_700_000_500_000),
+        ],
+      } as never)
+      .mockResolvedValueOnce({
+        workers: [
+          decodedWorker(1_700_000_560_000),
+        ],
+      } as never)
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext()
+      await settle()
+      const first = state.workers()[0]
+
+      await state.refreshWorkers()
+
+      expect(state.workers()[0]).not.toBe(first)
+      expect(state.workers()[0]?.lastSeenAt?.seconds).toBe(1_700_000_560n)
+      dispose()
+    })
+  })
+})
+
 describe('createWorkerDialogContext onError', () => {
   it('forwards listWorkers failures to the onError sink', async () => {
     // The state hook no longer owns an error signal — submit and load
@@ -286,7 +356,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
     })
   })
 
-  it('handleRefresh in singleWorkerId mode does not call listWorkers', async () => {
+  it('does not call listWorkers when refreshWorkers runs in singleWorkerId mode', async () => {
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ singleWorkerId: 'w-fixed' })
       await Promise.resolve()
@@ -296,7 +366,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
     })
   })
 
-  it('refreshWorkers awaits fetchWorkerInfo so workersRefreshing observes the in-flight state', async () => {
+  it('awaits fetchWorkerInfo in refreshWorkers so workersRefreshing observes the in-flight state', async () => {
     // Regression guard: an earlier implementation flipped
     // workersRefreshing(true) then immediately (false) around a
     // non-awaited fetchWorkerInfo call, so consumers never observed
@@ -330,7 +400,7 @@ describe('createWorkerDialogContext singleWorkerId', () => {
     })
   })
 
-  it('refreshWorkers clears workersRefreshing even if fetchWorkerInfo rejects', async () => {
+  it('clears workersRefreshing in refreshWorkers even if fetchWorkerInfo rejects', async () => {
     // The setter must run in a `finally` so a transport failure
     // doesn't leave the spinner stuck on.
     setFetchWorkerInfo(async () => null) // for onMount
@@ -391,7 +461,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     })
   })
 
-  it('prefetchOnlineWorkerInfos fans out to every online worker except the selected one', async () => {
+  it('fans out to every online worker except the selected one when prefetchOnlineWorkerInfos runs', async () => {
     const calls = withRecordedFetches()
     mockWorkers([
       { id: 'w-1', online: true },
@@ -411,7 +481,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     })
   })
 
-  it('prefetchOnlineWorkerInfos is idempotent: a second call does not refetch', async () => {
+  it('keeps prefetchOnlineWorkerInfos idempotent: a second call does not refetch', async () => {
     // The WorkerSelector wires both onFocus and onPointerDown to this
     // method, and both can fire during one open of the dropdown. Without
     // the guard, that would double the fan-out RPC count on every interaction.
@@ -434,7 +504,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     })
   })
 
-  it('prefetchOnlineWorkerInfos guard is shared across dialog instances', async () => {
+  it('shares the prefetchOnlineWorkerInfos guard across dialog instances', async () => {
     // The "already prefetched" guard lives at module scope in
     // workerInfo.store, so opening a second dialog later in the same
     // session doesn't re-fan the per-worker fetch loop for ids the
@@ -476,7 +546,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     })
   })
 
-  it('refreshWorkers resets the prefetch guard so a follow-up prefetch re-fans', async () => {
+  it('resets the prefetch guard in refreshWorkers so a follow-up prefetch re-fans', async () => {
     // After a manual refresh, the fleet may have grown / shrunk / had
     // workers come online; the dropdown's next focus must trigger fresh
     // info fetches.
@@ -526,7 +596,7 @@ describe('createWorkerDialogContext worker-info lazy fetch', () => {
     })
   })
 
-  it('singleWorkerId mode fetches the seeded worker on mount', async () => {
+  it('fetches the seeded worker on mount in singleWorkerId mode', async () => {
     // Dialogs locked to one worker (ChangeBranchDialog, DeleteBranchDialog)
     // skip the fleet listing entirely; the createEffect on workerId
     // still drives the per-selection fetch off the synchronously-seeded
@@ -682,7 +752,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     })
   })
 
-  it('setWorkerId throws when the dialog is locked to a singleWorkerId and the caller tries a different id', async () => {
+  it('makes setWorkerId throw when the dialog is locked to a singleWorkerId and the caller tries a different id', async () => {
     // Regression: the dialog used to expose setWorkerId unconditionally
     // even when constructed with singleWorkerId. A stray
     // setWorkerId('other') silently fired the workerInfo effect for the
@@ -704,7 +774,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     })
   })
 
-  it('singleWorkerId="" still activates the lock and skips fetchWorkers', async () => {
+  it('still activates the lock and skips fetchWorkers when singleWorkerId=""', async () => {
     // Defensive regression: an earlier revision used `!options.singleWorkerId`
     // (falsy) to decide whether to run fetchWorkers. With singleWorkerId='',
     // that path leaked through — fetchWorkers ran AND then attempted

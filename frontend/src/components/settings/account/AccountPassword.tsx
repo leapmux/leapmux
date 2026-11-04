@@ -49,19 +49,23 @@ export const AccountPassword: Component = () => {
     await action.run({
       fallback: 'Failed to change password',
       work: async () => {
-        // Read BEFORE the request: the refresh below moves this flag, and the
+        // Read BEFORE the request: the adoption below moves this flag, and the
         // message states what the user just did.
         const wasSet = passwordSet()
-        await userClient.changePassword({
+        // Opened BEFORE the request leaves, so a reply that lands after an
+        // identity change re-reads the new identity instead of adopting this one.
+        const adopt = auth.openUserAdoption()
+        const resp = await userClient.changePassword({
           newPassword: newPassword(),
         })
         setNewPassword('')
         setConfirmPassword('')
-        // BOTH re-reads, and neither may fail the action: the hub stored the
+        // BOTH updates, and neither may fail the action: the hub stored the
         // password already, so reporting "Failed to change password" here
-        // would tell the user to retry a write that landed. `refreshUser`
-        // swallows its own failure; the snapshot load rejects by design, and
-        // allSettled is what holds that promise to the same rule.
+        // would tell the user to retry a write that landed. The adoption
+        // swallows the failure of its own re-read; the snapshot load rejects
+        // by design, and allSettled is what holds that promise to the same
+        // rule.
         //
         // The SNAPSHOT is the solo hub's copy of this same fact, and
         // Administration → Network access reads it to decide whether it must
@@ -71,7 +75,7 @@ export const AccountPassword: Component = () => {
         // `soloPasswordSet` false whatever the account holds, so the read
         // would move nothing.
         await Promise.allSettled([
-          auth.refreshUser(),
+          adopt(resp.user),
           ...(isSoloMode()
             ? [
                 loadSystemInfo(true),

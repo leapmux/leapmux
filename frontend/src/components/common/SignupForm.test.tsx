@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
+import { settle } from '~/test-support/async'
 import { resetCaptchaMocks } from '~/test-support/captchaMocks'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
@@ -309,6 +310,45 @@ describe('signup form success', () => {
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
     expect(onSuccess.mock.calls[0]?.[0]).toEqual({ report })
     expect(onSuccess.mock.calls[0]?.[0].report).toBe(report)
+  })
+
+  // A password manager can submit the form itself, past the disabled button.
+  // While the system info is pending, the form cannot tell whether the hub
+  // requires a captcha, so a sign-up sent then can arrive without a captcha
+  // that the hub requires. So the handler refuses exactly when the button
+  // does.
+  it('refuses a programmatic submit until bootstrap answers the captcha question', async () => {
+    setSystemInfoMock({ loaded: false })
+    mockSignUp.mockResolvedValue({})
+    renderForm()
+    fillPasswordForm()
+    const form = screen.getByRole('button', { name: 'Create account' }).closest('form')!
+
+    form.requestSubmit()
+    await settle()
+    expect(mockSignUp).not.toHaveBeenCalled()
+
+    setSystemInfoMock({ loaded: true })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled())
+    form.requestSubmit()
+    await vi.waitFor(() => expect(mockSignUp).toHaveBeenCalledOnce())
+  })
+
+  // The form keeps `submitting` after a success, because the caller navigates
+  // away. A second programmatic submit in that window would create a second
+  // account, or sign in over the first.
+  it('refuses a programmatic submit while a sign-up is in flight', async () => {
+    mockSignUp.mockReturnValue(new Promise<never>(() => {}))
+    renderForm()
+    fillPasswordForm()
+    const form = screen.getByRole('button', { name: 'Create account' }).closest('form')!
+
+    form.requestSubmit()
+    expect(await screen.findByRole('button', { name: 'Creating account...' })).toBeDisabled()
+    form.requestSubmit()
+    await settle()
+
+    expect(mockSignUp).toHaveBeenCalledOnce()
   })
 
   // The sign-up succeeded and only the account read-back is missing. The old

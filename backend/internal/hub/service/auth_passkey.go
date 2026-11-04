@@ -64,9 +64,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
-	// The count FinishLogin returns is not reused: signInReport builds the
-	// complete projection, which counts as GetCurrentUser does.
-	user, _, err := wa.FinishLogin(ctx, ceremonyID, credentialJSON)
+	user, err := wa.FinishLogin(ctx, ceremonyID, credentialJSON)
 	if err != nil {
 		switch classifyWebAuthnError(err) {
 		case webAuthnErrorClone:
@@ -108,10 +106,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	resp := &leapmuxv1.FinishPasskeyLoginResponse{
-		SessionReport: signInReport(ctx, s.store, user,
-			emailVerificationToProto(s.loginVerificationOutcome(ctx, user)), nil),
-	}
+	resp := &leapmuxv1.FinishPasskeyLoginResponse{SessionReport: s.loginSessionReport(ctx, user)}
 	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	return resp, nil
 }

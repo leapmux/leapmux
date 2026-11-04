@@ -13,8 +13,10 @@ const gitStatusStore = createRepoGitStore()
 const listDirectory = vi.fn()
 const statFile = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: (...args: unknown[]) => listDirectory(...args),
-  statFile: (...args: unknown[]) => statFile(...args),
+  workerFile: {
+    listDirectory: (...args: unknown[]) => listDirectory(...args),
+    statFile: (...args: unknown[]) => statFile(...args),
+  },
 }))
 
 interface EntryOverrides {

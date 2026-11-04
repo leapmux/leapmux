@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -95,10 +96,10 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 // unary calls is a no-op on the streaming path, so the stream open
 // drops the `X-LeapMux-Token` header and the IPC server's withAuth
 // middleware rejects the request with HTTP 401 — surfaced as
-// "unauthenticated: HTTP status 401 Unauthorized" in the CLI. CRDT
-// bootstrap (`hub.WatchUser`) is the production path that exposed it
-// (`leapmux control tile list` fails on bootstrap), so we exercise
-// StreamInner directly here.
+// "unauthenticated: HTTP status 401 Unauthorized" in the CLI. The
+// hub's user-event stream (`hub./ws/userevents`) was the production path
+// that exposed it (`leapmux control tile list` failed on bootstrap), so we
+// exercise StreamInner directly here.
 func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses unix sockets; npipe variant exercised elsewhere")
@@ -188,8 +189,13 @@ type fakeChannelHub struct {
 func (f *fakeChannelHub) GetWorkerHandshakeParams(
 	context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest,
 ) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	// A complete key set, as the hub announces one: the channel refuses an
+	// incomplete set before any pin decision. Only the X25519 key takes part in
+	// a CLASSIC handshake, so the other two keep the fixture bytes.
+	keys := workerkeystest.Keys(workerkeystest.SeededWorkerFill)
+	keys.X25519 = f.staticPub
 	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
-		Keys:           &leapmuxv1.WorkerPublicKeys{X25519: f.staticPub},
+		Keys:           keys,
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}, nil
 }
@@ -483,7 +489,7 @@ func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
 // TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
 // STREAM must run on.
 //
-// `events --local` and `agent messages --follow` both open
+// `events watch` over local IPC and `agent messages --follow` both open
 // ControlIPCService.StreamInner, which rides the HTTP client rather than a
 // WebSocket. An http.Client timeout covers the BODY read and a stream's body
 // ends only when the stream does, so the timed unary client severed both

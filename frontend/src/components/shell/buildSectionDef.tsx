@@ -138,6 +138,8 @@ export interface SectionDefContext {
    */
   localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
+  /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
@@ -286,6 +288,7 @@ export function buildSectionDef(
           // way: one line off `ctx.workers` and one flag, rather than a prop
           // threaded down the whole sidebar chain.
           isLocalWorkerFn={workerId => isLocalWorker(ctx.workers, workerId, ctx.localSolo)}
+          isWorkerStreamOnline={ctx.isWorkerStreamOnline}
           {...(ctx.workspaceStartActions !== undefined
             ? { startActions: ctx.workspaceStartActions }
             : {})}

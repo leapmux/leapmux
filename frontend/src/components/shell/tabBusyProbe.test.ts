@@ -8,8 +8,12 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 const mockInspect = vi.fn()
 const mockListAgents = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  inspectTerminalProcesses: (...args: unknown[]) => mockInspect(...args),
-  listAgents: (...args: unknown[]) => mockListAgents(...args),
+  workerTerminal: {
+    inspectTerminalProcesses: (...args: unknown[]) => mockInspect(...args),
+  },
+  workerAgent: {
+    listAgents: (...args: unknown[]) => mockListAgents(...args),
+  },
 }))
 
 function agentTab(id: string, extra: Partial<Tab> = {}): Tab {

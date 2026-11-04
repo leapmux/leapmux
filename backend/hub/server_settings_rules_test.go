@@ -156,7 +156,7 @@ func TestAltchaResetStepIsRegistered(t *testing.T) {
 	before := captcha.AltchaKey.Of(set.Snapshot(ctx)).HMACKey
 	require.NotEmpty(t, before, "startup provisioning stores a signing key")
 
-	require.NoError(t, set.Reset(ctx, captcha.AltchaKey))
+	require.NoError(t, set.ResetMany(ctx, []settings.Descriptor{captcha.AltchaKey}))
 	require.Empty(t, captcha.AltchaKey.Of(set.Snapshot(ctx)).HMACKey,
 		"the reset really removed the key the step has to restore")
 

@@ -18,17 +18,17 @@ describe('passkeyManagement helpers', () => {
     vi.clearAllMocks()
   })
 
-  it('credentialIdFromRegistrationJson reads the credential id', () => {
+  it('reads the credential id in credentialIdFromRegistrationJson', () => {
     expect(credentialIdFromRegistrationJson('{"id":"abc"}')).toBe('abc')
     expect(credentialIdFromRegistrationJson('not-json')).toBeUndefined()
   })
 
-  it('credentialIdFromRegistrationJson ignores a non-string id', () => {
+  it('ignores a non-string id in credentialIdFromRegistrationJson', () => {
     expect(credentialIdFromRegistrationJson('{"id":42}')).toBeUndefined()
     expect(credentialIdFromRegistrationJson('{}')).toBeUndefined()
   })
 
-  it('loadPasskeys returns the list with the server-derived RP ID', async () => {
+  it('returns the list with the server-derived RP ID from loadPasskeys', async () => {
     const passkeys = [
       { id: 'pk-1', friendlyName: 'Laptop', credentialId: 'cred-abc' },
     ]

@@ -72,6 +72,9 @@ describe('startAuthentication', () => {
   })
 })
 
+/** What a person reads when a Begin response carries no challenge. */
+const MISSING_CHALLENGE_TEXT = 'The hub could not start the passkey prompt. Try again.'
+
 /** A Begin response's challenge, as the hub sends it. */
 function challengeOf(sessionId: string, options: Record<string, unknown>): WebAuthnChallenge {
   return create(WebAuthnChallengeSchema, {
@@ -101,8 +104,12 @@ describe('registerForChallenge', () => {
     expect(JSON.parse(credential.credentialJson ?? '')).toEqual({ id: 'cred-1', response: {} })
   })
 
+  // A person reads the refusal through passkeyErrorMessage on every passkey
+  // surface, so it states the fault in plain words and offers a next step.
   it('refuses an absent challenge without opening the browser prompt', async () => {
-    await expect(registerForChallenge(undefined)).rejects.toThrow('without a passkey challenge')
+    const err = await registerForChallenge(undefined).catch((e: unknown) => e)
+
+    expect(passkeyErrorMessage(err, 'Sign up failed')).toBe(MISSING_CHALLENGE_TEXT)
     expect(mockStartRegistration).not.toHaveBeenCalled()
   })
 
@@ -133,7 +140,9 @@ describe('authenticateForChallenge', () => {
   })
 
   it('refuses an absent challenge without opening the browser prompt', async () => {
-    await expect(authenticateForChallenge(undefined)).rejects.toThrow('without a passkey challenge')
+    const err = await authenticateForChallenge(undefined).catch((e: unknown) => e)
+
+    expect(passkeyErrorMessage(err, 'Passkey login failed')).toBe(MISSING_CHALLENGE_TEXT)
     expect(mockStartAuthentication).not.toHaveBeenCalled()
   })
 
@@ -155,12 +164,12 @@ describe('signal helpers', () => {
     })
   })
 
-  it('encodeWebAuthnUserId base64url-encodes UTF-8 bytes of the UUID string', () => {
+  it('base64url-encodes the UTF-8 bytes of the UUID string in encodeWebAuthnUserId', () => {
     // btoa("user-1") with URL-safe alphabet and no padding
     expect(encodeWebAuthnUserId('user-1')).toBe('dXNlci0x')
   })
 
-  it('signalPasskeyRemoved calls the browser API when present', () => {
+  it('calls the browser API from signalPasskeyRemoved when the API is present', () => {
     const signalUnknownCredential = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,
@@ -170,7 +179,7 @@ describe('signal helpers', () => {
     expect(signalUnknownCredential).toHaveBeenCalledWith({ rpId: 'example.com', credentialId: 'cred-id' })
   })
 
-  it('signalAcceptedPasskeys calls signalAllAcceptedCredentials when present', () => {
+  it('calls signalAllAcceptedCredentials from signalAcceptedPasskeys when the browser API is present', () => {
     const signalAllAcceptedCredentials = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,
@@ -184,7 +193,7 @@ describe('signal helpers', () => {
     })
   })
 
-  it('signalAcceptedPasskeys skips empty credential lists', () => {
+  it('skips empty credential lists in signalAcceptedPasskeys', () => {
     const signalAllAcceptedCredentials = vi.fn()
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,

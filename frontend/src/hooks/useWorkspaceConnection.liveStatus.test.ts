@@ -1,11 +1,9 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { TerminalDisplayStatus } from '~/components/shell/terminalStatus'
 import type { TerminalEventSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
 import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -19,6 +17,7 @@ import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -26,8 +25,11 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
   return {
     ...actual,
-    // Return an empty page so the hook completes its history request.
-    listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    workerAgent: {
+      ...actual.workerAgent,
+      // Return an empty page so the hook completes its history request.
+      listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
+    },
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
       hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
@@ -83,6 +85,7 @@ function mountConnection(initial: AgentStatus) {
   createRoot((d) => {
     dispose = d
     useWorkspaceConnection({
+      workerOnline: createWorkerOnlineStore(),
       chatStore: createChatStore(),
       agentInputQueueStore: createAgentInputQueueStore(),
       view,
@@ -277,7 +280,7 @@ describe('useWorkspaceConnection live catalog writers', () => {
   })
 })
 
-function mountTerminalConnection(initial: TerminalDisplayStatus | undefined) {
+function mountTerminalConnection(initial: TerminalStatus | undefined) {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
   emitAddTab({
@@ -294,6 +297,7 @@ function mountTerminalConnection(initial: TerminalDisplayStatus | undefined) {
   createRoot((d) => {
     dispose = d
     useWorkspaceConnection({
+      workerOnline: createWorkerOnlineStore(),
       chatStore: createChatStore(),
       agentInputQueueStore: createAgentInputQueueStore(),
       view,
@@ -359,14 +363,14 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   })
 
   it('does not count a statusChange event that the tab refuses', () => {
-    const { dispose, status, epoch } = mountTerminalConnection(TERMINAL_DISCONNECTED)
+    const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.READY)
 
     streamOpts().onEvent(WORKER, terminalEvent({
       case: 'statusChange',
-      value: { status: TerminalStatus.READY },
+      value: { status: TerminalStatus.STARTING },
     }))
 
-    expect(status()).toBe(TERMINAL_DISCONNECTED)
+    expect(status()).toBe(TerminalStatus.READY)
     expect(epoch()).toBe(0)
     dispose()
   })

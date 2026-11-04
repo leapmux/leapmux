@@ -244,7 +244,7 @@ describe('insertIntoMruAgentEditor', () => {
  * module (type-to-focus uses the ref directly) and the ones not written yet.
  */
 describe('a read-only editor refuses writes', () => {
-  it('insertIntoAgentEditor writes nothing and reports refused', () => {
+  it('makes insertIntoAgentEditor write nothing and report refused', () => {
     const set = vi.fn()
     registerEditorRef('ro', readOnlyRef({
       get: () => 'draft',
@@ -259,7 +259,7 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
-  it('insertIntoAgentEditor reports inserted for a writable editor', () => {
+  it('makes insertIntoAgentEditor report inserted for a writable editor', () => {
     const set = vi.fn()
     registerEditorRef('rw', writableRef({
       get: () => 'draft',
@@ -277,7 +277,7 @@ describe('a read-only editor refuses writes', () => {
   // `queued` and `refused` are separate answers on purpose. Merging them into
   // one boolean is what let the quote handler read a refusing editor as an
   // absent one and park text nothing would ever flush.
-  it('insertIntoAgentEditor reports queued when no editor is registered', () => {
+  it('makes insertIntoAgentEditor report queued when no editor is registered', () => {
     vi.useFakeTimers()
     const set = vi.fn()
     try {
@@ -292,7 +292,7 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
-  it('getEditorRef hands out a handle whose set and insert are inert', () => {
+  it('makes getEditorRef hand out a handle whose set and insert are inert', () => {
     const set = vi.fn()
     const insert = vi.fn()
     registerEditorRef('ro', readOnlyRef({
@@ -315,7 +315,7 @@ describe('a read-only editor refuses writes', () => {
     }
   })
 
-  it('getEditorRef still forwards set and insert for a writable editor', () => {
+  it('makes getEditorRef still forward set and insert for a writable editor', () => {
     const set = vi.fn()
     const insert = vi.fn()
     registerEditorRef('rw', writableRef({ set, insert }))

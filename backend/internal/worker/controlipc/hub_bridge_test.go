@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
+	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 )
@@ -158,7 +159,7 @@ func TestHubUnaryBridge_ReachesAPlaintextHub(t *testing.T) {
 
 	payload, err := proto.Marshal(&leapmuxv1.ListTabsRequest{})
 	require.NoError(t, err)
-	out, err := bridge.CallHub(context.Background(), userid.MustNew("u-1"), "ListTabs", payload)
+	out, err := bridge.CallHub(context.Background(), userid.MustNew("u-1"), leapmuxv1connect.WorkspaceServiceListTabsProcedure, payload)
 	require.NoError(t, err)
 
 	var resp leapmuxv1.ListTabsResponse
@@ -181,7 +182,7 @@ func TestHubUnaryBridge_ReachesAnHTTP11OnlyHub(t *testing.T) {
 
 	payload, err := proto.Marshal(&leapmuxv1.ListTabsRequest{})
 	require.NoError(t, err)
-	_, err = bridge.CallHub(context.Background(), userid.MustNew("u-1"), "ListTabs", payload)
+	_, err = bridge.CallHub(context.Background(), userid.MustNew("u-1"), leapmuxv1connect.WorkspaceServiceListTabsProcedure, payload)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer "+testBearer, workspaces.gotAuth)
 	assert.Equal(t, "HTTP/1.1", workspaces.gotProto, "the fallback is the point of this case")
@@ -207,7 +208,7 @@ func TestHubEventStreamer_ReachesAPlaintextHub(t *testing.T) {
 			defer cancel()
 
 			frames := make(chan []byte, 4)
-			err = streamer.StreamHub(ctx, userid.MustNew("u-1"), "WatchUser", payload, func(p []byte) error {
+			err = streamer.StreamHub(ctx, userid.MustNew("u-1"), hubrpc.WatchUserStream, payload, func(p []byte) error {
 				frames <- append([]byte(nil), p...)
 				return nil
 			})
@@ -223,6 +224,20 @@ func TestHubEventStreamer_ReachesAPlaintextHub(t *testing.T) {
 			assert.Equal(t, "HTTP/1.1", <-events.gotProto, "a WebSocket upgrade cannot ride HTTP/2")
 		})
 	}
+}
+
+// Both bridges address a hub method by its full procedure path, as
+// hubrpc.Registry keys it. A bare method name is not an address, so each
+// bridge refuses it before it mints a bearer or reaches the network.
+func TestHubBridges_RefuseABareMethodName(t *testing.T) {
+	endpoint := mustEndpoint(t, "http://hub.invalid:4327")
+
+	_, err := controlipc.NewHubUnaryBridge(endpoint, stubDelegation{}).CallHub(context.Background(), userid.MustNew("u-1"), "ListTabs", nil)
+	require.ErrorContains(t, err, "hub method not implemented: ListTabs")
+
+	err = controlipc.NewHubEventStreamer(endpoint, stubDelegation{}).StreamHub(context.Background(), userid.MustNew("u-1"), "WatchUser", nil,
+		func([]byte) error { t.Error("a refused stream delivers nothing"); return nil })
+	require.ErrorContains(t, err, "hub stream method not implemented: WatchUser")
 }
 
 // TestHubBridgesDoNotShareOneClient pins the split that the two lanes need.

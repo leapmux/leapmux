@@ -23,8 +23,10 @@ vi.mock('~/stores/workerInfo.store', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
-    getGitInfo(workerId, req),
+  workerGit: {
+    getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
+      getGitInfo(workerId, req),
+  },
 }))
 
 const { useWorkerDialog } = await import('~/hooks/useWorkerDialog')
@@ -139,7 +141,7 @@ describe('useWorkerDialog', () => {
     })
   })
 
-  it('pathInfo.remapWorktreeRoot=true reroutes the working dir on the first worktree-root probe', async () => {
+  it('reroutes the working dir on the first worktree-root probe when pathInfo.remapWorktreeRoot=true', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({
       isGitRepo: true,
       isRepoRoot: false,
@@ -228,7 +230,7 @@ describe('useWorkerDialog', () => {
     })
   })
 
-  it('pathInfo.remapWorktreeRoot=false leaves the working dir pinned to the caller-provided path', async () => {
+  it('leaves the working dir pinned to the caller-provided path when pathInfo.remapWorktreeRoot=false', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({
       isGitRepo: true,
       isRepoRoot: false,

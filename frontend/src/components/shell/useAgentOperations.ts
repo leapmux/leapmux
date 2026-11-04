@@ -18,14 +18,14 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
 import { forgetAgentScheduleDrafts } from '~/components/chat/composer/scheduleDrafts'
 import { ControlResponseDeliveryError } from '~/components/chat/controls/controlResponseError'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
-import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
+import { closeTabOnWorker } from '~/components/shell/closeTabOnWorker'
 import { AgentOptionSettlementState, AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
@@ -103,7 +103,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const issuedFor = ctx.workerId
     const superseded = () =>
       abort.signal.aborted || props.getCurrentTabContext().workerId !== issuedFor
-    workerRpc.listAvailableProviders(issuedFor, { signal: abort.signal })
+    workerAgent.listAvailableProviders(issuedFor, {}, { signal: abort.signal })
       .then((resp) => {
         if (superseded())
           return
@@ -170,7 +170,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // Title left empty: the worker picks "Agent <Name>" server-side
       // so CLI and UI paths share one pool (see worker/service/
       // tab_names.go). The response carries the resolved title back.
-      const resp = await workerRpc.openAgent(workerId, {
+      const resp = await workerAgent.openAgent(workerId, {
         agentProvider,
         workingDir,
         ...openAgentRequestOptions(agentProvider),
@@ -295,7 +295,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // Use the captured request's token even if a new request reuses its ID.
     let response
     try {
-      response = await workerRpc.sendControlResponse(workerId, {
+      response = await workerAgent.sendControlResponse(workerId, {
         agentId,
         requestId,
         content,
@@ -325,7 +325,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   const handleInterrupt = async (agentId: string) => {
     try {
       const workerId = getAgentWorkerId(agentId)
-      await workerRpc.interruptAgent(workerId, { agentId })
+      await workerAgent.interruptAgent(workerId, { agentId })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)
@@ -347,7 +347,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    * there. See RL-004.
    */
   const updateGoal = async (agentId: string, action: GoalAction, objective?: string): Promise<void> => {
-    await workerRpc.updateAgentGoal(getAgentWorkerId(agentId), {
+    await workerAgent.updateAgentGoal(getAgentWorkerId(agentId), {
       agentId,
       action: goalActionToProto(action),
       objective: objective ?? '',
@@ -379,7 +379,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    */
   const handleApproveAutoReviewDenial = async (agentId: string, messageId: string, reviewId: string): Promise<void> => {
     try {
-      await workerRpc.approveAutoReviewDenial(getAgentWorkerId(agentId), { agentId, messageId, reviewId })
+      await workerAgent.approveAutoReviewDenial(getAgentWorkerId(agentId), { agentId, messageId, reviewId })
     }
     catch (err) {
       showWarnToast('Failed to approve the action', err)
@@ -397,7 +397,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    */
   const handleRetryTurn = async (agentId: string, turnId: string, model: string): Promise<boolean> => {
     try {
-      await workerRpc.retryAgentTurn(getAgentWorkerId(agentId), { agentId, turnId, model })
+      await workerAgent.retryAgentTurn(getAgentWorkerId(agentId), { agentId, turnId, model })
       return true
     }
     catch (err) {
@@ -434,7 +434,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   const reconcileSettingSettlements = (
     agentId: string,
     requestVersions: Map<string, number>,
-    settlements: Awaited<ReturnType<typeof workerRpc.updateAgentSettings>>['optionSettlements'],
+    settlements: Awaited<ReturnType<typeof workerAgent.updateAgentSettings>>['optionSettlements'],
   ) => {
     const current = props.view.getAgentTab(agentId)?.optionValues || {}
     const reconciled = { ...current }
@@ -518,9 +518,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // agent -- another agent's unrelated push, and a server-initiated change to a DIFFERENT axis
     // on this same agent, still apply their own confirmed current values.
     props.settingsLoading.start(agentId, keys)
-    let resp: Awaited<ReturnType<typeof workerRpc.updateAgentSettings>>
+    let resp: Awaited<ReturnType<typeof workerAgent.updateAgentSettings>>
     try {
-      resp = await workerRpc.updateAgentSettings(agent.workerId, {
+      resp = await workerAgent.updateAgentSettings(agent.workerId, {
         agentId,
         settings: {
           options: { ...sets },
@@ -616,22 +616,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // The TombstoneTab op above is the removal: the tab leaves the projection
     // and therefore every view, and the hub broadcasts it to peer clients via
     // /ws/userevents.
-    if (!workerId) {
-      // No worker to send the close to. The local tab is gone, but a
-      // REMOVE can't reach the worker — say so rather than letting the
-      // caller assume the worktree was removed.
-      warnWorktreeUnreachable(worktreeAction)
-      return Promise.resolve(undefined)
-    }
-
+    //
     // Background: kill the subprocess, DB-close the agent, optionally
     // remove the worktree. Partial failures come back as a non-empty
     // failure_message on the response; the resolved result lets the
     // delete-branch flow report the actual worktree outcome.
-    const rpc = workerRpc.closeTab(workerId, {
-      tab: { tabType: TabType.AGENT, tabId: agentId },
-      worktreeAction,
-    })
+    const result = closeTabOnWorker(workerId, { type: TabType.AGENT, id: agentId }, worktreeAction, 'Failed to close agent')
 
     // Retire the subagent tabs the worker reports underneath this one.
     //
@@ -643,15 +633,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // sweep cannot see it, and the tab would outlive the agent that fed it.
     // A tombstone is idempotent, so the two passes overlapping costs nothing.
     //
-    // Errors are the RPC's own, and `awaitCloseResult` below already toasts
-    // them; a second handler would report the same failure twice.
-    //
-    // The rejection handler is the SECOND argument to `then`, not a trailing
-    // `catch`: a trailing one also swallows a throw from the sweep itself, so a
-    // failure half way through would leave the remaining descendant tabs on
-    // screen with no toast and no console trace. This form scopes the swallow
-    // to the RPC's own rejection and lets a sweep error surface.
-    rpc.then((resp) => {
+    // `closeTabOnWorker` already shows a failed RPC and resolves undefined for
+    // it, so the sweep runs on a response only. A throw from the sweep itself
+    // rejects this chain and surfaces, so a failure half way through cannot
+    // leave the remaining descendant tabs on screen without a console trace.
+    void result.then((resp) => {
+      if (!resp)
+        return
       // Only the ids this client holds a LIVE tab record for. The worker answers
       // from the `agents` table, where `EnsureChildAgent` creates a row on first
       // sight of a spawn -- whether or not anyone ever opened that subagent's
@@ -668,9 +656,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // state per BATCH, so a per-id loop pays all of that N times to say what
       // one batch says.
       emitRemoveTabs(TabType.AGENT, ids)
-    }, () => {})
+    })
 
-    return awaitCloseResult(rpc, 'Failed to close agent')
+    return result
   }
 
   return {

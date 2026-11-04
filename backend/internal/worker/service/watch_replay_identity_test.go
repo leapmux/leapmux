@@ -26,8 +26,9 @@ import (
 
 type replayIdentityWriter struct {
 	*testResponseWriter
-	onBind func(channel.StreamController)
-	onSend func(*leapmuxv1.InnerStreamMessage)
+	onBind  func(channel.StreamController)
+	onSend  func(*leapmuxv1.InnerStreamMessage)
+	onError func()
 }
 
 func (writer *replayIdentityWriter) BindStream(controller channel.StreamController) (func(), bool) {
@@ -36,6 +37,15 @@ func (writer *replayIdentityWriter) BindStream(controller channel.StreamControll
 		writer.onBind(controller)
 	}
 	return release, bound
+}
+
+// SendError runs onError first, so a test can act while the error is on its way
+// to the client.
+func (writer *replayIdentityWriter) SendError(code int32, message string) error {
+	if writer.onError != nil {
+		writer.onError()
+	}
+	return writer.testResponseWriter.SendError(code, message)
 }
 
 func (writer *replayIdentityWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {

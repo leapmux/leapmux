@@ -3,6 +3,7 @@ package service
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -341,6 +343,36 @@ func TestPlanArchive_IdempotentRerun(t *testing.T) {
 	assert.Equal(t, zipInfo1.Size(), zipInfo2.Size(), "zip should be unchanged")
 	assert.Equal(t, zipInfo1.ModTime(), zipInfo2.ModTime(), "zip should not be rewritten")
 	assert.DirExists(t, filepath.Join(plansDir, "2025"))
+}
+
+// cancelOnQuery cancels a pass at its first query, which lies past the checks of
+// ctx that the pass makes before each year.
+type cancelOnQuery struct {
+	db.DBTX
+	cancel context.CancelFunc
+}
+
+func (c cancelOnQuery) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c.cancel()
+	return c.DBTX.QueryContext(ctx, query, args...)
+}
+
+// Shutdown cancels a pass in progress and waits for it. A year that the cancel ended
+// is the stop working, so it is no failure to report.
+//
+// Not parallel: it captures the process-global default logger.
+func TestPlanArchive_ACanceledPassLogsNoFailure(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	sqlDB, _ := setupTestDB(t)
+	dataDir := t.TempDir()
+	writeTestPlanFile(t, filepath.Join(dataDir, "plans", "2024", "05", "x.md"), "x")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runPlanArchive(ctx, dataDir, db.New(cancelOnQuery{DBTX: sqlDB, cancel: cancel}), fixedNow)
+
+	require.Error(t, ctx.Err(), "precondition: the pass reached its query")
+	assert.NotContains(t, logs.String(), "plan archive: year failed")
 }
 
 func TestPlanArchive_PreCanceledCtxIsCompleteNoOp(t *testing.T) {

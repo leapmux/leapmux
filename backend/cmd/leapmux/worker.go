@@ -7,19 +7,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
-	"github.com/leapmux/leapmux/internal/worker/bootstrap"
 	"github.com/leapmux/leapmux/internal/worker/config"
-	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
-	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/version"
+	"github.com/leapmux/leapmux/worker"
 )
 
 func runWorker(args []string) error {
@@ -52,18 +48,8 @@ func runWorker(args []string) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
-	// Use a manually-cancelled context (rather than signal.NotifyContext)
-	// so SIGTERM/SIGINT can run wiring.Shutdown() *before* the bidi stream
-	// is torn down. Otherwise the disconnect-notice broadcasts emitted by
-	// Shutdown race a closed connection and never reach watchers.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Report the periods in which this process did not run, so a suspended machine
-	// explains the ended streams and refused credentials that follow it. This
-	// entry point needs its own call: worker.Run has one, but only solo goes
-	// through worker.Run -- `leapmux worker` builds its client here instead.
-	clockjump.StartLoop(ctx)
 
 	// Check if we already have credentials from a previous registration.
 	state, err := cfg.LoadState()
@@ -134,72 +120,8 @@ func runWorker(args []string) error {
 		"encryption_mode", cfg.EncryptionMode,
 	)
 
-	// Open the Worker-local database for persistent state.
-	sqlDB, err := workerdb.Open(cfg.DBPath(), cfg.DBConfig())
-	if err != nil {
-		return fmt.Errorf("open worker db: %w", err)
-	}
-	defer func() {
-		if closeErr := sqlDB.Close(); closeErr != nil {
-			slog.Error("failed to close worker db", "error", closeErr)
-		}
-	}()
-
-	if err := workerdb.Migrate(ctx, sqlDB); err != nil {
-		return fmt.Errorf("migrate worker db: %w", err)
-	}
-
-	client := hub.New(hubEndpoint)
-	defer client.Stop()
-
-	homeDir, _ := os.UserHomeDir()
-
-	wakeLockTracker := wakelock.NewActivityTracker()
-	defer wakeLockTracker.Close()
-
-	// Set up E2EE channel manager with service handlers.
-	encMode := cfg.EncryptionModeProto()
-
-	// SeedRegisteredBy is deliberately not set: the Hub delivers the owner
-	// on connect (see Client.OnWorkerIdentity, wired by Wire) and is the
-	// only authority for it. Everything else this entry point needs --
-	// remote IPC, the orphan reconciler, the retention loops -- comes from
-	// the shared sequence rather than being re-listed here, which is how
-	// this entry point silently lost svc.ControlIPC before.
-	wiring := bootstrap.Wire(bootstrap.Params{
-		Ctx:                     ctx,
-		Client:                  client,
-		DB:                      sqlDB,
-		CompositeKey:            compositeKey,
-		EncryptionMode:          encMode,
-		MaxIncompleteChunked:    cfg.MaxIncompleteChunked,
-		MaxMessageSize:          cfg.MaxMessageSize,
-		WorkerID:                state.WorkerID,
-		Name:                    cfg.Name,
-		HomeDir:                 homeDir,
-		DataDir:                 cfg.DataDir,
-		AuthToken:               state.AuthToken,
-		AgentStartupTimeout:     cfg.AgentStartupTimeout,
-		APITimeout:              cfg.APITimeout,
-		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
-		UseLoginShell:           cfg.UseLoginShell,
-		WakeLock:                wakeLockTracker,
-	})
-	// wiring.Shutdown persists terminal screen snapshots, broadcasts the
-	// "[Worker disconnected - Press Enter to restart]" notice to live watchers,
-	// and flushes the outbound queue those broadcasts land in. Wrap it in
-	// sync.Once so all exit paths (signal, OnDeregister, defer fallback)
-	// converge on a single invocation that runs *before* the bidi stream is
-	// torn down — otherwise the broadcast races a closed connection.
-	var shutdownOnce sync.Once
-	runShutdown := func() {
-		shutdownOnce.Do(func() {
-			slog.Info("draining worker state for graceful shutdown")
-			wiring.Shutdown()
-		})
-	}
-	defer runShutdown()
-
+	// A signal only cancels ctx: worker.Run keeps the bidi stream alive until its
+	// shutdown has run, so the disconnect notices still reach the watchers.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -207,30 +129,42 @@ func runWorker(args []string) error {
 		select {
 		case <-sigCh:
 			slog.Info("shutdown signal received")
-			runShutdown()
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
 
-	// This is the only cleanup for WORKER_DELETED, and it also runs for a worker
-	// deleted with its user, which was never deregistered. A discarded error
-	// would leave state.json on disk and repeat the same silent failure at every
-	// start.
-	client.OnDeregister = func() {
-		slog.Info("the hub told this worker to stop; clearing state and shutting down")
-		if err := clearDeletedWorkerState(cfg); err != nil {
-			slog.Error("failed to clear the worker state", "error", err)
-		}
-		runShutdown()
-		cancel()
-	}
-
-	if err := client.ConnectWithReconnect(ctx, state.AuthToken); err != nil {
-		return reregistrationAdvice(err, cfg.StatePath())
-	}
-
-	return nil
+	// RegisteredBy is deliberately not set: the Hub delivers the owner on connect
+	// (see Client.OnWorkerIdentity, wired by bootstrap.Wire) and is the only
+	// authority for it.
+	return reregistrationAdvice(worker.Run(ctx, worker.RunConfig{
+		HubEndpoint:             hubEndpoint,
+		DataDir:                 cfg.DataDir,
+		AuthToken:               state.AuthToken,
+		CompositeKey:            compositeKey,
+		WorkerID:                state.WorkerID,
+		Name:                    cfg.Name,
+		DBMaxConns:              cfg.DBMaxConns,
+		DBCacheSize:             cfg.DBCacheSize,
+		DBMmapSize:              cfg.DBMmapSize,
+		MaxIncompleteChunked:    cfg.MaxIncompleteChunked,
+		MaxMessageSize:          cfg.MaxMessageSize,
+		AgentStartupTimeout:     cfg.AgentStartupTimeout,
+		APITimeout:              cfg.APITimeout,
+		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
+		EncryptionMode:          cfg.EncryptionModeProto(),
+		UseLoginShell:           cfg.UseLoginShell,
+		// This is the only cleanup for WORKER_DELETED, and it also runs for a
+		// worker deleted with its user, which was never deregistered. A discarded
+		// error would leave state.json on disk and repeat the same silent failure
+		// at every start.
+		OnDeregister: func() {
+			slog.Info("the hub told this worker to stop; clearing state and shutting down")
+			if err := clearDeletedWorkerState(cfg); err != nil {
+				slog.Error("failed to clear the worker state", "error", err)
+			}
+		},
+	}), cfg.StatePath())
 }
 
 // reregistrationSteps states the one remedy for a Worker whose keys cannot be

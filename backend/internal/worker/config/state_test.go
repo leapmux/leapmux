@@ -220,7 +220,7 @@ func TestState_EnsureCompositeKeypair(t *testing.T) {
 
 // decode64 states the field that failed to decode, so an operator can tell
 // which key is mangled.
-func TestDecode64NamesTheFieldThatFailed(t *testing.T) {
+func TestDecode64StatesTheFieldThatFailed(t *testing.T) {
 	_, err := decode64("mlkem_private_key", "not!valid!base64")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mlkem_private_key")
@@ -243,7 +243,7 @@ func TestState_CompositeKeypairRefusesAnUndecodableKey(t *testing.T) {
 	ck, err := state.CompositeKeypair()
 	require.Error(t, err, "an undecodable private key must not restore as an empty one")
 	assert.Nil(t, ck)
-	assert.Contains(t, err.Error(), "x25519_private_key", "the error names the field")
+	assert.Contains(t, err.Error(), "x25519_private_key", "the error states the field")
 }
 
 // KeyMaterial round-trips through its base64 fields.

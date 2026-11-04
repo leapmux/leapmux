@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
 // authTestClient is the client half of an auth test server. It reaches both
@@ -21,9 +22,9 @@ type authTestClient struct {
 
 // mountAuthAndSystem registers the AuthService and the SystemService built
 // over it, as backend/hub/server.go does.
-func mountAuthAndSystem(server *connect.Server, authSvc *service.AuthService) {
+func mountAuthAndSystem(server *connect.Server, authSvc *service.AuthService, set *settings.Manager) {
 	leapmuxv1connect.RegisterAuthServiceHandler(server, authSvc)
-	leapmuxv1connect.RegisterSystemServiceHandler(server, service.NewSystemService(authSvc))
+	leapmuxv1connect.RegisterSystemServiceHandler(server, service.NewSystemService(authSvc, set))
 }
 
 // newAuthTestClient builds the client for an auth test server at baseURL.

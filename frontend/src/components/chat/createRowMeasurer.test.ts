@@ -561,7 +561,7 @@ describe('createRowMeasurer', () => {
     expect(measure).not.toHaveBeenCalledWith('b', 200)
   })
 
-  it('detachRow unobserves, unmounts, and drops a pending measurement', () => {
+  it('unobserves, unmounts, and drops a pending measurement when detachRow runs', () => {
     const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
     const obs = fakeObserver()
@@ -585,7 +585,7 @@ describe('createRowMeasurer', () => {
     expect(measure).not.toHaveBeenCalled()
   })
 
-  it('detachRow drops the el->id mapping so a late resize for it does not measure', () => {
+  it('drops the el->id mapping in detachRow so a late resize for it does not measure', () => {
     const measure = vi.fn(() => true)
     const obs = fakeObserver()
     const sched = manualScheduler()

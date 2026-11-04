@@ -603,19 +603,14 @@ func (i Item) WithUpdatedAt(t time.Time) Item {
 	return i
 }
 
-// ItemsToProto bulk-converts a slice for proto-shaped responses and broadcasts.
-func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
-	out := make([]*leapmuxv1.BackgroundTaskItem, len(items))
-	for i, it := range items {
-		out[i] = it.ToProto()
-	}
-	return out
-}
-
 // SnapshotToProto builds the whole registry that a broadcast, a replay and a
 // latest message page each carry.
 func SnapshotToProto(items []Item) *leapmuxv1.AgentBackgroundTaskSnapshot {
-	return &leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: ItemsToProto(items)}
+	tasks := make([]*leapmuxv1.BackgroundTaskItem, len(items))
+	for i, it := range items {
+		tasks[i] = it.ToProto()
+	}
+	return &leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: tasks}
 }
 
 // StatusWire returns the status token that child reports carry to the browser.

@@ -16,14 +16,19 @@ import "leapmux/v1/common.proto";
 // worker, and hub-side calls through a single dispatch layer without
 // having to enumerate every method. The router chooses the destination from
 // the method's namespace and target_worker_id alone, and never reads the
-// payload: a "worker." method with an empty target_worker_id, or with this
-// worker's id, dispatches locally; any other id goes over the cross-worker
-// channel; a "hub." method goes to the hub.
+// payload:
+//   - A "worker." method with an empty target_worker_id, or with this
+//     worker's id, dispatches locally.
+//   - A "worker." method with any other target_worker_id goes over the
+//     cross-worker channel.
+//   - A "hub." method goes to the hub.
 service ControlIPCService {
   option (leapmux.v1.host) = SERVICE_HOST_WORKER_IPC;
-  // CallInner dispatches a unary inner-RPC. A local failure comes back
-  // in-band, in InnerRpcResponse.error; a cross-worker or hub failure comes
-  // back as a ConnectRPC error.
+  // CallInner dispatches a unary inner-RPC. An error that a worker's handler
+  // answers comes back in-band, in InnerRpcResponse.error, with its code,
+  // whether the handler runs on this worker or on a sibling worker. A failure
+  // to reach the sibling worker, and every hub failure, comes back as a
+  // ConnectRPC error.
   rpc CallInner(CallInnerRequest) returns (InnerRpcResponse);
   // StreamInner is the server-streaming counterpart for events / message
   // tails / WatchEvents-style RPCs.
@@ -38,11 +43,13 @@ service ControlIPCService {
 }
 
 message CallInnerRequest {
-  // Namespaced method. Examples:
+  // Namespaced procedure path. Both namespaces address a method by its full
+  // procedure path. Examples:
   //   "worker./leapmux.v1.WorkerAgentService/OpenAgent" — a worker
   //   procedure, dispatched on this worker or a sibling (see
   //   target_worker_id).
-  //   "hub.WorkspaceService/ListWorkspaces" — hub-side ConnectRPC.
+  //   "hub./leapmux.v1.WorkspaceService/ListWorkspaces" — a hub procedure,
+  //   which the worker's hub bridge resolves through internal/hubrpc.
   string method = 1;
   bytes payload = 2;
   // The worker that serves a "worker." method. Empty or this worker's id
@@ -52,6 +59,9 @@ message CallInnerRequest {
 }
 
 message StreamInnerRequest {
+  // As CallInnerRequest.method. The hub serves one stream, the user-event
+  // feed, which is the /ws/userevents WebSocket and has no procedure path:
+  // "hub./ws/userevents" addresses it (internal/hubrpc.WatchUserStream).
   string method = 1;
   bytes payload = 2;
   // As CallInnerRequest.target_worker_id.
@@ -75,10 +85,17 @@ message WhoamiResponse {
   TabType tab_type = 5;    // matches the rest of the protos
 }
 
+// UpdateStreamRequest carries a revision or a cancel, never both. The router
+// refuses an update that selects neither.
 message UpdateStreamRequest {
   string client_request_id = 1;
-  bytes payload = 2; // Empty on a pure cancel.
-  bool cancel = 3;   // The client is done; the router retires the stream.
+  oneof action {
+    // A revision, in the encoding the opening StreamInnerRequest.payload
+    // used. An empty payload is a revision too.
+    bytes payload = 2;
+    // The client is done; the router retires the stream.
+    StreamCancel cancel = 3;
+  }
 }
 
 message UpdateStreamResponse {}

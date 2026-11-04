@@ -2,11 +2,13 @@
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 
 vi.mock('~/api/workerRpc', () => ({
-  inspectBranchDeletion: vi.fn(),
+  workerGit: {
+    inspectBranchDeletion: vi.fn(),
+  },
 }))
 
 function makeResp(overrides: Partial<InspectBranchDeletionResponse> = {}): InspectBranchDeletionResponse {
@@ -39,7 +41,7 @@ describe('useDeleteBranchInspect', () => {
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'feature', isRemote: false },
       ],
     })
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(resp)
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(resp)
     await createRoot(async (dispose) => {
       const inspect = useDeleteBranchInspect({
         workerId: 'w1',
@@ -49,7 +51,7 @@ describe('useDeleteBranchInspect', () => {
       })
       expect(inspect.info()).toBeNull()
       await flushMicrotasks()
-      expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1)
+      expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(1)
       expect(inspect.info()).toBe(resp)
       expect(inspect.loading()).toBe(false)
       dispose()
@@ -57,7 +59,7 @@ describe('useDeleteBranchInspect', () => {
   })
 
   it('forwards props.branchName as the wire hint', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeResp())
     await createRoot(async (dispose) => {
       useDeleteBranchInspect({
         workerId: 'w1',
@@ -66,7 +68,7 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerGit.inspectBranchDeletion).mock.calls[0]
       expect(inspectCall).toBeDefined()
       const [workerId, req] = inspectCall ?? []
       // The worker id routes the call and stays out of the request body.
@@ -80,7 +82,7 @@ describe('useDeleteBranchInspect', () => {
   })
 
   it('sends an empty branchNameHint when branchName is null (sidebar "(no branch)" group)', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeResp())
     await createRoot(async (dispose) => {
       useDeleteBranchInspect({
         workerId: 'w1',
@@ -89,7 +91,7 @@ describe('useDeleteBranchInspect', () => {
         onError: () => {},
       })
       await flushMicrotasks()
-      const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+      const inspectCall = vi.mocked(workerGit.inspectBranchDeletion).mock.calls[0]
       expect(inspectCall).toBeDefined()
       const [, req] = inspectCall ?? []
       expect(req).toEqual({ path: '/repo', branchNameHint: '' })
@@ -100,7 +102,7 @@ describe('useDeleteBranchInspect', () => {
   it('refresh() re-issues the RPC and surfaces the new response', async () => {
     const first = makeResp()
     const second = makeResp({ branchName: 'doomed-after-push' })
-    vi.mocked(workerRpc.inspectBranchDeletion)
+    vi.mocked(workerGit.inspectBranchDeletion)
       .mockResolvedValueOnce(first)
       .mockResolvedValueOnce(second)
     await createRoot(async (dispose) => {
@@ -114,7 +116,7 @@ describe('useDeleteBranchInspect', () => {
       expect(inspect.info()).toBe(first)
       await inspect.refresh()
       await flushMicrotasks()
-      expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(2)
+      expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(2)
       expect(inspect.info()).toBe(second)
       dispose()
     })
@@ -122,7 +124,7 @@ describe('useDeleteBranchInspect', () => {
 
   it('forwards RPC failures to onError and clears loading', async () => {
     const onError = vi.fn()
-    vi.mocked(workerRpc.inspectBranchDeletion).mockRejectedValue(new Error('boom'))
+    vi.mocked(workerGit.inspectBranchDeletion).mockRejectedValue(new Error('boom'))
     await createRoot(async (dispose) => {
       const inspect = useDeleteBranchInspect({
         workerId: 'w1',
@@ -155,7 +157,7 @@ describe('useDeleteBranchInspect', () => {
         onError,
       })
       await flushMicrotasks()
-      expect(workerRpc.inspectBranchDeletion).not.toHaveBeenCalled()
+      expect(workerGit.inspectBranchDeletion).not.toHaveBeenCalled()
       expect(onError).toHaveBeenCalledTimes(1)
       expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error)
       expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/no resolved repo path/)

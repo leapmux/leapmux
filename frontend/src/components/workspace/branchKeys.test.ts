@@ -192,7 +192,7 @@ describe('tabBranchKey', () => {
 // resolve it: the tree hoists one resolution per tab and threads it through
 // every key, and a divergence here would mis-key the sidebar's groups.
 describe('branchKeys accept a precomputed view', () => {
-  it('tabGitToplevelForKey returns the same answer with and without the view', () => {
+  it('returns the same answer from tabGitToplevelForKey with and without the view', () => {
     const store = createRepoGitStore()
     const tab = { workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo' }
     const view = repoGitView(tab, store)
@@ -200,7 +200,7 @@ describe('branchKeys accept a precomputed view', () => {
       .toBe(tabGitToplevelForKey(tab, store))
   })
 
-  it('tabBranchKey returns the same key with and without the view', () => {
+  it('returns the same key from tabBranchKey with and without the view', () => {
     const store = createRepoGitStore()
     const tab = { workerId: 'w1', gitToplevel: '/repo', workingDir: '/repo' }
     const view = repoGitView(tab, store)

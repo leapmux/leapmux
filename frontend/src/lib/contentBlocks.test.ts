@@ -307,7 +307,7 @@ describe('forEachContentBlock guarantees', () => {
 
   // The same walk feeds both sinks, so the index a tab stores and the text a
   // quote shows come from one traversal rather than two that must agree.
-  it('splitToolResultContent numbers images by that same order', () => {
+  it('numbers images by that same order in splitToolResultContent', () => {
     const { text, images } = splitToolResultContent(
       [
         { type: 'image', mimeType: 'image/png', data: 'FIRST' },

@@ -1,14 +1,12 @@
 package service
 
 import (
-	"errors"
-	"fmt"
 	"math"
 	"testing"
 
-	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
@@ -23,19 +21,19 @@ func TestPageParams(t *testing.T) {
 		page *leapmuxv1.PageRequest
 		want store.PageParams
 	}{
-		"an absent page reads the first default page": {nil, store.PageParams{Limit: DefaultPageLimit}},
-		"a zero limit takes the default":              {&leapmuxv1.PageRequest{}, store.PageParams{Limit: DefaultPageLimit}},
-		"a negative limit takes the default":          {&leapmuxv1.PageRequest{Limit: -5}, store.PageParams{Limit: DefaultPageLimit}},
+		"an absent page reads the first default page": {nil, store.PageParams{Limit: contracts.DefaultPageLimit}},
+		"a zero limit takes the default":              {&leapmuxv1.PageRequest{}, store.PageParams{Limit: contracts.DefaultPageLimit}},
+		"a negative limit takes the default":          {&leapmuxv1.PageRequest{Limit: -5}, store.PageParams{Limit: contracts.DefaultPageLimit}},
 		"one row is a legal page":                     {&leapmuxv1.PageRequest{Limit: 1}, store.PageParams{Limit: 1}},
-		"the ceiling itself is allowed":               {&leapmuxv1.PageRequest{Limit: MaxPageLimit}, store.PageParams{Limit: MaxPageLimit}},
-		"one past the ceiling is capped":              {&leapmuxv1.PageRequest{Limit: MaxPageLimit + 1}, store.PageParams{Limit: MaxPageLimit}},
-		"the largest wire limit is capped":            {&leapmuxv1.PageRequest{Limit: math.MaxInt32}, store.PageParams{Limit: MaxPageLimit}},
+		"the ceiling itself is allowed":               {&leapmuxv1.PageRequest{Limit: contracts.MaxPageLimit}, store.PageParams{Limit: contracts.MaxPageLimit}},
+		"one past the ceiling is capped":              {&leapmuxv1.PageRequest{Limit: contracts.MaxPageLimit + 1}, store.PageParams{Limit: contracts.MaxPageLimit}},
+		"the largest wire limit is capped":            {&leapmuxv1.PageRequest{Limit: math.MaxInt32}, store.PageParams{Limit: contracts.MaxPageLimit}},
 		"the most negative wire limit takes the default": {
-			&leapmuxv1.PageRequest{Limit: math.MinInt32}, store.PageParams{Limit: DefaultPageLimit},
+			&leapmuxv1.PageRequest{Limit: math.MinInt32}, store.PageParams{Limit: contracts.DefaultPageLimit},
 		},
 		"a cursor with no limit reads a default page": {
 			&leapmuxv1.PageRequest{Cursor: "opaque-cursor"},
-			store.PageParams{Limit: DefaultPageLimit, Cursor: "opaque-cursor"},
+			store.PageParams{Limit: contracts.DefaultPageLimit, Cursor: "opaque-cursor"},
 		},
 		"the cursor passes through unchanged": {
 			&leapmuxv1.PageRequest{Limit: 10, Cursor: "opaque-cursor"},
@@ -58,31 +56,4 @@ func TestPageResponse(t *testing.T) {
 	last := pageResponse("")
 	assert.NotNil(t, last)
 	assert.Empty(t, last.GetNextCursor())
-}
-
-// TestPageListError pins the one mapping from a listing failure to a Connect
-// code: a cursor the store could not parse is the caller's input, and every
-// other failure is a hub fault.
-func TestPageListError(t *testing.T) {
-	t.Parallel()
-
-	badCursor := pageListError(fmt.Errorf("decode: %w", store.ErrInvalidCursor), "list things")
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(badCursor))
-	assert.ErrorIs(t, badCursor, store.ErrInvalidCursor, "the cause stays inspectable")
-	assert.Contains(t, badCursor.Error(), "list things")
-	assert.Contains(t, badCursor.Error(), "omit it to start from the first page",
-		"the message states how to recover")
-
-	cause := errors.New("disk full")
-	fault := pageListError(cause, "list things")
-	assert.Equal(t, connect.CodeInternal, connect.CodeOf(fault))
-	assert.ErrorIs(t, fault, cause, "the hub fault keeps its cause")
-	assert.Contains(t, fault.Error(), "list things", "the message identifies the listing")
-	assert.NotContains(t, fault.Error(), "omit it to start from the first page",
-		"a hub fault does not tell the caller to change the cursor")
-
-	// storeConnectError answers a bad cursor with the same code, so the admin
-	// handlers and the other listings agree.
-	assert.Equal(t, connect.CodeInvalidArgument,
-		connect.CodeOf(storeConnectError(fmt.Errorf("decode: %w", store.ErrInvalidCursor), "list users")))
 }

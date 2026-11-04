@@ -13,8 +13,9 @@ import (
 // ScopeRequirement is what one Connect procedure demands of a SCOPED
 // credential.
 //
-// The polarity is the whole design. adminProcedures is an ALLOWLIST, so a miss
-// there fails OPEN -- which is why enforceAdmin had to move to a name prefix.
+// The polarity is the whole design. A list of admin procedures would be an
+// ALLOWLIST, whose miss fails OPEN -- which is why enforceAdmin denies by a
+// name prefix (adminProcedurePrefix).
 // A REQUIREMENT map's miss is the strictest possible answer instead: the zero
 // value is "nobody classified this", and enforceScope refuses it to every
 // scoped credential. So a procedure added tomorrow is unreachable by an app

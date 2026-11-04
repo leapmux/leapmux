@@ -49,6 +49,25 @@ func TestHandleControlArgs_WorkerPinsListIsLeaf(t *testing.T) {
 	assert.Empty(t, stderr.String())
 }
 
+// TestHandleControlArgs_WorkerInfoIsLeaf confirms that `worker info` reaches
+// the leaf dispatch path beside `worker get`, and that the help of the group
+// lists it.
+func TestHandleControlArgs_WorkerInfoIsLeaf(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, handled := handleControlArgs([]string{"worker", "info"}, &stdout, &stderr)
+	assert.False(t, handled, "args=worker info must reach the leaf dispatch path")
+	assert.Equal(t, 0, code)
+	assert.Empty(t, stdout.String())
+	assert.Empty(t, stderr.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	code, handled = handleControlArgs([]string{"worker"}, &stdout, &stderr)
+	assert.True(t, handled, "args=worker must print the help of the group")
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr.String(), "\n  info ", "the help of the group must list the verb")
+}
+
 // TestFormatGroupUsage_ControlRootSplitsCommandsFromGroups pins the two
 // headers of `leapmux control`.
 //

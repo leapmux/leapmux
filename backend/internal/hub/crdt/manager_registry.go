@@ -180,7 +180,8 @@ func (r *Registry) loaded(userID string) (*Manager, bool) {
 }
 
 // BroadcastWorkersChanged tells every live /ws/userevents subscriber of userID
-// that the user's worker list changed.
+// whose credential holds worker:read that the user's worker list changed (see
+// Manager.BroadcastWorkersChanged).
 //
 // It uses only a manager that is already loaded and never bootstraps one: the
 // registry evicts only a manager with no subscriber (see SweepIdle), so a

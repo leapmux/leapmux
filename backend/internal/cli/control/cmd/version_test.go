@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
@@ -54,6 +55,22 @@ func clearRemoteEnv(t *testing.T) {
 	} {
 		t.Setenv(key, "")
 	}
+}
+
+// A build that another binary reports prints with the key names of this
+// binary's own build, so a script reads one spelling.
+func TestBuildInfoToMapUsesTheKeysOfCLIVersionFields(t *testing.T) {
+	got := buildInfoToMap(nil)
+	for key := range cliVersionFields() {
+		assert.Containsf(t, got, key, "the key %q of `control version`", key)
+	}
+}
+
+// The formatted line describes the build that the map renders, not this binary.
+func TestBuildInfoToMapFormatsTheReportedBuild(t *testing.T) {
+	got := buildInfoToMap(&leapmuxv1.BuildInfo{Version: "9.9.9", CommitHash: "abc1234"})
+	assert.Equal(t, "9.9.9 · abc1234", got["formatted"])
+	assert.Empty(t, buildInfoToMap(nil)["formatted"], "a nil build formats as nothing")
 }
 
 // TestRunVersion_NoHubPrintsCLIOnly is the happy-path case when no

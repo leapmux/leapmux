@@ -71,12 +71,12 @@ describe('shallowEqual (GitModeIntent semantics)', () => {
     expect(shallowEqual({ mode: GitMode.Current }, { mode: GitMode.Current })).toBe(true)
   })
 
-  it('switchBranch compares checkoutBranch', () => {
+  it('compares checkoutBranch for the switchBranch variant', () => {
     expect(shallowEqual(switchBranch('main'), switchBranch('main'))).toBe(true)
     expect(shallowEqual(switchBranch('main'), switchBranch('dev'))).toBe(false)
   })
 
-  it('createBranch compares all three payload fields', () => {
+  it('compares all three payload fields for the createBranch variant', () => {
     const base = createBranch({ createBranch: 'feat', createBranchBase: 'main', createBranchError: null })
     expect(shallowEqual(base, createBranch({ createBranch: 'feat', createBranchBase: 'main', createBranchError: null }))).toBe(true)
     // Each field flip should break equality independently.
@@ -85,7 +85,7 @@ describe('shallowEqual (GitModeIntent semantics)', () => {
     expect(shallowEqual(base, createBranch({ createBranch: 'feat', createBranchBase: 'main', createBranchError: 'invalid' }))).toBe(false)
   })
 
-  it('createWorktree compares all three payload fields', () => {
+  it('compares all three payload fields for the createWorktree variant', () => {
     const base = createWorktree()
     expect(shallowEqual(base, createWorktree())).toBe(true)
     expect(shallowEqual(base, createWorktree({ worktreeBranch: 'other' }))).toBe(false)
@@ -93,7 +93,7 @@ describe('shallowEqual (GitModeIntent semantics)', () => {
     expect(shallowEqual(base, createWorktree({ worktreeBranchError: 'bad' }))).toBe(false)
   })
 
-  it('useWorktree compares useWorktreePath', () => {
+  it('compares useWorktreePath for the useWorktree variant', () => {
     const a: GitModeIntent = { mode: GitMode.UseWorktree, useWorktreePath: '/wt-a' }
     const b: GitModeIntent = { mode: GitMode.UseWorktree, useWorktreePath: '/wt-a' }
     const c: GitModeIntent = { mode: GitMode.UseWorktree, useWorktreePath: '/wt-b' }
@@ -149,7 +149,7 @@ describe('useGitModeState', () => {
     })
   })
 
-  it('handleGitModeChange after a seed swaps the variant cleanly (no leftover seed fields)', () => {
+  it('swaps the variant cleanly when handleGitModeChange runs after a seed (no leftover seed fields)', () => {
     // Defensive: the signal's `equals: shallowEqual` could mask a
     // setter that forgot to clear a previous variant's fields. The
     // initial-intent path must not be a special case — once
@@ -161,14 +161,14 @@ describe('useGitModeState', () => {
     expect(s.toGitSetup()).toBeUndefined()
   })
 
-  it('handleGitModeChange swaps the active variant atomically', () => {
+  it('swaps the active variant atomically when handleGitModeChange runs', () => {
     const s = useGitModeState()
     s.handleGitModeChange(switchBranch('main'))
     expect(s.gitMode()).toBe(GitMode.SwitchBranch)
     expect(s.currentIntent()).toEqual({ mode: GitMode.SwitchBranch, checkoutBranch: 'main', checkoutBranchError: null })
   })
 
-  it('toGitSetup(Current) leaves the setup absent', () => {
+  it('leaves the setup absent when toGitSetup runs in the Current mode', () => {
     // Absent means "use the directory as it is" on the worker.
     const s = useGitModeState()
     expect(s.toGitSetup()).toBeUndefined()
@@ -185,7 +185,7 @@ describe('useGitModeState', () => {
     })
   })
 
-  it('gitMode() dedupes across same-mode field updates (memo equality)', async () => {
+  it('dedupes gitMode() across same-mode field updates (memo equality)', async () => {
     // Regression guard for the `gitMode = createMemo(() => currentIntent().mode)`
     // optimization. CreateBranch field-level writes (per-keystroke in the
     // branch-name input) change `currentIntent` but leave `.mode`
@@ -233,7 +233,7 @@ describe('useGitModeState', () => {
     })
   })
 
-  it('handleGitModeChange with a structurally-identical intent does NOT refire downstream effects', async () => {
+  it('does NOT refire downstream effects when handleGitModeChange receives a structurally-identical intent', async () => {
     // Regression guard for the `{ equals: shallowEqual }` option on the
     // intent signal. Without it, every handleGitModeChange call would
     // notify subscribers even when the payload didn't change — defeating
@@ -411,7 +411,7 @@ describe('toGitSetup projects every active mode onto one setup case', () => {
   // NewTerminalDialog, NewWorkspaceDialog). Asserting on the concrete
   // payload — not on equality with the helper invocation we'd otherwise
   // compare to — catches a refactor that swaps in the wrong helper.
-  it('switchBranch selects checkout_branch', () => {
+  it('selects checkout_branch for the switchBranch mode', () => {
     const s = useGitModeState()
     s.handleGitModeChange(switchBranch('main'))
     expect(s.toGitSetup()).toEqual({
@@ -419,7 +419,7 @@ describe('toGitSetup projects every active mode onto one setup case', () => {
     })
   })
 
-  it('createBranch selects create_branch', () => {
+  it('selects create_branch for the createBranch mode', () => {
     const s = useGitModeState()
     s.handleGitModeChange(createBranch({ createBranch: 'feat', createBranchBase: 'main' }))
     expect(s.toGitSetup()).toEqual({
@@ -430,7 +430,7 @@ describe('toGitSetup projects every active mode onto one setup case', () => {
     })
   })
 
-  it('createWorktree selects create_worktree', () => {
+  it('selects create_worktree for the createWorktree mode', () => {
     const s = useGitModeState()
     s.handleGitModeChange(createWorktree({ worktreeBranch: 'feat-wt', worktreeBaseBranch: 'main' }))
     expect(s.toGitSetup()).toEqual({
@@ -441,7 +441,7 @@ describe('toGitSetup projects every active mode onto one setup case', () => {
     })
   })
 
-  it('useWorktree selects use_worktree_path', () => {
+  it('selects use_worktree_path for the useWorktree mode', () => {
     const s = useGitModeState()
     s.handleGitModeChange({ mode: GitMode.UseWorktree, useWorktreePath: '/wt' })
     expect(s.toGitSetup()).toEqual({

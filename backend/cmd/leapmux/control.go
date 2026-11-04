@@ -70,6 +70,7 @@ var controlTree = cmdGroup{
 			Commands: []cmdLeaf{
 				{Name: "list", Summary: "List accessible workers", Run: controlRun(cmdcontrol.RunWorkerList)},
 				{Name: "get", Summary: "Show metadata for one worker", Run: controlRun(cmdcontrol.RunWorkerGet)},
+				{Name: "info", Summary: "Show what an online worker reports about itself (name, OS, home directory, build)", Run: controlRun(cmdcontrol.RunWorkerInfo)},
 			},
 			Subgroups: []cmdGroup{
 				{

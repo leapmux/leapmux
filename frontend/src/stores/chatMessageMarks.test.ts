@@ -17,7 +17,7 @@ const C = MarkType.CONTROL_RESPONSE
 
 describe('chatMessageMarks', () => {
   describe('pure helpers', () => {
-    it('insertMarkSorted keeps ascending order and is idempotent on a duplicate seq', () => {
+    it('keeps ascending order in insertMarkSorted and is idempotent on a duplicate seq', () => {
       let marks = insertMarkSorted([], 5n, U)
       marks = insertMarkSorted(marks, 2n, U)
       marks = insertMarkSorted(marks, 8n, C)
@@ -26,12 +26,12 @@ describe('chatMessageMarks', () => {
       expect(marks.map(m => m.type)).toEqual([U, U, C])
     })
 
-    it('insertMarkSorted returns the SAME reference when the seq is already present', () => {
+    it('returns the SAME reference from insertMarkSorted when the seq is already present', () => {
       const marks = insertMarkSorted([], 3n, U)
       expect(insertMarkSorted(marks, 3n, U)).toBe(marks)
     })
 
-    it('removeMarkAt drops the seq and returns the same reference when absent', () => {
+    it('drops the seq in removeMarkAt and returns the same reference when the seq is absent', () => {
       const marks = insertMarkSorted(insertMarkSorted([], 1n, U), 2n, C)
       expect(removeMarkAt(marks, 1n).map(m => m.seq)).toEqual([2n])
       expect(removeMarkAt(marks, 99n)).toBe(marks)

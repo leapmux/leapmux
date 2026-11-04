@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -42,6 +43,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -104,13 +106,17 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
-	return regKeyEnvFromStore(t, st, cfg, seed, connectorStore)
+	return regKeyEnvFromStore(t, st, cfg, seed, connectorStore, nil)
 }
 
 // regKeyEnvFromStore exercises registration through the same services on a
 // caller-supplied backend, including databases with concurrent writers.
-func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
+// clock drives the connector's deadlines; nil gives the real clock.
+func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store, clock quartz.Clock) *regKeyEnv {
 	t.Helper()
+	if clock == nil {
+		clock = quartz.NewReal()
+	}
 	hubtestutil.CreateTestAdmin(t, st)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	if seed != nil {
@@ -147,7 +153,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	if connectorStore != nil {
 		connectorSt = connectorStore(st)
 	}
-	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, pendingReqs, notif, registry, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, pendingReqs, notif, registry, sendq.NewMaxBytesPoolForTest(), clock)
 	// Both halves of max_workers_per_user, wired from one value exactly as
 	// hub/server.go does: the service caps registered ROWS, the registry caps
 	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
@@ -158,7 +164,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, registry.BroadcastWorkersChanged, notif, mailer, mail.Renderer{}, set, nil)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewWorkerDeregisterEffects(nil, notif, registry.BroadcastWorkersChanged), mailer, mail.Renderer{}, set)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
@@ -743,34 +749,62 @@ func TestDeregisterWorker_AllowsManuallyRegisteredWorker(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
 }
 
-// TestDeregisterWorker_RefusesAutoRegisteredWorker locks in the
-// defense-in-depth guard for the solo launcher's bundled worker. The
-// row is created via Server.RegisterWorker (auto_registered=true) and
-// would just be re-created on next launch if deregistered, so the
-// handler must refuse rather than producing a transient outage and a
-// reappearing row.
-func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
-	t.Parallel()
-
-	env := setupRegKeyEnv(t)
-	token := env.login(t, "admin", "admin123")
-
-	workerID := "auto-worker-1"
+// createBundledWorker adds an auto-registered worker row for the admin, as
+// Server.RegisterWorker does, and returns its id.
+func createBundledWorker(t *testing.T, env *regKeyEnv) string {
+	t.Helper()
+	workerID := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:             workerID,
-		AuthToken:      "auto-token-1",
+		AuthToken:      id.Generate(),
 		RegisteredBy:   userid.MustNew(env.adminID(t)),
 		AutoRegistered: true,
 		PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
+	return workerID
+}
+
+// The owner may remove an offline bundled worker: that is the only cleanup in
+// the browser for the row that a launch leaves behind when the app's state file
+// was lost.
+func TestDeregisterWorker_AllowsAnOfflineBundledWorker(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	workerID := createBundledWorker(t, env)
 
 	_, err := env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
 		WorkerId: workerID,
 	}, token))
+	require.NoError(t, err)
+
+	worker, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
+}
+
+// The owner cannot stop a connected bundled worker: the app would run with no
+// local worker until its next launch. The refusal is the admin path's, because
+// one rule governs both paths.
+func TestDeregisterWorker_RefusesAConnectedBundledWorker(t *testing.T) {
+	t.Parallel()
+
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	workerID := createBundledWorker(t, env)
+	conn := workermgrtest.NewConnWithWrite(t, workerID, func(*leapmuxv1.ConnectResponse) error { return nil })
+	_, err := env.wMgr.Register(conn)
+	require.NoError(t, err)
+
+	_, err = env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
+		WorkerId: workerID,
+	}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "the bundled local worker is connected; deregister it only while it is offline")
 
-	// Row still active — the precondition fired before any UPDATE.
+	// Row still active: the precondition fired before any UPDATE.
 	worker, err := env.store.Workers().GetByID(context.Background(), workerID)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, worker.Status)
@@ -899,7 +933,7 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 	// The greeting also carries the owner's username, which the worker reports
 	// to `leapmux control whoami` and could not learn any other way.
 	assert.Equal(t, "admin", first.GetWorkerIdentity().GetRegisteredByUsername(),
-		"the Hub must name the owner's username")
+		"the Hub must give the owner's username")
 	require.NoError(t, stream.CloseSend())
 }
 
@@ -907,6 +941,18 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 // stream over a Unix socket. It returns the stream, the worker's owner id, and
 // the greeting the Hub sent first.
 func connectAdminWorker(t *testing.T, env *regKeyEnv, socketName string) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, string, *leapmuxv1.WorkerIdentity) {
+	t.Helper()
+	stream, worker := openAdminWorkerStream(t, env, socketName)
+	first, err := stream.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, first.GetWorkerIdentity(), "the first frame is the greeting")
+	return stream, worker.RegisteredBy, first.GetWorkerIdentity()
+}
+
+// openAdminWorkerStream registers a worker as the admin, opens its Connect
+// stream over a Unix socket and sends the hello. It reads nothing, so a test
+// can act while Connect still runs, before the Hub writes the greeting.
+func openAdminWorkerStream(t *testing.T, env *regKeyEnv, socketName string) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, *store.Worker) {
 	t.Helper()
 	token := env.login(t, "admin", "admin123")
 	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
@@ -927,11 +973,7 @@ func connectAdminWorker(t *testing.T, env *regKeyEnv, socketName string) (leapmu
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.CloseSend() })
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
-
-	first, err := stream.Receive()
-	require.NoError(t, err)
-	require.NotNil(t, first.GetWorkerIdentity(), "the first frame is the greeting")
-	return stream, worker.RegisteredBy, first.GetWorkerIdentity()
+	return stream, worker
 }
 
 // nextWorkerIdentity reads frames until the next WorkerIdentity frame.
@@ -977,16 +1019,22 @@ func TestRedeliverWorkerIdentity_FollowsARename(t *testing.T) {
 	assert.Equal(t, owner, identity.GetRegisteredBy(), "a rename keeps the owner")
 	assert.Equal(t, "admin-renamed", identity.GetRegisteredByUsername(), "the worker learns the new username")
 
-	// Another user's change reaches none of this owner's workers, and an owner
-	// with no connected worker costs nothing.
+	// Another user's change reaches none of this owner's workers: the next
+	// identity frame the worker reads is the owner's own later re-delivery.
 	env.connector.RedeliverWorkerIdentity("someone-else")
 	env.connector.RedeliverWorkerIdentity("")
+	renameUser(t, env.store, owner, "admin-final")
+	env.connector.RedeliverWorkerIdentity(owner)
+	identity = nextWorkerIdentity(t, stream)
+	assert.Equal(t, owner, identity.GetRegisteredBy(), "no other owner's identity reaches this worker")
+	assert.Equal(t, "admin-final", identity.GetRegisteredByUsername())
 }
 
-// A rename that commits between Connect's greeting read and the registration
-// misses the user-info re-delivery, because the registry does not hold the
-// connection yet. Connect reads the username again after it registers the
-// connection and sends the changed name, so the worker never keeps the old one.
+// A rename can commit after Connect's greeting read returned the old name and
+// before the registration publishes the connection. Its re-delivery then starts
+// while the registry does not hold the connection yet. Connect holds the owner's
+// delivery lock across both steps, so the re-delivery waits, takes its snapshot
+// after the registration, and the worker never keeps the old name.
 func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -994,9 +1042,22 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 		t.Skip("unix sockets are not available on Windows")
 	}
 	var renamed atomic.Bool
+	var connector atomic.Pointer[service.WorkerConnectorService]
+	redelivered := make(chan struct{})
 	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
-		return renameAfterFirstReadStore{Store: st, renamed: &renamed, username: "admin-raced"}
+		return renameAfterFirstReadStore{
+			Store: st, renamed: &renamed, username: "admin-raced",
+			// The rename's user-info observer, which runs on another goroutine
+			// while Connect still holds the lock.
+			afterRename: func(owner string) {
+				go func() {
+					defer close(redelivered)
+					connector.Load().RedeliverWorkerIdentity(owner)
+				}()
+			},
+		}
 	})
+	connector.Store(env.connector)
 	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-race")
 	require.Equal(t, "admin", greeting.GetRegisteredByUsername(), "the greeting holds the name read before the rename")
 	require.True(t, renamed.Load(), "precondition: the rename landed during Connect")
@@ -1004,7 +1065,29 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 	identity := nextWorkerIdentity(t, stream)
 	assert.Equal(t, owner, identity.GetRegisteredBy())
 	assert.Equal(t, "admin-raced", identity.GetRegisteredByUsername(),
-		"Connect re-delivers a username that changed before the registration")
+		"the re-delivery finds the connection that its rename raced")
+	<-redelivered
+}
+
+// A connection reads the owner's username once, for its greeting. The count is
+// taken after a re-delivery, whose frame the test reads, so it holds every read
+// that Connect made.
+func TestConnect_ReadsTheUsernameOnce(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	var reads atomic.Int64
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return userReadCountingStore{Store: st, reads: &reads}
+	})
+	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-one-read")
+
+	renameUser(t, env.store, owner, "admin-counted-once")
+	env.connector.RedeliverWorkerIdentity(owner)
+	assert.Equal(t, "admin-counted-once", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
+	assert.Equal(t, int64(2), reads.Load(), "the greeting's read, then the re-delivery's read")
 }
 
 // A failed username read keeps the name each worker holds: the re-delivery
@@ -1034,7 +1117,7 @@ func TestRedeliverWorkerIdentity_SendsNothingWhenTheAccountCannotBeRead(t *testi
 }
 
 // The username is display only, so a failed read never refuses a connection:
-// the greeting names the owner with no username, and no second frame repeats
+// the greeting identifies the owner with no username, and no second frame repeats
 // the empty name. The connection stays live, so a later re-delivery reaches it.
 func TestConnect_GreetsWithNoUsernameWhenTheAccountCannotBeRead(t *testing.T) {
 	t.Parallel()
@@ -1048,7 +1131,7 @@ func TestConnect_GreetsWithNoUsernameWhenTheAccountCannotBeRead(t *testing.T) {
 		return userReadFailStore{Store: st, fail: &failReads}
 	})
 	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-unreadable")
-	assert.Equal(t, owner, greeting.GetRegisteredBy(), "the greeting still names the owner")
+	assert.Equal(t, owner, greeting.GetRegisteredBy(), "the greeting still identifies the owner")
 	assert.Empty(t, greeting.GetRegisteredByUsername(), "an unread username is sent as none")
 
 	failReads.Store(false)
@@ -1088,12 +1171,10 @@ func TestRedeliverWorkerIdentity_ReadsNothingForAnOwnerWithNoConnectedWorker(t *
 	assert.Equal(t, "admin-counted", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
 }
 
-// Every username read that a later identity frame carries runs under the
-// owner's delivery lock: Connect's read after the registration and each
-// re-delivery's read. The lock is what keeps a read that started before a
-// rename from enqueuing after the rename's own re-delivery, so the worker can
-// never end up with the older name. The greeting read needs no lock, because
-// the greeting enqueues before any re-delivery can reach the connection.
+// Every username read runs under the owner's delivery lock: the greeting's read
+// and each re-delivery's read. The lock is what keeps a read that started before
+// a rename from enqueuing after the rename's own re-delivery, so the worker can
+// never end up with the older name.
 func TestWorkerIdentityReadsHoldTheOwnersDeliveryLock(t *testing.T) {
 	t.Parallel()
 
@@ -1112,8 +1193,227 @@ func TestWorkerIdentityReadsHoldTheOwnersDeliveryLock(t *testing.T) {
 	env.connector.RedeliverWorkerIdentity(owner)
 	require.Equal(t, "admin-locked", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
 
-	assert.Equal(t, []bool{false, true, true}, held.snapshot(),
-		"the greeting read, Connect's read after the registration, then the re-delivery's read")
+	assert.Equal(t, []bool{true, true}, held.snapshot(), "the greeting's read, then the re-delivery's read")
+	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(owner), "each critical section ended")
+}
+
+// Connect reads the owner's username under the owner's delivery lock. A read
+// that stalls holds the lock for at most the identity read timeout, so a
+// re-delivery for the same owner still completes. The user-info observers and
+// the revocation watcher run that re-delivery, so a stall that held the lock for
+// ever would stall them too.
+func TestConnect_AStalledGreetingReadReleasesTheOwnersDeliveryLock(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	stalled := make(chan struct{})
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return stallUserReadStore{Store: st, reads: new(atomic.Int64), stallRead: 1, stalled: stalled}
+	}, clock)
+	stream, worker := openAdminWorkerStream(t, env, "hub-identity-stall")
+	owner := worker.RegisteredBy
+
+	select {
+	case <-stalled:
+	case <-ctx.Done():
+		require.FailNow(t, "Connect never read the username for its greeting")
+	}
+	require.True(t, env.connector.IdentityDeliveryLockHeldForTest(owner),
+		"precondition: the stalled read holds the owner's delivery lock")
+
+	renameUser(t, env.store, owner, "admin-after-stall")
+	redelivered := make(chan struct{})
+	go func() {
+		defer close(redelivered)
+		env.connector.RedeliverWorkerIdentity(owner)
+	}()
+	// The re-delivery takes its snapshot inside the lock, so it waits here. One
+	// that took the snapshot first would find no connection and return, and the
+	// worker would keep the old name. A slow run can only miss that mistake, so
+	// this window cannot fail a correct build.
+	assert.Never(t, func() bool {
+		select {
+		case <-redelivered:
+			return true
+		default:
+			return false
+		}
+	}, 50*time.Millisecond, 5*time.Millisecond, "the re-delivery must wait for the greeting's critical section")
+	clock.Advance(service.WorkerIdentityReadTimeoutForTest).MustWait(ctx)
+	select {
+	case <-redelivered:
+	case <-ctx.Done():
+		require.FailNow(t, "the re-delivery still waits on the owner's delivery lock after the read timeout")
+	}
+
+	assert.Empty(t, nextWorkerIdentity(t, stream).GetRegisteredByUsername(),
+		"the stalled read greets with no username")
+	assert.Equal(t, "admin-after-stall", nextWorkerIdentity(t, stream).GetRegisteredByUsername(),
+		"the re-delivery waited for the registration, so it found the connection")
+}
+
+// A re-delivery reads the username under the owner's delivery lock too, and it
+// runs inside a user-info observer with no request context of its own. A read
+// that stalls must end at the identity read timeout, so the observer, and the
+// revocation watcher that runs it, does not wait for ever.
+func TestRedeliverWorkerIdentity_AStalledReadEndsAtTheReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	stalled := make(chan struct{})
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, func(st store.Store) store.Store {
+		// The first read is Connect's; the second is the re-delivery's.
+		return stallUserReadStore{Store: st, reads: new(atomic.Int64), stallRead: 2, stalled: stalled}
+	}, clock)
+	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-redeliver-stall")
+
+	redelivered := make(chan struct{})
+	go func() {
+		defer close(redelivered)
+		env.connector.RedeliverWorkerIdentity(owner)
+	}()
+	select {
+	case <-stalled:
+	case <-ctx.Done():
+		require.FailNow(t, "the re-delivery never read the username")
+	}
+	clock.Advance(service.WorkerIdentityReadTimeoutForTest).MustWait(ctx)
+	select {
+	case <-redelivered:
+	case <-ctx.Done():
+		require.FailNow(t, "the re-delivery still waits on its read after the read timeout")
+	}
+	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(owner), "the re-delivery released the owner's delivery lock")
+
+	// The stalled read sent nothing, and the next re-delivery still works.
+	renameUser(t, env.store, owner, "admin-after-redeliver-stall")
+	env.connector.RedeliverWorkerIdentity(owner)
+	assert.Equal(t, "admin-after-redeliver-stall", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
+}
+
+// A panic in Connect's greeting read must release the owner's delivery lock.
+// Otherwise every later delivery for the owners on that lock's stripe blocks for
+// ever. Nothing registered, so the worker stays offline.
+func TestConnect_APanicInTheGreetingReadUnlocks(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return panicUserReadStore{Store: st, reads: new(atomic.Int64), panicRead: 1}
+	})
+	stream, worker := openAdminWorkerStream(t, env, "hub-identity-panic")
+
+	_, err := stream.Receive()
+	require.Error(t, err, "the panic ends the stream before any frame")
+	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID), "nothing registered the connection")
+	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(worker.RegisteredBy),
+		"the panic must release the owner's delivery lock")
+}
+
+// A panic in Connect after the registration must undo the registration.
+// Otherwise the worker reads online through a connection that nobody drains.
+func TestConnect_APanicAfterTheRegistrationUnregisters(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return panicWorkerReadStore{Store: st}
+	})
+	stream, worker := openAdminWorkerStream(t, env, "hub-worker-read-panic")
+
+	// The teardown can still write the queued greeting before the stream
+	// ends, so read until the stream fails.
+	for {
+		if _, err := stream.Receive(); err != nil {
+			break
+		}
+	}
+	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID), "the panic must unregister the connection")
+	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(worker.RegisteredBy),
+		"the critical section ended with the registration")
+}
+
+// panicWorkerReadStore panics in the worker read that Connect makes after the
+// registration.
+type panicWorkerReadStore struct {
+	store.Store
+}
+
+func (s panicWorkerReadStore) Workers() store.WorkerStore {
+	return panicWorkerReadWorkers{WorkerStore: s.Store.Workers()}
+}
+
+type panicWorkerReadWorkers struct {
+	store.WorkerStore
+}
+
+func (panicWorkerReadWorkers) GetByIDIncludeDeleted(context.Context, string) (*store.Worker, error) {
+	panic("worker read panicked")
+}
+
+// stallUserReadStore blocks the connector's user read number stallRead by id
+// until that read's context ends, and closes stalled when the read starts.
+// Every other read passes through.
+type stallUserReadStore struct {
+	store.Store
+	reads     *atomic.Int64
+	stallRead int64
+	stalled   chan struct{}
+}
+
+func (s stallUserReadStore) Users() store.UserStore {
+	return stallUserReadUsers{UserStore: s.Store.Users(), stall: s}
+}
+
+type stallUserReadUsers struct {
+	store.UserStore
+	stall stallUserReadStore
+}
+
+func (u stallUserReadUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	if u.stall.reads.Add(1) != u.stall.stallRead {
+		return u.UserStore.GetByID(ctx, id)
+	}
+	close(u.stall.stalled)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// panicUserReadStore panics in the connector's user read number panicRead by
+// id. Every other read passes through.
+type panicUserReadStore struct {
+	store.Store
+	reads     *atomic.Int64
+	panicRead int64
+}
+
+func (s panicUserReadStore) Users() store.UserStore {
+	return panicUserReadUsers{UserStore: s.Store.Users(), reads: s.reads, panicRead: s.panicRead}
+}
+
+type panicUserReadUsers struct {
+	store.UserStore
+	reads     *atomic.Int64
+	panicRead int64
+}
+
+func (u panicUserReadUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
+	if u.reads.Add(1) == u.panicRead {
+		panic("user read panicked")
+	}
+	return u.UserStore.GetByID(ctx, id)
 }
 
 // lockObservations records, for each user read, whether the reader held the
@@ -1186,28 +1486,31 @@ type renameAfterFirstReadStore struct {
 	store.Store
 	renamed  *atomic.Bool
 	username string
+	// afterRename runs once, on the reader's goroutine, right after the rename
+	// commits.
+	afterRename func(owner string)
 }
 
 func (s renameAfterFirstReadStore) Users() store.UserStore {
-	return renameAfterFirstReadUsers{UserStore: s.Store.Users(), renamed: s.renamed, username: s.username}
+	return renameAfterFirstReadUsers{UserStore: s.Store.Users(), stub: s}
 }
 
 type renameAfterFirstReadUsers struct {
 	store.UserStore
-	renamed  *atomic.Bool
-	username string
+	stub renameAfterFirstReadStore
 }
 
 func (u renameAfterFirstReadUsers) GetByID(ctx context.Context, id string) (*store.User, error) {
 	user, err := u.UserStore.GetByID(ctx, id)
-	if err != nil || !u.renamed.CompareAndSwap(false, true) {
+	if err != nil || !u.stub.renamed.CompareAndSwap(false, true) {
 		return user, err
 	}
 	if err := u.UpdateProfile(ctx, store.UpdateUserProfileParams{
-		ID: id, Username: u.username, DisplayName: user.DisplayName,
+		ID: id, Username: u.stub.username, DisplayName: user.DisplayName,
 	}); err != nil {
 		return nil, err
 	}
+	u.stub.afterRename(id)
 	return user, nil
 }
 
@@ -1612,6 +1915,8 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 		"a Hub that is going away is Unavailable; Internal would read as a worker-side fault")
 	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID),
 		"the refused connection must never be published")
+	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(worker.RegisteredBy),
+		"a refused registration ends the critical section too")
 	require.NoError(t, stream.CloseSend())
 }
 
@@ -1772,16 +2077,17 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 }
 
 // subscribeUserEvents subscribes to userID's CRDT manager the way a
-// /ws/userevents connection does, with a filter that admits no workspace, and
-// returns the events it receives.
+// /ws/userevents connection whose credential holds worker:read does, with a
+// filter that admits no workspace, and returns the events it receives.
 func (e *regKeyEnv) subscribeUserEvents(t *testing.T, userID string) <-chan *leapmuxv1.WatchUserEvent {
 	t.Helper()
 	mgr, err := e.registry.Get(context.Background(), userID)
 	require.NoError(t, err)
 	events := make(chan *leapmuxv1.WatchUserEvent, 64)
 	_, unsub := mgr.Subscribe(&crdt.Subscriber{
-		UserID: userID,
-		Filter: crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}},
+		UserID:         userID,
+		Filter:         crdt.SubscriberFilter{WorkspaceIDs: map[string]bool{}},
+		MayReadWorkers: true,
 		Send: func(evt *crdt.MarshaledEvent) error {
 			events <- evt.Event
 			return nil
@@ -2008,8 +2314,13 @@ func TestRegisterRefusesAnIncompleteKeySetWithoutConsumingTheKey(t *testing.T) {
 	for name, keys := range map[string]*leapmuxv1.WorkerPublicKeys{
 		"keys absent":        nil,
 		"a short x25519 key": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:16] }),
-		"ML-KEM absent":      cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }),
-		"SLH-DSA absent":     cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }),
+		// The right size, but a low-order point: every handshake fails at its
+		// DH, so the pin would leave the worker unreachable.
+		"a low-order x25519 key": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) {
+			k.X25519 = make([]byte, contracts.X25519PublicKeySize)
+		}),
+		"ML-KEM absent":  cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }),
+		"SLH-DSA absent": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }),
 		"an oversized SLH-DSA key": cloneWith(func(k *leapmuxv1.WorkerPublicKeys) {
 			k.Slhdsa = append(k.Slhdsa, 0)
 		}),
@@ -2089,7 +2400,10 @@ func TestConnectTagsOnlyADeletedWorkerAsPermanent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	env := setupRegKeyEnv(t)
+	// A mock clock never fires the hello deadline by itself, so a refusal
+	// that waited for it would never come, and the deadline context below
+	// would fail the subtest instead.
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, nil, testutil.NewQuartzMock(t))
 	token := env.login(t, "admin", "admin123")
 	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
 		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
@@ -2130,17 +2444,10 @@ func TestConnectTagsOnlyADeletedWorkerAsPermanent(t *testing.T) {
 
 	t.Run("a deleted worker is tagged before any hello", func(t *testing.T) {
 		// Headers only: the refusal must not wait for the hello deadline,
-		// because the Hub reads nothing before it decides.
-		early, cancelEarly := context.WithTimeout(ctx, 5*time.Second)
-		defer cancelEarly()
-		streamCtx, streamInfo := connect.NewClientContext(early)
-		streamInfo.RequestHeader().Set("Authorization", "Bearer "+goneResp.GetAuthToken())
-		stream, err := connectorClient.Connect(streamCtx)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = stream.Close() })
-		require.NoError(t, stream.SendHeaders())
-
-		_, err = stream.Receive()
+		// because the Hub reads nothing before it decides. The env's mock
+		// clock never reaches that deadline.
+		stream := openStream(t, goneResp.GetAuthToken(), false)
+		_, err := stream.Receive()
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,

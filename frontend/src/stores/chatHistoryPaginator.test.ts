@@ -9,7 +9,11 @@ import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/ch
 const { listAgentMessages } = vi.hoisted(() => ({
   listAgentMessages: vi.fn(),
 }))
-vi.mock('~/api/workerRpc', () => ({ listAgentMessages }))
+vi.mock('~/api/workerRpc', () => ({
+  workerAgent: {
+    listAgentMessages,
+  },
+}))
 
 const { createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
 const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
@@ -635,7 +639,7 @@ describe('chatHistoryPaginator', () => {
       expect(h.state.tailFillDeferred.a).toBe(true)
     })
 
-    it('resumeDeferredTailFill no-ops when no deferral is armed', async () => {
+    it('makes resumeDeferredTailFill a no-op when no deferral is armed', async () => {
       const h = harness({
         messages: [
           makeMsg(1n),
@@ -659,7 +663,7 @@ describe('chatHistoryPaginator', () => {
       expect(h.state.tailFillDeferred.a).toBe(false)
     })
 
-    it('resumeDeferredTailFill resumes a parked fill and clears the deferral once the storm subsides', async () => {
+    it('resumes a parked fill in resumeDeferredTailFill and clears the deferral once the storm subsides', async () => {
       let caught = false
       const h = harness({
         messages: [
@@ -873,12 +877,6 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     expect(h.replaceBackgroundTasks).not.toHaveBeenCalled()
   })
 
-  /**
-   * The OTHER way the registry cannot be read. An absent in-band snapshot only
-   * travels on a response that arrived; when the call itself rejects, nothing applies the
-   * page at all -- and the section, which is hidden while empty, would leave the
-   * screen with nothing to say why.
-   */
   it('applies the to-do list only when the page carries its snapshot', async () => {
     const h = harness({ messages: [] })
     listAgentMessages.mockResolvedValue({
@@ -906,6 +904,12 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     expect(absent.replaceTodos, 'an absent snapshot leaves the list alone').not.toHaveBeenCalled()
   })
 
+  /**
+   * The OTHER way the registry cannot be read. An absent in-band snapshot only
+   * travels on a response that arrived; when the call itself rejects, nothing applies the
+   * page at all -- and the section, which is hidden while empty, would leave the
+   * screen with nothing to say why.
+   */
   it('records a failure when the cold-start call itself rejects', async () => {
     const h = harness({ messages: [] })
     listAgentMessages.mockRejectedValue(new Error('worker unreachable'))

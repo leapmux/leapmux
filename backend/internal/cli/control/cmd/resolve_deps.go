@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -24,9 +25,9 @@ import (
 // working_dir as best-effort.
 func resolveDeps(c *control.Client) resolve.Deps {
 	return resolve.Deps{
-		LocateTab: func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+		LocateTab: func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
 			var resp leapmuxv1.LocateTabResponse
-			if err := hubCallUnary(ctx, c, "LocateTab", &leapmuxv1.LocateTabRequest{TabType: tabType, TabId: tabID}, &resp); err != nil {
+			if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceLocateTabProcedure, &leapmuxv1.LocateTabRequest{TabType: tabType, TabId: tabID}, &resp); err != nil {
 				// The one failure the resolver must tell apart from every
 				// other: "the Hub has no placement for this id" rather than
 				// "the Hub could not be asked". A quake terminal is the id
@@ -39,21 +40,19 @@ func resolveDeps(c *control.Client) resolve.Deps {
 				// who may not see a tab learns nothing further by having the
 				// command fail here rather than at the worker.
 				if isNotFoundOrForbidden(err) {
-					return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
-						fmt.Errorf("%w: %w", resolve.ErrTabNotLocatable, err)
+					return nil, fmt.Errorf("%w: %w", resolve.ErrTabNotLocatable, err)
 				}
-				return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", err
+				return nil, err
 			}
-			t := resp.GetTab()
-			return t.GetTab().GetTabType(), t.GetWorkspaceId(), t.GetTileId(), t.GetWorkerId(), nil
+			return resp.GetTab(), nil
 		},
 		GetWorkspace: func(ctx context.Context, workspaceID string) error {
 			var resp leapmuxv1.GetWorkspaceResponse
-			return hubCallUnary(ctx, c, "GetWorkspace", &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp)
+			return hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure, &leapmuxv1.GetWorkspaceRequest{WorkspaceId: workspaceID}, &resp)
 		},
 		LocateTile: func(ctx context.Context, tileID string) (string, error) {
 			var resp leapmuxv1.LocateTileResponse
-			if err := hubCallUnary(ctx, c, "LocateTile", &leapmuxv1.LocateTileRequest{TileId: tileID}, &resp); err != nil {
+			if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceLocateTileProcedure, &leapmuxv1.LocateTileRequest{TileId: tileID}, &resp); err != nil {
 				return "", err
 			}
 			return resp.GetWorkspaceId(), nil

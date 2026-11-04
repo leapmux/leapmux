@@ -9,7 +9,7 @@ import (
 )
 
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
-func registerCleanupHandlers(d registrar, svc *Service) {
+func registerCleanupHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, dispatchTracked, handleCleanupWorkspace(svc))
 }
 
@@ -18,6 +18,10 @@ func registerCleanupHandlers(d registrar, svc *Service) {
 // The Hub supplies its owned tab set from inside the workspace deletion transaction.
 // This includes tabs that the rendered projection hides and tabs created before deletion commits.
 // The tracked handler lets shutdown wait until teardown completes.
+//
+// workspace:write alone authorizes the call, and CloseTab's per-type scopes do not
+// apply. That grant already stops these processes within seconds through a layout
+// close, an archive or a delete, so a per-type check here would only delay them.
 func handleCleanupWorkspace(svc *Service) func(_ context.Context, caller channel.Caller, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
 	return func(_ context.Context, caller channel.Caller, r *leapmuxv1.CleanupWorkspaceRequest, sender channel.ResponseWriter) {
 		for _, tab := range r.GetTabs() {

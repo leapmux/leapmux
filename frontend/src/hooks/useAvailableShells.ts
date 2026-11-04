@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
 import { createSignal } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTerminal } from '~/api/workerRpc'
 import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
 
 export interface UseAvailableShellsArgs {
@@ -66,11 +66,11 @@ export function useAvailableShells(
   // Every rule about WHEN to fetch, when to retry and when to clear lives in
   // `createWorkerScopedList`. This hook keeps only the state it stores: the
   // server default beside the list, and the user's explicit override.
-  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerRpc.listAvailableShells>>>({
+  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerTerminal.listAvailableShells>>>({
     workerId,
     enabled,
     args: () => ({}),
-    fetch: args => workerRpc.listAvailableShells(args.workerId, {}),
+    fetch: args => workerTerminal.listAvailableShells(args.workerId),
     applySuccess: (resp) => {
       setShells(resp.shells)
       setServerDefault(resp.defaultShell)

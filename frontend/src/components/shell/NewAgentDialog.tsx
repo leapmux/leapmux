@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { openAgentRequestOptions, providerFor } from '~/components/chat/providers/registry'
 import { resolveStartupOptionValues } from '~/components/chat/providers/startupOptions'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
@@ -136,7 +136,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     // an undefined value never silently rides the wire as proto enum 0.
     if (provider === undefined)
       throw new Error('No agent provider available')
-    const resp = await workerRpc.openAgent(worker.workerId(), {
+    const resp = await workerAgent.openAgent(worker.workerId(), {
       agentProvider: provider,
       // The CLEANED title: the worker applies the same rule to whatever
       // arrives, so sending the raw text would show one title here and store

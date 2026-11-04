@@ -1202,19 +1202,6 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 		assert.Empty(t, sc.GetStartupMessage())
 	})
 
-	t.Run("READY produces blank message and error", func(t *testing.T) {
-		sc := buildTerminalReadyStatus()
-		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, sc.GetStatus())
-		assert.Empty(t, sc.GetStartupError())
-		assert.Empty(t, sc.GetStartupMessage())
-	})
-
-	t.Run("EXITED produces blank message and error", func(t *testing.T) {
-		sc := buildTerminalExitedStatus()
-		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, sc.GetStatus())
-		assert.Empty(t, sc.GetStartupError())
-		assert.Empty(t, sc.GetStartupMessage())
-	})
 }
 
 // TestOpenAgent_StartupFailurePhaseCarriesGitStatus asserts that when

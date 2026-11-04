@@ -142,20 +142,19 @@ func isLocalhost(host string) bool {
 
 // TimeoutsValue groups the RPC timeout budget the hub advertises and
 // enforces. All hot: the timeout interceptor reads api_seconds per
-// request, and GetTimeouts reads the worker-facing pair.
+// request, and GetTimeouts reports api_seconds alone. The solo launcher
+// hands api_seconds and agent_startup_seconds to its bundled worker when it
+// starts it.
 type TimeoutsValue struct {
 	APITimeoutSeconds          int64 `json:"api_seconds,omitempty"`
 	AgentStartupTimeoutSeconds int64 `json:"agent_startup_seconds,omitempty"`
-	WorktreeCreateSecs         int64 `json:"worktree_create_seconds,omitempty"`
 }
 
 // DefaultTimeouts is the timeouts key's default: ten seconds per API
-// request, five minutes for an agent startup, one minute to create a
-// worktree.
+// request, five minutes for an agent startup.
 var DefaultTimeouts = TimeoutsValue{
 	APITimeoutSeconds:          10,
 	AgentStartupTimeoutSeconds: 300,
-	WorktreeCreateSecs:         60,
 }
 
 // APITimeout returns api_seconds as a duration.
@@ -166,11 +165,6 @@ func (v TimeoutsValue) APITimeout() time.Duration {
 // AgentStartupTimeout returns agent_startup_seconds as a duration.
 func (v TimeoutsValue) AgentStartupTimeout() time.Duration {
 	return time.Duration(v.AgentStartupTimeoutSeconds) * time.Second
-}
-
-// WorktreeCreateTimeout returns worktree_create_seconds as a duration.
-func (v TimeoutsValue) WorktreeCreateTimeout() time.Duration {
-	return time.Duration(v.WorktreeCreateSecs) * time.Second
 }
 
 // LimitsValue groups the per-user connection and worker caps. Both are
@@ -319,11 +313,11 @@ func validateSessionDuration(seconds int64) error {
 
 // MaxTimeoutSeconds caps every timeout budget at one day.
 //
-// The ceiling is what makes GetTimeouts safe: the RPC carries these as
-// int32 seconds, so an int64 the validator lets through would WRAP on the
-// narrowing conversion and hand the client an arbitrary — possibly
-// negative — timeout. A day is far past any real budget, so the cap costs
-// an operator nothing and removes the overflow entirely.
+// The ceiling is what makes GetTimeouts safe: the RPC carries
+// api_seconds as int32 seconds, so an int64 the validator lets through would
+// WRAP on the narrowing conversion and hand the client an arbitrary —
+// possibly negative — timeout. A day is far past any real budget, so the cap
+// costs an operator nothing and removes the overflow entirely.
 const MaxTimeoutSeconds = 86400
 
 // validateTimeouts keeps every budget strictly positive and inside the
@@ -337,7 +331,6 @@ func validateTimeouts(v TimeoutsValue) error {
 	}{
 		{"api timeout", v.APITimeoutSeconds},
 		{"agent startup timeout", v.AgentStartupTimeoutSeconds},
-		{"worktree create timeout", v.WorktreeCreateSecs},
 	} {
 		if f.value < 1 || f.value > MaxTimeoutSeconds {
 			return fmt.Errorf("%s must be between 1s and %ds (got %ds)", f.name, MaxTimeoutSeconds, f.value)
@@ -634,14 +627,13 @@ var (
 			WithUI(UIMeta{
 			Category: "limits",
 			Title:    "Timeouts",
-			Summary:  "API/agent-startup/worktree-create timeouts in seconds",
+			Summary:  "API and agent-startup timeouts in seconds",
 			Fields: []Field{
 				{Name: "api_seconds", Label: "API timeout", Kind: FieldInt,
 					Min: ptrconv.Ptr[int64](1), Max: ptrconv.Ptr[int64](MaxTimeoutSeconds), Unit: "seconds"},
 				{Name: "agent_startup_seconds", Label: "Agent startup timeout", Kind: FieldInt,
-					Min: ptrconv.Ptr[int64](1), Max: ptrconv.Ptr[int64](MaxTimeoutSeconds), Unit: "seconds"},
-				{Name: "worktree_create_seconds", Label: "Worktree create timeout", Kind: FieldInt,
-					Min: ptrconv.Ptr[int64](1), Max: ptrconv.Ptr[int64](MaxTimeoutSeconds), Unit: "seconds"},
+					Min: ptrconv.Ptr[int64](1), Max: ptrconv.Ptr[int64](MaxTimeoutSeconds), Unit: "seconds",
+					Help: "Applies to the worker that solo and dev run inside the hub. A standalone worker uses its --agent-startup-timeout flag."},
 			},
 		})
 

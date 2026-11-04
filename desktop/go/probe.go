@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 )
 
@@ -20,7 +21,9 @@ import (
 // connections with no owner that can close them.
 func probeHub(ctx context.Context, endpoint *hubtransport.Endpoint) error {
 	baseURL := strings.TrimRight(endpoint.BaseURL(), "/")
-	target := baseURL + "/leapmux.v1.SystemService/GetSystemInfo"
+	// The generated procedure path, so a renamed service or method fails to
+	// compile here instead of turning every probe into a 404.
+	target := baseURL + leapmuxv1connect.SystemServiceGetSystemInfoProcedure
 
 	// Pin redirects to the hub origin, the same as every other hub-directed
 	// client (see HubProxy in proxy.go). The hub URL arrives from the webview,

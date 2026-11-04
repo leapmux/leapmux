@@ -163,7 +163,10 @@ describe('channelInbound', () => {
       kind: {
         case: 'response',
         value: create(InnerRpcResponseSchema, {
-          payload: new Uint8Array([7]),
+          result: {
+            case: 'payload',
+            value: new Uint8Array([7]),
+          },
         }),
       },
     })
@@ -216,7 +219,10 @@ function responsePlaintext(): Uint8Array {
     kind: {
       case: 'response',
       value: create(InnerRpcResponseSchema, {
-        payload: new Uint8Array([7]),
+        result: {
+          case: 'payload',
+          value: new Uint8Array([7]),
+        },
       }),
     },
   }))

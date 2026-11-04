@@ -1,7 +1,7 @@
 import type { CollisionDetector, DragEventHandler } from '@thisbeyond/solid-dnd'
 import type { LucideIcon } from 'lucide-solid'
 import type { Accessor, Component } from 'solid-js'
-import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInputQueueSnapshot, QueuedAgentInput, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { closestCenter, DragDropProvider, SortableProvider } from '@thisbeyond/solid-dnd'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import ArrowUp from 'lucide-solid/icons/arrow-up'
@@ -20,13 +20,13 @@ import { DragHandle } from '~/components/common/DragHandle'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { GuardedPointerSensor } from '~/components/shell/guardedPointerSensor'
-import { AgentInputKind, AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import * as styles from './AgentInputQueue.css'
-import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
+import { dragIdOf, isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
 
 export interface AgentInputQueueProps {
   snapshot?: AgentInputQueueSnapshot
@@ -250,6 +250,9 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
   // no longer lifts only to snap back.
   const movableIds = createMemo(() => movableSegmentIds(items()))
   const headIndex = createMemo(() => queueHeadIndex(items()))
+  // The action the head row offers. The keyboard chord reads the same rule, so
+  // it cannot fire an action that the row hides.
+  const headAction = createMemo(() => queueHeadAction(props.queueHeadDispatch, items()))
 
   /**
    * Whether this key's row can be dragged, resolved through the LIVE queue.
@@ -441,19 +444,18 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
           {/*
             Steer and Preempt stay last, so the one button that still shows a
             word sits at the end of the row and the squares before it keep an
-            even rhythm. Exactly one of the two is ever offered: a provider
-            either injects into the running turn (Steer) or can only cancel it
-            (Preempt).
+            even rhythm. At most one of the two is offered: STEER offers Steer,
+            PREEMPT offers Preempt, and NONE offers neither.
 
             `canSteer` and `canPreempt` come from the Worker, which computes
             them with the same expression that the store's guards apply. The
             browser must never re-implement that precondition: a new input kind
             would then offer a button that the Worker refuses.
           */}
-          <Show when={isHead() && props.queueHeadDispatch === QueueHeadDispatch.STEER && item().canSteer}>
+          <Show when={isHead() && headAction()?.action === 'steer'}>
             <LabelledRowAction icon={SendHorizontal} label="Steer" tooltip="Steer" onClick={() => props.onSteer(item())} />
           </Show>
-          <Show when={isHead() && props.queueHeadDispatch === QueueHeadDispatch.PREEMPT && item().canPreempt}>
+          <Show when={isHead() && headAction()?.action === 'preempt'}>
             <LabelledRowAction
               icon={Zap}
               label="Preempt"

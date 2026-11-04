@@ -60,39 +60,44 @@ enum CaptchaProvider {
 
 message GetSystemInfoResponse {
   bool signup_enabled = 1;
-  bool solo_mode = 2;
-  BuildInfo build = 3; // the hub's build
-  bool oauth_enabled = 4; // true if at least one OAuth provider is configured and enabled
-  bool setup_required = 5; // true when no users exist (first-time setup needed)
+  BuildInfo build = 2; // the hub's build
+  bool oauth_enabled = 3; // true if at least one OAuth provider is configured and enabled
+  bool setup_required = 4; // true when no users exist (first-time setup needed)
   // URL the `leapmux worker --hub <url>` command should target. The hub
-  // populates it in two cases: an explicit public_url setting exists (e.g.
-  // behind a reverse proxy), or the hub has no TCP listener at all
-  // (desktop app's local-only mode, where the browser origin is
-  // `tauri://localhost` and the only viable URL is the unix-socket /
-  // named-pipe address). Empty otherwise — the caller should fall back
-  // to window.location.origin, which already reflects whatever proxy or
-  // hostname the user connects through.
-  string worker_hub_url = 6;
+  // populates it in two cases:
+  //   - An explicit public_url setting exists (e.g. behind a reverse proxy).
+  //   - The hub's configured bind set has no TCP address (the desktop app's
+  //     local-only mode, where the browser origin is `tauri://localhost`).
+  //     The hub then answers a TCP address that the extra_listen_addresses
+  //     setting added, if one exists, and otherwise the unix-socket /
+  //     named-pipe address, which a worker can always dial locally.
+  // Empty otherwise — the caller should fall back to window.location.origin,
+  // which already reflects whatever proxy or hostname the user connects
+  // through.
+  string worker_hub_url = 5;
   // True when the hub has SMTP configured (the smtp setting's host
   // non-empty). Frontend restriction: when false, the frontend hides the
   // "Send email" affordance on the worker registration dialog — calling
   // EmailRegistrationInstructions on a hub without SMTP returns
   // FailedPrecondition, so showing the button would mislead users.
-  bool email_enabled = 7;
-  // True when the hub requires captcha verification on Login, SignUp, and
-  // CompleteOAuthSignup. Always false in solo mode.
-  bool captcha_enabled = 8;
+  bool email_enabled = 6;
+  // True when the hub requires a captcha proof on its captcha-protected
+  // procedures: the expensive credential, recovery and verification calls
+  // that internal/hub/captcha lists (Login, SignUp, CompleteOAuthSignup, the
+  // passkey login and sign-up Begins, the account recovery calls,
+  // VerifyEmail and ResendVerificationEmail). Always false in solo mode.
+  bool captcha_enabled = 7;
   // Active ALTCHA algorithm name (e.g. "PBKDF2/SHA-256"), populated only
   // when captcha_provider is "altcha". Informational; the authoritative
   // parameters arrive with each GetAltchaChallenge response.
-  string altcha_algorithm = 9;
+  string altcha_algorithm = 8;
   // Active captcha provider. The hub reports ALTCHA by default; switching
   // providers is an admin CLI operation.
-  CaptchaProvider captcha_provider = 10;
+  CaptchaProvider captcha_provider = 9;
   // Public site key for external providers (recaptcha_v3 / turnstile);
   // empty for altcha. The frontend pairs it with captcha_provider to load
   // the right widget.
-  string captcha_site_key = 11;
+  string captcha_site_key = 10;
   // True when passkey ceremonies can run for THE BROWSER THAT ASKED: a
   // keystore is configured, the hub has a usable browser origin (public_url
   // or a TCP listener), and the request's Origin header identifies an
@@ -108,11 +113,12 @@ message GetSystemInfoResponse {
   // The origin half matters on its own. A hub published at one address and
   // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
   // is configured for passkeys and still runs none for that page.
-  bool passkey_enabled = 12;
+  bool passkey_enabled = 11;
   // The access state for this connection. This value separates local IPC,
   // restricted TCP setup, and ordinary TCP sign-in without two booleans that
-  // can describe an invalid combination.
-  SoloAccess solo_access = 13;
+  // can describe an invalid combination. SOLO_ACCESS_UNSPECIFIED means the
+  // hub is not a solo hub, so this field is also the one solo-mode signal.
+  SoloAccess solo_access = 12;
   // True when the single account holds a password that can sign in. Solo
   // mode only; false on a multi-user hub, where each account answers for
   // itself.
@@ -122,5 +128,5 @@ message GetSystemInfoResponse {
   // Account → Password once it is true. It answers for the HUB -- whether a
   // network address can be signed in to at all, which is the question that
   // panel asks. An account's own password is User.password_set.
-  bool solo_password_set = 14;
+  bool solo_password_set = 13;
 }

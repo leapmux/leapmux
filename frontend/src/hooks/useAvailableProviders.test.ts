@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { deferred, flush } from '~/test-support/async'
 
-const listAvailableProviders = vi.fn<(workerId: string, opts?: { signal?: AbortSignal }) => Promise<ListAvailableProvidersResponse>>()
+const listAvailableProviders = vi.fn<(workerId: string, req: object, opts: { signal?: AbortSignal }) => Promise<ListAvailableProvidersResponse>>()
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableProviders: (workerId: string, opts?: { signal?: AbortSignal }) =>
-    listAvailableProviders(workerId, opts),
+  workerAgent: {
+    listAvailableProviders: (workerId: string, req: object, opts: { signal?: AbortSignal }) =>
+      listAvailableProviders(workerId, req, opts),
+  },
 }))
 
 const { useAvailableProviders } = await import('./useAvailableProviders')
@@ -48,7 +50,13 @@ describe('useAvailableProviders', () => {
         setWorkerId('A')
         await flush()
         expect(listAvailableProviders).toHaveBeenCalledTimes(1)
-        expect(listAvailableProviders.mock.calls[0]?.[0]).toBe('A')
+        expect(listAvailableProviders.mock.calls[0]).toEqual([
+          'A',
+          {},
+          {
+            signal: expect.any(AbortSignal),
+          },
+        ])
         expect(hook.providers()).toEqual([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX])
         expect(hook.loading()).toBe(false)
         dispose()

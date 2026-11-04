@@ -1,10 +1,11 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from './channel'
 import type { KeyPinConfirmFn } from './keyPinStore'
 import type { Session } from './noise'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { beforeEach, expect, vi } from 'vitest'
-import { DEFAULT_MAX_MESSAGE_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
+import { DEFAULT_MAX_MESSAGE_SIZE, MLKEM_PUBLIC_KEY_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import {
   ChannelMessageSchema,
   EncryptionMode,
@@ -286,9 +287,9 @@ export function createMockTransport(
       // since we mock initiatorHandshake1/2.
       return {
         keys: {
-          x25519PublicKey: new Uint8Array(32),
-          mlkemPublicKey: new Uint8Array(1568),
-          slhdsaPublicKey: new Uint8Array(64),
+          x25519PublicKey: new Uint8Array(X25519_PUBLIC_KEY_SIZE),
+          mlkemPublicKey: new Uint8Array(MLKEM_PUBLIC_KEY_SIZE),
+          slhdsaPublicKey: new Uint8Array(SLHDSA_PUBLIC_KEY_SIZE),
         },
         encryptionMode: EncryptionMode.POST_QUANTUM,
       }
@@ -471,7 +472,7 @@ export class ChannelManagerTestHarness {
   sendResponseFromWorker(channelId: string, requestId: number, payload: Uint8Array) {
     const pair = sessions.get(channelId)!
     const resp = create(InnerRpcResponseSchema, {
-      payload,
+      result: { case: 'payload', value: payload },
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -484,7 +485,10 @@ export class ChannelManagerTestHarness {
   sendErrorResponseFromWorker(channelId: string, requestId: number, errorMessage: string) {
     const pair = sessions.get(channelId)!
     const resp = create(InnerRpcResponseSchema, {
-      error: { code: 2, message: errorMessage },
+      result: {
+        case: 'error',
+        value: { code: 2, message: errorMessage },
+      },
     })
     const envelope = create(InnerMessageSchema, {
       kind: { case: 'response', value: resp },
@@ -590,14 +594,17 @@ export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: str
  */
 export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: string, message: string) {
   simulatePingResponseOnWs(ws, channelId, {
-    error: { code: 2, message },
+    result: {
+      case: 'error',
+      value: { code: 2, message },
+    },
   })
 }
 
 function simulatePingResponseOnWs(
   ws: AutoOpenMockWebSocket,
   channelId: string,
-  response: { error?: { code: number, message: string } },
+  response: MessageInitShape<typeof InnerRpcResponseSchema>,
 ): void {
   const resp = create(InnerRpcResponseSchema, response)
   const envelope = create(InnerMessageSchema, {

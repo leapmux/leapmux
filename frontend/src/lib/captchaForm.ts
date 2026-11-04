@@ -5,7 +5,7 @@ import { isCaptchaEnabled, isCaptchaUnsolvableHere, isSystemInfoLoaded, refreshS
 
 /**
  * The request field every protected request carries: one `CaptchaProof`. A
- * caller spreads it into the request, so a protected request names the proof
+ * caller spreads it into the request, so a protected request carries the proof
  * once rather than its two parts.
  */
 export interface CaptchaRequestFields {

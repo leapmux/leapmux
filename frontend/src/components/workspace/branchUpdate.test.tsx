@@ -101,7 +101,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
     expect(store.get(repoKey('w1', '/repo'))?.branch).toBe('A')
   })
 
-  it('buildTree re-runs reactively when the repo branch changes', () => {
+  it('re-runs buildTree reactively when the repo branch changes', () => {
     createRoot((dispose) => {
       const store = createRepoGitStore()
       const tabs = [

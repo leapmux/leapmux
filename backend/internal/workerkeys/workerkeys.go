@@ -9,7 +9,6 @@ package workerkeys
 
 import (
 	"bytes"
-	"crypto/mlkem"
 	"errors"
 	"fmt"
 
@@ -21,29 +20,14 @@ import (
 //
 // A set is complete or it is nothing: all three keys are the Worker's identity,
 // whatever handshake the connection later negotiates, so a partial set is
-// always refused. The ML-KEM key is also parsed here, because a correctly sized
-// key whose coefficients are out of range is one every post-quantum handshake
-// will refuse — and a pin can never change afterwards.
+// always refused. A correctly sized key can still be one that every handshake
+// refuses, and a pin can never change afterwards.
+// noise.ValidateStaticPublicKeys states what the handshake requires of each key.
 func Validate(keys *leapmuxv1.WorkerPublicKeys) error {
 	if keys == nil {
 		return errors.New("the worker public keys are missing")
 	}
-	x25519 := keys.GetX25519()
-	if len(x25519) != noise.EphemeralPublicKeySize {
-		return fmt.Errorf("worker x25519 public key is %d bytes, want %d", len(x25519), noise.EphemeralPublicKeySize)
-	}
-	mlkemKey := keys.GetMlkem()
-	if len(mlkemKey) != noise.MlkemPublicKeySize {
-		return fmt.Errorf("worker mlkem public key is %d bytes, want %d", len(mlkemKey), noise.MlkemPublicKeySize)
-	}
-	if _, err := mlkem.NewEncapsulationKey1024(mlkemKey); err != nil {
-		return fmt.Errorf("worker mlkem public key is not a valid ML-KEM-1024 encapsulation key: %w", err)
-	}
-	slhdsa := keys.GetSlhdsa()
-	if len(slhdsa) != noise.SlhdsaPublicKeySize {
-		return fmt.Errorf("worker slhdsa public key is %d bytes, want %d", len(slhdsa), noise.SlhdsaPublicKeySize)
-	}
-	return nil
+	return noise.ValidateStaticPublicKeys(keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa())
 }
 
 // Of returns the wire public keys of a composite keypair.
@@ -74,9 +58,9 @@ func Of(ck *noise.CompositeKeypair) (*leapmuxv1.WorkerPublicKeys, error) {
 
 // Equal reports whether two sets hold the same three keys.
 //
-// It compares the fields, not the messages: proto.Equal also compares unknown
-// fields, which would refuse a newer Worker for ever while only three columns
-// are stored.
+// The key set is the three keys, and an unknown field is not part of it, so
+// Equal compares the three fields, not the messages: proto.Equal also compares
+// unknown fields.
 func Equal(a, b *leapmuxv1.WorkerPublicKeys) bool {
 	return bytes.Equal(a.GetX25519(), b.GetX25519()) &&
 		bytes.Equal(a.GetMlkem(), b.GetMlkem()) &&

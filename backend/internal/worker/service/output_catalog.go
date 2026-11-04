@@ -150,9 +150,11 @@ func (sink *agentOutputSink) buildStatusChange(row db.Agent, status leapmuxv1.Ag
 		(row.ClosedAt.Valid || sink.h.agentClosing != nil && sink.h.agentClosing(sink.rootAgentID)) {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	}
+	// After the downgrade above, so a closing agent's INACTIVE status cannot
+	// offer STEER or PREEMPT: an agent that does not run answers NONE.
 	dispatch := leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE
 	if sink.h.queueHeadDispatch != nil {
-		dispatch = sink.h.queueHeadDispatch(sink.agentID)
+		dispatch = sink.h.queueHeadDispatch(&row, status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE)
 	}
 	return &leapmuxv1.AgentStatusChange{
 		Status: status, AgentSessionId: sessionID,

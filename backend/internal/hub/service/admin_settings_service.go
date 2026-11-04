@@ -206,22 +206,14 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv
 	}); err != nil {
 		return nil, err
 	}
-	// One snapshot for the whole reply: every value the caller listed comes
-	// from the same post-write view, so two keys of one transaction cannot
-	// be reported from different moments.
-	snap := s.set.Snapshot(ctx)
-	values := make([]*leapmuxv1.SettingValue, 0, len(writes))
-	var restartKeys []string
+	descs := make([]settings.Descriptor, 0, len(writes))
 	for _, w := range writes {
-		values = append(values, s.settingValueToProto(snap, w.Desc))
-		// The manager stores the write, but a restart-class key keeps its
-		// previous value in this process until it restarts. Report that here
-		// rather than leave the caller to look the descriptor up again.
-		if w.Desc.Propagation() == settings.PropagationRestart {
-			restartKeys = append(restartKeys, w.Desc.Name())
-		}
+		descs = append(descs, w.Desc)
 	}
-	return &leapmuxv1.UpdateSettingsResponse{Values: values, RestartKeys: restartKeys}, nil
+	return &leapmuxv1.UpdateSettingsResponse{
+		Values:      s.settingValuesToProto(ctx, descs),
+		RestartKeys: restartKeysOf(descs),
+	}, nil
 }
 
 // ResetSettings clears one or more keys in ONE transaction.
@@ -246,18 +238,42 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *leapmuxv1
 	}); err != nil {
 		return nil, err
 	}
-	// One snapshot for the whole reply, so two keys of one transaction
-	// cannot be reported from different moments.
+	return &leapmuxv1.ResetSettingsResponse{
+		Values:      s.settingValuesToProto(ctx, descs),
+		RestartKeys: restartKeysOf(descs),
+	}, nil
+}
+
+// settingValuesToProto answers the resulting value of every written key, in
+// request order. One snapshot serves the whole reply, so two keys of one
+// transaction cannot be reported from different moments.
+func (s *AdminSettingsService) settingValuesToProto(ctx context.Context, descs []settings.Descriptor) []*leapmuxv1.SettingValue {
 	snap := s.set.Snapshot(ctx)
 	values := make([]*leapmuxv1.SettingValue, 0, len(descs))
 	for _, desc := range descs {
 		values = append(values, s.settingValueToProto(snap, desc))
 	}
-	return &leapmuxv1.ResetSettingsResponse{Values: values}, nil
+	return values
 }
 
-// runAfterReset runs each reset key's post-reset step. Both reset handlers
-// share it, so the rule holds whichever verb the caller used.
+// restartKeysOf lists the written keys that are restart-class. The manager
+// stores such a write, but this process keeps the previous value until it
+// restarts, so both write verbs report it rather than leave the caller to
+// look each descriptor up again.
+func restartKeysOf(descs []settings.Descriptor) []string {
+	var keys []string
+	for _, desc := range descs {
+		if desc.Propagation() == settings.PropagationRestart {
+			keys = append(keys, desc.Name())
+		}
+	}
+	return keys
+}
+
+// runAfterReset runs each reset key's post-reset step. ResetSettings is its
+// one caller, and it runs the step inside the elevated write: the post-reset
+// step is PART of the write, because a reset is not complete until it ran, so
+// a failure there must not count as use of the elevation window either.
 //
 // The steps belong to the KEYS, registered at the hub's wiring site
 // (settings.WithAfterReset). The ALTCHA signing key is the one that has a

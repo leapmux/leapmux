@@ -123,7 +123,8 @@ func RunTerminalGet(rawCtx any, args []string) error {
 // the user would see on the live terminal.
 //
 // status is rendered through terminalStatusName so the envelope shows
-// "ready" / "starting" / etc. instead of an opaque integer ordinal.
+// "ready" / "starting" / etc. instead of an opaque integer ordinal. It is the
+// one key that states the lifecycle of the terminal.
 func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
 	gs := t.GetGitStatus()
 	return map[string]any{
@@ -132,7 +133,6 @@ func terminalInfoToMap(t *leapmuxv1.TerminalInfo) map[string]any {
 		"rows":              t.GetRows(),
 		"screen":            string(t.GetScreen()),
 		"screen_end_offset": t.GetScreenEndOffset(),
-		"exited":            t.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
 		"working_dir":       t.GetWorkingDir(),
 		"shell_start_dir":   t.GetShellStartDir(),
 		"git_branch":        gs.GetBranch(),

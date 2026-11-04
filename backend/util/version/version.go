@@ -57,15 +57,25 @@ func BuildInfoProto() *leapmuxv1.BuildInfo {
 //     Release vs. unreleased is encoded by Value's "-dev" suffix.
 //   - BuildTime is formatted in the local timezone when set.
 func Format() string {
-	parts := []string{Value}
-	if CommitHash != "" {
-		parts = append(parts, CommitHash)
+	return FormatBuild(BuildInfoProto())
+}
+
+// FormatBuild is Format for a build that any binary reported, such as a worker's
+// system information. A field that the report leaves empty is omitted, the
+// version included, and a nil build formats as "".
+func FormatBuild(b *leapmuxv1.BuildInfo) string {
+	parts := make([]string, 0, 4)
+	if version := b.GetVersion(); version != "" {
+		parts = append(parts, version)
 	}
-	if Branch != "" && Branch != "main" {
-		parts = append(parts, Branch)
+	if commit := b.GetCommitHash(); commit != "" {
+		parts = append(parts, commit)
 	}
-	if BuildTime != "" {
-		parts = append(parts, FormatLocalTimestamp(BuildTime))
+	if branch := b.GetBranch(); branch != "" && branch != "main" {
+		parts = append(parts, branch)
+	}
+	if buildTime := b.GetBuildTime(); buildTime != "" {
+		parts = append(parts, FormatLocalTimestamp(buildTime))
 	}
 	return strings.Join(parts, " · ")
 }

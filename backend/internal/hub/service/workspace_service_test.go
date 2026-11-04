@@ -75,7 +75,7 @@ func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T)
 	// is what removed the caller's own pre-delete read -- and with it a race, a
 	// swallowed error, and a projection subset that hid tabs entirely.
 	tabs := resp.GetWorkerTabs()[0].GetTabs()
-	require.Len(t, tabs, 1, "the response must name the tabs the worker has to tear down, and only those")
+	require.Len(t, tabs, 1, "the response must list the tabs the worker has to tear down, and only those")
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, tabs[0].GetTabType())
 	assert.Equal(t, "tab-owner", tabs[0].GetTabId(), "the stranger's tab is not the owner's worker's to tear down")
 }
@@ -406,9 +406,18 @@ func newMoveWorkspaceEnv(t *testing.T, username string) moveWorkspaceEnv {
 	return env
 }
 
-func (e moveWorkspaceEnv) move(ctx context.Context, sectionID, position string) error {
+// The archive states a caller can hold for a workspace, as MoveWorkspace's
+// expected_archive_state carries them.
+const (
+	expectActive   = leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE
+	expectArchived = leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
+)
+
+// move asks the hub to move the env's workspace, stating `expected` as the
+// archive state that the caller holds for it.
+func (e moveWorkspaceEnv) move(ctx context.Context, sectionID, position string, expected leapmuxv1.WorkspaceArchiveState) error {
 	_, err := e.svc.MoveWorkspace(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: e.workspaceID, SectionId: sectionID, Position: position,
+		WorkspaceId: e.workspaceID, SectionId: sectionID, Position: position, ExpectedArchiveState: expected,
 	})
 	return err
 }
@@ -430,8 +439,8 @@ func (e moveWorkspaceEnv) bearerCtx() context.Context {
 
 // The destination section decides the archive state, and the Hub owns the
 // Worker delivery, so the nudge set IS the observable: every worker hosting one
-// of the workspace's tabs is told once per move, including the one that hosts
-// only a payload-backed tab.
+// of the workspace's tabs is told once per move that crosses the archive
+// boundary, including the one that hosts only a payload-backed tab.
 func TestWorkspaceService_MoveWorkspace_ArchivesAndUnarchivesByTheSectionTypeAndNudges(t *testing.T) {
 	t.Parallel()
 	env := newMoveWorkspaceEnv(t, "move-archive")
@@ -445,7 +454,7 @@ func TestWorkspaceService_MoveWorkspace_ArchivesAndUnarchivesByTheSectionTypeAnd
 		UserID: env.owner, WorkspaceID: existingActive, SectionID: env.inProgressID, Position: "y",
 	}))
 
-	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, ""))
+	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, "", expectActive))
 	archived := env.item(t)
 	assert.Equal(t, env.archivedID, archived.SectionID, "into Archived archives the workspace")
 	// The rank sorts after the destination's tail; its exact spelling carries a
@@ -453,33 +462,51 @@ func TestWorkspaceService_MoveWorkspace_ArchivesAndUnarchivesByTheSectionTypeAnd
 	assert.Greater(t, archived.Position, "x", "an empty position appends after the destination tail")
 	assert.ElementsMatch(t, []string{env.workerA, env.workerB}, env.nudges.snapshot())
 
-	// A repeat is the caller's remedy after a Worker missed its nudge, so it
-	// must nudge every one again, and must not move the workspace again, or
-	// every retry would reorder the sidebar.
-	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, ""))
-	assert.Len(t, env.nudges.snapshot(), 4, "a repeat nudges every affected Worker again")
+	// A repeat changes no archive state, so it has nothing to deliver. It also
+	// must not move the workspace again, or every repeat would reorder the
+	// sidebar.
+	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, "", expectArchived))
+	assert.Len(t, env.nudges.snapshot(), 2, "a repeat adds no nudge")
 	assert.Equal(t, archived.Position, env.item(t).Position, "a repeat keeps the workspace's rank")
 
-	require.NoError(t, env.move(env.ownerCtx(), env.inProgressID, ""))
-	assert.Len(t, env.nudges.snapshot(), 6, "out of Archived nudges every affected Worker too")
+	require.NoError(t, env.move(env.ownerCtx(), env.inProgressID, "", expectArchived))
+	assert.Len(t, env.nudges.snapshot(), 4, "out of Archived nudges every affected Worker too")
 	unarchived := env.item(t)
 	assert.Equal(t, env.inProgressID, unarchived.SectionID, "out of Archived unarchives the workspace")
 	assert.Greater(t, unarchived.Position, "y")
 }
 
 // A move that stays on one side of the archive boundary still places the
-// workspace exactly where the caller asked, and still nudges each hosting
-// worker once: the nudge carries the archive state, and a repeat is the
-// recovery path.
-func TestWorkspaceService_MoveWorkspace_SameSideSetsThePositionAndNudgesOnce(t *testing.T) {
+// workspace exactly where the caller asked, and nudges nobody: it changes no
+// archive state, so no Worker has anything to apply.
+func TestWorkspaceService_MoveWorkspace_SameSideSetsThePositionAndNudgesNobody(t *testing.T) {
 	t.Parallel()
 	env := newMoveWorkspaceEnv(t, "move-same-side")
 
-	require.NoError(t, env.move(env.ownerCtx(), env.customID, "q"))
+	require.NoError(t, env.move(env.ownerCtx(), env.customID, "q", expectActive))
 	item := env.item(t)
 	assert.Equal(t, env.customID, item.SectionID)
 	assert.Equal(t, "q", item.Position, "an explicit rank is used verbatim, so a drop keeps its place")
-	assert.ElementsMatch(t, []string{env.workerA, env.workerB}, env.nudges.snapshot())
+	assert.Empty(t, env.nudges.snapshot(), "a reorder costs no reconcile pass")
+
+	placeWorkspaceInSection(t, env.st, env.owner.String(), env.workspaceID, env.archivedID)
+	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, "r", expectArchived))
+	assert.Equal(t, "r", env.item(t).Position, "a reorder inside Archived moves the workspace too")
+	assert.Empty(t, env.nudges.snapshot(), "a reorder inside Archived costs no reconcile pass")
+}
+
+// A move that stays on one side costs no tab read: the failing read below stays
+// unreached, so the move succeeds.
+func TestWorkspaceService_MoveWorkspace_SameSideReadsNoTabs(t *testing.T) {
+	t.Parallel()
+	env := newMoveWorkspaceEnv(t, "move-same-side-no-read")
+	svc := service.NewWorkspaceService(archiveFailureStore{Store: env.st, failTabs: true}, nil, env.nudges)
+
+	_, err := svc.MoveWorkspace(env.ownerCtx(), &leapmuxv1.MoveWorkspaceRequest{
+		WorkspaceId: env.workspaceID, SectionId: env.customID, Position: "q", ExpectedArchiveState: expectActive,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, env.customID, env.item(t).SectionID)
 }
 
 // "Move to <custom section>" on an archived workspace is ONE transaction: it
@@ -490,7 +517,7 @@ func TestWorkspaceService_MoveWorkspace_UnarchivesStraightIntoACustomSection(t *
 	env := newMoveWorkspaceEnv(t, "move-unarchive-custom")
 	placeWorkspaceInSection(t, env.st, env.owner.String(), env.workspaceID, env.archivedID)
 
-	require.NoError(t, env.move(env.ownerCtx(), env.customID, "q"))
+	require.NoError(t, env.move(env.ownerCtx(), env.customID, "q", expectArchived))
 	item := env.item(t)
 	assert.Equal(t, env.customID, item.SectionID, "the workspace lands where the caller asked, not in In progress")
 	assert.Equal(t, "q", item.Position)
@@ -503,14 +530,15 @@ func TestWorkspaceService_MoveWorkspace_RefusesADelegationBearerOnlyAcrossTheArc
 	t.Parallel()
 	env := newMoveWorkspaceEnv(t, "move-bearer")
 
-	require.NoError(t, env.move(env.bearerCtx(), env.customID, "q"), "a same-side move is allowed")
+	require.NoError(t, env.move(env.bearerCtx(), env.customID, "q", expectActive), "a same-side move is allowed")
 	assert.Equal(t, env.customID, env.item(t).SectionID)
+	assert.Empty(t, env.nudges.snapshot(), "a bearer's same-side move reaches no worker")
 
-	err := env.move(env.bearerCtx(), env.archivedID, "")
+	err := env.move(env.bearerCtx(), env.archivedID, "", expectActive)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Equal(t, env.customID, env.item(t).SectionID, "a refused move moves nothing")
-	assert.Len(t, env.nudges.snapshot(), 2, "a refused move nudges nobody")
+	assert.Empty(t, env.nudges.snapshot(), "a refused move nudges nobody")
 }
 
 func TestWorkspaceService_MoveWorkspace_RefusesABadDestination(t *testing.T) {
@@ -531,10 +559,67 @@ func TestWorkspaceService_MoveWorkspace_RefusesABadDestination(t *testing.T) {
 		{"another user's section", strangerSection, connect.CodeNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := env.move(env.ownerCtx(), tc.sectionID, "")
+			err := env.move(env.ownerCtx(), tc.sectionID, "", expectActive)
 			require.Error(t, err)
 			assert.Equal(t, tc.want, connect.CodeOf(err))
 			assert.Equal(t, env.inProgressID, env.item(t).SectionID, "a refused destination moves nothing")
+		})
+	}
+	assert.Empty(t, env.nudges.snapshot(), "a refused move nudges nobody")
+}
+
+// No event tells other clients about a section move, so a client's sidebar can
+// hold an archive state that another device already changed. The destination
+// decides the archive state, so a drop from that stale sidebar would silently
+// archive or unarchive the workspace, and stop or resume its processes. The
+// caller therefore states the archive state it holds, and the hub refuses the
+// move when the stored state differs.
+func TestWorkspaceService_MoveWorkspace_RefusesAStaleArchiveState(t *testing.T) {
+	t.Parallel()
+	env := newMoveWorkspaceEnv(t, "move-stale-state")
+
+	require.NoError(t, env.move(env.ownerCtx(), env.archivedID, "", expectActive))
+	require.Equal(t, env.archivedID, env.item(t).SectionID)
+	nudgesAfterArchive := len(env.nudges.snapshot())
+
+	// A second device still shows the workspace active, and its user drops it
+	// into In progress: a reorder in that device's view, an unarchive in fact.
+	err := env.move(env.ownerCtx(), env.inProgressID, "q", expectActive)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, env.archivedID, env.item(t).SectionID, "a refused move leaves the workspace archived")
+	assert.Len(t, env.nudges.snapshot(), nudgesAfterArchive, "a refused move nudges nobody")
+
+	// The same holds in the other direction: a device that still shows the
+	// workspace archived cannot archive it into a custom section by a reorder.
+	require.NoError(t, env.move(env.ownerCtx(), env.inProgressID, "", expectArchived))
+	nudgesAfterUnarchive := len(env.nudges.snapshot())
+	err = env.move(env.ownerCtx(), env.customID, "q", expectArchived)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Equal(t, env.inProgressID, env.item(t).SectionID, "a refused move leaves the workspace where it was")
+	assert.Len(t, env.nudges.snapshot(), nudgesAfterUnarchive, "a refused move nudges nobody")
+}
+
+// The expected archive state is required. A caller that sends none, or a value
+// that is neither ACTIVE nor ARCHIVED, states nothing the hub can compare, so
+// the hub refuses the request before it reads any state.
+func TestWorkspaceService_MoveWorkspace_RefusesAMissingExpectedArchiveState(t *testing.T) {
+	t.Parallel()
+	env := newMoveWorkspaceEnv(t, "move-missing-state")
+
+	for _, tc := range []struct {
+		name     string
+		expected leapmuxv1.WorkspaceArchiveState
+	}{
+		{"UNSPECIFIED", leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED},
+		{"a value the enum does not declare", leapmuxv1.WorkspaceArchiveState(99)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := env.move(env.ownerCtx(), env.archivedID, "", tc.expected)
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+			assert.Equal(t, env.inProgressID, env.item(t).SectionID, "a refused move moves nothing")
 		})
 	}
 	assert.Empty(t, env.nudges.snapshot(), "a refused move nudges nobody")
@@ -570,8 +655,9 @@ func TestWorkspaceService_MoveWorkspace_ConcurrentMovesGetDistinctRanks(t *testi
 			UserID: owner, WorkspaceID: workspaceID, SectionID: inProgressID, Position: "n",
 		}))
 		_, err := svc.MoveWorkspace(authCtx, &leapmuxv1.MoveWorkspaceRequest{
-			WorkspaceId: workspaceID,
-			SectionId:   archivedID,
+			WorkspaceId:          workspaceID,
+			SectionId:            archivedID,
+			ExpectedArchiveState: expectActive,
 		})
 		require.NoError(t, err)
 		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
@@ -603,8 +689,9 @@ func TestWorkspaceService_MoveWorkspace_RefusesForeignWorkspace(t *testing.T) {
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(stranger.ID)})
 
 	_, err := svc.MoveWorkspace(ctx, &leapmuxv1.MoveWorkspaceRequest{
-		WorkspaceId: workspaceID,
-		SectionId:   sectionIDOfType(t, st, stranger.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED),
+		WorkspaceId:          workspaceID,
+		SectionId:            sectionIDOfType(t, st, stranger.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED),
+		ExpectedArchiveState: expectActive,
 	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -680,8 +767,9 @@ func TestWorkspaceService_MoveWorkspace_RollsBackTransactionFailures(t *testing.
 			ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: owner})
 
 			_, err := svc.MoveWorkspace(ctx, &leapmuxv1.MoveWorkspaceRequest{
-				WorkspaceId: workspaceID,
-				SectionId:   sectionIDOfType(t, base, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED),
+				WorkspaceId:          workspaceID,
+				SectionId:            sectionIDOfType(t, base, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED),
+				ExpectedArchiveState: expectActive,
 			})
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))

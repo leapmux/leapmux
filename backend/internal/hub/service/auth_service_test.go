@@ -62,7 +62,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed
 	}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
@@ -1837,6 +1837,41 @@ func TestLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
 	require.NotNil(t, loginResp.GetSessionReport().GetEmailVerification().GetNextResendAvailableAt())
 }
 
+// A sign-in can mint the account's pending verification row: an account that
+// signed up with an unverified address before SMTP was configured has none.
+// The account that the sign-in reports must then hold the pending address,
+// exactly as GetCurrentUser reports it.
+func TestLogin_ReportsThePendingAddressItsVerificationMinted(t *testing.T) {
+	t.Parallel()
+
+	client, st, set := setupAuthTestServer(t, testConfig(), enableSignup)
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+		Username:    "lateverify",
+		Password:    "password123",
+		DisplayName: "Late Verify",
+		Email:       "late@example.com",
+	})
+	require.NoError(t, err)
+	before, err := st.Users().GetByUsername(context.Background(), "lateverify")
+	require.NoError(t, err)
+	require.Empty(t, before.PendingEmail, "precondition: the sign-up left no pending row")
+	enableEmailVerification(t, set)
+
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	loginResp, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{Username: "lateverify", Password: "password123"})
+	require.NoError(t, err)
+
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie")))
+	current, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
+	require.NoError(t, err)
+	require.Equal(t, "late@example.com", current.GetSessionReport().GetUser().GetPendingEmail(),
+		"precondition: the sign-in minted the pending row")
+	assert.Equal(t, current.GetSessionReport().GetUser().GetPendingEmail(),
+		loginResp.GetSessionReport().GetUser().GetPendingEmail(),
+		"the sign-in reports the pending address that GetCurrentUser reports")
+}
+
 func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	t.Parallel()
 
@@ -1886,6 +1921,41 @@ func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *
 	assert.True(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationRequired())
 	assert.False(t, loginResp.GetSessionReport().GetEmailVerification().GetVerificationEmailSent())
 	require.NotNil(t, loginResp.GetSessionReport().GetEmailVerification().GetNextResendAvailableAt())
+}
+
+// The passkey twin of TestLogin_ReportsThePendingAddressItsVerificationMinted.
+func TestFinishPasskeyLogin_ReportsThePendingAddressItsVerificationMinted(t *testing.T) {
+	t.Parallel()
+
+	var set *settings.Manager
+	env := setupPasskeyAuthTestServer(t, func(t *testing.T, seeded *settings.Manager) {
+		enableSignup(t, seeded)
+		set = seeded
+	}, nil)
+
+	begin := beginPasskeySignUp(t, env.client, "pklate", "pklate@example.com")
+	ceremony := newPasskeyCeremony()
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
+	require.NoError(t, err)
+	before, err := env.store.Users().GetByUsername(context.Background(), "pklate")
+	require.NoError(t, err)
+	require.Empty(t, before.PendingEmail, "precondition: the sign-up left no pending row")
+	enableEmailVerification(t, set)
+
+	loginBegin := beginPasskeyLogin(t, env.client, "pklate")
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetChallenge().GetSessionId(), assertionJSON)
+	require.NoError(t, err)
+
+	// GetCurrentUser projects the stored row, so the row is what it reports.
+	after, err := env.store.Users().GetByUsername(context.Background(), "pklate")
+	require.NoError(t, err)
+	require.Equal(t, "pklate@example.com", after.PendingEmail, "precondition: the sign-in minted the pending row")
+	assert.Equal(t, after.PendingEmail, loginResp.GetSessionReport().GetUser().GetPendingEmail(),
+		"the sign-in reports the pending address that GetCurrentUser reports")
 }
 
 func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {

@@ -14,22 +14,15 @@ export interface BufferedStreamHandle<TEvent> {
 }
 
 /**
- * Wrap a raw stream source with buffering plus a `decode` step that
- * converts low-level messages into typed events. Any backend event
- * arriving before the consumer wires its callbacks is captured and
- * flushed on first registration, so events emitted exactly when a
- * stream is being (re)established aren't silently dropped.
+ * Wrap a stream source with buffering. Any backend event arriving
+ * before the consumer wires its callbacks is captured and flushed on
+ * first registration, so events emitted exactly when a stream is being
+ * (re)established aren't silently dropped.
  *
  * Each flush is one-shot: re-registering a callback replaces the
  * destination but does not re-deliver already-flushed events.
- *
- * If `decode` throws, the error is routed through onError (buffered if
- * the consumer hasn't registered yet).
  */
-export function bufferStreamHandle<TMessage, TEvent>(
-  source: StreamSource<TMessage>,
-  decode: (msg: TMessage) => TEvent,
-): BufferedStreamHandle<TEvent> {
+export function bufferStreamHandle<TEvent>(source: StreamSource<TEvent>): BufferedStreamHandle<TEvent> {
   let eventCb: ((event: TEvent) => void) | null = null
   let endCb: (() => void) | null = null
   let errorCb: ((err: Error) => void) | null = null
@@ -38,21 +31,7 @@ export function bufferStreamHandle<TMessage, TEvent>(
   let pendingEnd = false
   let pendingError: Error | null = null
 
-  source.onMessage((msg) => {
-    let event: TEvent
-    try {
-      event = decode(msg)
-    }
-    catch (err) {
-      const e = err instanceof Error
-        ? err
-        : new Error(String(err))
-      if (errorCb)
-        errorCb(e)
-      else
-        pendingError = e
-      return
-    }
+  source.onMessage((event) => {
     if (eventCb)
       eventCb(event)
     else

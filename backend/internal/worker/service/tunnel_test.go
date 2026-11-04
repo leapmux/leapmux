@@ -19,6 +19,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -136,10 +137,11 @@ func TestOpenTunnelConn_InvalidTargetPort(t *testing.T) {
 
 // OpenTunnelConn streams the conn's events on its own correlation id, so the
 // client holds that id as a stream. A refusal must therefore arrive as a stream
-// error frame, and the method must be registered as streaming so the dispatcher
-// prepares the stream before the handler runs.
+// error frame, and the method must be declared server-streaming: the registrar
+// registers it in the declared shape, so the dispatcher prepares the stream
+// before the handler runs.
 func TestOpenTunnelConnDeniesWithAStreamFrame(t *testing.T) {
-	svc, d, w := tunnelTestSetup(t)
+	_, d, w := tunnelTestSetup(t)
 	dispatch(d, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{
 		TargetAddr: "127.0.0.1",
 		TargetPort: 80,
@@ -147,8 +149,9 @@ func TestOpenTunnelConnDeniesWithAStreamFrame(t *testing.T) {
 
 	requireStreamRefusal(t, w, codes.InvalidArgument)
 
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
-	assert.Equal(t, shapeStream, shapes[leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure], "OpenTunnelConn must be registered as streaming")
+	declared, ok := rpcaccess.Lookup(leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure)
+	require.True(t, ok)
+	assert.True(t, declared.ServerStreaming, "OpenTunnelConn must be declared server-streaming")
 }
 
 // An open whose conn_id a close already canceled, or that an open conn still
@@ -1468,10 +1471,8 @@ func TestTunnelTargetEOF(t *testing.T) {
 	assert.True(t, hasEOF, "expected EOF stream message")
 }
 
-// collectTunnelEvents decodes stream payloads and returns the concatenated
-// data bytes plus whether any event signalled EOF.
 // requireStreamRefusal asserts that an OpenTunnelConn dispatch was refused with
-// exactly one terminal stream error frame carrying code, and no unary reply.
+// exactly one final stream error frame carrying code, and no unary reply.
 func requireStreamRefusal(t *testing.T, w *testResponseWriter, code codes.Code) {
 	t.Helper()
 	require.Empty(t, w.errors, "a refusal must not arrive as a unary error")
@@ -1498,6 +1499,8 @@ func requireTunnelOpened(t *testing.T, w *testResponseWriter) {
 	require.NotNil(t, event.GetOpened(), "the first frame must be the opened event, got %v", &event)
 }
 
+// collectTunnelEvents decodes stream payloads and returns the concatenated
+// data bytes plus whether any event signalled EOF.
 func collectTunnelEvents(streams []*leapmuxv1.InnerStreamMessage) (data []byte, hasEOF bool) {
 	for _, s := range streams {
 		var event leapmuxv1.TunnelConnEvent
@@ -2226,10 +2229,11 @@ type failingReadConn struct {
 
 func (c failingReadConn) Read([]byte) (int, error) { return 0, c.err }
 
-// A target read that fails with anything but EOF reaches the client as the
-// `error` event of the stream, not as a stream error frame: the conn failed,
-// not the RPC. The read loop then closes the conn and evicts it.
-func TestTunnelReadLoop_TargetReadErrorSendsAnErrorEvent(t *testing.T) {
+// A target read that fails with anything but EOF ends the stream with a stream
+// error frame (Unavailable): a failure is not a TunnelConnEvent, so the client
+// has one failure path after `opened`. The read loop then closes the conn and
+// evicts it.
+func TestTunnelReadLoop_TargetReadErrorEndsTheStreamWithUnavailable(t *testing.T) {
 	client, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
 	const connID = "read-error"
@@ -2243,13 +2247,11 @@ func TestTunnelReadLoop_TargetReadErrorSendsAnErrorEvent(t *testing.T) {
 
 	frames := w.streamsSnapshot()
 	require.Len(t, frames, 1)
-	assert.Nil(t, frames[0].GetError(), "a target read error is an event, not a stream error frame")
-	var event leapmuxv1.TunnelConnEvent
-	require.NoError(t, proto.Unmarshal(frames[0].GetPayload(), &event))
-	assert.Equal(t, "connection reset by target", event.GetError())
-	assert.Nil(t, event.GetData())
-	assert.Nil(t, event.GetEof())
-	assert.Nil(t, event.GetOpened())
+	require.NotNil(t, frames[0].GetError(), "a target read error is a stream error frame")
+	assert.Equal(t, int32(codes.Unavailable), frames[0].GetError().GetCode())
+	assert.Equal(t, "read tunnel target: connection reset by target", frames[0].GetError().GetMessage())
+	assert.True(t, frames[0].GetEnd(), "the error frame ends the stream")
+	assert.Empty(t, frames[0].GetPayload(), "the frame carries no TunnelConnEvent")
 	assert.True(t, tc.closed.Load(), "a target read error closes the conn")
 	assert.Nil(t, mgr.get(connID), "and evicts it from the manager")
 }

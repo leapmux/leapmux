@@ -250,6 +250,8 @@ func TestWatchEvents_AgentLookupFailureLeavesRegistrationsUntouched(t *testing.T
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
 	waitTerminalWatchCount(t, svc, "term-1", 1)
+	registered := svc.Watchers.agents.senderFor("agent-1", testChannelID)
+	require.NotNil(t, registered)
 
 	_, err := svc.DB.Exec("DROP TABLE agents")
 	require.NoError(t, err)
@@ -268,7 +270,7 @@ func TestWatchEvents_AgentLookupFailureLeavesRegistrationsUntouched(t *testing.T
 		assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED, r.GetReason())
 	}
 	assert.Equal(t, 1, svc.Watchers.agents.count("agent-1"), "agent registrations unchanged on lookup failure")
-	assert.Same(t, w, svc.Watchers.agents.senderFor("agent-1", testChannelID),
+	assertSameSender(t, registered, svc.Watchers.agents.senderFor("agent-1", testChannelID),
 		"agent registration must stay byte-identical (same sender) on lookup failure")
 	assert.Equal(t, 1, svc.Watchers.terminals.count("term-1"), "terminal half still applied")
 }
@@ -829,6 +831,8 @@ func TestWatchEvents_LookupFailedRetryPerformsOwedReplay(t *testing.T) {
 	}, w)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
 	assert.Equal(t, 0, countCatchUpCompletes(w))
+	registered := svc.Watchers.agents.senderFor("agent-1", testChannelID)
+	require.NotNil(t, registered)
 
 	_, err := svc.DB.Exec("ALTER TABLE agents RENAME TO agents_bak")
 	require.NoError(t, err)
@@ -845,7 +849,7 @@ func TestWatchEvents_LookupFailedRetryPerformsOwedReplay(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
 		ack.GetRejectedAgents()[0].GetReason())
 	assert.Equal(t, 0, countCatchUpCompletes(w), "LOOKUP_FAILED must not advance mode / replay")
-	assert.Same(t, w, svc.Watchers.agents.senderFor("agent-1", testChannelID))
+	assertSameSender(t, registered, svc.Watchers.agents.senderFor("agent-1", testChannelID))
 
 	_, err = svc.DB.Exec("ALTER TABLE agents_bak RENAME TO agents")
 	require.NoError(t, err)
@@ -1028,6 +1032,56 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 	assert.Equal(t, "alpha", keys["task-a"].GetTitle())
 	require.Contains(t, keys, "task-b")
 	assert.Equal(t, "beta", keys["task-b"].GetTitle())
+}
+
+// replayAgentCatchUp reads the goal of a child tab from the child's root, and
+// that read is optional, like the to-do and background-task snapshots beside
+// it. A failed read skips the goal event, and the replay continues: the status
+// marker, the queue snapshot and CatchUpComplete still arrive. A replay that
+// stopped at the goal left the tab with no status and a catch-up that never
+// ended. Live events kept the stream open, so the client never subscribed
+// again.
+func TestReplayOfAChildTabSurvivesAFailedRootGoalRead(t *testing.T) {
+	t.Parallel()
+
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	row, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+
+	// replayStages reports which stages of one replay of the child arrived.
+	type replayStages struct {
+		rootGoal, status, queue, catchUpComplete bool
+	}
+	replay := func(t *testing.T) replayStages {
+		t.Helper()
+		writer := &testResponseWriter{channelID: "child-goal-replay"}
+		svc.replayAgentCatchUp(newReplaySink(writer, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
+		var seen replayStages
+		for _, stream := range writer.streamsSnapshot() {
+			event := decodeWatchAgentEvent(t, stream)
+			switch {
+			case event.GetGoalChanged() != nil:
+				seen.rootGoal = event.GetAgentId() == rootID
+			case event.GetStatusChange() != nil:
+				seen.status = true
+			case event.GetInputQueueChanged() != nil:
+				seen.queue = true
+			case event.GetCatchUpComplete() != nil:
+				seen.catchUpComplete = true
+			}
+		}
+		return seen
+	}
+
+	require.Equal(t, replayStages{rootGoal: true, status: true, queue: true, catchUpComplete: true}, replay(t),
+		"precondition: a replay whose goal read succeeds carries every stage")
+
+	// Fault the goal read alone. The sqlc header identifies the one statement.
+	svc.Output.WaitActivityRefreshes()
+	svc.Output.queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "-- name: GetAgentGoal :one"})
+
+	assert.Equal(t, replayStages{rootGoal: false, status: true, queue: true, catchUpComplete: true}, replay(t),
+		"a failed root goal read must skip only the goal event")
 }
 
 // TestReplayIncludesActivitySnapshot pins the activity leg of
@@ -1463,11 +1517,9 @@ type replayErrorReplacementWriter struct {
 	once    sync.Once
 }
 
-func (writer *replayErrorReplacementWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {
-	if message.GetError() != nil {
-		writer.once.Do(writer.onError)
-	}
-	return writer.testResponseWriter.SendStream(message)
+func (writer *replayErrorReplacementWriter) SendError(code int32, message string) error {
+	writer.once.Do(writer.onError)
+	return writer.testResponseWriter.SendError(code, message)
 }
 
 func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
@@ -1503,7 +1555,7 @@ func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
 	assert.False(t, svc.Watchers.isOwner(failed.channelID, failed.sessionID))
 	assert.Equal(t, map[string]leapmuxv1.WatchMode{ownerID: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}, svc.Watchers.AgentModesForChannel(oldWriter.ChannelID()))
 	assert.Zero(t, countCatchUpCompletes(oldWriter))
-	assert.True(t, streamEndedWithError(oldWriter))
+	assert.Len(t, oldWriter.rejections(), 1, "the failed replay must report its failure")
 	ack := lastWatchUpdateAck(t, replacementWriter)
 	require.NotNil(t, ack)
 	assert.Equal(t, uint64(18), ack.UpdateId)

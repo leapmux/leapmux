@@ -3,7 +3,7 @@ import type { TreeNodeData } from './directoryTreeState'
 import type { DirectoryListing } from '~/generated/proto/leapmux/v1/file_pb'
 import type { PathFlavor } from '~/lib/paths'
 import { createEffect, createSignal, on } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { formatErrorMessage } from '~/lib/errors'
 import { join, normalizeSeparators, relativeUnder, split } from '~/lib/paths'
 import { samePath } from './directoryTreeState'
@@ -73,7 +73,7 @@ export async function loadListings(
   showFiles: boolean,
   fromRoot?: string,
 ): Promise<ChainResult> {
-  const resp = await workerRpc.listDirectory(workerId, {
+  const resp = await workerFile.listDirectory(workerId, {
     path: dirPath,
     maxDepth: 5,
     dirsOnly: !showFiles,

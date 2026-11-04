@@ -13,6 +13,7 @@ import { CAPTCHA_ACTION } from '~/generated/contracts/captcha'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
+import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
@@ -31,6 +32,10 @@ const OAuthCompleteSignupPage: Component = () => {
   // The provider's own claim, captured once at bootstrap. A supplied
   // address is fixed; an absent one leaves the field to the user.
   const [providerSuppliedEmail, setProviderSuppliedEmail] = createSignal(false)
+  // Where the sign-in that started this sign-up asked to continue, such as the
+  // CLI consent page. The hub carries it across the provider round trip and
+  // sanitized it when the sign-in started; undefined when it gave none.
+  const [redirect, setRedirect] = createSignal<string>()
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [loading, setLoading] = createSignal(true)
@@ -55,6 +60,7 @@ const OAuthCompleteSignupPage: Component = () => {
       setEmail(resp.email)
       setProviderSuppliedEmail(resp.email !== '')
       setProviderName(resp.providerName)
+      setRedirect(resp.redirect || undefined)
     }
     catch {
       setTokenError('This signup link is invalid or expired.')
@@ -64,8 +70,21 @@ const OAuthCompleteSignupPage: Component = () => {
     }
   })
 
+  /**
+   * Whether a submit must not complete the sign-up now. The button and the
+   * handler both read it, because a password manager can submit the form
+   * itself, past a disabled button. `submitting` stays set once the hub
+   * accepted the single-use token, so this also refuses to send it twice.
+   */
+  const submitBlocked = () => submitting() || !username() || captcha.blocksSubmit()
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
+    // While the system info is pending, the form cannot tell whether the hub
+    // requires a captcha, so a sign-up sent then can arrive without a captcha
+    // that the hub requires.
+    if (submitBlocked())
+      return
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       setError(slugErr)
@@ -106,19 +125,22 @@ const OAuthCompleteSignupPage: Component = () => {
       return
     }
     // The account exists now. An absent account in the report recovers,
-    // and recovery owns the navigation; only an adopted one is routed here.
-    if (await auth.setAuth(report) !== 'adopted')
+    // and recovery owns the navigation, so it gets the redirect too; only an
+    // adopted one is routed here.
+    if (await auth.setAuth(report, {
+      redirect: redirect(),
+    }) !== 'adopted') {
       return
+    }
     // OAuth signup mirrors the SignUp flow: when the provider returned
     // an unverified email and verification is enabled, send the user
     // to /verify-email so they can paste the code (or click the emailed
     // link). The hub created the session, so the authenticated
     // VerifyEmail RPC is reachable from there. The adoption already seeded
-    // the resend cooldown from the report.
-    if (report?.emailVerification?.verificationRequired)
-      navigate('/verify-email', { replace: true })
-    else
-      navigate('/', { replace: true })
+    // the resend cooldown from the report. Otherwise the sign-up continues
+    // where the sign-in asked to, such as the CLI consent page, and to the
+    // app without a redirect.
+    followDestination(navigate, postSignInDestination(report?.emailVerification?.verificationRequired ?? false, redirect()))
   }
 
   return (
@@ -176,7 +198,7 @@ const OAuthCompleteSignupPage: Component = () => {
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>
-            <button type="submit" disabled={submitting() || !username() || captcha.blocksSubmit()}>
+            <button type="submit" disabled={submitBlocked()}>
               <Show when={submitting()}><Spinner /></Show>
               {submitting()
                 ? 'Creating account...'

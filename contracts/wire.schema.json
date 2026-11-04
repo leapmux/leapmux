@@ -194,7 +194,11 @@
       "additionalProperties": false,
       "required": [
         "softNonceLimit",
-        "hardNonceLimit"
+        "hardNonceLimit",
+        "x25519PublicKeySizeBytes",
+        "mlkemPublicKeySizeBytes",
+        "slhdsaPublicKeySizeBytes",
+        "slhdsaSignatureSizeBytes"
       ],
       "properties": {
         "softNonceLimit": {
@@ -207,6 +211,26 @@
           "minimum": 1,
           "maximum": 4294967295,
           "description": "The uint32 wrap bound: the last nonce value the counter may hold before a rekey is mandatory. 2^32-1; the generator checks hardNonceLimit > softNonceLimit."
+        },
+        "x25519PublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an X25519 public key: the worker's static identity key that a registration pins, and a rekey ephemeral key. It is also DHLEN of the Noise spec, and an X25519 private key has the same size. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "mlkemPublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an ML-KEM-1024 encapsulation key. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "slhdsaPublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an SLH-DSA-SHAKE-256f public key. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "slhdsaSignatureSizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an SLH-DSA-SHAKE-256f signature, which authenticates the handshake transcript. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
         }
       }
     },

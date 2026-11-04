@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -434,7 +435,7 @@ func TestValidateWorkerHello(t *testing.T) {
 	})
 
 	// Every key defect, each on an otherwise complete set, and each error must
-	// name the key that is wrong.
+	// identify the key that is wrong.
 	for name, tc := range map[string]struct {
 		msg *leapmuxv1.ConnectRequest
 		key string
@@ -485,4 +486,147 @@ func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a clock", func() {
 		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), nil)
 	})
+}
+
+// scriptedWorkerStream answers each Receive from a channel that the test feeds.
+// A Receive with nothing to answer blocks, as a real stream does.
+type scriptedWorkerStream struct {
+	results chan workerReceiveResult
+}
+
+func newScriptedWorkerStream() *scriptedWorkerStream {
+	return &scriptedWorkerStream{results: make(chan workerReceiveResult, 8)}
+}
+
+func (s *scriptedWorkerStream) Receive() (*leapmuxv1.ConnectRequest, error) {
+	result := <-s.results
+	return result.msg, result.err
+}
+
+func (s *scriptedWorkerStream) feed(results ...workerReceiveResult) {
+	for _, result := range results {
+		s.results <- result
+	}
+}
+
+func heartbeatMessage(requestID string) *leapmuxv1.ConnectRequest {
+	return &leapmuxv1.ConnectRequest{
+		RequestId: requestID,
+		Payload:   &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}
+}
+
+// Each case below ends inside a synctest bubble, which fails the test when a
+// goroutine outlives the bubble's main goroutine. That is the proof that the
+// pump stops: no case can observe an exit any other way.
+
+// The hello wait and the main loop read one channel, so the pump delivers every
+// outcome in stream order, and a receive error ends it.
+func TestStartWorkerReceivePump_DeliversInOrderAndStopsAfterAnError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := newScriptedWorkerStream()
+		received := startWorkerReceivePump(t.Context(), stream)
+
+		stream.feed(
+			workerReceiveResult{msg: heartbeatMessage("first")},
+			workerReceiveResult{msg: heartbeatMessage("second")},
+			workerReceiveResult{err: io.EOF},
+		)
+		assert.Equal(t, "first", (<-received).msg.GetRequestId())
+		assert.Equal(t, "second", (<-received).msg.GetRequestId())
+		assert.ErrorIs(t, (<-received).err, io.EOF)
+		synctest.Wait()
+	})
+}
+
+// A handler that stopped reading leaves the pump parked on a full channel, and
+// the connection's context is what ends it.
+func TestStartWorkerReceivePump_StopsWhenTheContextEndsWithAFullChannel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		stream := newScriptedWorkerStream()
+		received := startWorkerReceivePump(ctx, stream)
+
+		stream.feed(
+			workerReceiveResult{msg: heartbeatMessage("buffered")},
+			workerReceiveResult{msg: heartbeatMessage("read ahead")},
+		)
+		synctest.Wait()
+		require.Len(t, received, 1, "precondition: the channel is full, and the pump holds the next message")
+
+		cancel()
+		synctest.Wait()
+		assert.Equal(t, "buffered", (<-received).msg.GetRequestId(), "a parked pump delivers nothing more")
+	})
+}
+
+// A handler that returns ends the stream, which unblocks Receive with an error,
+// and cancels the context. The pump stops whichever way that error goes.
+func TestStartWorkerReceivePump_StopsWhenTheStreamEndsAfterTheContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		stream := newScriptedWorkerStream()
+		startWorkerReceivePump(ctx, stream)
+		synctest.Wait()
+
+		cancel()
+		stream.feed(workerReceiveResult{err: errors.New("the stream ended")})
+		synctest.Wait()
+	})
+}
+
+// receiveHello reads the stream only through the pump's channel, so each outcome
+// of the hello wait is one result on that channel.
+func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
+	t.Parallel()
+
+	svc := &WorkerConnectorService{clock: quartz.NewReal()}
+
+	t.Run("reports a worker that closed the stream", func(t *testing.T) {
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: io.EOF}
+		hello, err := svc.receiveHello(t.Context(), received)
+		require.NoError(t, err)
+		assert.Nil(t, hello)
+	})
+
+	t.Run("returns a receive failure", func(t *testing.T) {
+		failure := errors.New("the transport failed")
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: failure}
+		_, err := svc.receiveHello(t.Context(), received)
+		assert.ErrorIs(t, err, failure)
+	})
+
+	t.Run("refuses a first message that is not a hello", func(t *testing.T) {
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{msg: heartbeatMessage("first")}
+		_, err := svc.receiveHello(t.Context(), received)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a hello")
+	})
+
+	t.Run("returns the context's error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := svc.receiveHello(ctx, make(chan workerReceiveResult))
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// A read that the identity cap ended and a read that a disconnect ended both leave
+// ctx.Err() as context.Canceled. Only the cause tells an operator that the cap
+// fired and held the owner's delivery lock for its whole length.
+func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	st := hubtestutil.OpenTestStore(t)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(context.DeadlineExceeded)
+
+	username, ok := svc.ownerUsername(ctx, "owner-1")
+
+	assert.False(t, ok)
+	assert.Empty(t, username)
+	assert.Contains(t, logs.String(), "cause=\"context deadline exceeded\"")
 }

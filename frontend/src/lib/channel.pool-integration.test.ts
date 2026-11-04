@@ -123,7 +123,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     expect(notBefore).toBeLessThan(before + 61_000)
   })
 
-  it('checkChannelsAfterWake closes a pooled channel past the hard ceiling', async () => {
+  it('closes a pooled channel past the hard ceiling when checkChannelsAfterWake runs', async () => {
     const ch1 = await h.openTestChannel('w1')
     agePastHardCeiling((h.mgr as any).channels.get(ch1))
     h.mgr.checkChannelsAfterWake()
@@ -256,7 +256,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     agePastHardCeiling((h.mgr as any).channels.get(ch1))
     const errorFn = vi.fn()
     const endFn = vi.fn()
-    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, new Uint8Array())
+    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, {})
     handle.onError(errorFn)
     handle.onEnd(endFn)
     expect(errorFn).not.toHaveBeenCalled()
@@ -269,7 +269,7 @@ describe('ChannelManager getOrOpenChannel', () => {
 
   it('rekeys before a stream send when the pooled channel has aged', async () => {
     const ch1 = await h.openTestChannel('w1')
-    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, new Uint8Array())
+    const handle = h.mgr.stream(ch1, WorkerWatchService.method.watchEvents, {})
     // StreamOpen advanced the initiator send nonce; consume it on the
     // responder so simulateRekeyAck can decrypt the subsequent RekeyRequest.
     {
@@ -279,7 +279,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     }
     agePastMaxAge((h.mgr as any).channels.get(ch1))
     const sentBefore = h.mockWs.sent.length
-    handle.send(new Uint8Array([9, 9]))
+    handle.send({ updateId: 9n })
     // Gate engaged: the update is not on the wire yet.
     expect(h.mockWs.sent.length).toBe(sentBefore)
     await h.flushMicrotasks()
@@ -300,7 +300,7 @@ describe('ChannelManager getOrOpenChannel', () => {
     const echoWire = decodeWireMessage(h.mockWs.sent.at(-1)!)
     h.sendResponseFromWorker(ch1, Number(echoWire.correlationId), new Uint8Array([9]))
     const resp = await callPromise
-    expect(resp.payload).toEqual(new Uint8Array([9]))
+    expect(resp).toEqual(new Uint8Array([9]))
     expect(h.mgr.isOpen(ch1)).toBe(true)
   })
 
@@ -519,7 +519,7 @@ describe('ChannelManager pooled channel identity', () => {
   // is one getOrOpenChannel would reject and reopen, so reporting "connected" for it
   // would claim a live link the current user cannot use as themselves. (Age / rekey
   // are deliberately NOT excluded here -- their rotation is transparent.)
-  it('hasOpenChannel reports a drifted-identity channel as not open', async () => {
+  it('reports a drifted-identity channel as not open from hasOpenChannel', async () => {
     let ws: AutoOpenMockWebSocket | null = null
     let identity = 'user-a'
     const transport = makeCountingTransport(() => {

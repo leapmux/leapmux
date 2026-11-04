@@ -17,8 +17,9 @@ import (
 // Every User the hub returns is this projection, so a client that adopts a
 // User from any response reads the same facts GetCurrentUser reports.
 //
-// It returns an error only when the account elevates only through a provider
-// and its link read failed; every other failure degrades, as stated below.
+// It returns an error in two cases: the row has a blank id, or the account
+// elevates only through a provider and its link read failed. Every other
+// failure degrades, as stated below.
 func completeUserProto(ctx context.Context, st store.Store, user *store.User) (*leapmuxv1.User, error) {
 	// ONE count, for the number this REPORTS and for the step-up option rule
 	// below. Best-effort: this runs at every page load, so a transient count
@@ -79,42 +80,50 @@ func completeUserProto(ctx context.Context, st store.Store, user *store.User) (*
 	return userProto, nil
 }
 
+// committedUserProto returns the complete projection of an account whose
+// change already committed. The change is the RPC's main work, so a failed
+// projection must not fail the RPC: it logs the failure and answers nil, the
+// response omits user, and the client reads GetCurrentUser. change describes
+// the committed change in the log.
+func committedUserProto(ctx context.Context, st store.Store, user *store.User, change string) *leapmuxv1.User {
+	userProto, err := completeUserProto(ctx, st, user)
+	if err != nil {
+		slog.WarnContext(ctx, "the account change committed, but its projection could not be read",
+			"change", change, "user_id", user.ID, "err", err)
+		return nil
+	}
+	return userProto
+}
+
 // signInReport builds the SessionReport a SUCCESSFUL sign-in returns. The
 // sign-in's main work -- the account, the session, the cookie -- already
-// committed, so a failed projection must not fail the RPC: it logs the
-// failure and leaves user absent, and the client reads GetCurrentUser.
-// elevation is nil for a fresh sign-in, which grants no elevation.
+// committed, so a failed projection leaves user absent (see
+// committedUserProto). elevation is nil for a fresh sign-in, which grants no
+// elevation.
 func signInReport(
 	ctx context.Context, st store.Store, user *store.User,
 	verification *leapmuxv1.EmailVerificationStatus, elevation *timestamppb.Timestamp,
 ) *leapmuxv1.SessionReport {
-	report := &leapmuxv1.SessionReport{EmailVerification: verification, ElevationExpiresAt: elevation}
-	userProto, err := completeUserProto(ctx, st, user)
-	if err != nil {
-		slog.WarnContext(ctx, "the sign-in succeeded, but its account projection could not be read",
-			"user_id", user.ID, "err", err)
-		return report
+	return &leapmuxv1.SessionReport{
+		User:               committedUserProto(ctx, st, user, "sign-in"),
+		EmailVerification:  verification,
+		ElevationExpiresAt: elevation,
 	}
-	report.User = userProto
-	return report
 }
 
-// storedUserProto re-reads the account after a committed mutation and returns
-// its complete projection. The mutation already committed, so a failed read
-// or projection must not fail the RPC: it logs the failure and answers nil,
-// the response omits user, and the client reads GetCurrentUser.
-func storedUserProto(ctx context.Context, st store.Store, userID string) *leapmuxv1.User {
+// storedUserProto re-reads the account after a committed change and returns
+// its complete projection. The change already committed, so a failed read or
+// projection must not fail the RPC: it logs the failure and answers nil, the
+// response omits user, and the client reads GetCurrentUser. change describes
+// the committed change in the log.
+func storedUserProto(ctx context.Context, st store.Store, userID, change string) *leapmuxv1.User {
 	user, err := st.Users().GetByID(ctx, userID)
 	if err != nil {
-		slog.WarnContext(ctx, "the account changed, but it could not be read back", "user_id", userID, "err", err)
+		slog.WarnContext(ctx, "the account change committed, but the account could not be read back",
+			"change", change, "user_id", userID, "err", err)
 		return nil
 	}
-	userProto, err := completeUserProto(ctx, st, user)
-	if err != nil {
-		slog.WarnContext(ctx, "the account changed, but its projection could not be read", "user_id", userID, "err", err)
-		return nil
-	}
-	return userProto
+	return committedUserProto(ctx, st, user, change)
 }
 
 // linkedProvidersFor lists the account's OAuth links, each with whether an

@@ -22,9 +22,9 @@ import (
 //
 //   - `workspace delete` is destructive by name, carries its own --force, and
 //     its fan-out never inspects an individual tab.
-//   - tab_spawn.go's closeOrphanAgent and its terminal rollback unwind a `tab
-//     open` that already failed. They close what this command itself created
-//     moments ago, so there is no user work to lose.
+//   - tab_spawn.go's closeOrphanTab unwinds a `tab open` that already failed,
+//     for an agent and for a terminal. It closes what this command itself
+//     created moments ago, so there is no user work to lose.
 //   - `agent interrupt` aborts a turn without closing anything. Interrupting IS
 //     the intent, and a guard would ask the user to confirm what they asked for.
 

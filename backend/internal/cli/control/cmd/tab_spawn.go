@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"log/slog"
 
 	"golang.org/x/sync/errgroup"
 
@@ -61,13 +62,31 @@ type openAgentResult struct {
 	InitialMsgWarn string
 }
 
-// closeOrphanAgent tears down an agent that was spawned but never got a tab,
-// on the channel the spawn already holds. Best-effort: the caller is already
-// returning the failure that caused the unwind.
-func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
-	_ = w.CallEmit(ctx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
-		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
+// closeOrphanTab tears down an agent or a terminal that was opened but never
+// got a tab, on the channel the spawn already holds. Best-effort: the caller is
+// already returning the failure that caused the unwind.
+//
+// The rollback runs because the operation failed, and the likeliest failure is
+// that the operation's context ended: one deadline covers the whole `tab open`.
+// A CloseTab under that context would start expired and fail at once, and the
+// agent or the PTY would run with no tab until the worker's orphan reconciler
+// stops it. So the rollback keeps the values of ctx but takes a deadline of its
+// own, which the end of ctx does not cancel.
+//
+// It calls Call, not CallEmit, and logs its own failure instead of printing it.
+// The caller prints the one envelope that reports the failure that caused the
+// rollback, and a rollback envelope printed first would be the one that a
+// script reads.
+func closeOrphanTab(ctx context.Context, w workerCall, tabType leapmuxv1.TabType, tabID string) {
+	rollbackCtx, cancel := rpcDeadline(context.WithoutCancel(ctx))
+	defer cancel()
+	err := w.Call(rollbackCtx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
+		Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID},
 	}, nil)
+	if err != nil {
+		slog.Warn("tab open: the rollback could not close the tab on the worker, so its process runs until the worker's orphan reconciler stops it",
+			"tab_type", tabTypeName(tabType), "tab_id", tabID, "worker_id", w.workerID, "error", err)
+	}
 }
 
 // openAgentAndAddTab opens an agent on the worker, defaults its tile
@@ -83,13 +102,13 @@ func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
 // wall-clock latency is bounded by the slower of the two rather than
 // their sum.
 //
-// `ch` is a channel the CALLER opened to args.WorkerID and keeps open for
+// `w` carries a channel the CALLER opened to args.WorkerID and keeps open for
 // the whole sequence, so OpenAgent, the optional EnqueueAgentInput, and any
 // rollback CloseTab share one Noise_NK handshake instead of one apiece.
-// Pass nil on local-IPC clients, where there is no channel and each call
-// routes through the per-agent socket.
+// On a local-IPC client it carries no channel, and each call routes through
+// the per-agent socket.
 //
-// Only one errgroup leg touches `ch`, so nothing here relies on the
+// Only one errgroup goroutine touches `w`, so nothing here relies on the
 // channel being safe for concurrent calls.
 func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
@@ -105,34 +124,41 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	}
 
 	// Phase 1: spawn the agent on the worker AND bootstrap the CRDT in
-	// parallel -- neither leg feeds the other. Errgroup short-circuits
-	// the other half on failure via ctx cancellation.
-	gctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	g, gctx := errgroup.WithContext(gctx)
+	// parallel, because neither feeds the other.
+	//
+	// A failed OpenAgent cancels the bootstrap, whose result nothing needs any
+	// more. A failed bootstrap cancels nothing: OpenAgent runs under ctx, because
+	// the worker finishes a spawn that the CLI stops waiting for, and only the
+	// response gives the agent id that the rollback needs.
+	//
+	// Neither goroutine prints. A cancellation fails the other goroutine too,
+	// and that failure is a result of the first one, so a goroutine that printed
+	// its own failure would add a second envelope. errgroup keeps the first
+	// failure, and the code below prints that one.
+	g, bootstrapCtx := errgroup.WithContext(ctx)
 
 	var resp leapmuxv1.OpenAgentResponse
 	var bs *CRDTBootstrap
 
 	g.Go(func() error {
-		return w.CallEmit(gctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, req, &resp)
+		return w.Call(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, req, &resp)
 	})
 	g.Go(func() error {
 		var err error
-		bs, err = crdtBootstrap(gctx, c, []string{args.WorkspaceID})
+		bs, err = crdtBootstrap(bootstrapCtx, c, []string{args.WorkspaceID})
 		if err != nil {
-			return control.EmitErrorWith("crdt_bootstrap_failed", err)
+			return &codedRPCError{Code: "crdt_bootstrap_failed", Cause: err}
 		}
 		return nil
 	})
 	if err := g.Wait(); err != nil {
-		// If OpenAgent succeeded but the bootstrap leg failed, the
-		// agent is now orphan on the worker. Roll it back so the user
-		// isn't left with a dangling agent record.
+		// If OpenAgent succeeded but the bootstrap failed, the agent is now
+		// orphan on the worker. Roll it back so the user isn't left with a
+		// dangling agent record.
 		if agentID := resp.GetAgent().GetId(); agentID != "" {
-			closeOrphanAgent(ctx, w, agentID)
+			closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
 		}
-		return nil, err
+		return nil, emitInnerRPCError(err)
 	}
 
 	agentID := resp.GetAgent().GetId()
@@ -140,7 +166,7 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	// CRDT-failure rollback below used to call callInnerRPC, which opened a
 	// fresh Noise_NK channel and quietly broke the one-handshake property this
 	// function's doc comment promises -- on the likelier of the two paths.
-	rollback := func() { closeOrphanAgent(ctx, w, agentID) }
+	rollback := func() { closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID) }
 	resolvedTileID, position, err := addTabToCRDTWithBootstrap(ctx, c, bs, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, args.TileID, args.Position, args.WorkerID, rollback)
 	if err != nil {
 		return nil, err
@@ -307,11 +333,7 @@ func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall,
 	// On the SAME channel as the open, matching the agent path: the rollback
 	// is the likelier of this function's two worker calls to actually run, and
 	// paying a second Noise_NK handshake for it defeats the hoist.
-	rollback := func() {
-		_ = w.CallEmit(ctx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
-			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
-		}, nil)
-	}
+	rollback := func() { closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID) }
 	resolvedTileID, position, err := addTabToCRDT(ctx, c, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)
 	if err != nil {
 		return nil, err

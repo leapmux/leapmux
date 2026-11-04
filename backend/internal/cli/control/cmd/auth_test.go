@@ -27,10 +27,10 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/util/pkce"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
@@ -937,7 +937,7 @@ func (s *stubMyTokensService) requestedLimits() []int64 {
 // TestRunAuthCredentials_AsksForTheHubsMaximumPage pins the page size to the
 // hub's OWN constant rather than a number restated here.
 //
-// An omitted limit resolves to service.DefaultPageLimit, so the listing loop
+// An omitted limit resolves to contracts.DefaultPageLimit, so the listing loop
 // would take ten times the requests and cover a tenth of what its own limit
 // claims; a hand-copied 500 answers correctly only until the hub changes it.
 func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
@@ -950,7 +950,7 @@ func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 
 	limits := stub.requestedLimits()
 	require.NotEmpty(t, limits)
-	assert.Equal(t, int64(service.MaxPageLimit), limits[0])
+	assert.Equal(t, int64(contracts.MaxPageLimit), limits[0])
 }
 
 // startMyTokensHub serves handler as the hub's UserService and saves a live

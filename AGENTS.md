@@ -310,11 +310,14 @@ layer 1 is where raw shapes are known.
   which `test/prefer-lowercase-title` allows via `ignore: ['describe']`. A
   `describe` with no single symbol opens lowercase
   (`describe('parses empty input')`). An `it`/`test` title is a lowercase
-  sentence continuing "it" (`it('returns null for an empty payload')`); since
-  `--fix` lowercases only the first letter, never open one with a capitalized
-  name (`dEFAULT_MONO_FONT_FAMILY`). Never flatten a name's capitals
+  sentence continuing "it" (`it('returns null for an empty payload')`), so it
+  opens with a verb and never with the symbol under test: the `describe` spells
+  the symbol (`describe('createWorkspace')` with `it('preserves a set root')`),
+  or the sentence states it later. Since `--fix` lowercases only the first
+  letter, never open a title with a capitalized name
+  (`dEFAULT_MONO_FONT_FAMILY`). Never flatten a name's capitals
   (`describe('mcptoolcalldisplayname')` for `mcpToolCallDisplayName`).
-  `src/test-support/noMangledTestTitles.test.ts` fails both.
+  `src/test-support/noMangledTestTitles.test.ts` fails all three.
 - **Co-locate:** `foo.ts` → `foo.test.ts` beside it, `tests/e2e/` included
   (`helpers/mail.ts` → `helpers/mail.test.ts`). No `tests/unit/` mirror
   (`src/test-support/noMirroredUnitTests.test.ts`). Shared helpers live in

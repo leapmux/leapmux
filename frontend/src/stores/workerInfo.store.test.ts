@@ -12,7 +12,9 @@ useTestStorage()
 
 const mockGetWorkerSystemInfo = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  getWorkerSystemInfo: (...args: unknown[]) => mockGetWorkerSystemInfo(...args),
+  workerSystem: {
+    getWorkerSystemInfo: (...args: unknown[]) => mockGetWorkerSystemInfo(...args),
+  },
 }))
 
 // Imported after the mock so the store closure binds to the mocked RPC.
@@ -214,7 +216,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() hydrates a fresh store from the stored row on first access', async () => {
+  it('hydrates a fresh store from the stored row on the first workerInfo() access', async () => {
     // Across a page reload (or a new dialog opening with a fresh store),
     // the reactive infoMap starts empty but storage already holds
     // the prior snapshot — workerInfo() must surface it transparently
@@ -296,7 +298,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo() still notifies subscribers after a workerInfo() read hydrated from storage', async () => {
+  it('makes fetchWorkerInfo() still notify subscribers after a workerInfo() read hydrated from storage', async () => {
     // Regression guard for the non-reactive hydration cache. workerInfo()
     // now routes stored hits through a non-reactive Map, so a
     // careless refactor could end up shadowing future writes (subscriber
@@ -347,7 +349,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo populates the hydrated cache so a later workerInfo() read survives a storage wipe', async () => {
+  it('makes fetchWorkerInfo populate the hydrated cache so a later workerInfo() read survives a storage wipe', async () => {
     // The `hydrated` cache is shared between workerInfo() and
     // fetchWorkerInfo. A successful fetch must seed the cache so a
     // subsequent workerInfo() — say, after a sweep wiped the row
@@ -371,7 +373,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo short-circuits on the in-memory map without re-reading storage', async () => {
+  it('makes fetchWorkerInfo short-circuit on the in-memory map without re-reading storage', async () => {
     // The warm path: an entry that's already in the reactive `infoMap`
     // (a sibling dialog just fetched it) must not trigger a stored read
     // — the in-memory check happens first. The `clearWorkerInfo`
@@ -398,7 +400,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo does not subscribe a reactive caller to infoMap (untrack guard)', async () => {
+  it('does not subscribe a reactive caller of fetchWorkerInfo to infoMap (untrack guard)', async () => {
     // A `createEffect` that awaits `fetchWorkerInfo` would otherwise
     // pick up an implicit subscription via the in-memory check — every
     // subsequent infoMap mutation (including writes for unrelated ids)
@@ -437,7 +439,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() does NOT cache null reads — a sibling store writing to storage is visible on the next call', async () => {
+  it('does NOT cache null reads in workerInfo() — a sibling store writing to storage is visible on the next call', async () => {
     // Regression: an earlier revision cached null returns from the
     // stored probe in a per-store `hydrated` Map forever. Once a
     // store had observed "no cached info" for a worker id, a sibling
@@ -538,7 +540,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() reads never write to infoMap, so subscribers to unrelated entries stay quiet', async () => {
+  it('never writes to infoMap on workerInfo() reads, so subscribers to unrelated entries stay quiet', async () => {
     // Storage-hydrated reads route through a non-reactive cache.
     // A subscriber tracking `getHomeDir(unrelated)` (an entry the read
     // never touches) must not re-fire when an unrelated worker is hydrated

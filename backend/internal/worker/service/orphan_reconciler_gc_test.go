@@ -10,10 +10,11 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 	return nil, nil
 }
 
@@ -465,7 +466,7 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 		resp := &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}
 		if present {
 			resp.TabStates = []*leapmuxv1.WorkerTabState{{
-				Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent"}},
+				Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent"},
 				ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 			}}
 		}

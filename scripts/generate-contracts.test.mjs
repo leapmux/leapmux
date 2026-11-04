@@ -22,6 +22,7 @@ import {
   checkGenerationTrace,
   checkHeaders,
   checkListen,
+  checkPagination,
   checkProviderProtocol,
   checkProviderProtocolDependencies,
   checkProviders,
@@ -49,6 +50,7 @@ import {
   emitGoGenerationTrace,
   emitGoHeaders,
   emitGoListen,
+  emitGoPagination,
   emitGoProviderProtocol,
   emitGoRetry,
   emitGoSessionInfo,
@@ -64,6 +66,7 @@ import {
   emitTsGenerationTrace,
   emitTsHeaders,
   emitTsListen,
+  emitTsPagination,
   emitTsProviderFrameKinds,
   emitTsProviderProtocol,
   emitTsProviders,
@@ -118,6 +121,7 @@ const WIRE = readContract('wire')
 const HEADERS = readContract('headers')
 const RETRY = readContract('retry')
 const CHAT_HISTORY = readContract('chat-history')
+const PAGINATION = readContract('pagination')
 const TRUSTED_PROXIES = readContract('trusted-proxies')
 const USER_SETTINGS = readContract('user-settings')
 const DESKTOP_FOR_SETTINGS = readContract('desktop')
@@ -310,6 +314,53 @@ describe('checkHeaders / checkRetry', () => {
   })
 })
 
+describe('checkPagination', () => {
+  it('accepts the shipped contract', () => {
+    expect(() => checkPagination(PAGINATION)).not.toThrow()
+  })
+
+  it('rejects a non-positive default page limit', () => {
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, defaultPageLimit: 0 }),
+      'defaultPageLimit must be a positive safe integer',
+    )
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, defaultPageLimit: -1 }),
+      'defaultPageLimit must be a positive safe integer',
+    )
+  })
+
+  it('rejects a maximum below the default', () => {
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, maxPageLimit: PAGINATION.defaultPageLimit - 1 }),
+      'maxPageLimit must be >= defaultPageLimit',
+    )
+  })
+
+  it('accepts a maximum equal to the default', () => {
+    expect(() => checkPagination({ ...PAGINATION, maxPageLimit: PAGINATION.defaultPageLimit })).not.toThrow()
+  })
+
+  it('rejects a maximum that PageRequest.limit, an int32, cannot carry', () => {
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, maxPageLimit: 2 ** 31 }),
+      'PageRequest.limit is an int32',
+    )
+    expect(() => checkPagination({ ...PAGINATION, maxPageLimit: 2 ** 31 - 1 })).not.toThrow()
+  })
+
+  it('rejects fractional limits', () => {
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, defaultPageLimit: 1.5 }),
+      'defaultPageLimit must be a positive safe integer',
+    )
+    expectContractError(
+      () => checkPagination({ ...PAGINATION, maxPageLimit: 500.5 }),
+      'maxPageLimit must be a safe integer',
+    )
+  })
+})
+
 describe('checkChatHistory', () => {
   it('accepts the shipped contract', () => {
     expect(() => checkChatHistory(CHAT_HISTORY)).not.toThrow()
@@ -406,6 +457,20 @@ describe('emitters', () => {
     expect(ts).toContain('export const HARD_NONCE_LIMIT = 4294967295 as const')
   })
 
+  it('emits the Noise sizes for both languages, driven by the name tables', () => {
+    const go = emitGoWire(WIRE, deriveWire(WIRE))
+    expect(go).toContain('X25519PublicKeySize = 32')
+    expect(go).toContain('MlkemPublicKeySize = 1568')
+    expect(go).toContain('SlhdsaPublicKeySize = 64')
+    expect(go).toContain('SlhdsaSignatureSize = 49856')
+    const ts = emitTsWire(WIRE, deriveWire(WIRE))
+    expect(ts).toContain('export const X25519_PUBLIC_KEY_SIZE = 32 as const')
+    expect(ts).toContain('export const MLKEM_PUBLIC_KEY_SIZE = 1568 as const')
+    expect(ts).toContain('export const SLHDSA_PUBLIC_KEY_SIZE = 64 as const')
+    expect(ts).toContain('export const SLHDSA_SIG_SIZE = 49856 as const')
+    expect(ts).toContain('export const AEAD_TAG_SIZE = 16 as const')
+  })
+
   it('emits every Tauri event the shell and webview spell, including the log and menu events', () => {
     // Both sides once stated `sidecar:log` and the two menu events manually.
     // A change on one side could disable a listener without a failure. The name
@@ -452,6 +517,15 @@ describe('emitters', () => {
     const go = emitGoRetry(RETRY)
     expect(go).toContain('EventsRejectionRetryInitial     = time.Duration(500) * time.Millisecond')
     expect(go).toContain('EventsRejectionRetryMaxAttempts = 8')
+  })
+
+  it('emits the page limits for Go and TypeScript', () => {
+    const go = emitGoPagination(PAGINATION)
+    expect(go).toContain('DefaultPageLimit = 50')
+    expect(go).toContain('MaxPageLimit     = 500')
+    const ts = emitTsPagination(PAGINATION)
+    expect(ts).toContain('DEFAULT_PAGE_LIMIT = 50 as const')
+    expect(ts).toContain('MAX_PAGE_LIMIT = 500 as const')
   })
 
   it('emits the chat history limits for Go and TypeScript', () => {
@@ -1864,6 +1938,7 @@ describe('generate', () => {
       'backend/generated/contracts/muse-protocol.go',
       'backend/generated/contracts/ohmypi-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
+      'backend/generated/contracts/pagination.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/qoder-protocol.go',
@@ -1919,6 +1994,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/muse-protocol.ts',
       'frontend/src/generated/contracts/ohmypi-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
+      'frontend/src/generated/contracts/pagination.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
       'frontend/src/generated/contracts/provider-frame-kinds.ts',
       'frontend/src/generated/contracts/providers.ts',

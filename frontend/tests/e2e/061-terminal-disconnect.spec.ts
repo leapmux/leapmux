@@ -1,8 +1,9 @@
 import { expect } from '@playwright/test'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import { withCleanup } from './helpers/cleanup'
-import { getTerminalText, sendActiveTerminalInput, waitForTerminalText } from './helpers/terminal'
+import { getTerminalRows, getTerminalText, sendActiveTerminalInput, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, terminalTabs } from './helpers/ui'
-import { ensureWorkerOnline, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { ensureWorkerOnline, restartHub, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
@@ -38,6 +39,38 @@ test.describe('Terminal Disconnection', () => {
       // killed the child, so the cause isn't actually unknown.
       await waitForTerminalText(page, 'Worker disconnected - Press Enter to restart')
     }, () => ensureWorkerOnline(separateHubWorker))
+  })
+
+  // A Hub outage keeps the Worker and its shell alive, so the size must reach the
+  // same PTY when the Worker comes back. The terminal drops the resize while its
+  // Worker is offline, and the ResizeObserver stays quiet after the reconnect,
+  // because the dimensions of the view no longer change.
+  test('should send a resize from an outage to the shell that survived it', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await openTerminalViaUI(page)
+    await terminalTabs(page).click()
+    await expect(async () => {
+      expect(await getTerminalText(page)).toMatch(/[$%#>]\s*$/)
+    }).toPass()
+    const rowsBefore = await getTerminalRows(page)
+    expect(rowsBefore).toBeGreaterThan(0)
+    const viewport = page.viewportSize()
+    if (viewport === null)
+      throw new Error('this test needs a fixed viewport to shrink')
+
+    await stopHub(separateHubWorker)
+    await withCleanup(async () => {
+      await expect(terminalTabs(page)).toHaveAttribute('data-terminal-status', TERMINAL_DISCONNECTED)
+      await page.setViewportSize({ width: viewport.width, height: viewport.height - 200 })
+      await expect.poll(() => getTerminalRows(page)).toBeLessThan(rowsBefore)
+    }, () => restartHub(separateHubWorker))
+
+    const rowsDuringTheOutage = await getTerminalRows(page)
+    await expect(terminalTabs(page)).not.toHaveAttribute('data-terminal-status', TERMINAL_DISCONNECTED)
+    await expect(async () => {
+      expect(await sendActiveTerminalInput(page, 'echo SIZE=$(stty size)\r')).toBe(true)
+      expect(await getTerminalText(page)).toMatch(new RegExp(`SIZE=${rowsDuringTheOutage} \\d+`))
+    }).toPass()
   })
 
   test('should restart the shell when the user presses Enter on an exited terminal', async ({ page, authenticatedWorkspace }) => {

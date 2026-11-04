@@ -18,6 +18,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -343,6 +344,40 @@ func TestSinkStatusIsNotActiveWhileACloseIsInProgress(t *testing.T) {
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE.String(),
 		sink.buildStatusChange(row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "").GetStatus().String(),
 		"a provider push reported ACTIVE for a closed tab")
+}
+
+// TestSinkStatusOfAClosingAgentOffersNoQueueHeadDispatch pins the queue-head
+// dispatch beside the status that the close downgrades. Inside the close window
+// the process still runs and can steer, but the status says INACTIVE, and an
+// agent that does not run answers NONE. A status that said INACTIVE and STEER
+// offered a Steer action that the next RPC refused.
+func TestSinkStatusOfAClosingAgentOffersNoQueueHeadDispatch(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-sink-close-steer"
+	seedOpenAgent(t, svc, agentID, true)
+	services := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	sink := requireRootOutputSink(t, svc.Output, agentID)
+	_, err := svc.Agents.StartAgentWith(testutil.DeadlineContext(t), agent.Options{
+		AgentID: agentID, WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, services, claudetest.StartEcho)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	require.True(t, svc.Agents.SupportsSteering(agentID), "fixture check: the running provider steers")
+
+	open := sink.buildStatusChange(requireAgentRow(t, svc, agentID), leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE.String(), open.GetStatus().String())
+	assert.Equal(t, leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_STEER.String(), open.GetQueueHeadDispatch().String(),
+		"fixture check: an open tab whose provider steers offers STEER")
+
+	finish := holdCloseBeforeTeardown(t, svc, agentID)
+	require.True(t, svc.Agents.SupportsSteering(agentID), "fixture check: the held close did not stop the process yet")
+	closing := sink.buildStatusChange(requireAgentRow(t, svc, agentID), leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, "")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE.String(), closing.GetStatus().String())
+	assert.Equal(t, leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE.String(), closing.GetQueueHeadDispatch().String(),
+		"an INACTIVE status must not offer a way to dispatch the queue head")
+	finish()
 }
 
 // TestBroadcastAgentActiveSkipsATabThatMayNotReportActive pins the guard on the

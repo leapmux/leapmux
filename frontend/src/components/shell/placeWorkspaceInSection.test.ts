@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
+import { WorkspaceArchiveState } from '~/generated/proto/leapmux/v1/common_pb'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 vi.mock('~/api/clients', () => ({
@@ -65,6 +66,22 @@ describe('placeWorkspaceInSection', () => {
     const arg = vi.mocked(workspaceClient.moveWorkspace).mock.calls[0]?.[0]
     expect(arg).toMatchObject({ workspaceId: 'ws-1', sectionId: 'sec-1' })
     expect((arg?.position ?? '') > 'u', 'the new rank must sort after the last item').toBe(true)
+  })
+
+  // The Hub requires the archive state the caller holds, and refuses a move
+  // that would cross the archive boundary unseen. CreateWorkspace just made
+  // this workspace, and a new workspace is active.
+  it('states that the new workspace is active', async () => {
+    const deps = makeDeps([])
+    placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
+
+    await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())
+    expect(workspaceClient.moveWorkspace).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-1',
+      sectionId: 'sec-1',
+      position: expect.any(String),
+      expectedArchiveState: WorkspaceArchiveState.ACTIVE,
+    })
   })
 
   it('gives an empty section a valid rank rather than an empty string', async () => {

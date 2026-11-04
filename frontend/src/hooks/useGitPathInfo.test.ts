@@ -6,8 +6,10 @@ import { deferred, flush } from '~/test-support/async'
 const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string }) => Promise<GetGitInfoResponse>>()
 
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
-    getGitInfo(workerId, req),
+  workerGit: {
+    getGitInfo: (workerId: string, req: { workerId: string, path: string }) =>
+      getGitInfo(workerId, req),
+  },
 }))
 
 const { useGitPathInfo } = await import('./useGitPathInfo')
@@ -87,7 +89,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('showGitOptions tracks isGitRepo && (isRepoRoot || isWorktreeRoot)', async () => {
+  it('makes showGitOptions track isGitRepo && (isRepoRoot || isWorktreeRoot)', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({
       isGitRepo: true,
       isRepoRoot: false,
@@ -110,7 +112,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('showGitOptions is true at a worktree root', async () => {
+  it('reports showGitOptions as true at a worktree root', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({
       isGitRepo: true,
       isRepoRoot: false,
@@ -228,7 +230,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('remapWorktreeRoot option: fires once with repo root when first probe lands on a worktree', async () => {
+  it('fires the remapWorktreeRoot option once with repo root when first probe lands on a worktree', async () => {
     getGitInfo
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/main/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/main/repo' }))
@@ -253,7 +255,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('remapWorktreeRoot option: skips the wasted setInfo so info() never paints the worktree-scoped branch', async () => {
+  it('skips the wasted setInfo so info() never paints the worktree-scoped branch when the remapWorktreeRoot option is set', async () => {
     // Regression guard: an earlier impl wrote the worktree's
     // currentBranch into info() before the remap-triggered second
     // probe overwrote it, so consumers saw the worktree branch flash
@@ -306,7 +308,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('remapWorktreeRoot option: not called when first probe is a regular repo root', async () => {
+  it('does not call the remapWorktreeRoot option when first probe is a regular repo root', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo' }))
     const remap = vi.fn<(p: string) => void>()
     await new Promise<void>((done) => {
@@ -323,7 +325,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('remapWorktreeRoot option: NOT called when isWorktreeRoot=true but repoRoot is empty', async () => {
+  it('does NOT call the remapWorktreeRoot option when isWorktreeRoot=true but repoRoot is empty', async () => {
     // Defensive guard: a malformed probe response shouldn't trigger a
     // remap to "" (which would collapse the dialog's path back to empty
     // and re-probe an empty wid/path no-op).
@@ -343,7 +345,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('remapWorktreeRoot option: stays one-shot even when a later probe also returns isWorktreeRoot=true', async () => {
+  it('keeps the remapWorktreeRoot option one-shot even when a later probe also returns isWorktreeRoot=true', async () => {
     // The firstProbeSeen flag controls the remap. Once the first
     // probe lands (worktree or not), subsequent worktree-root probes
     // must NOT fire it again — otherwise a worker/path switch could
@@ -371,7 +373,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('firstProbeSeen: resets when workerId swaps to a different non-empty value so the new worker gets its own remap-on-first-probe', async () => {
+  it('resets firstProbeSeen when workerId swaps to a different non-empty value so the new worker gets its own remap-on-first-probe', async () => {
     // Regression: firstProbeSeen only reset when workerId/path cycled
     // empty, so a useWorkerDialog-wrapped dialog whose user picks a
     // different non-empty worker silently lost the remap. The new
@@ -403,7 +405,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('firstProbeSeen: keeps the flag set across path changes on the SAME worker (does not steal user input)', async () => {
+  it('keeps the firstProbeSeen flag set across path changes on the SAME worker (does not steal user input)', async () => {
     // The flag only resets on empty cycle OR worker swap. A path
     // change on the same worker is a user-driven navigation that must
     // NOT trigger a re-remap; doing so would yank the input back to
@@ -429,7 +431,7 @@ describe('useGitPathInfo', () => {
     })
   })
 
-  it('firstProbeSeen: resets after workerId/path goes empty so a re-mount can fire remap again', async () => {
+  it('resets firstProbeSeen after workerId/path goes empty so a re-mount can fire remap again', async () => {
     getGitInfo
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/main/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/other/repo' }))
@@ -667,7 +669,7 @@ describe('useGitPathInfo', () => {
       })
     })
 
-    it('showGitOptions stays stable across probe-driven info() updates that do not flip the boolean', async () => {
+    it('keeps showGitOptions stable across probe-driven info() updates that do not flip the boolean', async () => {
       // Regression guard: showGitOptions is a createMemo so downstream
       // `on()` consumers (e.g. GitOptions' listGitBranches effect)
       // don't refire on every info() update. Without the memo, a seed
@@ -707,7 +709,7 @@ describe('useGitPathInfo', () => {
       })
     })
 
-    it('showGitOptions flips and refires consumers when the probe corrects isRepoRoot=true to a non-repo', async () => {
+    it('flips showGitOptions and refires consumers when the probe corrects isRepoRoot=true to a non-repo', async () => {
       // Symmetry check: when showGitOptions actually changes, the memo
       // does fire downstream effects.
       getGitInfo.mockResolvedValueOnce(gitResp({

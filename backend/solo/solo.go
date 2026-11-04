@@ -24,6 +24,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
@@ -63,8 +64,8 @@ var workerDrainTimeout = 5 * time.Second
 // tests had to avoid by discipline alone -- and which silently forbade
 // t.Parallel() on every test that stubs one.
 //
-// Both have to be seams at all because no fixture reaches their failure modes
-// from outside:
+// All three have to be seams at all because no fixture reaches their failure
+// modes from outside:
 //
 //   - serveHub: hub.NewServer binds BOTH listeners before Serve is ever called,
 //     so no fixture can induce a Serve-TIME failure by occupying an address or
@@ -77,8 +78,11 @@ var workerDrainTimeout = 5 * time.Second
 //     unreadable state file, a store error -- fails AT ONCE, at the first
 //     statement that touches the database or the disk, so nothing can hold Start
 //     inside the bring-up window long enough for the startup to end there.
+//   - runWorker: the Hub refuses its bundled Worker for good only after a retire
+//     or a key change that a running solo process does not make, so no fixture
+//     can end worker.Run while the context is live.
 //
-// defaultDeps gives the real implementations, and both stay directly callable,
+// defaultDeps gives the real implementations, and they stay directly callable,
 // which is what keeps the seams honest: several tests drive Start straight
 // through them, and TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied
 // WRAPS bringUpLocalWorker rather than replacing it, so the token accounting under
@@ -86,12 +90,14 @@ var workerDrainTimeout = 5 * time.Second
 type deps struct {
 	serveHub      func(ctx context.Context, s *hub.Server) error
 	bringUpWorker func(ctx context.Context, p workerBringUp) error
+	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
 }
 
 func defaultDeps() deps {
 	return deps{
 		serveHub:      func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) },
 		bringUpWorker: bringUpLocalWorker,
+		runWorker:     worker.Run,
 	}
 }
 
@@ -648,6 +654,7 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 			hubCfg:        hubCfg,
 			listenURL:     listenURL,
 			modeName:      modeName,
+			runWorker:     d.runWorker,
 		})
 	}
 	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
@@ -807,6 +814,7 @@ type workerBringUp struct {
 	hubCfg        *hubconfig.Config
 	listenURL     string
 	modeName      string
+	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
 }
 
 // bringUpLocalWorker loads (or creates, then persists) the local worker's
@@ -845,7 +853,7 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 	go func() {
 		defer p.work.Done()
 		defer releaseDrained()
-		if wErr := worker.Run(ctx, worker.RunConfig{
+		wErr := p.runWorker(ctx, worker.RunConfig{
 			Drained:      releaseDrained,
 			HubURL:       p.listenURL,
 			DataDir:      p.workerDataDir,
@@ -866,8 +874,19 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:           parseBool(p.hubCfg.Extras["use_login_shell"], true),
 			RegisteredBy:            state.RegisteredBy,
-		}); wErr != nil {
+		})
+		if wErr != nil {
 			slog.Error("worker error", "error", wErr)
+		}
+		// Run also returns with ctx live. Instance.Wait does not learn of it, and
+		// nothing here restarts the Worker. A nil return or a refusal of the keys
+		// means that the Hub stopped this Worker for good, and the next launch
+		// retires the row and registers a fresh Worker. Any other error is a local
+		// failure, such as "open worker db". The next launch fails the same way,
+		// so a restart is no remedy, and the error above is the whole report.
+		if ctx.Err() == nil && (wErr == nil || errors.Is(wErr, workerhub.ErrKeysRefused)) {
+			slog.Error("the local worker stopped and will not reconnect; restart LeapMux to register a new local worker",
+				"worker_id", state.WorkerID)
 		}
 	}()
 
@@ -887,110 +906,17 @@ type workerRegistrar interface {
 	RetireLocalWorker(ctx context.Context, workerID string) error
 }
 
-// loadOrCreateWorkerState returns the local Worker's state and its keypair,
-// registering a fresh Worker when there is nothing usable to launch.
-//
-// A saved state with a worker ID and token is usable only when the row is
-// ACTIVE, the keypair restores, and the keys it yields equal the ones the Hub
-// pinned. Anything else retires the old row first -- a store error fails the
-// launch and keeps state.json, so the next launch can retry -- and only then is
-// the file preserved and a fresh Worker registered.
+// loadOrCreateWorkerState returns the local Worker's state and its keypair: the
+// saved ones when they can be launched (reuseSavedWorkerState), and a freshly
+// registered Worker's otherwise.
 func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, statePath, workerDataDir string) (*soloState, *noiseutil.CompositeKeypair, error) {
 	if err := os.MkdirAll(workerDataDir, 0o750); err != nil {
 		return nil, nil, fmt.Errorf("create worker data dir: %w", err)
 	}
 
-	data, err := os.ReadFile(statePath)
-	if err == nil {
-		var s soloState
-		unmarshalErr := json.Unmarshal(data, &s)
-		if unmarshalErr == nil && s.WorkerID != "" && s.AuthToken != "" {
-			// Take the owner from the DB, which is the authority: workers.registered_by
-			// is NOT NULL and set at registration, and it is the fact that
-			// the worker's owner gate uses to control the whole machine. The state
-			// file's copy is a cache that can lag
-			// it, and an empty one is not something to paper over -- a worker launched
-			// with no owner has every machine-scoped family (file, git, sysinfo, tunnel)
-			// permanently dead for its own legitimate user, failing closed in a way that
-			// reads exactly like a genuine cross-tenant refusal.
-			//
-			// This replaces a backfill from GetAdminUser. Sourcing ownership from
-			// "whoever the admin is now" answers a different question that merely shares
-			// an answer on a fresh single-user install: on any install where the admin
-			// changed, it silently reassigned the machine to them.
-			registration, dbErr := server.GetWorkerRegistration(ctx, s.WorkerID)
-			if dbErr == nil {
-				if registration.Owner == "" {
-					// Unreachable via the schema (NOT NULL, set at registration), so this
-					// means a hand-edited row or a mint path that dropped it. Re-register
-					// rather than launch an ownerless worker.
-					slog.Warn("saved worker has no recorded owner, re-registering", "worker_id", s.WorkerID)
-				} else if compositeKey, reason := usableLocalKeypair(&s, registration); reason != "" {
-					// The saved identity cannot be launched: the Hub pinned keys this
-					// state cannot reproduce, the keys it does reproduce are not the
-					// pinned ones, or an administrator retired the row while the app
-					// was offline. Retire the old row BEFORE touching the file: a
-					// store error must fail the launch and leave state.json in place
-					// so the next launch can retry, which is exactly what a
-					// transient owner-lookup error does.
-					slog.Error("saved worker state is unusable; retiring it and re-registering a fresh worker, which orphans the previous one",
-						"worker_id", s.WorkerID, "reason", reason)
-					if err := server.RetireLocalWorker(ctx, s.WorkerID); err != nil {
-						if !errors.Is(err, hub.ErrNotAutoRegistered) {
-							return nil, nil, fmt.Errorf("retire unusable local worker %q: %w", s.WorkerID, err)
-						}
-						slog.Warn("saved worker is not an auto-registered worker; leaving its row alone",
-							"worker_id", s.WorkerID, "error", err)
-					}
-					preserveCorruptState(statePath, data)
-				} else {
-					if s.RegisteredBy != registration.Owner {
-						// The file disagreed with the DB (or predates the field). The DB wins;
-						// refresh the cache so the next launch matches without a second query.
-						s.RegisteredBy = registration.Owner
-						if err := persistState(statePath, &s); err != nil {
-							// The in-memory correction still applies; a failed write only
-							// costs the cache and forces this DB lookup again next launch.
-							slog.Warn("failed to refresh worker state cache", "error", err)
-						}
-					}
-					return &s, compositeKey, nil
-				}
-			} else if errors.Is(dbErr, store.ErrNotFound) {
-				// The worker row is genuinely gone (deleted, or never persisted):
-				// re-register a fresh identity below.
-				slog.Warn("saved worker not found in DB, re-registering", "worker_id", s.WorkerID)
-			} else {
-				// A transient store failure (for example a disk I/O error) is NOT
-				// a deletion. Treating it as one would discard the saved WorkerID
-				// and re-register a brand-new identity, orphaning every workspace
-				// and tab still pointed at the old worker. Fail the launch so a
-				// retry can find the row intact.
-				return nil, nil, fmt.Errorf("look up saved worker %q owner: %w", s.WorkerID, dbErr)
-			}
-		} else {
-			// The file exists but is not a usable worker state -- a partial write
-			// (power loss or OS crash mid-write, before this launch made writes
-			// atomic), a hand-edit, or a truncated tail. The saved identity is
-			// unrecoverable from these bytes, so re-registering a fresh worker
-			// below is the only forward path, but it ORPHANS every workspace and
-			// tab still pointing at the old worker_id -- the same loss the
-			// transient-DB-error guard above exists to prevent. The DB analogue
-			// fails the launch to keep the saved identity; here the identity is
-			// already gone, so the best we can do is fail LOUDLY (Error, not a
-			// silent fall-through) and preserve the corrupt file so an operator
-			// can re-link the orphaned workspaces before the reaper collects them.
-			if unmarshalErr != nil {
-				slog.Error("saved worker state is unreadable; re-registering a fresh worker, which orphans the previous one",
-					"state_path", statePath, "err", unmarshalErr)
-			} else {
-				slog.Error("saved worker state is missing its worker id or auth token; re-registering a fresh worker, which orphans the previous one",
-					"state_path", statePath)
-			}
-			preserveCorruptState(statePath, data)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, fmt.Errorf("read state: %w", err)
+	saved, savedKey, err := reuseSavedWorkerState(ctx, server, statePath)
+	if err != nil || saved != nil {
+		return saved, savedKey, err
 	}
 
 	userID, err := server.GetAdminUser(ctx)
@@ -1028,8 +954,9 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 	if err := persistState(statePath, state); err != nil {
 		// The row is pinned to private keys that only this failed write would
 		// have kept, so it can never be used: retire it rather than leave an
-		// ACTIVE Worker nobody can launch.
-		retireErr := server.RetireLocalWorker(ctx, state.WorkerID)
+		// ACTIVE Worker nobody can launch. The retire runs even when the launch
+		// is cancelled meanwhile, because nothing else would ever retire the row.
+		retireErr := server.RetireLocalWorker(context.WithoutCancel(ctx), state.WorkerID)
 		if retireErr != nil {
 			return nil, nil, errors.Join(err, fmt.Errorf("retire the worker whose state could not be saved: %w", retireErr))
 		}
@@ -1039,14 +966,140 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 	return state, compositeKey, nil
 }
 
+// reuseSavedWorkerState returns the saved local Worker state and its keypair when
+// they can be launched. It returns nil values when there is nothing to launch: no
+// file, or a file that it discarded. The caller then registers a fresh Worker,
+// whose state overwrites the file.
+//
+// A saved state with a worker ID is usable only when it holds a token, the row has
+// an owner and is ACTIVE, the keypair restores, and the keys it yields equal the
+// ones the Hub pinned. Every other saved state takes the one path of
+// discardSavedState.
+//
+// An error fails the launch and keeps state.json, so the next launch can retry.
+// A transient store failure takes this path, and so does a failed retire.
+func reuseSavedWorkerState(ctx context.Context, server workerRegistrar, statePath string) (*soloState, *noiseutil.CompositeKeypair, error) {
+	data, err := os.ReadFile(statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read state: %w", err)
+	}
+
+	// A file that is not a usable worker state comes from a partial write (power
+	// loss or OS crash mid-write, before this launch made writes atomic), a
+	// hand-edit, or a truncated tail. The saved identity is unrecoverable from
+	// these bytes, so re-registering a fresh worker is the only forward path, but
+	// it ORPHANS every workspace and tab still pointing at the old worker_id --
+	// the same loss the transient-DB-error guard below exists to prevent. The DB
+	// analogue fails the launch to keep the saved identity; here the identity is
+	// already gone, so the best we can do is fail LOUDLY (Error, not a silent
+	// fall-through) and preserve the corrupt file so an operator can re-link the
+	// orphaned workspaces before the reaper collects them.
+	var s soloState
+	if err := json.Unmarshal(data, &s); err != nil {
+		slog.Error("saved worker state is unreadable; re-registering a fresh worker, which orphans the previous one",
+			"state_path", statePath, "err", err)
+		return nil, nil, discardSavedState(ctx, server, statePath, data, "")
+	}
+	if s.WorkerID == "" {
+		slog.Error("saved worker state is missing its worker id; re-registering a fresh worker, which orphans the previous one",
+			"state_path", statePath)
+		return nil, nil, discardSavedState(ctx, server, statePath, data, "")
+	}
+
+	// Take the owner from the DB, which is the authority: workers.registered_by
+	// is NOT NULL and set at registration, and it is the fact that
+	// the worker's owner gate uses to control the whole machine. The state
+	// file's copy is a cache that can lag
+	// it, and an empty one is not something to paper over -- a worker launched
+	// with no owner has every machine-scoped family (file, git, sysinfo, tunnel)
+	// permanently dead for its own legitimate user, failing closed in a way that
+	// reads exactly like a genuine cross-tenant refusal.
+	//
+	// This replaces a backfill from GetAdminUser. Sourcing ownership from
+	// "whoever the admin is now" answers a different question that merely shares
+	// an answer on a fresh single-user install: on any install where the admin
+	// changed, it silently reassigned the machine to them.
+	registration, err := server.GetWorkerRegistration(ctx, s.WorkerID)
+	if errors.Is(err, store.ErrNotFound) {
+		// The worker row is genuinely gone (deleted, or never persisted), so there
+		// is no row to retire.
+		slog.Warn("saved worker not found in DB, re-registering", "worker_id", s.WorkerID)
+		return nil, nil, discardSavedState(ctx, server, statePath, data, "")
+	}
+	if err != nil {
+		// A transient store failure (for example a disk I/O error) is NOT
+		// a deletion. Treating it as one would discard the saved WorkerID
+		// and re-register a brand-new identity, orphaning every workspace
+		// and tab still pointed at the old worker. Fail the launch so a
+		// retry can find the row intact.
+		return nil, nil, fmt.Errorf("look up saved worker %q owner: %w", s.WorkerID, err)
+	}
+
+	compositeKey, reason := usableLocalKeypair(&s, registration)
+	if reason != "" {
+		slog.Error("saved worker state is unusable; retiring it and re-registering a fresh worker, which orphans the previous one",
+			"worker_id", s.WorkerID, "reason", reason)
+		return nil, nil, discardSavedState(ctx, server, statePath, data, s.WorkerID)
+	}
+
+	if s.RegisteredBy != registration.Owner {
+		// The file disagreed with the DB (or predates the field). The DB wins;
+		// refresh the cache so the next launch matches without a second query.
+		s.RegisteredBy = registration.Owner
+		if err := persistState(statePath, &s); err != nil {
+			// The in-memory correction still applies; a failed write only
+			// costs the cache and forces this DB lookup again next launch.
+			slog.Warn("failed to refresh worker state cache", "error", err)
+		}
+	}
+	return &s, compositeKey, nil
+}
+
+// discardSavedState is the one way a launch gives up a saved worker state: it
+// retires rowID, when the state identifies a row that exists, and then moves the
+// file aside.
+//
+// The order matters. A retire that fails is a store error, which must fail the
+// launch and leave state.json in place, so the next launch can retry. A file that
+// is unreadable or that lacks the worker ID identifies no row, and neither does a
+// saved ID that the store does not know, so such a caller passes an empty rowID.
+func discardSavedState(ctx context.Context, server workerRegistrar, statePath string, data []byte, rowID string) error {
+	if rowID != "" {
+		if err := server.RetireLocalWorker(ctx, rowID); err != nil {
+			if !errors.Is(err, hub.ErrNotAutoRegistered) {
+				return fmt.Errorf("retire unusable local worker %q: %w", rowID, err)
+			}
+			slog.Warn("saved worker is not an auto-registered worker; leaving its row alone",
+				"worker_id", rowID, "error", err)
+		}
+	}
+	preserveDiscardedState(statePath, data)
+	return nil
+}
+
 // usableLocalKeypair returns the keypair of a saved local Worker state that can
 // be launched. When the state cannot be launched, it returns no keypair and a
-// reason for the log.
+// reason for the log: the state has no token, the row has no owner or is not
+// ACTIVE, the Hub pinned keys this state cannot reproduce, or the keys it does
+// reproduce are not the pinned ones.
 //
 // The check has to restore the keypair to compare its keys with the pin, so it
 // returns that keypair: the restore recomputes the SLH-DSA public key, and a
 // caller that restored it again would pay that cost twice on every launch.
 func usableLocalKeypair(s *soloState, registration hub.WorkerRegistration) (*noiseutil.CompositeKeypair, string) {
+	// The ID still identifies the row, which no launch can connect as without its
+	// token, so the row must not stay ACTIVE and offline for good.
+	if s.AuthToken == "" {
+		return nil, "the auth token is missing"
+	}
+	// Unreachable via the schema (NOT NULL, set at registration), so this means a
+	// hand-edited row or a mint path that dropped it.
+	if registration.Owner == "" {
+		return nil, "the worker row has no recorded owner"
+	}
 	if registration.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
 		return nil, "the worker row is " + registration.Status.String()
 	}
@@ -1097,11 +1150,12 @@ func persistState(statePath string, s *soloState) error {
 	return nil
 }
 
-// preserveCorruptState renames an unreadable or unusable worker-state file aside so a
-// later launch does not re-log the same orphaning and an operator can inspect
-// or re-link it. Best-effort: a failure leaves the bytes in place for the next
-// launch to warn about again, which is still better than silently overwriting.
-func preserveCorruptState(statePath string, data []byte) {
+// preserveDiscardedState renames a worker-state file that this launch discards
+// aside, so a later launch does not re-log the same orphaning and an operator can
+// inspect or re-link it. Best-effort: a failure leaves the bytes in place for the
+// next launch to warn about again, which is still better than silently
+// overwriting.
+func preserveDiscardedState(statePath string, data []byte) {
 	sidecar := fmt.Sprintf("%s.corrupt-%d", statePath, time.Now().UnixNano())
 	// RENAME, not copy. A copy leaves the unreadable file exactly where the next
 	// load will read it again, and the dev-mode poller re-enters this path every

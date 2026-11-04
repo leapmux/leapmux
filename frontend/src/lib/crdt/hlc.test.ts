@@ -94,38 +94,38 @@ describe('formatHlcWire / parseHlcWire', () => {
     expect(parsed!.clientId).toBe('c-abc')
   })
 
-  it('formatHlcWire accepts the minimal structural shape (no proto $typeName)', () => {
+  it('accepts the minimal structural shape (no proto $typeName) in formatHlcWire', () => {
     // The desktop bridge holds only {physical, logical, clientId}; the helper
     // must not require the full proto HLC type.
     const wire = formatHlcWire({ physical: 5n, logical: 1n, clientId: 'c' })
     expect(wire).toBe('5.1.c')
   })
 
-  it('parseHlcWire rejects a negative logical (mirrors Go logical < 0)', () => {
+  it('rejects a negative logical (mirrors Go logical < 0) in parseHlcWire', () => {
     // Pre-fix this passed TS validation and was rejected by the hub → storm.
     expect(parseHlcWire('100.-5.c')).toBeUndefined()
   })
 
-  it('parseHlcWire rejects a clientId longer than 128 chars (mirrors Go bound)', () => {
+  it('rejects a clientId longer than 128 chars in parseHlcWire (mirrors Go limit)', () => {
     expect(parseHlcWire(`100.0.${'x'.repeat(129)}`)).toBeUndefined()
     // 128 is the boundary: accepted.
     expect(parseHlcWire(`100.0.${'x'.repeat(128)}`)).toBeDefined()
   })
 
-  it('parseHlcWire rejects physical/logical outside int64 range (mirrors Go ParseInt)', () => {
+  it('rejects physical/logical outside int64 range in parseHlcWire (mirrors Go ParseInt)', () => {
     // BigInt is unbounded; Go's strconv.ParseInt(..., 10, 64) overflows.
     const over = 2n ** 63n // int64 max + 1
     expect(parseHlcWire(`${over}.0.c`)).toBeUndefined()
     expect(parseHlcWire(`100.${over}.c`)).toBeUndefined()
   })
 
-  it('parseHlcWire rejects an empty logical segment ("100..c")', () => {
+  it('rejects an empty logical segment ("100..c") in parseHlcWire', () => {
     // Pins the fixed d2 guard: previously d2<=0 was dead code (absolute index)
     // and this was saved only by BigInt("") throwing.
     expect(parseHlcWire('100..c')).toBeUndefined()
   })
 
-  it('parseHlcWire never throws on garbage (corrupted persisted value)', () => {
+  it('never throws on garbage in parseHlcWire (corrupted persisted value)', () => {
     // A corrupted persisted watermark must degrade to undefined, not throw out
     // of the socket-open effect.
     expect(() => parseHlcWire('not.an.hlc.at.all')).not.toThrow()

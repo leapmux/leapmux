@@ -2,6 +2,7 @@ import type { DescMethod, JsonValue } from '@bufbuild/protobuf'
 import type { ChannelTransport } from '../../../src/lib/channel'
 import { fromJson } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { AdminSettingsService } from '~/generated/proto/leapmux/v1/admin_pb'
 import { AgentProvider, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
 import { AuthService } from '~/generated/proto/leapmux/v1/auth_pb'
@@ -143,7 +144,7 @@ describe('openAgentViaAPI', () => {
     expect(callWorker.mock.calls[0]?.[0]).toBe('worker-a')
     expect(callWorker.mock.calls[0]?.[1]).toBe(WorkerAgentService.method.openAgent)
     expect(callWorker.mock.calls[0]?.[2]).toMatchObject({ workingDir: '/project', agentSessionId: 'native-conversation-42' })
-    // The routing argument names the Worker; the request body does not repeat it.
+    // The routing argument specifies the Worker; the request body does not repeat it.
     expect(callWorker.mock.calls[0]?.[2]).not.toHaveProperty('workerId')
   })
 
@@ -1107,10 +1108,10 @@ describe('listWorkersViaAPI', () => {
     ])
     expect(requests.map(r => r.body)).toEqual([
       {
-        page: { limit: 500, cursor: '' },
+        page: { limit: MAX_PAGE_LIMIT, cursor: '' },
       },
       {
-        page: { limit: 500, cursor: 'c1' },
+        page: { limit: MAX_PAGE_LIMIT, cursor: 'c1' },
       },
     ])
     for (const request of requests)
@@ -1131,7 +1132,7 @@ describe('listWorkersViaAPI', () => {
     await expect(listWorkersViaAPI(hubUrl, 'c')).rejects.toThrow('listWorkersViaAPI read 100 pages and the hub still reported more.')
     expect(requests).toHaveLength(100)
     expect(requests.at(-1)?.body).toEqual({
-      page: { limit: 500, cursor: 'c99' },
+      page: { limit: MAX_PAGE_LIMIT, cursor: 'c99' },
     })
   })
 

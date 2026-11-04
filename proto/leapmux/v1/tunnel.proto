@@ -27,7 +27,8 @@ service WorkerTunnelService {
 // before sending so cancellation can close an open that completes after the
 // local deadline. The worker answers on the OpenTunnelConn stream: an `opened`
 // event first, then the target's data, or a stream error frame when it refuses
-// or cannot connect.
+// or cannot connect. A target read that fails after `opened` also ends the
+// stream with a stream error frame (Unavailable).
 message OpenTunnelConnRequest {
   string conn_id = 1;
   string target_addr = 2; // Hostname or IP (DNS resolved at Worker)
@@ -83,13 +84,13 @@ message GrantTunnelReadCreditRequest {
 
 message GrantTunnelReadCreditResponse {}
 
-// Streamed on the OpenTunnelConn stream; the stream identifies the conn.
+// Streamed on the OpenTunnelConn stream; the stream identifies the conn. A
+// failure is not an event: the worker ends the stream with a stream error frame.
 message TunnelConnEvent {
   oneof event {
     TunnelConnOpened opened = 1; // First frame: the worker connected to the target.
     bytes data = 2;              // Bytes the target sent.
     TunnelConnEof eof = 3;       // The target closed its write side.
-    string error = 4;            // The target connection failed.
   }
 }
 

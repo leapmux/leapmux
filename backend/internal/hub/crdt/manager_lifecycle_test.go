@@ -892,7 +892,7 @@ func TestLifecycleDelete_EmptyWorkspace_SubmitsSingleTombstoneOp(t *testing.T) {
 
 	// Seed w1's WorkspaceContentsRecord with NO root node (empty workspace).
 	// No valid op batch produces that state -- a CreateWorkspaceOp carries its
-	// root, and the validator refuses one that names no live root -- so the
+	// root, and the validator refuses one that identifies no live root -- so the
 	// test-only seam writes it, still on the manager goroutine.
 	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.Workspaces["w1"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "w1"}

@@ -140,12 +140,13 @@ func TestCatalogQueueHeadDispatchCanPublishTheSameSink(t *testing.T) {
 	sink := requireRootOutputSink(t, svc.Output, "agent-1")
 	svc.Output.WaitActivityRefreshes()
 	original := svc.Output.queueHeadDispatch
-	expected := original("agent-1")
+	row := mustGetAgent(t, svc)
+	expected := original(&row, true)
 	before := len(agentStatusChanges(t, writer, "agent-1"))
 	var entered bool
 	var callbacks int
 	var mutexesFree bool
-	svc.Output.SetQueueHeadDispatchFunc(func(agentID string) leapmuxv1.QueueHeadDispatch {
+	svc.Output.SetQueueHeadDispatchFunc(func(row *db.Agent, running bool) leapmuxv1.QueueHeadDispatch {
 		if !entered {
 			entered = true
 			mutexesFree = catalogCallbackLocksFree(sink)
@@ -154,7 +155,7 @@ func TestCatalogQueueHeadDispatchCanPublishTheSameSink(t *testing.T) {
 				services.BroadcastStatusActive("original-native-session")
 			}
 		}
-		return original(agentID)
+		return original(row, running)
 	})
 	services.BroadcastStatusActive("original-native-session")
 	assert.True(t, mutexesFree, "the configured dispatch reader must release both service mutexes")

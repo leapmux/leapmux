@@ -330,7 +330,7 @@ func collectTerminalIDs(w *testResponseWriter) []string {
 	var ids []string
 	for _, r := range w.responses {
 		var resp leapmuxv1.OpenTerminalResponse
-		if err := proto.Unmarshal(r.Payload, &resp); err == nil && resp.TerminalId != "" {
+		if err := proto.Unmarshal(r.GetPayload(), &resp); err == nil && resp.TerminalId != "" {
 			ids = append(ids, resp.TerminalId)
 		}
 	}
@@ -343,7 +343,7 @@ func collectAgentIDs(w *testResponseWriter) []string {
 	var ids []string
 	for _, r := range w.responses {
 		var resp leapmuxv1.OpenAgentResponse
-		if err := proto.Unmarshal(r.Payload, &resp); err == nil && resp.GetAgent().GetId() != "" {
+		if err := proto.Unmarshal(r.GetPayload(), &resp); err == nil && resp.GetAgent().GetId() != "" {
 			ids = append(ids, resp.GetAgent().GetId())
 		}
 	}

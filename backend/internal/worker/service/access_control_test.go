@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -540,20 +541,14 @@ func TestAccessControl_OwnerGuardedMethods_DenyOtherUser(t *testing.T) {
 // method whose gate answered unary left the browser holding a stream
 // subscription with no End frame to terminate on.
 //
-// Asserted per streaming method, from the registration table, so a new streaming
-// method is covered the moment it is registered.
+// Asserted per streaming method, from the proto declarations of every
+// registered method, so a new streaming method is covered the moment it is
+// registered.
 func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	t.Parallel()
 
-	svc, d, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
-
-	var streaming []string
-	for method, shape := range shapes {
-		if shape == shapeStream {
-			streaming = append(streaming, method)
-		}
-	}
+	_, d, _ := setupTestService(t)
+	streaming := declaredMethodsByShape(t, d.Methods(), true)
 	require.NotEmpty(t, streaming, "there must be streaming methods to check")
 
 	for _, method := range streaming {
@@ -606,6 +601,60 @@ func TestCleanupWorkspace_ClosesTheNamedTabs(t *testing.T) {
 	assert.False(t, other.ClosedAt.Valid, "cleanup must not close a tab the caller did not name")
 }
 
+// workspace:write alone authorizes CleanupWorkspace, whatever the listed tabs are.
+// The per-type scopes of CloseTab do not apply: the same grant stops these
+// processes anyway through a layout close, an archive or a delete.
+func TestAccessControl_CleanupWorkspaceRequiresOnlyWorkspaceWrite(t *testing.T) {
+	t.Parallel()
+
+	owner := userid.MustNew("user-1")
+	cleanup := func(t *testing.T, d *channel.Dispatcher, grant string, tabs ...*leapmuxv1.TabIdent) *testResponseWriter {
+		t.Helper()
+		payload, err := proto.Marshal(&leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs})
+		require.NoError(t, err)
+		w := newTestWriter()
+		d.DispatchWith(context.Background(), channel.NewCaller(owner, mustScopes(grant)), &leapmuxv1.InnerRpcRequest{
+			Method: leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, Payload: payload,
+		}, w)
+		return w
+	}
+
+	t.Run("workspace:write alone closes a live agent and a live terminal", func(t *testing.T) {
+		t.Parallel()
+		svc, d, _ := setupTestService(t)
+		defer drainAllInFlight(svc)
+		seedAgent(t, svc, "agent-1")
+		seedTerminal(t, svc, "term-1")
+
+		w := cleanup(t, d, "workspace:write", agentTabIdent("agent-1"), terminalTabIdent("term-1"))
+
+		require.Empty(t, w.errors)
+		require.Len(t, w.responses, 1)
+		agent, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+		require.NoError(t, err)
+		assert.True(t, agent.ClosedAt.Valid, "the agent tab must close")
+		terminal, err := svc.Queries.GetTerminal(context.Background(), "term-1")
+		require.NoError(t, err)
+		assert.True(t, terminal.ClosedAt.Valid, "the terminal tab must close")
+	})
+
+	t.Run("the per-type scopes alone do not", func(t *testing.T) {
+		t.Parallel()
+		svc, d, _ := setupTestService(t)
+		defer drainAllInFlight(svc)
+		seedAgent(t, svc, "agent-1")
+
+		w := cleanup(t, d, "worker:read agent:write terminal:write file:read", agentTabIdent("agent-1"))
+
+		require.Len(t, w.errors, 1)
+		assert.Equal(t, codePermissionDenied, w.errors[0].code)
+		assert.Contains(t, w.errors[0].message, "workspace:write")
+		row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+		require.NoError(t, err)
+		assert.False(t, row.ClosedAt.Valid, "a denied cleanup must leave the tab open")
+	})
+}
+
 // An empty tab list is a legitimate request (a workspace that held nothing on
 // this worker), not an error, and must not be read as "close everything".
 func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
@@ -641,7 +690,7 @@ func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
 //
 // Tab-scoped methods sit behind the SAME gate, wired structurally via
 // registerOwnerGuarded / registerAgentGuarded / registerTerminalGuarded (and the
-// Tracked / ByID / ForRestart variants); their per-method denials are covered by
+// ByID / ForRestart variants); their per-method denials are covered by
 // ownerGuardedProbes. Completeness is asserted by
 // TestAccessControl_OwnerGuardedProbesAreComplete and
 // TestEveryRegisteredMethodIsClassified.
@@ -668,8 +717,8 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 			}, w)
 
 			// rejections(), not w.errors: a streaming method reports its
-			// denial as a stream frame -- a unary reply on a correlation id the
-			// client holds as a stream is dropped on arrival.
+			// denial as a stream frame -- a unary error on a correlation id
+			// the client holds as a stream carries no End flag.
 			rejected := w.rejections()
 			require.Len(t, rejected, 1, "a non-owner must be refused")
 			assert.Equal(t, codePermissionDenied, rejected[0].code)
@@ -678,13 +727,14 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// TestListAvailableShells_OwnerAllowed pins the ALLOW side of the
-// registerOwnerOnly gate the capability probes moved behind: the worker owner
+// TestListAvailableShells_OwnerAllowed pins the ALLOW side of the owner gate
+// that registerOwnerGuarded puts the capability probes behind: the worker owner
 // (the identity the local-IPC remote CLI dispatches with) must still be able
 // to enumerate installed shells. The deny side is covered per-method by
-// TestMachineScopedFamiliesAreOwnerOnly; ListAvailableProviders shares the
-// identical registerOwnerOnly wrapper, so one end-to-end allow probe covers
-// the gate (its body forks discovery subprocesses, too slow for a unit test).
+// TestMachineScopedFamiliesAreOwnerOnly; ListAvailableProviders registers
+// through the same registerOwnerGuarded wrapper, so one end-to-end allow probe
+// covers the gate (its body forks discovery subprocesses, too slow for a unit
+// test).
 func TestListAvailableShells_OwnerAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -735,32 +785,71 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 		"gateNone additions must be an explicit reviewed decision")
 }
 
-// TestRegisteredShapesFollowTheDeclarations pins that the registrar registers
-// each method in the reply shape its proto declares: a server-streaming method
-// as streaming, every other method as unary.
-func TestRegisteredShapesFollowTheDeclarations(t *testing.T) {
+// TestScopeDenialsFollowTheDeclaredShape pins that every registered method
+// refuses a caller whose grant lacks its scope in the reply shape its proto
+// declares: a server-streaming method with one final stream error frame, every
+// other method with one unary error and no stream frame.
+//
+// The expected shape comes from the declarations (rpcaccess.Lookup), and the
+// observed shape from what the method sends, so a registrar that answered in a
+// shape its declaration does not state fails here. The caller is the owner, so
+// the scope check is the only refusal that can fire, and it fires for every
+// method, Ping included.
+func TestScopeDenialsFollowTheDeclaredShape(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
-	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
-	require.NotEmpty(t, shapes)
-	streaming := 0
-	for method, shape := range shapes {
+	_, d, _ := setupTestService(t)
+	noGrant := channel.NewCaller(userid.MustNew("user-1"), authscope.ScopeSet{})
+	streaming := declaredMethodsByShape(t, d.Methods(), true)
+	unary := declaredMethodsByShape(t, d.Methods(), false)
+	require.NotEmpty(t, streaming, "no streaming method at all; the stream case would prove nothing")
+	require.NotEmpty(t, unary, "no unary method at all; the unary case would prove nothing")
+
+	for _, method := range streaming {
+		t.Run(method, func(t *testing.T) {
+			w := newTestWriter()
+			d.DispatchWith(context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
+			assert.Empty(t, w.errors, "a streaming method must not refuse with a unary error")
+			frames := w.streamsSnapshot()
+			require.Len(t, frames, 1, "the denial must arrive as exactly one stream frame")
+			assert.True(t, frames[0].GetEnd())
+			assert.Equal(t, codePermissionDenied, frames[0].GetError().GetCode())
+		})
+	}
+	for _, method := range unary {
+		t.Run(method, func(t *testing.T) {
+			w := newTestWriter()
+			d.DispatchWith(context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
+			assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
+			require.Len(t, w.errors, 1, "the denial must arrive as exactly one unary error")
+			assert.Equal(t, codePermissionDenied, w.errors[0].code)
+			assert.Empty(t, w.responses, "a refused call must return no data")
+		})
+	}
+}
+
+// declaredMethodsByShape returns, in sorted order, the methods whose proto
+// declaration is server-streaming when streaming is true, and the others when
+// it is false. It reads the shape from the declarations, never from the
+// registrar under test, so a test that uses it does not check the registrar
+// against itself.
+func declaredMethodsByShape(t *testing.T, methods []string, streaming bool) []string {
+	t.Helper()
+	var matched []string
+	for _, method := range methods {
 		declared, ok := rpcaccess.Lookup(method)
 		require.Truef(t, ok, "%s is registered but not declared", method)
-		want := shapeUnary
-		if declared.ServerStreaming {
-			want = shapeStream
-			streaming++
+		if declared.ServerStreaming == streaming {
+			matched = append(matched, method)
 		}
-		assert.Equalf(t, want, shape, "%s is registered in a shape its declaration does not state", method)
 	}
-	assert.Positive(t, streaming, "no streaming method at all; the assertion proved nothing")
+	sort.Strings(matched)
+	return matched
 }
 
 // TestAStreamingMethodDeniesWithAStreamFrame pins every refusal of a
 // server-streaming method -- a decode failure, a scope denial and an owner
-// denial -- to one terminal stream frame, because the client holds the
+// denial -- to one final stream frame, because the client holds the
 // correlation id as a stream and a unary error there carries no End.
 func TestAStreamingMethodDeniesWithAStreamFrame(t *testing.T) {
 	t.Parallel()
@@ -818,6 +907,79 @@ func TestAUnaryMethodDeniesWithAUnaryError(t *testing.T) {
 	}
 }
 
+// ownerOnlyMethodsThatReadNoRequest lists the owner-only methods whose handler
+// never decodes its payload, with the reason for each. Such a method answers
+// whatever payload arrives, so it has no decode refusal to check.
+var ownerOnlyMethodsThatReadNoRequest = map[string]string{
+	leapmuxv1connect.WorkerSystemServiceGetWorkerSystemInfoProcedure: "its request has no fields, and its handler reports the worker's own facts without reading the payload",
+}
+
+// TestEveryOwnerOnlyMethodRefusesAnUndecodablePayloadInItsShape pins the decode
+// refusal of every owner-only method that reads its request: one
+// InvalidArgument "invalid request", as one final stream error frame for a
+// server-streaming method and as one unary error otherwise.
+//
+// The caller is the owner and holds every scope, so the decode is the only
+// refusal that can fire. The expected shape comes from the declarations
+// (rpcaccess.Lookup, through declaredMethodsByShape), never from the registrar
+// under test. The method list comes from the gate map, so a new owner-only
+// method is checked as soon as it is registered.
+func TestEveryOwnerOnlyMethodRefusesAnUndecodablePayloadInItsShape(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	gates := registerAllWithGuards(channel.NewDispatcher(), svc)
+
+	var methods []string
+	for method, gate := range gates {
+		if gate != guardOwnerOnly {
+			continue
+		}
+		if _, readsNoRequest := ownerOnlyMethodsThatReadNoRequest[method]; readsNoRequest {
+			continue
+		}
+		methods = append(methods, method)
+	}
+	// An exclusion must still identify an owner-only method, or it outlives the
+	// method and hides nothing while it claims to.
+	for method, reason := range ownerOnlyMethodsThatReadNoRequest {
+		assert.Equalf(t, guardOwnerOnly, gates[method], "%s is excluded (%s) but is not an owner-only method", method, reason)
+	}
+
+	streaming := declaredMethodsByShape(t, methods, true)
+	unary := declaredMethodsByShape(t, methods, false)
+	require.NotEmpty(t, streaming, "no streaming owner-only method; the stream case would prove nothing")
+	require.NotEmpty(t, unary, "no unary owner-only method; the unary case would prove nothing")
+
+	// 0xff starts a varint and never ends it, so no message decodes it.
+	undecodable := []byte{0xff}
+	owner := channel.LocalAgentCaller(userid.MustNew("user-1"))
+	for _, method := range streaming {
+		t.Run(method, func(t *testing.T) {
+			w := newTestWriter()
+			d.DispatchWith(context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
+			assert.Empty(t, w.errors, "a streaming method must not refuse with a unary error")
+			assert.Empty(t, w.responses, "a refused call must return no data")
+			frames := w.streamsSnapshot()
+			require.Len(t, frames, 1, "the refusal must arrive as exactly one stream frame")
+			assert.True(t, frames[0].GetEnd(), "the refusal must end the stream")
+			assert.Equal(t, codeInvalidArgument, frames[0].GetError().GetCode())
+			assert.Equal(t, "invalid request", frames[0].GetError().GetMessage())
+		})
+	}
+	for _, method := range unary {
+		t.Run(method, func(t *testing.T) {
+			w := newTestWriter()
+			d.DispatchWith(context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
+			assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
+			assert.Empty(t, w.responses, "a refused call must return no data")
+			require.Len(t, w.errors, 1, "the refusal must arrive as exactly one unary error")
+			assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+			assert.Equal(t, "invalid request", w.errors[0].message)
+		})
+	}
+}
+
 // The owner is written by the connect loop and read by handlers on their own
 // goroutines, so the two genuinely race and the field must be atomic.
 //
@@ -854,7 +1016,6 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 
 	// Handlers left over from a previous connection, still gating.
 	gate := newRegistrar(channel.NewDispatcher(), svc).ownerOnly().gate(
-		leapmuxv1connect.WorkerFileServiceStatFileProcedure,
 		func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	for range 4 {
 		wg.Add(1)
@@ -894,7 +1055,6 @@ func TestOwnerGateRefusesEmptyIdentities(t *testing.T) {
 			svc.SetRegisteredBy(useridFromTest(tc.registeredBy))
 			reached := false
 			gate := newRegistrar(channel.NewDispatcher(), svc).ownerOnly().gate(
-				leapmuxv1connect.WorkerFileServiceStatFileProcedure,
 				func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
 					reached = true
 				})
@@ -939,7 +1099,7 @@ func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
 // truth outside the registration call: what the handler body actually does.
 //
 // Parses this package and flags any registration of a unary method whose
-// handler reaches a stream-emitting call (SendStream / sendStreamError).
+// handler reaches a stream-emitting call (SendStream).
 // Deliberately shallow -- it matches the handler function literal, the named
 // function or method value passed at the registration site, not an arbitrary
 // call graph -- which is enough, because a handler that streams does so
@@ -947,24 +1107,7 @@ func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
 func TestNoUnaryHandlerSendsStreamFrames(t *testing.T) {
 	t.Parallel()
 
-	// Parsed file by file rather than through parser.ParseDir, which is
-	// deprecated (it ignores build tags when grouping files into packages).
-	// Grouping is irrelevant here -- every non-test .go file in this directory is
-	// package service by definition of the directory.
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	require.NoError(t, err)
-	var files []*ast.File
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, perr := parser.ParseFile(fset, name, nil, 0)
-		require.NoError(t, perr, "parsing %s", name)
-		files = append(files, f)
-	}
-	require.NotEmpty(t, files, "the service package must have source files to scan")
+	_, files := parseServiceSources(t)
 
 	// The declared worker methods, by their leapmuxv1connect constant name.
 	declared := map[string]rpcaccess.Method{}
@@ -985,8 +1128,8 @@ func TestNoUnaryHandlerSendsStreamFrames(t *testing.T) {
 			}
 		}
 	}
-	require.Contains(t, streamers, "sendStreamError",
-		"the detector must at minimum see sendStreamError's own body -- if it does not, it is matching nothing")
+	require.Contains(t, streamers, "broadcastWatchEvent",
+		"the detector must at minimum see broadcastWatchEvent's own body -- if it does not, it is matching nothing")
 
 	// Every registration of a UNARY method, with why we believe its handler
 	// streams: either the named function it passes is a known streamer, or the
@@ -1034,20 +1177,91 @@ func TestNoUnaryHandlerSendsStreamFrames(t *testing.T) {
 	}
 }
 
-// emitsStreamFrames reports whether n's subtree calls SendStream or
-// sendStreamError.
+// parseServiceSources parses every non-test .go file of this package.
+//
+// It parses file by file rather than through parser.ParseDir, which is
+// deprecated (it ignores build tags when it groups files into packages). The
+// grouping does not matter here: every non-test .go file in this directory is
+// package service by definition of the directory.
+func parseServiceSources(t *testing.T) (*token.FileSet, []*ast.File) {
+	t.Helper()
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, name, nil, 0)
+		require.NoError(t, perr, "parsing %s", name)
+		files = append(files, f)
+	}
+	require.NotEmpty(t, files, "the service package must have source files to scan")
+	return fset, files
+}
+
+// TestOnlyDecodeIntoUnmarshalsARequest checks that decodeInto is the one place
+// in this package that decodes an InnerRpcRequest payload.
+//
+// decodeInto refuses an undecodable payload with one InvalidArgument. A handler
+// that decodes by hand must restate that refusal, and a hand-written refusal can
+// drift in its code and its words. A registration through registerOwnerGuarded
+// (or a row guard built on decodeInto) cannot make that mistake, so every handler
+// that reads its request must register through one.
+func TestOnlyDecodeIntoUnmarshalsARequest(t *testing.T) {
+	t.Parallel()
+
+	fset, files := parseServiceSources(t)
+
+	var offenders []string
+	sawDecodeInto := false
+	report := func(enclosing string, n ast.Node) {
+		ast.Inspect(n, func(node ast.Node) bool {
+			id, ok := node.(*ast.Ident)
+			if !ok || id.Name != "unmarshalRequest" {
+				return true
+			}
+			if enclosing == "decodeInto" {
+				sawDecodeInto = true
+				return true
+			}
+			where := enclosing
+			if where == "" {
+				where = "a package-level declaration"
+			}
+			offenders = append(offenders, fmt.Sprintf("%s (in %s)", fset.Position(id.Pos()), where))
+			return true
+		})
+	}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				// The body only: the declaration's own name is not a use.
+				if d.Body != nil {
+					report(d.Name.Name, d.Body)
+				}
+			case *ast.GenDecl:
+				report("", d)
+			}
+		}
+	}
+
+	require.True(t, sawDecodeInto,
+		"decodeInto must call unmarshalRequest; if it does not, this scan matches nothing")
+	assert.Empty(t, offenders,
+		"only decodeInto may call unmarshalRequest; register these handlers through registerOwnerGuarded "+
+			"so that every undecodable payload gets the same refusal")
+}
+
+// emitsStreamFrames reports whether n's subtree calls SendStream.
 func emitsStreamFrames(n ast.Node) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
-		switch x := node.(type) {
-		case *ast.SelectorExpr:
-			if x.Sel.Name == "SendStream" {
-				found = true
-			}
-		case *ast.Ident:
-			if x.Name == "sendStreamError" {
-				found = true
-			}
+		if x, ok := node.(*ast.SelectorExpr); ok && x.Sel.Name == "SendStream" {
+			found = true
 		}
 		return !found
 	})
@@ -1123,7 +1337,7 @@ func TestEveryRegisteredMethodIsWithinTheDelegationGrant(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
-	gates, _ := registerAllClassified(d, svc)
+	gates := registerAllWithGuards(d, svc)
 
 	// The delegation grant, spelled exactly as the hub's mint writes it
 	// (worker_delegation_handler.go derives it from CeilingFor). The literal
@@ -1255,7 +1469,7 @@ func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
 			require.Len(t, rejected, 1)
 			assert.Equal(t, codePermissionDenied, rejected[0].code)
 			assert.Contains(t, rejected[0].message, "git:write",
-				"the denial should name the permission the escalation needs")
+				"the denial should state the permission the escalation needs")
 			assert.True(t, tc.open(t, svc, "tab-remove"), "a denied close must leave the tab open")
 
 			// The same grant closes the tab when it keeps the worktree...
@@ -1277,9 +1491,9 @@ func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
 // CloseTab requires only worker:read at the method, because the scope a close
 // needs depends on the tab type. Each case checks that the handler then
 // requires the scope of the per-type close RPC it replaced: agent:write for an
-// AGENT tab, terminal:write for a TERMINAL tab, file:read for a FILE tab. The
-// grants are exact sets, so each one holds worker:read and lacks only the
-// scope under test.
+// AGENT tab, terminal:write for a TERMINAL tab, file:read for a FILE or IMAGE
+// tab. The grants are exact sets, so each one holds worker:read and lacks only
+// the scope under test.
 func TestAccessControl_CloseTabRequiresTheScopeOfItsTabType(t *testing.T) {
 	t.Parallel()
 
@@ -1337,6 +1551,28 @@ func TestAccessControl_CloseTabRequiresTheScopeOfItsTabType(t *testing.T) {
 		row, err := svc.Queries.GetTerminal(context.Background(), "term-1")
 		require.NoError(t, err)
 		assert.True(t, row.ClosedAt.Valid, "the allowed close stamps closed_at")
+	})
+
+	t.Run("an image close without file:read is denied", func(t *testing.T) {
+		t.Parallel()
+		svc, d, _ := setupTestService(t)
+		defer drainAllInFlight(svc)
+		repo := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+			UserID: owner.String(), TabID: "image-1", Payload: fileTabPayload(filepath.Join(repo, "image"), repo),
+		}))
+		image := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabId: "image-1"}
+
+		w := closeTab(t, svc, d, grant(t, "worker:read agent:write"), image)
+		require.Len(t, w.errors, 1)
+		assert.Equal(t, codePermissionDenied, w.errors[0].code)
+		assert.Contains(t, w.errors[0].message, "file:read")
+		_, err := svc.TabPayloads.TabTypeOf(context.Background(), owner.String(), "image-1")
+		require.NoError(t, err, "a denied close must not revoke the payload row")
+
+		w = closeTab(t, svc, d, grant(t, "worker:read file:read"), image)
+		assert.Empty(t, w.errors, "file:read closes an image tab")
+		require.Len(t, w.responses, 1)
 	})
 
 	t.Run("a file close without file:read is denied", func(t *testing.T) {

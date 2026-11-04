@@ -32,7 +32,7 @@ const (
 	// service.WorkerReachAuthorizer. Valid ONLY for a row loaded that way --
 	// never for a bare id off the request.
 	reachStoreScoped
-	// reachAdminGated: the procedure is an ADMIN one. The access interceptor
+	// reachAdminOnly: the procedure is an ADMIN one. The access interceptor
 	// admits it only for an account with IsAdmin (enforceAdmin denies every
 	// admin.proto procedure by prefix), and only for a credential that holds its
 	// admin scope (SCOPE_ADMIN_WORKERS for AdminWorkerService.DeregisterWorker).
@@ -40,8 +40,9 @@ const (
 	// listing already spans every owner -- so the bit is not an oracle for an
 	// ordinary user. Valid ONLY on an admin-only procedure: an owner-facing path
 	// reading another owner's worker by a bare id is an oracle however it is
-	// spelled.
-	reachAdminGated
+	// spelled. TestRepoInvariants checks that each such site is the hub's
+	// handler for a method that admin.proto declares (servesAdminProtoMethod).
+	reachAdminOnly
 )
 
 // workerReachSites classifies every function IN THE REPOSITORY that reads the
@@ -85,12 +86,14 @@ var workerReachSites = map[string]workerReachKind{
 	// user's rows, and Server.RetireLocalWorker acts on the solo launcher's own
 	// state.
 	"internal/hub/notifier.(*Notifier).SendDeregister": reachServerInitiated,
-	// The reconcile nudge is raised by the CRDT commit path, and its worker id
-	// comes from the projection of the committing batch's OWN owner -- never from
-	// a user request. It carries no principal at all (crdt.ReconcileNudger takes
-	// only a worker id), so the "no user in the path" claim is structural rather
-	// than asserted, and a send failure is swallowed so the call discloses nothing
-	// about liveness either.
+	// The reconcile nudge has two sources, and neither takes a worker id from
+	// the request. The CRDT commit path takes each id from the projection of the
+	// committing batch's OWN owner. WorkspaceService.MoveWorkspace runs on a user
+	// request, but it takes each id from a tab row that the store read for the
+	// caller (ListOwnedTabsByWorkspace matches user_id to the caller). The nudge
+	// carries no principal at all (crdt.ReconcileNudger takes only a worker id),
+	// and a send failure is swallowed, so the call discloses nothing about
+	// liveness either.
 	"internal/hub/service.(*ReconcileNudger).NudgeReconcile": reachServerInitiated,
 	// The identity re-delivery is a user-info observer: its owner id comes from
 	// the Hub's own user_info event -- a change the store committed for that
@@ -102,7 +105,13 @@ var workerReachSites = map[string]workerReachKind{
 	// the row is connected before it refuses. The caller reached an admin-only
 	// procedure, so the liveness bit is one that surface exists to report; the
 	// refusal itself depends on that bit, which is the point.
-	"internal/hub/service.(*AdminWorkerService).DeregisterWorker": reachAdminGated,
+	"internal/hub/service.(*AdminWorkerService).DeregisterWorker": reachAdminOnly,
+	// The same guard on the owner's path: DeregisterWorker asks whether a row
+	// that Workers().GetOwned scoped to the caller is connected. An id that the
+	// caller does not own answers NotFound before the read, so the refusal
+	// discloses only the liveness of the caller's own worker, which ListWorkers
+	// already reports.
+	"internal/hub/service.(*WorkerManagementService).DeregisterWorker": reachStoreScoped,
 }
 
 // registryMethodKind names WHY one exported *workermgr.Manager method that

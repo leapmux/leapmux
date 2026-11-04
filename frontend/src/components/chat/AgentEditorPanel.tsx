@@ -566,20 +566,22 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       state.sending.start()
       state.setEnqueueInFlight(true)
       try {
-        const editing = queueEdit.activeEditingInput()
-        if (editing && props.onUpdateQueueItem) {
-          // The edit belongs to the agent the panel shows now; the panel can
-          // move to another agent while the update is in flight.
-          const editAgentId = props.agentId
-          queueEdit.markUpdateStarted()
+        // The token holds the open edit and its agent. The panel can move to
+        // another agent while the update is in flight, so the RPC and the
+        // completion both take the pair the session answered, not the props.
+        const updateQueueItem = props.onUpdateQueueItem
+        const update = updateQueueItem
+          ? queueEdit.markUpdateStarted()
+          : undefined
+        if (updateQueueItem && update) {
           try {
-            await props.onUpdateQueueItem(editAgentId, editing, content, fileAttachments ?? [], editSchedule)
+            await updateQueueItem(update.agentId, update.input, content, fileAttachments ?? [], editSchedule)
           }
           catch (error) {
-            queueEdit.markUpdateFailed()
+            queueEdit.markUpdateFailed(update)
             throw error
           }
-          queueEdit.markUpdateCompleted(editAgentId, editing)
+          queueEdit.markUpdateCompleted(update)
         }
         else if (check.verdict === 'notFuture') {
           const retried = await props.onRetryPendingSend?.(content, fileAttachments ?? [], check.wire) ?? false

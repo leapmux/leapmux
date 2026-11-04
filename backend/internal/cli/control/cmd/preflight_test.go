@@ -428,51 +428,108 @@ func TestIsWorkerUnreachable_NilSafe(t *testing.T) {
 	assert.False(t, isWorkerUnreachable(fmt.Errorf("bare error with no code")))
 }
 
-// TestPreflightFindsAWorkerOnALaterPage pins that the worker preflight reads
-// EVERY page of ListWorkers. The hub answers at most one page per call, so a
-// preflight that read only the first page refused a worker the caller owns
-// as `not_found` once the account held more workers than one page.
-func TestPreflightFindsAWorkerOnALaterPage(t *testing.T) {
-	disp := &shellsDispatcher{}
-	// worker-A is the spawn's own worker, so the command dispatches locally
-	// once the preflight finds it on the second page.
-	hub := &recordingHub{listWorkerPages: [][]string{{"worker-B"}, {"worker-A"}}}
+// preflightOutcome runs `terminal shells --worker-id workerID` against hub and
+// returns the one envelope the command printed. `terminal shells` is the
+// smallest command that preflights its worker and then calls it.
+func preflightOutcome(t *testing.T, hub *recordingHub, disp *shellsDispatcher, workerID string) (errEnvelope map[string]any) {
+	t.Helper()
 	startSpawnIPC(t, hub, disp)
-
 	out := withCapturedStdout(t, func() {
-		require.NoError(t, RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
+		_ = RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", workerID})
 	})
-
 	var env struct {
+		Data  map[string]any `json:"data"`
 		Error map[string]any `json:"error"`
 	}
-	require.NoError(t, json.Unmarshal(out, &env))
-	require.Nil(t, env.Error, "a worker on the second page must pass the preflight")
-	assert.Equal(t, []string{"ListWorkers", "ListWorkers"}, hub.called(),
-		"the preflight must read the second page through the first page's cursor")
+	// Unmarshalling the WHOLE buffer pins that exactly one envelope was
+	// written: a second object would fail with "invalid character '{' after
+	// top-level value".
+	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
+	return env.Error
+}
+
+// The worker preflight asks the hub's point lookup for the one id. It used to
+// read every page of ListWorkers to test one id, which cost one round trip per
+// 500 workers on nearly every command that an agent issues, and a worker past
+// the page limit of the loop read as not_found.
+func TestMaybePreflightWorker_AsksGetWorkerForTheOneID(t *testing.T) {
+	disp := &shellsDispatcher{}
+	// worker-A is the spawn's own worker, so the command dispatches locally
+	// once the preflight finds it.
+	hub := &recordingHub{workers: workerRows("worker-B", "worker-A", "worker-C")}
+
+	errEnvelope := preflightOutcome(t, hub, disp, "worker-A")
+
+	require.Nil(t, errEnvelope, "a worker that GetWorker answers must pass the preflight")
+	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(), "the preflight is one GetWorker round trip")
 	assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure}, disp.called())
 }
 
-// The other half of TestPreflightFindsAWorkerOnALaterPage: a worker that no
-// page holds is refused as not_found, and only after the preflight read every
-// page. A refusal after the first page would reject a worker that the caller
-// owns on a later page.
-func TestPreflightRefusesAWorkerThatNoPageHolds(t *testing.T) {
+// A worker that GetWorker does not find is refused as not_found before the
+// command reaches any worker. The hub answers NotFound for an id that is not
+// the caller's too, so the refusal says nothing about another account.
+func TestMaybePreflightWorker_RefusesAWorkerThatGetWorkerDoesNotFind(t *testing.T) {
 	disp := &shellsDispatcher{}
-	hub := &recordingHub{listWorkerPages: [][]string{{"worker-B"}, {"worker-C"}}}
-	startSpawnIPC(t, hub, disp)
+	hub := &recordingHub{workers: workerRows("worker-B")}
+
+	errEnvelope := preflightOutcome(t, hub, disp, "worker-A")
+
+	require.NotNil(t, errEnvelope)
+	assert.Equal(t, "not_found", errEnvelope["code"])
+	assert.Equal(t, "no such worker: worker-A", errEnvelope["message"])
+	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called())
+	assert.Empty(t, disp.called(), "a refused worker id must not reach the worker")
+}
+
+// A bearer that may not ask GetWorker gets a denial, and the preflight is
+// advisory, so the command proceeds unvalidated. Both denial codes count:
+// the interceptor can reject the procedure or the credential.
+func TestMaybePreflightWorker_ToleratesADenial(t *testing.T) {
+	for _, code := range []connect.Code{connect.CodePermissionDenied, connect.CodeUnauthenticated} {
+		t.Run(code.String(), func(t *testing.T) {
+			disp := &shellsDispatcher{}
+			hub := &recordingHub{getWorkerErr: connect.NewError(code, "this bearer cannot read workers")}
+
+			errEnvelope := preflightOutcome(t, hub, disp, "worker-A")
+
+			require.Nil(t, errEnvelope, "a denied preflight must not fail the command")
+			assert.Equal(t, []string{leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure}, disp.called(),
+				"the command must reach the worker after a denied preflight")
+		})
+	}
+}
+
+// Any other failure of the lookup is reported as preflight_failed, and the
+// command stops before the worker. Treating it as a denial would downgrade
+// the check to "unvalidated" without a word.
+func TestMaybePreflightWorker_ReportsALookupThatFailed(t *testing.T) {
+	for _, code := range []connect.Code{connect.CodeUnavailable, connect.CodeInternal, connect.CodeDeadlineExceeded} {
+		t.Run(code.String(), func(t *testing.T) {
+			disp := &shellsDispatcher{}
+			hub := &recordingHub{getWorkerErr: connect.NewError(code, "the hub could not answer")}
+
+			errEnvelope := preflightOutcome(t, hub, disp, "worker-A")
+
+			require.NotNil(t, errEnvelope)
+			assert.Equal(t, "preflight_failed", errEnvelope["code"])
+			assert.Contains(t, errEnvelope["message"], "the hub could not answer")
+			assert.Empty(t, disp.called(), "a failed preflight must not reach the worker")
+		})
+	}
+}
+
+// An empty worker id skips the preflight without a round trip: every caller
+// treats --worker-id as optional and resolves the worker later.
+func TestMaybePreflightWorker_SkipsAnEmptyWorkerID(t *testing.T) {
+	hub := &recordingHub{}
+	startSpawnIPC(t, hub, nil)
+	c, err := requireClient("")
+	require.NoError(t, err)
 
 	out := withCapturedStdout(t, func() {
-		require.Error(t, RunTerminalShells(fakeCmdCtx{}, []string{"--worker-id", "worker-A"}))
+		require.NoError(t, maybePreflightWorker(t.Context(), c, ""))
 	})
 
-	var env struct {
-		Error map[string]any `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal(out, &env), "exactly one envelope: %s", out)
-	require.NotNil(t, env.Error)
-	assert.Equal(t, "not_found", env.Error["code"])
-	assert.Equal(t, "no such worker: worker-A", env.Error["message"])
-	assert.Equal(t, []string{"ListWorkers", "ListWorkers"}, hub.called(), "the preflight reads every page before it refuses")
-	assert.Empty(t, disp.called(), "a refused worker id must not reach the worker")
+	assert.Empty(t, out, "a skipped preflight prints nothing")
+	assert.Empty(t, hub.called(), "a skipped preflight asks the hub nothing")
 }

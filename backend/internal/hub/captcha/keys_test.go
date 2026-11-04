@@ -57,10 +57,10 @@ func TestSelectedConfiguredRejectsUnconfiguredSelection(t *testing.T) {
 
 	// Resetting the selected provider's row directly is refused too; the
 	// selection must move first (the CLI wrapper orders them that way).
-	err = m.Reset(ctx, RecaptchaV3Key)
+	err = m.ResetMany(ctx, []settings.Descriptor{RecaptchaV3Key})
 	require.ErrorContains(t, err, "requires its site key and secret")
-	require.NoError(t, m.Reset(ctx, CaptchaSelectedKey))
-	require.NoError(t, m.Reset(ctx, RecaptchaV3Key))
+	require.NoError(t, m.ResetMany(ctx, []settings.Descriptor{CaptchaSelectedKey}))
+	require.NoError(t, m.ResetMany(ctx, []settings.Descriptor{RecaptchaV3Key}))
 
 	// Selecting altcha needs nothing: its row self-provisions.
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"altcha"`)))

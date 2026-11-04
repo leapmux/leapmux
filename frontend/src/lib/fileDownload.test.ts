@@ -9,7 +9,9 @@ const fileSaveCommitImpl = vi.fn()
 const fileSaveAbortImpl = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
-  readFile: (...args: unknown[]) => readFileImpl(...args),
+  workerFile: {
+    readFile: (...args: unknown[]) => readFileImpl(...args),
+  },
 }))
 
 vi.mock('~/api/platformBridge', () => ({

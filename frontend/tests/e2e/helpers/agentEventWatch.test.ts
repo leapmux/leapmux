@@ -1,5 +1,5 @@
-import type { AgentEvent, WatchAgentState } from '../../../src/generated/proto/leapmux/v1/watch_pb'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import type { AgentEvent, WatchAgentState, WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
 import { AgentEventSchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchReplayMode, WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
@@ -25,8 +25,8 @@ function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: strin
     mode: WatchMode.FULL,
     replayId: AGENT_WATCH_UPDATE_ID,
   }),
-]): Uint8Array {
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+]): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'updateAck',
       value: {
@@ -39,12 +39,12 @@ function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: strin
         agentStates: states,
       },
     },
-  }))
+  })
 }
 
 /** A frame that carries one input-queue event, whose revision a test selects. */
-function queueEvent(agentId: string, revision: bigint): Uint8Array {
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+function queueEvent(agentId: string, revision: bigint): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'agentEvent',
       value: {
@@ -57,10 +57,10 @@ function queueEvent(agentId: string, revision: bigint): Uint8Array {
         },
       },
     },
-  }))
+  })
 }
 
-function replayQueueEvent(origin: string, replayId = AGENT_WATCH_UPDATE_ID, destination = 'agent-1'): Uint8Array {
+function replayQueueEvent(origin: string, replayId = AGENT_WATCH_UPDATE_ID, destination = 'agent-1'): WatchEventsResponse {
   const event = create(AgentEventSchema, {
     agentId: destination,
     replay: { replayId, agentId: origin },
@@ -71,9 +71,9 @@ function replayQueueEvent(origin: string, replayId = AGENT_WATCH_UPDATE_ID, dest
       },
     },
   })
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+  return create(WatchEventsResponseSchema, {
     event: { case: 'agentEvent', value: event },
-  }))
+  })
 }
 
 /** Keep the revision of each input-queue event, and skip every other event. */
@@ -85,7 +85,7 @@ function queueRevision(event: AgentEvent): bigint | undefined {
 
 describe('agentWatchRequest', () => {
   it('subscribes to the live events of one agent with the shared update ID', () => {
-    expect(fromBinary(WatchEventsRequestSchema, agentWatchRequest('agent-1'))).toMatchObject({
+    expect(create(WatchEventsRequestSchema, agentWatchRequest('agent-1'))).toMatchObject({
       agents: [
         {
           agentId: 'agent-1',
@@ -249,18 +249,6 @@ describe('readAgentWatchFrame', () => {
     collector.assertHealthy()
     expect(collector.items).toEqual([])
   })
-
-  it('refuses malformed bytes with the watch label, and keeps the decoder error as the cause', () => {
-    let failure: unknown
-    try {
-      readAgentWatchFrame(Uint8Array.of(0xFF), 'agent-1', 'test watch')
-    }
-    catch (error) {
-      failure = error
-    }
-    expect(failure).toMatchObject({ message: 'The Worker sent an invalid test watch frame.' })
-    expect((failure as Error).cause).toBeInstanceOf(Error)
-  })
 })
 
 describe('AgentEventCollector', () => {
@@ -330,10 +318,7 @@ describe('watchAgentEvents', () => {
     await stream.ready
     expect(getTestChannel).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken)
     expect(stream.channel.getOrOpenChannel).toHaveBeenCalledExactlyOnceWith(server.workerId)
-    const [channelId, method, payload] = stream.channel.stream.mock.calls[0] ?? []
-    expect(channelId).toBe('native-channel')
-    expect(method).toBe(WorkerWatchService.method.watchEvents)
-    expect(payload).toEqual(agentWatchRequest('agent-1'))
+    expect(stream.channel.stream).toHaveBeenCalledExactlyOnceWith('native-channel', WorkerWatchService.method.watchEvents, agentWatchRequest('agent-1'))
     stream.message(acknowledgement())
     const watch = await watching
     stream.message(queueEvent('agent-1', 4n))

@@ -355,8 +355,9 @@ func SanitizeName(name string) (string, error) {
 // that separated two words.
 //
 // Every writer of a tab title calls this, in the worker and in the browser
-// alike, so the three title-writing RPCs and the derived plan title enforce
-// one rule and none of them refuses a title. The browser copy is `cleanName`
+// alike, so the four title-writing RPCs (OpenAgent, RenameAgent, OpenTerminal
+// and RenameTerminal) and the derived plan title enforce one rule and none of
+// them refuses a title. The browser copy is `cleanName`
 // in `frontend/src/lib/validate.ts`; testdata/title_cleaning_conformance.json
 // pins the two against each other.
 func CleanName(name string) string {

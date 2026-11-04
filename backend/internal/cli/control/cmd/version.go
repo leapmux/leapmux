@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/locallisten"
@@ -65,6 +66,20 @@ func cliVersionFields() map[string]string {
 		"branch":     version.Branch,
 		"build_time": version.BuildTime,
 		"formatted":  version.Format(),
+	}
+}
+
+// buildInfoToMap renders a build that another binary reports, with the key
+// names of cliVersionFields. A nil build renders as empty values. The map also
+// holds commit_time, because the report carries it.
+func buildInfoToMap(b *leapmuxv1.BuildInfo) map[string]string {
+	return map[string]string{
+		"version":     b.GetVersion(),
+		"commit":      b.GetCommitHash(),
+		"commit_time": b.GetCommitTime(),
+		"branch":      b.GetBranch(),
+		"build_time":  b.GetBuildTime(),
+		"formatted":   version.FormatBuild(b),
 	}
 }
 

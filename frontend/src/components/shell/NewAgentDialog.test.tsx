@@ -2,7 +2,7 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerGit } from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
@@ -35,26 +35,34 @@ vi.mock('~/api/clients', () => ({
 // export throws inside the render chain and takes the shells effect down
 // with it, which is exactly what these mocks exist to prevent.
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: vi.fn(async () => ({})),
-  // GitOptions lists both once the directory is a repository root.
-  listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
-  listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
-  getWorkerSystemInfo: vi.fn(async () => ({})),
-  statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({
-    listings: [
-      {
-        path: '',
-        entries: [],
-        truncated: false,
-        totalEntries: 0,
-      },
-    ],
-  })),
-  openAgent: vi.fn(async () => ({})),
+  workerGit: {
+    getGitInfo: vi.fn(async () => ({})),
+    // GitOptions lists both once the directory is a repository root.
+    listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
+    listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
+  },
+  workerSystem: {
+    getWorkerSystemInfo: vi.fn(async () => ({})),
+  },
+  workerFile: {
+    statFile: vi.fn(async () => ({})),
+    listDirectory: vi.fn(async () => ({
+      listings: [
+        {
+          path: '',
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+        },
+      ],
+    })),
+  },
+  workerAgent: {
+    openAgent: vi.fn(async () => ({})),
+  },
 }))
 
-const openAgentMock = workerRpc.openAgent as unknown as ReturnType<typeof vi.fn>
+const openAgentMock = workerAgent.openAgent as unknown as ReturnType<typeof vi.fn>
 
 function renderDialog(blockedReason?: () => string | undefined) {
   return render(withPreferences(() => (
@@ -262,11 +270,11 @@ describe('NewAgentDialog git setup', () => {
   })
 
   afterEach(() => {
-    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({}) as never)
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({}) as never)
   })
 
   it('sends the create-branch setup with the typed name and the base branch', async () => {
-    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({
       isGitRepo: true,
       isRepoRoot: true,
       repoRoot: '/tmp',

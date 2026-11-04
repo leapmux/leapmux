@@ -1,4 +1,5 @@
 import type { MemoryHistory } from '@solidjs/router'
+import type { SignInRecovery } from '~/context/AuthContext'
 
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
@@ -28,13 +29,15 @@ const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.A
 // The hub requires an address exactly when it can verify one, so the
 // field follows the same rule.
 const mockIsEmailEnabled = vi.fn(() => false)
+// False while the bootstrap's system info load is still out.
+const mockIsSystemInfoLoaded = vi.fn(() => true)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => false,
   loadOAuthProviders: () => Promise.resolve([]),
-  isSystemInfoLoaded: () => true,
+  isSystemInfoLoaded: () => mockIsSystemInfoLoaded(),
   isEmailEnabled: () => mockIsEmailEnabled(),
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
   isCaptchaUnsolvableHere: () => false,
@@ -51,10 +54,9 @@ vi.mock('~/components/common/CaptchaField', () => ({
 }))
 
 const mockSetAuth = vi.fn()
-const mockSetVerificationResendAvailableAt = vi.fn()
 // The sign-in recovery the gate renders; a test sets it when the adoption of
 // the completion's report recovers.
-const [signInRecovery, setSignInRecovery] = createSignal<{ error: string | null, verificationRequired: boolean, completed: boolean } | null>(null)
+const [signInRecovery, setSignInRecovery] = createSignal<SignInRecovery | null>(null)
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => null,
@@ -66,7 +68,6 @@ vi.mock('~/context/AuthContext', () => ({
     signInRecovery: () => signInRecovery(),
     retrySignInRecovery: vi.fn(),
     finishSignInRecovery: () => setSignInRecovery(null),
-    setVerificationResendAvailableAt: mockSetVerificationResendAvailableAt,
     isAuthenticated: () => false,
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
@@ -104,6 +105,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     vi.clearAllMocks()
     setSignInRecovery(null)
     mockSetAuth.mockResolvedValue('adopted')
+    // Restated, not merely cleared: `clearAllMocks` keeps an implementation
+    // that an earlier test set.
+    mockIsSystemInfoLoaded.mockReturnValue(true)
   })
 
   it('renders form with pre-filled display name and email', async () => {
@@ -179,9 +183,10 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       })
     })
 
+    // The pending sign-up carried no redirect, so the adoption gets none.
     expect(mockSetAuth).toHaveBeenCalledWith({
       user: { id: 'u1', username: 'testuser' },
-    })
+    }, { redirect: undefined })
   })
 
   // The hub accepted the single-use signup token, so the account exists, but
@@ -201,7 +206,10 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
         },
       })
       mockSetAuth.mockImplementation(async () => {
-        setSignInRecovery({ error: 'account read failed', verificationRequired, completed: false })
+        setSignInRecovery({
+          read: { kind: 'failed', message: 'account read failed' },
+          verificationRequired,
+        })
         return 'recovering'
       })
 
@@ -216,7 +224,7 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       expect(mockCompleteOAuthSignup).toHaveBeenCalledOnce()
       expect(mockSetAuth).toHaveBeenCalledWith({
         emailVerification: { verificationRequired },
-      })
+      }, { redirect: undefined })
     })
   }
 
@@ -240,6 +248,101 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
     expect(history.get()).toBe('/verify-email')
+  })
+
+  // A CLI login bounces through the sign-in with a consent address that the
+  // hub's mux serves. A first-time OAuth sign-up continues here, so the
+  // address must survive the sign-up, or the CLI waits for a consent screen
+  // that the user never sees.
+  it('continues to the address the sign-in asked to reach when the account needs no verification', async () => {
+    const consent = '/oauth/authorize?client_id=cli'
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+      redirect: consent,
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
+    })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      const { history } = renderPage()
+      await submitAs('testuser')
+
+      // The hub serves the consent page, so a client-side transition would
+      // render the SPA's 404 page. The page loads it as a full document.
+      await vi.waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(consent))
+      expect(history.get()).toBe('/?token=test-token')
+      expect(mockSetAuth).toHaveBeenCalledExactlyOnceWith({
+        user: { id: 'u1', username: 'testuser' },
+      }, { redirect: consent })
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // Verification comes first: the account verifies its address before it
+  // continues to the consent page.
+  it('goes to the verification page over the redirect when the account must verify its email', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+      redirect: '/oauth/authorize?client_id=cli',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+        emailVerification: { verificationRequired: true },
+      },
+    })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      const { history } = renderPage()
+      await submitAs('testuser')
+
+      expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
+      expect(history.get()).toBe('/verify-email')
+      expect(assign).not.toHaveBeenCalled()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // The hub sanitized the address when the sign-in started, and the page
+  // filters it again before it follows it. An address that leaves the origin
+  // falls back to the app.
+  it('goes home when the redirect would leave the origin', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+      redirect: '//evil.example/steal',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
+    })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      const { history } = renderPage()
+      await submitAs('testuser')
+
+      await vi.waitFor(() => expect(history.get()).toBe('/'))
+      expect(assign).not.toHaveBeenCalled()
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('goes home when the adopted account needs no verification', async () => {
@@ -373,6 +476,57 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     // adopts nothing.
     expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled()
     expect(mockSetAuth).not.toHaveBeenCalled()
+  })
+
+  // A password manager can submit the form itself, past the disabled button.
+  // While the system info is pending, the form cannot tell whether the hub
+  // requires a captcha, so a completion sent then can arrive without a
+  // captcha that the hub requires.
+  it('refuses a programmatic submit while the system info is pending', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockIsSystemInfoLoaded.mockReturnValue(false)
+    renderPage()
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'testuser' },
+    })
+
+    screen.getByRole('button', { name: 'Create account' }).closest('form')!.requestSubmit()
+    await settle()
+
+    expect(mockCompleteOAuthSignup).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Create account' })).toBeDisabled()
+  })
+
+  // The hub accepted the single-use token, and the adoption is still out. A
+  // second programmatic submit must not send the token again.
+  it('refuses a programmatic submit after the hub accepted the token', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      sessionReport: {
+        user: { id: 'u1', username: 'testuser' },
+      },
+    })
+    mockSetAuth.mockReturnValue(new Promise<never>(() => {}))
+    renderPage()
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'testuser' },
+    })
+    const form = screen.getByRole('button', { name: 'Create account' }).closest('form')!
+
+    form.requestSubmit()
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledOnce())
+    form.requestSubmit()
+    await settle()
+
+    expect(mockCompleteOAuthSignup).toHaveBeenCalledOnce()
   })
 
   it('hands the captcha field the complete_signup action under an external provider', async () => {

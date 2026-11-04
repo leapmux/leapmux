@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -162,6 +163,56 @@ func TestResolveUserSelectorFilter(t *testing.T) {
 			}
 			assert.Equal(t, tc.wantID, id)
 			assert.Equal(t, tc.lookups, f.st.lookups.Load(), "a refused selector must reach no lookup")
+		})
+	}
+}
+
+// TestSelectUserFromPair covers the four shapes of an (id, username) flag pair.
+// The selector holds one of the two values, so both values are a refusal and
+// never a selector that prefers one of them. Neither value is no selector: the
+// caller decides whether that is a missing argument or "every user".
+func TestSelectUserFromPair(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		id           string
+		username     string
+		want         *leapmuxv1.UserSelector
+		wantErr      error
+		wantResolve  error
+		wantFiltered bool
+	}{
+		{name: "neither value builds no selector", wantResolve: service.ErrNoUserSelector},
+		{name: "an id alone selects by id", id: "usr_1", want: service.SelectUserByID("usr_1"), wantResolve: store.ErrNotFound, wantFiltered: true},
+		{name: "a username alone selects by username", username: "amy", want: service.SelectUserByUsername("amy"), wantResolve: store.ErrNotFound, wantFiltered: true},
+		{name: "both values are ambiguous", id: "usr_1", username: "amy", wantErr: service.ErrAmbiguousUserSelector},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sel, err := service.SelectUserFromPair(tc.id, tc.username)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				assert.Nil(t, sel, "a refused pair builds no selector, so no surface can send half of it")
+				return
+			}
+			require.NoError(t, err)
+			if tc.want == nil {
+				assert.Nil(t, sel)
+			} else {
+				assert.True(t, proto.Equal(tc.want, sel), "got %v", sel)
+			}
+
+			// The flag surfaces hand the result straight to the two resolvers,
+			// so a nil selector must read as absent to both of them.
+			st := newSelectorStore(t)
+			_, err = service.ResolveUserSelector(context.Background(), st, sel)
+			assert.ErrorIs(t, err, tc.wantResolve)
+
+			filtered, err := service.ResolveUserSelectorFilter(context.Background(), st, sel)
+			if tc.wantFiltered {
+				assert.ErrorIs(t, err, store.ErrNotFound)
+			} else {
+				require.NoError(t, err)
+				assert.Nil(t, filtered, "no selector is no filter")
+			}
 		})
 	}
 }

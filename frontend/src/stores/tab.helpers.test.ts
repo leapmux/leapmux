@@ -1,5 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { AgentTab, Tab } from './tab.types'
+import type { AgentTab, Tab, TerminalTab } from './tab.types'
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
@@ -16,7 +16,8 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalMetadata, terminalProgressBarProps, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalDisplayStatus, terminalMetadata, terminalProgressBarProps, withoutClientHeldTerminalFields, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
+import { TERMINAL_DISCONNECTED } from './tab.types'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -65,7 +66,7 @@ describe('tabDisplayLabel', () => {
     expect(tabDisplayLabel(terminal({ title: 'My Shell', ptyTitle: 'live' }))).toBe('My Shell')
   })
 
-  it('tabTooltipText prefers ptyTitle for terminals', () => {
+  it('prefers ptyTitle for terminals in tabTooltipText', () => {
     expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: 'live' }))).toBe('live')
     expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: '' }))).toBe('My Shell')
     expect(tabTooltipText(agent({ title: 'Agent A' }))).toBe('Agent A')
@@ -77,7 +78,7 @@ describe('tabDisplayLabel', () => {
    * never shows, so gating it on the label happening to overflow hid it
    * outright.
    */
-  it('tabTooltipShowWhen is always only when the tooltip differs from the label', () => {
+  it('returns \'always\' from tabTooltipShowWhen only when the tooltip differs from the label', () => {
     // A live PTY title behind a user rename: the tooltip carries text the
     // label does not, so clip detection must not gate it.
     expect(tabTooltipShowWhen(terminal({ title: 'My Shell', ptyTitle: 'vim src/app.ts' }))).toBe('always')
@@ -737,9 +738,71 @@ describe('isTabReadyForGitStatus', () => {
 /**
  * Every producer of the git/startup fields must write REAL negatives.
  * `tabMetadata.patch` skips `undefined`, and these producers run a SECOND time
- * over a populated row -- `useTabHydrators` re-arms on DISCONNECTED, which the
- * worker-offline sweep sets -- so a collapsed negative can never be delivered.
+ * over a populated row -- `useTabHydrators` asks again about every terminal of a
+ * worker that came back -- so a collapsed negative can never be delivered.
  */
+describe('terminalDisplayStatus', () => {
+  const terminal = (status: TerminalStatus | undefined, over: Partial<TerminalTab> = {}): Tab => ({
+    type: TabType.TERMINAL,
+    id: 't1',
+    workspaceId: 'ws-1',
+    status,
+    workerId: 'w1',
+    ...over,
+  })
+  const online = () => true
+  const offline = () => false
+
+  it('shows a READY terminal of an offline worker as DISCONNECTED', () => {
+    expect(terminalDisplayStatus(terminal(TerminalStatus.READY), offline)).toBe(TERMINAL_DISCONNECTED)
+  })
+
+  it('shows a READY terminal of an online worker as READY', () => {
+    expect(terminalDisplayStatus(terminal(TerminalStatus.READY), online)).toBe(TerminalStatus.READY)
+  })
+
+  it('asks about the worker of the tab', () => {
+    const isOnline = (workerId: string) => workerId !== 'w-gone'
+
+    expect(terminalDisplayStatus(terminal(TerminalStatus.READY, { workerId: 'w-gone' }), isOnline)).toBe(TERMINAL_DISCONNECTED)
+    expect(terminalDisplayStatus(terminal(TerminalStatus.READY, { workerId: 'w-here' }), isOnline)).toBe(TerminalStatus.READY)
+  })
+
+  it.each([
+    ['STARTING', TerminalStatus.STARTING],
+    ['STARTUP_FAILED', TerminalStatus.STARTUP_FAILED],
+    ['EXITED', TerminalStatus.EXITED],
+    ['an unhydrated status', undefined],
+  ])('keeps %s while the worker is offline', (_label, status) => {
+    expect(terminalDisplayStatus(terminal(status), offline)).toBe(status)
+  })
+
+  it('derives the same answer for a terminal with no tile, which is the quake panel\'s shape', () => {
+    expect(terminalDisplayStatus(terminal(TerminalStatus.READY, { tileId: undefined }), offline)).toBe(TERMINAL_DISCONNECTED)
+  })
+
+  it('asks about the empty id for a terminal with no worker', () => {
+    const asked: string[] = []
+    terminalDisplayStatus(terminal(TerminalStatus.READY, { workerId: undefined }), (workerId) => {
+      asked.push(workerId)
+      return true
+    })
+
+    expect(asked).toEqual([''])
+  })
+
+  it('answers undefined for every other tab kind', () => {
+    const agent: Tab = {
+      type: TabType.AGENT,
+      id: 'a1',
+      workspaceId: 'ws-1',
+      workerId: 'w1',
+    }
+
+    expect(terminalDisplayStatus(agent, offline)).toBeUndefined()
+  })
+})
+
 describe('terminalMetadata convergence', () => {
   it('clears startup fields on a re-hydration', () => {
     const metadata = createTabMetadataStore()
@@ -1381,7 +1444,7 @@ describe('isSteerableAgentTab', () => {
     ).toBe(false)
   })
 
-  it('acceptsMessages wins over the provider fallback when both are present', () => {
+  it('lets acceptsMessages win over the provider fallback when both are present', () => {
     // A CODEX child that the backend says is NOT steerable must read false --
     // the authoritative flag overrides the optimistic provider default.
     expect(
@@ -1629,6 +1692,66 @@ describe('withoutLiveCatalogFields', () => {
   })
 })
 
+describe('withoutClientHeldTerminalFields', () => {
+  const reply = () => terminalMetadata('w1', create(TerminalInfoSchema, {
+    terminalId: 't1',
+    status: TerminalStatus.READY,
+    title: 'zsh',
+    cols: 80,
+    rows: 24,
+    screen: new Uint8Array([104, 105]),
+    screenEndOffset: 2n,
+  }))
+
+  it('keeps the whole reply for a row that holds nothing', () => {
+    expect(withoutClientHeldTerminalFields(reply(), undefined)).toEqual(reply())
+    expect(withoutClientHeldTerminalFields(reply(), {})).toEqual(reply())
+  })
+
+  it('drops the screen with the cursor, because the two describe the same bytes', () => {
+    const kept = withoutClientHeldTerminalFields(reply(), { lastOffset: 700 })
+
+    expect('lastOffset' in kept).toBe(false)
+    expect('screen' in kept).toBe(false)
+    expect(kept).toMatchObject({ cols: 80, rows: 24 })
+  })
+
+  it('counts a cursor of zero as held', () => {
+    const kept = withoutClientHeldTerminalFields(reply(), { lastOffset: 0 })
+
+    expect('lastOffset' in kept).toBe(false)
+    expect('screen' in kept).toBe(false)
+  })
+
+  it('drops only the part of the size that the row holds', () => {
+    const kept = withoutClientHeldTerminalFields(reply(), { cols: 132 })
+
+    expect('cols' in kept).toBe(false)
+    expect(kept.rows).toBe(24)
+    expect(kept.lastOffset).toBe(2)
+  })
+
+  it('keeps what the worker owns', () => {
+    const kept = withoutClientHeldTerminalFields(reply(), { lastOffset: 700, cols: 132, rows: 40 })
+
+    expect(kept).toEqual({
+      workerId: 'w1',
+      terminalStatus: TerminalStatus.READY,
+      startupError: '',
+      startupMessage: '',
+      title: 'zsh',
+      contentReady: true,
+    })
+  })
+
+  it('does not change its argument', () => {
+    const fields = reply()
+    const before = { ...fields }
+    withoutClientHeldTerminalFields(fields, { lastOffset: 700, cols: 132, rows: 40 })
+    expect(fields).toEqual(before)
+  })
+})
+
 describe('keepLiveTerminalStatus', () => {
   const reply = (over: MessageInitShape<typeof TerminalInfoSchema> = {}) =>
     terminalMetadata('w1', create(TerminalInfoSchema, {
@@ -1674,13 +1797,14 @@ describe('keepLiveTerminalStatus', () => {
       expect(key in kept, `${key} stays out`).toBe(false)
   })
 
-  // A dead shell stays dead until a restart, so a reply that says EXITED wins
-  // over a newer live status.
-  it('keeps the whole reply when it says that the shell exited', () => {
+  // An EXITED reply has no special standing: the live event is newer here too.
+  it('removes the lifecycle fields of an EXITED reply too', () => {
     const fields = reply({ status: TerminalStatus.EXITED, startupMessage: '' })
     expect(fields.terminalStatus).toBe(TerminalStatus.EXITED)
 
-    expect(keepLiveTerminalStatus(fields)).toEqual(fields)
+    const kept = keepLiveTerminalStatus(fields)
+    for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
   })
 
   it('does not change its argument', () => {

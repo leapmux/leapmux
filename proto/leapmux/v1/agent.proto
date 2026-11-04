@@ -361,11 +361,13 @@ message AgentInfo {
   // hydrated and fall back to the wrong id.
   string root_agent_id = 18;
   // How a queued input reaches this agent while its turn is in progress. The
-  // Worker computes it from the live provider capability: STEER when the running
-  // provider can add the queue head to an active regular turn; PREEMPT when it
-  // cannot steer but can interrupt, so the head is sent by cancelling the active
-  // turn first; NONE otherwise, and always for an agent that does not run. The
-  // client offers Steer or Preempt from it.
+  // Worker computes it from the live provider capability:
+  //   - STEER when the running provider can add the queue head to an active
+  //     regular turn.
+  //   - PREEMPT when it cannot steer but can interrupt, so the head is sent by
+  //     cancelling the active turn first.
+  //   - NONE otherwise, and always for an agent that does not run.
+  // The client offers Steer or Preempt from it.
   QueueHeadDispatch queue_head_dispatch = 19;
 
   // What the agent is doing, derived by the Worker from the provider's turn
@@ -775,7 +777,7 @@ message ListAgentMessagesResponse {
   // served. Drives the sidebar without re-scanning message history; survives
   // page reloads and cross-client opens via the worker's agent_todos table.
   // Present only on a latest page whose LoadTodos succeeded. Absent on a
-  // non-latest page OR when the LoadTodos query errored, and the client then
+  // non-latest page OR when the LoadTodos query failed, and the client then
   // leaves its to-do list alone, so a transient DB error can't wipe a populated
   // list. A present snapshot with no items is an empty list.
   AgentTodoSnapshot todos = 3;

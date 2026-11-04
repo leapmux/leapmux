@@ -21,7 +21,7 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Flags: func(fs *flag.FlagSet) {
-			owner.bind(fs, "filter by user ID (soft-deleted users included; empty = all users)")
+			owner.bind(fs)
 			fs.StringVar(&status, "status", "active", "worker status filter (active, deregistering, deleted, all)")
 		},
 		BeforeDial: func(a adminArgs) error {
@@ -44,7 +44,7 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-				User: owner.selector(), Status: statusEnum, Page: page.request(),
+				User: owner.Selector(), Status: statusEnum, Page: page.request(),
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)

@@ -1,4 +1,5 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { WatchEventsHandle } from '~/api/workerRpc'
 import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type {
@@ -10,10 +11,9 @@ import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { createRoot, mapArray } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
-import { TERMINAL_DISCONNECTED } from '~/components/shell/terminalStatus'
+import { watchEventsViaChannel, workerAgent } from '~/api/workerRpc'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentChatMessageSchema, AgentControlCancelRequestSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, QueueHeadDispatch, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import {
@@ -23,10 +23,10 @@ import {
   WatchMode,
   WatchRejectionReason,
 } from '~/generated/proto/leapmux/v1/watch_pb'
-import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged, markTerminalExited } from '~/hooks/terminalEvents'
-import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { clearOfflineAgentState, collectOfflineAgents, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -39,6 +39,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { LIVE_STATUS_FIELDS, TERMINAL_LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -47,10 +48,13 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   return {
     ...actual,
     watchEventsViaChannel: vi.fn(),
-    // The active agent triggers a history request. Stub that request so each test controls its
-    // failure without opening a real channel.
+    workerAgent: {
+      ...actual.workerAgent,
+      // The active agent triggers a history request. Stub that request so each test controls its
+      // failure without opening a real channel.
 
-    listAgentMessages: vi.fn(),
+      listAgentMessages: vi.fn(),
+    },
     // This module calls only getOrOpenChannel. Its fake must not attempt a real handshake.
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
@@ -178,6 +182,14 @@ function handlerStores(tabs: TabStores, agentSessionStore = createAgentSessionSt
 /** Return the runtime phase union for direct handler tests. */
 function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
   return phase
+}
+
+/**
+ * The exit transition for a status test that sends no EXITED. It fails the
+ * test, because only an EXITED status may reach the exit transition.
+ */
+function failOnExit(terminalId: string): never {
+  throw new Error(`a status other than EXITED reached the exit transition of ${terminalId}`)
 }
 
 describe('background agent history trimming', () => {
@@ -1115,38 +1127,6 @@ describe('handleAgentInactive', () => {
     })
   })
 
-  it('retains delivered cancellation state until recording completes', () => {
-    const store = createControlStore()
-    const request = {
-      requestId: 'record',
-      agentId: 'agent-1',
-      payload: {},
-      claimToken: 'record-claim',
-      responseState: ControlResponseState.READY,
-    }
-    store.addRequest('agent-1', request)
-    handleControlCancellation('agent-1', create(AgentControlCancelRequestSchema, { requestId: request.requestId, claimToken: request.claimToken, responseState: ControlResponseState.DELIVERED }), store)
-    expect(store.getRequests('agent-1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
-    handleControlCancellation('agent-1', create(AgentControlCancelRequestSchema, { requestId: request.requestId, claimToken: request.claimToken, responseState: ControlResponseState.COMPLETED }), store)
-    expect(store.getRequests('agent-1')).toEqual([])
-  })
-
-  it('accepts confirmed delivery after cancellation but ignores replay after completion', () => {
-    const store = createControlStore()
-    const request = {
-      requestId: 'record',
-      agentId: 'agent-1',
-      payload: {},
-      claimToken: 'record-claim',
-    }
-    store.addRequest('agent-1', request)
-    handleControlCancellation('agent-1', create(AgentControlCancelRequestSchema, { requestId: request.requestId, claimToken: request.claimToken, responseState: ControlResponseState.CANCELED }), store)
-    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
-    expect(store.getRequests('agent-1')).toHaveLength(1)
-    handleControlCancellation('agent-1', create(AgentControlCancelRequestSchema, { requestId: request.requestId, claimToken: request.claimToken, responseState: ControlResponseState.COMPLETED }), store)
-    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
-    expect(store.getRequests('agent-1')).toEqual([])
-  })
   function makeStores() {
     const tabs = makeTabStores()
     tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
@@ -1197,28 +1177,27 @@ describe('workerOnline handling in agent statusChange', () => {
   it('reports the worker online for a status event and leaves it for a status-less one', () => {
     createRoot((dispose) => {
       try {
-        let workerOnline = false
+        let onlineReports = 0
         const tabs = makeTabStores()
         tabs.addAgent('connectivity-agent', { agentStatus: AgentStatus.ACTIVE })
         const stores = handlerStores(tabs)
         const patch = vi.spyOn(tabs.metadata, 'patchLive')
         const applyStatusChange = (sc: MessageInitShape<typeof AgentStatusChangeSchema>) => {
           const before = patch.mock.calls.length
-          handleAgentStatusChange('connectivity-agent', create(AgentStatusChangeSchema, { ...sc }), 'live', stores, createLoadingSignal(), (value) => {
-            workerOnline = value
+          handleAgentStatusChange('connectivity-agent', create(AgentStatusChangeSchema, { ...sc }), 'live', stores, createLoadingSignal(), () => {
+            onlineReports += 1
           })
           return patch.mock.calls.length > before
         }
 
         expect(applyStatusChange({ status: AgentStatus.UNSPECIFIED, gitStatus: {} })).toBe(true)
-        expect(workerOnline, 'a git-only update states nothing about the worker').toBe(false)
+        expect(onlineReports, 'a git-only update states nothing about the worker').toBe(0)
 
         expect(applyStatusChange({ status: AgentStatus.INACTIVE })).toBe(true)
-        expect(workerOnline, 'only a live worker sends a status').toBe(true)
+        expect(onlineReports, 'only a live worker sends a status').toBe(1)
 
-        workerOnline = false
         expect(applyStatusChange({ status: AgentStatus.UNSPECIFIED })).toBe(false)
-        expect(workerOnline, 'an empty event leaves the online state alone').toBe(false)
+        expect(onlineReports, 'an empty event leaves the online state alone').toBe(1)
       }
       finally {
         dispose()
@@ -1245,6 +1224,7 @@ describe('startupMessage handling in terminal statusChange', () => {
       tabs.view.getTerminalTab(terminalId),
       terminalId,
       create(TerminalStatusChangeSchema, { status: TerminalStatus.STARTING, startupMessage: msg ?? '' }),
+      failOnExit,
     )
   }
 
@@ -1328,6 +1308,7 @@ describe('applyTerminalStatusChange', () => {
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange({ status: TerminalStatus.READY }),
+        failOnExit,
       )
 
       const tab = tabs.view.getTerminalTab('term-1')
@@ -1349,6 +1330,7 @@ describe('applyTerminalStatusChange', () => {
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
+        failOnExit,
       )
 
       const tab = tabs.view.getTerminalTab('term-1')
@@ -1361,10 +1343,11 @@ describe('applyTerminalStatusChange', () => {
   // The worker replays EXITED for a shell that exited before the watch began,
   // so a page that loads cold learns it from the replay. The tab then offers a
   // restart, and Enter restarts the shell instead of typing into a dead one.
+  // The status reaches the caller's exit transition, which is the hook's
+  // `applyShellExit` and calls `markTerminalExited` for a terminal tab.
   for (const [label, before] of [
     ['an unhydrated', undefined],
     ['a READY', TerminalStatus.READY],
-    ['a DISCONNECTED', TERMINAL_DISCONNECTED],
   ] as const) {
     it(`records EXITED for ${label} terminal`, () => {
       createRoot((dispose) => {
@@ -1373,6 +1356,7 @@ describe('applyTerminalStatusChange', () => {
         tabs.addTerminal('term-1', before === undefined
           ? {}
           : { terminalStatus: before })
+        const onExited = vi.fn((terminalId: string) => markTerminalExited(tabs.metadata, terminalId))
 
         applyTerminalStatusChange(
           tabs.metadata,
@@ -1380,8 +1364,10 @@ describe('applyTerminalStatusChange', () => {
           tabs.view.getTerminalTab('term-1'),
           'term-1',
           statusChange({ status: TerminalStatus.EXITED }),
+          onExited,
         )
 
+        expect(onExited).toHaveBeenCalledExactlyOnceWith('term-1')
         const tab = tabs.view.getTerminalTab('term-1')
         expect(tab?.status).toBe(TerminalStatus.EXITED)
         expect(tab?.startupMessage).toBe('')
@@ -1391,21 +1377,26 @@ describe('applyTerminalStatusChange', () => {
     })
   }
 
-  it('leaves a DISCONNECTED terminal alone on a READY event', () => {
+  // One exit transition: a quake terminal must retract its panel on a replayed
+  // EXITED as on a live close, and only the caller holds the quake store.
+  it('leaves an EXITED status to the exit transition and writes no status itself', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
-      const repoGitStore = createRepoGitStore()
-      tabs.addTerminal('term-1', { terminalStatus: TERMINAL_DISCONNECTED })
+      tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.READY })
+      const onExited = vi.fn()
 
       applyTerminalStatusChange(
         tabs.metadata,
-        repoGitStore,
+        createRepoGitStore(),
         tabs.view.getTerminalTab('term-1'),
         'term-1',
-        statusChange({ status: TerminalStatus.READY }),
+        statusChange({ status: TerminalStatus.EXITED }),
+        onExited,
       )
 
-      expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TERMINAL_DISCONNECTED)
+      expect(onExited).toHaveBeenCalledExactlyOnceWith('term-1')
+      expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.READY)
+      expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
       dispose()
     })
   })
@@ -1421,6 +1412,7 @@ describe('applyTerminalStatusChange', () => {
         tabs.view.getTerminalTab('term-1'),
         'term-1',
         statusChange(fields),
+        failOnExit,
       )
     }
 
@@ -1487,14 +1479,34 @@ describe('applyTerminalStatusChange', () => {
       })
     })
 
-    it('does not count a READY event that a DISCONNECTED tab refuses', () => {
+    it.each([
+      ['EXITED', TerminalStatus.EXITED],
+      ['STARTUP_FAILED', TerminalStatus.STARTUP_FAILED],
+    ])('applies and counts a READY event on a tab that reads %s', (_label, status) => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
-        tabs.addTerminal('term-1', { terminalStatus: TERMINAL_DISCONNECTED })
+        tabs.addTerminal('term-1', { terminalStatus: status, startupError: 'no such shell' })
 
         applyEvent(tabs, { status: TerminalStatus.READY })
 
-        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TERMINAL_DISCONNECTED)
+        const tab = tabs.view.getTerminalTab('term-1')
+        expect(tab?.status).toBe(TerminalStatus.READY)
+        expect(tab?.startupError, 'a running shell carries no startup error').toBeFalsy()
+        expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(1)
+        dispose()
+      })
+    })
+
+    // A replay repeats the status of every watched terminal. A count for an event
+    // that wrote nothing would hold back the reply of a pending request.
+    it('does not count a READY event that repeats the status of the tab', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('term-1', { terminalStatus: TerminalStatus.READY })
+
+        applyEvent(tabs, { status: TerminalStatus.READY })
+
+        expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.READY)
         expect(tabs.metadata.liveStatusEpoch('term-1')).toBe(0)
         dispose()
       })
@@ -1586,6 +1598,7 @@ describe('applyTerminalStatusChange', () => {
           tabs.view.getTerminalTab('term-2'),
           'term-2',
           statusChange({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
+          failOnExit,
         )
 
         expect([...written].sort()).toEqual([...TERMINAL_LIVE_STATUS_FIELDS, 'contentReady'].sort())
@@ -1614,6 +1627,7 @@ describe('applyTerminalStatusChange', () => {
             isWorktree: true,
           } as never,
         }),
+        failOnExit,
         'wkr-1',
       )
 
@@ -1697,7 +1711,7 @@ describe('agentMessage sub-handlers', () => {
     }
   }
 
-  it('handleAgentSessionInfo consumes an agent_session_info message and applies its updates', () => {
+  it('consumes an agent_session_info message and applies its updates in handleAgentSessionInfo', () => {
     createRoot((dispose) => {
       const stores = sessionInfoStores()
       const msg = agentMessage({
@@ -1712,7 +1726,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleAgentSessionInfo replaces a full rate-limit snapshot', () => {
+  it('replaces a full rate-limit snapshot in handleAgentSessionInfo', () => {
     createRoot((dispose) => {
       const stores = sessionInfoStores()
       const first = agentMessage({
@@ -1749,7 +1763,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleAgentSessionInfo returns false for a persisted message (caller keeps processing it)', () => {
+  it('returns false from handleAgentSessionInfo for a persisted message (caller keeps processing it)', () => {
     createRoot((dispose) => {
       const msg = agentMessage({
         type: 'assistant',
@@ -1764,7 +1778,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleAgentSessionInfo clears a stale thinking-token estimate on a 0 (per-phase reset)', () => {
+  it('clears a stale thinking-token estimate on a 0 in handleAgentSessionInfo (per-phase reset)', () => {
     createRoot((dispose) => {
       const stores = sessionInfoStores()
       stores.agentSessionStore.applyProgress('a1', { revision: 1, thinkingTokens: 500 })
@@ -1778,7 +1792,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleAgentSessionInfo routes running_tool to the chat store, not the session store', () => {
+  it('routes running_tool to the chat store, not the session store, in handleAgentSessionInfo', () => {
     createRoot((dispose) => {
       const stores = sessionInfoStores()
       const msg = agentMessage({
@@ -1802,7 +1816,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleResultDivider rehydrates cost without alerting — the settle edge owns the alert', () => {
+  it('rehydrates cost without alerting in handleResultDivider — the settle edge owns the alert', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
       const stores = {
@@ -2376,7 +2390,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    it('titleChanged patches ptyTitle only', () => {
+    it('patches ptyTitle only on a titleChanged event', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
         tabs.addTerminal('t1')
@@ -2387,7 +2401,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    it('titleChanged ignores an empty OSC title so a rename sticks', () => {
+    it('ignores an empty OSC title on a titleChanged event so a rename sticks', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
         tabs.addTerminal('t1')
@@ -2399,7 +2413,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    it('titleChanged does not overwrite a user rename in title', () => {
+    it('does not overwrite a user rename in title on a titleChanged event', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
         tabs.addTerminal('t1')
@@ -2612,16 +2626,16 @@ describe('extracted handleAgentEvent branch handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.STARTING })
-        let online: boolean | undefined
+        let onlineReports = 0
         const sc = {
           status: AgentStatus.ACTIVE,
           optionGroups: [],
           startupError: '',
           startupMessage: '',
         } as unknown as AgentStatusChange
-        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
+        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), () => void (onlineReports += 1), undefined)
         expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
-        expect(online).toBe(true)
+        expect(onlineReports).toBe(1)
         dispose()
       })
     })
@@ -2681,15 +2695,15 @@ describe('extracted handleAgentEvent branch handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
-        let online: boolean | undefined
+        let onlineReports = 0
         const sc = {
           status: AgentStatus.UNSPECIFIED,
           optionGroups: [],
         } as unknown as AgentStatusChange
-        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
+        handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), () => void (onlineReports += 1), undefined)
         // An event without an explicit status retains the current status and sends no connectivity report.
         expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
-        expect(online).toBeUndefined()
+        expect(onlineReports).toBe(0)
         dispose()
       })
     })
@@ -2956,10 +2970,10 @@ describe('wireSessionInfoToUpdates', () => {
 })
 
 /**
- * The offline sweep reads tabs from every account workspace. Filter both tab types by worker
- * ID so a healthy worker retains its agents and terminals.
+ * The offline sweep reads tabs from every account workspace. Filter them by worker ID so a
+ * healthy worker retains its agents.
  */
-describe('collectWorkerOfflineTargets', () => {
+describe('collectOfflineAgents', () => {
   // An explicit undefined override clears a default. An absent override retains it.
   // The partial type for each tab variant retains its fields, including terminal status.
   const tab = (over: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>): Tab => ({
@@ -2971,77 +2985,46 @@ describe('collectWorkerOfflineTargets', () => {
   } as Tab)
 
   it('leaves agents on OTHER workers alone', () => {
-    const { agents } = collectWorkerOfflineTargets([
+    const agents = collectOfflineAgents([
       tab({ id: 'mine', workerId: 'w1' }),
       tab({ id: 'other-worker', workerId: 'w2' }),
       tab({ id: 'other-ws', workspaceId: 'ws-2', workerId: 'w2' }),
-    ], 'w1')
+    ], new Set(['w1']))
 
     expect(agents.map(a => a.id), 'only the offline worker loses its stream').toEqual(['mine'])
   })
 
-  it('leaves terminals on OTHER workers alone', () => {
-    const { terminals } = collectWorkerOfflineTargets([
-      tab({
-        type: TabType.TERMINAL,
-        id: 'mine',
-        workerId: 'w1',
-        status: TerminalStatus.READY,
-      }),
-      tab({
-        type: TabType.TERMINAL,
-        id: 'theirs',
-        workerId: 'w2',
-        status: TerminalStatus.READY,
-      }),
-    ], 'w1')
+  it('collects the agents of every offline worker in one pass', () => {
+    const agents = collectOfflineAgents([
+      tab({ id: 'first', workerId: 'w1' }),
+      tab({ id: 'second', workerId: 'w2' }),
+      tab({ id: 'online', workerId: 'w3' }),
+    ], new Set(['w1', 'w2']))
 
-    expect([...terminals]).toEqual(['mine'])
+    expect(agents.map(a => a.id)).toEqual(['first', 'second'])
   })
 
-  it('only marks READY terminals', () => {
-    const { terminals } = collectWorkerOfflineTargets([
-      tab({ type: TabType.TERMINAL, id: 'ready', status: TerminalStatus.READY }),
-      tab({ type: TabType.TERMINAL, id: 'already-gone', status: TERMINAL_DISCONNECTED }),
-      tab({ type: TabType.TERMINAL, id: 'exited', status: TerminalStatus.EXITED }),
-    ], 'w1')
+  it('ignores every other tab kind', () => {
+    const agents = collectOfflineAgents([
+      tab({ type: TabType.TERMINAL, id: 'terminal', status: TerminalStatus.READY }),
+      tab({ type: TabType.FILE, id: 'file' }),
+    ], new Set(['w1']))
 
-    expect([...terminals], 'a terminal already down has nothing to lose').toEqual(['ready'])
+    expect(agents).toEqual([])
   })
 
   it('ignores tabs with no worker at all', () => {
-    const { terminals, agents } = collectWorkerOfflineTargets([
+    const agents = collectOfflineAgents([
       tab({ id: 'unhosted', workerId: undefined }),
-      tab({ type: TabType.FILE, id: 'file', workerId: 'w1' }),
-    ], 'w1')
+    ], new Set(['w1']))
 
     expect(agents).toEqual([])
-    expect(terminals.size, 'a FILE tab is neither branch').toBe(0)
   })
 
-  /**
-   * A quake terminal has no placed tab. Add detached terminals to the offline sweep so they do
-   * not retain READY during an outage.
-   */
-  it('marks a terminal that has no tile, which is the quake panel\'s shape', () => {
-    const { terminals } = collectWorkerOfflineTargets([
-      tab({
-        type: TabType.TERMINAL,
-        id: 'companion',
-        tileId: undefined,
-        status: TerminalStatus.READY,
-      }),
-    ], 'w1')
-
-    expect([...terminals]).toEqual(['companion'])
-  })
-
-  it('returns nothing for a worker that hosts none of these tabs', () => {
-    const { terminals, agents } = collectWorkerOfflineTargets([
+  it('returns nothing when no worker is offline', () => {
+    expect(collectOfflineAgents([
       tab({ workerId: 'w1' }),
-    ], 'w-unknown')
-    expect(agents).toEqual([])
-    expect(terminals.size).toBe(0)
+    ], new Set())).toEqual([])
   })
 })
 
@@ -3123,13 +3106,14 @@ describe('useWorkspaceConnection chat history load', () => {
    * then requests its history.
    */
   function mountWithActiveAgent(listAgentMessagesRejectsWith: unknown) {
-    vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(listAgentMessagesRejectsWith)
+    vi.mocked(workerAgent.listAgentMessages).mockRejectedValue(listAgentMessagesRejectsWith)
     const tabs = makeTabStores()
     tabs.addAgent('a1', { workerId: 'w1' })
     let dispose!: () => void
     createRoot((d) => {
       dispose = d
       useWorkspaceConnection({
+        workerOnline: createWorkerOnlineStore(),
         chatStore: createChatStore(),
         agentInputQueueStore: createAgentInputQueueStore(),
         view: tabs.view,
@@ -3159,7 +3143,7 @@ describe('useWorkspaceConnection chat history load', () => {
     const dispose = mountWithActiveAgent(channelNotOpenError())
     try {
       await settle()
-      expect(workerRpc.listAgentMessages, 'the load has to have been attempted').toHaveBeenCalled()
+      expect(workerAgent.listAgentMessages, 'the load has to have been attempted').toHaveBeenCalled()
       expect(mockShowWarnToast).not.toHaveBeenCalled()
     }
     finally {
@@ -3200,7 +3184,7 @@ describe('useWorkspaceConnection chat history load', () => {
     // Otherwise, each later recovery attempt produces an unhandled rejection.
     mockShowWarnToast.mockClear()
     const refusal = new ChannelError('rpc', 'agent not found', { code: 5 })
-    vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(refusal)
+    vi.mocked(workerAgent.listAgentMessages).mockRejectedValue(refusal)
     const tabs = makeTabStores()
     tabs.addAgent('a1', { workerId: 'w1' })
     let dispose!: () => void
@@ -3212,6 +3196,7 @@ describe('useWorkspaceConnection chat history load', () => {
       ])
       chatStore.liveTail.bump('a1', 10n + CATCH_UP_GAP_LIMIT + 1n)
       useWorkspaceConnection({
+        workerOnline: createWorkerOnlineStore(),
         chatStore,
         agentInputQueueStore: createAgentInputQueueStore(),
         view: tabs.view,
@@ -3229,7 +3214,7 @@ describe('useWorkspaceConnection chat history load', () => {
     })
     try {
       await settle()
-      expect(workerRpc.listAgentMessages, 'the re-anchor has to have been attempted').toHaveBeenCalled()
+      expect(workerAgent.listAgentMessages, 'the re-anchor has to have been attempted').toHaveBeenCalled()
       expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load chat history', refusal)
     }
     finally {
@@ -3245,16 +3230,16 @@ describe('useWorkspaceConnection replay ownership', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0.5)
-    vi.mocked(workerRpc.watchEventsViaChannel).mockReset()
-    vi.mocked(workerRpc.listAgentMessages).mockResolvedValue(create(ListAgentMessagesResponseSchema))
-    restoreMarks = vi.spyOn(workerRpc, 'listMessageMarks').mockResolvedValue(create(ListMessageMarksResponseSchema, { minSeq: 0n, maxSeq: 0n })).mockRestore
+    vi.mocked(watchEventsViaChannel).mockReset()
+    vi.mocked(workerAgent.listAgentMessages).mockResolvedValue(create(ListAgentMessagesResponseSchema))
+    restoreMarks = vi.spyOn(workerAgent, 'listMessageMarks').mockResolvedValue(create(ListMessageMarksResponseSchema, { minSeq: 0n, maxSeq: 0n })).mockRestore
   })
 
   afterEach(() => {
     dispose?.()
     dispose = undefined
     restoreMarks?.()
-    vi.mocked(workerRpc.watchEventsViaChannel).mockReset()
+    vi.mocked(watchEventsViaChannel).mockReset()
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
@@ -3276,7 +3261,7 @@ describe('useWorkspaceConnection replay ownership', () => {
     relatedAgents?: Array<{ id: string, parentAgentId?: string, rootAgentId?: string, workerId?: string, workspaceId?: string, visible?: boolean, hydrated?: boolean }>
   } = {}) {
     const agentId = initial.agentId ?? 'a1'
-    const handles: Array<{ workerId: string, handle: workerRpc.WatchEventsHandle, emit: (event: AgentEvent) => void, end: () => void, requestId: () => bigint }> = []
+    const handles: Array<{ workerId: string, handle: WatchEventsHandle, emit: (event: AgentEvent) => void, end: () => void, requestId: () => bigint }> = []
     const transmitted: WatchEventsRequest[] = []
     const requests: Array<{ workerId: string, request: WatchEventsRequest }> = []
     const ownershipAtTransport: boolean[] = []
@@ -3339,7 +3324,7 @@ describe('useWorkspaceConnection replay ownership', () => {
       const agentActivityStore = createAgentActivityStore()
       const controlStore = createControlStore()
       const agentInputQueueStore = createAgentInputQueueStore()
-      vi.mocked(workerRpc.watchEventsViaChannel).mockImplementation(async (workerId, request) => {
+      vi.mocked(watchEventsViaChannel).mockImplementation(async (workerId, request) => {
         const opening = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, request)))
         transmitted.push(opening)
         requests.push({ workerId, request: opening })
@@ -3347,7 +3332,7 @@ describe('useWorkspaceConnection replay ownership', () => {
         ownershipAtTransport.push(agentSessionStore.acceptsReplay(agentId, requestId))
         let listener: ((response: WatchEventsResponse) => void) | undefined
         let ended: (() => void) | undefined
-        const handle: workerRpc.WatchEventsHandle = {
+        const handle: WatchEventsHandle = {
           update: vi.fn((next) => {
             requestId = next.updateId ?? 0n
             const update = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, next)))
@@ -3371,6 +3356,7 @@ describe('useWorkspaceConnection replay ownership', () => {
         return handle
       })
       useWorkspaceConnection({
+        workerOnline: createWorkerOnlineStore(),
         chatStore,
         agentInputQueueStore,
         view: tabs.view,

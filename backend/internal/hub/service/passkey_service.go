@@ -870,6 +870,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 
 	return &leapmuxv1.FinishPasskeyRegistrationResponse{
 		Passkey: passkeyInfoToProto(ctx, passkey),
+		User:    storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey registration"),
 	}, nil
 }
 
@@ -1002,7 +1003,9 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *leapmuxv1.DeletePa
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return &leapmuxv1.DeletePasskeyResponse{}, nil
+	return &leapmuxv1.DeletePasskeyResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey removal"),
+	}, nil
 }
 
 func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.DeactivatePasskeyAuthRequest) (*leapmuxv1.DeactivatePasskeyAuthResponse, error) {
@@ -1041,7 +1044,9 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return &leapmuxv1.DeactivatePasskeyAuthResponse{}, nil
+	return &leapmuxv1.DeactivatePasskeyAuthResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey deactivation"),
+	}, nil
 }
 
 // hashReplacementPassword validates and hashes a replacement password for

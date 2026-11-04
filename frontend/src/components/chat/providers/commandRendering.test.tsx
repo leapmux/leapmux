@@ -305,7 +305,7 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
 
-  it('openCode execute with exit 5 renders "Error (exit 5)"', () => {
+  it('renders "Error (exit 5)" for an openCode execute with exit 5', () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',
@@ -325,7 +325,7 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
 
-  it('openCode execute with terminal content block shows a Terminal badge', () => {
+  it('shows a Terminal badge for an openCode execute with terminal content block', () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'execute',

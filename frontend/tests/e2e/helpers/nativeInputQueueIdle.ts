@@ -1,5 +1,6 @@
 import type { AgentInputQueueSnapshot } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { ChannelManager } from '../../../src/lib/channel'
+import type { WatchEventsRequestSchema, WatchEventsResponse, WatchEventsResponseSchema } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import type { ChannelStream } from '../../../src/lib/channel'
 import type { AgentWatchServer } from './agentEventWatch'
 import { WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
@@ -44,8 +45,8 @@ export class NativeInputQueueIdleCollector {
       : undefined
   }
 
-  accept(payload: Uint8Array): void {
-    const frame = readAgentWatchFrame(payload, this.agentId, WATCH_LABEL)
+  accept(response: WatchEventsResponse): void {
+    const frame = readAgentWatchFrame(response, this.agentId, WATCH_LABEL)
     if (frame.kind === 'acknowledged') {
       this.subscribed = true
       return
@@ -81,7 +82,7 @@ export async function waitForNativeInputQueueIdle(
   if (failureDeadline <= Date.now())
     throw new Error('The whole-test deadline leaves no time for the input queue wait.')
 
-  let watch: ReturnType<ChannelManager['stream']> | undefined
+  let watch: ChannelStream<typeof WatchEventsRequestSchema, typeof WatchEventsResponseSchema> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let completed = false
   const completion = new Promise<AgentInputQueueSnapshot>((resolve, reject) => {
@@ -110,11 +111,11 @@ export async function waitForNativeInputQueueIdle(
       if (completed)
         return
       watch = channel.stream(channelId, WorkerWatchService.method.watchEvents, agentWatchRequest(agentId))
-      watch.onMessage((frame) => {
+      watch.onMessage((response) => {
         if (completed)
           return
         try {
-          collector.accept(frame.payload)
+          collector.accept(response)
           const snapshot = collector.idleSnapshot
           if (snapshot) {
             completed = true

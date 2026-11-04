@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createMemo, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTerminal } from '~/api/workerRpc'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
@@ -102,7 +102,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   }
 
   const handleSubmit = formHandler(submitDisabled, async () => {
-    const resp = await workerRpc.openTerminal(worker.workerId(), {
+    const resp = await workerTerminal.openTerminal(worker.workerId(), {
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,
       workingDir: worker.workingDir(),

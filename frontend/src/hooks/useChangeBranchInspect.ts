@@ -2,7 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { GitBranchEntry, InspectBranchChangeResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { createMemo, createSignal, onMount } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { buildInfo } from '~/hooks/useGitPathInfo'
 import { createLogger } from '~/lib/logger'
@@ -122,7 +122,7 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
   })
 
   const fetcher = createGuardedFetch<void, InspectBranchChangeResponse>({
-    fetch: (_args, signal) => workerRpc.inspectBranchChange(args.workerId, {
+    fetch: (_args, signal) => workerGit.inspectBranchChange(args.workerId, {
       path: args.gitToplevel,
     }, { signal }),
     // Suppress the loading flag while the seed already paints the form

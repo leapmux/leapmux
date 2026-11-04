@@ -87,6 +87,12 @@ The Worker never comes online, and each reconnection attempt logs an `unauthenti
 
 The Worker keeps its `state.json` for these errors, because a wrong `--hub` or a proxy must not destroy its identity.
 
+After five `unauthenticated` refusals in a row, the Worker logs one error that states the remedy, and it keeps retrying:
+
+```text
+the hub does not know this worker's token. Check --hub and any proxy in front of the hub. If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.
+```
+
 **Fix**
 Check `--hub` and the proxy. If neither is wrong, stop the Worker, delete its `state.json`, and register it again.
 

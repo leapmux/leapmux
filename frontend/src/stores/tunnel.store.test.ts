@@ -38,7 +38,7 @@ describe('tunnel store', () => {
     vi.restoreAllMocks()
   })
 
-  it('tunnelsForWorker filters correctly', async () => {
+  it('filters correctly in tunnelsForWorker', async () => {
     const { platformBridge } = await import('~/api/platformBridge')
     const store = createTunnelStore()
 

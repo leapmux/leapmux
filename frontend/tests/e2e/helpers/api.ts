@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { fromJson } from '@bufbuild/protobuf'
 import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
+import { MAX_PAGE_LIMIT } from '../../../src/generated/contracts/pagination'
 import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import {
@@ -398,9 +399,6 @@ export interface WorkerSummary {
   online: boolean
 }
 
-/** The largest page ListWorkers answers, so a listing of a few workers is one round trip. */
-const WORKER_PAGE_LIMIT = 500
-
 /**
  * The pages one listing reads before it fails. A cursor that never ends is a hub fault, and a helper that followed it
  * would hang the spec instead of failing it.
@@ -409,7 +407,8 @@ const WORKER_MAX_PAGES = 100
 
 /**
  * List the workers that `cookie` can see, in the hub's order, across every page. The one reader of ListWorkers: a
- * worker with no ID throws, an absent `workers` field reads as no worker, and an absent `page` ends the listing.
+ * worker with no ID throws, an absent `workers` field reads as no worker, and an absent `page` ends the listing. Each
+ * read asks for the hub's largest page, so a listing of a few workers is one round trip.
  */
 export async function listWorkersViaAPI(hubUrl: string, cookie: string, signal?: AbortSignal): Promise<WorkerSummary[]> {
   const workers: WorkerSummary[] = []
@@ -419,7 +418,7 @@ export async function listWorkersViaAPI(hubUrl: string, cookie: string, signal?:
       hubUrl,
       'WorkerManagementService/ListWorkers',
       {
-        page: { limit: WORKER_PAGE_LIMIT, cursor },
+        page: { limit: MAX_PAGE_LIMIT, cursor },
       },
       { cookie, signal, operation: 'listWorkersViaAPI' },
     )

@@ -17,6 +17,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/service"
@@ -68,7 +69,7 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 		opts.CloseTab = teardown.closeTab
 	}
 	if opts.ApplyArchiveState == nil {
-		opts.ApplyArchiveState = func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+		opts.ApplyArchiveState = func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 			return nil, nil
 		}
 	}
@@ -118,7 +119,7 @@ func TestNewOrphanReconciler_RefusesAListFnWithoutArchiveHooks(t *testing.T) {
 	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{}, nil
 	}
-	applyFn := func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+	applyFn := func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 		return nil, nil
 	}
 	resumeFn := func([]string) {}
@@ -331,7 +332,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -366,7 +367,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 	// The hub lists the agent tab and knows nothing of the quake terminal,
 	// which is the steady state for every quake panel the user ever opened.
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -419,7 +420,7 @@ func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *t
 		ID: "quake", WorkingDir: "/repo", Screen: []byte{}, IsQuake: true,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"}}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "elsewhere"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -435,9 +436,9 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 
 	var calls []leapmuxv1.WorkspaceArchiveState
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) ([]string, error) {
+		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, _ userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
 			calls = append(calls, state)
-			require.Equal(t, "agent-archived", tabs[0].GetTab().GetTabId())
+			require.Equal(t, "agent-archived", tabs[0].GetTabId())
 			return nil, nil
 		},
 	})
@@ -445,7 +446,7 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 		ID: "agent-archived", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-archived"}},
+		Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-archived"},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 	}}, nil)
 
@@ -456,26 +457,28 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 	assert.Empty(t, teardown.agents)
 }
 
-// The archive pass forwards each hub row's TabRef whole, so a payload-backed
-// tab keeps its owner: worker_tab_payloads is keyed (user_id, tab_id), and an
-// id without its owner addresses no row. A row that addresses no tab, or that
-// states a type this worker cannot archive, drops out of the pass and does not
-// stop it.
-func TestOrphanReconciler_ArchivePassForwardsEachTabRefWithItsOwner(t *testing.T) {
+// The archive pass forwards the response's owner with each bucket, so a
+// payload-backed tab stays addressable: worker_tab_payloads is keyed (user_id,
+// tab_id), and an id without its owner addresses no row. A row that addresses
+// no tab, or that states a type this worker cannot archive, drops out of the
+// pass and does not stop it.
+func TestOrphanReconciler_ArchivePassForwardsTheResponseOwner(t *testing.T) {
 	t.Parallel()
 
-	received := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabRef{}
+	received := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabIdent{}
+	owners := map[leapmuxv1.WorkspaceArchiveState]string{}
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) ([]string, error) {
+		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
 			received[state] = append(received[state], tabs...)
+			owners[state] = owner.String()
 			return nil, nil
 		},
 	})
 	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-active", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	archivedFile := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}, UserId: "user-a"}
-	activeAgent := &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"}}
+	archivedFile := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}
+	activeAgent := &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"}
 	archived := leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
 	active := leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE
 	setFake("user-a", []*leapmuxv1.WorkerTabState{
@@ -484,15 +487,16 @@ func TestOrphanReconciler_ArchivePassForwardsEachTabRefWithItsOwner(t *testing.T
 		// A row that addresses no tab.
 		{ArchiveState: archived},
 		// A row whose type a newer hub knows and this worker does not.
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType(99), TabId: "future"}}, ArchiveState: archived},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType(99), TabId: "future"}, ArchiveState: archived},
 	}, nil)
 
 	require.True(t, runOnce(t.Context(), rec), "a row the worker cannot classify must not stop the pass")
 	require.Len(t, received[archived], 1)
-	assert.True(t, proto.Equal(archivedFile, received[archived][0]),
-		"the archived FILE tab must keep its owner, got %v", received[archived][0])
+	assert.True(t, proto.Equal(archivedFile, received[archived][0]), "got %v", received[archived][0])
+	assert.Equal(t, "user-a", owners[archived], "the archived FILE tab must travel with the response's owner")
 	require.Len(t, received[active], 1)
 	assert.True(t, proto.Equal(activeAgent, received[active][0]), "got %v", received[active][0])
+	assert.Equal(t, "user-a", owners[active])
 	assert.Empty(t, teardown.agents, "the agent the hub lists is not reaped")
 }
 
@@ -500,7 +504,7 @@ func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing
 	t.Parallel()
 
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 			return nil, assert.AnError
 		},
 	})
@@ -508,7 +512,7 @@ func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing
 		ID: "agent-live", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-live"}},
+		Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-live"},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 	}}, nil)
 
@@ -538,7 +542,7 @@ func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t 
 	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Now:      func() time.Time { return now },
 		TabGrace: 10 * time.Second,
-		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 			if firstApply {
 				firstApply = false
 				return []string{"agent-active"}, nil
@@ -555,7 +559,7 @@ func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t 
 		}))
 	}
 	setFake("user-1", []*leapmuxv1.WorkerTabState{{
-		Tab:          &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"}},
+		Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active"},
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 	}}, nil)
 
@@ -708,11 +712,10 @@ func runOnce(ctx context.Context, rec *service.OrphanReconciler) bool {
 // of the reconciler's hub-vs-local comparison.
 //
 // ListAllWorkerTabPayloads walks EVERY user's rows and the hub's owned-tab view is
-// keyed by (user_id, tab_id), so two owners can legitimately appear with the
-// same client-minted FILE tab id. Keying the comparison by (tab_type, tab_id)
-// alone collapses them into one map entry -- last one wins -- and every local
-// row is then reconciled against a stranger's hub row, so user-a's live tab is
-// judged by whether USER-B still owns that id -- and reaped when they do not.
+// keyed by (user_id, tab_id), so two owners can legitimately hold the same
+// client-minted FILE tab id. Keying the comparison by (tab_type, tab_id) alone
+// would match user-b's local row against user-a's hub row, so the reconciler
+// keys the hub rows by the response's owner and every local row by its own.
 func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	t.Parallel()
 
@@ -727,12 +730,11 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 
-	// The hub knows both rows, each naming its own owner. Neither is absent,
-	// so neither is reaped -- and the owner-keyed comparison is what makes that
-	// true for BOTH: an owner-blind key would collapse them into one entry.
+	// The response is scoped to user-a and lists the shared id. user-a's row
+	// matches it; user-b's row is outside the scope, so it is not "absent"
+	// either. Neither is reaped.
 	setFake("user-a", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-a"}},
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-b"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
@@ -743,7 +745,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	assert.Equal(t, testutil.NativeAbsPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
 		"user-a must be reconciled against user-a's hub row, not user-b's")
 	assert.Equal(t, testutil.NativeAbsPath("/r/b.go"), filePathOf(t, byUser["user-b"]),
-		"user-b's row must survive on its own hub row")
+		"user-b's row lies outside the response's scope, so it must survive")
 }
 
 // TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner is the
@@ -753,10 +755,9 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 // dropped owner's row survives indefinitely under the live owner's cover.
 //
 // The response is scoped to user-b, the owner being reaped: that is what makes
-// user-b's absence mean "dropped" rather than "not asked about". It also
-// carries user-a's row, which the scope does not cover -- deliberately
-// adversarial, so the reap decision cannot lean on the hub having sent only
-// in-scope rows.
+// user-b's absence mean "dropped" rather than "not asked about". user-a's row
+// shares the id but lies outside that scope, so the collision must not shield
+// user-b's row, and the scope must not reap user-a's.
 func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T) {
 	t.Parallel()
 
@@ -771,10 +772,9 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 
-	// Only user-a's tab survives at the hub.
-	setFake("user-b", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID}, UserId: "user-a"}},
-	}, nil)
+	// Only user-a's tab survives at the hub, so the response scoped to user-b
+	// lists none of user-b's tabs.
+	setFake("user-b", []*leapmuxv1.WorkerTabState{}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
@@ -821,7 +821,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	// A response scoped to user-a, listing user-a's live tab. It says nothing
 	// about user-b -- who is not "absent", merely not asked about.
 	setFake("user-a", []*leapmuxv1.WorkerTabState{
-		{Tab: &leapmuxv1.TabRef{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}, UserId: "user-a"}},
+		{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a"}},
 	}, nil)
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")

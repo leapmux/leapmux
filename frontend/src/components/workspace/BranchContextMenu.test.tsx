@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerTerminal } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -13,17 +13,21 @@ import { BranchContextMenu } from './BranchContextMenu'
 // via DropdownMenu's own onClick → hidePopover wiring.
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableProviders: vi.fn(async () => ({
-    providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
-  })),
-  listAvailableShells: vi.fn(async () => ({
-    shells: ['/bin/zsh', '/bin/bash'],
-    defaultShell: '/bin/zsh',
-  })),
+  workerAgent: {
+    listAvailableProviders: vi.fn(async () => ({
+      providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+    })),
+  },
+  workerTerminal: {
+    listAvailableShells: vi.fn(async () => ({
+      shells: ['/bin/zsh', '/bin/bash'],
+      defaultShell: '/bin/zsh',
+    })),
+  },
 }))
 
-const listProviders = workerRpc.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
-const listShells = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
+const listProviders = workerAgent.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
+const listShells = workerTerminal.listAvailableShells as unknown as ReturnType<typeof vi.fn>
 
 // The Popover API stubs come from `vitest.setup.ts`, and this suite needs THOSE
 // rather than bare `vi.fn()` replacements: they dispatch the `toggle` event and
@@ -177,8 +181,8 @@ describe('BranchContextMenu', () => {
       const { trigger } = renderMenu()
       await openMenu(trigger)
 
-      expect(listProviders).toHaveBeenCalledWith('w-1', expect.anything())
-      expect(listShells).toHaveBeenCalledWith('w-1', {})
+      expect(listProviders).toHaveBeenCalledWith('w-1', {}, expect.anything())
+      expect(listShells).toHaveBeenCalledWith('w-1')
       expect(screen.getByTestId(`menu-new-agent-${AgentProvider.CLAUDE_CODE}`)).toBeInTheDocument()
       expect(screen.getByText('/bin/zsh')).toBeInTheDocument()
       expect(screen.getByText('/bin/bash')).toBeInTheDocument()

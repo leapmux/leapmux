@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { platformBridgeFileSaveStubs } from '~/test-support/saveActionsMocks'
 import { readResp, statResp } from '~/test-support/workerRpcMocks'
@@ -14,9 +15,16 @@ const readGitFileImpl = vi.fn(async (..._args: unknown[]) => ({
 const downloadImpl = vi.fn((..._args: unknown[]) => Promise.resolve())
 
 vi.mock('~/api/workerRpc', () => ({
-  statFile: (...args: unknown[]) => statFileImpl(...args),
-  readFile: (...args: unknown[]) => readFileImpl(...args),
-  readGitFile: (...args: unknown[]) => readGitFileImpl(...args),
+  workerFile: {
+    statFile: (...args: unknown[]) => statFileImpl(...args),
+    readFile: (...args: unknown[]) => readFileImpl(...args),
+  },
+  workerGit: {
+    // `.then` hands out a promise that the spy never saw. A vi.fn spy attaches
+    // handlers to the promise it returns, which marks a rejection as handled and
+    // would hide one that the viewer leaves unhandled.
+    readGitFile: (...args: unknown[]) => readGitFileImpl(...args).then(resp => resp),
+  },
 }))
 
 vi.mock('~/lib/fileDownload', () => ({
@@ -28,8 +36,8 @@ vi.mock('~/lib/fileDownload', () => ({
 // Light-weight mocks for the heavy child views so we can assert which
 // branch fired without dragging in syntax highlighting / virtualization.
 vi.mock('~/components/fileviewer/TextFileView', () => ({
-  TextFileView: (props: { filePath: string }) => (
-    <div data-testid="text-view">{props.filePath}</div>
+  TextFileView: (props: { filePath: string, content: Uint8Array }) => (
+    <div data-testid="text-view" data-text={new TextDecoder().decode(props.content)}>{props.filePath}</div>
   ),
 }))
 vi.mock('~/components/fileviewer/MarkdownFileView', () => ({
@@ -208,10 +216,13 @@ describe('FileViewer dispatch with unsupported view', () => {
     fireEvent.click(screen.getByTestId('unsupported-show-anyway-button'))
     await waitFor(() => expect(screen.getByTestId('hex-view')).toBeInTheDocument())
     expect(readFileImpl).toHaveBeenCalledTimes(1)
-    expect(readFileImpl).toHaveBeenCalledWith('w1', expect.objectContaining({
+    // The worker id and the request. The third argument holds the call
+    // options, which this read leaves unset.
+    expect(readFileImpl.mock.calls[0]?.[0]).toBe('w1')
+    expect(readFileImpl.mock.calls[0]?.[1]).toMatchObject({
       path: '/repo/archive.zip',
       limit: BigInt(MAX),
-    }))
+    })
   })
 
   it('clicking Show anyway on an oversize image lazy-fetches and renders HexView', async () => {
@@ -384,5 +395,266 @@ describe('FileViewer dispatch with unsupported view', () => {
       expect.stringContaining('Failed to download archive.zip'),
       expect.any(Error),
     )
+  })
+})
+
+// A superseded or unmounted load must stop its RPCs, not only ignore their
+// answers: a large read keeps the worker and the channel busy for a result
+// that nobody waits for.
+describe('FileViewer load cancellation', () => {
+  beforeEach(() => {
+    statFileImpl.mockReset()
+    readFileImpl.mockReset()
+    readGitFileImpl.mockClear()
+  })
+
+  /** The options that one RPC call received, which carry its abort signal. */
+  function signalOf(call: unknown[] | undefined): AbortSignal | undefined {
+    return (call?.[2] as { signal?: AbortSignal } | undefined)?.signal
+  }
+
+  /** A response that never arrives unless the test rejects it. */
+  function pendingRpc() {
+    let reject!: (err: unknown) => void
+    const promise = new Promise<never>((_resolve, rejectPromise) => {
+      reject = rejectPromise
+    })
+    return { promise, reject }
+  }
+
+  it('aborts the read of a superseded text load', async () => {
+    const first = pendingRpc()
+    readFileImpl.mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(readResp(new TextEncoder().encode('second')))
+    const [path, setPath] = createSignal('/repo/first.txt')
+    render(() => <FileViewer workerId="w1" filePath={path()} />)
+    await waitFor(() => expect(readFileImpl).toHaveBeenCalledOnce())
+    const signal = signalOf(readFileImpl.mock.calls[0])
+    expect(signal?.aborted).toBe(false)
+
+    setPath('/repo/second.txt')
+
+    expect(signal?.aborted).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveTextContent('/repo/second.txt'))
+    expect(signalOf(readFileImpl.mock.calls[1])?.aborted).toBe(false)
+  })
+
+  it('aborts the stat of a superseded binary load', async () => {
+    const first = pendingRpc()
+    statFileImpl.mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(statResp(2048))
+    const [path, setPath] = createSignal('/repo/first.zip')
+    render(() => <FileViewer workerId="w1" filePath={path()} />)
+    await waitFor(() => expect(statFileImpl).toHaveBeenCalledOnce())
+    const signal = signalOf(statFileImpl.mock.calls[0])
+    expect(signal?.aborted).toBe(false)
+
+    setPath('/repo/second.zip')
+
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('aborts the load when the viewer unmounts', async () => {
+    const first = pendingRpc()
+    readFileImpl.mockImplementationOnce(() => first.promise)
+    const { unmount } = render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" />)
+    await waitFor(() => expect(readFileImpl).toHaveBeenCalledOnce())
+
+    unmount()
+
+    expect(signalOf(readFileImpl.mock.calls[0])?.aborted).toBe(true)
+  })
+
+  // The abort rejects the superseded RPC. That rejection is the expected end
+  // of a load nobody waits for, so it must not reach the screen as a failure
+  // of the file that replaced it.
+  it('ignores the abort of a superseded load', async () => {
+    const first = pendingRpc()
+    readFileImpl.mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(readResp(new TextEncoder().encode('second')))
+    const [path, setPath] = createSignal('/repo/first.txt')
+    render(() => <FileViewer workerId="w1" filePath={path()} />)
+    await waitFor(() => expect(readFileImpl).toHaveBeenCalledOnce())
+
+    setPath('/repo/second.txt')
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveTextContent('/repo/second.txt'))
+    first.reject(new DOMException('The operation was aborted.', 'AbortError'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(screen.getByTestId('text-view')).toHaveTextContent('/repo/second.txt')
+    expect(screen.queryByText('The operation was aborted.')).not.toBeInTheDocument()
+  })
+})
+
+// The ref and diff reads follow the same rule as the working-copy load: a
+// newer mode or path ends the older read, and its late answer must not
+// replace the view the user switched to.
+describe('FileViewer ref and diff reads', () => {
+  beforeEach(() => {
+    statFileImpl.mockReset()
+    readFileImpl.mockReset()
+    readGitFileImpl.mockReset()
+    readFileImpl.mockResolvedValue(readResp(new TextEncoder().encode('working')))
+  })
+
+  type GitRead = Awaited<ReturnType<typeof readGitFileImpl>>
+
+  /** A git read that the test answers by hand. */
+  function deferredGitRead() {
+    let resolve!: (value: GitRead) => void
+    const promise = new Promise<GitRead>((resolvePromise) => {
+      resolve = resolvePromise
+    })
+    return { promise, resolve }
+  }
+
+  function gitText(text: string): GitRead {
+    return {
+      exists: true,
+      content: new TextEncoder().encode(text),
+    }
+  }
+
+  it('keeps the staged copy when the earlier HEAD read answers last', async () => {
+    const head = deferredGitRead()
+    readGitFileImpl.mockImplementationOnce(() => head.promise)
+      .mockResolvedValue(gitText('staged text'))
+    const [mode, setMode] = createSignal<'head' | 'staged'>('head')
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode={mode()} />)
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledOnce())
+
+    setMode('staged')
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'staged text'))
+    head.resolve(gitText('head text'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'staged text')
+  })
+
+  it('aborts the git read of a superseded mode', async () => {
+    const head = deferredGitRead()
+    readGitFileImpl.mockImplementationOnce(() => head.promise)
+      .mockResolvedValue(gitText('staged text'))
+    const [mode, setMode] = createSignal<'head' | 'staged'>('head')
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode={mode()} />)
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledOnce())
+    const signal = (readGitFileImpl.mock.calls[0]?.[2] as { signal?: AbortSignal } | undefined)?.signal
+    expect(signal?.aborted).toBe(false)
+
+    setMode('staged')
+
+    expect(signal?.aborted).toBe(true)
+  })
+
+  // Both sides of a staged diff start together. A mode switch aborts both,
+  // and the viewer leaves at the staged side's rejection before it awaits the
+  // HEAD side. The HEAD side's rejection must not go unhandled.
+  it('handles both sides of a diff whose reads the viewer abandons', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      // Each read rejects only when its caller aborts it.
+      readGitFileImpl.mockImplementation((...args: unknown[]) => new Promise<GitRead>((_resolve, reject) => {
+        const opts = args[2] as { signal?: AbortSignal } | undefined
+        opts?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
+      }))
+      const [mode, setMode] = createSignal<'unified-diff' | 'working'>('unified-diff')
+      render(() => (
+        <FileViewer
+          workerId="w1"
+          filePath="/repo/notes.txt"
+          fileViewMode={mode()}
+          fileDiffBase="head-vs-staged"
+          gitFileStatus={{ path: 'notes.txt' } as never}
+        />
+      ))
+      await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledTimes(2))
+
+      setMode('working')
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(unhandled).toEqual([])
+      expect(screen.queryByText('Loading...'), 'the mode switch ended the reads that the flag waited for').not.toBeInTheDocument()
+    }
+    finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  // Working mode reads nothing, so no read of that run can clear the flag. A
+  // read that the switch abandoned cannot clear it either, because its run is
+  // over. The working-mode run must clear the flag itself.
+  describe.each([
+    ['the HEAD copy', 'head', {}],
+    ['the staged copy', 'staged', {}],
+    [
+      'a HEAD-vs-staged diff',
+      'unified-diff',
+      { fileDiffBase: 'head-vs-staged' as const },
+    ],
+    [
+      'a HEAD-vs-working diff',
+      'split-diff',
+      { fileDiffBase: 'head-vs-working' as const },
+    ],
+  ] as const)('a return to working mode from %s', (_label, startMode, extraProps) => {
+    /** Mount in `startMode` with the git reads held, then return to working mode. */
+    async function switchToWorkingBeforeTheReadAnswers() {
+      readGitFileImpl.mockImplementation(() => new Promise<GitRead>(() => {}))
+      const [mode, setMode] = createSignal<'head' | 'staged' | 'unified-diff' | 'split-diff' | 'working'>(startMode)
+      render(() => (
+        <FileViewer
+          workerId="w1"
+          filePath="/repo/notes.txt"
+          fileViewMode={mode()}
+          gitFileStatus={{ path: 'notes.txt' } as never}
+          {...extraProps}
+        />
+      ))
+      await waitFor(() => expect(readGitFileImpl).toHaveBeenCalled())
+      await waitFor(() => expect(readFileImpl).toHaveBeenCalled())
+      expect(screen.getByText('Loading...'), 'the git read holds the indicator').toBeInTheDocument()
+
+      setMode('working')
+      await waitFor(() => expect(screen.getByTestId('text-view')).toBeInTheDocument())
+    }
+
+    it('clears the loading indicator', async () => {
+      await switchToWorkingBeforeTheReadAnswers()
+
+      expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+    })
+
+    // The restore effect returns while a read is pending, so a stuck flag
+    // stops every later restore for this viewer.
+    it('restores the saved scroll position of working mode', async () => {
+      const key = `${PREFIX_FILE_SCROLL}w1:/repo/notes.txt:working`
+      sessionStorageSet(key, 120)
+
+      await switchToWorkingBeforeTheReadAnswers()
+
+      expect(sessionStorageGet<number>(key), 'the restore consumes the saved position').toBeUndefined()
+    })
+  })
+
+  it('keeps the indicator while a newer read is pending', async () => {
+    const head = deferredGitRead()
+    const staged = deferredGitRead()
+    readGitFileImpl.mockImplementationOnce(() => head.promise)
+      .mockImplementationOnce(() => staged.promise)
+    const [mode, setMode] = createSignal<'head' | 'staged'>('head')
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode={mode()} />)
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledOnce())
+
+    setMode('staged')
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledTimes(2))
+    head.resolve(gitText('head text'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByText('Loading...'), 'the late answer of the older run must not clear the flag').toBeInTheDocument()
+
+    staged.resolve(gitText('staged text'))
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'staged text'))
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
   })
 })

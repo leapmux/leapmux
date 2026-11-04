@@ -32,7 +32,7 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			}
 			env := regKeyEnvFromStore(t, st, testConfig(), maxWorkersPerUser(1), func(st store.Store) store.Store {
 				return registrationOverlapStore{Store: st, coordinator: coordinator}
-			})
+			}, nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			owner := userid.MustNew(env.adminID(t))

@@ -634,7 +634,7 @@ func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 	assert.Contains(t, mergedDoc, "api_seconds", "the merged document always carries every field")
 
 	// One field written: the stored document carries THAT FIELD ONLY, while
-	// the merged one still carries all three.
+	// the merged one still carries every field.
 	_, err := env.client.UpdateSettings(authedReq(ctx, oneWrite(settings.KeyTimeouts.Name(), `{"api_seconds":11}`), env.token))
 	require.NoError(t, err)
 
@@ -649,7 +649,7 @@ func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 	// made every field read as customized.
 	assert.JSONEq(t, written.GetMergedJson(), written.GetValueJson())
 	require.NoError(t, json.Unmarshal([]byte(written.GetMergedJson()), &mergedDoc))
-	assert.Len(t, mergedDoc, 3, "the merged document carries every field")
+	assert.Len(t, mergedDoc, len(settings.KeyTimeouts.UI().Fields), "the merged document carries every field")
 	assert.JSONEq(t, written.GetMergedJson(), written.GetEffectiveJson(),
 		"timeouts has no read-time override, so merged and effective agree")
 }
@@ -732,7 +732,7 @@ func TestAdminSettingsService_SoloAdministersWhatItsSignInReads(t *testing.T) {
 // restart-class write IS stored, but the running hub keeps the previous
 // value, and the caller should not have to look the descriptor up again to
 // learn that. The list holds exactly the restart-class keys the request
-// wrote, so a mixed write names one and not the other.
+// wrote, so a mixed write lists one and not the other.
 func TestAdminSettingsService_UpdateReportsRestartKeys(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
@@ -756,6 +756,31 @@ func TestAdminSettingsService_UpdateReportsRestartKeys(t *testing.T) {
 	assert.Equal(t, []string{restartKey}, mixed.GetRestartKeys(),
 		"only the restart-class key of a mixed write is listed")
 	require.Len(t, mixed.GetValues(), 2, "one value per written key, in request order")
+	assert.Equal(t, hotKey, mixed.GetValues()[0].GetKey())
+	assert.Equal(t, restartKey, mixed.GetValues()[1].GetKey())
+}
+
+// A reset of a restart-class key is stored too, and the running hub keeps its
+// previous value until it restarts, so ResetSettings reports restart_keys by
+// the same rule as UpdateSettings.
+func TestAdminSettingsService_ResetReportsRestartKeys(t *testing.T) {
+	env := setupAdminSettingsTest(t, &config.Config{})
+	ctx := context.Background()
+	hotKey, restartKey := settings.KeyTimeouts.Name(), settings.KeyQueueBudget.Name()
+
+	hot, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{Keys: []string{hotKey}}, env.token))
+	require.NoError(t, err)
+	assert.Empty(t, hot.GetRestartKeys(), "a hot key applies within the snapshot TTL")
+
+	restart, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{Keys: []string{restartKey}}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, []string{restartKey}, restart.GetRestartKeys(), "queue_budget is restart-class")
+
+	mixed, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{Keys: []string{hotKey, restartKey}}, env.token))
+	require.NoError(t, err)
+	assert.Equal(t, []string{restartKey}, mixed.GetRestartKeys(),
+		"only the restart-class key of a mixed reset is listed")
+	require.Len(t, mixed.GetValues(), 2, "one value per reset key, in request order")
 	assert.Equal(t, hotKey, mixed.GetValues()[0].GetKey())
 	assert.Equal(t, restartKey, mixed.GetValues()[1].GetKey())
 }

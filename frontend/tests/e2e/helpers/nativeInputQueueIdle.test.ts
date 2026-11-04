@@ -1,5 +1,5 @@
-import type { WatchAgentState } from '../../../src/generated/proto/leapmux/v1/watch_pb'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import type { WatchAgentState, WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
 import {
@@ -28,14 +28,14 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, options: { agentId?: string, agentStates?: WatchAgentState[] } = {}): Uint8Array {
+function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, options: { agentId?: string, agentStates?: WatchAgentState[] } = {}): WatchEventsResponse {
   const agentId = options.agentId ?? 'agent-1'
   const agentStates = options.agentStates ?? (rejectedAgent === agentId
     ? []
     : [
         create(WatchAgentStateSchema, { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }),
       ])
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'updateAck',
       value: {
@@ -48,11 +48,11 @@ function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: strin
         agentStates,
       },
     },
-  }))
+  })
 }
 
-function queueFrame(agentId: string, options: { revision?: bigint, active?: boolean, paused?: boolean, absent?: boolean } = {}): Uint8Array {
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+function queueFrame(agentId: string, options: { revision?: bigint, active?: boolean, paused?: boolean, absent?: boolean } = {}): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'agentEvent',
       value: {
@@ -73,7 +73,7 @@ function queueFrame(agentId: string, options: { revision?: bigint, active?: bool
         },
       },
     },
-  }))
+  })
 }
 
 describe('NativeInputQueueIdleCollector', () => {
@@ -143,7 +143,7 @@ describe('NativeInputQueueIdleCollector', () => {
   it.each(['canSteer', 'canPreempt'] as const)('accepts a native %s refresh without a queue revision change', (capability) => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
     const initial = capability === 'canSteer'
-    const frame = (enabled: boolean) => toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+    const frame = (enabled: boolean) => create(WatchEventsResponseSchema, {
       event: {
         case: 'agentEvent',
         value: {
@@ -173,7 +173,7 @@ describe('NativeInputQueueIdleCollector', () => {
           },
         },
       },
-    }))
+    })
     collector.accept(acknowledgement())
     collector.accept(frame(initial))
     expect(() => collector.accept(frame(!initial))).not.toThrow()
@@ -217,7 +217,7 @@ describe('NativeInputQueueIdleCollector', () => {
 
   it('ignores unrelated native agent events', () => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
-    collector.accept(toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+    collector.accept(create(WatchEventsResponseSchema, {
       event: {
         case: 'agentEvent',
         value: {
@@ -225,7 +225,7 @@ describe('NativeInputQueueIdleCollector', () => {
           event: { case: 'catchUpComplete', value: {} },
         },
       },
-    })))
+    }))
     expect(collector.idleSnapshot).toBeUndefined()
   })
 
@@ -238,10 +238,6 @@ describe('NativeInputQueueIdleCollector', () => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
     expect(() => collector.accept(acknowledgement(1n, 'agent-1'))).toThrow('refused')
     expect(collector.subscribed).toBe(false)
-  })
-
-  it('rejects malformed protobuf data', () => {
-    expect(() => new NativeInputQueueIdleCollector('agent-1').accept(Uint8Array.of(0xFF))).toThrow('The Worker sent an invalid input queue subscription frame.')
   })
 
   it.each(['', ' \n\t'])('rejects an empty agent ID: %j', (agentId) => {
@@ -267,7 +263,7 @@ describe('waitForNativeInputQueueIdle', () => {
     const [channelId, method, payload] = request
     expect(channelId).toBe('native-channel')
     expect(method).toBe(WorkerWatchService.method.watchEvents)
-    expect(fromBinary(WatchEventsRequestSchema, payload)).toMatchObject({
+    expect(create(WatchEventsRequestSchema, payload)).toMatchObject({
       agents: [
         {
           agentId: 'agent-1',

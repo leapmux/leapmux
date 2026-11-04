@@ -1,8 +1,10 @@
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthGuard } from '~/components/common/AuthGuard'
 import { SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
+import { settle } from '~/test-support/async'
 
 // Mock the auth context module
 const mockUser = vi.fn()
@@ -27,12 +29,17 @@ vi.mock('~/context/AuthContext', () => ({
 
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
 const mockSoloAccess = vi.fn<() => SoloAccess>(() => SoloAccess.UNSPECIFIED)
+// Signals rather than plain mocks, so a test can move the snapshot and watch
+// the guard follow, as it follows the production module's snapshot signal.
+const [systemInfoLoaded, setSystemInfoLoaded] = createSignal(true)
+const [loadFailure, setLoadFailure] = createSignal<string | null>(null)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
   isAutoAuthenticated: () => mockSoloAccess() === SoloAccess.CREDENTIAL_FREE,
   isPasswordSetupGate: () => mockSoloAccess() === SoloAccess.PASSWORD_SETUP,
-  isSystemInfoLoaded: () => true,
+  isSystemInfoLoaded: () => systemInfoLoaded(),
+  systemInfoLoadFailure: () => loadFailure(),
   isCaptchaEnabled: () => false,
 }))
 
@@ -78,6 +85,8 @@ describe('AuthGuard', () => {
     mockSoloAccess.mockReturnValue(SoloAccess.UNSPECIFIED)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
+    setSystemInfoLoaded(true)
+    setLoadFailure(null)
   })
 
   it('renders children for an authenticated user', () => {
@@ -260,5 +269,118 @@ describe('AuthGuard', () => {
 
     expect(await screen.findByTestId('auth-bootstrap-error')).toBeInTheDocument()
     expect(navigations).toEqual([])
+  })
+
+  // The bootstrap records a failed system-info load only while it is the
+  // current auth operation, and a sign-in clears `bootstrapError`. So a sign-in
+  // that supersedes the bootstrap, or that follows a failed load, ends
+  // `loading()` on a snapshot that never loaded. Every decision below the
+  // bootstrap-error branch would then read fabricated defaults: on a solo hub
+  // the app would offer a "Log out" that strands the user at /login.
+  it('reports a failed system-info load that no bootstrap error recorded', async () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setSystemInfoLoaded(false)
+    setLoadFailure('network down')
+
+    const { navigations } = renderGuard()
+
+    const panel = await screen.findByTestId('auth-bootstrap-error')
+    expect(panel).toHaveTextContent('Could not reach the hub.')
+    expect(panel).toHaveTextContent('network down')
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+    expect(navigations).toEqual([])
+  })
+
+  // The retry re-runs the bootstrap, whose first step loads the system info
+  // again while the snapshot is absent.
+  it('offers a retry that re-runs the bootstrap after a failed system-info load', async () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setSystemInfoLoaded(false)
+    setLoadFailure('network down')
+
+    renderGuard()
+
+    ;(await screen.findByRole('button', { name: /retry/i })).click()
+    expect(mockRetryBootstrap).toHaveBeenCalledTimes(1)
+  })
+
+  // An empty message is still a failure. Reading it for truthiness would turn
+  // it into a wait with nothing to click.
+  it('reports a failed system-info load whose message is empty', async () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setSystemInfoLoaded(false)
+    setLoadFailure('')
+
+    renderGuard()
+
+    expect(await screen.findByTestId('auth-bootstrap-error')).toHaveTextContent('Could not reach the hub.')
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+  })
+
+  it('waits while the system-info load is still in flight', async () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setSystemInfoLoaded(false)
+
+    const { navigations } = renderGuard()
+    await settle()
+
+    expect(screen.getByTestId('boot-splash')).toBeInTheDocument()
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('auth-bootstrap-error')).not.toBeInTheDocument()
+    expect(navigations).toEqual([])
+  })
+
+  // The redirect reads the snapshot too, so an unauthenticated visitor waits
+  // as well: on a solo hub reached over local IPC, a redirect to /login would
+  // send them to a form no credentials can satisfy.
+  it('does not redirect an unauthenticated visitor before the system info loads', async () => {
+    mockUser.mockReturnValue(null)
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(false)
+    setSystemInfoLoaded(false)
+
+    const { navigations } = renderGuard()
+    // The redirect lands after the render returns, so wait for the queued
+    // work before asserting that none happened.
+    await settle()
+
+    expect(screen.getByTestId('boot-splash')).toBeInTheDocument()
+    expect(navigations).toEqual([])
+  })
+
+  it('renders the children once the in-flight system-info load succeeds', async () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setSystemInfoLoaded(false)
+
+    renderGuard()
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+
+    setSystemInfoLoaded(true)
+
+    expect(await screen.findByText('Protected Content')).toBeInTheDocument()
+  })
+
+  // A forced refresh can fail after a load succeeded. The snapshot it keeps is
+  // a real answer from the hub, so the guard keeps deciding from it.
+  it('ignores a failed refresh while an earlier snapshot is loaded', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: false })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    setLoadFailure('network down')
+
+    renderGuard()
+
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
+    expect(screen.queryByTestId('auth-bootstrap-error')).not.toBeInTheDocument()
   })
 })

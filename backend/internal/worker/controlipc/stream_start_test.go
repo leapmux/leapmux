@@ -18,20 +18,20 @@ func TestRouterRetainsAnUpdateBeforeControllerBinding(t *testing.T) {
 	dispatcher := &cancelRaceDispatcher{ctrl: controller, registered: make(chan struct{}), proceed: make(chan struct{}), bindResult: make(chan bool, 1)}
 	proceed := sync.OnceFunc(func() { close(dispatcher.proceed) })
 	router := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u"), LocalDispatcher: dispatcher}
-	t.Cleanup(func() { proceed(); _ = router.UpdateStream("early-update", nil, true) })
+	t.Cleanup(func() { proceed(); _ = cancelStream(router, "early-update") })
 	done := make(chan error, 1)
 	go func() {
 		done <- router.StreamInner(context.Background(), controlipc.TokenInfo{}, "worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "early-update", func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	<-dispatcher.registered
-	require.NoError(t, router.UpdateStream("early-update", []byte("full interest"), false))
+	require.NoError(t, reviseStream(router, "early-update", []byte("full interest")))
 	proceed()
 	require.True(t, <-dispatcher.bindResult)
 	controller.mu.Lock()
 	frames := append([][]byte(nil), controller.payloads...)
 	controller.mu.Unlock()
 	require.Equal(t, [][]byte{[]byte("full interest")}, frames)
-	require.NoError(t, router.UpdateStream("early-update", nil, true))
+	require.NoError(t, cancelStream(router, "early-update"))
 	require.NoError(t, <-done)
 }
 
@@ -85,11 +85,11 @@ func TestRouterReplacementKeepsItsOwnController(t *testing.T) {
 			}
 			oldController, currentController := &recordingStreamController{}, &recordingStreamController{}
 			releaseOld := old.bind(oldController)
-			require.NoError(t, router.UpdateStream("same", []byte("before current binding"), false))
+			require.NoError(t, reviseStream(router, "same", []byte("before current binding")))
 			releaseOld()
 			releaseCurrent := current.bind(currentController)
 			t.Cleanup(releaseCurrent)
-			require.NoError(t, router.UpdateStream("same", []byte("after current binding"), false))
+			require.NoError(t, reviseStream(router, "same", []byte("after current binding")))
 			oldController.mu.Lock()
 			oldFrames := append([][]byte(nil), oldController.payloads...)
 			oldController.mu.Unlock()
@@ -98,7 +98,7 @@ func TestRouterReplacementKeepsItsOwnController(t *testing.T) {
 			currentController.mu.Unlock()
 			require.Empty(t, oldFrames, "the old controller must not receive the replacement's frames")
 			require.Equal(t, [][]byte{[]byte("before current binding"), []byte("after current binding")}, currentFrames)
-			require.NoError(t, router.UpdateStream("same", nil, true))
+			require.NoError(t, cancelStream(router, "same"))
 			if target == "local" {
 				require.NoError(t, <-currentDone)
 			} else {

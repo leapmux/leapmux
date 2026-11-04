@@ -1,5 +1,5 @@
-import type { TerminalDisplayStatus } from '~/components/shell/terminalStatus'
 import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 /**
@@ -8,6 +8,18 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
  * factory (which transitively imports SolidJS reactivity primitives).
  * Importing only the types keeps the bundle dependency graph shallow.
  */
+
+/**
+ * The display state of a terminal whose worker channel the client lost. Only
+ * the client can observe it, so it is no TerminalStatus value.
+ *
+ * `terminalDisplayStatus` in `~/stores/tab.helpers` derives it on each read, and
+ * no tab or metadata row stores it.
+ */
+export const TERMINAL_DISCONNECTED = 'disconnected' as const
+
+/** A terminal status as a tab shows it: the worker's status, or the client's own disconnected state. */
+export type TerminalDisplayStatus = TerminalStatus | typeof TERMINAL_DISCONNECTED
 
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
@@ -113,7 +125,8 @@ export interface AgentTab extends BaseTab {
 /** TERMINAL tab. Worker-driven PTY + screen snapshot. */
 export interface TerminalTab extends BaseTab {
   type: TabType.TERMINAL
-  status?: TerminalDisplayStatus | undefined
+  /** The status that the worker reported. A surface shows `terminalDisplayStatus`. */
+  status?: TerminalStatus | undefined
   /** Working directory the shell was originally spawned in. */
   shellStartDir?: string | undefined
   /** Last-known screen snapshot for fast visual restore. */

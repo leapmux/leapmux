@@ -26,10 +26,14 @@ service WorkspaceService {
   }
   // MoveWorkspace puts a workspace in a section at a position. The section's
   // type decides the archive state: the Archived section archives the
-  // workspace, any other workspace section makes it active. Every move nudges
-  // each worker that hosts one of its tabs (a repeat is the recovery path for
-  // a lost nudge). A delegation bearer may not make a move that crosses the
-  // archive boundary.
+  // workspace, any other workspace section makes it active. A move that crosses
+  // the archive boundary nudges each worker that hosts one of its tabs, and a
+  // move that stays on one side nudges nobody. A delegation bearer may not make
+  // a move that crosses the archive boundary.
+  //
+  // The caller states the archive state it holds for the workspace, and the
+  // Hub refuses the move when the stored state differs. A client whose sidebar
+  // is stale therefore cannot archive or unarchive a workspace by a reorder.
   //
   // The Worker fan-out is the Hub's, not the caller's. The Hub already holds
   // the authoritative tab list and nudges each affected Worker inside this
@@ -114,6 +118,10 @@ message MoveWorkspaceRequest {
   // Lexorank inside section_id. Empty keeps the current rank when the
   // workspace already sits in section_id, and appends at the end otherwise.
   string position = 3;
+  // Required: ACTIVE or ARCHIVED. The archive state that the caller holds for
+  // the workspace. The Hub refuses the move with FailedPrecondition when the
+  // stored state differs, and with InvalidArgument for UNSPECIFIED.
+  WorkspaceArchiveState expected_archive_state = 4;
 }
 
 message MoveWorkspaceResponse {

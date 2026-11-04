@@ -325,7 +325,7 @@ describe('activateBindings (slots)', () => {
     expect(coreHandler).toHaveBeenCalledTimes(1)
   })
 
-  it('unbindAll(slot) leaves the other slot intact', () => {
+  it('leaves the other slot intact after unbindAll(slot)', () => {
     const coreHandler = vi.fn()
     const wsHandler = vi.fn()
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
@@ -346,7 +346,7 @@ describe('activateBindings (slots)', () => {
     expect(wsHandler).toHaveBeenCalledTimes(1)
   })
 
-  it('unbindAll() with no slot clears every slot', () => {
+  it('clears every slot when unbindAll() runs with no slot', () => {
     const coreHandler = vi.fn()
     const wsHandler = vi.fn()
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })

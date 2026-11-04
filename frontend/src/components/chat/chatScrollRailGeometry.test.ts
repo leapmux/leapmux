@@ -151,7 +151,7 @@ describe('chatScrollRailGeometry', () => {
   })
 
   describe('fraction to seq / dot fraction / rail y to seq', () => {
-    it('fractionToSeq maps clamped fractions to the nearest seq', () => {
+    it('maps clamped fractions to the nearest seq in fractionToSeq', () => {
       expect(fractionToSeq(0, 1n, 101n)).toBe(1n)
       expect(fractionToSeq(1, 1n, 101n)).toBe(101n)
       expect(fractionToSeq(0.5, 1n, 101n)).toBe(51n)
@@ -159,13 +159,13 @@ describe('chatScrollRailGeometry', () => {
       expect(fractionToSeq(0.5, 5n, 5n)).toBe(5n) // degenerate range
     })
 
-    it('fractionToSeq treats a NaN fraction as the top rather than throwing BigInt(NaN)', () => {
+    it('treats a NaN fraction as the top rather than throwing BigInt(NaN) in fractionToSeq', () => {
       // A 0/0 from a degenerate rail/rect height reaches here as NaN; it must not throw.
       expect(() => fractionToSeq(Number.NaN, 1n, 101n)).not.toThrow()
       expect(fractionToSeq(Number.NaN, 1n, 101n)).toBe(1n)
     })
 
-    it('seqNumberAtFraction maps a fraction to the absolute fractional seq, failing closed', () => {
+    it('maps a fraction to the absolute fractional seq in seqNumberAtFraction, failing closed', () => {
       // The shared fail-closed core: fractionToSeq rounds it; the thumb-drag maps it to content-Y.
       expect(seqNumberAtFraction(0, 1n, 101n)).toBe(1)
       expect(seqNumberAtFraction(1, 1n, 101n)).toBe(101)
@@ -178,7 +178,7 @@ describe('chatScrollRailGeometry', () => {
       expect(seqNumberAtFraction(0.5, 1n, BigInt(Number.MAX_SAFE_INTEGER) + 2n)).toBeNull() // unsafe span
     })
 
-    it('fractionToSeq is seqNumberAtFraction rounded to a bigint (one shared travel core)', () => {
+    it('returns seqNumberAtFraction rounded to a bigint from fractionToSeq (one shared travel core)', () => {
       for (const f of [0, 0.13, 0.5, 0.87, 1]) {
         const num = seqNumberAtFraction(f, 1n, 101n)
         expect(num).not.toBeNull()
@@ -186,13 +186,13 @@ describe('chatScrollRailGeometry', () => {
       }
     })
 
-    it('dotFraction centers a dot on its message band', () => {
+    it('centers a dot on its message band in dotFraction', () => {
       // span = (10 - 1) + 1 = 10; seq 1 -> 0.5/10, seq 10 -> 9.5/10
       expect(dotFraction(1n, { minSeq: 1n, maxSeq: 10n })).toBeCloseTo(0.05, 5)
       expect(dotFraction(10n, { minSeq: 1n, maxSeq: 10n })).toBeCloseTo(0.95, 5)
     })
 
-    it('railYToSeq inverts a rail-relative pixel to a seq via the thumb-centre axis', () => {
+    it('inverts a rail-relative pixel to a seq via the thumb-centre axis in railYToSeq', () => {
       // thumbHeight 0 -> no inset, so the pixel maps over the full rail.
       expect(railYToSeq(0, 200, 0, { minSeq: 1n, maxSeq: 101n })).toBe(1n)
       expect(railYToSeq(100, 200, 0, { minSeq: 1n, maxSeq: 101n })).toBe(51n)
@@ -218,7 +218,7 @@ describe('chatScrollRailGeometry', () => {
       expect(railYToSeq(100, 200, 0, { minSeq: 1n, maxSeq: tooWide })).toBeNull()
     })
 
-    it('dotFraction fails CLOSED (null) on an unsafe/degenerate range, not fraction 0', () => {
+    it('fails CLOSED (null) in dotFraction on an unsafe/degenerate range, not fraction 0', () => {
       // An unsafe span or an inverted range must DROP the dot (null), never pin it to the rail
       // top (fraction 0, a valid in-band position that would mis-place the jump) -- honoring the
       // module's fail-closed contract shared with computeSeqThumb / fractionToSeq.
@@ -252,7 +252,7 @@ describe('chatScrollRailGeometry', () => {
       expect(centerAxisFraction(123, 400, 400)).toBe(0)
     })
 
-    it('centerAxisFraction inverts centerAxisY', () => {
+    it('makes centerAxisFraction invert centerAxisY', () => {
       expect(centerAxisFraction(12, 400, 24)).toBe(0)
       expect(centerAxisFraction(388, 400, 24)).toBe(1)
       expect(centerAxisFraction(200, 400, 24)).toBeCloseTo(0.5, 5)

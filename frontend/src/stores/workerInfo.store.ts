@@ -11,7 +11,7 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { untrack } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
-import { getWorkerSystemInfo } from '~/api/workerRpc'
+import { workerSystem } from '~/api/workerRpc'
 import { onStorageAccountChange } from '~/lib/browserStorage'
 import { createInflightCache } from '~/lib/inflightCache'
 import { shallowEqualExcept } from '~/lib/shallowEqual'
@@ -209,7 +209,7 @@ export function createWorkerInfoStore(): WorkerInfoStore {
     // outside, because the body closes over only the first caller's setter.
     const info = await processSession.pending.run(workerId, async () => {
       try {
-        const resp = await getWorkerSystemInfo(workerId)
+        const resp = await workerSystem.getWorkerSystemInfo(workerId)
         const next: WorkerInfo = {
           name: resp.name,
           os: resp.os,

@@ -12,21 +12,11 @@ import (
 func validateTabIDCrossTabTypes(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) (leapmuxv1.BatchRejectionReason, string) {
 	seen := map[string]leapmuxv1.TabType{}
 	for _, op := range batch {
-		var tabID string
-		var tabType leapmuxv1.TabType
-		switch body := op.GetBody().(type) {
-		case *leapmuxv1.CrdtOp_SetTabRegister:
-			tabID = body.SetTabRegister.GetTab().GetTabId()
-			tabType = body.SetTabRegister.GetTab().GetTabType()
-		case *leapmuxv1.CrdtOp_TombstoneTab:
-			tabID = body.TombstoneTab.GetTab().GetTabId()
-			tabType = body.TombstoneTab.GetTab().GetTabType()
-		case *leapmuxv1.CrdtOp_ReviveTab:
-			tabID = body.ReviveTab.GetTab().GetTabId()
-			tabType = body.ReviveTab.GetTab().GetTabType()
-		default:
+		ref := OpTarget(op)
+		if ref.Kind != EntityKindTab {
 			continue
 		}
+		tabID, tabType := ref.TabID, ref.TabType
 		if existing, ok := seen[tabID]; ok && existing != tabType {
 			return leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES, op.GetOpId()
 		}

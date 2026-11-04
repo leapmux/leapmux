@@ -30,7 +30,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/util/validate"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -65,7 +64,7 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 }
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
-func registerAgentHandlers(d registrar, svc *Service) {
+func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentInputQueueHandlers(d, svc)
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
@@ -274,8 +273,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				// that answers with an RPC error instead of an OpenAgentResponse,
 				// so the client never learns the agent id: it cannot list the tab
 				// (ListAgents resolves only client-held ids) and will never send
-				// CloseTab. Left open, the row is a tab nobody can name and
-				// nobody can close, reclaimed only when the hourly
+				// CloseTab. Left open, the row is a tab that nobody can identify
+				// and nobody can close, reclaimed only when the hourly
 				// OrphanReconciler notices the hub never heard of it. Closing it
 				// here makes the worker's own state consistent the moment the
 				// failure is durable and lets the retention sweep
@@ -1058,15 +1057,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	//
 	// SnapshotAndSubscribe drives the stream lifetime off a cancellable
 	// context bound to the stream's correlation id (via BindStream). An
-	// InnerStreamRequest{cancel: true} from the client cancels that ctx,
+	// InnerStreamRequest that selects cancel from the client cancels that ctx,
 	// which exits the subscribe loop and deletes the subscriber. The
 	// dispatcher ctx is intentionally not used: it only covers the initial
 	// subscribe call and would cancel the moment the handler returns.
-	// Registered as STREAMING: the browser opens this with
-	// channelManager.stream and holds the correlation id in
-	// streamListeners only, so a unary reply -- an owner-gate rejection, or
-	// a panic -- is dropped on arrival and the subscription hangs with no
-	// error to retry from.
+	// Registered as STREAMING, because the proto declares it server-streaming:
+	// the browser opens this with channelManager.stream and holds the
+	// correlation id in streamListeners only. Every reply is therefore a stream
+	// frame, a refusal or a panic included (see channel.Registration).
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, dispatchPlain,
 		func(_ context.Context, caller channel.Caller, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
 			ctx, cancel := context.WithCancel(bgCtx())
@@ -1074,7 +1072,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			release, ok := sender.BindStream(ctrl)
 			if !ok {
 				cancel()
-				sendStreamError(sender, codes.FailedPrecondition, "stream binding unavailable")
+				sendFailedPrecondition(sender, "stream binding unavailable")
 				return
 			}
 			defer release()
@@ -1216,12 +1214,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// notably a delegation bearer minted for a different user -- must not
 	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
 	// which dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListAvailableProvidersRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, _ *leapmuxv1.ListAvailableProvidersRequest, sender channel.ResponseWriter) {
 		// Discovery probes run in parallel (one goroutine per provider), so
 		// this deadline is effectively a per-probe wall-clock cap. Uses the
 		// API timeout rather than startup timeout: probing binary presence
@@ -1246,7 +1239,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		})
 	})
 
-	registerOwnerOnly(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, handleWatchEvents(svc))
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, dispatchPlain, handleWatchEvents(svc))
 }
 
 // resolveChildRegistryRow looks up the registry row for a child agent id and
@@ -1442,21 +1435,14 @@ func (svc *Service) replayAgentCatchUp(
 	if !sink.alive() {
 		return
 	}
-	// Projected from dbAgent when this tab IS the root, which is every provider
-	// except a Codex collab child: the row is already in hand, so re-reading it
-	// would run a second query on every (re)subscribe. A child tab carries its
-	// ROOT's goal, and that root's row is not here, so it is read.
-	goal := svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(dbAgent))
-	if rootID != agentID {
-		loaded, goalErr := svc.Output.LoadGoal(bgCtx(), rootID)
-		if goalErr != nil {
-			slog.Warn("failed to load agent goal for replay", "agent_id", agentID, "error", goalErr)
-			return
-		}
-		goal = loaded
+	// The goal is optional exactly as the two stages above are: a failed read
+	// skips the goal event, and the replay continues. Ending the replay here
+	// would withhold the status marker, the queue snapshot, the pending control
+	// requests and CatchUpComplete, while live events keep the stream open, so
+	// the client would never subscribe again.
+	if goal, ok := svc.replayGoalSnapshot(agentID, rootID, &dbAgent); ok {
+		broadcastReplayAgentEvent(sink, agentID, GoalChangedEvent(rootID, goal, svc.Output.SupportedGoalActions(rootID)))
 	}
-	supportedGoalActions := svc.Output.SupportedGoalActions(rootID)
-	broadcastReplayAgentEvent(sink, agentID, GoalChangedEvent(rootID, goal, supportedGoalActions))
 
 	if !sink.alive() {
 		return
@@ -1599,6 +1585,26 @@ func (svc *Service) replayAgentCatchUp(
 			},
 		},
 	})
+}
+
+// replayGoalSnapshot returns the goal that a replay of agentID carries, which
+// is the goal of its root rootID. ok is false when the goal could not be read;
+// the caller then skips the goal event.
+//
+// The goal is projected from dbAgent when the tab IS the root, which is every
+// provider except a Codex collab child: the row is already in hand, so a
+// re-read would run a second query on every (re)subscribe. A child tab carries
+// its ROOT's goal, and that root's row is not here, so it is read.
+func (svc *Service) replayGoalSnapshot(agentID, rootID string, dbAgent *db.Agent) (GoalSnapshot, bool) {
+	if rootID == agentID {
+		return svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(*dbAgent)), true
+	}
+	goal, err := svc.Output.LoadGoal(bgCtx(), rootID)
+	if err != nil {
+		slog.Warn("failed to load agent goal for replay", "agent_id", agentID, "root_agent_id", rootID, "error", err)
+		return GoalSnapshot{}, false
+	}
+	return goal, true
 }
 
 // agentStartupSnapshot is one read of the startup registry entry of an agent: a

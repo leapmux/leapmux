@@ -41,7 +41,9 @@ function unresolvedResponse(...axes: string[]) {
 }
 
 vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: (workerId: string, req: unknown) => updateAgentSettings(workerId, req),
+  workerAgent: {
+    updateAgentSettings: (workerId: string, req: unknown) => updateAgentSettings(workerId, req),
+  },
 }))
 
 // The rollback path surfaces a toast; stub it so the failure-case test doesn't

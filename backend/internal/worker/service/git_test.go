@@ -1206,6 +1206,10 @@ func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
 // succeeds. The UNSPECIFIED case uses the id of an agent on a dirty branch,
 // which prompts when the request states its type, so the answer cannot come
 // from a guessed type.
+//
+// The answer also carries no error hint. No git state was in scope for such a
+// request, so a hint that reports an unreadable repository would show the
+// user a git warning about a tab that the request never identified.
 func TestInspectLastTabClose_AnIncompleteTabNeedsNoPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -1237,6 +1241,7 @@ func TestInspectLastTabClose_AnIncompleteTabNeedsNoPrompt(t *testing.T) {
 			assert.False(t, resp.GetShouldPrompt())
 			assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 			assert.Empty(t, resp.GetDescendantAgentIds())
+			assert.Empty(t, resp.GetErrorHint(), "a request that identifies no tab reports no git failure")
 		})
 	}
 }

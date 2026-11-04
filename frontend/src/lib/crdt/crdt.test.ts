@@ -129,7 +129,7 @@ describe('crdt apply', () => {
   // `state.workspaces[wsId]` undefined: the agent tab seed waited forever for
   // `rootNodeId != ''`, and the new workspace appeared tile-less. The create
   // op makes the record itself.
-  it('createWorkspace creates the WorkspaceContentsRecord', () => {
+  it('creates the WorkspaceContentsRecord from createWorkspace', () => {
     const state = newState('user')
     expect(state.workspaces.w1).toBeUndefined()
     applyOp(state, createWorkspace('w1', 'root1', hlc(1n, 0n, 'a')))
@@ -139,7 +139,7 @@ describe('crdt apply', () => {
 
   // The op is set-once: re-applying with a different root id must not
   // overwrite an already-seeded record.
-  it('createWorkspace is set-once on the rootNodeId slot', () => {
+  it('is set-once on the rootNodeId slot for createWorkspace', () => {
     const state = newState('user')
     applyOp(state, createWorkspace('w1', 'root1', hlc(1n, 0n, 'a')))
     applyOp(state, createWorkspace('w1', 'root2', hlc(2n, 0n, 'a')))

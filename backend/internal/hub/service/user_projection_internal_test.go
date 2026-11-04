@@ -140,8 +140,25 @@ func TestStoredUserProtoAnswersNilWhenTheAccountCannotBeRead(t *testing.T) {
 	st := openProjectionStore(t)
 	user := storetest.SeedUser(t, st, "readable")
 
-	assert.Equal(t, user.ID, storedUserProto(context.Background(), st, user.ID).GetId())
-	assert.Nil(t, storedUserProto(context.Background(), st, "00000000000000000000000000"))
-	assert.Nil(t, storedUserProto(context.Background(), failingLinksStore{st}, storetest.SeedPasswordlessUser(t, st, "no-links").ID),
+	assert.Equal(t, user.ID, storedUserProto(context.Background(), st, user.ID, "test change").GetId())
+	assert.Nil(t, storedUserProto(context.Background(), st, "00000000000000000000000000", "test change"))
+	assert.Nil(t, storedUserProto(context.Background(), failingLinksStore{st}, storetest.SeedPasswordlessUser(t, st, "no-links").ID, "test change"),
 		"a projection that fails answers nil too")
+}
+
+// committedUserProto projects an account whose change already committed. A
+// projection that fails answers nil, so the response omits the user rather
+// than the RPC failing.
+func TestCommittedUserProtoAnswersNilWhenTheProjectionFails(t *testing.T) {
+	t.Parallel()
+	st := openProjectionStore(t)
+	user := storetest.SeedUser(t, st, "committed")
+
+	assert.Equal(t, user.ID, committedUserProto(context.Background(), st, user, "test change").GetId())
+	assert.Nil(t, committedUserProto(context.Background(), failingLinksStore{st},
+		storetest.SeedPasswordlessUser(t, st, "committed-provider-only"), "test change"),
+		"a provider-only account whose links cannot be read has no projection")
+	assert.Nil(t, committedUserProto(context.Background(), st,
+		&store.User{Username: "committed-blank-id", FirstCredentialExempt: true}, "test change"),
+		"a row with a blank id has no projection")
 }

@@ -105,7 +105,6 @@ func TestCoreTimeoutsDefaultAndDurationHelpers(t *testing.T) {
 	assert.Equal(t, DefaultTimeouts, v, "the timeouts key resolves to DefaultTimeouts")
 	assert.Equal(t, 10*time.Second, v.APITimeout())
 	assert.Equal(t, 5*time.Minute, v.AgentStartupTimeout())
-	assert.Equal(t, time.Minute, v.WorktreeCreateTimeout())
 }
 
 func TestUpdateMergesPartialDocuments(t *testing.T) {
@@ -179,7 +178,7 @@ func TestResetReturnsToDefault(t *testing.T) {
 	m, k := newTestManager(t)
 	ctx := context.Background()
 	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"x"}`)))
-	require.NoError(t, m.Reset(ctx, k))
+	require.NoError(t, m.ResetMany(ctx, []Descriptor{k}))
 	assert.False(t, m.Snapshot(ctx).Customized(k))
 	assert.Equal(t, 587, k.Of(m.Snapshot(ctx)).Port)
 	assert.Empty(t, k.Of(m.Snapshot(ctx)).Host)
@@ -360,7 +359,7 @@ func TestEmailVerificationEffectiveDegradesWithoutSMTP(t *testing.T) {
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
 	assert.True(t, EmailVerificationEffective(m.Snapshot(ctx)))
 
-	require.NoError(t, m.Reset(ctx, KeySMTP))
+	require.NoError(t, m.ResetMany(ctx, []Descriptor{KeySMTP}))
 	assert.False(t, EmailVerificationEffective(m.Snapshot(ctx)))
 }
 
@@ -423,7 +422,7 @@ func TestResetClearsSMTPRow(t *testing.T) {
 	m, _ := newTestManager(t)
 	ctx := context.Background()
 	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
-	require.NoError(t, m.Reset(ctx, KeySMTP))
+	require.NoError(t, m.ResetMany(ctx, []Descriptor{KeySMTP}))
 	assert.False(t, m.Snapshot(ctx).Customized(KeySMTP))
 }
 
@@ -659,7 +658,7 @@ func TestSignupEnabledEffectiveDevDefaultNotCustomized(t *testing.T) {
 	assert.True(t, snap.Customized(KeySignupEnabled))
 	assert.False(t, SignupEnabledEffective(snap, true), "an explicit operator write wins over the dev default")
 
-	require.NoError(t, m.Reset(ctx, KeySignupEnabled))
+	require.NoError(t, m.ResetMany(ctx, []Descriptor{KeySignupEnabled}))
 	snap = m.Snapshot(ctx)
 	assert.False(t, snap.Customized(KeySignupEnabled), "reset returns the key to its rowless default")
 	assert.True(t, SignupEnabledEffective(snap, true), "reset in dev restores the dev default without a restart")
@@ -947,7 +946,7 @@ func TestUpdateManyRefusesASecretHalfWithNoSecretField(t *testing.T) {
 }
 
 // The secret-field rule judges the secret half alone. A valid public half on
-// the same key does not excuse a secret half that names only public fields,
+// the same key does not excuse a secret half that specifies only public fields,
 // and a refused secret half on a later key leaves every earlier key unwritten,
 // because the rule runs in the validation pass before any row is written.
 func TestUpdateManyJudgesTheSecretHalfOnItsOwn(t *testing.T) {
@@ -1337,7 +1336,7 @@ func TestAfterResetRunsTheKeysStep(t *testing.T) {
 		m.Configure(WithAfterReset(k.Name(), func(context.Context) error { calls++; return nil }))
 		require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"stored.example"}`)))
 
-		require.NoError(t, m.Reset(ctx, k))
+		require.NoError(t, m.ResetMany(ctx, []Descriptor{k}))
 		assert.False(t, m.Snapshot(ctx).Customized(k), "the row is gone")
 		assert.Zero(t, calls,
 			"the step writes settings itself, so the caller runs it after the reset commits")
@@ -1898,7 +1897,6 @@ func TestEveryWriteVerbRefusesAnUnregisteredKey(t *testing.T) {
 	for name, write := range map[string]func() error{
 		"Update":      func() error { return m.Update(ctx, stranger, json.RawMessage(`2`)) },
 		"UpdateMany":  func() error { return m.UpdateMany(ctx, []KeyWrite{{Desc: stranger, Public: json.RawMessage(`2`)}}) },
-		"Reset":       func() error { return m.Reset(ctx, stranger) },
 		"ResetMany":   func() error { return m.ResetMany(ctx, []Descriptor{stranger}) },
 		"SetValue":    func() error { return m.SetValue(ctx, stranger, int64(2)) },
 		"SetIfAbsent": func() error { return m.SetIfAbsent(ctx, stranger, int64(2)) },
@@ -1994,39 +1992,30 @@ func TestEveryWriteVerbRunsTheCrossKeyRules(t *testing.T) {
 		})
 	}
 
-	// Reset and ResetMany reach crossValidate through ResetMany, and Reset
-	// wraps the error -- the class has to survive that wrap.
-	for _, tc := range []struct {
-		name  string
-		write func(m *Manager) error
-	}{
-		{"Reset", func(m *Manager) error { return m.Reset(ctx, a) }},
-		{"ResetMany", func(m *Manager) error { return m.ResetMany(ctx, []Descriptor{a}) }},
-	} {
-		t.Run(tc.name+" refuses", func(t *testing.T) {
-			st := newSettingsTestStore(t)
-			// This rule refuses the state a reset PRODUCES, so the reset
-			// itself is what the rule has to see.
-			requireA := func(s *Snapshot) error {
-				if !s.Customized(a) {
-					return fmt.Errorf("cross.a must stay set")
-				}
-				return nil
+	// ResetMany runs the cross-key rules over the state the reset PRODUCES.
+	t.Run("ResetMany refuses", func(t *testing.T) {
+		st := newSettingsTestStore(t)
+		// This rule refuses the state a reset PRODUCES, so the reset itself
+		// is what the rule has to see.
+		requireA := func(s *Snapshot) error {
+			if !s.Customized(a) {
+				return fmt.Errorf("cross.a must stay set")
 			}
-			m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(requireA))
-			require.NoError(t, m.Load(ctx))
-			require.NoError(t, m.SetValue(ctx, a, int64(1)))
-			before := m.currentEpoch()
+			return nil
+		}
+		m := NewManager(st, nil, []Descriptor{a, b}, WithCrossValidation(requireA))
+		require.NoError(t, m.Load(ctx))
+		require.NoError(t, m.SetValue(ctx, a, int64(1)))
+		before := m.currentEpoch()
 
-			err := tc.write(m)
-			require.Error(t, err, "the verb must run the cross-key rules")
-			require.ErrorContains(t, err, "must stay set")
-			var invalid *InvalidError
-			assert.ErrorAs(t, err, &invalid, "the error class must survive Reset's wrap")
-			assert.Equal(t, before, m.currentEpoch(), "a refused reset must not publish")
-			assert.True(t, m.Snapshot(ctx).Customized(a), "and must leave the row in place")
-		})
-	}
+		err := m.ResetMany(ctx, []Descriptor{a})
+		require.Error(t, err, "the verb must run the cross-key rules")
+		require.ErrorContains(t, err, "must stay set")
+		var invalid *InvalidError
+		assert.ErrorAs(t, err, &invalid, "a refused combination is the caller's mistake, not a fault")
+		assert.Equal(t, before, m.currentEpoch(), "a refused reset must not publish")
+		assert.True(t, m.Snapshot(ctx).Customized(a), "and must leave the row in place")
+	})
 }
 
 // TestUpdateManySecretHalfRefusalOrder pins the ORDER the secret half's
@@ -2062,23 +2051,6 @@ func TestUpdateManySecretHalfRefusalOrder(t *testing.T) {
 		err := m.UpdateMany(ctx, []KeyWrite{{Desc: k, Secret: json.RawMessage(`{"host":"evil.example"}`)}})
 		require.ErrorContains(t, err, "must specify at least one of")
 		assert.Contains(t, err.Error(), "pass", "the message lists the key's secret fields")
-	})
-}
-
-// TestResetKeepsTheErrorClassThroughItsWrap pins that the single-key reset's
-// context wrap does not hide the class the admin RPC surface classifies on.
-// Reset wraps ResetMany's error to say which key it was resetting, and a
-// wrap that dropped the class would downgrade an actionable InvalidArgument
-// to a 500.
-func TestResetKeepsTheErrorClassThroughItsWrap(t *testing.T) {
-	m, _ := newTestManager(t)
-	ctx := context.Background()
-
-	t.Run("an unregistered key", func(t *testing.T) {
-		err := m.Reset(ctx, NewKey[bool]("never.registered"))
-		var invalid *InvalidError
-		require.ErrorAs(t, err, &invalid)
-		assert.Contains(t, err.Error(), "is not registered")
 	})
 }
 

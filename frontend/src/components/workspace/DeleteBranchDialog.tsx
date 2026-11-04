@@ -3,7 +3,7 @@ import type { BusyTab } from '~/components/shell/tabBusyProbe'
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
 import { createMemo, createResource, createSignal, createUniqueId, For, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
@@ -303,7 +303,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       // did before the preflight existed.
       let blockedReason = ''
       try {
-        const preflight = await workerRpc.inspectWorktreeRemoval(props.workerId, {
+        const preflight = await workerGit.inspectWorktreeRemoval(props.workerId, {
           path: props.gitToplevel,
         })
         blockedReason = preflight.blockedReason
@@ -341,7 +341,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   const handleBranchDelete = (i: InspectBranchDeletionResponse) => {
     void run(async () => {
       const target = switchTo()
-      await workerRpc.deleteBranch(props.workerId, {
+      await workerGit.deleteBranch(props.workerId, {
         path: props.gitToplevel,
         branchToDelete: i.branchName,
         switchToBranch: target,

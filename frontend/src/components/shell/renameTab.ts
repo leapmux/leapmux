@@ -1,7 +1,7 @@
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerTerminal } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { cleanName } from '~/lib/validate'
@@ -58,7 +58,7 @@ export function renameTab(deps: RenameTabDeps, tab: Tab, typed: string): void {
   if (tab.type === TabType.AGENT) {
     deps.metadata.patch(tab.id, { title })
     const workerId = deps.view.getAgentTab(tab.id)?.workerId ?? ''
-    workerRpc.renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
+    workerAgent.renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
       showWarnToast('Failed to rename agent', err)
     })
     return
@@ -69,7 +69,7 @@ export function renameTab(deps: RenameTabDeps, tab: Tab, typed: string): void {
     // ptyTitle, and tabDisplayLabel prefers title.
     deps.metadata.patch(tab.id, { title, ptyTitle: '' })
     const workerId = deps.view.getTerminalTab(tab.id)?.workerId ?? ''
-    workerRpc.renameTerminal(workerId, { terminalId: tab.id, title }).catch((err) => {
+    workerTerminal.renameTerminal(workerId, { terminalId: tab.id, title }).catch((err) => {
       showWarnToast('Failed to rename terminal', err)
     })
   }

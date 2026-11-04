@@ -112,7 +112,7 @@ Because keys are one-shot and expire in 5 minutes, a key that worked a moment ag
 
 ### Auto-registered Workers (solo and dev)
 
-In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered*, and the owner's deregistration path refuses them. A Worker's context menu does not offer **Deregister...** for these Workers, because the next launch would just register a fresh one. The Hub also refuses `leapmux control admin worker deregister` for one while it is connected. An administrator can remove an offline one with that command, such as the entry that a launch leaves behind when the app's Worker state file was lost: the app then registers a fresh Worker with a new Worker ID, and the old Worker's tabs do not move to it. See [Running LeapMux](/docs/admin/running-leapmux/).
+In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered*. The Hub refuses to deregister one while it is connected, from the UI and from `leapmux control admin worker deregister`, because the next launch would just register a fresh one. You can remove an offline one, such as the entry that a launch leaves behind when the app's Worker state file was lost: its context menu offers **Deregister...**, and an administrator can use that command. The app then registers a fresh Worker with a new Worker ID, and the old Worker's tabs do not move to it. See [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Worker status: online and offline
 
@@ -132,7 +132,7 @@ Right-click a Worker row (or open its context menu) to:
 
 - View and copy its details — **Name**, **Version** (with commit hash), and **OS** (with architecture) are always shown when the Worker's info is available; a **Built at** row appears only when the Worker reports a build time. Clicking the info block copies the full metadata as JSON to your clipboard.
 - Manage [tunnels](#tunnels-desktop-app) (when available and you own the Worker).
-- **Deregister...** the Worker — shown only for Workers that are *not* auto-registered.
+- **Deregister...** the Worker — shown for every Worker except a connected auto-registered one.
 
 ## Selecting which Worker hosts a new tab
 
@@ -179,7 +179,7 @@ A standalone Worker needs a fresh registration key to register again. The launch
 
 Deregistering tells the Hub to forget a Worker and tear down everything running on it.
 
-**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. The menu does not offer this for an auto-registered (bundled local) Worker, and the Hub refuses the owner's request to deregister one. See [Auto-registered Workers (solo and dev)](#auto-registered-workers-solo-and-dev).
+**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. The menu does not offer this for an auto-registered (bundled local) Worker while it is connected, and the Hub refuses such a request. See [Auto-registered Workers (solo and dev)](#auto-registered-workers-solo-and-dev).
 
 **From the control CLI** (administrators):
 

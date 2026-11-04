@@ -73,7 +73,7 @@ func (svc *Service) announceTerminalStarting(terminalID, shell string) {
 const terminalProcessScanTimeout = 5 * time.Second
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
-func registerTerminalHandlers(d registrar, svc *Service) {
+func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// InspectTerminalProcesses lists what runs inside each terminal, so a
 	// close guard can state the reason before it tears the tab down. Batched:
 	// closing a tile asks about every terminal it holds at once.
@@ -645,11 +645,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			return
 		}
 
-		// The DB pass is the ONE source of every terminal's is_quake flag, and
-		// it runs first so both passes below can read from it. The manager
-		// holds the live ring but nothing about the flag, so a map built beside
-		// it needed a third loop afterwards to stamp the entries it had
-		// already produced -- three writers for one derived fact.
+		// The DB pass is the ONE source of every terminal's is_quake flag and
+		// persisted startup_error, and it runs first so both passes below can
+		// read from it. The manager holds the live ring but neither fact, so a
+		// map built beside it needed a third loop afterwards to stamp the
+		// entries it had already produced -- three writers for one derived
+		// fact.
 		//
 		// A DB read failure has to fail the WHOLE call. Falling through to
 		// the verdict pass would leave `seen` holding only the ids the
@@ -665,11 +666,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			sendInternalError(sender, "failed to list terminals")
 			return
 		}
-		quakeByTerminalID := make(map[string]bool, len(dbTerminals))
-		for _, ts := range dbTerminals {
-			if ts.IsQuake {
-				quakeByTerminalID[ts.ID] = true
-			}
+		rowsByID := make(map[string]*db.Terminal, len(dbTerminals))
+		for i := range dbTerminals {
+			rowsByID[dbTerminals[i].ID] = &dbTerminals[i]
 		}
 
 		// Run git FIRST. It is the one slow step of this call: a large working
@@ -690,15 +689,34 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		// Collect from the in-memory manager and DB-only rows. This is the read of
 		// the runtime state: see the note above the call to git.
 		//
-		// A terminal can register in the Manager after the read of ListByIDs. The
-		// DB-only pass below therefore reads the registry first and the Manager
-		// last. A startup that ends in between then reads READY and running, and
-		// never READY and exited.
+		// Both passes take the status from deriveTerminalStatus, the one
+		// statement of the rule, which also feeds the WatchEvents replay. It
+		// reads the registry first and the Manager last, so a startup that ends
+		// in between reads READY and running, and never READY and exited. A
+		// terminal can register in the Manager after the read of ListByIDs, and
+		// the DB-only pass covers it the same way.
+		//
+		// The manager pass does not read the Exited flag of its entry, because
+		// that flag can disagree with the Manager when the status is read.
+		// ListByIDs took the flag BEFORE the registry read. A restart that ends
+		// in between pairs the flag of the old, exited shell with a registry that
+		// no longer holds the startup, so the reply would say EXITED over a shell
+		// that runs. A shell that exits in between disagrees the other way.
+		// IsRunning, read last, states the terminal closest to the reply.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
 		for _, e := range entries {
 			seen[e.ID] = true
+			row := rowsByID[e.ID]
+			if row == nil {
+				// The Manager can hold a terminal that the DB read did not
+				// return, such as one whose close is in progress: the query
+				// returns no closed row. The reply then has no persisted
+				// startup_error or is_quake flag to read for it.
+				row = &db.Terminal{ID: e.ID}
+			}
+			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      e.ID,
 				Cols:            e.Meta.Cols,
@@ -708,16 +726,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				WorkingDir:      e.Meta.WorkingDir,
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
-				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
-				Quake:           quakeByTerminalID[e.ID],
+				Status:          status,
+				StartupError:    startupError,
+				StartupMessage:  startupMessage,
+				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
 			}
-			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
-				ti.Status = sup
-				ti.StartupError = errStr
-				ti.StartupMessage = msg
-			}
-			ti.Status = exitedTerminalStatus(ti.Status, e.Exited)
 			terminals = append(terminals, ti)
 		}
 
@@ -745,7 +759,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           quakeByTerminalID[ts.ID],
+				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
@@ -845,13 +859,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// notably a delegation bearer minted for a different user -- must not
 	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
 	// which dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListAvailableShellsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, _ *leapmuxv1.ListAvailableShellsRequest, sender channel.ResponseWriter) {
 		shells, defaultShell := terminal.ListAvailableShells()
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableShellsResponse{
 			Shells:       shells,
@@ -1096,23 +1104,22 @@ func (svc *Service) runTerminalRestart(
 	svc.succeedTerminalStartup(terminalID, h)
 }
 
-// succeedTerminalStartup is the shared READY tail for runTerminalStartup
-// and runTerminalRestart: clear the persisted startup_error, retire the
-// registry entry, and broadcast READY last.
+// succeedTerminalStartup is the shared tail of a successful start for
+// runTerminalStartup and runTerminalRestart: clear the persisted startup_error,
+// retire the registry entry, and broadcast the status last.
 //
 // The registry comes before the broadcast for the reason failStartup states:
 // ListTerminals lets the registry override the READY of a live terminal, so a
 // client that receives READY and then lists a registry that still says
 // STARTING keeps STARTING, and no later event corrects it.
 //
-// The other order has a cost of its own, and it is the smaller one. A restart
-// can claim the terminal between the two steps, and its STARTING can then
-// reach the client before this READY. That restart ends in its own READY or
-// STARTUP_FAILED broadcast, which corrects the client.
+// A restart can claim the terminal between the two steps. The broadcast then
+// states that restart's status, because it derives the status at its own step
+// (see broadcastTerminalStatusAfterStartup).
 func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.TerminalStartup.succeed(terminalID, h)
-	svc.broadcastTerminalReady(terminalID)
+	svc.broadcastTerminalStatusAfterStartup(terminalID)
 }
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the
@@ -1170,21 +1177,6 @@ func buildTerminalFailedStatus(errMsg string) *leapmuxv1.TerminalStatusChange {
 	}
 }
 
-// buildTerminalReadyStatus builds a READY TerminalStatusChange.
-func buildTerminalReadyStatus() *leapmuxv1.TerminalStatusChange {
-	return &leapmuxv1.TerminalStatusChange{
-		Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
-	}
-}
-
-// buildTerminalExitedStatus builds an EXITED TerminalStatusChange, which a
-// WatchEvents replay sends for a terminal whose shell already exited.
-func buildTerminalExitedStatus() *leapmuxv1.TerminalStatusChange {
-	return &leapmuxv1.TerminalStatusChange{
-		Status: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
-	}
-}
-
 // terminalGitStatuses runs git for the terminals in ids and returns the status
 // of each terminal by its id. A terminal in a directory that is no repository
 // has no entry in the result.
@@ -1224,37 +1216,61 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 }
 
 // deriveTerminalStatus computes (status, startupError, startupMessage)
-// for a terminal, in priority order:
+// for a terminal. It is the ONE statement of the terminal status rule:
+// ListTerminals, the WatchEvents replay and the status after a startup all read
+// it, so they cannot report different states for one terminal. The priority
+// order:
 //  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
 //     startup is in flight or has just failed. The current phase
 //     message is surfaced so a WatchEvents subscriber that arrived
 //     after the initial STARTING broadcast still sees the right label.
-//  2. persisted startup_error column — surfaces a prior failure across
-//     worker restarts (the in-memory registry is wiped on restart).
-//  3. READY while the shell runs, otherwise EXITED (see
-//     exitedTerminalStatus). "Runs" is IsRunning, not HasTerminal: the
-//     manager keeps an exited terminal until RestartTerminal or
-//     RemoveTerminal, so holding the terminal does not mean its shell
-//     still runs.
+//  2. READY while the shell runs. A running shell proves that the last
+//     startup succeeded: every failure path leaves no new shell, and
+//     RestartTerminal refuses a terminal whose shell runs. A persisted
+//     startup_error beside a running shell is therefore stale, such as a
+//     row read before the success cleared the column. deriveAgentStatus
+//     puts a running agent before its persisted error for the same reason.
+//     "Runs" is IsRunning, not HasTerminal: the manager keeps an exited
+//     terminal until RestartTerminal or RemoveTerminal, so holding the
+//     terminal does not mean its shell still runs.
+//  3. persisted startup_error column — surfaces a prior failure across
+//     worker restarts (the in-memory registry is wiped on restart) and after
+//     the registry evicts a failure (failedEntryTTL). A failed restart keeps
+//     the stopped previous shell in the manager, so this case covers a
+//     terminal that the manager holds too.
+//  4. EXITED: no startup owns the status, no shell runs, and no failure is
+//     persisted.
+//
+// startupError is empty unless the status is STARTUP_FAILED, and
+// startupMessage is empty unless it is STARTING. derivedTerminalStatusEvent and
+// ListTerminals copy all three into the reply and rely on that.
 func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
 		return sup, errStr, msg
 	}
+	if svc.Terminals.IsRunning(t.ID) {
+		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+	}
 	if t.StartupError != "" {
 		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
 	}
-	return exitedTerminalStatus(leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, !svc.Terminals.IsRunning(t.ID)), "", ""
+	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "", ""
 }
 
-// exitedTerminalStatus is the ONE statement of the EXITED rule: a terminal
-// that would read READY reads EXITED once its shell process exited. STARTING
-// and STARTUP_FAILED win over EXITED, because a startup that has not ended, or
-// that failed, owns the status.
-func exitedTerminalStatus(status leapmuxv1.TerminalStatus, exited bool) leapmuxv1.TerminalStatus {
-	if exited && status == leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY {
-		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED
+// derivedTerminalStatusEvent builds the status change that deriveTerminalStatus
+// states for t. deriveTerminalStatus sets startupError only for STARTUP_FAILED
+// and startupMessage only for STARTING, so one status change carries all three
+// as they are, and a new status needs no case here.
+func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.TerminalEvent {
+	status, startupError, startupMessage := svc.deriveTerminalStatus(t)
+	return &leapmuxv1.TerminalEvent{
+		TerminalId: t.ID,
+		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
+			Status:         status,
+			StartupError:   startupError,
+			StartupMessage: startupMessage,
+		}},
 	}
-	return status
 }
 
 // effectiveTerminalTitle returns the title a terminal tab shows right now.
@@ -1277,7 +1293,7 @@ func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
 // Used by runTerminalStartup for each phase label transition; gs is
 // non-nil only once phase 1 has computed git status.
 func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.GitRepoStatus) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+	svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
 			StatusChange: buildTerminalStartingStatus(message, gs),
@@ -1287,7 +1303,7 @@ func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *le
 
 // broadcastTerminalFailed fans out a STARTUP_FAILED TerminalStatusChange.
 func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+	svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
 			StatusChange: buildTerminalFailedStatus(errMsg),
@@ -1295,13 +1311,31 @@ func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
 	})
 }
 
-// broadcastTerminalReady fans out a READY TerminalStatusChange.
-func (svc *Service) broadcastTerminalReady(terminalID string) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
-		TerminalId: terminalID,
-		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalReadyStatus(),
-		},
+// broadcastTerminalStatusAfterStartup fans out the status of a terminal whose
+// startup succeeded and left the registry: READY while the shell runs, and EXITED
+// when it already ended.
+//
+// A shell can exit between its spawn and this call. A watch session that
+// registered after the exit handler published closed never receives closed, and
+// its replay can read the STARTING of the registry. So the queue entry states the
+// truth instead of nothing: this status is the only one that corrects that
+// session, and the client's EXITED case takes the same path as closed.
+//
+// READY never lands behind closed. IsExited turns true before the exit handler
+// runs, and the status is derived inside the queue's lock, so a closed event that
+// is already in the queue implies a derive that sees the exit.
+//
+// The derive also reads the registry, because a restart can claim the terminal
+// before this call. A bare EXITED would then land behind that restart's STARTING,
+// and the client would drop the restart's READY and show a dead tab over a live
+// shell.
+//
+// The row holds only the id because succeedTerminalStartup cleared the persisted
+// error, the one other field that deriveTerminalStatus reads.
+func (svc *Service) broadcastTerminalStatusAfterStartup(terminalID string) {
+	row := db.Terminal{ID: terminalID}
+	svc.Watchers.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent {
+		return svc.derivedTerminalStatusEvent(&row)
 	})
 }
 
@@ -1480,7 +1514,7 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		svc.persistTerminalOnExit(tid, exitCode)
 		svc.clearTerminalBellCoalesce(tid)
-		svc.Watchers.BroadcastTerminalEvent(tid, &leapmuxv1.TerminalEvent{
+		svc.Watchers.PublishTerminalStatus(tid, &leapmuxv1.TerminalEvent{
 			TerminalId: tid,
 			Event: &leapmuxv1.TerminalEvent_Closed{
 				Closed: &leapmuxv1.TerminalClosed{

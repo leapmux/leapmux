@@ -19,7 +19,7 @@ func busyTerminal(id string, procs ...*leapmuxv1.TerminalProcess) *leapmuxv1.Ter
 
 func busyCloseHub() *recordingHub {
 	return &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			leafNode("root-1", "", "m").
@@ -65,7 +65,7 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 		"the refusal must name what it is refusing to interrupt")
 	assert.Contains(t, env.Error["message"], "pass --allow-busy to close anyway")
 
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
 	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
 		"and before the worker teardown")
@@ -82,7 +82,7 @@ func TestRunTabClose_AllowBusyProceedsToTheTombstone(t *testing.T) {
 
 	_ = runBusyTabClose(t, disp, hub, "--allow-busy")
 
-	assert.Contains(t, hub.called(), "SubmitOps",
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"--allow-busy is an override; the close must reach the tombstone")
 }
 
@@ -93,7 +93,7 @@ func TestRunTabClose_IdleTabIsNotRefused(t *testing.T) {
 
 	_ = runBusyTabClose(t, disp, hub)
 
-	assert.Contains(t, hub.called(), "SubmitOps")
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
 	assert.Contains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"the guard still asks; it just finds nothing running")
 }
@@ -220,7 +220,7 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 		},
 	}
 	hub := &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			leafNode("root-1", "", "m").
@@ -245,7 +245,7 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "agent is working, 2 background tasks active")
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
 }
 
@@ -310,7 +310,7 @@ func (b *stateBuilder) tabOnWorker(tabID, tileID, workerID string, tabType leapm
 
 func busyTileHub() *recordingHub {
 	return &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			splitNode("root-1", "", "m").
@@ -349,7 +349,7 @@ func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "term-2")
 	assert.Contains(t, env.Error["message"], "node pid 51234")
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land before the tile and its tabs are tombstoned")
 }
 
@@ -361,7 +361,7 @@ func TestRunTileClose_AllowBusyProceeds(t *testing.T) {
 
 	_ = runBusyTileClose(t, disp, hub, "--allow-busy")
 
-	assert.Contains(t, hub.called(), "SubmitOps",
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"--allow-busy is an override; the close must reach the tombstone")
 }
 

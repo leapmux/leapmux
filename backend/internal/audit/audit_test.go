@@ -13,7 +13,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -138,9 +140,10 @@ func TestRepoInvariants(t *testing.T) {
 			case reachEstablishedChan:
 				// No structural claim: the id's provenance (an already-authorized
 				// channel record) is not visible in the signature.
-			case reachAdminGated:
-				// No structural claim: that the procedure is admin-only is an
-				// access-interceptor property, not one the signature states.
+			case reachAdminOnly:
+				assert.True(t, servesAdminProtoMethod(name),
+					"%s (%s) is classified reachAdminOnly but is not the hub's handler for a method that admin.proto declares: only those handlers run behind enforceAdmin",
+					name, site.firstPos)
 			}
 		}
 	})
@@ -502,6 +505,31 @@ func packageDir(rel string) string {
 // siteKey renders one classified function as "dir.(*Recv).Method".
 func siteKey(rel string, fn *ast.FuncDecl) string {
 	return packageDir(rel) + "." + testutil.QualifiedFuncName(fn)
+}
+
+// hubServiceSitePrefix opens the siteKey of every method on a pointer receiver
+// in the hub's service package, where the hub's Connect handlers live.
+const hubServiceSitePrefix = "internal/hub/service.(*"
+
+// servesAdminProtoMethod reports whether site, a siteKey, is the hub's handler
+// for a method that admin.proto declares: a method on a pointer receiver in
+// internal/hub/service whose receiver type carries the name of an admin.proto
+// service that declares the method. enforceAdmin admits exactly those
+// procedures for an administrator only.
+//
+// The check reads the Go type name as the proto service name, so a handler
+// type that does not carry its service's name fails the check.
+func servesAdminProtoMethod(site string) bool {
+	rest, ok := strings.CutPrefix(site, hubServiceSitePrefix)
+	if !ok {
+		return false
+	}
+	recv, method, ok := strings.Cut(rest, ").")
+	if !ok || recv == "" || method == "" {
+		return false
+	}
+	svc := leapmuxv1.File_leapmux_v1_admin_proto.Services().ByName(protoreflect.Name(recv))
+	return svc != nil && svc.Methods().ByName(protoreflect.Name(method)) != nil
 }
 
 // mustNewSiteKey renders one MustNew call site as "file#EnclosingFunc", or

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -256,7 +257,8 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, user
 
 // CallInner sends a unary inner RPC to a sibling worker. userID is the
 // delegation scope used both for minting the bearer and for keying the
-// channel pool.
+// channel pool. An error that the sibling's handler answers comes back as the
+// *channelwire.RPCError that tunnel.Channel.CallRPC returns, which keeps its code.
 func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	ch, err := c.channelFor(ctx, targetWorkerID, userID)
 	if err != nil {
@@ -291,6 +293,21 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 		return err
 	}
 	defer ch.Close()
+	return runStream(ctx, ch, method, payload, onMsg, bindCtrl)
+}
+
+// streamRPCChannel is what runStream needs from a dedicated channel.
+// *tunnel.Channel implements it, and a test substitutes a fake.
+type streamRPCChannel interface {
+	streamChannel
+	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
+	UnregisterPending(reqID uint64)
+	UnregisterStream(reqID uint64)
+}
+
+// runStream runs one server-streaming inner RPC on ch, which belongs to this
+// stream alone, and returns when the stream ends or ctx is cancelled.
+func runStream(ctx context.Context, ch streamRPCChannel, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	var streamErr error
@@ -304,14 +321,15 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 	// with no compound invariant is exactly an atomic.Bool, so it is one. This
 	// mirrors streamevents.ChannelTransport's identical guard.
 	var closed atomic.Bool
-	// A streaming RPC can terminate with an error envelope (InnerRpcResponse)
-	// instead of a stream frame -- "only the worker owner may use this", "no dispatcher
-	// configured", "too many incomplete chunked messages", or any handler
-	// SendError before its first stream frame. Without a Response handler,
-	// recvLoop finds no pending entry and drops it, so StreamInner would hang
-	// until the caller's context expired. Register respCh so a terminal error
-	// is surfaced; this mirrors streamevents.ChannelTransport, which watches a
-	// response channel for exactly this case.
+	// A streaming RPC can end with a unary error (InnerRpcResponse) instead of
+	// a stream frame -- "unknown method", "no dispatcher configured" or "too many
+	// incomplete chunked messages". Each comes from a layer that has no method
+	// registration to state the reply shape. A handler's SendError is not one of
+	// them: the dispatcher's shapedWriter turns it into a stream error frame,
+	// which the Stream handler below reads. tunnel.Channel delivers a unary error
+	// to respCh, which this registers, so the call returns the error instead of
+	// hanging until the caller's context expires. streamevents.ChannelTransport
+	// watches a response channel for the same reason.
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
 	reqID, err := ch.SendRPCNoWait(ctx, method, payload, tunnel.RPCHandlers{
 		Response: respCh,
@@ -324,7 +342,11 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 				// happens-before close(done); a trailing error frame after the
 				// terminating one is a no-op and never races `return streamErr`.
 				doneOnce.Do(func() {
-					streamErr = fmt.Errorf("stream error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage())
+					// Forward the error frame before the stream ends, as the
+					// same-worker path does (controlipc.streamCollector), so the
+					// caller reads the worker's error with its code.
+					onMsg(m)
+					streamErr = channelwire.ErrorOf(rpcErr)
 					close(done)
 				})
 				return
@@ -362,10 +384,7 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 		// No nil arm: recvLoop never delivers nil and respCh is never closed, so a
 		// closed channel wakes the ch.Context().Done() arm below (see
 		// tunnel.Channel.Close), never this one.
-		if rpcErr := resp.GetError(); rpcErr != nil {
-			return fmt.Errorf("rpc error (code %d): %s", rpcErr.GetCode(), rpcErr.GetMessage())
-		}
-		return nil
+		return channelwire.ErrorOf(resp.GetError())
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-ch.Context().Done():

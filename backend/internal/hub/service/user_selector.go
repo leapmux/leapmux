@@ -13,9 +13,14 @@ import (
 // holds an id OR a username. The oneof makes "both" unrepresentable, so the
 // rule refuses only an absent selector and a selector that selects nothing.
 //
+// The flag surfaces take the id and the username as two flags, so they can
+// receive both. SelectUserFromPair serves those surfaces: it refuses both
+// values with ErrAmbiguousUserSelector before any selector exists. The wire
+// cannot carry both, so no RPC handler reads that sentinel.
+//
 // The rule is shared; the WORDING is not. The RPC surface gives proto
-// fields to a machine caller and the CLI gives flags to a person, so the
-// resolvers return these sentinels unformatted and each surface renders
+// fields to a machine caller and the CLI gives flags to a person, so these
+// functions return the sentinels unformatted and each surface renders
 // them for its own audience. Returning one surface's phrasing to the
 // other was the alternative, and it puts `--id` in an RPC error.
 var (
@@ -25,6 +30,9 @@ var (
 	// ErrEmptyUserSelector reports a selector that is present but selects no
 	// case, or selects an empty id or username.
 	ErrEmptyUserSelector = errors.New("the user selector selects no id or username")
+	// ErrAmbiguousUserSelector reports an (id, username) pair that holds both
+	// values, which no selector can carry.
+	ErrAmbiguousUserSelector = errors.New("a user selector holds an id or a username, not both")
 )
 
 // SelectUserByID returns a selector for the account with this id.
@@ -35,6 +43,24 @@ func SelectUserByID(id string) *leapmuxv1.UserSelector {
 // SelectUserByUsername returns a selector for the account with this username.
 func SelectUserByUsername(username string) *leapmuxv1.UserSelector {
 	return &leapmuxv1.UserSelector{By: &leapmuxv1.UserSelector_Username{Username: username}}
+}
+
+// SelectUserFromPair builds the selector of an (id, username) flag pair. Both
+// values are ErrAmbiguousUserSelector, its only error. Neither value returns
+// (nil, nil), because only the caller knows whether an absent selector is a
+// missing argument or "every user". ResolveUserSelector and
+// ResolveUserSelectorFilter each read a nil selector as absent.
+func SelectUserFromPair(id, username string) (*leapmuxv1.UserSelector, error) {
+	switch {
+	case id != "" && username != "":
+		return nil, ErrAmbiguousUserSelector
+	case id != "":
+		return SelectUserByID(id), nil
+	case username != "":
+		return SelectUserByUsername(username), nil
+	default:
+		return nil, nil
+	}
 }
 
 // selectedUser returns the value a present selector selects, and whether that

@@ -272,11 +272,11 @@ describe('the identity paths return the input itself', () => {
     ws('b', 'Beta'),
   ]
 
-  it('sortWorkspaces returns the same array under the manual order', () => {
+  it('returns the same array from sortWorkspaces under the manual order', () => {
     expect(sortWorkspaces(list, { key: 'manual', direction: 'asc' }, () => undefined)).toBe(list)
   })
 
-  it('filterWorkspaces returns the same array for an empty query', () => {
+  it('returns the same array from filterWorkspaces for an empty query', () => {
     expect(filterWorkspaces(list, '')).toBe(list)
     expect(filterWorkspaces(list, '   ')).toBe(list)
   })

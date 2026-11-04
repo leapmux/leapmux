@@ -880,3 +880,33 @@ func TestBroadcast_FramesAreMarshaledBeforeTheFanOut(t *testing.T) {
 		"every frame must be marshaled before it reaches a subscriber; %d of %d arrived unmarshaled, "+
 			"which means the marshal would happen under the projection lock", unwarmed, seen)
 }
+
+// TestBroadcastWorkspaceRenamed_ReachesOnlySubscribersThatAdmitTheWorkspace
+// pins the lifecycle-event fan-out: a rename reaches exactly the subscribers
+// whose filter admits the workspace, once each, and carries the new title.
+func TestBroadcastWorkspaceRenamed_ReachesOnlySubscribersThatAdmitTheWorkspace(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 122_000)
+
+	admitting, unsubAdmitting := subscribeCapturing(t, mgr, map[string]bool{"w1": true})
+	defer unsubAdmitting()
+	other, unsubOther := subscribeCapturing(t, mgr, map[string]bool{"w2": true})
+	defer unsubOther()
+
+	// The fan-out calls each subscriber's Send before it returns.
+	mgr.BroadcastWorkspaceRenamed("w1", "t")
+
+	renamed := func(events []*leapmuxv1.WatchUserEvent) []*leapmuxv1.WorkspaceRenamed {
+		var out []*leapmuxv1.WorkspaceRenamed
+		for _, evt := range events {
+			if r := evt.GetRenamed(); r != nil {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	got := renamed(admitting())
+	require.Len(t, got, 1, "the subscriber that admits w1 hears the rename once")
+	assert.Equal(t, "w1", got[0].GetWorkspaceId())
+	assert.Equal(t, "t", got[0].GetTitle())
+	assert.Empty(t, renamed(other()), "a subscriber that cannot see w1 must not hear its rename")
+}

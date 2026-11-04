@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -33,15 +32,10 @@ func (d *shellsDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
 	}
-	payload, err := proto.Marshal(&leapmuxv1.ListAvailableShellsResponse{
+	writeProtoResponse(w, &leapmuxv1.ListAvailableShellsResponse{
 		Shells:       []string{"/bin/zsh", "/bin/bash"},
 		DefaultShell: "/bin/zsh",
 	})
-	if err != nil {
-		_ = w.SendError(int32(codes.Internal), err.Error())
-		return
-	}
-	_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
 }
 
 func (d *shellsDispatcher) called() []string {
@@ -59,7 +53,7 @@ func (d *shellsDispatcher) called() []string {
 //
 // Both hub round-trips that used to hang off that value target
 // WorkerManagementService: the resolver's GetWorker existence leg
-// (deleted) and maybePreflightWorker's ListWorkers (now tolerates a
+// (deleted) and maybePreflightWorker's GetWorker (now tolerates a
 // lookup it cannot perform). Either one aborted the command with
 // `resolve_failed` / `preflight_failed` before it could issue the worker
 // RPC it actually wanted, and the hub stub here refuses both -- the
@@ -88,18 +82,18 @@ func TestRunTerminalShells_InsideWorkerSpawn(t *testing.T) {
 	// The preflight round-trip survives (it is the friendly
 	// "no such worker id" check for laptop users); only its failure
 	// handling changed. The resolver must add none of its own.
-	assert.Equal(t, []string{"ListWorkers"}, hub.called(),
+	assert.Equal(t, []string{leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure}, hub.called(),
 		"no hub call may be made on the --worker-id axis beyond the tolerated preflight")
 }
 
 // TestRunTerminalShells_PreflightStillRejectsUnknownWorker is the
 // other half of the pair above: making the preflight tolerate a
 // lookup it cannot perform must not make it tolerate an answer it
-// can. When ListWorkers does come back, an id missing from it is
-// still a hard `not_found`.
+// can. When GetWorker does answer, its NotFound for the id is still a
+// hard `not_found`.
 func TestRunTerminalShells_PreflightStillRejectsUnknownWorker(t *testing.T) {
 	disp := &shellsDispatcher{}
-	hub := &recordingHub{listWorkers: []string{"worker-A"}}
+	hub := &recordingHub{workers: workerRows("worker-A")}
 	startSpawnIPC(t, hub, disp)
 
 	out := withCapturedStdout(t, func() {
@@ -121,20 +115,21 @@ func TestRunTerminalShells_PreflightStillRejectsUnknownWorker(t *testing.T) {
 	assert.Empty(t, disp.called(), "a rejected worker id must not reach the worker")
 }
 
-// TestTerminalInfoToMap_ExitedFollowsTheStatus pins the derived `exited`
-// field. The worker no longer sends a separate flag, so the CLI derives it
-// from the status: true for an exited terminal only, and false for every
-// other status, the unset one included. `status` still prints the name.
-func TestTerminalInfoToMap_ExitedFollowsTheStatus(t *testing.T) {
-	for status, exited := range map[leapmuxv1.TerminalStatus]bool{
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:         true,
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:          false,
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:       false,
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED: false,
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED:    false,
+// TestTerminalInfoToMap_StatusIsTheOnlyLifecycleKey pins that `status` alone
+// states the lifecycle of a terminal. A second key derived from it says less
+// than `status` does: a STARTUP_FAILED terminal runs no process, and such a key
+// read false for it. The status prints as its name, and an unset status prints
+// the empty name.
+func TestTerminalInfoToMap_StatusIsTheOnlyLifecycleKey(t *testing.T) {
+	for status, name := range map[leapmuxv1.TerminalStatus]string{
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:         "exited",
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:          "ready",
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:       "starting",
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED: "startup_failed",
+		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED:    "",
 	} {
 		got := terminalInfoToMap(&leapmuxv1.TerminalInfo{TerminalId: "term-1", Status: status})
-		assert.Equalf(t, exited, got["exited"], "status %s", status)
-		assert.Equalf(t, terminalStatusName(status), got["status"], "status %s", status)
+		assert.NotContainsf(t, got, "exited", "status %s", status)
+		assert.Equalf(t, name, got["status"], "status %s", status)
 	}
 }

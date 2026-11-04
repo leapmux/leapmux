@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAX_PAGE_LIMIT } from '~/generated/contracts/pagination'
 import { PageResponseSchema } from '~/generated/proto/leapmux/v1/common_pb'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
-import { PAGE_SIZE } from './fetchAllPages'
 import { listAllWorkers } from './listAllWorkers'
 
 const listWorkers = vi.hoisted(() => vi.fn())
@@ -46,12 +46,12 @@ describe('listAllWorkers', () => {
     expect(listWorkers.mock.calls).toEqual([
       [
         {
-          page: { limit: PAGE_SIZE, cursor: '' },
+          page: { limit: MAX_PAGE_LIMIT, cursor: '' },
         },
       ],
       [
         {
-          page: { limit: PAGE_SIZE, cursor: 'c1' },
+          page: { limit: MAX_PAGE_LIMIT, cursor: 'c1' },
         },
       ],
     ])

@@ -1,5 +1,6 @@
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it } from 'vitest'
+import { PI_QUESTION_DIALOG } from '~/generated/contracts/pi-protocol'
 import { createControlAnswerState } from '../../controls/types'
 import {
   piAskAnswerValue,
@@ -28,14 +29,14 @@ describe('pi controlResponse helpers', () => {
     })
     expect(piAskAnswerValue(state, [
       { question: 'Choose', options: [] },
-    ], { method: 'input', placeholder: '1,3' })).toBe('1,2')
+    ], { method: 'input', placeholder: PI_QUESTION_DIALOG.MultiSelectPlaceholder })).toBe('1,2')
   })
 
   it('preserves numeric-looking custom text as typed', () => {
     const state = createControlAnswerState({
       customTexts: { 0: '1. A — custom text' },
     })
-    expect(piAskAnswerValue(state, [], { method: 'input', placeholder: '1,3' })).toBe('1. A — custom text')
+    expect(piAskAnswerValue(state, [], { method: 'input', placeholder: PI_QUESTION_DIALOG.MultiSelectPlaceholder })).toBe('1. A — custom text')
   })
 
   it('builds value responses for select / input / editor', () => {

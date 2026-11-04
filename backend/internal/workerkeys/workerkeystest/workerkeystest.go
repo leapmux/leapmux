@@ -8,8 +8,8 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
@@ -25,9 +25,9 @@ const SeededWorkerFill = 0x42
 // panic at the fixture beats a confusing refusal in some later assertion.
 func Keys(fill byte) *leapmuxv1.WorkerPublicKeys {
 	keys := &leapmuxv1.WorkerPublicKeys{
-		X25519: bytes.Repeat([]byte{fill}, noise.EphemeralPublicKeySize),
-		Mlkem:  bytes.Repeat([]byte{fill}, noise.MlkemPublicKeySize),
-		Slhdsa: bytes.Repeat([]byte{fill}, noise.SlhdsaPublicKeySize),
+		X25519: bytes.Repeat([]byte{fill}, contracts.X25519PublicKeySize),
+		Mlkem:  bytes.Repeat([]byte{fill}, contracts.MlkemPublicKeySize),
+		Slhdsa: bytes.Repeat([]byte{fill}, contracts.SlhdsaPublicKeySize),
 	}
 	if err := workerkeys.Validate(keys); err != nil {
 		panic(fmt.Sprintf("workerkeystest: fill byte %#x does not make a valid key set: %v", fill, err))

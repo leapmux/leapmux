@@ -15,6 +15,9 @@ service WorkerTabService {
   rpc CloseTab(CloseTabRequest) returns (CloseTabResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKER_READ };
   }
+  // Closes every listed tab of a deleted workspace at once, which stops its
+  // agents and terminals. workspace:write owns this teardown, as it owns the
+  // layout close that stops the same processes.
   rpc CleanupWorkspace(CleanupWorkspaceRequest) returns (CleanupWorkspaceResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_WORKSPACE_WRITE };
   }
@@ -26,8 +29,8 @@ message CloseTabRequest {
   TabIdent tab = 1;
   // Worktree disposition chosen by the user when this tab was the last tab on
   // a tracked worktree. UNSPECIFIED / KEEP leaves the worktree in place;
-  // REMOVE asks the worker to `git worktree remove` once no other tabs
-  // reference it.
+  // REMOVE asks the worker to `git worktree remove` once no other tab
+  // uses it.
   WorktreeAction worktree_action = 2;
 }
 

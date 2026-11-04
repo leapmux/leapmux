@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -13,8 +13,10 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 
 vi.mock('~/api/workerRpc', () => ({
-  pushBranch: vi.fn(),
-  inspectLastTabClose: vi.fn(),
+  workerGit: {
+    pushBranch: vi.fn(),
+    inspectLastTabClose: vi.fn(),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -447,8 +449,8 @@ describe('LastTabCloseDialog', () => {
   })
 
   it('pushes via workerRpc and re-inspects when Push is clicked', async () => {
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
-    vi.mocked(workerRpc.inspectLastTabClose).mockResolvedValueOnce(makeState({ shouldPrompt: true }) as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.inspectLastTabClose).mockResolvedValueOnce(makeState({ shouldPrompt: true }) as never)
     const state = makeState({
       canPush: true,
       unpushedCommitCount: 1,
@@ -464,8 +466,8 @@ describe('LastTabCloseDialog', () => {
       // snapshot, so no hint rides the request -- and the push specifies the DIR
       // the worker itself resolved and echoed back on this very inspect
       // response, not a tab id it would have to resolve again.
-      expect(workerRpc.pushBranch).toHaveBeenCalledWith('w7', { workingDir: '/repo' })
-      expect(workerRpc.inspectLastTabClose).toHaveBeenCalledWith('w7', {
+      expect(workerGit.pushBranch).toHaveBeenCalledWith('w7', { workingDir: '/repo' })
+      expect(workerGit.inspectLastTabClose).toHaveBeenCalledWith('w7', {
         tab: { tabType: TabType.AGENT, tabId: 't9' },
       })
     })
@@ -476,8 +478,8 @@ describe('LastTabCloseDialog', () => {
     // a local status shadow; the parent owns `state` and must be notified
     // so it can merge the refreshed fields back in.
     const refreshed = makeState({ shouldPrompt: false })
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
-    vi.mocked(workerRpc.inspectLastTabClose).mockResolvedValueOnce(refreshed as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.inspectLastTabClose).mockResolvedValueOnce(refreshed as never)
     const onStatusRefreshed = vi.fn<(s: InspectLastTabCloseResponse) => void>()
     renderDialog(makeState({ canPush: true, hasUncommittedChanges: true, diffAdded: 1 }), vi.fn(), onStatusRefreshed)
     fireEvent.click(screen.getByRole('button', { name: /Commit and Push/ }))
@@ -491,11 +493,11 @@ describe('LastTabCloseDialog', () => {
     // onStatusRefreshed is optional — the legacy call shape (without it)
     // must still complete a Push cleanly. Guards against a future
     // refactor accidentally requiring the callback.
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
-    vi.mocked(workerRpc.inspectLastTabClose).mockResolvedValueOnce(makeState({ shouldPrompt: false }) as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.inspectLastTabClose).mockResolvedValueOnce(makeState({ shouldPrompt: false }) as never)
     renderDialog(makeState({ canPush: true, unpushedCommitCount: 1 }))
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.inspectLastTabClose).toHaveBeenCalled())
+    await waitFor(() => expect(workerGit.inspectLastTabClose).toHaveBeenCalled())
   })
 
   it('post-push inspect failure: success toast still fires, no "Failed to push" warn toast', async () => {
@@ -507,8 +509,8 @@ describe('LastTabCloseDialog', () => {
     // rejection so the user-visible signal matches the actual outcome
     // (push succeeded; refresh failed silently).
     const { showInfoToast, showWarnToast } = await import('~/components/common/Toast')
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
-    vi.mocked(workerRpc.inspectLastTabClose).mockRejectedValueOnce(new Error('worker hiccup'))
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.inspectLastTabClose).mockRejectedValueOnce(new Error('worker hiccup'))
     const onStatusRefreshed = vi.fn<(s: InspectLastTabCloseResponse) => void>()
     renderDialog(makeState({ canPush: true, unpushedCommitCount: 1 }), vi.fn(), onStatusRefreshed)
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -529,8 +531,8 @@ describe('LastTabCloseDialog', () => {
     // is still notified so it can merge the refreshed (degraded) status.
     const { showWarnToast } = await import('~/components/common/Toast')
     const degraded = makeState({ shouldPrompt: false, errorHint: 'git state unavailable; closed without checking for uncommitted or unpushed changes' })
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
-    vi.mocked(workerRpc.inspectLastTabClose).mockResolvedValueOnce(degraded as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.inspectLastTabClose).mockResolvedValueOnce(degraded as never)
     const onStatusRefreshed = vi.fn<(s: InspectLastTabCloseResponse) => void>()
     renderDialog(makeState({ canPush: true, unpushedCommitCount: 1 }), vi.fn(), onStatusRefreshed)
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))

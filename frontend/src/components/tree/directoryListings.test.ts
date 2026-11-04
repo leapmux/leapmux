@@ -3,7 +3,9 @@ import { ancestorChain, loadChildren, loadListings } from './directoryListings'
 
 const listDirectory = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: (...args: unknown[]) => listDirectory(...args),
+  workerFile: {
+    listDirectory: (...args: unknown[]) => listDirectory(...args),
+  },
 }))
 
 beforeEach(() => {

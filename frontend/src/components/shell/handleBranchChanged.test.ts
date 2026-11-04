@@ -6,7 +6,9 @@ import { handleBranchChanged } from './handleBranchChanged'
 
 const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  getGitFileStatus: (...a: unknown[]) => mockGetGitFileStatus(...a),
+  workerGit: {
+    getGitFileStatus: (...a: unknown[]) => mockGetGitFileStatus(...a),
+  },
 }))
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))

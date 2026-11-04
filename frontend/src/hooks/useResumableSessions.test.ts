@@ -1,15 +1,17 @@
 import type { UseResumableSessionsArgs } from '~/hooks/useResumableSessions'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useResumableSessions } from '~/hooks/useResumableSessions'
 
 vi.mock('~/api/workerRpc', () => ({
-  listAgentSessions: vi.fn(),
+  workerAgent: {
+    listAgentSessions: vi.fn(),
+  },
 }))
 
-const listAgentSessions = vi.mocked(workerRpc.listAgentSessions)
+const listAgentSessions = vi.mocked(workerAgent.listAgentSessions)
 
 function session(sessionId: string) {
   return {
@@ -201,7 +203,7 @@ describe('useResumableSessions', () => {
   // still passed its own guard -- repopulating the list the hook had just
   // emptied, with sessions of a selection the user had left.
   it('discards a fetch still in flight when the source becomes null', async () => {
-    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    const pending = deferred<Awaited<ReturnType<typeof workerAgent.listAgentSessions>>>()
     listAgentSessions.mockReturnValueOnce(pending.promise)
 
     await createRoot(async (dispose) => {
@@ -227,7 +229,7 @@ describe('useResumableSessions', () => {
   // box on the first frame of every dialog and swaps it for the menu a frame
   // later, under a user who may already be typing.
   it('reports settled only once an answer for the current source arrives', async () => {
-    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    const pending = deferred<Awaited<ReturnType<typeof workerAgent.listAgentSessions>>>()
     listAgentSessions.mockReturnValueOnce(pending.promise)
 
     await createRoot(async (dispose) => {

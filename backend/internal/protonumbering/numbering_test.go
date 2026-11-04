@@ -66,9 +66,8 @@ func checkMessage(t *testing.T, message protoreflect.MessageDescriptor) int {
 	name := string(message.FullName())
 	assert.Zerof(t, message.ReservedRanges().Len(), "%s reserves a field number; renumber the later fields instead", name)
 	assert.Zerof(t, message.ReservedNames().Len(), "%s reserves a field name; delete it instead", name)
-	if problem := messageNumberingProblem(message); problem != "" {
-		t.Errorf("%s: %s", name, problem)
-	}
+	problem := messageNumberingProblem(message)
+	assert.Emptyf(t, problem, "%s: %s", name, problem)
 	for i := range message.Enums().Len() {
 		checkEnum(t, message.Enums().Get(i))
 		checked++
@@ -103,32 +102,24 @@ func messageNumberingProblem(message protoreflect.MessageDescriptor) string {
 	if fields.Len() == 0 {
 		return ""
 	}
-	var header, payload []int
+	all := make([]int, 0, fields.Len())
+	// The payload oneof is a real oneof that holds a field numbered 10 or
+	// more. A proto3 `optional` field is a synthetic oneof of one field, so it
+	// counts as a header field, not as a payload oneof.
 	var payloadOneof protoreflect.OneofDescriptor
 	payloadOneofs := 0
 	for i := range fields.Len() {
 		field := fields.Get(i)
-		number := int(field.Number())
-		if number < payloadOneofStart {
-			header = append(header, number)
-			continue
-		}
-		// A proto3 `optional` field is a synthetic oneof of one field, so it
-		// counts as a header field, not as a payload oneof.
+		all = append(all, int(field.Number()))
 		oneof := field.ContainingOneof()
-		if oneof == nil || oneof.IsSynthetic() {
-			header = append(header, number)
+		if field.Number() < payloadOneofStart || oneof == nil || oneof.IsSynthetic() || oneof == payloadOneof {
 			continue
-		}
-		if payloadOneof != oneof {
-			payloadOneofs++
 		}
 		payloadOneof = oneof
-		payload = append(payload, number)
+		payloadOneofs++
 	}
 	// A run from 1 has no hole, whichever fields its oneofs hold. Only a
 	// message that is not one needs the header-and-payload exemption.
-	all := slices.Concat(header, payload)
 	slices.Sort(all)
 	if isRun(all, 1) {
 		return ""
@@ -139,16 +130,28 @@ func messageNumberingProblem(message protoreflect.MessageDescriptor) string {
 	if payloadOneofs > 1 {
 		return "two oneofs number fields from 10; one payload oneof may start there"
 	}
+	// Every member of the payload oneof is a payload field, a member below 10
+	// included, so that the payload check refuses it. Every other field is a
+	// header field.
+	var header, payload []int
+	for i := range fields.Len() {
+		field := fields.Get(i)
+		if field.ContainingOneof() == payloadOneof {
+			payload = append(payload, int(field.Number()))
+		} else {
+			header = append(header, int(field.Number()))
+		}
+	}
 	slices.Sort(header)
 	slices.Sort(payload)
+	if !isRun(payload, payloadOneofStart) {
+		return "oneof " + string(payloadOneof.Name()) + " numbers " + numbersText(payload) + "; a payload oneof must run from 10 with no hole"
+	}
 	if len(header) == 0 {
 		return "oneof " + string(payloadOneof.Name()) + " starts at 10 with no header; a payload oneof from 10 must follow header fields from 1"
 	}
 	if !isRun(header, 1) {
 		return "header fields " + numbersText(header) + " must run from 1 with no hole"
-	}
-	if !isRun(payload, payloadOneofStart) {
-		return "oneof " + string(payloadOneof.Name()) + " numbers " + numbersText(payload) + "; a payload oneof must run from 10 with no hole"
 	}
 	// No header field can sit among the payload numbers here. The payload is a
 	// run from 10, so it holds 10. A header that runs from 1 and reaches 10
@@ -205,6 +208,14 @@ func TestMessageNumberingProblem(t *testing.T) {
 		{name: "a plain field at 10 after a hole", plain: []int32{1, 2, 10}},
 		{name: "two oneofs from 10", oneofs: [][]int32{{10}, {11}}},
 		{name: "a field before 10 inside a payload oneof", plain: []int32{1}, oneofs: [][]int32{{9, 10, 11}}},
+		// A payload oneof member below 10 is not a header field. WatchUserEvent
+		// numbers one oneof from 1 to 11, so deleting its field 9 leaves a hole
+		// that the header-and-payload exemption must not cover.
+		{name: "a hole inside one oneof that reaches 10", oneofs: [][]int32{{1, 2, 3, 4, 5, 6, 7, 8, 10, 11}}},
+		{name: "a payload oneof that starts below 10 after a header", plain: []int32{1, 2}, oneofs: [][]int32{{3, 4, 10, 11}}},
+		// A oneof below 10 is part of the header, and only the oneof that
+		// reaches 10 is the payload.
+		{name: "a oneof in the header before a payload oneof", plain: []int32{1}, oneofs: [][]int32{{2, 3}, {10, 11}}, ok: true},
 		// A synthetic oneof is not a second payload oneof: the optional field
 		// at 10 runs on from the header, and the real oneof follows it.
 		{name: "an optional field at 10 before a oneof", plain: []int32{1, 2, 3, 4, 5, 6, 7, 8, 9}, optional: []int32{10}, oneofs: [][]int32{{11, 12}}, ok: true},

@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit, workerTerminal } from '~/api/workerRpc'
 import { NewTerminalDialog } from '~/components/shell/NewTerminalDialog'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -31,30 +31,38 @@ vi.mock('~/api/clients', () => ({
 // export throws inside the render chain and takes the shells effect down
 // with it, which is exactly what these mocks exist to prevent.
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: vi.fn(async () => ({})),
-  // GitOptions lists both once the directory is a repository root.
-  listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
-  listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
-  getWorkerSystemInfo: vi.fn(async () => ({})),
-  listAvailableShells: vi.fn(async () => ({
-    shells: ['bash', 'zsh'],
-    defaultShell: 'bash',
-  })),
-  statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({
-    listings: [
-      {
-        path: '',
-        entries: [],
-        truncated: false,
-        totalEntries: 0,
-      },
-    ],
-  })),
-  openTerminal: vi.fn(async () => ({ terminalId: 'tid-1', title: 'Terminal 1' })),
+  workerGit: {
+    getGitInfo: vi.fn(async () => ({})),
+    // GitOptions lists both once the directory is a repository root.
+    listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
+    listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
+  },
+  workerSystem: {
+    getWorkerSystemInfo: vi.fn(async () => ({})),
+  },
+  workerTerminal: {
+    listAvailableShells: vi.fn(async () => ({
+      shells: ['bash', 'zsh'],
+      defaultShell: 'bash',
+    })),
+    openTerminal: vi.fn(async () => ({ terminalId: 'tid-1', title: 'Terminal 1' })),
+  },
+  workerFile: {
+    statFile: vi.fn(async () => ({})),
+    listDirectory: vi.fn(async () => ({
+      listings: [
+        {
+          path: '',
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+        },
+      ],
+    })),
+  },
 }))
 
-const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
+const openTerminalMock = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
 
 function renderDialog(blockedReason?: () => string | undefined) {
   return render(withPreferences(() => (
@@ -182,10 +190,10 @@ describe('NewTerminalDialog shell field', () => {
 
     // Wait for the mount-time fetch to settle, so the click's fetch is the
     // second call rather than a race with the first.
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledOnce())
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByTestId('shell-selector-refresh'))
 
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledTimes(2))
   })
 
   // A failed load writes the dialog's error banner (the RPC's own message,
@@ -193,7 +201,7 @@ describe('NewTerminalDialog shell field', () => {
   // button repopulated the menu and armed Create while the banner still
   // reported the failure -- the one state that button exists to leave.
   it('clears the load failure once a refresh succeeds', async () => {
-    vi.mocked(workerRpc.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
+    vi.mocked(workerTerminal.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
     renderDialog()
 
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
@@ -216,11 +224,11 @@ describe('NewTerminalDialog git setup', () => {
   })
 
   afterEach(() => {
-    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({}) as never)
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({}) as never)
   })
 
   it('sends the create-branch setup with the typed name and the base branch', async () => {
-    vi.mocked(workerRpc.getGitInfo).mockImplementation(async () => ({
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({
       isGitRepo: true,
       isRepoRoot: true,
       repoRoot: '/tmp',

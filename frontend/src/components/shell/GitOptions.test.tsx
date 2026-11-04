@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { generateSlug } from 'random-word-slugs'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { GitMode } from '~/hooks/useGitModeState'
 import { dirtyWarningCopy, GitOptions, indexBranches } from './GitOptions'
 
@@ -184,7 +184,7 @@ describe('indexBranches', () => {
     expect(idx.remote.map(b => b.name)).toEqual(['origin/z', 'origin/a'])
   })
 
-  it('localNames is the set of local branch names only', () => {
+  it('reports localNames as the set of local branch names only', () => {
     const idx = indexBranches([
       entry('main'),
       entry('feature/foo'),
@@ -223,8 +223,10 @@ vi.mock('random-word-slugs', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  listGitBranches: vi.fn(),
-  listGitWorktrees: vi.fn(),
+  workerGit: {
+    listGitBranches: vi.fn(),
+    listGitWorktrees: vi.fn(),
+  },
 }))
 
 function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
@@ -249,12 +251,12 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
 describe('GitOptions activeMode ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(workerRpc.listGitBranches).mockResolvedValue({
+    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitBranchesResponse',
       branches: [],
       currentBranch: 'main',
     })
-    vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue({
+    vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitWorktreesResponse',
       worktrees: [],
     })
@@ -588,12 +590,12 @@ describe('GitOptions activeMode ownership', () => {
 describe('GitOptions branch name field', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(workerRpc.listGitBranches).mockResolvedValue({
+    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitBranchesResponse',
       branches: [],
       currentBranch: 'main',
     })
-    vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue({
+    vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitWorktreesResponse',
       worktrees: [],
     })

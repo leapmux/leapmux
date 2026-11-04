@@ -209,9 +209,9 @@ func TestBroadcastTo_SharesOneMarshaledFrameAcrossAdmittedSubscribers(t *testing
 }
 
 // The worker list belongs to the user, so BroadcastWorkersChanged reaches a
-// subscriber whose filter admits no workspace as it reaches one that admits
+// worker reader whose filter admits no workspace as it reaches one that admits
 // some. It still shares one marshaled frame across the whole fan-out.
-func TestBroadcastWorkersChanged_SharesOneMarshaledFrameWithEverySubscriber(t *testing.T) {
+func TestBroadcastWorkersChanged_SharesOneMarshaledFrameWithEveryWorkerReader(t *testing.T) {
 	m := NewManager(userid.MustNew("user-1"), nil, nil, nil, nil)
 	m.state = NewState(m.owner.String())
 
@@ -224,32 +224,73 @@ func TestBroadcastWorkersChanged_SharesOneMarshaledFrameWithEverySubscriber(t *t
 		NewSubscriberFilter(map[string]bool{"w1": true}),
 		NewSubscriberFilter(map[string]bool{}),
 	} {
-		reg := m.registerForFallback(&Subscriber{UserID: "user-1", Filter: filter, Send: record}, fallbackCold)
+		reg := m.registerForFallback(&Subscriber{UserID: "user-1", Filter: filter, MayReadWorkers: true, Send: record}, fallbackCold)
 		t.Cleanup(reg.unsub)
 	}
 
 	m.BroadcastWorkersChanged()
 
-	require.Len(t, received, 2, "every subscriber hears the change, whatever its filter admits")
+	require.Len(t, received, 2, "every worker reader hears the change, whatever its filter admits")
 	assert.Same(t, received[0], received[1], "one marshaled buffer is shared across the fan-out")
 	assert.NotNil(t, received[0].Event.GetWorkersChanged())
 	assert.True(t, received[0].AlreadyMarshaledForTest(), "the frame is marshaled before the projection lock")
 }
 
-// The pre-warm for a user-wide event marshals as soon as one subscriber
-// exists, even one whose filter admits no workspace, and skips the work when
-// nobody listens.
-func TestBroadcastFrame_PrewarmForEverySubscriberMarshalsWhenAnyoneListens(t *testing.T) {
+// WorkersChanged asks the client to call ListWorkers, which requires
+// worker:read, and its timing alone tells when the owner's workers register,
+// connect, disconnect or deregister. So a subscriber whose credential lacks
+// worker:read must not hear it, even one whose filter admits a workspace.
+func TestBroadcastWorkersChanged_SkipsASubscriberThatCannotReadWorkers(t *testing.T) {
+	m := NewManager(userid.MustNew("user-1"), nil, nil, nil, nil)
+	m.state = NewState(m.owner.String())
+
+	var readerSends, nonReaderSends int
+	reader := &Subscriber{
+		UserID:         "user-1",
+		Filter:         NewSubscriberFilter(map[string]bool{}),
+		MayReadWorkers: true,
+		Send: func(*MarshaledEvent) error {
+			readerSends++
+			return nil
+		},
+	}
+	nonReader := &Subscriber{
+		UserID: "user-1",
+		Filter: NewSubscriberFilter(map[string]bool{"w1": true}),
+		Send: func(*MarshaledEvent) error {
+			nonReaderSends++
+			return nil
+		},
+	}
+	for _, sub := range []*Subscriber{reader, nonReader} {
+		reg := m.registerForFallback(sub, fallbackCold)
+		t.Cleanup(reg.unsub)
+	}
+
+	m.BroadcastWorkersChanged()
+
+	assert.Equal(t, 1, readerSends, "a subscriber that may read workers hears the change once")
+	assert.Zero(t, nonReaderSends, "a subscriber whose credential lacks worker:read must not hear the change")
+}
+
+// The pre-warm for the worker-list event marshals as soon as one worker reader
+// exists, even one whose filter admits no workspace. It skips the work when
+// nobody listens, and when every listener lacks worker:read.
+func TestBroadcastFrame_PrewarmForWorkerReadersMarshalsWhenAReaderListens(t *testing.T) {
 	evt := &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}},
 	}
 
 	nobody := &broadcastFrame{evt: evt}
-	nobody.prewarm(nil, admitsEverySubscriber)
+	nobody.prewarm(nil, admitsWorkerReaders)
 	assert.Nil(t, nobody.me)
 
+	nonReaderOnly := &broadcastFrame{evt: evt}
+	nonReaderOnly.prewarm([]*Subscriber{{Filter: NewSubscriberFilter(nil)}}, admitsWorkerReaders)
+	assert.Nil(t, nonReaderOnly.me, "no listener may read workers, so no frame is built")
+
 	narrow := &broadcastFrame{evt: evt}
-	narrow.prewarm([]*Subscriber{{Filter: NewSubscriberFilter(map[string]bool{})}}, admitsEverySubscriber)
+	narrow.prewarm([]*Subscriber{{Filter: NewSubscriberFilter(map[string]bool{}), MayReadWorkers: true}}, admitsWorkerReaders)
 	require.NotNil(t, narrow.me)
 	assert.True(t, narrow.me.AlreadyMarshaledForTest())
 }

@@ -425,9 +425,10 @@ func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
 }
 
 // agentSupportsSteering answers the capability from a row the caller already
-// holds. agentToProto and buildAgentActiveStatus each hold one, and ListAgents
-// runs agentToProto for every requested tab, so an ID-based call would repeat
-// a `SELECT *` on the agents row once per agent.
+// holds. agentToProto, buildAgentActiveStatus and the output sink's
+// buildStatusChange each hold one, and ListAgents runs agentToProto for every
+// requested tab, so an ID-based call would repeat a `SELECT *` on the agents
+// row once per agent.
 func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 	if dbAgent.ParentAgentID.Valid {
 		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages {
@@ -477,18 +478,6 @@ func (svc *Service) queueHeadDispatch(dbAgent *db.Agent, running bool) leapmuxv1
 	default:
 		return leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE
 	}
-}
-
-// QueueHeadDispatch answers queueHeadDispatch for an agent id, for the output
-// handler's status changes. It passes running as true: both capability checks
-// already answer false for an agent with no live provider, which is what the
-// status builders relied on before this value existed.
-func (a *agentInputQueueAdapter) QueueHeadDispatch(agentID string) leapmuxv1.QueueHeadDispatch {
-	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		return leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE
-	}
-	return a.svc.queueHeadDispatch(&dbAgent, true)
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
@@ -559,7 +548,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 	return result
 }
 
-func registerAgentInputQueueHandlers(d registrar, svc *Service) {
+func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {

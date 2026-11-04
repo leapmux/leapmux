@@ -5,7 +5,7 @@ import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -14,10 +14,12 @@ import { menuOptionValues, pickMenuValue } from '~/test-support/menu'
 import { DeleteBranchDialog } from './DeleteBranchDialog'
 
 vi.mock('~/api/workerRpc', () => ({
-  inspectBranchDeletion: vi.fn(),
-  inspectWorktreeRemoval: vi.fn(),
-  deleteBranch: vi.fn(),
-  pushBranch: vi.fn(),
+  workerGit: {
+    inspectBranchDeletion: vi.fn(),
+    inspectWorktreeRemoval: vi.fn(),
+    deleteBranch: vi.fn(),
+    pushBranch: vi.fn(),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -132,11 +134,11 @@ function reasonOf(el: Element): string {
 describe('DeleteBranchDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(workerRpc.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
-    vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
+    vi.mocked(workerGit.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
+    vi.mocked(workerGit.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
     // Default: git refuses nothing, so the worktree path proceeds. The
     // blocked cases set their own reason.
-    vi.mocked(workerRpc.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
+    vi.mocked(workerGit.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
   })
 
   // The dialog names what it destroys. A worktree delete removes a whole
@@ -144,7 +146,7 @@ describe('DeleteBranchDialog', () => {
   // directory they meant to keep.
   describe('naming the target', () => {
     it('says worktree in the title, the button and the status rows', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
         makeInspectResp({ isWorktree: true, worktreePath: '/home/dev/repos/lm-worktrees/wt' }),
       )
       renderDialog({ isWorktree: true })
@@ -157,7 +159,7 @@ describe('DeleteBranchDialog', () => {
     })
 
     it('says branch in the title, the button and the status rows', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
       renderDialog({ isWorktree: false })
 
       await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete branch' })).toBeInTheDocument())
@@ -172,7 +174,7 @@ describe('DeleteBranchDialog', () => {
     // that flips from "branch" to "worktree" a beat later is worse than one
     // that was right from the start.
     it('seeds the title from the row while the inspect RPC is in flight', () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(new Promise<InspectBranchDeletionResponse>(() => {}))
+      vi.mocked(workerGit.inspectBranchDeletion).mockReturnValue(new Promise<InspectBranchDeletionResponse>(() => {}))
       renderDialog({ isWorktree: true })
 
       expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument()
@@ -181,7 +183,7 @@ describe('DeleteBranchDialog', () => {
     // The seed is the sidebar bucket's view of the path, and the bucket keeps
     // the first tab's answer. The worker's own answer wins over it.
     it('lets the inspect response overrule a wrong seed', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
         makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
       )
       renderDialog({ isWorktree: false })
@@ -190,7 +192,7 @@ describe('DeleteBranchDialog', () => {
     })
 
     it('states what a worktree delete destroys', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
         makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
       )
       renderDialog({ isWorktree: true })
@@ -200,7 +202,7 @@ describe('DeleteBranchDialog', () => {
     })
 
     it('states what a branch delete does to the working directory', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
       renderDialog({ isWorktree: false })
 
       await waitFor(() => expect(screen.getByTestId('branch-delete-consequence').textContent)
@@ -210,7 +212,7 @@ describe('DeleteBranchDialog', () => {
     // The "only branch" case offers no delete at all, so promising a switch
     // target the dialog cannot give would be a lie.
     it('states no consequence when there is no other branch to switch to', async () => {
-      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
         makeInspectResp({ isWorktree: false, branches: [] }),
       )
       renderDialog({ isWorktree: false })
@@ -222,7 +224,7 @@ describe('DeleteBranchDialog', () => {
 
   it('shows a loader while inspecting branch state', async () => {
     let resolve: (r: InspectBranchDeletionResponse) => void = () => {}
-    vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockReturnValue(
       new Promise<InspectBranchDeletionResponse>((r) => { resolve = r }),
     )
     renderDialog()
@@ -236,7 +238,7 @@ describe('DeleteBranchDialog', () => {
     // and it runs below handleTabClose, so nothing else asks. BranchStatusInfo
     // only counts the tabs ("2 terminals will be stopped"); it never names the
     // process still writing into the directory about to be removed.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const busyTab = makeTerminalTab('t-busy')
@@ -265,7 +267,7 @@ describe('DeleteBranchDialog', () => {
   it('keeps Delete disabled until the busy scan answers', async () => {
     // Confirming before the warning lands is the one order that makes the
     // warning useless, and this dialog destroys a directory.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     let release: (v: BusyTab[]) => void = () => {}
@@ -289,7 +291,7 @@ describe('DeleteBranchDialog', () => {
     // WorktreeAction.REMOVE on the worker and reports the folded outcome.
     // `trackedAtInspect` rides along, because only the dialog holds the
     // inspect-time snapshot the reporter ranks below the worker's verdict.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: 'wt-1' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -312,7 +314,7 @@ describe('DeleteBranchDialog', () => {
     // The mirror. An untracked worktree has no DB row, so REMOVE degrades to
     // KEEP server-side and the directory stays. The reporter needs to know,
     // or it reports "not removed" as if something had gone wrong.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: '' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -333,7 +335,7 @@ describe('DeleteBranchDialog', () => {
     // The hand-off returns nothing at all, which is what makes the await
     // impossible to reintroduce by accident: the dialog has no promise to
     // hold. A resolved onClose proves it dismissed on its own.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -350,7 +352,7 @@ describe('DeleteBranchDialog', () => {
     // ignores its arguments. A preflight aimed at the wrong directory then
     // answers for a repository nobody deletes, and reads as a clean "no
     // refusal" every time.
-    expect(workerRpc.inspectWorktreeRemoval).toHaveBeenCalledWith('w1', {
+    expect(workerGit.inspectWorktreeRemoval).toHaveBeenCalledWith('w1', {
       path: '/repo',
     })
   })
@@ -360,10 +362,10 @@ describe('DeleteBranchDialog', () => {
     // open, because a closed dialog can render none of them. Nothing may be
     // destroyed on this path: the tabs are the user's only route back to
     // the worktree.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.inspectWorktreeRemoval).mockResolvedValue(
+    vi.mocked(workerGit.inspectWorktreeRemoval).mockResolvedValue(
       makeWorktreeRemovalResp('This worktree is locked (held for review). Unlock it with `git worktree unlock` first.'),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -386,10 +388,10 @@ describe('DeleteBranchDialog', () => {
     // delete here and allows it in the last-tab dialog. The close then
     // reports the real outcome, which is what it did before the preflight
     // existed.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
-    vi.mocked(workerRpc.inspectWorktreeRemoval).mockRejectedValue(new Error('git worktree list: exit status 128'))
+    vi.mocked(workerGit.inspectWorktreeRemoval).mockRejectedValue(new Error('git worktree list: exit status 128'))
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const props = renderDialog({ closeWorktreeTabs })
     await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
@@ -409,7 +411,7 @@ describe('DeleteBranchDialog', () => {
     // confirm, not after firing it. The verdict rides on the same open-time
     // inspect that populated the dialog, so it costs no extra round trip --
     // exactly what the last-tab dialog already does with the same verdict.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         isWorktree: true,
         worktreePath: '/wt',
@@ -427,7 +429,7 @@ describe('DeleteBranchDialog', () => {
     // with no stated reason looks like a defect.
     expect(screen.getAllByText(/held for review/).length).toBeGreaterThan(0)
     // Nothing was armed, so nothing reached the confirm-time re-check either.
-    expect(workerRpc.inspectWorktreeRemoval).not.toHaveBeenCalled()
+    expect(workerGit.inspectWorktreeRemoval).not.toHaveBeenCalled()
     expect(closeWorktreeTabs).not.toHaveBeenCalled()
   })
 
@@ -435,7 +437,7 @@ describe('DeleteBranchDialog', () => {
     // A refused removal must not leave Cancel as the dialog's one enabled
     // action. The tabs are still closable -- only the removal is refused --
     // so this is the counterpart of the last-tab dialog's "Close anyway".
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         isWorktree: true,
         worktreePath: '/wt',
@@ -460,7 +462,7 @@ describe('DeleteBranchDialog', () => {
   it('worktree variant: no blocked reason leaves Delete enabled and offers no escape hatch', async () => {
     // The mirror, and the case that matters most: a field read that goes
     // wrong here disables Delete on every worktree branch.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog()
@@ -475,7 +477,7 @@ describe('DeleteBranchDialog', () => {
   it('worktree variant: states that the removal check was skipped', async () => {
     // An empty blocked reason is also what a clean worktree sends, so a
     // skipped check and an accepted removal look identical without this.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         isWorktree: true,
         worktreePath: '/wt',
@@ -494,7 +496,7 @@ describe('DeleteBranchDialog', () => {
     // The in-place delete removes no worktree, so the removal verdict must
     // not restrict it. The worker sets the field only for a worktree, and
     // the dialog restates that gate so the two cannot disagree.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: false, worktreeRemovalBlockedReason: 'This worktree is locked.' }),
     )
     renderDialog()
@@ -509,11 +511,11 @@ describe('DeleteBranchDialog', () => {
     // The preflight is a round trip, so the button states that it runs —
     // this dialog's custom footer cannot use DialogFormFooter's own
     // spinner-in-submit pattern.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     let release: (r: InspectWorktreeRemovalResponse) => void = () => {}
-    vi.mocked(workerRpc.inspectWorktreeRemoval).mockReturnValue(new Promise((r) => {
+    vi.mocked(workerGit.inspectWorktreeRemoval).mockReturnValue(new Promise((r) => {
       release = r
     }))
     renderDialog()
@@ -528,15 +530,15 @@ describe('DeleteBranchDialog', () => {
   it('non-worktree variant: runs no removal preflight', async () => {
     // The in-place delete removes no worktree, so the preflight has nothing
     // to answer — and it must not restrict a path it cannot describe.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
 
-    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
-    expect(workerRpc.inspectWorktreeRemoval).not.toHaveBeenCalled()
+    await waitFor(() => expect(workerGit.deleteBranch).toHaveBeenCalledTimes(1))
+    expect(workerGit.inspectWorktreeRemoval).not.toHaveBeenCalled()
   })
 
   it('worktree variant closes a FILE-only group through closeWorktreeTabs', async () => {
@@ -544,7 +546,7 @@ describe('DeleteBranchDialog', () => {
     // ref-counts worktree_tabs type-agnostically (FILE rows count the same
     // as AGENT/TERMINAL). The dialog does not special-case tab type — it
     // hands the whole group to closeWorktreeTabs regardless.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -562,7 +564,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('non-worktree variant: Delete disabled until switch-to is chosen', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
@@ -574,7 +576,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('non-worktree variant: fires onBranchChanged with the chosen switch-to branch', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const onBranchChanged = vi.fn()
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ onBranchChanged, closeWorktreeTabs })
@@ -600,7 +602,7 @@ describe('DeleteBranchDialog', () => {
     //
     // The dialog's own try/catch — not this order — is what keeps a
     // callback throw out of `run`'s "Delete failed" banner.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const calls: string[] = []
     const onBranchChanged = vi.fn(() => {
       calls.push('onBranchChanged')
@@ -622,7 +624,7 @@ describe('DeleteBranchDialog', () => {
     // absent callback must therefore still reach `props.onClose()`. The
     // optional call must not drop the close -- so this render supplies no
     // callback at all rather than a present-undefined one.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const props = renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     pickMenuValue('branch-select-menu', 'main')
@@ -641,7 +643,7 @@ describe('DeleteBranchDialog', () => {
     // stamped onto every tab in the branch group, leaving the sidebar
     // label disagreeing with HEAD until something else triggered a
     // refresh.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branches: [
           { $typeName: 'leapmux.v1.GitBranchEntry', name: 'main', isRemote: false },
@@ -663,7 +665,7 @@ describe('DeleteBranchDialog', () => {
     // A legitimate local branch like `feature/auth` must NOT have its
     // prefix stripped — otherwise the sidebar would stamp `auth` on
     // every tab in the group while HEAD is actually on `feature/auth`.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branches: [
           { $typeName: 'leapmux.v1.GitBranchEntry', name: 'feature/auth', isRemote: false },
@@ -687,10 +689,10 @@ describe('DeleteBranchDialog', () => {
     // A regression that re-introduces a second fetch would either fail
     // this count assertion or trip the mock (no `listGitBranches` is
     // declared in the workerRpc mock above).
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1)
+    expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(1)
   })
 
   it('forwards props.branchName as branchNameHint on inspectBranchDeletion', async () => {
@@ -698,10 +700,10 @@ describe('DeleteBranchDialog', () => {
     // the menu). Passing it as a hint lets the worker parallelize the
     // queryGitPathInfo and pushStatusForPath forks; pin the wire
     // contract so a future refactor can't silently drop it.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog({ branchName: 'doomed' })
-    await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
-    const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    await waitFor(() => expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(1))
+    const inspectCall = vi.mocked(workerGit.inspectBranchDeletion).mock.calls[0]
     if (inspectCall === undefined)
       throw new Error('expected the inspect call to have fired')
     const [, req] = inspectCall
@@ -713,17 +715,17 @@ describe('DeleteBranchDialog', () => {
     // HEAD or freshly-initialised repo) must surface as an empty hint —
     // the wire field is a `string`, not optional — so the worker falls
     // back to the no-hint path.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog({ branchName: null })
-    await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
-    const inspectCall = vi.mocked(workerRpc.inspectBranchDeletion).mock.calls[0]
+    await waitFor(() => expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(1))
+    const inspectCall = vi.mocked(workerGit.inspectBranchDeletion).mock.calls[0]
     if (inspectCall === undefined)
       throw new Error('expected the inspect call to have fired')
     const [, req] = inspectCall
     expect(req).toMatchObject({ branchNameHint: '' })
   })
 
-  it('refreshInspect after push re-runs inspect once and re-populates the branch list', async () => {
+  it('re-runs inspect once and re-populates the branch list on refreshInspect after push', async () => {
     // Post-push refresh re-issues only the inspect RPC. The worker
     // repopulates `branches` in the new response, so a new ref (e.g.
     // `origin/<doomed>` created by the push) lands in the picker without
@@ -738,7 +740,7 @@ describe('DeleteBranchDialog', () => {
         'origin/doomed',
       ],
     })
-    vi.mocked(workerRpc.inspectBranchDeletion)
+    vi.mocked(workerGit.inspectBranchDeletion)
       .mockResolvedValueOnce(makeInspectResp({ canPush: true, unpushedCommitCount: 1 }))
       .mockResolvedValueOnce(second)
 
@@ -747,10 +749,10 @@ describe('DeleteBranchDialog', () => {
         makeTerminalTab('t1'),
       ],
     })
-    await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(workerGit.inspectBranchDeletion).toHaveBeenCalledTimes(2))
     // The newly-introduced remote ref is now in the picker.
     await waitFor(() => {
       const optionValues = menuOptionValues('branch-select-menu')
@@ -764,7 +766,7 @@ describe('DeleteBranchDialog', () => {
     // when isWorktree is true, since the dialog renders no picker.
     // Pin the contract so a regression that always populates the list
     // (wasting bytes on every worktree open) trips this test.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog()
@@ -774,7 +776,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('worktree variant does NOT call onBranchChanged', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const onBranchChanged = vi.fn()
@@ -787,7 +789,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('non-worktree variant fires deleteBranch with the chosen switch target', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
@@ -795,8 +797,8 @@ describe('DeleteBranchDialog', () => {
 
     await clickDelete()
 
-    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0]?.[1]).toMatchObject({
+    await waitFor(() => expect(workerGit.deleteBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.deleteBranch).mock.calls[0]?.[1]).toMatchObject({
       branchToDelete: 'doomed',
       switchToBranch: 'main',
       path: '/repo',
@@ -804,7 +806,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('non-worktree variant filters out the current branch from the switch-to list', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branchNames: ['doomed', 'main', 'feature'],
       }),
@@ -820,7 +822,7 @@ describe('DeleteBranchDialog', () => {
   it('only-branch case disables Delete and shows the explanatory copy', async () => {
     // Only the doomed branch in the candidate list ⇒ after filtering,
     // the picker has no candidates ⇒ isOnlyBranch ⇒ disabled.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branchNames: ['doomed'],
       }),
@@ -834,7 +836,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('only-branch case hides the affected-tabs line (delete cannot proceed)', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branchNames: ['doomed'],
       }),
@@ -853,7 +855,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('shows the Commit and Push button when canPush is true', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: true, hasUncommittedChanges: true, diffAdded: 1 }),
     )
     renderDialog()
@@ -863,7 +865,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('hides the Commit and Push button when canPush is false', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: false, hasUncommittedChanges: false, unpushedCommitCount: 0 }),
     )
     renderDialog()
@@ -877,7 +879,7 @@ describe('DeleteBranchDialog', () => {
     // canPush is a capability check (origin exists, valid branch name).
     // A clean tree against an existing upstream has nothing to push, so
     // the button must not render even though the capability is there.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         canPush: true,
         hasUncommittedChanges: false,
@@ -897,7 +899,7 @@ describe('DeleteBranchDialog', () => {
     // Pins the !upstreamExists trigger of hasPushableWork in isolation —
     // remoteBranchMissing is left at its default false so a regression
     // that drops the upstream branch of the predicate fails here.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         canPush: true,
         hasUncommittedChanges: false,
@@ -914,7 +916,7 @@ describe('DeleteBranchDialog', () => {
     // Pre-push state: upstream metadata exists (e.g. tracking origin/<name>)
     // but origin doesn't actually have the ref yet. Pins the
     // remoteBranchMissing trigger of hasPushableWork in isolation.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         canPush: true,
         hasUncommittedChanges: false,
@@ -936,7 +938,7 @@ describe('DeleteBranchDialog', () => {
     // hard-deleted, and the push failed with "tab payload not found" while a
     // healthy terminal sat beside it.
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 1 })
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({
       tabs: [
         makeFileTab('f1'),
@@ -946,8 +948,8 @@ describe('DeleteBranchDialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
+    await waitFor(() => expect(workerGit.pushBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('offers push for a group made only of FILE tabs', async () => {
@@ -955,7 +957,7 @@ describe('DeleteBranchDialog', () => {
     // anchor one -- the user had to open a terminal in the branch just to push
     // it before deleting. There is nothing special about the group: its tabs
     // name a working dir, so the worker can commit and push from it.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: true, unpushedCommitCount: 1 }),
     )
     renderDialog({
@@ -967,15 +969,15 @@ describe('DeleteBranchDialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
+    await waitFor(() => expect(workerGit.pushBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('hides the push button when no tab in the group holds a directory', async () => {
     // The edge the Show gate covers: a branch row whose tabs all closed while
     // the dialog was open has no dir to push from, and a button that sends an
     // empty one is worse than no button.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: true, unpushedCommitCount: 1 }),
     )
     renderDialog({ tabs: [] })
@@ -990,7 +992,7 @@ describe('DeleteBranchDialog', () => {
     // to vanish would point its editor at a deleted dir. The per-tab
     // dispatch + FILE handling lives inside closeWorktreeTabs; the
     // dialog's contract is just "pass the full group, don't filter".
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
@@ -1009,7 +1011,7 @@ describe('DeleteBranchDialog', () => {
 
   it('push button sends the group\'s working dir to pushBranch', async () => {
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 2 })
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({
       tabs: [
         makeTerminalTab('t1'),
@@ -1018,20 +1020,20 @@ describe('DeleteBranchDialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.pushBranch).toHaveBeenCalledTimes(1))
     // The worker always re-probes pushStatus to avoid acting on a
     // stale snapshot, so no hint rides the request.
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
+    expect(vi.mocked(workerGit.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('cancel closes without firing any worker RPC', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ closeWorktreeTabs })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(workerRpc.deleteBranch).not.toHaveBeenCalled()
+    expect(workerGit.deleteBranch).not.toHaveBeenCalled()
     expect(closeWorktreeTabs).not.toHaveBeenCalled()
   })
 
@@ -1042,15 +1044,15 @@ describe('DeleteBranchDialog', () => {
     // RPC keeps running, and a failure then calls setError on a disposed
     // dialog, so the user sees no error at all for a delete that did not
     // happen. DialogFormFooter's own Cancel carries the same gate.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     // Never resolves: holds the dialog in its submitting state.
-    vi.mocked(workerRpc.deleteBranch).mockReturnValue(new Promise<DeleteBranchResponse>(() => {}))
+    vi.mocked(workerGit.deleteBranch).mockReturnValue(new Promise<DeleteBranchResponse>(() => {}))
     const props = renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     pickMenuValue('branch-select-menu', 'main')
 
     await clickDelete()
-    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.deleteBranch).toHaveBeenCalledTimes(1))
 
     const cancel = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement
     expect(cancel.disabled).toBe(true)
@@ -1059,7 +1061,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('renders affected-tab counts based on the tabs prop', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog({
@@ -1075,7 +1077,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('renders the affected-tab counts derived from the tabs snapshot', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog({
@@ -1100,7 +1102,7 @@ describe('DeleteBranchDialog', () => {
     // The worktree variant counts every tab (agents + terminals) as
     // "will be stopped"; zero counts must hide the line entirely so we
     // don't render "0 agents will be stopped" copy.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog({ tabs: [] })
@@ -1109,7 +1111,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('inspect failure surfaces an error in the dialog and disables Delete', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockRejectedValue(new Error('worker offline'))
+    vi.mocked(workerGit.inspectBranchDeletion).mockRejectedValue(new Error('worker offline'))
     renderDialog()
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
     const del = deleteButton()
@@ -1117,7 +1119,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('keeps remote branches in the non-worktree switch-to picker', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         branches: [
           { $typeName: 'leapmux.v1.GitBranchEntry', name: 'main', isRemote: false },
@@ -1135,7 +1137,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('non-worktree variant says tabs will keep running, not stopped', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     renderDialog({
       tabs: [
         makeAgentTab('a1'),
@@ -1147,7 +1149,7 @@ describe('DeleteBranchDialog', () => {
   })
 
   it('calls a non-worktree checkout a branch, not a worktree', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: false, worktreePath: '' }),
     )
     renderDialog()
@@ -1161,8 +1163,8 @@ describe('DeleteBranchDialog', () => {
     // overlay until DeleteBranch settles, so a failure renders the worker's
     // message in the dialog's inline error row (not a toast) and onClose is
     // never called — the user can pick a different switch-to or retry.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
-    vi.mocked(workerRpc.deleteBranch).mockRejectedValue(new Error('branch in use'))
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.deleteBranch).mockRejectedValue(new Error('branch in use'))
     const onBranchChanged = vi.fn()
 
     const props = renderDialog({ onBranchChanged })
@@ -1182,9 +1184,9 @@ describe('DeleteBranchDialog', () => {
     // stays open (onClose not called) and the stamp/toast hold; once it
     // resolves, onBranchChanged stamps the local name, the success toast
     // fires, and the dialog closes.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     let resolveDelete!: (r: DeleteBranchResponse) => void
-    vi.mocked(workerRpc.deleteBranch).mockReturnValue(
+    vi.mocked(workerGit.deleteBranch).mockReturnValue(
       new Promise<DeleteBranchResponse>((r) => { resolveDelete = r }),
     )
     const onBranchChanged = vi.fn()
@@ -1195,7 +1197,7 @@ describe('DeleteBranchDialog', () => {
     await clickDelete()
 
     // DeleteBranch is still pending: dialog stays open, nothing stamped.
-    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.deleteBranch).toHaveBeenCalledTimes(1))
     expect(props.onClose).not.toHaveBeenCalled()
     expect(onBranchChanged).not.toHaveBeenCalled()
     expect(showInfoToast).not.toHaveBeenCalled()
@@ -1212,7 +1214,7 @@ describe('DeleteBranchDialog', () => {
     // error sink and show "Delete failed" for a delete that worked. The
     // try/catch around the stamp is what guarantees that, and the stamp
     // failure surfaces as its own warn toast. (S11)
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const onBranchChanged = vi.fn(() => {
       throw new Error('stamp boom')
     })
@@ -1240,10 +1242,10 @@ describe('DeleteBranchDialog', () => {
   // accessor saw the refresh. Verify the body's "N commits not pushed"
   // line flips with the refreshed payload.
   it('body re-renders when refreshInspect replaces info() with a new truthy value', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion)
+    vi.mocked(workerGit.inspectBranchDeletion)
       .mockResolvedValueOnce(makeInspectResp({ canPush: true, unpushedCommitCount: 2 }))
       .mockResolvedValueOnce(makeInspectResp({ canPush: false, unpushedCommitCount: 0 }))
-    vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
+    vi.mocked(workerGit.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
     renderDialog({
       tabs: [
@@ -1276,7 +1278,7 @@ describe('DeleteBranchDialog', () => {
   // gate must include tabs.length > 0 so the typed Tab[] contract is
   // honored even at the empty edge.
   it('does not render the Push button when tabs is empty even if canPush is true', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({
         isWorktree: true,
         worktreePath: '/wt',
@@ -1296,10 +1298,10 @@ describe('DeleteBranchDialog', () => {
   // landed.
   it('shows a refresh indicator while inspect.refresh() is in flight after a successful push', async () => {
     let resolveSecond!: (r: InspectBranchDeletionResponse) => void
-    vi.mocked(workerRpc.inspectBranchDeletion)
+    vi.mocked(workerGit.inspectBranchDeletion)
       .mockResolvedValueOnce(makeInspectResp({ canPush: true, unpushedCommitCount: 1 }))
       .mockReturnValueOnce(new Promise<InspectBranchDeletionResponse>((r) => { resolveSecond = r }))
-    vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
+    vi.mocked(workerGit.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
     renderDialog({
       tabs: [
@@ -1325,10 +1327,10 @@ describe('DeleteBranchDialog', () => {
   it('renders error AND body together when a post-inspect refresh fails', async () => {
     // Initial inspect succeeds with canPush:true so the Push button renders.
     // The post-Push refresh fires inspectBranchDeletion again — fail it.
-    vi.mocked(workerRpc.inspectBranchDeletion)
+    vi.mocked(workerGit.inspectBranchDeletion)
       .mockResolvedValueOnce(makeInspectResp({ canPush: true, unpushedCommitCount: 1 }))
       .mockRejectedValueOnce(new Error('worker offline'))
-    vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
+    vi.mocked(workerGit.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
     renderDialog({
       tabs: [

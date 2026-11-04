@@ -46,6 +46,37 @@ func startShellPastInit(t *testing.T, m *Manager, id string) string {
 	return workingDir
 }
 
+// jobGroupFailure is the text that bash prints when a job did not get a process
+// group of its own.
+const jobGroupFailure = "child setpgid"
+
+// sendJobUntil sends a job command to the shell and waits for done. It sends the
+// command again each time the shell reports that the job did not get a process
+// group of its own.
+//
+// A job-control shell calls setpgid twice for each job, once in the parent and
+// once in the child, as POSIX requires. Darwin can fail these concurrent calls
+// with EPERM when the machine is busy, and the job then stays in the shell's own
+// group for its whole life. reportsAsWork correctly hides such a job, so no wait
+// can make it appear, but a new job gets a new chance.
+func sendJobUntil(t *testing.T, m *Manager, id, line string, done func() bool, msgAndArgs ...any) bool {
+	t.Helper()
+	send := func() { assert.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter()))) }
+	send()
+	sent := 1
+	return testutil.AssertEventually(t, func() bool {
+		if done() {
+			return true
+		}
+		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		if bytes.Count(screen, []byte(jobGroupFailure)) >= sent {
+			send()
+			sent++
+		}
+		return false
+	}, msgAndArgs...)
+}
+
 // namesOf normalizes each reported name so one assertion reads the same
 // everywhere: Windows reports the snapshot's image name (PING.EXE) and macOS
 // reports argv[0] for a long name, which carries a path (/bin/sh).
@@ -79,10 +110,9 @@ func TestDescendantProcesses_FindsABackgroundedChild(t *testing.T) {
 	startShellPastInit(t, m, id)
 
 	line, want := testutil.TestSleepCommand()
-	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
 
 	var got []ProcessInfo
-	testutil.AssertEventually(t, func() bool {
+	sendJobUntil(t, m, id, line, func() bool {
 		procs, _, err := oneTerminal(t, m, id)
 		if err != nil {
 			return false
@@ -105,11 +135,10 @@ func TestDescendantProcesses_ReachesAGrandchild(t *testing.T) {
 	// The `make` -> `cc` shape. A depth-1 answer would name the wrapper and miss
 	// the process actually doing the work, which is the one the user loses.
 	line, grandchild := testutil.TestNestedSleepCommand()
-	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
 
 	var got []string
 	var total int
-	testutil.AssertEventually(t, func() bool {
+	sendJobUntil(t, m, id, line, func() bool {
 		procs, n, err := oneTerminal(t, m, id)
 		if err != nil {
 			return false
@@ -203,6 +232,7 @@ func terminalOf(t *testing.T, m *Manager, id string) *Terminal {
 // TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups pins the OS fact the
 // whole filter rests on: a shell with job control puts each job it runs in a
 // process group of its own and keeps its own work in the group it already has.
+// The one exception is the Darwin failure that sendJobUntil describes.
 //
 // The negative half -- a descendant IN the shell's group -- has no portable PTY
 // form. Producing one needs shell code that forks outside job control (a zsh
@@ -251,22 +281,19 @@ func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
 	quotedPIDPath := "'" + strings.ReplaceAll(pidPath, "'", "'\\''") + "'"
 	// The PID is numeric. Interactive Bash treats ! followed by a double quote
 	// as history expansion, so leave this special parameter unquoted.
-	require.NoError(t, m.SendInput(id, []byte("sleep 60 & printf '%s\\n' $! > "+quotedPIDPath+testutil.TestShellEnter())))
-	testutil.RequireEventually(t, func() bool {
+	require.True(t, sendJobUntil(t, m, id, "sleep 60 & printf '%s\\n' $! > "+quotedPIDPath, func() bool {
 		data, err := os.ReadFile(pidPath)
 		if err != nil {
 			return false
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		return err == nil && pid > 0
-	}, "expected the shell to write the child PID receipt")
-	data, err := os.ReadFile(pidPath)
-	require.NoError(t, err)
-	childPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
-	require.NoError(t, err)
-	childGroup, result := processGroupOf(childPID)
-	require.Equal(t, processGroupFound, result)
-	require.NotEqual(t, shellGroup, childGroup, "a background job must have its own process group")
+		if err != nil || pid <= 0 {
+			return false
+		}
+		childPID = pid
+		childGroup, result := processGroupOf(pid)
+		return result == processGroupFound && childGroup != shellGroup
+	}, "a background job must have its own process group"))
 	testutil.RequireEventually(t, func() bool {
 		table, _ := procutil.SnapshotProcessTable(t.Context())
 		for _, record := range table.Records() {
@@ -304,10 +331,9 @@ func TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan(t *testing.T) 
 	startShellPastInit(t, m, idleID)
 
 	line, want := testutil.TestSleepCommand()
-	require.NoError(t, m.SendInput(busyID, []byte(line+testutil.TestShellEnter())))
 
 	var out []TerminalProcesses
-	testutil.AssertEventually(t, func() bool {
+	sendJobUntil(t, m, busyID, line, func() bool {
 		got, err := m.DescendantProcesses(context.Background(), []string{"no-such-terminal", idleID, busyID})
 		if err != nil {
 			return false
@@ -340,10 +366,9 @@ func TestDescendantProcesses_RepeatedIDsAreWalkedOnce(t *testing.T) {
 	startShellPastInit(t, m, id)
 
 	line, _ := testutil.TestSleepCommand()
-	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
 
 	var out []TerminalProcesses
-	testutil.AssertEventually(t, func() bool {
+	sendJobUntil(t, m, id, line, func() bool {
 		got, err := m.DescendantProcesses(context.Background(), []string{id, id, id, id})
 		if err != nil {
 			return false

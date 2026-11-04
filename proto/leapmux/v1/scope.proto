@@ -59,7 +59,8 @@ enum Scope {
   // Read workspaces, tabs and the layout document.
   SCOPE_WORKSPACE_READ = 5;
   // Create, rename, move and close workspaces and tabs, and submit layout
-  // operations.
+  // operations. Closing a tab stops its agent or terminal, so this scope can stop
+  // a process without agent:write or terminal:write.
   SCOPE_WORKSPACE_WRITE = 6;
 
   // --- Worker --------------------------------------------------------------
@@ -96,7 +97,7 @@ enum Scope {
   // handler. An unused scope on a consent screen is a lie; a future write
   // handler adds its own. The one destructive path the tab-payload verbs can
   // reach -- CloseTab of a FILE or IMAGE tab with WORKTREE_ACTION_REMOVE, which runs
-  // `git worktree remove` -- is gated under SCOPE_GIT_WRITE at the action,
+  // `git worktree remove` -- requires SCOPE_GIT_WRITE at the action,
   // so file:read alone stays read-only.
   SCOPE_FILE_READ = 13;
 

@@ -232,6 +232,16 @@ type Resolved struct {
 	TileID      string
 	WorkspaceID string
 	WorkerID    string
+	// Tab is the hub's row for TabID, exactly as LocateTab answered it. It is
+	// nil when the resolver skipped LocateTab (see wantsTabPlacement) and when
+	// it tolerated an ambient tab id the hub could not place (see
+	// ErrTabNotLocatable).
+	//
+	// The fields above are the AGREED values, so they can differ from the
+	// row's: an explicit --workspace-id shadows the workspace that an ambient
+	// tab id derives. A command that prints the row reads it here instead of
+	// asking the hub again, so the row and the fields come from one snapshot.
+	Tab *leapmuxv1.WorkspaceTab
 }
 
 // Deps is the dependency surface the resolver needs to issue hub
@@ -244,16 +254,18 @@ type Resolved struct {
 // present. Production code wires these to the `cmd` package's
 // hubCallUnary / callInnerRPC helpers; tests inject stubs.
 type Deps struct {
-	// LocateTab resolves a tab id to its (matched type, workspace,
-	// tile, worker). When the caller passes TAB_TYPE_UNSPECIFIED the
-	// server matches any type and returns the actual type in the
-	// first slot; the resolver records that back into Resolved.TabType.
+	// LocateTab resolves a tab id to the hub's row for it, which carries
+	// the matched type, the workspace, the tile, and the worker. When the
+	// caller passes TAB_TYPE_UNSPECIFIED the server matches any type and
+	// returns the actual type in the row's tab identity; the resolver
+	// records that back into Resolved.TabType, and keeps the row as
+	// Resolved.Tab.
 	//
 	// It must report ErrTabNotLocatable for an id the Hub holds no
 	// placement for, so the resolver can tell that apart from "the Hub
 	// could not be asked" -- see that error for why the difference decides
 	// whether the command proceeds.
-	LocateTab func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (matchedTabType leapmuxv1.TabType, workspaceID, tileID, workerID string, err error)
+	LocateTab func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error)
 	// GetWorkspace confirms the supplied workspace id identifies a
 	// workspace the caller can read. The hub conflates "no such
 	// workspace" with "not yours", so a bogus --workspace-id comes
@@ -369,25 +381,26 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	// production cmd package always wire every dep (zero overhead
 	// for un-used inputs) while keeping tests free to pass only the
 	// deps they need.
-	// resolvedTabTypeFromLocate captures the type LocateTab returns
-	// when the caller didn't pin one. We backfill the outer tabType
-	// after the errgroup wait so the Resolved struct carries the
-	// authoritative discriminator. Only one goroutine writes this
-	// field (the LocateTab goroutine below) and the post-Wait read
-	// is happens-after the goroutine's exit, so no mutex is needed.
+	// locatedTab captures the row LocateTab returns. Its tab type
+	// backfills the outer tabType after the errgroup wait when the
+	// caller didn't pin one, so the Resolved struct carries the
+	// authoritative discriminator, and the row itself becomes
+	// Resolved.Tab. Only one goroutine writes this variable (the
+	// LocateTab goroutine below) and the post-Wait read is
+	// happens-after the goroutine's exit, so no mutex is needed.
 	// unlocatableTabErr holds a LocateTab miss that has not been judged yet.
 	// Written by the one goroutine below and read after Wait, so it needs no
-	// mutex for the same reason resolvedTabTypeFromLocate does not.
+	// mutex for the same reason locatedTab does not.
 	//
 	// It is deliberately NOT returned from the goroutine: doing that cancels
 	// the errgroup's context and kills the sibling derivations, and the whole
 	// point is that this miss may turn out not to matter. See
 	// ErrTabNotLocatable.
 	var unlocatableTabErr error
-	var resolvedTabTypeFromLocate leapmuxv1.TabType
+	var locatedTab *leapmuxv1.WorkspaceTab
 	if in.TabID != "" && deps.LocateTab != nil && wantsTabPlacement(need, in) {
 		g.Go(func() error {
-			matched, ws, tile, worker, err := deps.LocateTab(gctx, tabType, in.TabID)
+			tab, err := deps.LocateTab(gctx, tabType, in.TabID)
 			// Tolerated for an AMBIENT tab id only. The miss this exists for is
 			// the quake panel's: its shell has no CRDT tab, so the id it
 			// inherits from the environment cannot be placed, and a command
@@ -405,15 +418,15 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 			if err != nil {
 				return fmt.Errorf("locate tab %s: %w", in.TabID, err)
 			}
-			resolvedTabTypeFromLocate = matched
+			locatedTab = tab
 			// Each derivation inherits the priority of its source
 			// input: when the user typed --tab-id, downstream
 			// workspace_id / tile_id / worker_id share that priority
 			// and win over env-derived values; otherwise the whole
 			// chain is env-derived and yields to any explicit flag.
-			agg.put(fieldWorkspaceID, ws, sourceTabID, in.ExplicitTabID)
-			agg.put(fieldTileID, tile, sourceTabID, in.ExplicitTabID)
-			agg.put(fieldWorkerID, worker, sourceTabID, in.ExplicitTabID)
+			agg.put(fieldWorkspaceID, tab.GetWorkspaceId(), sourceTabID, in.ExplicitTabID)
+			agg.put(fieldTileID, tab.GetTileId(), sourceTabID, in.ExplicitTabID)
+			agg.put(fieldWorkerID, tab.GetWorkerId(), sourceTabID, in.ExplicitTabID)
 			return nil
 		})
 	}
@@ -461,7 +474,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 	// type wins over the (still-unspecified) caller hint.
 	outTabType := tabType
 	if outTabType == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
-		outTabType = resolvedTabTypeFromLocate
+		outTabType = locatedTab.GetTab().GetTabType()
 	}
 	out := Resolved{
 		TabID:       in.TabID,
@@ -469,6 +482,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		TileID:      agg.value(fieldTileID),
 		WorkspaceID: agg.value(fieldWorkspaceID),
 		WorkerID:    agg.value(fieldWorkerID),
+		Tab:         locatedTab,
 	}
 
 	// Validate required fields are populated. Each missing slot

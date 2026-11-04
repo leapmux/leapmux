@@ -1,17 +1,21 @@
 import type { Tab } from './tab.types'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTab, workerTerminal } from '~/api/workerRpc'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createQuakeTerminalStore, quakeKeyForTab, quakeKeyId } from './quakeTerminal.store'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 vi.mock('~/api/workerRpc', () => ({
-  listTerminals: vi.fn(async () => ({ terminals: [], verdicts: [] })),
-  openTerminal: vi.fn(async () => ({ terminalId: 'quake-1', title: 'Terminal Alpha' })),
-  // Mocked so a call can be REFUSED by assertion. The store must never make
-  // one: the worker closes a quake terminal itself.
-  closeTab: vi.fn(async () => ({})),
+  workerTerminal: {
+    listTerminals: vi.fn(async () => ({ terminals: [], verdicts: [] })),
+    openTerminal: vi.fn(async () => ({ terminalId: 'quake-1', title: 'Terminal Alpha' })),
+  },
+  workerTab: {
+    // Mocked so a call can be REFUSED by assertion. The store must never make
+    // one: the worker closes a quake terminal itself.
+    closeTab: vi.fn(async () => ({})),
+  },
 }))
 
 const disposeInstance = vi.fn()
@@ -24,9 +28,9 @@ vi.mock('~/components/common/Toast', () => ({
   showWarnToast: (...args: unknown[]) => warnToast(...args),
 }))
 
-const listTerminals = workerRpc.listTerminals as unknown as ReturnType<typeof vi.fn>
-const openTerminal = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
-const closeTab = workerRpc.closeTab as unknown as ReturnType<typeof vi.fn>
+const listTerminals = workerTerminal.listTerminals as unknown as ReturnType<typeof vi.fn>
+const openTerminal = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
+const closeTab = workerTab.closeTab as unknown as ReturnType<typeof vi.fn>
 
 const AGENT: Tab = {
   type: TabType.AGENT,

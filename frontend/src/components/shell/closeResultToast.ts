@@ -134,8 +134,9 @@ export function toastCloseFailure(result: CloseTabResponse | undefined): void {
 // warnWorktreeUnreachable surfaces the "tab closed locally, but no
 // worker connection so a REMOVE couldn't reach the worktree" warning.
 // No-op for non-REMOVE actions. Centralizes the copy and the REMOVE
-// guard that every close helper repeats when it has no worker to
-// dispatch the close RPC to.
+// guard for the two paths that close a tab without a worker:
+// closeTabOnWorker with no worker to dispatch the close RPC to, and
+// handleTabClose after its inspect found the worker offline.
 export function warnWorktreeUnreachable(worktreeAction: WorktreeAction): void {
   if (worktreeAction === WorktreeAction.REMOVE)
     showWarnToast('Closed the tab, but could not remove its worktree (no worker connection).')

@@ -18,9 +18,10 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit, workerPrivate } from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { awaitCloseResult, summarizeWorktreeCloses, warnWorktreeUnreachable, worktreeRemovalToast } from '~/components/shell/closeResultToast'
+import { summarizeWorktreeCloses, warnWorktreeUnreachable, worktreeRemovalToast } from '~/components/shell/closeResultToast'
+import { closeTabOnWorker } from '~/components/shell/closeTabOnWorker'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
@@ -286,29 +287,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   /**
-   * Close a payload-backed tab (FILE or IMAGE) with a pre-determined worktree
-   * action. Mirrors the shape of `agentOps.handleAgentClose` /
-   * `termOps.handleTerminalClose` so every tab type follows the same pattern
-   * (sync local cleanup + fire-and-forget worker RPC + toast on failure). The
-   * worker drives the unified closeTabCommon flow on its side. The close needs
-   * no workspaceId, and the type it sends is a fallback only: the worker reads
-   * the kind off the row it is about to delete.
-   */
-  const handlePayloadTabClose = (tab: Pick<Tab, 'type' | 'id'>, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResponse | undefined> => {
-    if (!workerId) {
-      // No worker to send the revoke to. A REMOVE therefore can't
-      // reach the worktree — surface it rather than letting the caller
-      // assume removal happened.
-      warnWorktreeUnreachable(worktreeAction)
-      return Promise.resolve(undefined)
-    }
-    return awaitCloseResult(workerRpc.closeTab(workerId, {
-      tab: { tabType: tab.type, tabId: tab.id },
-      worktreeAction,
-    }), 'Failed to close tab')
-  }
-
-  /**
    * Close an agent / terminal / file tab with a pre-determined worktree
    * action, skipping the inspect+confirm prompt that handleTabClose
    * runs. Used by the delete-branch flow where the user has already
@@ -358,13 +336,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // worktree from disk once no other tabs reference it — matching
       // the AGENT / TERMINAL last-close behavior.
       emitRemoveTab(tab.type, tab.id)
-      if (tab.workerId) {
-        closeResult = handlePayloadTabClose(tab, tab.workerId, worktreeAction)
-      }
-      else {
-        warnWorktreeUnreachable(worktreeAction)
-        closeResult = Promise.resolve(undefined)
-      }
+      closeResult = closeTabOnWorker(tab.workerId ?? '', tab, worktreeAction, 'Failed to close tab')
     }
     else {
       return Promise.resolve(undefined)
@@ -560,7 +532,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // terminal close. The busy probe fails open on its own, so it needs no
       // branch in the catch below.
       const [status, busyReason] = await Promise.all([
-        workerRpc.inspectLastTabClose(workerId, {
+        workerGit.inspectLastTabClose(workerId, {
           tab: { tabType: tab.type, tabId: tab.id },
         }),
         closeOpts?.skipBusyConfirm
@@ -771,7 +743,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     //
     // Fire-and-forget — failure here doesn't unmount the locally-added tab; the
     // user can retry by re-opening.
-    workerRpc.registerTabPayload(ctx.workerId, {
+    workerPrivate.registerTabPayload(ctx.workerId, {
       tabId,
       payload: fileTabPayload(path, ctx.workingDir),
     }).catch(() => {
@@ -858,7 +830,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
     gitSeed.commit()
 
-    workerRpc.registerTabPayload(ctx.workerId, {
+    workerPrivate.registerTabPayload(ctx.workerId, {
       tabId,
       payload: imageTabPayload({ ...image, workingDir: ctx.workingDir }),
     }).catch(() => {

@@ -81,6 +81,7 @@ function renderContent(options: RenderOptions = {}) {
       getTileOrderForWorkspace={() => []}
       onTabClick={noop}
       isLocalWorkerFn={() => false}
+      isWorkerStreamOnline={() => true}
       repoGitStore={createRepoGitStore()}
     />
   ))

@@ -26,8 +26,6 @@ const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
  * retuning the ciphertext cap or the AEAD tag size moves this limit with it.
  */
 const MAX_PLAINTEXT_SIZE = MAX_CHUNK_SIZE
-/** X25519 ephemeral public key size (bytes), as carried by rekey dh_pub. */
-export const DH_LEN = 32
 
 // ---- Low-level crypto primitives ----
 

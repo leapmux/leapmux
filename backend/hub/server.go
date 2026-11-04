@@ -227,8 +227,8 @@ type Server struct {
 	crdtRegistry      *crdt.Registry
 	revocationWatcher *revocationwatcher.Watcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
-	// the admin surface, the user-deletion cascade and RetireLocalWorker. The
-	// per-user surface builds an equal instance from the same parts.
+	// the per-user and admin surfaces, the user-deletion cascade and
+	// RetireLocalWorker.
 	workerEffects *service.WorkerDeregisterEffects
 }
 
@@ -642,14 +642,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
 	scopeCache := auth.NewDelegationScopeCache(st)
-	// The post-deregister effects, shared by the admin surface, the
-	// user-deletion cascade and Server.RetireLocalWorker -- so a worker torn
-	// down by any of the three is told to stop, loses its memoized delegation
-	// scope, and leaves its owner's client informed. The per-user surface
-	// builds an equal instance from the same scope cache, notifier and
-	// workers-changed hook.
+	// The post-deregister effects, shared by the per-user and admin surfaces,
+	// the user-deletion cascade and Server.RetireLocalWorker -- so a worker
+	// torn down by any of the four is told to stop, loses its memoized
+	// delegation scope, and leaves its owner's client informed.
 	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, crdtRegistry.BroadcastWorkersChanged, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
@@ -665,7 +663,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 	})
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
-	leapmuxv1connect.RegisterSystemServiceHandler(connectServer, service.NewSystemService(authSvc))
+	leapmuxv1connect.RegisterSystemServiceHandler(connectServer, service.NewSystemService(authSvc, setMgr))
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
 	// The cookie-name policy resolves per connection, so a secure_cookies
@@ -717,7 +715,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	// The admin services: the authenticated, online surface of hub
 	// administration, restricted to admin users by the auth interceptor's
-	// adminProcedures map (tripwired against these handlers' proto
+	// Admin* procedure prefix (tripwired against these handlers' proto
 	// descriptors in internal/hub/auth and against the mounted mux paths
 	// in this package's tests). `leapmux control admin ...` and the
 	// preferences dialog's administration panels are the callers; the
@@ -1099,10 +1097,11 @@ type WorkerCredentials struct {
 // security. Outside solo mode, all worker registration must go
 // through WorkerConnectorService.Register with a real registration key.
 //
-// Rows created here are flagged auto_registered. The owner's deregistration
-// path refuses them, and the admin path refuses one while it is connected:
-// re-registration on next launch would just undo the user's action, and the
-// running worker would stop until that launch.
+// Rows created here are flagged auto_registered. The owner's and the admin's
+// deregistration paths refuse one while it is connected: the running worker
+// would stop until the next launch, and re-registration on that launch would
+// undo the user's action. An offline one is removable, because that is the only
+// cleanup for the row that a launch leaves behind when its state file was lost.
 //
 // The keys are the ones the co-located Worker will present in every
 // WorkerHello. The Hub pins them to the new row, exactly as Register does, so a

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect/v2"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -140,26 +141,6 @@ func userSelectorConnectError(err error, sel *leapmuxv1.UserSelector) error {
 		return storeConnectError(err, "get user by id")
 	default:
 		return storeConnectError(err, "get user by username")
-	}
-}
-
-// storeConnectError maps a store error onto the Connect surface: not
-// found is the caller's selector, conflict is the caller's field, and
-// anything else is internal.
-func storeConnectError(err error, op string) error {
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return connect.Errorf(connect.CodeNotFound, "%s: not found", op)
-	case errors.Is(err, store.ErrConflict):
-		return connect.Errorf(connect.CodeAlreadyExists, "%s: conflict", op)
-	case errors.Is(err, store.ErrInvalidCursor):
-		// ErrInvalidCursor is its own sentinel and does NOT wrap
-		// ErrInvalidArgument, so without this case it read as a hub fault.
-		return invalidCursorError(err, op)
-	case errors.Is(err, store.ErrInvalidArgument):
-		return wrappedConnectError(connect.CodeInvalidArgument, err)
-	default:
-		return wrappedConnectError(connect.CodeInternal, err)
 	}
 }
 
@@ -704,7 +685,7 @@ func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]
 		// must tell those workers too when an earlier stop instruction failed.
 		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			UserID:     &ownerID,
-			PageParams: NormalizePageParams(cursor, MaxPageLimit),
+			PageParams: normalizePageParams(cursor, contracts.MaxPageLimit),
 		})
 		if err != nil {
 			return nil, storeConnectError(err, "list workers")

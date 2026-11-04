@@ -9,15 +9,17 @@ import (
 func (c *Client) handleDeregister(requestID string, _ *leapmuxv1.DeregisterNotification) {
 	slog.Info("received deregistration notification from hub")
 
-	// Ack on the receive goroutine must not block: TrySendOrReset keeps the
+	// Ack on the receive goroutine must not block: trySendControl keeps the
 	// shared Connect receive loop free of EnqueueWait. The Hub deregisters
-	// regardless of whether the ack lands; a drop resets the connection.
-	if !c.TrySendOrReset(&leapmuxv1.ConnectRequest{
+	// regardless of whether the ack lands; a drop under budget resets the
+	// connection, and a drop because the connection is already ending needs
+	// no warning.
+	if c.trySendControl(&leapmuxv1.ConnectRequest{
 		RequestId: requestID,
 		Payload: &leapmuxv1.ConnectRequest_DeregisterAck{
 			DeregisterAck: &leapmuxv1.DeregisterAck{},
 		},
-	}) {
+	}) == controlSaturated {
 		slog.Warn("dropped deregister ack: connect writer over budget; resetting connection")
 	}
 

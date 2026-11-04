@@ -1,9 +1,10 @@
-import type { SignInRecovery } from '~/context/AuthContext'
+import type { SignInRecovery, SignInRecoveryRead } from '~/context/AuthContext'
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 
 import { SignInRecoveryGate } from './SignInRecoveryGate'
 
@@ -12,11 +13,13 @@ import { SignInRecoveryGate } from './SignInRecoveryGate'
 const [recovery, setRecovery] = createSignal<SignInRecovery | null>(null)
 const mockRetry = vi.fn(async () => {})
 const mockFinish = vi.fn(() => setRecovery(null))
+const mockLogout = vi.fn(async () => {})
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     signInRecovery: () => recovery(),
     retrySignInRecovery: mockRetry,
     finishSignInRecovery: mockFinish,
+    logout: mockLogout,
   }),
 }))
 
@@ -70,15 +73,22 @@ function renderGate(path: string) {
   return { history, navigations }
 }
 
-/** Recovery in a given phase; `redirect` is the address the sign-in asked for. */
+/** Recovery with its read running; `redirect` is the address the sign-in asked for. */
 function recoveryState(fields: Partial<SignInRecovery>): SignInRecovery {
   return {
-    error: null,
+    read: { kind: 'reading' },
     verificationRequired: false,
-    completed: false,
     ...fields,
   }
 }
+
+/** A read that failed with `message`. */
+function failed(message: string): SignInRecoveryRead {
+  return { kind: 'failed', message }
+}
+
+/** A read that succeeded, with the account adopted. */
+const COMPLETED: SignInRecoveryRead = { kind: 'completed' }
 
 const CONSENT = '/oauth/authorize?client_id=leapmux-cli&state=s1'
 
@@ -107,7 +117,9 @@ describe('SignInRecoveryGate', () => {
   // address alike: no route component mounts beneath it.
   for (const path of ['/login', '/verify-email', '/']) {
     it(`replaces ${path} with the recovery panel after a failed read`, async () => {
-      setRecovery(recoveryState({ error: 'account read failed' }))
+      setRecovery(recoveryState({
+        read: failed('account read failed'),
+      }))
       renderGate(path)
 
       const panel = await screen.findByTestId('signin-recovery')
@@ -119,12 +131,65 @@ describe('SignInRecoveryGate', () => {
     })
   }
 
+  // A failure whose error carries no message is still a failure. Reading it as
+  // a pending read would leave a spinner with no Retry over every route.
+  it('offers Retry after a failed read whose message is empty', async () => {
+    setRecovery(recoveryState({
+      read: failed(''),
+    }))
+    renderGate('/login')
+
+    const panel = await screen.findByTestId('signin-recovery')
+    expect(panel).toHaveTextContent('You are signed in, but your account could not be loaded.')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    expect(screen.queryByTestId('signin-recovery-pending')).not.toBeInTheDocument()
+  })
+
+  // A read that keeps failing holds the visitor here, because the gate
+  // replaces every route, the user menu included. Sign out is the exit: it
+  // ends the session, and the context ends recovery with it.
+  it('offers Sign out beside Retry, and holds both while the sign-out runs', async () => {
+    const signOut = deferred<void>()
+    mockLogout.mockImplementationOnce(async () => {
+      await signOut.promise
+      setRecovery(null)
+    })
+    setRecovery(recoveryState({
+      read: failed('account read failed'),
+    }))
+    renderGate('/login')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
+
+    expect(mockLogout).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Signing out...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(mockRetry).not.toHaveBeenCalled()
+
+    signOut.resolve()
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument()
+    expect(screen.queryByTestId('signin-recovery')).not.toBeInTheDocument()
+  })
+
+  // While a read runs there is nothing to give up on yet, so only the failure
+  // screen offers the exit.
+  it('offers no Sign out while the read runs', async () => {
+    setRecovery(recoveryState({}))
+    renderGate('/login')
+
+    expect(await screen.findByTestId('signin-recovery-pending')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+  })
+
   it('shows a pending screen while the read runs, and Retry re-reads after a failure', async () => {
     setRecovery(recoveryState({}))
     renderGate('/login')
     expect(await screen.findByTestId('signin-recovery-pending')).toHaveTextContent('Loading your account')
 
-    setRecovery(recoveryState({ error: 'account read failed' }))
+    setRecovery(recoveryState({
+      read: failed('account read failed'),
+    }))
     fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
     expect(mockRetry).toHaveBeenCalledOnce()
   })
@@ -136,7 +201,7 @@ describe('SignInRecoveryGate', () => {
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
     const loginMounts = mounts.login
 
-    setRecovery(recoveryState({ redirect: CONSENT, verificationRequired: true, completed: true }))
+    setRecovery(recoveryState({ redirect: CONSENT, verificationRequired: true, read: COMPLETED }))
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
     expect(assign).not.toHaveBeenCalled()
@@ -151,7 +216,7 @@ describe('SignInRecoveryGate', () => {
     renderGate(`/signup?redirect=${encodeURIComponent(CONSENT)}`)
     expect(await screen.findByTestId('signup-page')).toBeInTheDocument()
 
-    setRecovery(recoveryState({ redirect: CONSENT, completed: true }))
+    setRecovery(recoveryState({ redirect: CONSENT, read: COMPLETED }))
 
     await vi.waitFor(() => expect(assign).toHaveBeenCalledOnce())
     expect(assign).toHaveBeenCalledWith(CONSENT)
@@ -162,7 +227,7 @@ describe('SignInRecoveryGate', () => {
     renderGate('/login')
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
 
-    setRecovery(recoveryState({ completed: true }))
+    setRecovery(recoveryState({ read: COMPLETED }))
 
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
     expect(mockFinish).toHaveBeenCalledOnce()
@@ -175,7 +240,7 @@ describe('SignInRecoveryGate', () => {
     const { navigations } = renderGate('/login')
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
 
-    setRecovery(recoveryState({ redirect: '/?from=cli', completed: true }))
+    setRecovery(recoveryState({ redirect: '/?from=cli', read: COMPLETED }))
 
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
     expect(navigations).toEqual(['/?from=cli'])
@@ -189,7 +254,7 @@ describe('SignInRecoveryGate', () => {
     renderGate('/login')
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
 
-    setRecovery(recoveryState({ redirect: '/verify-email/', completed: true }))
+    setRecovery(recoveryState({ redirect: '/verify-email/', read: COMPLETED }))
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
     await vi.waitFor(() => expect(mockFinish).toHaveBeenCalledOnce())
@@ -201,7 +266,7 @@ describe('SignInRecoveryGate', () => {
     const { navigations } = renderGate('/login')
     expect(await screen.findByTestId('login-page')).toBeInTheDocument()
 
-    setRecovery(recoveryState({ redirect: 'https://evil.example/', completed: true }))
+    setRecovery(recoveryState({ redirect: 'https://evil.example/', read: COMPLETED }))
 
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
     expect(navigations).toEqual(['/'])
@@ -218,7 +283,7 @@ describe('SignInRecoveryGate', () => {
 
     setRecovery(recoveryState({}))
     expect(await screen.findByTestId('signin-recovery-pending')).toBeInTheDocument()
-    setRecovery(recoveryState({ completed: true }))
+    setRecovery(recoveryState({ read: COMPLETED }))
 
     expect(await screen.findByTestId('app-home')).toBeInTheDocument()
     expect(navigations).toEqual(['/'])

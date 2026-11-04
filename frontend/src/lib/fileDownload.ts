@@ -1,7 +1,7 @@
 import type { SaveStreamHandle } from '~/api/platformBridge'
 import type { PathFlavor } from '~/lib/paths'
 import { platformBridge } from '~/api/platformBridge'
-import * as workerRpc from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { basename } from '~/lib/paths'
 
 // 1 MiB chunks: large enough to keep round-trip count manageable for
@@ -63,7 +63,7 @@ async function* streamFileChunks(
   let received = 0
   let totalSize = -1
   while (totalSize < 0 || received < totalSize) {
-    const resp = await workerRpc.readFile(workerId, {
+    const resp = await workerFile.readFile(workerId, {
       path: filePath,
       offset: BigInt(received),
       limit: BigInt(DOWNLOAD_CHUNK_SIZE),

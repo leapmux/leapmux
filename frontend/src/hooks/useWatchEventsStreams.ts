@@ -20,7 +20,7 @@ import {
 import { ChannelError } from '~/lib/channel'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
-import { createExponentialBackoff } from '~/lib/retry'
+import { createExponentialBackoff, streamProvedHealthy } from '~/lib/retry'
 import { shouldRetryRejection, watchPlanKey } from './watchPlan'
 
 const log = createLogger('watchEventsStreams')
@@ -46,6 +46,8 @@ interface ReplayRequest {
 
 interface WorkerStream {
   handle: WatchEventsHandle | null
+  /** When `handle` opened. See `streamProvedHealthy`. */
+  openedAt: number | undefined
   pendingPlan: WatchPlan | null
   /** Interest key from the last settled acknowledgment. */
   sentKey: string
@@ -108,6 +110,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     if (!s) {
       s = {
         handle: null,
+        openedAt: undefined,
         pendingPlan: null,
         sentKey: '',
         fullReplays: new Map(),
@@ -212,6 +215,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     retireReplays(workerId, s, [
       ...s.replayRequests.keys(),
     ], 'closed')
+    if (streamProvedHealthy(s.openedAt))
+      reconnectBackoff.reset(workerId)
+    s.openedAt = undefined
     s.handle = null
     s.inflightPlan = null
     s.inflightUpdateId = 0n
@@ -251,7 +257,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   /**
    * Report that this client cannot receive the worker's events.
    * useWorkspaceConnection clears the live state, including after a fatal close.
-   * That effect marks READY terminals DISCONNECTED and ACTIVE agents INACTIVE.
+   * Each READY terminal then shows DISCONNECTED, and that hook marks ACTIVE agents INACTIVE.
    * It also clears their live counters. announceOutage controls the user notification separately.
    */
   function markWorkerOffline(workerId: string): void {
@@ -382,6 +388,7 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       }
       s.handle?.close()
       s.handle = handle
+      s.openedAt = Date.now()
       // 161-watch-stream-continuity.spec.ts counts successful stream opens.
       // An interest update must not emit this event.
       emitDevEvent('leapmux:watch-events-open', () => ({ workerId, updateId: nextId }))
@@ -391,7 +398,6 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       handle.onEvent((resp) => {
         if (!isCurrentHandle())
           return
-        reconnectBackoff.reset(workerId)
         if (resp.event.case === 'updateAck') {
           // A settled acknowledgment resets the rejection count.
           // An ignored acknowledgment must preserve a pending retry and its count.
@@ -509,7 +515,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // Emit after the toast decision. Count the first connection loss as one failure.
     emitDevEvent('leapmux:watch-events-redial', () => ({ workerId, failures: reconnectBackoff.attemptCount(workerId) + 1 }))
     reconnectBackoff.schedule(workerId, () => {
-      if (s.closed)
+      // A plan change can open a stream during this wait. It needs no redial, and
+      // the abort below would end the loads that use its signal.
+      if (s.closed || s.handle)
         return
       // Read the latest plan when the timer runs.
       // Assigning pendingPlan before the timer would make openStream's finally skip the retry delay.

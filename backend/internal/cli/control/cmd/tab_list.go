@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -49,19 +50,24 @@ func RunTabList(rawCtx any, args []string) error {
 			req.WorkspaceIds = []string{got.WorkspaceID}
 		}
 		var resp leapmuxv1.ListTabsResponse
-		return hubCallUnaryEmitOn(ctx, c, "ListTabs", req, &resp, func() any {
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceListTabsProcedure, req, &resp, func() any {
 			tabs := filterTabsByType(resp.GetTabs(), wantedType)
 			return map[string]any{"tabs": workspaceTabsToList(tabs)}
 		})
 	})
 }
 
-// RunTabGet returns the rendered-tab row for a single tab, through
-// LocateTab. The resolver derives workspace_id from --tab-id when only the
-// tab id is supplied; tab_type may be left unset and the wildcard LocateTab
-// will fill it (via the resolver's UNSPECIFIED-to-matched backfill). A
-// workspace the caller names that does not hold the tab answers not_found,
-// as a lookup scoped to that workspace would.
+// RunTabGet returns the rendered-tab row for a single tab: the row that the
+// resolver's LocateTab answered, so the command asks the hub once. The
+// resolver derives workspace_id from --tab-id when only the tab id is
+// supplied; tab_type may be left unset and the wildcard LocateTab will fill it
+// (via the resolver's UNSPECIFIED-to-matched backfill). A workspace that the
+// caller specifies but that does not hold the tab answers not_found, as a
+// lookup scoped to that workspace would.
+//
+// The resolver hands back no row when it tolerated an ambient tab id that the
+// hub cannot place (see resolve.ErrTabNotLocatable), and that answers
+// not_found too: there is no row to print.
 func RunTabGet(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub string
@@ -71,18 +77,12 @@ func RunTabGet(rawCtx any, args []string) error {
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
-	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
-		req := &leapmuxv1.LocateTabRequest{
-			TabId:   got.TabID,
-			TabType: got.TabType,
-		}
-		var resp leapmuxv1.LocateTabResponse
-		if err := hubCallUnary(ctx, c, "LocateTab", req, &resp); err != nil {
-			return control.EmitErrorWith(classifyHubError(err), err)
-		}
-		if located := resp.GetTab().GetWorkspaceId(); located != got.WorkspaceID {
+	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}}, in, func(_ context.Context, _ *control.Client, got resolve.Resolved) error {
+		// An explicit --workspace-id shadows the workspace that an ambient tab
+		// id derives, so the resolved workspace can differ from the row's.
+		if got.Tab == nil || got.Tab.GetWorkspaceId() != got.WorkspaceID {
 			return control.EmitError("not_found", "tab "+got.TabID+" is not in workspace "+got.WorkspaceID)
 		}
-		return control.EmitData(workspaceTabToMap(resp.GetTab()))
+		return control.EmitData(workspaceTabToMap(got.Tab))
 	})
 }

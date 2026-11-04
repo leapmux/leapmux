@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/workerkeys"
@@ -27,9 +28,9 @@ func TestOf(t *testing.T) {
 	assert.Equal(t, ck.X25519Public, keys.GetX25519())
 	assert.Equal(t, ck.MlkemPublicKeyBytes(), keys.GetMlkem())
 	assert.Equal(t, slhdsa, keys.GetSlhdsa())
-	assert.Len(t, keys.GetX25519(), noise.EphemeralPublicKeySize)
-	assert.Len(t, keys.GetMlkem(), noise.MlkemPublicKeySize)
-	assert.Len(t, keys.GetSlhdsa(), noise.SlhdsaPublicKeySize)
+	assert.Len(t, keys.GetX25519(), contracts.X25519PublicKeySize)
+	assert.Len(t, keys.GetMlkem(), contracts.MlkemPublicKeySize)
+	assert.Len(t, keys.GetSlhdsa(), contracts.SlhdsaPublicKeySize)
 }
 
 func TestOfRefusesAKeypairItCannotDescribe(t *testing.T) {
@@ -62,6 +63,10 @@ func TestOfRefusesAKeypairItCannotDescribe(t *testing.T) {
 	})
 }
 
+// Validate owns the check for an absent set, and hands each key to the noise
+// package in its own position. noise_test.go covers what makes a key valid; a
+// bad key in each position here shows that the set reaches that check whole, and
+// the error identifies the position.
 func TestValidate(t *testing.T) {
 	t.Parallel()
 
@@ -76,42 +81,26 @@ func TestValidate(t *testing.T) {
 		require.NoError(t, workerkeys.Validate(valid))
 	})
 
-	for name, keys := range map[string]*leapmuxv1.WorkerPublicKeys{
-		"an absent set":        nil,
-		"a short x25519 key":   clone(func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:31] }),
-		"a long x25519 key":    clone(func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = append(k.X25519, 0) }),
-		"a missing mlkem key":  clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }),
-		"a short mlkem key":    clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = k.Mlkem[:1567] }),
-		"a long mlkem key":     clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = append(k.Mlkem, 0) }),
-		"a missing slhdsa key": clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }),
-		"a short slhdsa key":   clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = k.Slhdsa[:63] }),
-		"a long slhdsa key":    clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = append(k.Slhdsa, 0) }),
-		"an out-of-range mlkem key": clone(func(k *leapmuxv1.WorkerPublicKeys) {
-			// Correctly sized, but every 12-bit coefficient is 0xFFF, above the
-			// 3329 modulus: every post-quantum handshake refuses it.
-			k.Mlkem = make([]byte, noise.MlkemPublicKeySize)
-			for i := range k.Mlkem {
-				k.Mlkem[i] = 0xFF
-			}
-		}),
+	t.Run("refuses an absent set", func(t *testing.T) {
+		err := workerkeys.Validate(nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing")
+	})
+
+	for name, tc := range map[string]struct {
+		keys *leapmuxv1.WorkerPublicKeys
+		want string
+	}{
+		"a short x25519 key": {clone(func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:31] }), "x25519"},
+		"a short mlkem key":  {clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = k.Mlkem[:1567] }), "mlkem"},
+		"a short slhdsa key": {clone(func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = k.Slhdsa[:63] }), "slhdsa"},
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
-			require.Error(t, workerkeys.Validate(keys))
+			err := workerkeys.Validate(tc.keys)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
-
-	// The ML-KEM parse is what makes the size check insufficient: an
-	// out-of-range key of the right length is refused, and the error must say
-	// which key failed.
-	outOfRange := clone(func(k *leapmuxv1.WorkerPublicKeys) {
-		k.Mlkem = make([]byte, noise.MlkemPublicKeySize)
-		for i := range k.Mlkem {
-			k.Mlkem[i] = 0xFF
-		}
-	})
-	err := workerkeys.Validate(outOfRange)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mlkem")
 }
 
 func TestEqual(t *testing.T) {
@@ -129,8 +118,7 @@ func TestEqual(t *testing.T) {
 		X25519: a.GetX25519(), Mlkem: a.GetMlkem(), Slhdsa: a.GetSlhdsa()[:63],
 	}), "a truncated slhdsa key is not equal")
 
-	// Unknown fields are ignored: a newer worker that adds one must not be
-	// refused for ever while only three columns are stored.
+	// The key set is the three keys; an unknown field is not part of it.
 	newer := proto.Clone(a).(*leapmuxv1.WorkerPublicKeys)
 	// Field 31, varint 0: one unknown field, which proto.Equal would compare.
 	newer.ProtoReflect().SetUnknown([]byte{0xF8, 0x01, 0x00})

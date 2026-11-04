@@ -42,21 +42,32 @@ export interface SignInOptions {
 }
 
 /**
+ * Where the account read of a sign-in recovery stands.
+ *
+ * - `reading`: the read runs.
+ * - `failed`: the read failed, and `message` says why. The gate offers Retry.
+ * - `completed`: the read succeeded and the account is adopted. The gate now
+ *   navigates to the destination and calls `finishSignInRecovery`.
+ */
+export type SignInRecoveryRead
+  = | { kind: 'reading' }
+    | { kind: 'failed', message: string }
+    | { kind: 'completed' }
+
+/**
  * A sign-in that succeeded but could not report its account. `SignInRecoveryGate`
  * replaces every route while this is set.
  */
 export interface SignInRecovery {
-  /** The last failed account read's message; null while a read is pending. */
-  error: string | null
+  /**
+   * The account read. ONE field, so a read cannot be failed and completed at
+   * once, and a failure whose message is empty still reads as a failure.
+   */
+  read: SignInRecoveryRead
   /** The sign-in reported that the account must verify an email address. */
   verificationRequired: boolean
   /** The address the sign-in was asked to continue to. */
   redirect?: string
-  /**
-   * The account read succeeded and the account is adopted. The gate now
-   * navigates to the destination and calls `finishSignInRecovery`.
-   */
-  completed: boolean
 }
 
 /**
@@ -65,11 +76,25 @@ export interface SignInRecovery {
  */
 const RECOVERY_ADOPTION_DISPLACED = 'Your account changed while it was loading. Retry to load it again.'
 
+/**
+ * What one account read led to.
+ *
+ * - `adopted`: this document adopted the account that the read returned.
+ * - `superseded`: the caller's staleness rule discarded the response, or a
+ *   newer write that the rule covers refused its adoption.
+ * - `displaced`: `setUser` refused the account because a local write landed
+ *   while its rows loaded, and the caller's rule still holds the read
+ *   current. Nothing else adopts the account then.
+ */
+type AccountReadOutcome = 'adopted' | 'superseded' | 'displaced'
+
 export interface AuthLoginResult {
   outcome: SignInOutcome
+  /**
+   * The sign-in reported that the account must verify an email address. The
+   * context already seeded the resend cooldown from the same report.
+   */
   verificationRequired: boolean
-  verificationEmailSent: boolean
-  nextResendAvailableAt?: Timestamp
 }
 
 /**
@@ -82,7 +107,15 @@ export interface AuthState {
   user: () => User | null
   loading: () => boolean
   error: () => string | null
-  /** Cooldown timestamp seeded from login when verification is required. */
+  /**
+   * When the hub accepts another request for a verification email; undefined
+   * when no cooldown is known.
+   *
+   * The context writes it from the reports and the replies it adopts: a
+   * sign-in, an account read and a same-identity adoption. It has no public
+   * setter, for the reason `elevateWithPassword` gives for the elevation
+   * mirror.
+   */
   verificationResendAvailableAt: () => Timestamp | undefined
   /**
    * When the session's step-up elevation lapses; undefined when the session
@@ -138,7 +171,6 @@ export interface AuthState {
   retryBootstrap: () => Promise<void>
   login: (username: string, password: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
   loginWithPasskey: (username: string, captcha?: CaptchaRequestFields, opts?: SignInOptions) => Promise<AuthLoginResult>
-  setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
   /**
    * Adopt the session a sign-up, the OAuth completion or the first solo
@@ -165,12 +197,17 @@ export interface AuthState {
   /**
    * Open the adoption of a mutation's reply, BEFORE the mutation leaves.
    *
-   * The returned function adopts the reply's user only while the identity and
-   * every local write are as they were when the mutation left, and only when
-   * the user is the same account. Otherwise it re-reads the account, so a
-   * reply that lands after a sign-out or a sign-in as someone else cannot put
-   * the old account back. It never writes the elevation: a mutation's reply
-   * carries none, so it cannot restore a window the user ended.
+   * The returned function adopts the reply's user only when it is the account
+   * that was signed in when the mutation left, and the account signed in
+   * when the reply lands. Otherwise it re-reads the account, so a reply that
+   * lands after a sign-out or a sign-in as someone else cannot put the old
+   * account back. It never writes the elevation: a mutation's reply carries
+   * none, so it cannot restore a window the user ended.
+   *
+   * A local write that leaves the identity alone, such as a proven elevation
+   * or a refresh that landed, does not discard the reply. The reply is the
+   * hub's account after the mutation, and the read that would replace it can
+   * fail.
    */
   openUserAdoption: () => UserAdoption
   refreshUser: () => Promise<void>
@@ -221,10 +258,10 @@ export const AuthProvider: ParentComponent = (props) => {
    * reports an elevated session as unelevated, and the next sensitive action
    * prompts for a window the user already holds.
    *
-   * `readCurrentUser` records the count before it sends the request and
-   * discards the response when the count moved. Every local write below moves
-   * it, so this covers a concurrent read AND a ceremony, for all four signals
-   * the response carries rather than for the deadline alone.
+   * `supersededByAnyWrite` records the count before the request leaves, and
+   * `readCurrentUser` discards the response when the count moved. Every local
+   * write below moves it, so this covers a concurrent read AND a ceremony, for
+   * every signal the response carries rather than for the deadline alone.
    */
   let authGeneration = 0
 
@@ -412,14 +449,18 @@ export const AuthProvider: ParentComponent = (props) => {
   /**
    * Adopt a `GetCurrentUser` response.
    *
-   * ONE site, because the response carries three signals and two paths read
-   * it: the bootstrap restore and `refreshUser`. They adopted different
-   * subsets by hand, so a refresh dropped the verification cooldown and left
-   * `/verify-email` counting from zero against a hub that just minted a
-   * code. A fourth signal added to the response now lands in both paths.
+   * ONE site, because the response carries three signals and three paths read
+   * it: the bootstrap restore, `refreshUser` and the sign-in recovery read.
+   * The first two adopted different subsets by hand, so a refresh dropped the
+   * verification cooldown and left `/verify-email` counting from zero against
+   * a hub that just minted a code. A fourth signal added to the response now
+   * lands in every path.
    *
-   * `readCurrentUser` is the only caller, and it decides whether the response
-   * is still the newest before it gets here.
+   * `readCurrentUser` is the only caller. Before it gets here, it asks the
+   * staleness rule its own caller passed whether the response may still land:
+   * the restore and `refreshUser` discard a response once any local write
+   * moved `authGeneration`, and the recovery read discards one once a newer
+   * operation started.
    */
   const adoptCurrentUser = async (resp: GetCurrentUserResponse): Promise<boolean> => {
     const report = resp.sessionReport
@@ -442,30 +483,64 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
-   * Read the account, and adopt the answer only while it is still the newest.
-   * Reports whether the answer was adopted or superseded; a failed read
-   * rejects.
-   *
-   * The staleness check lives here so a new call site cannot forget it. See
-   * `authGeneration` for what a stale adopt costs.
+   * The staleness rule of a read that may adopt only the NEWEST account
+   * state: the read is stale once any local write moved `authGeneration`
+   * after this call. Call it as the read leaves, as the argument of
+   * `readCurrentUser`. See `authGeneration` for what a stale adopt costs.
    */
-  const readCurrentUser = async (): Promise<'adopted' | 'superseded'> => {
+  const supersededByAnyWrite = (): (() => boolean) => {
     const generation = authGeneration
+    return () => generation !== authGeneration
+  }
+
+  /**
+   * Read the account, and adopt the answer only while `isSuperseded` still
+   * holds the read current. A failed read rejects.
+   *
+   * The ONE call site of `GetCurrentUser`, and the caller states the
+   * staleness rule, so a new reader cannot forget the check: it cannot read
+   * at all without one. Two rules exist, and each is right for its reader:
+   *
+   * - `refreshUser` and the bootstrap restore pass `supersededByAnyWrite()`,
+   *   because a response that an unrelated write outdated puts older account
+   *   state back.
+   * - The sign-in recovery read passes its operation, because a recovery read
+   *   that an unrelated write discarded leaves the gate waiting with no read
+   *   in flight. See `readForRecovery`.
+   */
+  const readCurrentUser = async (isSuperseded: () => boolean): Promise<AccountReadOutcome> => {
     const resp = await authClient.getCurrentUser({})
-    if (generation !== authGeneration)
+    if (isSuperseded())
       return 'superseded'
-    return await adoptCurrentUser(resp)
-      ? 'adopted'
-      : 'superseded'
+    if (await adoptCurrentUser(resp))
+      return 'adopted'
+    // `setUser` moved `authGeneration` itself, so `supersededByAnyWrite` reads
+    // every refusal as superseded, which it is for that rule: a newer write
+    // owns the state. The operation rule tells the two cases apart.
+    return isSuperseded()
+      ? 'superseded'
+      : 'displaced'
   }
 
   const refreshUser = async () => {
     try {
-      await readCurrentUser()
+      // Every outcome leaves the newest account state in place, which is all
+      // a refresh asks for.
+      await readCurrentUser(supersededByAnyWrite())
     }
     catch {
       // Ignore — user state unchanged.
     }
+  }
+
+  /**
+   * Reveal the shell rows of the boot splash's checklist, then jump the
+   * checklist to `workspaces`. Every caller runs this before AppShell mounts,
+   * so a sign-in does not flash the finished signed-out `ready` phase.
+   */
+  const enterShell = () => {
+    setBootShell(true)
+    setBootPhase('workspaces')
   }
 
   /**
@@ -484,11 +559,20 @@ export const AuthProvider: ParentComponent = (props) => {
     if (!await setUser(u))
       return false
     setElevationExpiresAt(undefined)
-    // Enter the shell checklist before AppShell mounts so login does not flash
-    // the finished signed-out `ready` phase, then jump to `workspaces`.
-    setBootShell(true)
-    setBootPhase('workspaces')
+    enterShell()
     return true
+  }
+
+  /**
+   * Patch the sign-in recovery in progress, and write nothing when none is in
+   * progress: a sign-out during a read ended recovery, and a late answer of
+   * that read must not start it again.
+   */
+  const patchRecovery = (patch: Partial<SignInRecovery>) => {
+    setSignInRecovery(prev => prev && {
+      ...prev,
+      ...patch,
+    })
   }
 
   /**
@@ -500,38 +584,41 @@ export const AuthProvider: ParentComponent = (props) => {
    * for one would leave the gate waiting with no read in flight. A newer
    * operation supersedes it.
    *
-   * A success adopts the account and marks recovery completed; the gate then
+   * A success adopts the account and marks the read completed; the gate then
    * navigates and calls `finishSignInRecovery`. A failure records its message
    * for the gate's Retry. A superseded read writes neither.
    */
   const readForRecovery = async (op: number) => {
     try {
-      const resp = await authClient.getCurrentUser({})
-      if (!isCurrent(op))
+      const outcome = await readCurrentUser(() => !isCurrent(op))
+      // The operation check also covers an adopted account: a newer
+      // operation that started while the account's rows loaded owns the
+      // state, and writes the rest of it.
+      if (outcome === 'superseded' || !isCurrent(op))
         return
-      const adopted = await adoptCurrentUser(resp)
-      if (!isCurrent(op))
-        return
-      if (!adopted) {
+      if (outcome === 'displaced') {
         // `setUser` refused the account because a local write landed while
         // its rows loaded, yet no newer operation owns the state. Nothing
         // else will finish this recovery, so the gate offers Retry.
-        setSignInRecovery(prev => prev && { ...prev, error: RECOVERY_ADOPTION_DISPLACED })
+        patchRecovery({
+          read: { kind: 'failed', message: RECOVERY_ADOPTION_DISPLACED },
+        })
         return
       }
-      setBootShell(true)
-      setBootPhase('workspaces')
+      enterShell()
       loadTimeouts().catch(() => {})
-      setSignInRecovery(prev => prev && { ...prev, error: null, completed: true })
+      patchRecovery({
+        read: { kind: 'completed' },
+      })
     }
     catch (err) {
       if (!isCurrent(op))
         return
-      // `prev &&`: a sign-out during the read ended recovery, and a late
-      // failure must not start it again.
-      setSignInRecovery(prev => prev && {
-        ...prev,
-        error: formatErrorMessage(err, 'Failed to load your account'),
+      patchRecovery({
+        read: {
+          kind: 'failed',
+          message: formatErrorMessage(err, 'Failed to load your account'),
+        },
       })
     }
   }
@@ -585,9 +672,8 @@ export const AuthProvider: ParentComponent = (props) => {
     setVerificationResendAvailableAt(verification?.nextResendAvailableAt)
     setBootstrapError(null)
     setSignInRecovery({
-      error: null,
+      read: { kind: 'reading' },
       verificationRequired: verification?.verificationRequired ?? false,
-      completed: false,
       ...(opts.redirect !== undefined
         ? { redirect: opts.redirect }
         : {}),
@@ -600,7 +686,9 @@ export const AuthProvider: ParentComponent = (props) => {
     if (!signInRecovery())
       return
     const op = beginOperation()
-    setSignInRecovery(prev => prev && { ...prev, error: null })
+    patchRecovery({
+      read: { kind: 'reading' },
+    })
     await readForRecovery(op)
   }
 
@@ -609,18 +697,29 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   const openUserAdoption = (): UserAdoption => {
-    const generation = authGeneration
     // A one-time snapshot on purpose: the identity as it stood when the
     // mutation left, which the reply must still match.
     const initialUserId = user()?.id
     return async (next, verification) => {
-      if (next && initialUserId !== undefined && next.id === initialUserId && generation === authGeneration) {
-        await setUser(next)
-        if (verification)
-          setVerificationResendAvailableAt(verification.nextResendAvailableAt)
+      // The LIVE identity too: a sign-out, or a sign-in as someone else, while
+      // the mutation was out leaves the reply describing an account this
+      // document no longer holds. Not `authGeneration`, which every local
+      // write moves: a slide report or a refresh that landed meanwhile would
+      // discard the one reply that states the mutation's result.
+      if (!next || next.id !== initialUserId || user()?.id !== initialUserId) {
+        await refreshUser()
         return
       }
-      await refreshUser()
+      // `setUser` refuses the reply when any local write lands while the
+      // account's rows load, because it cannot tell a newer identity from an
+      // unrelated write. None of the reply may land then, the cooldown
+      // included, so the account is read instead.
+      if (!await setUser(next)) {
+        await refreshUser()
+        return
+      }
+      if (verification)
+        setVerificationResendAvailableAt(verification.nextResendAvailableAt)
     }
   }
 
@@ -682,8 +781,12 @@ export const AuthProvider: ParentComponent = (props) => {
    */
   const restoreSession = async (op: number) => {
     try {
-      await readCurrentUser()
-      if (isCurrent(op))
+      // On ANY adoption, whatever the operation. The read's staleness rule is
+      // the account state, so it still adopts the account after a sign-in
+      // superseded the restore. When that sign-in then fails, or its passkey
+      // prompt is dismissed, the restored account is this document's account,
+      // and nothing else loads the hub's timeouts for it.
+      if (await readCurrentUser(supersededByAnyWrite()) === 'adopted')
         loadTimeouts().catch(() => {})
     }
     catch (err) {
@@ -703,7 +806,8 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   /**
-   * The whole bootstrap sequence, and the sole owner of `bootstrapError`.
+   * The whole bootstrap sequence. It records `bootstrapError`, and a sign-in
+   * that adopts an account or starts recovery clears it (`adoptSignInReport`).
    *
    * System info comes FIRST and is a hard prerequisite: every downstream
    * decision (solo vs. multi-user, setup-required) reads module getters that
@@ -713,6 +817,15 @@ export const AuthProvider: ParentComponent = (props) => {
    * local IPC connection with no credential), the code records nothing, and the
    * app offers a "Log out" that strands them at /login. So a failed load aborts
    * here with a `bootstrapError` for the guard's retry panel to render.
+   *
+   * That abort holds only while this bootstrap is the current operation. A
+   * sign-in that starts during the system info load supersedes it, and a
+   * failed load then records no `bootstrapError`: the sign-in owns the state,
+   * and it ends `loading` on a snapshot that never loaded. `AuthGuard` holds
+   * there anyway, because `loadSystemInfo` records its own failure
+   * (`systemInfoLoadFailure`) and the guard decides nothing until the
+   * snapshot loads. The credential forms also refuse to submit while the
+   * snapshot is pending.
    *
    * Each stage also advances the boot splash's checklist (data-boot-phase on
    * <html>): system info, then the session restore, then either `ready`
@@ -745,8 +858,7 @@ export const AuthProvider: ParentComponent = (props) => {
     // The restricted TCP setup state is not a session and not the shell, so it
     // must not reveal the workspace rows.
     if (user() && !isPasswordSetupGate()) {
-      setBootShell(true)
-      setBootPhase('workspaces')
+      enterShell()
       return op
     }
     setBootPhase('ready')
@@ -763,14 +875,6 @@ export const AuthProvider: ParentComponent = (props) => {
     if (isCurrent(await bootstrap()))
       setLoading(false)
   }
-
-  const loginResultFromResponse = (status: EmailVerificationStatus | undefined): Omit<AuthLoginResult, 'outcome'> => ({
-    verificationRequired: status?.verificationRequired ?? false,
-    verificationEmailSent: status?.verificationEmailSent ?? false,
-    ...(status?.nextResendAvailableAt !== undefined
-      ? { nextResendAvailableAt: status.nextResendAvailableAt }
-      : {}),
-  })
 
   /**
    * The state machine both sign-in paths share: clear the banner, hold
@@ -808,7 +912,7 @@ export const AuthProvider: ParentComponent = (props) => {
       const outcome = await adoptSignInReport(resp.sessionReport, op, opts)
       return {
         outcome,
-        ...loginResultFromResponse(resp.sessionReport?.emailVerification),
+        verificationRequired: resp.sessionReport?.emailVerification?.verificationRequired ?? false,
       }
     }
     catch (e) {
@@ -887,7 +991,6 @@ export const AuthProvider: ParentComponent = (props) => {
     dropElevation,
     login,
     loginWithPasskey,
-    setVerificationResendAvailableAt,
     logout,
     setAuth,
     signInRecovery,

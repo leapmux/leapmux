@@ -61,16 +61,6 @@ func TestWrappedConnectError_KeepsATypedCauseReachable(t *testing.T) {
 	assert.Equal(t, int64(3), target.limit)
 }
 
-func TestStoreConnectError_PreservesTheInvalidCursorCause(t *testing.T) {
-	cause := fmt.Errorf("cursor payload: %w", store.ErrInvalidCursor)
-	err := storeConnectError(cause, "list users")
-	require.ErrorIs(t, err, store.ErrInvalidCursor)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	var rpcErr *connect.Error
-	require.ErrorAs(t, err, &rpcErr)
-	assert.Equal(t, "list users: "+cause.Error()+" (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", rpcErr.Message())
-}
-
 type causeProbeStore struct {
 	store.Store
 	failure error

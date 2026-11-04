@@ -28,13 +28,13 @@
  */
 import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { ChannelSocket } from './channelRelay'
-import type { PendingRequest, StreamListener } from './channelRpc'
+import type { PendingRequest, StreamAction, StreamListener } from './channelRpc'
 import type { ChannelSessionOpts } from './channelSession'
 import type { Session } from './noise'
 import type { Reassembler } from './reassembler'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
-import type { EncryptionMode, InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
+import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { IDLE_REKEY_INTERVAL_MS } from '~/generated/contracts/wire'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
@@ -72,6 +72,28 @@ function safeCall(fn: () => void, description: string): void {
   catch (err) {
     log.warn('listener threw; continuing with the remaining listeners', { what: description, error: err })
   }
+}
+
+/**
+ * One server-streaming call on an open channel.
+ *
+ * The method descriptor types both directions: the opening request and `send`
+ * take the method's input message, and `onMessage` receives its output message.
+ */
+export interface ChannelStream<I extends DescMessage, O extends DescMessage> {
+  requestId: number
+  /**
+   * Receives each frame, decoded with the method's output schema. A frame that
+   * does not decode never reaches this listener: it ends the stream through
+   * `onError`, and the stream's owner reconnects.
+   */
+  onMessage: (cb: (msg: MessageShape<O>) => void) => void
+  onEnd: (cb: () => void) => void
+  onError: (cb: (err: Error) => void) => void
+  /** Revise the open stream. Encodes `req` with the method's input schema. */
+  send: (req: MessageInitShape<I>) => void
+  /** Cancel the stream on the wire and drop the local listener. */
+  cancel: () => void
 }
 
 /** Worker key bundle returned by transport. */
@@ -572,7 +594,9 @@ export class ChannelManager {
   }
 
   /**
-   * Send a unary RPC request through the encrypted channel.
+   * Send a unary RPC request through the encrypted channel. The promise
+   * resolves with the serialized response message, and rejects with the
+   * worker's in-band error.
    *
    * The optional `signal` lets the caller short-circuit the wait
    * locally: when it fires, the pendingRequest entry is dropped and
@@ -584,7 +608,7 @@ export class ChannelManager {
    * cancel: future channel revisions can add one without changing
    * any caller.
    */
-  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
+  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<Uint8Array> {
     const ch = this.pool.get(channelId)
     if (!ch || ch.state === 'closed') {
       return Promise.reject(channelNotOpenError())
@@ -615,15 +639,11 @@ export class ChannelManager {
   /**
    * Send a streaming RPC request through the encrypted channel.
    * Returns a handle for receiving stream messages.
+   *
+   * The method descriptor supplies the procedure path and both message schemas,
+   * so a caller cannot pair a method with the wrong request or message type.
    */
-  stream<I extends DescMessage, O extends DescMessage>(channelId: string, method: DescMethodServerStreaming<I, O>, payload: Uint8Array): {
-    requestId: number
-    onMessage: (cb: (msg: InnerStreamMessage) => void) => void
-    onEnd: (cb: () => void) => void
-    onError: (cb: (err: Error) => void) => void
-    send: (payload: Uint8Array) => void
-    cancel: () => void
-  } {
+  stream<I extends DescMessage, O extends DescMessage>(channelId: string, method: DescMethodServerStreaming<I, O>, req: MessageInitShape<I>): ChannelStream<I, O> {
     const ch = this.pool.get(channelId)
     // Streams require a verified session; call() still allows 'opening' so the
     // open-time Ping can complete before the channel is published as ready.
@@ -631,7 +651,9 @@ export class ChannelManager {
       throw channelNotOpenError()
     }
 
-    const handle = this.rpc.beginStream(ch, procedureOf(method), payload)
+    const procedure = procedureOf(method)
+    const encode = (msg: MessageInitShape<I>): Uint8Array => toBinary(method.input, create(method.input, msg))
+    const handle = this.rpc.beginStream(ch, procedure, encode(req))
 
     // Defer listener registration until after rekey when a rekey/ceiling path
     // runs: ensureRekeyed may closeChannel→drainChannel with onEnd, and a
@@ -668,14 +690,15 @@ export class ChannelManager {
         throw sendErr
     }
 
-    const sendOnStream = (payload: Uint8Array, cancel: boolean): void => {
+    const sendOnStream = (action: StreamAction): void => {
+      const cancel = action.case === 'cancel'
       const live = this.pool.get(channelId)
       if (!live || live.state === 'closed') {
         if (cancel)
           return
         throw channelNotOpenError()
       }
-      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, payload, cancel)
+      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, action)
       if (this.session.needsRekeyGate(live)) {
         // Rekey must complete before the frame is meaningful; await it so
         // callers learn about send failure instead of advancing local state
@@ -719,13 +742,41 @@ export class ChannelManager {
         throw err
     }
 
+    const deliverDecoded = (payload: Uint8Array, deliver: (msg: MessageShape<O>) => void): void => {
+      let msg: MessageShape<O>
+      try {
+        msg = fromBinary(method.output, payload)
+      }
+      catch (err) {
+        // Every stream takes this one policy: a skipped frame could hide a
+        // lost event, and a reconnect replays the state. Cancel first, so the
+        // worker stops the stream although the owner's listener may throw.
+        sendOnStream({ case: 'cancel' })
+        handle.fail(
+          new ChannelError('client', `decode a message of stream ${procedure}: ${formatErrorMessage(err)}`),
+          'stream decode failed with no onError listener',
+        )
+        return
+      }
+      if (log.isDebug()) {
+        log.debug('stream message', {
+          method: procedure,
+          message: toJsonString(method.output, msg),
+        })
+      }
+      deliver(msg)
+    }
+
     return {
       requestId: handle.requestId,
-      onMessage: handle.onMessage,
+      onMessage: cb => handle.onMessage(frame => deliverDecoded(frame.payload, cb)),
       onEnd: handle.onEnd,
       onError: handle.onError,
-      send: (payload: Uint8Array) => sendOnStream(payload, false),
-      cancel: () => sendOnStream(new Uint8Array(), true),
+      send: req => sendOnStream({
+        case: 'payload',
+        payload: encode(req),
+      }),
+      cancel: () => sendOnStream({ case: 'cancel' }),
     }
   }
 
@@ -815,9 +866,9 @@ export class ChannelManager {
       })
     }
     const payload = toBinary(reqSchema, msg)
-    let resp
+    let responsePayload
     try {
-      resp = await this.call(channelId, procedure, payload, opts?.timeoutMs, opts?.signal)
+      responsePayload = await this.call(channelId, procedure, payload, opts?.timeoutMs, opts?.signal)
     }
     catch (err) {
       log.debug('callWorker error', {
@@ -826,7 +877,7 @@ export class ChannelManager {
       })
       throw err
     }
-    const result = fromBinary(respSchema, resp.payload)
+    const result = fromBinary(respSchema, responsePayload)
     if (log.isDebug()) {
       log.debug('callWorker response', {
         method: procedure,

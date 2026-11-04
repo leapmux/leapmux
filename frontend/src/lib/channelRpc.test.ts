@@ -1,11 +1,19 @@
 import type { RpcChannel } from './channelRpc'
 import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
-import { create } from '@bufbuild/protobuf'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { InnerRpcResponseSchema, InnerStreamMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
+import { InnerMessageSchema, InnerRpcResponseSchema, InnerStreamMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { buildRequestPlaintext, buildStreamRequestPlaintext, ChannelRpcMux, FIRST_REQUEST_ID } from './channelRpc'
 import { Reassembler } from './reassembler'
+
+/** Decode the action of a stream frame from its InnerMessage plaintext. */
+function decodeStreamAction(plaintext: Uint8Array) {
+  const { kind } = fromBinary(InnerMessageSchema, plaintext)
+  if (kind.case !== 'streamRequest')
+    throw new Error(`expected a stream request, got ${kind.case}`)
+  return kind.value.action
+}
 
 function safeCall(fn: () => void): void {
   try {
@@ -51,14 +59,14 @@ describe('channelRpc', () => {
     vi.useRealTimers()
   })
 
-  it('buildRequestPlaintext encodes method and payload', () => {
+  it('encodes method and payload in buildRequestPlaintext', () => {
     const pt = buildRequestPlaintext('Ping', new Uint8Array([1, 2, 3]))
     expect(pt.length).toBeGreaterThan(0)
     // Same inputs must produce identical framing (call and stream share this).
     expect(buildRequestPlaintext('Ping', new Uint8Array([1, 2, 3]))).toEqual(pt)
   })
 
-  it('callAfterRekey registers, sends, and resolves on deliverResponse', async () => {
+  it('registers, sends, and resolves a call in callAfterRekey when deliverResponse delivers the response', async () => {
     const ch = makeChannel()
     const { mux, sent } = makeMux()
     const p = mux.callAfterRekey(ch, 'ch-1', 'Echo', new Uint8Array([9]))
@@ -67,16 +75,37 @@ describe('channelRpc', () => {
     expect(ch.pendingRequests.has(1)).toBe(true)
 
     const resp = create(InnerRpcResponseSchema, {
-      payload: new Uint8Array([42]),
+      result: {
+        case: 'payload',
+        value: new Uint8Array([42]),
+      },
     })
     mux.deliverResponse(ch, 1, resp)
-    const resolved = await p
-    expect(resolved.error, 'a response with no error resolves the call').toBeUndefined()
-    expect(resolved.payload).toEqual(new Uint8Array([42]))
+    await expect(p).resolves.toEqual(new Uint8Array([42]))
     expect(ch.pendingRequests.has(1)).toBe(false)
   })
 
-  it('callAfterRekey rejects on timeout and unregisters', async () => {
+  // A response that selects no result is the empty success, as a worker's Ping
+  // answer is, and an empty payload is a success too.
+  it('resolves a call with empty bytes for a response with no result or an empty payload', async () => {
+    const ch = makeChannel()
+    const { mux } = makeMux()
+
+    const noResult = mux.callAfterRekey(ch, 'ch-1', 'Ping', new Uint8Array())
+    mux.deliverResponse(ch, 1, create(InnerRpcResponseSchema, {}))
+    await expect(noResult).resolves.toEqual(new Uint8Array())
+
+    const emptyPayload = mux.callAfterRekey(ch, 'ch-1', 'Ping', new Uint8Array())
+    mux.deliverResponse(ch, 2, create(InnerRpcResponseSchema, {
+      result: {
+        case: 'payload',
+        value: new Uint8Array(),
+      },
+    }))
+    await expect(emptyPayload).resolves.toEqual(new Uint8Array())
+  })
+
+  it('rejects on timeout and unregisters in callAfterRekey', async () => {
     vi.useFakeTimers()
     const ch = makeChannel()
     const { mux } = makeMux()
@@ -87,7 +116,7 @@ describe('channelRpc', () => {
     expect(ch.pendingRequests.has(1)).toBe(false)
   })
 
-  it('callAfterRekey abort drops the pending entry', async () => {
+  it('drops the pending entry when callAfterRekey is aborted', async () => {
     const ch = makeChannel()
     const { mux } = makeMux()
     const ac = new AbortController()
@@ -98,7 +127,7 @@ describe('channelRpc', () => {
     expect(ch.pendingRequests.has(1)).toBe(false)
   })
 
-  it('callAfterRekey cleans up when send throws', async () => {
+  it('cleans up in callAfterRekey when send throws', async () => {
     const ch = makeChannel()
     const onSendFailure = vi.fn()
     const { mux } = makeMux({
@@ -112,55 +141,64 @@ describe('channelRpc', () => {
     expect(onSendFailure).toHaveBeenCalledOnce()
   })
 
-  it('deliverResponse rejects rpc errors and notifies', async () => {
+  it('rejects rpc errors and notifies in deliverResponse', async () => {
     const ch = makeChannel()
     const notifyError = vi.fn()
     const { mux } = makeMux({ notifyError })
     const p = mux.callAfterRekey(ch, 'ch-1', 'Fail', new Uint8Array())
     mux.deliverResponse(ch, 1, create(InnerRpcResponseSchema, {
-      error: { code: 7, message: 'nope' },
+      result: {
+        case: 'error',
+        value: { code: 7, message: 'nope' },
+      },
     }))
     await expect(p).rejects.toMatchObject({ source: 'rpc', code: 7, message: 'nope' })
     expect(notifyError).toHaveBeenCalledOnce()
   })
 
-  // The presence of the RpcError marks the failure, not a non-zero code: an
-  // error with code 0 and no message still rejects, with a message that names
-  // the code.
-  it('deliverResponse rejects an rpc error that carries no message or code', async () => {
+  // The error case marks the failure, not a non-zero code: an error with code 0
+  // and no message still rejects, with a message that states the code. The case
+  // survives the wire, where every field of that error has its default value.
+  it('rejects an rpc error that carries no message or code in deliverResponse', async () => {
     const ch = makeChannel()
     const notifyError = vi.fn()
     const { mux } = makeMux({ notifyError })
     const p = mux.callAfterRekey(ch, 'ch-1', 'Fail', new Uint8Array())
-    mux.deliverResponse(ch, 1, create(InnerRpcResponseSchema, {
-      error: {},
-      payload: new Uint8Array([1]),
+    const encoded = toBinary(InnerRpcResponseSchema, create(InnerRpcResponseSchema, {
+      result: { case: 'error', value: {} },
     }))
+    mux.deliverResponse(ch, 1, fromBinary(InnerRpcResponseSchema, encoded))
     await expect(p).rejects.toMatchObject({ source: 'rpc', code: 0, message: 'RPC error code 0' })
     expect(notifyError).toHaveBeenCalledOnce()
     expect(ch.pendingRequests.has(1)).toBe(false)
   })
 
-  it('deliverResponse names the code when an rpc error carries no message', async () => {
+  it('states the code in deliverResponse when an rpc error carries no message', async () => {
     const ch = makeChannel()
     const { mux } = makeMux()
     const p = mux.callAfterRekey(ch, 'ch-1', 'Fail', new Uint8Array())
     mux.deliverResponse(ch, 1, create(InnerRpcResponseSchema, {
-      error: { code: 14 },
+      result: {
+        case: 'error',
+        value: { code: 14 },
+      },
     }))
     await expect(p).rejects.toMatchObject({ source: 'rpc', code: 14, message: 'RPC error code 14' })
   })
 
-  it('deliverResponse ignores unknown correlation ids', () => {
+  it('ignores unknown correlation ids in deliverResponse', () => {
     const ch = makeChannel()
     const { mux } = makeMux()
     // Must not throw.
     mux.deliverResponse(ch, 99, create(InnerRpcResponseSchema, {
-      payload: new Uint8Array(),
+      result: {
+        case: 'payload',
+        value: new Uint8Array(),
+      },
     }))
   })
 
-  it('deliverResponse ignores a non-error unary reply on a stream id', () => {
+  it('ignores a non-error unary reply on a stream id in deliverResponse', () => {
     const ch = makeChannel()
     const onMessage = vi.fn()
     const onError = vi.fn()
@@ -171,14 +209,17 @@ describe('channelRpc', () => {
     })
     const { mux } = makeMux()
     mux.deliverResponse(ch, 5, create(InnerRpcResponseSchema, {
-      payload: new Uint8Array([1]),
+      result: {
+        case: 'payload',
+        value: new Uint8Array([1]),
+      },
     }) as InnerRpcResponse)
     expect(onMessage).not.toHaveBeenCalled()
     expect(onError).not.toHaveBeenCalled()
     expect(ch.streamListeners.has(5)).toBe(true)
   })
 
-  it('deliverResponse routes unary rpc error onto a stream listener', () => {
+  it('routes a unary rpc error onto a stream listener in deliverResponse', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     ch.streamListeners.set(5, {
@@ -188,13 +229,16 @@ describe('channelRpc', () => {
     })
     const { mux } = makeMux()
     mux.deliverResponse(ch, 5, create(InnerRpcResponseSchema, {
-      error: { code: 12, message: 'unimplemented' },
+      result: {
+        case: 'error',
+        value: { code: 12, message: 'unimplemented' },
+      },
     }) as InnerRpcResponse)
     expect(onError).toHaveBeenCalledOnce()
     expect(ch.streamListeners.has(5)).toBe(false)
   })
 
-  it('beginStream attachAndSend registers and deliverStream ends', () => {
+  it('registers a stream through beginStream attachAndSend, and deliverStream ends it', () => {
     const ch = makeChannel()
     const { mux, sent } = makeMux()
     const handle = mux.beginStream(ch, 'Subscribe', new Uint8Array([1]))
@@ -220,7 +264,7 @@ describe('channelRpc', () => {
     expect(ch.streamListeners.has(handle.requestId)).toBe(false)
   })
 
-  it('deliverStream errors and notifies', () => {
+  it('reports the stream error to the listener and notifies in deliverStream', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     const notifyError = vi.fn()
@@ -239,7 +283,7 @@ describe('channelRpc', () => {
     expect(ch.streamListeners.has(3)).toBe(false)
   })
 
-  it('deliverStream names the code when a stream error carries no message', () => {
+  it('states the code in deliverStream when a stream error carries no message', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     const onEnd = vi.fn()
@@ -259,7 +303,7 @@ describe('channelRpc', () => {
   })
 
   // The unary error routed onto a stream listener keeps the rpc source.
-  it('deliverResponse keeps the rpc source and code for an error on a stream id', () => {
+  it('keeps the rpc source and code for an error on a stream id in deliverResponse', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     ch.streamListeners.set(5, {
@@ -269,12 +313,15 @@ describe('channelRpc', () => {
     })
     const { mux } = makeMux()
     mux.deliverResponse(ch, 5, create(InnerRpcResponseSchema, {
-      error: { code: 7 },
+      result: {
+        case: 'error',
+        value: { code: 7 },
+      },
     }) as InnerRpcResponse)
     expect(onError.mock.calls[0]?.[0]).toMatchObject({ source: 'rpc', code: 7, message: 'RPC error code 7' })
   })
 
-  it('drainChannel rejects pending and ends streams', () => {
+  it('rejects pending and ends streams in drainChannel', () => {
     const ch = makeChannel()
     const reject = vi.fn()
     const onEnd = vi.fn()
@@ -299,7 +346,7 @@ describe('channelRpc', () => {
     expect(ch.reassembly.size()).toBe(0)
   })
 
-  it('drainChannel with error termination calls onError', () => {
+  it('calls onError when drainChannel runs with error termination', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     ch.streamListeners.set(1, {
@@ -312,7 +359,7 @@ describe('channelRpc', () => {
     expect(onError).toHaveBeenCalledOnce()
   })
 
-  it('drainChannel keeps draining when a stream listener throws', () => {
+  it('keeps draining in drainChannel when a stream listener throws', () => {
     const ch = makeChannel()
     const reject = vi.fn()
     const onEndSecond = vi.fn()
@@ -340,7 +387,7 @@ describe('channelRpc', () => {
     expect(ch.streamListeners.size).toBe(0)
   })
 
-  it('unregisterRequest drops pending, stream, and reassembly together', () => {
+  it('drops pending, stream, and reassembly together in unregisterRequest', () => {
     const ch = makeChannel()
     ch.pendingRequests.set(1, {
       resolve: () => {},
@@ -362,7 +409,7 @@ describe('channelRpc', () => {
     expect(ch.reassembly.get(2)).toBeUndefined()
   })
 
-  it('trySend wraps a non-ChannelError and unregisters', () => {
+  it('wraps a non-ChannelError and unregisters in trySend', () => {
     const ch = makeChannel()
     ch.pendingRequests.set(1, {
       resolve: () => {},
@@ -383,7 +430,7 @@ describe('channelRpc', () => {
     expect(onSendFailure).toHaveBeenCalledOnce()
   })
 
-  it('failReassembly rejects and poisons the id', () => {
+  it('rejects and poisons the id in failReassembly', () => {
     const ch = makeChannel()
     const reject = vi.fn()
     ch.pendingRequests.set(1, {
@@ -397,7 +444,7 @@ describe('channelRpc', () => {
     expect(ch.reassembly.get(1)?.poisoned).toBe(true)
   })
 
-  it('rejectPendingRequest errors a stream listener', () => {
+  it('fails a stream listener in rejectPendingRequest', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     ch.streamListeners.set(4, {
@@ -411,7 +458,7 @@ describe('channelRpc', () => {
     expect(ch.streamListeners.has(4)).toBe(false)
   })
 
-  it('hasHandler covers pending, stream, and rekey ids', () => {
+  it('covers pending, stream, and rekey ids in hasHandler', () => {
     const ch = makeChannel()
     ch.pendingRequests.set(1, {
       resolve: () => {},
@@ -429,7 +476,51 @@ describe('channelRpc', () => {
     expect(mux.hasHandler(ch, 3, 9)).toBe(false)
   })
 
-  it('deliverDeferredError uses onError when set', () => {
+  it('fail reports the error once and silences every listener', () => {
+    const { mux } = makeMux()
+    const ch = makeChannel()
+    const handle = mux.beginStream(ch, 'S', new Uint8Array())
+    const onMessage = vi.fn()
+    const onEnd = vi.fn()
+    const onError = vi.fn()
+    handle.onMessage(onMessage)
+    handle.onEnd(onEnd)
+    handle.onError(onError)
+    expect(handle.attachAndSend()).toBeNull()
+    const failure = new ChannelError('client', 'bad frame')
+
+    handle.fail(failure, 'unused')
+    mux.deliverStream(ch, handle.requestId, create(InnerStreamMessageSchema, {
+      payload: new Uint8Array([1]),
+    }))
+    handle.deliverDeferredError(new ChannelError('client', 'a later failure'), 'unused')
+    mux.deliverStream(ch, handle.requestId, create(InnerStreamMessageSchema, { end: true }))
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onEnd).not.toHaveBeenCalled()
+  })
+
+  it('fail silences the listeners although the error listener throws', () => {
+    const { mux } = makeMux()
+    const ch = makeChannel()
+    const handle = mux.beginStream(ch, 'S', new Uint8Array())
+    const onEnd = vi.fn()
+    const onError = vi.fn(() => {
+      throw new Error('listener bug')
+    })
+    handle.onEnd(onEnd)
+    handle.onError(onError)
+    expect(handle.attachAndSend()).toBeNull()
+
+    expect(() => handle.fail(new ChannelError('client', 'bad frame'), 'unused')).toThrow('listener bug')
+    mux.deliverStream(ch, handle.requestId, create(InnerStreamMessageSchema, { end: true }))
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onEnd).not.toHaveBeenCalled()
+  })
+
+  it('uses onError when set in deliverDeferredError', () => {
     const ch = makeChannel()
     const { mux } = makeMux()
     const handle = mux.beginStream(ch, 'S', new Uint8Array())
@@ -439,14 +530,30 @@ describe('channelRpc', () => {
     expect(onError).toHaveBeenCalledOnce()
   })
 
-  it('buildStreamRequestPlaintext round-trips cancel and payload', () => {
-    const pt = buildStreamRequestPlaintext(new Uint8Array([1, 2]), true)
-    expect(pt.length).toBeGreaterThan(0)
-    const pt2 = buildStreamRequestPlaintext(new Uint8Array([1, 2]), true)
-    expect(pt2).toEqual(pt)
+  it('encodes a stream cancel as the cancel action alone', () => {
+    expect(decodeStreamAction(buildStreamRequestPlaintext({ case: 'cancel' })).case).toBe('cancel')
   })
 
-  it('sendOnStream reuses the stream correlation id and does not advance nextRequestId', () => {
+  it('encodes a stream revision as the payload action', () => {
+    const payload = new Uint8Array([1, 2])
+    const action = decodeStreamAction(buildStreamRequestPlaintext({ case: 'payload', payload }))
+    expect(action.case).toBe('payload')
+    expect(action.value).toEqual(payload)
+  })
+
+  // A WatchEventsRequest that watches nothing encodes to zero bytes. The frame
+  // must still select the payload action on the wire, or the worker reads a
+  // frame that selects no action and fails the stream.
+  it('keeps an empty stream revision on the wire', () => {
+    const action = decodeStreamAction(buildStreamRequestPlaintext({
+      case: 'payload',
+      payload: new Uint8Array(),
+    }))
+    expect(action.case).toBe('payload')
+    expect(action.value).toEqual(new Uint8Array())
+  })
+
+  it('reuses the stream correlation id in sendOnStream and does not advance nextRequestId', () => {
     const ch = makeChannel({ nextRequestId: 5 })
     ch.streamListeners.set(3, {
       onMessage: () => {},
@@ -454,14 +561,17 @@ describe('channelRpc', () => {
       onError: () => {},
     })
     const { mux, sent } = makeMux()
-    const err = mux.sendOnStream(ch, 3, new Uint8Array([7]), false)
+    const err = mux.sendOnStream(ch, 3, {
+      case: 'payload',
+      payload: new Uint8Array([7]),
+    })
     expect(err).toBeNull()
     expect(sent).toHaveLength(1)
     expect(sent[0]!.requestId).toBe(3)
     expect(ch.nextRequestId).toBe(5)
   })
 
-  it('sendOnStream cancel unregisters locally', () => {
+  it('unregisters locally when sendOnStream sends a cancel', () => {
     const ch = makeChannel()
     ch.streamListeners.set(2, {
       onMessage: () => {},
@@ -469,14 +579,17 @@ describe('channelRpc', () => {
       onError: () => {},
     })
     const { mux } = makeMux()
-    mux.sendOnStream(ch, 2, new Uint8Array(), true)
+    mux.sendOnStream(ch, 2, { case: 'cancel' })
     expect(ch.streamListeners.has(2)).toBe(false)
   })
 
-  it('sendOnStream on an unregistered id returns an error', () => {
+  it('returns an error from sendOnStream on an unregistered id', () => {
     const ch = makeChannel()
     const { mux, sent } = makeMux()
-    const err = mux.sendOnStream(ch, 99, new Uint8Array([1]), false)
+    const err = mux.sendOnStream(ch, 99, {
+      case: 'payload',
+      payload: new Uint8Array([1]),
+    })
     expect(err).not.toBeNull()
     expect(err?.message).toMatch(/not registered/)
     expect(sent).toHaveLength(0)

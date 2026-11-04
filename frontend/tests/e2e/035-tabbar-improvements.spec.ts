@@ -114,7 +114,7 @@ test.describe('TabBar Improvements', () => {
 
   // AgentInfo carries no worker name. The card reads it from the worker store, which the Worker itself fills through
   // GetWorkerSystemInfo, so the row shows the name the Worker reports.
-  test('the info card names the agent\'s worker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('shows the name of the agent\'s worker in the info card', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     void authenticatedWorkspace
     const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
     const info = await channel.callWorker(leapmuxServer.workerId, WorkerSystemService.method.getWorkerSystemInfo, {})

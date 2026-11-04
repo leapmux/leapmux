@@ -980,7 +980,7 @@ describe('precomputed childIndex equivalence', () => {
     return { case: op.body.case, value: op.body.value }
   }
 
-  it('buildCloseTileOps: no SPLIT-parent path matches build-internally output', () => {
+  it('matches build-internally output on the no SPLIT-parent path of buildCloseTileOps', () => {
     const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
@@ -996,7 +996,7 @@ describe('precomputed childIndex equivalence', () => {
     expect(b.map(bodyShape)).toEqual(a.map(bodyShape))
   })
 
-  it('buildCloseTileOps: undo-split path matches build-internally output', () => {
+  it('matches build-internally output on the undo-split path of buildCloseTileOps', () => {
     const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),
@@ -1015,7 +1015,7 @@ describe('precomputed childIndex equivalence', () => {
     expect(b.map(bodyShape)).toEqual(a.map(bodyShape))
   })
 
-  it('buildCloseSubtreeOps: nested subtree matches build-internally output', () => {
+  it('matches build-internally output for a nested subtree in buildCloseSubtreeOps', () => {
     const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
@@ -1034,7 +1034,7 @@ describe('precomputed childIndex equivalence', () => {
     expect(b.map(bodyShape)).toEqual(a.map(bodyShape))
   })
 
-  it('buildCloseSubtreeOps with migrateTabsTo + tombstoneRoot variations matches', () => {
+  it('matches for buildCloseSubtreeOps with migrateTabsTo + tombstoneRoot variations', () => {
     const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkSplitNode('root'),
@@ -1058,7 +1058,7 @@ describe('precomputed childIndex equivalence', () => {
     expect(bNoRoot.map(bodyShape)).toEqual(aNoRoot.map(bodyShape))
   })
 
-  it('buildCloseTileOps with parent that has > 2 live children matches', () => {
+  it('matches for buildCloseTileOps with parent that has > 2 live children', () => {
     const state = create(UserCrdtStateSchema, {
       nodes: {
         root: mkLeafNode('root'),

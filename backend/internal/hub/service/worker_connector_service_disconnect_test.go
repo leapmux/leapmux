@@ -71,3 +71,44 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 	}, 5*time.Second, 10*time.Millisecond,
 		"the disconnect log must name the worker and classify its exit")
 }
+
+// TestConnect_LogsAHelloPhaseRefusal pins the log line of a stream that ends
+// before a valid hello. The worker retries every such refusal, and before this
+// line the Hub recorded nothing, so a worker that looped on a malformed hello
+// left no trace of why.
+func TestConnect_LogsAHelloPhaseRefusal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	logs := testutil.CaptureDefaultLogger(t)
+	env := setupRegKeyEnv(t)
+
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-hello-refusal"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	streamCtx, info := connect.NewClientContext(testutil.DeadlineContext(t))
+	info.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+	stream, err := connectorClient.Connect(streamCtx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	// A heartbeat where the hello must be.
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+	_, err = stream.Receive()
+	require.Error(t, err)
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	// Connect logs before it returns, and the refusal reaches the worker only
+	// after Connect returns, so the line is already in the buffer.
+	line := logs.String()
+	require.Contains(t, line, `level=WARN msg="worker stream ended before a valid hello"`)
+	require.Contains(t, line, "worker_id="+regResp.GetWorkerId())
+	require.Contains(t, line, "must be a hello", "the log carries the reason")
+}

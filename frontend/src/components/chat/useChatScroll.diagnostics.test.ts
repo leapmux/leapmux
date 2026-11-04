@@ -47,14 +47,14 @@ describe('useChatScroll stall indicators', () => {
     }
   }
 
-  it('stalledOlder is TRUE when clamped at the top edge with an older fetch in flight', () =>
+  it('reports stalledOlder as TRUE when clamped at the top edge with an older fetch in flight', () =>
     createRoot((dispose) => {
       const { hook } = setupStall({ scrollTop: 0, fetchingOlder: true, hasOlder: true })
       expect(hook.stalledOlder()).toBe(true)
       dispose()
     }))
 
-  it('stalledOlder stays dark for a background older pre-fetch away from the top edge', () =>
+  it('keeps stalledOlder dark for a background older pre-fetch away from the top edge', () =>
     createRoot((dispose) => {
       // scrollTop well inside the buffer: a pre-fetch is in flight but the reader is
       // not waiting at the edge, so no indicator.
@@ -63,28 +63,28 @@ describe('useChatScroll stall indicators', () => {
       dispose()
     }))
 
-  it('stalledOlder is dark with no older fetch in flight, and with no older history', () =>
+  it('keeps stalledOlder dark with no older fetch in flight, and with no older history', () =>
     createRoot((dispose) => {
       expect(setupStall({ scrollTop: 0, fetchingOlder: false, hasOlder: true }).hook.stalledOlder()).toBe(false)
       expect(setupStall({ scrollTop: 0, fetchingOlder: true, hasOlder: false }).hook.stalledOlder()).toBe(false)
       dispose()
     }))
 
-  it('stalledNewer is TRUE when clamped at the bottom edge with a newer fetch in flight', () =>
+  it('reports stalledNewer as TRUE when clamped at the bottom edge with a newer fetch in flight', () =>
     createRoot((dispose) => {
       const { hook } = setupStall({ scrollTop: 4500, fetchingNewer: true, hasNewer: true })
       expect(hook.stalledNewer()).toBe(true)
       dispose()
     }))
 
-  it('stalledNewer stays dark for a background newer pre-fetch away from the bottom edge', () =>
+  it('keeps stalledNewer dark for a background newer pre-fetch away from the bottom edge', () =>
     createRoot((dispose) => {
       const { hook } = setupStall({ scrollTop: 3000, fetchingNewer: true, hasNewer: true })
       expect(hook.stalledNewer()).toBe(false)
       dispose()
     }))
 
-  it('stalledNewer keys off distFromBottom, not scrollTop: a newer fetch at the TOP edge is dark', () =>
+  it('keys stalledNewer off distFromBottom, not scrollTop: a newer fetch at the TOP edge is dark', () =>
     createRoot((dispose) => {
       // At the top edge (scrollTop 0) distFromBottom is 4500 -- nowhere near the
       // bottom -- so a newer fetch here is a background pre-fetch, not a stall.
@@ -93,7 +93,7 @@ describe('useChatScroll stall indicators', () => {
       dispose()
     }))
 
-  it('stalledNewer turns on when a position-only scroll clamps the view at the bottom edge', () =>
+  it('turns stalledNewer on when a position-only scroll clamps the view at the bottom edge', () =>
     createRoot((dispose) => {
       // Fetch already in flight while the reader is still inside the buffer; the
       // scroll INTO the edge is a position-only move (no fetch-flag change), so the
@@ -106,7 +106,7 @@ describe('useChatScroll stall indicators', () => {
       dispose()
     }))
 
-  it('stalledNewer clears when the fetch ends, even without a scroll event', () =>
+  it('clears stalledNewer when the fetch ends, even without a scroll event', () =>
     createRoot((dispose) => {
       // A newer page that lands while anchored away from the tail grows content
       // BELOW the viewport without moving scrollTop (no scroll event). The fetch
@@ -118,7 +118,7 @@ describe('useChatScroll stall indicators', () => {
       dispose()
     }))
 
-  it('stalledNewer clears when the list element detaches', () =>
+  it('clears stalledNewer when the list element detaches', () =>
     createRoot((dispose) => {
       // The stall memos read messageListRef (a plain ref they can't track); attach AND
       // detach bump the geometry tick so they re-evaluate. On unmount the indicator must

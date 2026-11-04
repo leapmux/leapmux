@@ -1,14 +1,7 @@
+import type { TerminalDisplayStatus } from '~/stores/tab.types'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import * as styles from './terminalStatus.css'
-
-/**
- * The display state of a terminal whose worker channel the client lost. Only
- * the client can observe it, so it is no TerminalStatus value.
- */
-export const TERMINAL_DISCONNECTED = 'disconnected' as const
-
-/** A terminal status as a tab shows it: the worker's status, or the client's own disconnected state. */
-export type TerminalDisplayStatus = TerminalStatus | typeof TERMINAL_DISCONNECTED
 
 // Static classList objects — avoids per-render allocation from tab rendering.
 const RUNNING_OR_UNSET: Record<string, boolean> = {}

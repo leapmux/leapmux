@@ -129,10 +129,15 @@ export type WebAuthnCredentialInit = MessageInitShape<typeof WebAuthnCredentialS
  * The challenge a Begin response carries, refusing an absent one. The hub
  * always answers a successful Begin with a challenge, so an absent one is a
  * response the client cannot use, and the browser prompt must not open.
+ *
+ * The refusal's message reaches a person through `passkeyErrorMessage` on
+ * every passkey surface: sign-in, step-up, sign-up, account recovery and Add
+ * passkey. So it states the fault in plain words, and the next step it
+ * offers suits every one of those surfaces.
  */
 function requireChallenge(challenge: WebAuthnChallenge | undefined): WebAuthnChallenge {
   if (!challenge)
-    throw new Error('the hub answered without a passkey challenge')
+    throw new Error('The hub could not start the passkey prompt. Try again.')
   return challenge
 }
 

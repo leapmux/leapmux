@@ -60,7 +60,7 @@ func (s *Suite) testUsers(t *testing.T) {
 			RegisteredBy: userid.UserID{},
 			PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
 		})
-		require.Error(t, keysErr, "a worker has no blank-id registrant to reference")
+		require.Error(t, keysErr, "a worker has no blank-id registrant for its foreign key to point at")
 		assert.NotErrorIs(t, keysErr, store.ErrInvalidArgument, "the keys are valid, so the refusal is the foreign key")
 	})
 

@@ -132,9 +132,8 @@ func (s *Service) BeginLogin(ctx context.Context, userID, origin string) (sessio
 }
 
 // FinishLogin validates a passkey assertion and returns the authenticated
-// user (derived from the ceremony session) and the passkey count of the
-// loaded credential set.
-func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON string) (*store.User, int64, error) {
+// user, derived from the ceremony session.
+func (s *Service) FinishLogin(ctx context.Context, sessionID, credentialJSON string) (*store.User, error) {
 	return s.validateAssertion(ctx, sessionID, KindLogin, "", credentialJSON)
 }
 
@@ -182,48 +181,48 @@ func (s *Service) CheckOrigin(origin string) error {
 // TWO callers, and each keeps what belongs to its own kind. FinishLogin takes
 // the user this returns, and its own caller mints the session. FinishElevation
 // mints nothing at all -- the elevation lives on the credential row, which the
-// service layer stamps -- so it discards both return values.
+// service layer stamps -- so it discards the user.
 //
 // A REGISTRATION ceremony never reaches here. It presents an attestation
 // rather than an assertion, so both of its paths -- FinishSignUp, which also
 // carries the signup draft, and VerifyRegistration -- run verifyAttestation
 // instead.
-func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, credentialJSON string) (*store.User, int64, error) {
+func (s *Service) validateAssertion(ctx context.Context, sessionID string, wantKind leapmuxv1.WebAuthnSessionKind, expectedUserID, credentialJSON string) (*store.User, error) {
 	row, sessionData, err := s.consumeCeremonySession(ctx, sessionID, wantKind, "")
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	userID := expectedUserID
 	if userID == "" {
 		if row.UserID == "" {
-			return nil, 0, fmt.Errorf("%w: missing user", ErrCeremonyInvalid)
+			return nil, fmt.Errorf("%w: missing user", ErrCeremonyInvalid)
 		}
 		userID = row.UserID
 	} else if row.UserID != expectedUserID {
-		return nil, 0, fmt.Errorf("%w: session owner mismatch", ErrCeremonyInvalid)
+		return nil, fmt.Errorf("%w: session owner mismatch", ErrCeremonyInvalid)
 	}
 	if !bytes.Equal(sessionData.UserID, userIDBytes(userID)) {
-		return nil, 0, fmt.Errorf("%w: user mismatch", ErrCeremonyInvalid)
+		return nil, fmt.Errorf("%w: user mismatch", ErrCeremonyInvalid)
 	}
-	stored, count, err := s.loadUser(ctx, userID)
+	stored, _, err := s.loadUser(ctx, userID)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(credentialJSON))
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: parse: %w", ErrAssertionRejected, err)
+		return nil, fmt.Errorf("%w: parse: %w", ErrAssertionRejected, err)
 	}
 	cred, err := s.w.ValidateLogin(stored, *sessionData, parsed)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: %w", ErrAssertionRejected, err)
+		return nil, fmt.Errorf("%w: %w", ErrAssertionRejected, err)
 	}
 	if err := RejectIfCloneWarning(cred); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if err := s.applySignCountUpdate(ctx, cred.ID, userID, int64(cred.Authenticator.SignCount), time.Now().UTC()); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return stored.source, count, nil
+	return stored.source, nil
 }
 
 // FinishedSignUpCredential is the credential material a finish call returns
@@ -398,7 +397,7 @@ func (s *Service) BeginElevation(ctx context.Context, userID, origin string) (se
 // state, with its own TTL, its own replay window and its own consume path,
 // and it would say no more than the session row says directly.
 func (s *Service) FinishElevation(ctx context.Context, userID, sessionID, credentialJSON string) error {
-	_, _, err := s.validateAssertion(ctx, sessionID, KindElevation, userID, credentialJSON)
+	_, err := s.validateAssertion(ctx, sessionID, KindElevation, userID, credentialJSON)
 	return err
 }
 

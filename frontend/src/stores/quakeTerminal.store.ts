@@ -3,7 +3,7 @@ import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { onCleanup } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTerminal } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
@@ -270,7 +270,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    */
   const resolveTerminal = async (key: QuakeKey): Promise<void> => {
     const keyId = quakeKeyId(key)
-    const existing = await workerRpc.listTerminals(key.workerId, {
+    const existing = await workerTerminal.listTerminals(key.workerId, {
       tabIds: [],
       quakeWorkingDirs: [key.workingDir],
     })
@@ -280,7 +280,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
         deps.metadata.patch(adopted.terminalId, terminalMetadata(key.workerId, adopted)))
       return
     }
-    const resp = await workerRpc.openTerminal(key.workerId, {
+    const resp = await workerTerminal.openTerminal(key.workerId, {
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,
       workingDir: key.workingDir,

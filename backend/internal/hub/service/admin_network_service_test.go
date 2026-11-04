@@ -188,7 +188,7 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(ctx, func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(service.NewAuthService(deps), deps.Settings).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -259,7 +259,7 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(service.NewAuthService(deps), deps.Settings).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -285,7 +285,7 @@ func TestGetSystemInfo_DoesNotReadTheSoloAccountOnAMultiUserHub(t *testing.T) {
 	deps.SoloGate = auth.NewSoloGate(false, counted)
 
 	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
-		_, callErr := service.NewSystemService(service.NewAuthService(deps)).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		_, callErr := service.NewSystemService(service.NewAuthService(deps), deps.Settings).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)

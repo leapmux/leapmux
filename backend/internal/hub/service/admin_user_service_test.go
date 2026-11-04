@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/authscope"
@@ -1147,7 +1148,7 @@ func TestAdminUserService_IssueAPITokenNeedsAnElevatedSession(t *testing.T) {
 
 	// Nothing was minted.
 	page, listErr := env.st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
-		PageParams: service.NormalizePageParams("", service.MaxPageLimit),
+		PageParams: store.PageParams{Limit: contracts.MaxPageLimit},
 	})
 	require.NoError(t, listErr)
 	assert.Empty(t, page.Rows, "a refused mint must leave no row behind")
@@ -1339,7 +1340,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		require.Error(t, err, "a mint must not land on a session an administrator took away")
 
 		page, listErr := env.st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
-			PageParams: service.NormalizePageParams("", service.MaxPageLimit),
+			PageParams: store.PageParams{Limit: contracts.MaxPageLimit},
 		})
 		require.NoError(t, listErr)
 		assert.Empty(t, page.Rows, "a refused mint must leave no row behind")
