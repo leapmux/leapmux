@@ -121,12 +121,16 @@ runs:
         fi
         hash='${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}'
         week="$(date -u +%G-W%V)"
-        prefix="docker-go-build-${ARCH}-go${GOLANG_VERSION}-"
+        # The partition prefix and the runtime cache path come from the
+        # policy registry, so the workflows cannot disagree with the
+        # snapshot implementation about either.
+        prefix="$(node scripts/cache-snapshot.mjs prefix --kind docker-go)"
+        cache_path="$(node scripts/cache-snapshot.mjs active-path --kind docker-go --root go-build)"
         {
           echo "writes-shared=$writes_shared"
           echo "key=${prefix}${hash}-${week}"
           echo "restore-prefix=${prefix}"
-          echo "cache-path=$RUNNER_TEMP/docker-go-build"
+          echo "cache-path=$cache_path"
           echo "build-args<<LEAPMUX_BUILD_ARGS"
           echo "BASE_IMAGE=$base_image"
           echo "BUF_VERSION=$BUF_VERSION"

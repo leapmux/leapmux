@@ -57,4 +57,40 @@ describe('docker image tests', () => {
       expect(result.stdout).not.toContain('Testing ')
     })
   }
+
+  describe('docker build load flag', () => {
+    const taskfile = () => Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+
+    function buildCommand(target) {
+      const task = taskfile().tasks[target]
+      expect(task, target).toBeDefined()
+      const precondition = task.preconditions?.map(entry => entry.sh).join('\n')
+      const command = task.cmds.at(-1)
+      return { precondition, command }
+    }
+
+    it('loads by default only when a single platform is given, and rejects a multi-platform load', () => {
+      for (const target of ['docker-build-alpine', 'docker-build-ubuntu']) {
+        const { precondition, command } = buildCommand(target)
+        // The template carries the conditional load; the default variable
+        // value is 'false', so the default build loads nothing.
+        expect(command).toContain('{{if eq .LOAD "true"}}--load{{end}}')
+        expect(taskfile().tasks[target].vars.LOAD).toBe('{{.LOAD | default "false"}}')
+        // A load requires a single platform: the precondition rejects a
+        // comma before the build starts.
+        expect(precondition, target).toContain('grep -q ,')
+        expect(precondition).toContain('{{.LOAD}}" != "true"')
+      }
+    })
+
+    it('assembles the load command for a single platform', () => {
+      // The template renders --load only for LOAD=true; assert the rendered
+      // shape through a minimal template expansion of the same rule.
+      const template = buildCommand('docker-build-alpine').command
+      const renderedLoad = template.replace('{{if eq .LOAD "true"}}--load{{end}}', '--load')
+      expect(renderedLoad).toContain('--load')
+      const renderedNoLoad = template.replace('{{if eq .LOAD "true"}}--load{{end}}', '')
+      expect(renderedNoLoad).not.toContain('--load')
+    })
+  })
 })

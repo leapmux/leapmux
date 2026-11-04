@@ -42,22 +42,18 @@ jobs:
           arch: ${{ matrix.arch }}
           save-caches: 'true'
 
-      # Separate job steps make extraction and pruning failures stop the save.
-      - name: Cache Docker Go build outputs
+      # The writer passes no fallback: a missed exact key starts the Go
+      # cache mount from empty. The save follows the build action, whose
+      # export runs only after the image passed its runtime tests, and the
+      # pruner follows the save and verifies the stored replacement before
+      # its post step deletes older archives.
+      - name: Restore the Docker Go build outputs
         id: go-cache
         uses: ./.github/actions/build-output-cache
         with:
-          path: ${{ steps.setup.outputs.cache-path }}
+          kind: docker-go
           key: ${{ steps.setup.outputs.cache-key }}
-          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
-          save: ${{ steps.setup.outputs.writes-shared }}
-
-      - name: Replace older Docker Go build caches
-        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
+          writer: ${{ steps.setup.outputs.writes-shared }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -81,6 +77,23 @@ jobs:
           outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
           # This workflow runs only on pushes to main.
           save-caches: 'true'
+
+      - name: Save the Docker Go build outputs snapshot
+        id: go-cache-save
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: docker-go
+          key: ${{ steps.setup.outputs.cache-key }}
+
+      - name: Replace older Docker Go build caches
+        # A capacity skip published nothing, so it must not request a remote
+        # deletion.
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache-save.outputs.result == 'ready'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Upload image digest
         uses: ./.github/actions/upload-docker-digest

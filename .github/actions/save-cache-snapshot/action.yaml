@@ -1,0 +1,51 @@
+name: Save a cache snapshot
+description: |
+  Prepare one cache snapshot of the policy registry for publication and save
+  the archive only when the preparation reports ready. Preparation runs the
+  trimming rule of the kind, validates its required contents, builds the
+  staging payload, and checks the destination capacity. A malformed payload
+  or a failed trim fails this action; insufficient capacity reports
+  skipped-capacity, saves nothing, and keeps the job successful. Callers gate
+  remote pruning on the exposed result, so a capacity skip never requests a
+  deletion. The staging payload is removed in an always() cleanup after the
+  conditional save, on every publication outcome.
+inputs:
+  kind:
+    description: The cache kind from the policy registry.
+    required: true
+  key:
+    description: The exact cache key of this generation.
+    required: true
+outputs:
+  result:
+    description: Exactly ready or skipped-capacity; empty when preparation failed.
+    value: ${{ steps.prepare.outputs.result }}
+  archive-path:
+    description: The staging payload that the save transport archived.
+    value: ${{ steps.prepare.outputs.archive-path }}
+runs:
+  using: composite
+  steps:
+    - name: Prepare the snapshot archive
+      id: prepare
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+        LEAPMUX_CACHE_KEY: ${{ inputs.key }}
+      run: node scripts/cache-snapshot.mjs prepare --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
+
+    - name: Save the snapshot archive
+      id: save
+      if: steps.prepare.outputs.result == 'ready'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .tmp/ci-cache/snapshots/${{ inputs.kind }}/payload
+        key: ${{ inputs.key }}
+
+    - name: Clean the staging payload
+      id: cleanup
+      if: always()
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+      run: node scripts/cache-snapshot.mjs cleanup --kind "$LEAPMUX_CACHE_KIND"

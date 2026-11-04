@@ -44,10 +44,37 @@ jobs:
       - name: Load tool versions
         uses: ./.github/actions/load-versions
 
+      - name: Derive the cache week
+        # The weekly epoch of the site snapshots. Setup-build is not used
+        # here, so this job derives the week itself.
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: site/go.sum
+          # The built-in cache combines the module and build directories and
+          # cannot exclude inherited files, so the site snapshots replace it.
+          cache: false
+
+      - name: Restore the site module downloads
+        uses: ./.github/actions/dependency-caches
+        with:
+          go: 'true'
+          go-scope: site
+          bun: 'false'
+          populate: 'true'
+
+      - name: Restore the site build outputs
+        # This workflow runs only on main, so every job is a writer and
+        # passes no fallback: a missed exact key builds the site from an
+        # empty Go build cache, and the save below publishes only this
+        # build's outputs.
+        id: site-go-restore
+        uses: ./.github/actions/build-output-cache
+        with:
+          kind: site-go
+          key: site-go-2-${{ runner.os }}-go${{ env.GOLANG_VERSION }}-${{ hashFiles('site/go.mod', 'site/go.sum') }}-${{ env.CACHE_WEEK }}
+          writer: 'true'
 
       - name: Build site
         # GOWORK=off isolates the site module from the root go.work (which lists
@@ -55,6 +82,15 @@ jobs:
         # site/go.mod, so there is nothing extra to install.
         working-directory: site
         run: GOWORK=off go tool hugo --gc --minify
+
+      - name: Save the site build outputs snapshot
+        # Saved before the deploy step receives the Cloudflare token, so a
+        # failed or skipped deploy cannot withhold a complete snapshot.
+        if: steps.site-go-restore.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: site-go
+          key: site-go-2-${{ runner.os }}-go${{ env.GOLANG_VERSION }}-${{ hashFiles('site/go.mod', 'site/go.sum') }}-${{ env.CACHE_WEEK }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

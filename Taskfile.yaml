@@ -1211,6 +1211,7 @@ tasks:
       - task: test-ci-monitor
       - task: test-backend-no-docker-run
       - task: test-desktop-run
+      - task: test-cache-native
       # Linux cannot analyze Rust code behind macOS and Windows cfg attributes.
       - cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings
 
@@ -1239,6 +1240,7 @@ tasks:
       - task: test-ci-monitor
       - task: test-backend-no-docker
       - task: test-desktop
+      - task: test-cache-native
 
   test-no-docker:
     desc: Run all tests, skipping the backend tests that need Docker
@@ -1618,6 +1620,16 @@ tasks:
     cmds:
       - bun test --timeout 30000 ./scripts/test-docker.test.mjs
 
+  test-cache-native:
+    desc: Test the cache snapshot modules against this OS's real toolchains
+    cmds:
+      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs
+
+  test-docker-cache:
+    desc: Prove that the Docker Go cache export reads the current cache mount
+    cmds:
+      - node scripts/check-docker-cache.mjs {{.CLI_ARGS}}
+
   test-docker:
     desc: Test startup and shutdown of a built Docker image
     requires:
@@ -1636,10 +1648,18 @@ tasks:
     vars:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:latest"}}'
+      LOAD: '{{.LOAD | default "false"}}'
+    # Loading an image into the local docker store works for exactly one
+    # platform; a multi-platform load fails late inside buildx, so reject it
+    # before the build starts.
+    preconditions:
+      - sh: '[ "{{.LOAD}}" != "true" ] || ! printf %s "{{.PLATFORM}}" | grep -q ,'
+        msg: LOAD=true requires a single platform
     cmds:
       - >-
         docker buildx build
         --platform {{.PLATFORM}}
+        {{if eq .LOAD "true"}}--load{{end}}
         --build-arg BASE_IMAGE={{.ALPINE_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}
@@ -1659,10 +1679,18 @@ tasks:
     vars:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:ubuntu"}}'
+      LOAD: '{{.LOAD | default "false"}}'
+    # Loading an image into the local docker store works for exactly one
+    # platform; a multi-platform load fails late inside buildx, so reject it
+    # before the build starts.
+    preconditions:
+      - sh: '[ "{{.LOAD}}" != "true" ] || ! printf %s "{{.PLATFORM}}" | grep -q ,'
+        msg: LOAD=true requires a single platform
     cmds:
       - >-
         docker buildx build
         --platform {{.PLATFORM}}
+        {{if eq .LOAD "true"}}--load{{end}}
         --build-arg BASE_IMAGE={{.UBUNTU_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}

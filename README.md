@@ -301,6 +301,38 @@ The native test target runs these checks:
 - Go desktop sidecar tests
 - Rust desktop tests and Clippy for the host platform
 - Frontend script and end-to-end helper tests, including native process and filesystem tests
+- The cache snapshot tests against this OS's real toolchains (`task test-cache-native`)
+
+### Build cache snapshots
+
+CI caches restore through one policy registry, `scripts/cache-policy.mjs`.
+Every archive key embeds the snapshot generation, so an archive that an older
+retention rule produced never restores again. The rules that the plan fixes:
+
+- A writer that misses its exact key starts from empty owned roots. It never
+  inherits a fallback snapshot.
+- A reader may restore a fallback snapshot from the current generation, but
+  it cannot save the resulting directory.
+- Dependency archives populate an isolated empty directory from the current
+  declarations, so an inherited obsolete dependency cannot enter an archive.
+- Compiled archives trim before publication: the Rust rule keeps the
+  dependency outputs of every profile and the source data that reusing them
+  requires, and removes application binaries, bundles, and incremental data.
+- A failed build, test, trim, or export prevents the save. A capacity skip
+  reports `skipped-capacity`, saves nothing, and requests no remote pruning.
+- The remote pruner deletes older archives only after it verifies the
+  replacement archive under the exact key and branch.
+
+Run the snapshot tests against the real toolchains of this machine:
+```bash
+task test-cache-native
+```
+
+Prove on this machine that the Docker Go cache export reads the current
+cache mount (needs Docker; builds a dedicated builder and removes it):
+```bash
+task test-docker-cache
+```
 
 Linux amd64 covers all frontend tests, repository script tests, and schema validation.
 Both Linux architectures run Go lint and vet checks for all three operating systems.

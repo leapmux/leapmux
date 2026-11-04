@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { CRATES_INDEX } from './renovate-registry.mjs'
 
@@ -23,8 +23,36 @@ export function scratchDirectories() {
       return directory
     },
     cleanup() {
-      for (const directory of created.splice(0))
-        rmSync(directory, { recursive: true, force: true })
+      for (const directory of created.splice(0)) {
+        try {
+          rmSync(directory, { recursive: true, force: true })
+        }
+        catch {
+          // Tool caches mark directories read-only, and removing an entry
+          // needs a writable parent. Restore the owner's write bit on every
+          // directory and remove again.
+          const stack = [directory]
+          while (stack.length > 0) {
+            const current = stack.pop()
+            let stat
+            try {
+              stat = lstatSync(current)
+            }
+            catch {
+              continue
+            }
+            if (stat.isSymbolicLink() || !stat.isDirectory())
+              continue
+            try {
+              chmodSync(current, stat.mode | 0o200)
+            }
+            catch {}
+            for (const entry of readdirSync(current, { withFileTypes: true }))
+              stack.push(join(current, entry.name))
+          }
+          rmSync(directory, { recursive: true, force: true })
+        }
+      }
     },
   }
 }

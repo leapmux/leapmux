@@ -53,39 +53,7 @@ jobs:
           rust-components: clippy
           # Only push-to-main saves the compiled caches; see the input's docs.
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Start the resource monitor
-        # GitHub keeps no log for a runner that it loses. The monitor publishes
-        # the runner's memory, processes, disk and network to a check run,
-        # which stays readable after such a loss. Set the repository variable
-        # CI_RESOURCE_MONITOR to true to run it in every job, and remove it
-        # when the investigation ends: each job spends about two API requests
-        # a minute of the repository's GITHUB_TOKEN limit. It starts after
-        # the toolchain setup, which installs Bun.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
-        uses: ./.github/actions/ci-resource-monitor
-        with:
-          mode: start
-
-      # Keep these post contexts separate. A prune failure must stop the save.
-      - name: Cache Go build outputs
-        id: go-cache
-        if: github.ref == 'refs/heads/main'
-        uses: ./.github/actions/build-output-cache
-        with:
-          path: |
-            ${{ steps.setup.outputs.go-cache }}
-            ${{ steps.setup.outputs.lint-cache }}
-          key: ${{ steps.setup.outputs.cache-key }}
-          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
-          save: 'true'
-
-      - name: Replace older Go build caches
-        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
+          monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -114,21 +82,31 @@ jobs:
       # also holds the Task checksum and the task-state record of build-renovate-re2 (the record
       # file name is the SHA-256 of the task name). So the task accepts the engine only when its
       # sources, toolchain, and recipe match, and rebuilds it otherwise.
-      - name: Cache the compiled Renovate RE2 engine
+      - name: Restore the compiled Renovate RE2 engine
+        # The archive holds the outputs of the task, its Task checksum, and
+        # its task-state record, so the task accepts the engine only when
+        # its sources, toolchain, and recipe match, and rebuilds otherwise.
+        # A writer on main publishes through the explicit save below, after
+        # the extraction validated the engine; it passes no fallback.
+        id: re2-restore
         if: matrix.arch == 'amd64'
         uses: ./.github/actions/build-output-cache
         with:
-          path: |
-            .github/renovate/node_modules/re2/build/Release/re2.node
-            .task/checksum/build-renovate-re2
-            .task/artifacts/041ee1d9a6f1e20e6f63880ffd41e7502068f85f0c919c572e79d28cd36b3b68.sha256
-          key: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
-          restore-keys: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-
-          save: ${{ github.ref == 'refs/heads/main' }}
+          kind: renovate-re2
+          key: renovate-re2-2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('renovate-re2-2-{0}-{1}-{2}-node24-bun{3}-task{4}-{5}-', runner.os, runner.arch, env.CACHE_IMAGE, env.BUN_VERSION, env.TASK_VERSION, hashFiles('.github/renovate/bun.lock')) || '' }}
+          writer: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Validate Renovate dependency extraction
         if: matrix.arch == 'amd64'
         run: task renovate-extract
+
+      - name: Save the compiled Renovate RE2 engine
+        if: github.ref == 'refs/heads/main' && matrix.arch == 'amd64' && steps.re2-restore.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: renovate-re2
+          key: renovate-re2-2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
 
       - name: Restore project Node.js
         if: matrix.arch == 'amd64'
@@ -145,6 +123,24 @@ jobs:
 
       - name: Check the unchanged native build
         run: task check-build-cache
+
+      - name: Save the Tauri tool snapshot
+        # The packaging build completed; the trimmed tool cache is ready to
+        # publish. Linux and Windows publish; macOS has no Tauri cache.
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: tauri-tools
+          key: ${{ steps.setup.outputs.tauri-cache-key }}
+
+      - name: Save the spinner source snapshot
+        # The packaging build ran `task generate-spinners`, so the consumed
+        # spinners/ subtree is complete.
+        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
 
       - name: Diagnose linuxdeploy (on failure)
         # Tauri discards linuxdeploy output on failure and reports only "failed to run linuxdeploy".
@@ -175,6 +171,35 @@ jobs:
         # including Docker-backed storage tests.
         run: task test-native-linux
 
+      - name: Save the Go build outputs snapshot
+        # The job completed all required validation, so the trimmed build
+        # outputs may publish. The saves precede the pruner, which verifies
+        # the stored replacement before it deletes older archives. A
+        # capacity skip publishes nothing and keeps the job successful.
+        id: go-cache-save
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-go
+          key: ${{ steps.setup.outputs.cache-key }}
+
+      - name: Save the Rust build outputs snapshot
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-rust
+          key: ${{ steps.setup.outputs.rust-cache-key }}
+
+      - name: Replace older Go build caches
+        # A capacity skip published nothing, so it must not request a remote
+        # deletion. The pruner verifies the stored replacement again before
+        # its post step deletes anything.
+        if: github.ref == 'refs/heads/main' && steps.go-cache-save.outputs.result == 'ready'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
+
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
         uses: ./.github/actions/ci-resource-monitor
@@ -203,33 +228,7 @@ jobs:
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Start the resource monitor
-        # See the linux job.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
-        uses: ./.github/actions/ci-resource-monitor
-        with:
-          mode: start
-
-      # Keep these post contexts separate. A prune failure must stop the save.
-      - name: Cache Go build outputs
-        id: go-cache
-        if: github.ref == 'refs/heads/main'
-        uses: ./.github/actions/build-output-cache
-        with:
-          path: |
-            ${{ steps.setup.outputs.go-cache }}
-            ${{ steps.setup.outputs.lint-cache }}
-          key: ${{ steps.setup.outputs.cache-key }}
-          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
-          save: 'true'
-
-      - name: Replace older Go build caches
-        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
+          monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 
       - name: Test native modules
         # Linux amd64 owns portable validation. Keep Go and Rust tests here
@@ -247,6 +246,53 @@ jobs:
 
       - name: Check the unchanged native build
         run: task check-build-cache
+
+      - name: Save the Tauri tool snapshot
+        # The packaging build completed; the trimmed tool cache is ready to
+        # publish. Linux and Windows publish; macOS has no Tauri cache.
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: tauri-tools
+          key: ${{ steps.setup.outputs.tauri-cache-key }}
+
+      - name: Save the spinner source snapshot
+        # The packaging build ran `task generate-spinners`, so the consumed
+        # spinners/ subtree is complete.
+        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
+
+      - name: Save the Go build outputs snapshot
+        # The job completed all required validation, so the trimmed build
+        # outputs may publish. The saves precede the pruner, which verifies
+        # the stored replacement before it deletes older archives. A
+        # capacity skip publishes nothing and keeps the job successful.
+        id: go-cache-save
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-go
+          key: ${{ steps.setup.outputs.cache-key }}
+
+      - name: Save the Rust build outputs snapshot
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-rust
+          key: ${{ steps.setup.outputs.rust-cache-key }}
+
+      - name: Replace older Go build caches
+        # A capacity skip published nothing, so it must not request a remote
+        # deletion. The pruner verifies the stored replacement again before
+        # its post step deletes anything.
+        if: github.ref == 'refs/heads/main' && steps.go-cache-save.outputs.result == 'ready'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
@@ -284,33 +330,7 @@ jobs:
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Start the resource monitor
-        # See the linux job.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
-        uses: ./.github/actions/ci-resource-monitor
-        with:
-          mode: start
-
-      # Keep these post contexts separate. A prune failure must stop the save.
-      - name: Cache Go build outputs
-        id: go-cache
-        if: github.ref == 'refs/heads/main'
-        uses: ./.github/actions/build-output-cache
-        with:
-          path: |
-            ${{ steps.setup.outputs.go-cache }}
-            ${{ steps.setup.outputs.lint-cache }}
-          key: ${{ steps.setup.outputs.cache-key }}
-          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
-          save: 'true'
-
-      - name: Replace older Go build caches
-        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
+          monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 
       - name: Test native modules
         # Run under pwsh to preserve the MSVC PATH. Git Bash prepends /usr/bin, whose link.exe
@@ -330,6 +350,53 @@ jobs:
       - name: Check the unchanged native build
         shell: pwsh
         run: task check-build-cache
+
+      - name: Save the Tauri tool snapshot
+        # The packaging build completed; the trimmed tool cache is ready to
+        # publish. Linux and Windows publish; macOS has no Tauri cache.
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: tauri-tools
+          key: ${{ steps.setup.outputs.tauri-cache-key }}
+
+      - name: Save the spinner source snapshot
+        # The packaging build ran `task generate-spinners`, so the consumed
+        # spinners/ subtree is complete.
+        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
+
+      - name: Save the Go build outputs snapshot
+        # The job completed all required validation, so the trimmed build
+        # outputs may publish. The saves precede the pruner, which verifies
+        # the stored replacement before it deletes older archives. A
+        # capacity skip publishes nothing and keeps the job successful.
+        id: go-cache-save
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-go
+          key: ${{ steps.setup.outputs.cache-key }}
+
+      - name: Save the Rust build outputs snapshot
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: native-rust
+          key: ${{ steps.setup.outputs.rust-cache-key }}
+
+      - name: Replace older Go build caches
+        # A capacity skip published nothing, so it must not request a remote
+        # deletion. The pruner verifies the stored replacement again before
+        # its post step deletes anything.
+        if: github.ref == 'refs/heads/main' && steps.go-cache-save.outputs.result == 'ready'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
@@ -356,22 +423,16 @@ jobs:
           variant: ${{ matrix.variant }}
           arch: amd64
 
-      # Separate job steps make extraction and pruning failures stop the save.
-      - name: Cache Docker Go build outputs
+      # The pull-request job is a reader: it may restore a fallback snapshot
+      # but never exports or saves one, and no pruning runs.
+      - name: Restore the Docker Go build outputs
         id: go-cache
         uses: ./.github/actions/build-output-cache
         with:
-          path: ${{ steps.setup.outputs.cache-path }}
+          kind: docker-go
           key: ${{ steps.setup.outputs.cache-key }}
           restore-keys: ${{ steps.setup.outputs.cache-prefix }}
-          save: ${{ steps.setup.outputs.writes-shared }}
-
-      - name: Replace older Docker Go build caches
-        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/prune-build-cache
-        with:
-          key: ${{ steps.setup.outputs.cache-key }}
-          prefix: ${{ steps.setup.outputs.cache-prefix }}
+          writer: ${{ steps.setup.outputs.writes-shared }}
 
       # Load and test the image without publishing it or writing shared caches.
       - name: Build and test Docker image

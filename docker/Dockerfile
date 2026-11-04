@@ -77,6 +77,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
 # ------------------------------------------------------------------
+# Stage: export the Go build cache mount (the CI extraction reads it)
+# ------------------------------------------------------------------
+FROM builder AS go-cache-export
+
+# Read the current cache mount into the image filesystem. The CI caller sets
+# no-cache-filters to this stage, so BuildKit cannot replay an old export
+# layer instead of reading the mount content of the current build.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out && cp -a /root/.cache/go-build/. /out/
+
+FROM scratch AS go-cache-files
+
+COPY --from=go-cache-export /out/ /
+
+# ------------------------------------------------------------------
 # Stage 2: Runtime image with s6-overlay
 # ------------------------------------------------------------------
 FROM ${BASE_IMAGE}

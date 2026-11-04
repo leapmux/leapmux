@@ -10,6 +10,7 @@ const expression = body => `\${{ ${body} }}`
 // The one Bun test that the native jobs run: the resource monitor reads each
 // OS through its own probe, so each runner tests its own.
 const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
+const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs'
 const fixtures = []
 
 afterEach(() => {
@@ -89,7 +90,8 @@ describe('native CI validation', () => {
     expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
     expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     expect(linux).toContain(MONITOR_TEST)
-    expect(linux.filter(command => command !== MONITOR_TEST).join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
+    expect(linux).toContain(CACHE_NATIVE_TEST)
+    expect(linux.filter(command => command !== MONITOR_TEST && command !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
   })
 
   it.each([
@@ -126,6 +128,11 @@ describe('native CI validation', () => {
     let index = 0
     // Retain the production orchestration. Replace compilation with a recorder
     // so the fixture can fail each test command without native toolchains.
+    // test-cache-native keeps its `task:` reference, which the fixture's
+    // Taskfile resolves to its own definition below.
+    selected['test-cache-native'] = {
+      cmds: ['bun record.mjs cache-native'],
+    }
     for (const name of [
       'test-frontend-native',
       'test-ci-monitor',
@@ -147,9 +154,18 @@ describe('native CI validation', () => {
     })
     expect(result.error).toBeUndefined()
     expect(result.status === 0, result.stdout + result.stderr).toBe(failure === '')
-    expect(readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')).toEqual(failure
-      ? stages.slice(0, stages.indexOf(failure) + 1)
-      : stages)
+    // test-desktop-run contributes two recorded commands (Go and Rust), so
+    // the recorded order of the whole run is the stage list with the
+    // cache-native stage inserted after it.
+    const recorded = [
+      ...stages.slice(0, 5),
+      'cache-native',
+      ...stages.slice(5),
+    ]
+    const executedActual = readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')
+    expect(executedActual).toEqual(failure
+      ? recorded.slice(0, recorded.indexOf(failure) + 1)
+      : recorded)
   })
 
   it('keeps native Go tests, Rust tests and Rust lint without repeated portable validation', () => {
@@ -161,7 +177,8 @@ describe('native CI validation', () => {
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
     expect(native).toContain(MONITOR_TEST)
-    expect(native.filter(cmd => cmd !== MONITOR_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
+    expect(native).toContain(CACHE_NATIVE_TEST)
+    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // The no-Docker run tests every package. The container tests skip themselves.
     const backend = native.find(cmd => cmd.includes('cd backend && go tool gotestsum'))
@@ -211,21 +228,31 @@ describe('native CI validation', () => {
     }
   })
 
-  it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from the toolchain setup to the end of the job', (name) => {
+  it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from before the cache restorations to the end of the job', (name) => {
     const job = readYaml('.github/workflows/ci.yaml').jobs[name]
     const steps = job.steps
     const monitor = 'bun scripts/ci-resource-monitor.mjs'
-    const start = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'start')
     const stop = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'stop')
-    const setup = steps.findIndex(step => step.uses === './.github/actions/setup-build')
+    const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-build')
+    const setup = steps[setupIndex]
     const tests = steps.findIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
-    // The monitor needs the Bun that the toolchain setup installs.
-    expect(start).toBe(setup + 1)
-    expect(tests).toBeGreaterThan(start)
-    // The stop step runs last and after a failure, so it prints the log of every job that GitHub keeps.
+    // The job keeps only the stop step; the start moved into the setup.
+    expect(steps.filter(step => step.uses === './.github/actions/ci-resource-monitor')).toHaveLength(1)
     expect(stop).toBe(steps.length - 1)
-    // The repository variable CI_RESOURCE_MONITOR switches the monitor on.
-    expect(steps[start].if).toBe('vars.CI_RESOURCE_MONITOR == \'true\'')
+    expect(tests).toBeGreaterThan(setupIndex)
+    // The repository variable CI_RESOURCE_MONITOR switches the monitor on,
+    // and the setup starts it before the APT installation and the caches.
+    expect(setup.with['monitor-resources']).toBe(expression('vars.CI_RESOURCE_MONITOR == \'true\''))
+    const setupSteps = readYaml('.github/actions/setup-build/action.yaml').runs.steps
+    const bunSetup = setupSteps.findIndex(step => step.name === 'Setup Bun')
+    const start = setupSteps.findIndex(step => step.name === 'Start the resource monitor')
+    const aptRestore = setupSteps.findIndex(step => step.id === 'apt-restore')
+    expect(bunSetup).toBeGreaterThan(0)
+    expect(start).toBe(bunSetup + 1)
+    expect(aptRestore).toBeGreaterThan(start)
+    expect(setupSteps[start].if).toBe('inputs.monitor-resources == \'true\'')
+    expect(setupSteps[start].with.mode).toBe('start')
+    // The stop step runs last and after a failure, so it prints the log of every job that GitHub keeps.
     expect(steps[stop].if).toBe('always() && vars.CI_RESOURCE_MONITOR == \'true\'')
     const action = readYaml('.github/actions/ci-resource-monitor/action.yaml')
     expect(action.inputs.mode.required).toBe(true)
