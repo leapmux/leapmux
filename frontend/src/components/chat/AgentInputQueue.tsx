@@ -10,7 +10,7 @@ import PencilOff from 'lucide-solid/icons/pencil-off'
 import RotateCcw from 'lucide-solid/icons/rotate-ccw'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import SquarePen from 'lucide-solid/icons/square-pen'
-import Trash2 from 'lucide-solid/icons/trash-2'
+import Trash from 'lucide-solid/icons/trash'
 import TriangleAlert from 'lucide-solid/icons/triangle-alert'
 import UserPen from 'lucide-solid/icons/user-pen'
 import Zap from 'lucide-solid/icons/zap'
@@ -426,7 +426,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             disabled={isLocked()}
             onClick={() => props.onDelete(item())}
           >
-            <Icon icon={Trash2} size="xs" />
+            <Icon icon={Trash} size="xs" />
           </ConfirmButton>
           <Show when={isHead() && retryable() && !item().editOwnerClientId}>
             <RowAction

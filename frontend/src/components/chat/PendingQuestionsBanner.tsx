@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import MessageCircleQuestion from 'lucide-solid/icons/message-circle-question'
+import MessageCircleQuestionMark from 'lucide-solid/icons/message-circle-question-mark'
 import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { srOnly } from '~/styles/shared.css'
@@ -34,7 +34,7 @@ export const PendingQuestionsBanner: Component<PendingQuestionsBannerProps> = pr
     data-testid={props.shown ? 'pending-questions-banner' : undefined}
   >
     <Show when={props.shown}>
-      <Icon icon={MessageCircleQuestion} size="xs" class={styles.icon} />
+      <Icon icon={MessageCircleQuestionMark} size="xs" class={styles.icon} />
       <span class={styles.text}>
         {props.count === 1
           ? 'The agent asked a question.'

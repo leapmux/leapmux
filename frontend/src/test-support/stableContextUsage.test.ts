@@ -84,8 +84,8 @@ describe('createStableContext usage', () => {
   // `solid-refresh` is a direct devDependency purely so `createStableContext`'s
   // HMR reproduction can drive the real runtime. The copy the DEV SERVER runs is
   // whatever `vite-plugin-solid` resolves, so one behaviour is modelled by two
-  // independently-floating ranges. They dedupe to a single hoisted install
-  // today; the day a plugin bump moves to a major the direct range no longer
+  // independently-floating ranges. Keep them at a single hoisted install.
+  // If a plugin changes to a release line that the direct range no longer
   // covers, the package manager installs a NESTED second copy and that test
   // starts exercising a patch ordering the dev server has stopped running --
   // silently, and still green.
@@ -98,7 +98,7 @@ describe('createStableContext usage', () => {
       copies,
       copies.length === 0
         ? 'No `solid-refresh` install found at all -- either it left the dependency tree, or node_modules is not installed.'
-        : `Bump \`solid-refresh\` in package.json to match vite-plugin-solid's range, `
+        : `Align \`solid-refresh\` in package.json with vite-plugin-solid's range, `
           + `so the HMR test and the dev server run the same runtime:\n  ${copies.join('\n  ')}`,
     ).toHaveLength(1)
   })

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -21,16 +23,17 @@ import (
 // codexInterruptRig captures every JSON-RPC frame Codex writes to stdin and
 // supplies the delayed response for a turn/interrupt request.
 type codexInterruptRig struct {
-	agent          *Agent
-	responseBodies chan agenttest.RPCReply
-	captured       func() []map[string]any
+	agent              *Agent
+	responseBodies     chan agenttest.RPCReply
+	firstFrameCaptured <-chan struct{}
+	captured           func() []map[string]any
 }
 
 func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
-	return newCodexInterruptRigWithAutoResponse(t, true)
+	return newCodexInterruptRigWithAutoResponse(t, true, nil)
 }
 
-func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codexInterruptRig {
+func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool, clock quartz.Clock) *codexInterruptRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -46,6 +49,7 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 			ProcessDone:  make(chan struct{}),
 			StderrDone:   make(chan struct{}),
 			APITimeout:   2 * time.Second,
+			Clock:        clock,
 		})},
 	}
 	a.SkipStderr()
@@ -55,6 +59,7 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 		captured []map[string]any
 	)
 	responseBodies := make(chan agenttest.RPCReply, 1)
+	firstFrameCaptured := make(chan struct{})
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -74,6 +79,9 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 				"method":  frame.Method,
 				"params":  frame.Params,
 			})
+			if len(captured) == 1 {
+				close(firstFrameCaptured)
+			}
 			mu.Unlock()
 			if frame.ID != 0 && autoRespond {
 				body := agenttest.RPCReply{Result: json.RawMessage(`{}`)}
@@ -93,8 +101,9 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 	})
 
 	return &codexInterruptRig{
-		agent:          a,
-		responseBodies: responseBodies,
+		agent:              a,
+		responseBodies:     responseBodies,
+		firstFrameCaptured: firstFrameCaptured,
 		captured: func() []map[string]any {
 			mu.Lock()
 			defer mu.Unlock()
@@ -108,22 +117,50 @@ func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codex
 func TestCodexAgent_Interrupt_TimesOutWhenCodexDoesNotAnswer(t *testing.T) {
 	t.Parallel()
 
-	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	trap := clock.Trap().NewTimer(providerkit.AwaitResponseTimerTag, "turn/interrupt")
+	defer trap.Close()
+	rig := newCodexInterruptRigWithAutoResponse(t, false, clock)
 	rig.agent.threadID = "thread-A"
 	rig.agent.mainTurn.id = "turn-42"
-	rig.agent.SetAPITimeoutForTest(20 * time.Millisecond)
+	const timeout = 20 * time.Millisecond
+	rig.agent.SetAPITimeoutForTest(timeout)
 
-	err := rig.agent.Interrupt(agentapi.StopContext{})
+	result := make(chan error, 1)
+	go func() { result <- rig.agent.Interrupt(agentapi.StopContext{}) }()
+	require.Equal(t, timeout, testutil.WaitForTimer(t, ctx, trap))
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "timeout waiting for turn/interrupt response")
+	// A completed pipe write does not mean that the reader recorded its frame.
+	select {
+	case <-rig.firstFrameCaptured:
+	case <-ctx.Done():
+		t.Fatal("the pipe reader did not capture the interrupt request")
+	}
 	require.Len(t, rig.captured(), 1)
+
+	clock.Advance(timeout - time.Nanosecond).MustWait(ctx)
+	select {
+	case err := <-result:
+		t.Fatalf("the interrupt returned before its deadline: %v", err)
+	default:
+	}
+	clock.Advance(time.Nanosecond).MustWait(ctx)
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.ErrorIs(t, err, providerkit.ErrAwaitTimeout)
+		assert.Contains(t, err.Error(), "timeout waiting for turn/interrupt response")
+	case <-ctx.Done():
+		t.Fatal("the interrupt did not return after its deadline")
+	}
 }
 
 func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
 	t.Parallel()
 
-	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	rig := newCodexInterruptRigWithAutoResponse(t, false, nil)
 	rig.agent.threadID = "thread-A"
 	rig.agent.mainTurn.id = "turn-42"
 	rig.agent.SetAPITimeoutForTest(time.Second)

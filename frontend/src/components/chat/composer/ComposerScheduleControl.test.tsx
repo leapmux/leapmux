@@ -68,16 +68,20 @@ describe('ComposerScheduleControl', () => {
     expect(fieldInput()).toHaveValue('2030-01-01T18:45')
   })
 
-  it('opens with the draft value and applies a future time', () => {
+  it.each([
+    { fraction: '500', normalized: '5' },
+    { fraction: '050', normalized: '05' },
+    { fraction: '005', normalized: '005' },
+  ])('opens with the draft value and applies a future time with .$fraction seconds', ({ fraction, normalized }) => {
     const { onApply } = renderControl()
     open()
     expect(fieldInput().value).toBe('')
     expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone.')
     fireEvent.input(fieldInput(), {
-      target: { value: '2030-06-01T12:00:00.500' },
+      target: { value: `2030-06-01T12:00:00.${fraction}` },
     })
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
-    expect(onApply).toHaveBeenCalledWith('2030-06-01T12:00:00.500')
+    expect(onApply).toHaveBeenCalledExactlyOnceWith(`2030-06-01T12:00:00.${normalized}`)
   })
 
   it('applies the whole-minute form that the browser writes when the seconds are zero', () => {
