@@ -11,9 +11,9 @@ import type { Reassembler } from './reassembler'
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
+import type { InnerRpcResponse, InnerStreamMessage, RpcError } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema } from '~/generated/proto/leapmux/v1/channel_pb'
+import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema, StreamCancelSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { abortError, ChannelError } from './channelError'
 import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'
@@ -27,8 +27,46 @@ const log = createLogger('channel')
  */
 export const FIRST_REQUEST_ID = 1
 
+/** The ChannelError for the in-band error of an inner RPC or stream. */
+function inBandChannelError(source: 'rpc' | 'stream', error: RpcError): ChannelError {
+  const fallback = source === 'rpc'
+    ? `RPC error code ${error.code}`
+    : `stream error code ${error.code}`
+  return new ChannelError(source, error.message || fallback, { code: error.code })
+}
+
+/**
+ * The outcome of a unary InnerRpcResponse: the serialized response message, or
+ * the in-band error that failed the call. A response that selects neither
+ * result is a success whose response message is empty, so its payload is
+ * empty.
+ */
+type UnaryOutcome = { error: RpcError } | { error: undefined, payload: Uint8Array }
+
+function unaryOutcome(resp: InnerRpcResponse): UnaryOutcome {
+  switch (resp.result.case) {
+    case 'error':
+      return { error: resp.result.value }
+    case 'payload':
+      return { error: undefined, payload: resp.result.value }
+    case undefined:
+      return {
+        error: undefined,
+        payload: new Uint8Array(),
+      }
+  }
+}
+
+/**
+ * The action of a client frame on an open stream (InnerStreamRequest): a
+ * revision that carries the method-specific payload, or the cancel that
+ * retires the stream. An empty payload is a revision too.
+ */
+export type StreamAction = { case: 'payload', payload: Uint8Array } | { case: 'cancel' }
+
 export interface PendingRequest {
-  resolve: (resp: InnerRpcResponse) => void
+  /** Receives the serialized response message of a successful call. */
+  resolve: (payload: Uint8Array) => void
   reject: (err: Error) => void
 }
 
@@ -68,6 +106,12 @@ export interface StreamHandle {
    * ChannelManager.stream deferred-path behavior.
    */
   deliverDeferredError: (err: Error, logWhat: string) => void
+  /**
+   * End the stream for its consumer with `err`, as deliverDeferredError reports
+   * it. No listener fires after this one, so a frame that is still in flight
+   * cannot follow the failure.
+   */
+  fail: (err: Error, logWhat: string) => void
 }
 
 export interface ChannelRpcDeps {
@@ -108,10 +152,14 @@ export function buildRequestPlaintext(method: string, payload: Uint8Array): Uint
  * ALREADY-OPEN stream. Sibling of buildRequestPlaintext, so the two request
  * framings live side by side.
  */
-export function buildStreamRequestPlaintext(payload: Uint8Array, cancel: boolean): Uint8Array {
+export function buildStreamRequestPlaintext(action: StreamAction): Uint8Array {
   const streamReq = create(InnerStreamRequestSchema, {
-    payload,
-    cancel,
+    action: action.case === 'payload'
+      ? { case: 'payload', value: action.payload }
+      : {
+          case: 'cancel',
+          value: create(StreamCancelSchema),
+        },
   })
   const envelope = create(InnerMessageSchema, {
     kind: { case: 'streamRequest', value: streamReq },
@@ -141,11 +189,11 @@ export class ChannelRpcMux {
     payload: Uint8Array,
     timeoutMs?: number,
     signal?: AbortSignal,
-  ): Promise<InnerRpcResponse> {
+  ): Promise<Uint8Array> {
     const requestId = ch.nextRequestId++
     const effectiveTimeoutMs = timeoutMs ?? this.deps.rpcTimeoutFn()
 
-    return new Promise<InnerRpcResponse>((resolve, reject) => {
+    return new Promise<Uint8Array>((resolve, reject) => {
       const timeoutSec = Math.round(effectiveTimeoutMs / 1000)
       // timer + cleanup + abortListener form a mutually-referencing
       // teardown trio; lint-disable so the natural setup order can
@@ -174,9 +222,9 @@ export class ChannelRpcMux {
       })
 
       ch.pendingRequests.set(requestId, {
-        resolve: (resp) => {
+        resolve: (responsePayload) => {
           cleanup()
-          resolve(resp)
+          resolve(responsePayload)
         },
         reject: (err) => {
           cleanup()
@@ -241,17 +289,28 @@ export class ChannelRpcMux {
       return this.trySend(ch, plaintext, requestId)
     }
 
+    const report = (listener: ((err: Error) => void) | null, err: Error, logWhat: string): void => {
+      if (listener)
+        listener(err)
+      else
+        log.warn(logWhat, { channel_id: ch.channelId, error: err.message })
+    }
+
     return {
       requestId,
       onMessage: (cb) => { messageCb = cb },
       onEnd: (cb) => { endCb = cb },
       onError: (cb) => { errorCb = cb },
       attachAndSend,
-      deliverDeferredError: (err, logWhat) => {
-        if (errorCb)
-          errorCb(err)
-        else
-          log.warn(logWhat, { channel_id: ch.channelId, error: err.message })
+      deliverDeferredError: (err, logWhat) => report(errorCb, err, logWhat),
+      fail: (err, logWhat) => {
+        // Clear the listeners first, so a listener that throws cannot leave
+        // them in place.
+        const listener = errorCb
+        messageCb = null
+        endCb = null
+        errorCb = null
+        report(listener, err, logWhat)
       },
     }
   }
@@ -279,16 +338,16 @@ export class ChannelRpcMux {
    * addressed to the subscription, not to a new call.
    *
    * On cancel the local registration is dropped immediately; the worker's
-   * terminal end frame then lands on an unregistered id and is discarded.
+   * final end frame then lands on an unregistered id and is discarded.
    */
-  sendOnStream(ch: RpcChannel, correlationId: number, payload: Uint8Array, cancel: boolean): ChannelError | null {
+  sendOnStream(ch: RpcChannel, correlationId: number, action: StreamAction): ChannelError | null {
     if (!ch.streamListeners.has(correlationId)) {
       // Distinguish "already gone" from success so callers do not advance
       // local interest after a silent no-op.
       return new ChannelError('client', 'stream not registered')
     }
-    const plaintext = buildStreamRequestPlaintext(payload, cancel)
-    if (cancel) {
+    const plaintext = buildStreamRequestPlaintext(action)
+    if (action.case === 'cancel') {
       // Drop the local registration first so a racing end frame is discarded.
       this.unregisterRequest(ch, correlationId)
     }
@@ -331,26 +390,29 @@ export class ChannelRpcMux {
 
   /** Route a completed InnerRpcResponse to its pending request. */
   deliverResponse(ch: RpcChannel, correlationId: number, resp: InnerRpcResponse): void {
+    const outcome = unaryOutcome(resp)
     if (log.isDebug()) {
       log.debug('received inner RPC response', {
         channel_id: ch.channelId,
         correlation_id: correlationId,
-        is_error: resp.isError,
-        error_code: resp.errorCode,
-        error_message: resp.errorMessage,
-        payload_len: resp.payload.length,
+        is_error: outcome.error !== undefined,
+        error_code: outcome.error?.code,
+        error_message: outcome.error?.message,
+        payload_len: outcome.error === undefined
+          ? outcome.payload.length
+          : 0,
       })
     }
     const pending = ch.pendingRequests.get(correlationId)
     if (pending) {
       this.unregisterRequest(ch, correlationId)
-      if (resp.isError) {
-        const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
+      if (outcome.error !== undefined) {
+        const err = inBandChannelError('rpc', outcome.error)
         this.deps.notifyError(ch.workerId, err)
         pending.reject(err)
       }
       else {
-        pending.resolve(resp)
+        pending.resolve(outcome.payload)
       }
       return
     }
@@ -359,7 +421,7 @@ export class ChannelRpcMux {
     // this arm the frame is dropped and the subscription waits forever
     // with no error to retry from. Errors only: a non-error unary payload on
     // a stream id is not something a listener can interpret.
-    if (!resp.isError) {
+    if (outcome.error === undefined) {
       return
     }
     const listener = ch.streamListeners.get(correlationId)
@@ -367,7 +429,7 @@ export class ChannelRpcMux {
       return
     }
     this.unregisterRequest(ch, correlationId)
-    const err = new ChannelError('rpc', resp.errorMessage || `RPC error code ${resp.errorCode}`, { code: resp.errorCode })
+    const err = inBandChannelError('rpc', outcome.error)
     this.deps.notifyError(ch.workerId, err)
     this.deps.safeCall(() => listener.onError(err), 'stream onError listener')
   }
@@ -379,9 +441,9 @@ export class ChannelRpcMux {
         channel_id: ch.channelId,
         correlation_id: correlationId,
         end: streamMsg.end,
-        is_error: streamMsg.isError,
-        error_code: streamMsg.errorCode,
-        error_message: streamMsg.errorMessage,
+        is_error: streamMsg.error !== undefined,
+        error_code: streamMsg.error?.code,
+        error_message: streamMsg.error?.message,
         payload_len: streamMsg.payload.length,
       })
     }
@@ -389,8 +451,8 @@ export class ChannelRpcMux {
     if (listener) {
       // Unregister BEFORE invoking the terminal callback, and isolate every
       // listener call with safeCall, mirroring drainChannel.
-      if (streamMsg.isError) {
-        const err = new ChannelError('stream', streamMsg.errorMessage || `stream error code ${streamMsg.errorCode}`, { code: streamMsg.errorCode })
+      if (streamMsg.error) {
+        const err = inBandChannelError('stream', streamMsg.error)
         this.deps.notifyError(ch.workerId, err)
         this.unregisterRequest(ch, correlationId)
         this.deps.safeCall(() => listener.onError(err), 'stream onError listener')

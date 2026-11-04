@@ -56,8 +56,8 @@ func (l countingProviderList) ListAll(ctx context.Context) ([]store.OAuthProvide
 	return l.OAuthProviderStore.ListAll(ctx)
 }
 
-// TestUnlinkOAuthProvider_ReadsTheProviderListOnceOutsideTheLock pins where
-// the hub-wide read happens.
+// TestUnlinkOAuthProvider_ReadsTheProviderListOutsideTheLock pins where the
+// hub-wide read happens.
 //
 // RunInUserAuthTransaction takes the SQLite writer lock at the start, so every
 // query inside it makes every other writer on the hub wait. The rule runs
@@ -68,9 +68,12 @@ func (l countingProviderList) ListAll(ctx context.Context) ([]store.OAuthProvide
 // table (no administrator verb takes it), so one read before the lock is the
 // same answer.
 //
+// The reply's account projection reads the list too, to report the links that
+// remain. That read runs after the commit, so it holds no lock either.
+//
 // The passkey COUNT must stay inside, and it does: the lock DOES protect the
 // account's passkeys, so the locked run has to see them.
-func TestUnlinkOAuthProvider_ReadsTheProviderListOnceOutsideTheLock(t *testing.T) {
+func TestUnlinkOAuthProvider_ReadsTheProviderListOutsideTheLock(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -110,7 +113,7 @@ func TestUnlinkOAuthProvider_ReadsTheProviderListOnceOutsideTheLock(t *testing.T
 	})
 	require.NoError(t, err, "a second enabled link remains, so the account keeps a login method")
 
-	assert.Equal(t, 1, counts.total, "one read serves both runs of the rule")
+	assert.Equal(t, 2, counts.total, "one read serves both runs of the rule, and one serves the reply")
 	assert.Zero(t, counts.locked, "the writer lock must not hold a hub-wide read")
 
 	links, err := st.OAuthUserLinks().ListByUser(ctx, userid.MustNew(user.ID))

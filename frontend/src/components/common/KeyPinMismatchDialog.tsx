@@ -28,9 +28,9 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
           {' '}
           <code>{props.workerId}</code>
           {' '}
-          has changed
-          since the last connection. This could indicate a legitimate key rotation
-          or a potential security issue.
+          differs from the key pinned for it at an earlier connection. A worker
+          keeps its keys for as long as it stays registered, so one of the two
+          keys did not come from this worker.
         </p>
         <p>
           <strong>Expected:</strong>
@@ -43,8 +43,8 @@ export const KeyPinMismatchDialog: Component<KeyPinMismatchDialogProps> = (props
           <code data-testid="actual-fingerprint">{props.actualFingerprint}</code>
         </p>
         <p>
-          If you did not expect this change, reject the connection and
-          verify the worker's identity before accepting.
+          Reject the connection. Accept only after you confirm that the Actual
+          fingerprint matches the one the worker logs when it starts.
         </p>
       </section>
       <footer class={actionsFooter}>

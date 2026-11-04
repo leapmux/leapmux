@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ASSEMBLED_MESSAGE } from '../../../src/generated/contracts/worker-vocab'
-import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueuePauseReason, EnqueueAgentInputResponseSchema, MessageSource, WorkerAgentInputService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { assertFastAgentCatalogNoInference, assertFastAgentShellCatalog, fastAgentCatalogCommandReply, parseFastAgentCatalog, parseFastAgentToolSchema, sendFastAgentCatalogCommand } from './toolCatalog'
 
 const calls = vi.hoisted(() => ({
@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   calls.channel.mockResolvedValue({ callWorker: calls.enqueue })
   calls.enqueue.mockResolvedValue(create(EnqueueAgentInputResponseSchema, {
-    snapshot: { agentId: 'native-agent' },
+    snapshot: {},
   }))
 })
 
@@ -30,7 +30,7 @@ describe('sendFastAgentCatalogCommand', () => {
   it('sends exact underscore and Unicode arguments through the actual typed Worker user-input route', async () => {
     await sendFastAgentCatalogCommand(server, 'native-agent', '/tools read_text_file_한글')
     expect(calls.channel).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken)
-    expect(calls.enqueue).toHaveBeenCalledExactlyOnceWith('actual-worker', 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, {
+    expect(calls.enqueue).toHaveBeenCalledExactlyOnceWith('actual-worker', WorkerAgentInputService.method.enqueueAgentInput, {
       agentId: 'native-agent',
       inputId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       text: '/tools read_text_file_한글',
@@ -51,12 +51,9 @@ describe('sendFastAgentCatalogCommand', () => {
   it.each([
     create(EnqueueAgentInputResponseSchema),
     create(EnqueueAgentInputResponseSchema, {
-      snapshot: { agentId: 'another-agent' },
+      snapshot: { pauseReason: AgentInputQueuePauseReason.MANUAL },
     }),
-    create(EnqueueAgentInputResponseSchema, {
-      snapshot: { agentId: 'native-agent', paused: true },
-    }),
-  ])('rejects an absent, unrelated, or paused Worker queue', async (response) => {
+  ])('rejects an absent or paused Worker queue', async (response) => {
     calls.enqueue.mockResolvedValue(response)
     await expect(sendFastAgentCatalogCommand(server, 'native-agent', '/tools')).rejects.toThrow('active queue')
   })

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -21,19 +23,39 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 type adminWorkerEnv struct {
-	client leapmuxv1connect.AdminWorkerServiceClient
-	st     store.Store
-	token  string
-	userID string
+	client   leapmuxv1connect.AdminWorkerServiceClient
+	st       store.Store
+	token    string
+	userID   string
+	presence *fakeWorkerPresence
+}
+
+// fakeWorkerPresence answers the admin service's one registry question from a set
+// the test controls. No Worker is online unless the test says so.
+type fakeWorkerPresence struct {
+	online map[string]bool
+}
+
+func (f *fakeWorkerPresence) OnlineForTrustedPath(workerID string) bool {
+	return f.online[workerID]
 }
 
 func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
+	t.Helper()
+	return setupAdminWorkerTestWith(t, &fakeWorkerPresence{online: map[string]bool{}})
+}
+
+// setupAdminWorkerTestWith is setupAdminWorkerTest with the registry the test
+// controls, for the bundled-Worker guard.
+func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *adminWorkerEnv {
 	t.Helper()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -55,13 +77,15 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	// A real effects value over a real delegation-scope cache; the notifier
-	// and the broadcaster need a worker manager and a channel manager this
-	// harness does not build, and Apply skips the ones it was not given.
+	// A real effects value over a real delegation-scope cache. The notifier
+	// needs a worker manager and the workers-changed notification needs a CRDT
+	// registry, and this harness builds neither; Apply skips the effects it
+	// was not given.
 	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, service.NewAdminWorkerService(st, effects))
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer,
+		service.NewAdminWorkerService(st, presence, effects))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
@@ -70,10 +94,11 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	t.Cleanup(server.Close)
 
 	return &adminWorkerEnv{
-		client: leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
-		st:     st,
-		token:  session,
-		userID: admin.ID,
+		client:   leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
+		st:       st,
+		token:    session,
+		userID:   admin.ID,
+		presence: presence,
 	}
 }
 
@@ -97,13 +122,14 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "not found or not active")
 
+	// A filter that is present but selects nothing is a malformed request,
+	// not "every owner": only an ABSENT selector lists every owner.
 	_, err = env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		UserId:   env.userID,
-		Username: "admin",
+		User: &leapmuxv1.UserSelector{},
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "mutually exclusive")
+	assert.Contains(t, err.Error(), "selects no id or username")
 
 	worker := storetest.SeedWorker(t, env.st, env.userID)
 
@@ -193,6 +219,159 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 	assert.Zero(t, got.GetPurged())
 }
 
+// TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey pins the
+// page wiring of the key listing: the limit caps one reply, the cursor reaches
+// the rest, the final page states that no rows remain, and a malformed cursor
+// is the caller's to fix.
+func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	var seeded []string
+	for range 3 {
+		keyID := id.Generate()
+		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+			ID:        keyID,
+			CreatedBy: userid.MustNew(env.userID),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}))
+		seeded = append(seeded, keyID)
+	}
+	list := func(page *leapmuxv1.PageRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
+		return env.client.ListRegistrationKeys(authedReq(ctx, &leapmuxv1.ListRegistrationKeysRequest{Page: page}, env.token))
+	}
+
+	first, err := list(&leapmuxv1.PageRequest{Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, first.GetKeys(), 2, "the limit caps one page")
+	require.NotEmpty(t, first.GetPage().GetNextCursor(), "a full page states where the next one starts")
+
+	last, err := list(&leapmuxv1.PageRequest{Limit: 2, Cursor: first.GetPage().GetNextCursor()})
+	require.NoError(t, err)
+	require.Len(t, last.GetKeys(), 1)
+	assert.Empty(t, last.GetPage().GetNextCursor(), "the final page states that no rows remain")
+
+	var listed []string
+	for _, k := range append(first.GetKeys(), last.GetKeys()...) {
+		listed = append(listed, k.GetId())
+		assert.Equal(t, "admin", k.GetCreatorUsername())
+	}
+	assert.ElementsMatch(t, seeded, listed, "the pages hold every key once")
+
+	_, err = list(&leapmuxv1.PageRequest{Cursor: "not-a-cursor"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// An expired key has nothing left to revoke. The listing with expired keys still
+// shows the row, so the operator's revoke says that the key exists but is dead,
+// and leaves its expiry, so the purge still deletes it on schedule.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesAnExpiredKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	expired := time.Now().UTC().Add(-time.Hour)
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: expired,
+	}))
+
+	_, err := env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "registration key "+keyID+" is already revoked, consumed or expired")
+
+	got, err := env.st.RegistrationKeys().GetByID(ctx, keyID)
+	require.NoError(t, err)
+	assert.WithinDuration(t, expired, got.ExpiresAt, time.Second, "the refused revoke leaves the expiry")
+}
+
+// A live key revokes once. The second revoke finds the row dead, so a script can
+// tell it from a mistyped id.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesARevokedKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+	_, err := env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.NoError(t, err)
+
+	_, err = env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// A consumed key is one of the three dead states that the refusal states.
+func TestAdminWorkerService_RevokeRegistrationKeyRefusesAConsumedKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	ctx := context.Background()
+
+	keyID := id.Generate()
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID:        keyID,
+		CreatedBy: userid.MustNew(env.userID),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}))
+	_, err := env.st.RegistrationKeys().Consume(ctx, keyID)
+	require.NoError(t, err)
+
+	_, err = env.client.RevokeRegistrationKey(authedReq(ctx,
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: keyID}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// An id that the Hub does not know answers NotFound, so a script can tell a typo
+// from a dead key.
+func TestAdminWorkerService_RevokeRegistrationKeyAnswersNotFoundForAnUnknownKey(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+
+	_, err := env.client.RevokeRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: "no-such-key"}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "registration key not found: no-such-key")
+}
+
+// regKeyReadFailStore fails each registration key read by id.
+type regKeyReadFailStore struct {
+	store.Store
+}
+
+func (s regKeyReadFailStore) RegistrationKeys() store.RegistrationKeyStore {
+	return regKeyReadFailKeys{RegistrationKeyStore: s.Store.RegistrationKeys()}
+}
+
+type regKeyReadFailKeys struct {
+	store.RegistrationKeyStore
+}
+
+func (regKeyReadFailKeys) GetByID(context.Context, string) (*store.WorkerRegistrationKey, error) {
+	return nil, errors.New("registration key read failed")
+}
+
+// The read after a revoke that changed nothing can fail. That failure says
+// nothing about the key, so it answers Internal, not NotFound.
+func TestAdminWorkerService_RevokeRegistrationKeyReportsAFailedRead(t *testing.T) {
+	env := setupAdminWorkerTest(t)
+	svc := service.NewAdminWorkerService(regKeyReadFailStore{Store: env.st}, env.presence, nil)
+
+	_, err := svc.RevokeRegistrationKey(context.Background(),
+		&leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest{Id: "no-such-key"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+}
+
 // TestAdminWorkerService_GetWorkerReportsADeletedOwner pins the case
 // GetAdmin exists for.
 //
@@ -233,7 +412,7 @@ func TestAdminWorkerService_GetWorkerReportsADeletedOwner(t *testing.T) {
 		"the owner id stays, which is the only stable handle left")
 
 	listed, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		UserId: victim.ID,
+		User: service.SelectUserByID(victim.ID),
 	}, env.token))
 	require.NoError(t, err)
 	require.Len(t, listed.GetWorkers(), 1)
@@ -251,29 +430,112 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	ctx := context.Background()
 
 	owner := userid.MustNew(env.userID)
-	for range service.MaxPageLimit + 1 {
+	for range contracts.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              id.Generate(),
-			AuthToken:       id.Generate(),
-			RegisteredBy:    owner,
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
+			ID:           id.Generate(),
+			AuthToken:    id.Generate(),
+			RegisteredBy: owner,
+			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 	}
 
 	page, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		Limit: 100000,
+		Page: &leapmuxv1.PageRequest{Limit: 100000},
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, page.GetWorkers(), service.MaxPageLimit,
+	assert.Len(t, page.GetWorkers(), contracts.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
-	require.NotEmpty(t, page.GetNextCursor(), "a capped page says where the next one starts")
+	require.NotEmpty(t, page.GetPage().GetNextCursor(), "a capped page says where the next one starts")
 
 	next, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		Limit: 100000, Cursor: page.GetNextCursor(),
+		Page: &leapmuxv1.PageRequest{Limit: 100000, Cursor: page.GetPage().GetNextCursor()},
 	}, env.token))
 	require.NoError(t, err)
 	assert.Len(t, next.GetWorkers(), 1)
-	assert.Empty(t, next.GetNextCursor())
+	assert.Empty(t, next.GetPage().GetNextCursor())
+}
+
+// An administrator cannot deregister a CONNECTED bundled Worker: the app would
+// run with no local Worker until its next launch, which would then register a
+// fresh one anyway. An OFFLINE one is removable -- that is the only cleanup for
+// the ACTIVE row a launch leaves behind when the app's state file was lost -- and
+// a deleted one reads like any other inactive row.
+func TestAdminWorkerService_DeregisterOfABundledWorker(t *testing.T) {
+	t.Parallel()
+
+	createBundled := func(t *testing.T, env *adminWorkerEnv) string {
+		t.Helper()
+		workerID := id.Generate()
+		require.NoError(t, env.st.Workers().Create(context.Background(), store.CreateWorkerParams{
+			ID:             workerID,
+			AuthToken:      id.Generate(),
+			RegisteredBy:   userid.MustNew(env.userID),
+			AutoRegistered: true,
+			PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		}))
+		return workerID
+	}
+
+	t.Run("connected", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+		env.presence.online[workerID] = true
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "the bundled local worker is connected; deregister it only while it is offline")
+
+		row, err := env.st.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, row.Status,
+			"a refused request changes no row")
+	})
+
+	t.Run("offline", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.NoError(t, err)
+
+		row, err := env.st.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, row.Status)
+	})
+
+	t.Run("deleted", func(t *testing.T) {
+		t.Parallel()
+		env := setupAdminWorkerTest(t)
+		workerID := createBundled(t, env)
+		require.NoError(t, env.st.Workers().MarkDeleted(context.Background(), workerID))
+
+		callCtx, req := authedReq(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: workerID}, env.token)
+		_, err := env.client.DeregisterWorker(callCtx, req)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "not found or not active")
+	})
+}
+
+// The bundled-Worker guard asks the registry whether a Worker is connected. A
+// missing registry must fail at construction: read as "every Worker is offline",
+// it would silently let an administrator stop a running bundled Worker.
+func TestNewAdminWorkerService_RequiresAWorkerRegistry(t *testing.T) {
+	t.Parallel()
+
+	const want = "service: NewAdminWorkerService requires a worker registry"
+	assert.PanicsWithValue(t, want, func() {
+		service.NewAdminWorkerService(nil, nil, nil)
+	}, "a nil registry")
+	assert.PanicsWithValue(t, want, func() {
+		service.NewAdminWorkerService(nil, (*workermgr.Manager)(nil), nil)
+	}, "a typed-nil registry is as missing as a nil one")
+	assert.NotPanics(t, func() {
+		service.NewAdminWorkerService(nil, workermgr.New(workermgr.DenyAllReach()), nil)
+	}, "the deregistration effects stay optional")
 }

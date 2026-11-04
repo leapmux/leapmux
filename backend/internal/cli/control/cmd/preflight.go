@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
@@ -47,12 +48,18 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 	return control.EmitError("invalid_request", msg)
 }
 
-// maybePreflightWorker verifies workerID names a worker the caller can
-// use, when that question can be answered at all. Empty workerID is a
-// no-op (the flag is optional on every caller; some resolve the worker
-// later from a configured default or an agent lookup). An unknown or
-// unauthorised id surfaces as `not_found`. One ListWorkers round-trip
-// per call.
+// maybePreflightWorker verifies that workerID identifies a worker the caller
+// owns, when that question can be answered at all. Empty workerID is a no-op
+// (the flag is optional on every caller; some resolve the worker later from a
+// configured default or an agent lookup). An unknown or unauthorised id
+// surfaces as `not_found`, because the hub's GetWorker answers NotFound for a
+// worker that is not the caller's. One GetWorker round-trip per call.
+//
+// The check reads only whether GetWorker finds the row. GetWorker hides a
+// deregistering worker as ListWorkers does, so such a worker answers
+// not_found here too. The hub stays the authority on whether the worker is
+// usable now: its reach gate refuses a channel to a worker that is not ACTIVE,
+// and the CRDT validator refuses a tab bound to one.
 //
 // A FAILED lookup is not fatal: the command proceeds unvalidated.
 // This check is advisory (see the file header -- the hub independently
@@ -66,7 +73,7 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // --worker-id default -- so this preflight runs on essentially every
 // `leapmux control` command an agent issues, over a delegation bearer
 // the hub limits with `auth.CeilingFor(BearerKindDelegation)`. That
-// ceiling admits worker:read, so ListWorkers usually answers -- but the
+// ceiling admits worker:read, so GetWorker usually answers -- but the
 // grant is a property of the bearer rather than of this code, and a
 // narrower one refuses. Tolerating the denial is what keeps the command
 // working under either.
@@ -78,23 +85,27 @@ func preflightTileKind(state *leapmuxv1.UserMaterialized, tileID string, want le
 // (see controlipc.relayError), so the check can be narrow again: a denial is
 // expected and tolerated, while a transport failure surfaces as
 // preflight_failed instead of silently downgrading the check to "unvalidated".
+//
+// The error of the lookup is never emitted as it is: this function decides how
+// to report it, so the command prints one envelope.
 func maybePreflightWorker(ctx context.Context, c *control.Client, workerID string) error {
 	if workerID == "" {
 		return nil
 	}
-	workers, err := listAccessibleWorkers(ctx, c)
-	if err != nil {
-		if isPreflightDenied(err) {
-			// The designed outcome for a delegation bearer: an advisory check
-			// this caller is not allowed to run must not fail the command.
-			return nil
-		}
+	var resp leapmuxv1.GetWorkerResponse
+	err := hubCallUnary(ctx, c, leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, &leapmuxv1.GetWorkerRequest{WorkerId: workerID}, &resp)
+	switch {
+	case err == nil:
+		return nil
+	case connect.CodeOf(err) == connect.CodeNotFound:
+		return control.EmitError("not_found", "no such worker: "+workerID)
+	case isPreflightDenied(err):
+		// The designed outcome for a delegation bearer: an advisory check
+		// this caller is not allowed to run must not fail the command.
+		return nil
+	default:
 		return control.EmitErrorWith("preflight_failed", err)
 	}
-	if _, ok := workers[workerID]; !ok {
-		return control.EmitError("not_found", "no such worker: "+workerID)
-	}
-	return nil
 }
 
 // isPreflightDenied reports whether err is the hub refusing to answer the
@@ -110,23 +121,6 @@ func isPreflightDenied(err error) bool {
 	default:
 		return false
 	}
-}
-
-// listAccessibleWorkers fetches the set of workers the authenticated
-// user can use, indexed by worker_id. The error is returned raw, NOT
-// emitted as a JSON envelope: its only caller treats a failed lookup
-// as "unvalidated" and keeps going, so emitting here would print a
-// stray error envelope ahead of the command's real output.
-func listAccessibleWorkers(ctx context.Context, c *control.Client) (map[string]*leapmuxv1.Worker, error) {
-	var resp leapmuxv1.ListWorkersResponse
-	if err := hubCallUnary(ctx, c, "ListWorkers", &leapmuxv1.ListWorkersRequest{}, &resp); err != nil {
-		return nil, err
-	}
-	out := make(map[string]*leapmuxv1.Worker, len(resp.GetWorkers()))
-	for _, w := range resp.GetWorkers() {
-		out[w.GetId()] = w
-	}
-	return out, nil
 }
 
 // preflightTile returns nil when tileID names a live node belonging

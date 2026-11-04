@@ -2,8 +2,8 @@ import type { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalProcess } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
-import * as workerRpc from '~/api/workerRpc'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { workerAgent, workerTerminal } from '~/api/workerRpc'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createLogger } from '~/lib/logger'
 import { activityInterruptsWork } from '~/stores/agentActivity.store'
 import { isActiveBackgroundTaskStatus } from '~/stores/chatBackgroundTasks'
@@ -66,8 +66,8 @@ export interface TabBusyProbeDeps {
  */
 export function createTabBusyProbe(deps: TabBusyProbeDeps) {
   /**
-   * A subagent tab closes in the UI only: the worker treats CloseAgent on a
-   * child as tab-close-only, the transcript survives and the tab can be
+   * A subagent tab closes in the UI only: the worker treats CloseTab of a
+   * child agent as tab-close-only, the transcript survives and the tab can be
    * revived. Nothing stops, so there is nothing to warn about.
    */
   const guardedAgentTab = (tab: Tab): boolean => tab.type === TabType.AGENT && !isSubagentTab(tab)
@@ -101,7 +101,7 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
       ...idsByWorker(tabs, guardedAgentTab),
     ].map(async ([workerId, tabIds]) => {
       try {
-        const resp = await workerRpc.listAgents(workerId, { tabIds })
+        const resp = await workerAgent.listAgents(workerId, { tabIds })
         for (const info of resp.agents) {
           // Every agent the reply mentions, busy or not: an agent that drifted
           // to a stale WORKING is exactly the one this answer corrects.
@@ -137,7 +137,7 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
       ...idsByWorker(tabs, t => t.type === TabType.TERMINAL),
     ].map(async ([workerId, terminalIds]) => {
       try {
-        const resp = await workerRpc.inspectTerminalProcesses(workerId, { terminalIds })
+        const resp = await workerTerminal.inspectTerminalProcesses(workerId, { terminalIds })
         for (const entry of resp.terminals) {
           if (entry.processes.length === 0)
             continue

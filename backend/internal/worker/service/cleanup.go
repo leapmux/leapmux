@@ -21,18 +21,19 @@ const (
 // StartCleanupLoop starts a background goroutine that periodically
 // hard-deletes agents and terminals that have been closed for longer
 // than the retention period. A random jitter of up to cleanupJitter is
-// added before each run.
-func StartCleanupLoop(ctx context.Context, queries *db.Queries) {
-	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
+// added before each run. The returned channel closes after the loop stops.
+func StartCleanupLoop(ctx context.Context, queries *db.Queries) <-chan struct{} {
+	return periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
 		runCleanup(ctx, queries)
 	})
 }
 
 // StartOrphanSweepLoop starts a background goroutine that periodically reclaims the
 // in-memory tracker state of agents the DB no longer lists as open (see
-// SweepOrphanedAgentState). Shares the cleanup cadence and jitter.
-func (svc *Service) StartOrphanSweepLoop(ctx context.Context) {
-	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(context.Context) {
+// SweepOrphanedAgentState). Shares the cleanup cadence and jitter. The returned
+// channel closes after the loop stops.
+func (svc *Service) StartOrphanSweepLoop(ctx context.Context) <-chan struct{} {
+	return periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(context.Context) {
 		svc.SweepOrphanedAgentState()
 	})
 }
@@ -94,7 +95,11 @@ loop:
 	for {
 		res, err := fn()
 		if err != nil {
-			slog.Error("cleanup step failed", "step", name, "error", err)
+			// Shutdown cancels a pass in progress and waits for it, so a query
+			// that the cancel ended is no failure.
+			if ctx.Err() == nil {
+				slog.Error("cleanup step failed", "step", name, "error", err)
+			}
 			return
 		}
 		n, _ := res.RowsAffected()

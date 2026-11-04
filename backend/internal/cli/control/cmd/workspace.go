@@ -7,6 +7,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -105,9 +106,15 @@ func RunWorkspaceList(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.ListWorkspacesResponse
-		return hubCallUnaryEmitOn(ctx, c, "ListWorkspaces",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
 			&leapmuxv1.ListWorkspacesRequest{}, &resp,
-			func() any { return resp.GetWorkspaces() })
+			func() any {
+				rows := make([]map[string]any, 0, len(resp.GetWorkspaces()))
+				for _, ws := range resp.GetWorkspaces() {
+					rows = append(rows, workspaceToMap(ws))
+				}
+				return rows
+			})
 	})
 }
 
@@ -125,10 +132,24 @@ func RunWorkspaceGet(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.GetWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure,
 			&leapmuxv1.GetWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp,
-			func() any { return resp.GetWorkspace() })
+			func() any { return workspaceToMap(resp.GetWorkspace()) })
 	})
+}
+
+// workspaceToMap projects a Workspace into a JSON-friendly map. An explicit map
+// rather than the proto itself, so created_at prints as the same formatted
+// string every other listing verb prints (putTime), not as a protojson
+// Timestamp object.
+func workspaceToMap(ws *leapmuxv1.Workspace) map[string]any {
+	row := map[string]any{
+		"id":         ws.GetId(),
+		"created_by": ws.GetCreatedBy(),
+		"title":      ws.GetTitle(),
+	}
+	putTime(row, "created_at", ws.GetCreatedAt())
+	return row
 }
 
 // RunWorkspaceCreate provisions a new workspace for the authenticated
@@ -150,7 +171,7 @@ func RunWorkspaceCreate(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.CreateWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "CreateWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure,
 			&leapmuxv1.CreateWorkspaceRequest{Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": resp.GetWorkspaceId()} })
 	})
@@ -173,7 +194,7 @@ func RunWorkspaceRename(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkspaceID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.RenameWorkspaceResponse
-		return hubCallUnaryEmitOn(ctx, c, "RenameWorkspace",
+		return hubCallUnaryEmitOn(ctx, c, leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure,
 			&leapmuxv1.RenameWorkspaceRequest{WorkspaceId: got.WorkspaceID, Title: title}, &resp,
 			func() any { return map[string]string{"workspace_id": got.WorkspaceID} })
 	})
@@ -204,7 +225,7 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 			return err
 		}
 		var resp leapmuxv1.DeleteWorkspaceResponse
-		if err := hubCallUnary(ctx, c, "DeleteWorkspace", &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
+		if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: got.WorkspaceID}, &resp); err != nil {
 			return control.EmitErrorWith(classifyHubError(err), err)
 		}
 
@@ -237,16 +258,16 @@ func RunWorkspaceDelete(rawCtx any, args []string) error {
 // `CleanupWorkspace` inner-RPC per worker. The CLI binds it to the
 // real Client+E2EE channel; unit tests pass a fake that exercises the
 // surrounding aggregation logic without spinning up worker plumbing.
-type cleanupCaller func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error)
+type cleanupCaller func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error)
 
 // cliCleanupCaller wires runWorkspaceCleanupFanout to the production
 // transport: every worker_id gets its own E2EE channel and a
 // CleanupWorkspace inner-RPC.
 func cliCleanupCaller(c *control.Client) cleanupCaller {
-	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabRef) (*leapmuxv1.CleanupWorkspaceResponse, error) {
+	return func(ctx context.Context, workerID string, tabs []*leapmuxv1.TabIdent) (*leapmuxv1.CleanupWorkspaceResponse, error) {
 		req := &leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs}
 		var resp leapmuxv1.CleanupWorkspaceResponse
-		if err := callInnerRPCBest(ctx, c, workerID, "CleanupWorkspace", req, &resp); err != nil {
+		if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, req, &resp); err != nil {
 			return nil, err
 		}
 		return &resp, nil

@@ -108,14 +108,6 @@ SELECT * FROM workspace_tab_owned
 WHERE user_id = sqlc.arg(user_id) AND workspace_id = ANY(sqlc.arg(workspace_ids)::TEXT[]) AND rendered
 ORDER BY workspace_id, position;
 
--- GetRenderedTab binds user_id as well as workspace_id and tab_id. Tab ids are
--- client-minted and unique only within one user, so (workspace_id, tab_type,
--- tab_id) is not a key: without user_id this :one returns an arbitrary tenant's
--- row. Mirrors GetOwnedTab.
--- name: GetRenderedTab :one
-SELECT * FROM workspace_tab_owned
-WHERE user_id = $1 AND workspace_id = $2 AND tab_type = $3 AND tab_id = $4 AND rendered;
-
 -- LocateAccessibleRenderedTab finds a rendered tab by tab_id and
 -- (optionally) tab_type across every workspace the user owns.
 -- tab_type = 0 (TAB_TYPE_UNSPECIFIED) means "match any type";

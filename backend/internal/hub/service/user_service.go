@@ -18,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usersettings"
 	"github.com/leapmux/leapmux/util/validate"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
@@ -113,12 +112,9 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *leapmuxv1.UpdatePr
 		s.lifecycle.UserInfoInvalidated(user.ID)
 	}
 
-	return &leapmuxv1.UpdateProfileResponse{
-		Username:     newUsername,
-		DisplayName:  displayName,
-		Email:        user.Email,
-		PendingEmail: user.PendingEmail,
-	}, nil
+	// The STORED account, read back after the write, so the reply reports
+	// what the hub holds rather than what this request asked for.
+	return &leapmuxv1.UpdateProfileResponse{User: storedUserProto(ctx, s.store, user.ID, "profile update")}, nil
 }
 
 func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.RequestEmailChangeRequest) (*leapmuxv1.RequestEmailChangeResponse, error) {
@@ -236,28 +232,38 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.Req
 		s.lifecycle.UserInfoInvalidated(user.ID)
 		slideElevation(ctx, s.store, userInfo, s.now())
 		return &leapmuxv1.RequestEmailChangeResponse{
-			VerificationRequired: false,
+			EmailVerification: emailVerificationToProto(verificationOutcome{}),
+			User:              storedUserProto(ctx, s.store, user.ID, "email change"),
 		}, nil
 	}
 
 	// On a send failure the helper drops the undelivered code and keeps the
 	// pending address, so Resend retries the same change; the failure
 	// window's deadline is what the clear leaves behind.
-	if sent, _ := deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, pendingEmailDelivery{
+	sent, nextResend := deliverPendingEmailVerification(ctx, s.store, s.mail, s.renderer, pendingEmailDelivery{
 		userID:          user.ID,
 		email:           newEmail,
 		code:            storedCode,
 		mintUnblockedAt: mintedUnblockedAt,
 		failureCooldown: mailFailureCooldown(ctx, s.set),
 		now:             s.now,
-	}); !sent {
+	})
+	if !sent {
 		return nil, connect.NewError(connect.CodeUnavailable,
 			"the hub could not send the verification email")
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
+	// Required follows the rule GetCurrentUser reports with, as it does in
+	// ResendVerificationEmail: a verified account stays fully active while its
+	// new address waits. EmailSent is what states that a code went out.
 	return &leapmuxv1.RequestEmailChangeResponse{
-		VerificationRequired: true,
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              !auth.EmailVerificationFactsFromUser(user).Satisfied(verificationRequired),
+			EmailSent:             true,
+			NextResendAvailableAt: nextResend,
+		}),
+		User: storedUserProto(ctx, s.store, user.ID, "email change"),
 	}, nil
 }
 
@@ -277,8 +283,9 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
+	verificationRequired := settings.EmailVerificationEffective(s.set.Snapshot(ctx))
 	targetEmail := full.PendingEmail
-	if targetEmail == "" && full.Email != "" && !full.EmailVerified && settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
+	if targetEmail == "" && full.Email != "" && !full.EmailVerified && verificationRequired {
 		// An administrator enabled SMTP after a signup with no verification: the
 		// user has a primary email but never received a pending row. Seed one now.
 		targetEmail = full.Email
@@ -304,11 +311,18 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.
 	// and after a refused one from the failure stamp the clear writes -- a
 	// response that reports no cooldown would invite the retry the hub then
 	// refuses for the failure window.
-	resp := &leapmuxv1.ResendVerificationEmailResponse{EmailSent: sent}
-	if nextResend != nil {
-		resp.NextResendAvailableAt = timestamppb.New(*nextResend)
-	}
-	return resp, nil
+	//
+	// Required follows the rule GetCurrentUser reports with
+	// (reportedVerificationStatus), not the pending address: a verified
+	// account that changes its address, an administrator, and any account on
+	// a hub without SMTP may all use the hub while the pending address waits.
+	return &leapmuxv1.ResendVerificationEmailResponse{
+		EmailVerification: emailVerificationToProto(verificationOutcome{
+			Required:              !auth.EmailVerificationFactsFromUser(full).Satisfied(verificationRequired),
+			EmailSent:             sent,
+			NextResendAvailableAt: nextResend,
+		}),
+	}, nil
 }
 
 // VerifyEmail handles both signup verification and email-change verification.
@@ -332,10 +346,12 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *leapmuxv1.VerifyEmai
 	// /verify-email.
 	s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 
-	userProto := userToProtoWithPasskeys(ctx, s.store, updatedUser)
-
+	// The verification committed, so a failed projection omits user rather
+	// than failing the RPC; the client then reads GetCurrentUser.
 	return &leapmuxv1.VerifyEmailResponse{
-		User: userProto,
+		User: committedUserProto(ctx, s.store, updatedUser, "email verification"),
+		EmailVerification: emailVerificationToProto(reportedVerificationStatus(
+			updatedUser, settings.EmailVerificationEffective(s.set.Snapshot(ctx)), s.now())),
 	}, nil
 }
 
@@ -403,7 +419,9 @@ func (s *UserService) ChangePassword(ctx context.Context, req *leapmuxv1.ChangeP
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return &leapmuxv1.ChangePasswordResponse{}, nil
+	return &leapmuxv1.ChangePasswordResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "password change"),
+	}, nil
 }
 
 func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.UnlinkOAuthProviderRequest) (*leapmuxv1.UnlinkOAuthProviderResponse, error) {
@@ -528,7 +546,9 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.Un
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
-	return &leapmuxv1.UnlinkOAuthProviderResponse{}, nil
+	return &leapmuxv1.UnlinkOAuthProviderResponse{
+		User: storedUserProto(ctx, s.store, user.ID, "provider unlink"),
+	}, nil
 }
 
 // enabledProviderIDs reports whether each configured OAuth provider is
@@ -751,21 +771,4 @@ func (s *UserService) ResetUserSetting(ctx context.Context, req *leapmuxv1.Reset
 		return nil, err
 	}
 	return &leapmuxv1.ResetUserSettingResponse{Value: value}, nil
-}
-
-func (s *UserService) GetTimeouts(ctx context.Context, req *leapmuxv1.GetTimeoutsRequest) (*leapmuxv1.GetTimeoutsResponse, error) {
-	if _, err := auth.MustGetUser(ctx); err != nil {
-		return nil, err
-	}
-
-	t := settings.KeyTimeouts.Of(s.set.Snapshot(ctx))
-	// The narrowing conversions are safe because validateTimeouts caps
-	// every budget at settings.MaxTimeoutSeconds, and the snapshot degrades
-	// a value that fails validation to the default. Widen that cap and the
-	// wire type has to widen with it.
-	return &leapmuxv1.GetTimeoutsResponse{
-		ApiTimeoutSeconds:            int32(t.APITimeoutSeconds),
-		AgentStartupTimeoutSeconds:   int32(t.AgentStartupTimeoutSeconds),
-		WorktreeCreateTimeoutSeconds: int32(t.WorktreeCreateSecs),
-	}, nil
 }

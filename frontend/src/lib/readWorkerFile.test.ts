@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFile } from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { readWorkerFile } from './readWorkerFile'
 
 vi.mock('~/api/workerRpc', () => ({
-  readFile: vi.fn(),
+  workerFile: {
+    readFile: vi.fn(),
+  },
 }))
-const read = vi.mocked(readFile)
+const read = vi.mocked(workerFile.readFile)
 
 /** The page size the reader asks for, and the window it keeps in flight. */
 const PAGE = 48 * 1024
@@ -92,6 +94,29 @@ describe('readWorkerFile', () => {
     expect(read).toHaveBeenCalledTimes(11)
     expect(read.mock.calls.slice(1).map(call => Number(call[1].offset)).sort((a, b) => a - b))
       .toEqual(Array.from({ length: 10 }, (_, index) => index * PAGE))
+  })
+
+  // The worker id routes every read and stays out of each request body.
+  it('sends each read to the worker with only the file fields', async () => {
+    const bytes = fileBytes(PAGE + 10)
+    read
+      .mockResolvedValueOnce(response(bytes.subarray(0, 10), BigInt(bytes.length)))
+      .mockResolvedValueOnce(response(bytes.subarray(10), BigInt(bytes.length)))
+
+    await expect(readAll(bytes)).resolves.toMatchObject({ content: bytes })
+
+    expect(read.mock.calls[0]?.[0]).toBe('worker')
+    expect(read.mock.calls[0]?.[1]).toEqual({
+      path: '/file.bin',
+      limit: BigInt(bytes.length),
+      metaOnlyIfTruncated: true,
+    })
+    expect(read.mock.calls[1]?.[0]).toBe('worker')
+    expect(read.mock.calls[1]?.[1]).toEqual({
+      path: '/file.bin',
+      offset: 10n,
+      limit: BigInt(PAGE),
+    })
   })
 
   it('fills a range that a short page leaves incomplete', async () => {

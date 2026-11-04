@@ -26,21 +26,18 @@
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
-import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
-import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
+import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { ChannelSocket } from './channelRelay'
-import type { PendingRequest, StreamListener } from './channelRpc'
+import type { PendingRequest, StreamAction, StreamListener } from './channelRpc'
 import type { ChannelSessionOpts } from './channelSession'
 import type { Session } from './noise'
 import type { Reassembler } from './reassembler'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
-import type { ChannelMessage, EncryptionMode, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
+import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
-import { IDLE_REKEY_INTERVAL_MS, PING_METHOD } from '~/generated/contracts/wire'
-import {
-  HubControlFrameSchema,
-} from '~/generated/proto/leapmux/v1/channel_pb'
+import { IDLE_REKEY_INTERVAL_MS } from '~/generated/contracts/wire'
+import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { abortError, ChannelError, channelNotOpenError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelOpen } from './channelOpen'
@@ -52,6 +49,7 @@ import { formatErrorMessage } from './errors'
 import { fatalCloseError } from './fatalCloseMessage'
 import { KeyPinStore } from './keyPinStore'
 import { createLogger } from './logger'
+import { procedureOf } from './rpcProcedure'
 
 export type { ChannelErrorSource } from './channelError'
 export { abortError, ChannelError } from './channelError'
@@ -66,9 +64,7 @@ const log = createLogger('channel')
 // one throwing listener cannot break the iteration that notifies the rest. The
 // state, error, and stream-teardown loops all fan out to consumer callbacks; an
 // uncaught throw in one would leave later listeners unnotified and teardown
-// half-done (a leaked Hub-side channel, a stranded pending request). It mirrors
-// the per-callback isolation handleHubControl already applies to frame
-// callbacks.
+// half-done (a leaked Hub-side channel, a stranded pending request).
 function safeCall(fn: () => void, description: string): void {
   try {
     fn()
@@ -79,13 +75,26 @@ function safeCall(fn: () => void, description: string): void {
 }
 
 /**
- * The no-op inner RPC openChannel round-trips to prove the E2EE session decrypts
- * in both directions before returning the channel. Must match the worker's
- * registered handler — both sides take the name from contracts/wire.json
- * (generated as channelwire.PingMethod and PING_METHOD in
- * ~/generated/contracts/wire), so a rename in the contract reddens both
- * builds instead of desyncing the open-time Ping.
+ * One server-streaming call on an open channel.
+ *
+ * The method descriptor types both directions: the opening request and `send`
+ * take the method's input message, and `onMessage` receives its output message.
  */
+export interface ChannelStream<I extends DescMessage, O extends DescMessage> {
+  requestId: number
+  /**
+   * Receives each frame, decoded with the method's output schema. A frame that
+   * does not decode never reaches this listener: it ends the stream through
+   * `onError`, and the stream's owner reconnects.
+   */
+  onMessage: (cb: (msg: MessageShape<O>) => void) => void
+  onEnd: (cb: () => void) => void
+  onError: (cb: (err: Error) => void) => void
+  /** Revise the open stream. Encodes `req` with the method's input schema. */
+  send: (req: MessageInitShape<I>) => void
+  /** Cancel the stream on the wire and drop the local listener. */
+  cancel: () => void
+}
 
 /** Worker key bundle returned by transport. */
 export interface ChannelTransport {
@@ -265,7 +274,6 @@ export class ChannelManager {
 
   private stateListeners = new Set<() => void>()
   private errorListeners = new Set<(workerId: string, error: ChannelError) => void>()
-  private hubControlListeners = new Set<(frame: HubControlFrame) => void>()
   private fatalCloseListeners = new Set<(info: FatalCloseInfo) => void>()
 
   /**
@@ -291,7 +299,6 @@ export class ChannelManager {
       createWebSocket: () => this.transport.createWebSocket(),
       wsOpenTimeoutMs: opts?.wsOpenTimeoutMs ?? 10_000,
       onFrame: (channelId, msg) => this.inbound.handleMessage(channelId, msg),
-      onHubControl: msg => this.handleHubControl(msg),
       onCloseDrain: (successorDialing, fatal) => this.handleRelayCloseDrain(successorDialing, fatal),
       onFatalClose: info => this.notifyFatalClose(info),
     })
@@ -368,13 +375,6 @@ export class ChannelManager {
     this.errorListeners.add(cb)
     return () => {
       this.errorListeners.delete(cb)
-    }
-  }
-
-  onHubControl(cb: (frame: HubControlFrame) => void): () => void {
-    this.hubControlListeners.add(cb)
-    return () => {
-      this.hubControlListeners.delete(cb)
     }
   }
 
@@ -528,10 +528,14 @@ export class ChannelManager {
   /**
    * Round-trip Ping to prove the E2EE session before marking the channel verified.
    * On failure the channel is evicted here so it never leaves this method verified.
+   *
+   * Ping is WorkerSystemService.Ping, a no-op that proves the session decrypts in
+   * both directions. Its procedure comes from the generated descriptor, as the
+   * worker's registration takes it from the generated Go constant.
    */
   private async verifySession(channel: ActiveChannel): Promise<void> {
     try {
-      await this.call(channel.channelId, PING_METHOD, new Uint8Array())
+      await this.call(channel.channelId, procedureOf(WorkerSystemService.method.ping), new Uint8Array())
     }
     catch (err) {
       const failure = err instanceof ChannelError
@@ -590,7 +594,9 @@ export class ChannelManager {
   }
 
   /**
-   * Send a unary RPC request through the encrypted channel.
+   * Send a unary RPC request through the encrypted channel. The promise
+   * resolves with the serialized response message, and rejects with the
+   * worker's in-band error.
    *
    * The optional `signal` lets the caller short-circuit the wait
    * locally: when it fires, the pendingRequest entry is dropped and
@@ -602,7 +608,7 @@ export class ChannelManager {
    * cancel: future channel revisions can add one without changing
    * any caller.
    */
-  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<InnerRpcResponse> {
+  call(channelId: string, method: string, payload: Uint8Array, timeoutMs?: number, signal?: AbortSignal): Promise<Uint8Array> {
     const ch = this.pool.get(channelId)
     if (!ch || ch.state === 'closed') {
       return Promise.reject(channelNotOpenError())
@@ -633,15 +639,11 @@ export class ChannelManager {
   /**
    * Send a streaming RPC request through the encrypted channel.
    * Returns a handle for receiving stream messages.
+   *
+   * The method descriptor supplies the procedure path and both message schemas,
+   * so a caller cannot pair a method with the wrong request or message type.
    */
-  stream(channelId: string, method: string, payload: Uint8Array): {
-    requestId: number
-    onMessage: (cb: (msg: InnerStreamMessage) => void) => void
-    onEnd: (cb: () => void) => void
-    onError: (cb: (err: Error) => void) => void
-    send: (payload: Uint8Array) => void
-    cancel: () => void
-  } {
+  stream<I extends DescMessage, O extends DescMessage>(channelId: string, method: DescMethodServerStreaming<I, O>, req: MessageInitShape<I>): ChannelStream<I, O> {
     const ch = this.pool.get(channelId)
     // Streams require a verified session; call() still allows 'opening' so the
     // open-time Ping can complete before the channel is published as ready.
@@ -649,7 +651,9 @@ export class ChannelManager {
       throw channelNotOpenError()
     }
 
-    const handle = this.rpc.beginStream(ch, method, payload)
+    const procedure = procedureOf(method)
+    const encode = (msg: MessageInitShape<I>): Uint8Array => toBinary(method.input, create(method.input, msg))
+    const handle = this.rpc.beginStream(ch, procedure, encode(req))
 
     // Defer listener registration until after rekey when a rekey/ceiling path
     // runs: ensureRekeyed may closeChannel→drainChannel with onEnd, and a
@@ -686,14 +690,15 @@ export class ChannelManager {
         throw sendErr
     }
 
-    const sendOnStream = (payload: Uint8Array, cancel: boolean): void => {
+    const sendOnStream = (action: StreamAction): void => {
+      const cancel = action.case === 'cancel'
       const live = this.pool.get(channelId)
       if (!live || live.state === 'closed') {
         if (cancel)
           return
         throw channelNotOpenError()
       }
-      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, payload, cancel)
+      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, action)
       if (this.session.needsRekeyGate(live)) {
         // Rekey must complete before the frame is meaningful; await it so
         // callers learn about send failure instead of advancing local state
@@ -737,13 +742,41 @@ export class ChannelManager {
         throw err
     }
 
+    const deliverDecoded = (payload: Uint8Array, deliver: (msg: MessageShape<O>) => void): void => {
+      let msg: MessageShape<O>
+      try {
+        msg = fromBinary(method.output, payload)
+      }
+      catch (err) {
+        // Every stream takes this one policy: a skipped frame could hide a
+        // lost event, and a reconnect replays the state. Cancel first, so the
+        // worker stops the stream although the owner's listener may throw.
+        sendOnStream({ case: 'cancel' })
+        handle.fail(
+          new ChannelError('client', `decode a message of stream ${procedure}: ${formatErrorMessage(err)}`),
+          'stream decode failed with no onError listener',
+        )
+        return
+      }
+      if (log.isDebug()) {
+        log.debug('stream message', {
+          method: procedure,
+          message: toJsonString(method.output, msg),
+        })
+      }
+      deliver(msg)
+    }
+
     return {
       requestId: handle.requestId,
-      onMessage: handle.onMessage,
+      onMessage: cb => handle.onMessage(frame => deliverDecoded(frame.payload, cb)),
       onEnd: handle.onEnd,
       onError: handle.onError,
-      send: (payload: Uint8Array) => sendOnStream(payload, false),
-      cancel: () => sendOnStream(new Uint8Array(), true),
+      send: req => sendOnStream({
+        case: 'payload',
+        payload: encode(req),
+      }),
+      cancel: () => sendOnStream({ case: 'cancel' }),
     }
   }
 
@@ -801,20 +834,21 @@ export class ChannelManager {
   /**
    * High-level typed RPC call through the encrypted channel.
    * Opens a channel to the worker if needed.
+   *
+   * The method descriptor supplies the procedure path and both message schemas,
+   * so a caller cannot pair a method with the wrong request or response type.
    */
-  async callWorker<
-    ReqSchema extends GenMessage<any>,
-    RespSchema extends GenMessage<any>,
-  >(
+  async callWorker<I extends DescMessage, O extends DescMessage>(
     workerId: string,
-    method: string,
-    reqSchema: ReqSchema,
-    respSchema: RespSchema,
-    req: MessageInitShape<ReqSchema>,
+    method: DescMethodUnary<I, O>,
+    req: MessageInitShape<I>,
     opts?: { timeoutMs?: number, signal?: AbortSignal },
-  ): Promise<MessageShape<RespSchema>> {
+  ): Promise<MessageShape<O>> {
+    const procedure = procedureOf(method)
+    const reqSchema = method.input
+    const respSchema = method.output
     if (opts?.signal?.aborted) {
-      throw abortError(opts.signal, method)
+      throw abortError(opts.signal, procedure)
     }
     const channelId = await this.getOrOpenChannel(workerId)
     // Re-check after the (potentially async) channel-open: a long
@@ -822,31 +856,31 @@ export class ChannelManager {
     // this check would still get caught by call()'s pre-check, but
     // checking here saves the protobuf encode round-trip below.
     if (opts?.signal?.aborted) {
-      throw abortError(opts.signal, method)
+      throw abortError(opts.signal, procedure)
     }
     const msg = create(reqSchema, req)
     if (log.isDebug()) {
       log.debug('callWorker request', {
-        method,
+        method: procedure,
         request: toJsonString(reqSchema, msg),
       })
     }
     const payload = toBinary(reqSchema, msg)
-    let resp
+    let responsePayload
     try {
-      resp = await this.call(channelId, method, payload, opts?.timeoutMs, opts?.signal)
+      responsePayload = await this.call(channelId, procedure, payload, opts?.timeoutMs, opts?.signal)
     }
     catch (err) {
       log.debug('callWorker error', {
-        method,
+        method: procedure,
         error: formatErrorMessage(err),
       })
       throw err
     }
-    const result = fromBinary(respSchema, resp.payload)
+    const result = fromBinary(respSchema, responsePayload)
     if (log.isDebug()) {
       log.debug('callWorker response', {
-        method,
+        method: procedure,
         response: toJsonString(respSchema, result),
       })
     }
@@ -896,23 +930,6 @@ export class ChannelManager {
     queueMicrotask(() => {
       void this.closeChannel(ch.channelId, { streamTermination: 'error', reason })
     })
-  }
-
-  private handleHubControl(msg: ChannelMessage): void {
-    try {
-      const frame = fromBinary(HubControlFrameSchema, msg.ciphertext)
-      for (const cb of this.hubControlListeners) {
-        try {
-          cb(frame)
-        }
-        catch (err) {
-          log.error('hub control listener error', { error: err })
-        }
-      }
-    }
-    catch (err) {
-      log.error('failed to parse hub control frame', { error: err })
-    }
   }
 
   private handleRelayCloseDrain(successorDialing: boolean, fatal?: FatalCloseInfo): void {

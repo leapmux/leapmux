@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { writeMcpFormServer } from '../helpers/mcpFormServer'
@@ -56,7 +56,7 @@ export async function exerciseZCodeMcpForm(context: ManagedNativeScenarioContext
   await openWorkspace(context.page, context.workspaceId)
   const agent = await currentNativeAgent(context)
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  await channel.callWorker(server.workerId, 'SendAgentRawMessage', SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema, {
+  await channel.callWorker(server.workerId, WorkerAgentService.method.sendAgentRawMessage, {
     agentId: agent.id,
     content: zcodeMcpConnectFrame(`native-mcp-${randomUUID()}`, directory),
   })

@@ -17,6 +17,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -1110,8 +1111,8 @@ func assertHistoricalChildReplay(t *testing.T, svc *Service, childID string, cou
 				continue
 			}
 			messages++
-			assert.True(t, event.GetReplay())
-			assert.Equal(t, childID, readReplayOrigin(event))
+			assert.NotNil(t, event.GetReplay())
+			assert.Equal(t, childID, event.GetReplay().GetAgentId())
 			assert.True(t, message.GetTranscriptOnly())
 		}
 	}
@@ -1536,7 +1537,7 @@ func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	w := newTestWriter()
-	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentMessagesProcedure, &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: childID, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, Limit: 10,
 	}, w)
 	require.Empty(t, w.errors)

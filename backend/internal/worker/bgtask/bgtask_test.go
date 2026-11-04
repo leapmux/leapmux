@@ -254,12 +254,34 @@ func TestItemToProto(t *testing.T) {
 	assert.NotEmpty(t, sp.GetEndedAt())
 }
 
-func TestItemsToProto(t *testing.T) {
-	items := []Item{{RowKey: "a"}, {RowKey: "b"}}
-	out := ItemsToProto(items)
-	assert.Len(t, out, 2)
-	assert.Equal(t, "a", out[0].GetId())
-	assert.Equal(t, "b", out[1].GetId())
+// A snapshot is the whole registry, so it carries every row in order.
+func TestSnapshotToProto(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotToProto([]Item{
+		{RowKey: "a", Kind: KindShell, Status: StatusRunning},
+		{RowKey: "b", Kind: KindSubagent, Status: StatusSucceeded},
+	})
+	require.NotNil(t, snapshot)
+	require.Len(t, snapshot.GetTasks(), 2)
+	assert.Equal(t, "a", snapshot.GetTasks()[0].GetId())
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING, snapshot.GetTasks()[0].GetStatus())
+	assert.Equal(t, "b", snapshot.GetTasks()[1].GetId())
+	assert.Equal(t, leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SUBAGENT, snapshot.GetTasks()[1].GetKind())
+}
+
+// An empty registry is still a snapshot: it tells the client to clear its rows.
+// A nil message would mean that no snapshot was sent at all.
+func TestSnapshotToProtoOfAnEmptyRegistryIsAnEmptySnapshot(t *testing.T) {
+	t.Parallel()
+
+	for name, items := range map[string][]Item{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			snapshot := SnapshotToProto(items)
+			require.NotNil(t, snapshot)
+			assert.Empty(t, snapshot.GetTasks())
+		})
+	}
 }
 
 // A row key is an IDENTITY, so the rule REFUSES and never rewrites. The
@@ -546,7 +568,7 @@ func TestCleanTitleRunes(t *testing.T) {
 // unrepaired version dropped every row from the sidebar, and kept dropping
 // them, because sqlite stores the bad bytes verbatim and the cold-start seed
 // reads them back on every worker boot.
-func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
+func TestSnapshotToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 	t.Parallel()
 
 	rows := []Item{
@@ -558,9 +580,10 @@ func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 		{RowKey: "ok-2", Title: "Also fine"},
 	}
 
-	out := ItemsToProto(rows)
-	_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTasksChanged{AgentId: "root-1", Tasks: out})
+	snapshot := SnapshotToProto(rows)
+	_, err := proto.Marshal(snapshot)
 	require.NoError(t, err, "one bad field must not drop the whole registry broadcast")
+	out := snapshot.GetTasks()
 
 	require.Len(t, out, 3)
 	assert.Equal(t, "workflow:build", out[1].GetGroupKey(),
@@ -572,7 +595,7 @@ func TestItemsToProtoSurvivesAnInvalidUTF8ProviderField(t *testing.T) {
 	assert.Equal(t, "Ship the parser", out[0].GetTitle(), "a clean row is untouched")
 
 	// A U+FFFD the provider sent deliberately is valid UTF-8 and survives.
-	kept := ItemsToProto([]Item{{RowKey: "x", ActiveForm: "a�b"}})
+	kept := SnapshotToProto([]Item{{RowKey: "x", ActiveForm: "a�b"}}).GetTasks()
 	assert.Equal(t, "a�b", kept[0].GetActiveForm())
 }
 
@@ -602,7 +625,7 @@ func TestItemToProtoDropsAnUnusableGroupKeyRatherThanRepairingIt(t *testing.T) {
 			assert.Empty(t, out.GetGroupLabel(), "a heading that names no group has nothing to name")
 			assert.Equal(t, "t", out.GetTitle(), "the row itself survives, ungrouped")
 
-			_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTasksChanged{AgentId: "root-1", Tasks: []*leapmuxv1.BackgroundTaskItem{out}})
+			_, err := proto.Marshal(&leapmuxv1.AgentBackgroundTaskSnapshot{Tasks: []*leapmuxv1.BackgroundTaskItem{out}})
 			require.NoError(t, err, "the whole registry broadcast must still marshal")
 		})
 	}

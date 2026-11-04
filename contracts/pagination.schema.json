@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pagination.schema.json",
+  "title": "cross-language page limit contract",
+  "description": "The default and maximum page sizes of a keyset-paginated listing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "defaultPageLimit", "maxPageLimit"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "defaultPageLimit": { "type": "integer", "minimum": 1 },
+    "maxPageLimit": { "type": "integer", "minimum": 1 }
+  }
+}

@@ -36,6 +36,8 @@ vi.mock('~/api/clients', () => ({
     getCurrentUser: (...args: unknown[]) => getCurrentUser(...args),
     login: (...args: unknown[]) => login(...args),
     logout: (...args: unknown[]) => logout(...args),
+  },
+  systemClient: {
     getSystemInfo: vi.fn().mockResolvedValue({}),
   },
   userClient: {
@@ -183,7 +185,9 @@ beforeEach(() => {
   resetStorageAccountForTests()
   getCurrentUser.mockRejectedValue(unauthenticated())
   login.mockResolvedValue({
-    user: user('u1'),
+    sessionReport: {
+      user: user('u1'),
+    },
   })
   logout.mockResolvedValue({})
   listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
@@ -226,7 +230,9 @@ describe('usePreferencesForIdentity', () => {
 
     listUserSettings.mockResolvedValue(themeReply('light'))
     login.mockResolvedValue({
-      user: user('u2'),
+      sessionReport: {
+        user: user('u2'),
+      },
     })
     await app.auth().login('u2', 'pw')
 
@@ -260,7 +266,9 @@ describe('usePreferencesForIdentity', () => {
   // page load.
   it('does not reload for the identity the mount load already covered', async () => {
     getCurrentUser.mockResolvedValue({
-      user: user('u1'),
+      sessionReport: {
+        user: user('u1'),
+      },
     })
     listUserSettings.mockResolvedValue(themeReply('dark'))
     const app = await renderBootstrapped()
@@ -275,7 +283,9 @@ describe('usePreferencesForIdentity', () => {
   // the object with an equal value. A render changes neither value.
   it('does not reload while the identity stays the same', async () => {
     getCurrentUser.mockResolvedValue({
-      user: user('u1'),
+      sessionReport: {
+        user: user('u1'),
+      },
     })
     listUserSettings.mockResolvedValue(themeReply('dark'))
     const app = await renderBootstrapped()
@@ -397,7 +407,9 @@ describe('usePreferencesForIdentity', () => {
     expect(app.prefs().theme()).toEqual({ name: 'nord', mode: 'dark' })
 
     login.mockResolvedValue({
-      user: user('u2'),
+      sessionReport: {
+        user: user('u2'),
+      },
     })
     await app.auth().login('u2', 'pw')
 

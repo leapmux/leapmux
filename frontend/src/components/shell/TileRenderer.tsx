@@ -32,8 +32,9 @@ import type { AgentTab, FileTab, ImageTab, Tab, TerminalTab } from '~/stores/tab
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
+import type { WorkerOnlineStore } from '~/stores/workerOnline.store'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
-import { getAgentMessage, getAgentSpanMessages } from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
@@ -47,8 +48,7 @@ import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { GitFileStatusCode, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
@@ -112,6 +112,7 @@ interface TileRendererOpts {
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
     agentActivityStore: AgentActivityStore
     repoGitStore: ReturnType<typeof createRepoGitStore>
+    workerOnline: WorkerOnlineStore
   }
   /**
    * "This tab's registry rows", built ONCE by the shell and shared with the
@@ -235,6 +236,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     agentSessionStore,
     agentActivityStore,
     repoGitStore,
+    workerOnline,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const confirmLink = opts.confirmLink
@@ -648,12 +650,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
       fetchSpan: async (identity, signal) => {
         if (!workerId)
           throw new Error('The worker is unavailable')
-        return (await getAgentSpanMessages(workerId, { agentId, ...identity }, { signal })).messages
+        return (await workerAgent.getAgentSpanMessages(workerId, { agentId, ...identity }, { signal })).messages
       },
       fetchMessage: async (seq, signal) => {
         if (!workerId)
           throw new Error('The worker is unavailable')
-        return (await getAgentMessage(workerId, { agentId, seq }, { signal })).message
+        return (await workerAgent.getAgentMessage(workerId, { agentId, seq }, { signal })).message
       },
       fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
@@ -761,6 +763,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <TabBar
         tileId={tileId}
         tabs={view.forTile(tileId)}
+        isWorkerStreamOnline={workerOnline.isOnline}
         activeTabKey={selection.activeKeyForTile(tileId)}
         archived={isActiveWorkspaceArchived()}
         closingTabKeys={closingTabKeys()}
@@ -803,6 +806,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       >
         <TerminalView
           terminals={props.terminals}
+          isWorkerStreamOnline={workerOnline.isOnline}
           getLastOffset={id => metadata.get(id)?.lastOffset}
           activeTerminalId={props.activeTerminalId}
           visible={props.visible}

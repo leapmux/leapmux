@@ -41,13 +41,52 @@ func updateSettingJSON(c *control.Client, key string, value any) (*leapmuxv1.Set
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.AdminSettingsService().UpdateSetting(context.Background(), &leapmuxv1.UpdateSettingRequest{
-		Key: key, PartialJson: string(doc),
+	updated, _, err := updateOneSetting(c, &leapmuxv1.SettingWrite{Key: key, PartialJson: string(doc)})
+	return updated, err
+}
+
+// updateOneSetting sends ONE write through UpdateSettings, the hub's only
+// write verb. It returns the key's resulting value, and whether the hub
+// applies the key only after a restart.
+func updateOneSetting(c *control.Client, write *leapmuxv1.SettingWrite) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().UpdateSettings(context.Background(), &leapmuxv1.UpdateSettingsRequest{
+		Writes: []*leapmuxv1.SettingWrite{write},
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return resp.GetValue(), nil
+	value, err := onlySettingValue(resp.GetValues())
+	if err != nil {
+		return nil, false, err
+	}
+	return value, slices.Contains(resp.GetRestartKeys(), write.GetKey()), nil
+}
+
+// resetOneSetting removes ONE key's row through ResetSettings, the hub's only
+// reset verb, and returns the key's resulting value and whether the key is
+// restart-class.
+func resetOneSetting(c *control.Client, key string) (*leapmuxv1.SettingValue, bool, error) {
+	resp, err := c.AdminSettingsService().ResetSettings(context.Background(), &leapmuxv1.ResetSettingsRequest{
+		Keys: []string{key},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	value, err := onlySettingValue(resp.GetValues())
+	if err != nil {
+		return nil, false, err
+	}
+	return value, slices.Contains(resp.GetRestartKeys(), key), nil
+}
+
+// onlySettingValue reads the one value a single-key request answers. The hub
+// answers one value per listed key, so any other count is a hub fault, and
+// reading index 0 of it would print a value for the wrong key or panic.
+func onlySettingValue(values []*leapmuxv1.SettingValue) (*leapmuxv1.SettingValue, error) {
+	if len(values) != 1 {
+		return nil, fmt.Errorf("the hub answered %d setting values for one key", len(values))
+	}
+	return values[0], nil
 }
 
 // adminUpdateSetting merges one partial document onto one settings key.
@@ -62,10 +101,10 @@ func adminUpdateSettingScalar[T bool | int64 | float64 | string](c *control.Clie
 	return updateSettingJSON(c, key, value)
 }
 
-// No single-key secret helper lives here. The one verb that writes a
-// secret (`captcha set`) also writes the row it belongs to, and both
-// halves travel in ONE UpdateSettings write so they land together or not
-// at all. `settings set-secret` calls UpdateSettingSecret directly.
+// Secrets need no helper of their own, because updateOneSetting takes a
+// whole SettingWrite. `settings set-secret` sends its secret half through
+// it. `captcha set` sends both halves of a row in ONE UpdateSettings write,
+// so a site key and its secret land together or not at all.
 
 // defaultIfZero substitutes a family default for a value the operator
 // passed as 0.
@@ -664,11 +703,11 @@ func RunAdminRateLimitReset(rawCtx any, args []string) error {
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), &leapmuxv1.ResetSettingRequest{Key: target.Key})
+			value, _, err := resetOneSetting(c, target.Key)
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.GetValue()))
+			return control.EmitData(settingValueJSON(value))
 		},
 	})
 }

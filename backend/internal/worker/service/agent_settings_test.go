@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -68,7 +69,7 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	// Use a very short startup timeout to speed up the test.
 	svc.AgentStartupTimeout = 1 * time.Nanosecond // forces immediate timeout
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "sonnet"}},
 	}, w)
@@ -244,7 +245,7 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 
 	// Agent is NOT running (HasAgent returns false), so the restart
 	// block is skipped. Verify the DB update works correctly.
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "sonnet"}},
 	}, w)
@@ -299,7 +300,7 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{"opencode_mode": "fast"},
@@ -364,7 +365,7 @@ func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDModel: "composer-2.5"},
@@ -425,7 +426,7 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 			}))
 			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId: "agent-1",
 				Settings: &leapmuxv1.AgentSettings{
 					Options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: tc.sentEffort},
@@ -471,7 +472,7 @@ func TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort(t *testing
 			}))
 			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId: "agent-1",
 				Settings: &leapmuxv1.AgentSettings{
 					Options: map[string]string{agent.OptionIDModel: tc.newModel},
@@ -524,7 +525,7 @@ func TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalog
 	svc.Agents.PreloadCache("agent-1", liveCatalog)
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "glm-5.3-flash"}},
 	}, w)
@@ -560,7 +561,7 @@ func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 
 	// A model the static Claude seed does not list, plus an explicit effort the live catalog would
 	// offer for it. The agent is stopped, so OptionGroups serves the static fallback (no such model).
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDModel: "claude-opus-99-unreleased", agent.OptionIDEffort: "xhigh"},
@@ -606,7 +607,7 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 			// No model in the request: this is NOT a model switch, only an effort edit.
-			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  "agent-1",
 				Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDEffort: tc.sentEffort}},
 			}, w)
@@ -649,7 +650,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 
 	// The edit changes ONLY permission mode -- no model, no effort -- so the stale xhigh is
 	// inherited via the merge, not explicitly sent.
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModePlan}},
 	}, w)
@@ -686,7 +687,7 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{contracts.CodexOptionPermissionProfile: ""}},
 	}, w)
@@ -814,7 +815,7 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// "OPUS[1M]" normalizes to the stored "opus[1m]" -- same model, just a different spelling.
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDModel: "OPUS[1M]"},
@@ -854,7 +855,7 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 	// Fully-qualified alias for the SAME model, plus an explicit "max" -- a tier opus[1m]
 	// supports. The alias normalizes to the stored "opus[1m]", so this is not a switch, and
 	// "max" is valid for the model, so it must persist rather than reset to auto.
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDModel: "claude-opus-4-8[1m]", agent.OptionIDEffort: "max"},
@@ -890,7 +891,7 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 
 	// Switch to sonnet and to a tier sonnet offers (high), so effort actually changes and the
 	// label must resolve against sonnet's catalog.
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "high"},
@@ -925,7 +926,7 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDPermissionMode: "plan"}},
 	}, w)
@@ -979,7 +980,7 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 			}))
 			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  "agent-1",
 				Settings: &leapmuxv1.AgentSettings{Options: map[string]string{tc.foreign: "high"}},
 			}, w)
@@ -1010,7 +1011,7 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{contracts.CodexOptionPermissionProfile: codex.ProfileReadOnly},
@@ -1043,7 +1044,7 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDEffort: agent.EffortHigh}},
 	}, w)
@@ -1070,7 +1071,7 @@ func TestUpdateAgentSettings_OfflineResponseIsUnresolved(t *testing.T) {
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 	}))
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
 		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "composer-2.5"}},
 	}, w)
@@ -1761,7 +1762,7 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-goose", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-goose",
 		Settings: &leapmuxv1.AgentSettings{
 			Options: map[string]string{agent.OptionIDPermissionMode: "approve"},
@@ -1865,7 +1866,7 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 	// Send set_permission_mode via SendAgentRawMessage while the agent
 	// is running. The DB should be updated eagerly, even if the agent
 	// doesn't echo the mode back in its control_response.
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"r1","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`,
 	}, w)
@@ -1905,7 +1906,7 @@ func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *tes
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-1",
 		Content: `{"type":"control_request","request_id":"r1","request":{"subtype":"set_permission_mode","mode":"bypassPermissions"}}`,
 	}, w)

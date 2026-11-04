@@ -4,7 +4,7 @@ import type { GitModeIntent } from '~/hooks/useGitModeState'
 import type { GitPathInfo } from '~/hooks/useGitPathInfo'
 import { generateSlug } from 'random-word-slugs'
 import { batch, createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { labelRow, pathPreview, radioGroup, radioRow, radioSubContent } from '~/components/common/Dialog.css'
 import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
@@ -330,8 +330,8 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // batching buys now is that the menu's own loading gate and its options
   // flip together. Skipped entirely when the parent supplies
   // `preloadedBranches`.
-  const branchFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitBranches>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitBranches(wid, { workerId: wid, path }),
+  const branchFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerGit.listGitBranches>>>({
+    fetch: ({ wid, path }) => workerGit.listGitBranches(wid, { path }),
     applySuccess: (resp) => {
       setInternalBranches(resp.branches)
       const cur = resp.currentBranch || props.gitInfo.info().currentBranch
@@ -367,8 +367,8 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     }
   })
 
-  const worktreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerRpc.listGitWorktrees>>>({
-    fetch: ({ wid, path }) => workerRpc.listGitWorktrees(wid, { workerId: wid, path }),
+  const worktreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerGit.listGitWorktrees>>>({
+    fetch: ({ wid, path }) => workerGit.listGitWorktrees(wid, { path }),
     applySuccess: (resp) => {
       // Only show actual worktrees (exclude the main working tree).
       setWorktrees(resp.worktrees.filter(wt => !wt.isMain).map(wt => ({ path: wt.path, branch: wt.branch })))

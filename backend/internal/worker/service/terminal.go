@@ -12,6 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -72,7 +73,7 @@ func (svc *Service) announceTerminalStarting(terminalID, shell string) {
 const terminalProcessScanTimeout = 5 * time.Second
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
-func registerTerminalHandlers(d registrar, svc *Service) {
+func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// InspectTerminalProcesses lists what runs inside each terminal, so a
 	// close guard can state the reason before it tears the tab down. Batched:
 	// closing a tile asks about every terminal it holds at once.
@@ -82,7 +83,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// owner gate is the whole access decision here -- a Worker's terminals all
 	// belong to its one owner -- and an id that names no live PTY simply drops
 	// out of the response, which is the same answer an idle terminal gets.
-	registerOwnerGuarded(d, "InspectTerminalProcesses", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain,
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, dispatchPlain,
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.InspectTerminalProcessesRequest, sender channel.ResponseWriter) {
 			ctx, cancel := context.WithTimeout(ctx, terminalProcessScanTimeout)
 			defer cancel()
@@ -117,7 +118,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// OpenTerminal starts a new PTY terminal session.
-	registerOwnerGuarded(d, "OpenTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
@@ -149,7 +150,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// Validate git-mode options on the sync path so bad input fails
 			// the RPC with InvalidArgument before we create any DB row. The
 			// actual mutation happens inside runTerminalStartup.
-			plan, gmErr := svc.validateGitMode(ctx, workingDir, r)
+			plan, gmErr := svc.validateGitMode(ctx, workingDir, r.GetGitSetup())
 			if gmErr != nil {
 				sendValidationError(sender, gmErr)
 				return
@@ -204,7 +205,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			exitFn := svc.makeTerminalExitFn()
 
 			// Register the startup in the registry BEFORE the row becomes
-			// visible, with a cancel ctx so CloseTerminal during phase 0 aborts
+			// visible, with a cancel ctx so CloseTab during phase 0 aborts
 			// executeGitMode. A reader that finds the row of a terminal with no
 			// entry and no PTY takes it for a dead shell. A second quake open
 			// finds the row by its directory, and quakeShellIsLive then answers
@@ -237,7 +238,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// even before git-mode execution creates the worktree.
 			//
 			// A client-set title is CLEANED, never refused, with the rule that
-			// validate.CleanName documents. UpdateTerminalTitle, RenameAgent
+			// validate.CleanName documents. RenameTerminal, RenameAgent
 			// and OpenAgent apply the same rule, so every writer of a `title`
 			// column enforces one rule and none of them fails the RPC over a
 			// title the user can neither see nor correct.
@@ -328,7 +329,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
-	registerTerminalForRestartGuarded(d, "RestartTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
+	registerTerminalForRestartGuarded(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -431,24 +432,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
-	// CloseTerminal stops and removes a terminal session.
-	registerTerminalGuardedByID(d, "CloseTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchTracked,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
-			terminalID := r.GetTerminalId()
-
-			// Tracked via dispatcher RegisterTracked above so Shutdown
-			// drains the close flow (stop → DB close → unregister →
-			// optional worktree remove) before tearing down the DB pool.
-			// The frontend fires this RPC fire-and-forget after removing
-			// the tab from the UI. The TerminalStartup goroutine's
-			// trailing rollback work is tracked separately by
-			// TerminalStartup.WaitForInFlight and drained in Shutdown.
-			result := svc.closeTerminalTabCommon(caller.UserID.String(), terminalID, r.GetWorktreeAction(), dropWorktreeLink)
-			sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
-		})
-
 	// SendInput sends input data to a terminal.
-	registerTerminalGuardedByID(d, "SendInput", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -466,7 +451,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	registerTerminalGuardedByID(d, "ResizeTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -509,7 +494,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.ResizeTerminalResponse{})
 		})
 
-	// UpdateTerminalTitle updates a terminal's title in both the in-memory
+	// RenameTerminal updates a terminal's title in both the in-memory
 	// manager and the database. It is the only writer of a USER-SUPPLIED
 	// title; OpenTerminal writes the worker-assigned name at creation and
 	// persistTerminalOnExit writes TerminalMeta.Title on shell exit.
@@ -517,8 +502,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// The worker never persists a PTY-driven OSC title. It broadcasts that
 	// title as a live overlay instead -- see the SignalTitle case in this
 	// file for the reason.
-	registerTerminalGuarded(d, "UpdateTerminalTitle", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
+	registerTerminalGuarded(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RenameTerminalRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			// Clean the title, never refuse it -- the same rule OpenAgent,
@@ -535,7 +520,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				// manager's title while the terminal is live and the row's
 				// title after it exits -- the same precedence ListTerminals
 				// applies, so a client polling either RPC reads one answer.
-				sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{
+				sendProtoResponse(sender, &leapmuxv1.RenameTerminalResponse{
 					Title: svc.effectiveTerminalTitle(dbTerm),
 				})
 				return
@@ -558,14 +543,14 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				)
 			}
 
-			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{Title: title})
+			sendProtoResponse(sender, &leapmuxv1.RenameTerminalResponse{Title: title})
 		})
 
 	// ListTerminals resolves the records behind a set of terminal tab ids.
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerOwnerGuarded(d, "ListTerminals", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
 		// Verdicts answer for the ids the caller NAMED, so the requested set is
 		// captured before the quake lookup widens it. A directory with no quake
 		// terminal is an absence, not a failed hydration -- the client asks
@@ -660,11 +645,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			return
 		}
 
-		// The DB pass is the ONE source of every terminal's is_quake flag, and
-		// it runs first so both passes below can read from it. The manager
-		// holds the live ring but nothing about the flag, so a map built beside
-		// it needed a third loop afterwards to stamp the entries it had
-		// already produced -- three writers for one derived fact.
+		// The DB pass is the ONE source of every terminal's is_quake flag and
+		// persisted startup_error, and it runs first so both passes below can
+		// read from it. The manager holds the live ring but neither fact, so a
+		// map built beside it needed a third loop afterwards to stamp the
+		// entries it had already produced -- three writers for one derived
+		// fact.
 		//
 		// A DB read failure has to fail the WHOLE call. Falling through to
 		// the verdict pass would leave `seen` holding only the ids the
@@ -680,11 +666,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			sendInternalError(sender, "failed to list terminals")
 			return
 		}
-		quakeByTerminalID := make(map[string]bool, len(dbTerminals))
-		for _, ts := range dbTerminals {
-			if ts.IsQuake {
-				quakeByTerminalID[ts.ID] = true
-			}
+		rowsByID := make(map[string]*db.Terminal, len(dbTerminals))
+		for i := range dbTerminals {
+			rowsByID[dbTerminals[i].ID] = &dbTerminals[i]
 		}
 
 		// Run git FIRST. It is the one slow step of this call: a large working
@@ -705,33 +689,48 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		// Collect from the in-memory manager and DB-only rows. This is the read of
 		// the runtime state: see the note above the call to git.
 		//
-		// A terminal can register in the Manager after the read of ListByIDs. The
-		// DB-only pass below therefore reads the registry first and the Manager
-		// last. A startup that ends in between then reads READY and running, and
-		// never READY and exited.
+		// Both passes take the status from deriveTerminalStatus, the one
+		// statement of the rule, which also feeds the WatchEvents replay. It
+		// reads the registry first and the Manager last, so a startup that ends
+		// in between reads READY and running, and never READY and exited. A
+		// terminal can register in the Manager after the read of ListByIDs, and
+		// the DB-only pass covers it the same way.
+		//
+		// The manager pass does not read the Exited flag of its entry, because
+		// that flag can disagree with the Manager when the status is read.
+		// ListByIDs took the flag BEFORE the registry read. A restart that ends
+		// in between pairs the flag of the old, exited shell with a registry that
+		// no longer holds the startup, so the reply would say EXITED over a shell
+		// that runs. A shell that exits in between disagrees the other way.
+		// IsRunning, read last, states the terminal closest to the reply.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
 		for _, e := range entries {
 			seen[e.ID] = true
+			row := rowsByID[e.ID]
+			if row == nil {
+				// The Manager can hold a terminal that the DB read did not
+				// return, such as one whose close is in progress: the query
+				// returns no closed row. The reply then has no persisted
+				// startup_error or is_quake flag to read for it.
+				row = &db.Terminal{ID: e.ID}
+			}
+			status, startupError, startupMessage := svc.deriveTerminalStatus(row)
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      e.ID,
 				Cols:            e.Meta.Cols,
 				Rows:            e.Meta.Rows,
 				Screen:          e.Screen,
 				ScreenEndOffset: e.ScreenEndOffset,
-				Exited:          e.Exited,
 				WorkingDir:      e.Meta.WorkingDir,
 				ShellStartDir:   e.Meta.ShellStartDir,
 				Title:           e.Meta.Title,
-				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
-				Quake:           quakeByTerminalID[e.ID],
+				Status:          status,
+				StartupError:    startupError,
+				StartupMessage:  startupMessage,
+				Quake:           row.IsQuake,
 				GitStatus:       gitStatuses[e.ID],
-			}
-			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
-				ti.Status = sup
-				ti.StartupError = errStr
-				ti.StartupMessage = msg
 			}
 			terminals = append(terminals, ti)
 		}
@@ -754,14 +753,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Rows:            uint32(ts.Rows),
 				Screen:          ts.Screen,
 				ScreenEndOffset: int64(len(ts.Screen)),
-				Exited:          !svc.Terminals.HasTerminal(ts.ID),
 				WorkingDir:      ts.WorkingDir,
 				ShellStartDir:   ts.ShellStartDir,
 				Title:           ts.Title,
 				Status:          status,
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
-				Quake:           quakeByTerminalID[ts.ID],
+				Quake:           ts.IsQuake,
 				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
@@ -797,7 +795,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// workspace on its own (see the quake store's isWorkspaceMutatable), which
 	// is the check that matters: this RPC stores nothing that an archived
 	// workspace could be harmed by.
-	registerOwnerGuarded(d, "SetQuakePanel", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.SetQuakePanelRequest, sender channel.ResponseWriter) {
 			if r.GetAction() == leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_UNSPECIFIED {
 				sendInvalidArgument(sender, "action must be open, close or toggle")
@@ -861,13 +859,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// notably a delegation bearer minted for a different user -- must not
 	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
 	// which dispatches with the owner's user id) still pass this gate.
-	registerOwnerOnly(d, "ListAvailableShells", leapmuxv1.Scope_SCOPE_TERMINAL_READ, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListAvailableShellsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceListAvailableShellsProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, _ *leapmuxv1.ListAvailableShellsRequest, sender channel.ResponseWriter) {
 		shells, defaultShell := terminal.ListAvailableShells()
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableShellsResponse{
 			Shells:       shells,
@@ -889,7 +881,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	defer svc.TerminalStartup.finishEntry(h)
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
-	// map by the time any concurrent CloseTerminal calls terminalCleanups.run.
+	// map by the time any concurrent CloseTab calls terminalCleanups.run.
 	// Ownership lives with this goroutine until we broadcast READY; until
 	// then, the deferred cleanup retires the token on every error path so
 	// a close that lost the register-vs-cleanup race doesn't leak it.
@@ -925,7 +917,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		svc.failTerminalStartup(terminalID, gm, gmErr, h)
 		return
 	}
-	// Link the tab to its worktree unless a CloseTerminal already landed during
+	// Link the tab to its worktree unless a CloseTab already landed during
 	// startup and decided the worktree's fate itself (see
 	// registerTabForWorktreeAfterClose). Symmetric with the agent startup guard.
 	terminalClosedDuringStartup := false
@@ -959,7 +951,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 
 	startErr := svc.startTerminal(ctx, opts, outputFn, exitFn)
 
-	// Post-spawn fetch: closed_at detects a CloseTerminal that landed
+	// Post-spawn fetch: closed_at detects a CloseTab that landed
 	// during the PTY spawn (must neither broadcast READY nor leave a
 	// running PTY behind), and title absorbs the value the frontend may
 	// have persisted between OpenTerminal returning and StartTerminal
@@ -1008,7 +1000,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	}
 
 	// Spawn succeeded and no close-race; hand cleanup ownership to the
-	// eventual CloseTerminal handler.
+	// eventual CloseTab handler.
 	ownsIPCToken = false
 	svc.succeedTerminalStartup(terminalID, h)
 }
@@ -1071,10 +1063,10 @@ func (svc *Service) runTerminalRestart(
 
 	startErr := svc.Terminals.RestartTerminal(ctx, opts, fallbackOffset, outputFn, exitFn)
 
-	// Detect a CloseTerminal that landed during the PTY spawn: if
+	// Detect a CloseTab that landed during the PTY spawn: if
 	// closed_at is set we must neither broadcast READY nor leave a
 	// freshly-spawned PTY behind. Re-fetching is best-effort — a
-	// CloseTerminal whose DB write hasn't committed yet will be caught
+	// CloseTab whose DB write hasn't committed yet will be caught
 	// by its own RemoveTerminal call instead. The title column from the
 	// same row is unused on the restart path (titles don't change
 	// across restart), so it's read-and-discarded.
@@ -1112,23 +1104,22 @@ func (svc *Service) runTerminalRestart(
 	svc.succeedTerminalStartup(terminalID, h)
 }
 
-// succeedTerminalStartup is the shared READY tail for runTerminalStartup
-// and runTerminalRestart: clear the persisted startup_error, retire the
-// registry entry, and broadcast READY last.
+// succeedTerminalStartup is the shared tail of a successful start for
+// runTerminalStartup and runTerminalRestart: clear the persisted startup_error,
+// retire the registry entry, and broadcast the status last.
 //
 // The registry comes before the broadcast for the reason failStartup states:
 // ListTerminals lets the registry override the READY of a live terminal, so a
 // client that receives READY and then lists a registry that still says
 // STARTING keeps STARTING, and no later event corrects it.
 //
-// The other order has a cost of its own, and it is the smaller one. A restart
-// can claim the terminal between the two steps, and its STARTING can then
-// reach the client before this READY. That restart ends in its own READY or
-// STARTUP_FAILED broadcast, which corrects the client.
+// A restart can claim the terminal between the two steps. The broadcast then
+// states that restart's status, because it derives the status at its own step
+// (see broadcastTerminalStatusAfterStartup).
 func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.TerminalStartup.succeed(terminalID, h)
-	svc.broadcastTerminalReady(terminalID)
+	svc.broadcastTerminalStatusAfterStartup(terminalID)
 }
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the
@@ -1166,9 +1157,8 @@ func (svc *Service) persistTerminalStartupError(terminalID, errMsg string) {
 // status has been computed (phase 0 mode labels, rollback labels, the
 // seed broadcast from registerTerminalHandlers) and non-nil once
 // runTerminalStartup's phase 1 has run `git status` on the final dir.
-func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.TerminalStatusChange {
+func buildTerminalStartingStatus(message string, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.TerminalStatusChange {
 	sc := &leapmuxv1.TerminalStatusChange{
-		TerminalId:     terminalID,
 		Status:         leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		StartupMessage: message,
 	}
@@ -1180,19 +1170,10 @@ func buildTerminalStartingStatus(terminalID, message string, gs *leapmuxv1.GitRe
 
 // buildTerminalFailedStatus builds a STARTUP_FAILED TerminalStatusChange
 // carrying the error message.
-func buildTerminalFailedStatus(terminalID, errMsg string) *leapmuxv1.TerminalStatusChange {
+func buildTerminalFailedStatus(errMsg string) *leapmuxv1.TerminalStatusChange {
 	return &leapmuxv1.TerminalStatusChange{
-		TerminalId:   terminalID,
 		Status:       leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
 		StartupError: errMsg,
-	}
-}
-
-// buildTerminalReadyStatus builds a READY TerminalStatusChange.
-func buildTerminalReadyStatus(terminalID string) *leapmuxv1.TerminalStatusChange {
-	return &leapmuxv1.TerminalStatusChange{
-		TerminalId: terminalID,
-		Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 	}
 }
 
@@ -1235,23 +1216,61 @@ func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows 
 }
 
 // deriveTerminalStatus computes (status, startupError, startupMessage)
-// for a terminal, in priority order:
+// for a terminal. It is the ONE statement of the terminal status rule:
+// ListTerminals, the WatchEvents replay and the status after a startup all read
+// it, so they cannot report different states for one terminal. The priority
+// order:
 //  1. in-memory startup registry — STARTING / STARTUP_FAILED while a
 //     startup is in flight or has just failed. The current phase
 //     message is surfaced so a WatchEvents subscriber that arrived
 //     after the initial STARTING broadcast still sees the right label.
-//  2. persisted startup_error column — surfaces a prior failure across
-//     worker restarts (the in-memory registry is wiped on restart).
-//  3. READY otherwise (the caller uses `Exited` to distinguish a
-//     running terminal from an exited one).
+//  2. READY while the shell runs. A running shell proves that the last
+//     startup succeeded: every failure path leaves no new shell, and
+//     RestartTerminal refuses a terminal whose shell runs. A persisted
+//     startup_error beside a running shell is therefore stale, such as a
+//     row read before the success cleared the column. deriveAgentStatus
+//     puts a running agent before its persisted error for the same reason.
+//     "Runs" is IsRunning, not HasTerminal: the manager keeps an exited
+//     terminal until RestartTerminal or RemoveTerminal, so holding the
+//     terminal does not mean its shell still runs.
+//  3. persisted startup_error column — surfaces a prior failure across
+//     worker restarts (the in-memory registry is wiped on restart) and after
+//     the registry evicts a failure (failedEntryTTL). A failed restart keeps
+//     the stopped previous shell in the manager, so this case covers a
+//     terminal that the manager holds too.
+//  4. EXITED: no startup owns the status, no shell runs, and no failure is
+//     persisted.
+//
+// startupError is empty unless the status is STARTUP_FAILED, and
+// startupMessage is empty unless it is STARTING. derivedTerminalStatusEvent and
+// ListTerminals copy all three into the reply and rely on that.
 func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.TerminalStatus, startupError, startupMessage string) {
 	if sup, errStr, msg, ok := svc.TerminalStartup.status(t.ID); ok {
 		return sup, errStr, msg
 	}
+	if svc.Terminals.IsRunning(t.ID) {
+		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+	}
 	if t.StartupError != "" {
 		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
 	}
-	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, "", ""
+}
+
+// derivedTerminalStatusEvent builds the status change that deriveTerminalStatus
+// states for t. deriveTerminalStatus sets startupError only for STARTUP_FAILED
+// and startupMessage only for STARTING, so one status change carries all three
+// as they are, and a new status needs no case here.
+func (svc *Service) derivedTerminalStatusEvent(t *db.Terminal) *leapmuxv1.TerminalEvent {
+	status, startupError, startupMessage := svc.deriveTerminalStatus(t)
+	return &leapmuxv1.TerminalEvent{
+		TerminalId: t.ID,
+		Event: &leapmuxv1.TerminalEvent_StatusChange{StatusChange: &leapmuxv1.TerminalStatusChange{
+			Status:         status,
+			StartupError:   startupError,
+			StartupMessage: startupMessage,
+		}},
+	}
 }
 
 // effectiveTerminalTitle returns the title a terminal tab shows right now.
@@ -1260,7 +1279,7 @@ func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 // same precedence ListTerminals applies when it builds a TerminalInfo, so the
 // two RPCs cannot report different titles for the same terminal.
 //
-// UpdateTerminalTitle calls it on the path that stores nothing (the request's
+// RenameTerminal calls it on the path that stores nothing (the request's
 // title cleaned to empty), so the reply reports the title in force instead of
 // the empty string the handler refused to store.
 func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
@@ -1274,31 +1293,49 @@ func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
 // Used by runTerminalStartup for each phase label transition; gs is
 // non-nil only once phase 1 has computed git status.
 func (svc *Service) broadcastTerminalStarting(terminalID, message string, gs *leapmuxv1.GitRepoStatus) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+	svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalStartingStatus(terminalID, message, gs),
+			StatusChange: buildTerminalStartingStatus(message, gs),
 		},
 	})
 }
 
 // broadcastTerminalFailed fans out a STARTUP_FAILED TerminalStatusChange.
 func (svc *Service) broadcastTerminalFailed(terminalID, errMsg string) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+	svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 		TerminalId: terminalID,
 		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalFailedStatus(terminalID, errMsg),
+			StatusChange: buildTerminalFailedStatus(errMsg),
 		},
 	})
 }
 
-// broadcastTerminalReady fans out a READY TerminalStatusChange.
-func (svc *Service) broadcastTerminalReady(terminalID string) {
-	svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
-		TerminalId: terminalID,
-		Event: &leapmuxv1.TerminalEvent_StatusChange{
-			StatusChange: buildTerminalReadyStatus(terminalID),
-		},
+// broadcastTerminalStatusAfterStartup fans out the status of a terminal whose
+// startup succeeded and left the registry: READY while the shell runs, and EXITED
+// when it already ended.
+//
+// A shell can exit between its spawn and this call. A watch session that
+// registered after the exit handler published closed never receives closed, and
+// its replay can read the STARTING of the registry. So the queue entry states the
+// truth instead of nothing: this status is the only one that corrects that
+// session, and the client's EXITED case takes the same path as closed.
+//
+// READY never lands behind closed. IsExited turns true before the exit handler
+// runs, and the status is derived inside the queue's lock, so a closed event that
+// is already in the queue implies a derive that sees the exit.
+//
+// The derive also reads the registry, because a restart can claim the terminal
+// before this call. A bare EXITED would then land behind that restart's STARTING,
+// and the client would drop the restart's READY and show a dead tab over a live
+// shell.
+//
+// The row holds only the id because succeedTerminalStartup cleared the persisted
+// error, the one other field that deriveTerminalStatus reads.
+func (svc *Service) broadcastTerminalStatusAfterStartup(terminalID string) {
+	row := db.Terminal{ID: terminalID}
+	svc.Watchers.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent {
+		return svc.derivedTerminalStatusEvent(&row)
 	})
 }
 
@@ -1403,7 +1440,7 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 		})
 	case terminal.SignalTitle:
 		// Broadcast the live OSC title only — do NOT write Meta.Title. That
-		// field is owned by the user-rename path (UpdateTerminalTitle) and by
+		// field is owned by the user-rename path (RenameTerminal) and by
 		// persistTerminalOnExit, which persists TerminalMeta.Title into the DB
 		// title column on shell exit. Writing the OSC value into Meta.Title
 		// would (a) clobber an in-memory user rename on the next ListTerminals
@@ -1414,7 +1451,7 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 		// that yields to an explicit rename, so the broadcast alone is the
 		// correct worker-side effect.
 		//
-		// CleanName runs here for the reason UpdateTerminalTitle runs it above,
+		// CleanName runs here for the reason RenameTerminal runs it above,
 		// and this is the writer that needs it most: the bytes came from
 		// whatever process holds the PTY, which includes the REMOTE host of an
 		// `ssh` session and any command an agent ran. The browser renders the
@@ -1424,7 +1461,7 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 		// other writer of a tab title obeys.
 		//
 		// A title that cleans to nothing is a no-op, not a clear: the same
-		// answer UpdateTerminalTitle gives, and the answer the browser's own
+		// answer RenameTerminal gives, and the answer the browser's own
 		// `if (!value.title) return` already expects.
 		title := validate.CleanName(sig.Title)
 		if title == "" {
@@ -1477,7 +1514,7 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		svc.persistTerminalOnExit(tid, exitCode)
 		svc.clearTerminalBellCoalesce(tid)
-		svc.Watchers.BroadcastTerminalEvent(tid, &leapmuxv1.TerminalEvent{
+		svc.Watchers.PublishTerminalStatus(tid, &leapmuxv1.TerminalEvent{
 			TerminalId: tid,
 			Event: &leapmuxv1.TerminalEvent_Closed{
 				Closed: &leapmuxv1.TerminalClosed{

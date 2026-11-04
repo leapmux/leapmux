@@ -14,9 +14,10 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState } from '~/api/platformBridge'
+import { queueHeadAction } from '~/components/chat/agentInputQueueDrop'
 import { openPreferences } from '~/components/shell/UserMenuState'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { launchExternalApp, loadExternalApps, resolvePreferredExternalApp } from '~/lib/externalApps'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand } from '~/lib/shortcuts/commands'
@@ -80,9 +81,9 @@ interface UseShortcutsProps {
    * second place that knows how a queue is shaped.
    */
   getAgentInputQueue: (agentId: string) => AgentInputQueueSnapshot | undefined
-  /** Hand the queue head to the running turn. Rejects like every queue RPC. */
-  steerQueueItem: (item: QueuedAgentInput) => Promise<void>
-  preemptQueueItem: (item: QueuedAgentInput) => Promise<void>
+  /** Hand `agentId`'s queue head to the running turn. Rejects like every queue RPC. */
+  steerQueueItem: (agentId: string, item: QueuedAgentInput) => Promise<void>
+  preemptQueueItem: (agentId: string, item: QueuedAgentInput) => Promise<void>
   /**
    * Show, hide, or flip the quake terminal panel of the focused tab's working
    * directory.
@@ -280,29 +281,28 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('chat.steerQueuedInput', 'Steer or Preempt Queued Input', () => {
     const tab = resolveFocusedTab()
     // The capability checks live HERE and not in the `when` clause.
-    // `supportsSteering`, `canSteer` and `canPreempt` are per-agent,
-    // per-snapshot facts that move in the middle of a turn, and both flags are
-    // computed by the WORKER precisely so the browser never re-derives the
+    // `queueHeadDispatch`, `canSteer` and `canPreempt` are per-agent,
+    // per-snapshot facts that move in the middle of a turn, and the WORKER
+    // computes each one precisely so the browser never re-derives the
     // precondition. A context would have to poll them from the keybinding layer
     // and could still be a tick stale at dispatch.
     if (tab?.type !== TabType.AGENT)
       return
-    // Index 0 and never a scan: the worker marks `canSteer` and `canPreempt`
-    // on the head alone, so a search for a steerable item answers a different
-    // question from the one the worker enforces.
-    const head = props.getAgentInputQueue(tab.id)?.items[0]
-    if (tab.supportsSteering) {
-      if (!head?.canSteer)
-        return
-      // RETURNED, not discarded: `executeCommand` attaches a catch to a
-      // returned promise, and `runQueueRpc` rethrows after it toasts.
-      return props.steerQueueItem(head)
-    }
+    // The head and its action come from the rule the queue panel's head row
+    // reads: the first input that does not await its echo, which is the item
+    // the worker marks `canSteer` and `canPreempt` on. A search for a
+    // steerable item would answer a different question from the one the
+    // worker enforces.
+    const offered = queueHeadAction(tab.queueHeadDispatch, props.getAgentInputQueue(tab.id)?.items ?? [])
+    if (!offered)
+      return
+    // RETURNED, not discarded: `executeCommand` attaches a catch to a
+    // returned promise, and `runQueueRpc` rethrows after it toasts.
     // Preemption is the same chord on a provider that can only interrupt: the
     // turn is cancelled and the head follows as the next dispatch.
-    if (!tab.supportsPreemption || !head?.canPreempt)
-      return
-    return props.preemptQueueItem(head)
+    return offered.action === 'steer'
+      ? props.steerQueueItem(tab.id, offered.head)
+      : props.preemptQueueItem(tab.id, offered.head)
   }, 'Chat')
 
   /**

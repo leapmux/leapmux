@@ -1,7 +1,8 @@
 import type { AgentInputQueueSnapshot } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen, getContext } from '~/lib/shortcuts/context'
 import { registerChatPanel, unregisterChatPanel } from '~/stores/focusedChatPanel.store'
@@ -333,7 +334,7 @@ describe('useShortcuts', () => {
       unregisterChatPanel(panel)
     })
 
-    it('chatInputFocused is true only when focus is inside [data-chat-input]', () => {
+    it('reports chatInputFocused as true only when focus is inside [data-chat-input]', () => {
       const props = makeProps()
 
       render(() => {
@@ -364,8 +365,8 @@ describe('useShortcuts', () => {
 
     /** Props for an agent tab with a queue whose head reports `canSteer`. */
     function steerProps(over: {
-      supportsSteering?: boolean
-      items?: { canSteer: boolean, id: string }[]
+      queueHeadDispatch?: QueueHeadDispatch
+      items?: { canSteer: boolean, canPreempt?: boolean, id: string, state?: AgentInputState }[]
       snapshot?: boolean
       tab?: unknown
     } = {}) {
@@ -375,7 +376,7 @@ describe('useShortcuts', () => {
       ]
       const tab = 'tab' in over
         ? over.tab
-        : { type: TabType.AGENT, id: 'a1', supportsSteering: over.supportsSteering ?? true }
+        : { type: TabType.AGENT, id: 'a1', queueHeadDispatch: over.queueHeadDispatch ?? QueueHeadDispatch.STEER }
       return {
         ...props,
         resolveFocusedTab: () => tab,
@@ -383,6 +384,7 @@ describe('useShortcuts', () => {
           ? undefined
           : { items }),
         steerQueueItem: vi.fn(async () => {}),
+        preemptQueueItem: vi.fn(async () => {}),
       }
     }
 
@@ -401,11 +403,62 @@ describe('useShortcuts', () => {
     it('steers the queue head of the focused agent tab', () => {
       const props = steerProps()
       const steer = run(props)
-      expect(steer).toHaveBeenCalledWith({ canSteer: true, id: 'q1' })
+      expect(steer).toHaveBeenCalledWith('a1', { canSteer: true, id: 'q1' })
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
     })
 
     it('does nothing when the agent provider does not accept a steer', () => {
-      expect(run(steerProps({ supportsSteering: false }))).not.toHaveBeenCalled()
+      const props = steerProps({ queueHeadDispatch: QueueHeadDispatch.NONE })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    })
+
+    it('preempts the queue head of an agent whose provider can only interrupt', () => {
+      const props = steerProps({
+        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
+        items: [
+          { canSteer: false, canPreempt: true, id: 'q1' },
+        ],
+      })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).toHaveBeenCalledWith('a1', { canSteer: false, canPreempt: true, id: 'q1' })
+    })
+
+    it('does not preempt a head that the worker refuses to preempt', () => {
+      const props = steerProps({
+        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
+        items: [
+          { canSteer: false, canPreempt: false, id: 'q1' },
+        ],
+      })
+      run(props)
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    })
+
+    // A provider that steers never falls back to a preempt, even when the
+    // worker would allow one for the head.
+    it('does not preempt on a provider that steers when the head refuses a steer', () => {
+      const props = steerProps({
+        queueHeadDispatch: QueueHeadDispatch.STEER,
+        items: [
+          { canSteer: false, canPreempt: true, id: 'q1' },
+        ],
+      })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    })
+
+    // The client reads an UNSPECIFIED dispatch, which a worker that never
+    // reported one leaves, as NONE.
+    it('does nothing when the dispatch is unspecified', () => {
+      const props = steerProps({
+        queueHeadDispatch: QueueHeadDispatch.UNSPECIFIED,
+        items: [
+          { canSteer: true, canPreempt: true, id: 'q1' },
+        ],
+      })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
     })
 
     it('does nothing when the worker refuses to steer the head', () => {
@@ -434,8 +487,9 @@ describe('useShortcuts', () => {
       }))).not.toHaveBeenCalled()
     })
 
-    // The worker marks `canSteer` on index 0 alone, so a scan would answer a
-    // different question than the one the worker will enforce.
+    // The worker marks `canSteer` on the queue head alone, so a scan for a
+    // steerable item would answer a different question than the one the
+    // worker will enforce.
     it('steers the head alone, although a later item reports canSteer', () => {
       const steer = run(steerProps({
         items: [
@@ -444,6 +498,62 @@ describe('useShortcuts', () => {
         ],
       }))
       expect(steer).not.toHaveBeenCalled()
+    })
+
+    // The head is the first input that does not await its echo, the same row
+    // the queue panel offers Steer on. The chord read index 0, so it did
+    // nothing while the row showed the button.
+    it('steers the head behind an input that awaits its echo', () => {
+      const props = steerProps({
+        items: [
+          { canSteer: false, id: 'q0', state: AgentInputState.AWAITING_ECHO },
+          { canSteer: true, id: 'q1', state: AgentInputState.QUEUED },
+        ],
+      })
+      expect(run(props)).toHaveBeenCalledExactlyOnceWith('a1', { canSteer: true, id: 'q1', state: AgentInputState.QUEUED })
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
+    })
+
+    it('preempts the head behind an input that awaits its echo', () => {
+      const props = steerProps({
+        queueHeadDispatch: QueueHeadDispatch.PREEMPT,
+        items: [
+          {
+            canSteer: false,
+            canPreempt: false,
+            id: 'q0',
+            state: AgentInputState.AWAITING_ECHO,
+          },
+          {
+            canSteer: false,
+            canPreempt: true,
+            id: 'q1',
+            state: AgentInputState.QUEUED,
+          },
+        ],
+      })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).toHaveBeenCalledExactlyOnceWith('a1', {
+        canSteer: false,
+        canPreempt: true,
+        id: 'q1',
+        state: AgentInputState.QUEUED,
+      })
+    })
+
+    it('does nothing when every input awaits its echo', () => {
+      const props = steerProps({
+        items: [
+          {
+            canSteer: true,
+            canPreempt: true,
+            id: 'q0',
+            state: AgentInputState.AWAITING_ECHO,
+          },
+        ],
+      })
+      expect(run(props)).not.toHaveBeenCalled()
+      expect(props.preemptQueueItem).not.toHaveBeenCalled()
     })
   })
 

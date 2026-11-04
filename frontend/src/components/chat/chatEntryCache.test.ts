@@ -1258,7 +1258,7 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('hasVisibleEntries reports presence from visibleEntries()', () => {
+  it('reports presence through hasVisibleEntries from visibleEntries()', () => {
     createRoot((dispose) => {
       const visible = createTestClassifiedEntryCache({
         messages: () => [

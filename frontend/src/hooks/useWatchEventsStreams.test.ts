@@ -2,13 +2,18 @@ import type { Mock } from 'vitest'
 import type { UseWatchEventsStreamsOpts } from './useWatchEventsStreams'
 import type { WatchPlan } from './watchPlan'
 import type { WatchEventsHandle } from '~/api/workerRpc'
-import type { WatchAgentEntry, WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type {
+  WatchAgentEntry,
+  WatchEventsRequest,
+  WatchEventsResponse,
+} from '~/generated/proto/leapmux/v1/watch_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { batch, createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { AgentEventSchema, WatchAgentEntrySchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason, WatchReplayMode } from '~/generated/proto/leapmux/v1/watch_pb'
 import { ChannelError } from '~/lib/channel'
+import { STREAM_HEALTHY_AFTER_MS } from '~/lib/retry'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -147,7 +152,7 @@ describe('useWatchEventsStreams', () => {
       const harness = installTestBridge({ workspaceId: WS })
       const stores = createTestTabStores(WS)
       const plans = createMemo(plansFn)
-      useWatchEventsStreams({
+      const hook = useWatchEventsStreams({
         view: stores.view,
         plans,
         onEvent: opts.onEvent ?? (() => {}),
@@ -160,7 +165,7 @@ describe('useWatchEventsStreams', () => {
           ? { onReplayRetired: opts.onReplayRetired }
           : {}),
       })
-      return { harness, stores, dispose }
+      return { harness, stores, dispose, hook }
     })
   }
 
@@ -208,9 +213,7 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: {
           agentId: 'child-1',
-          replay: true,
-          replayAgentId: 'child-1',
-          replayId,
+          replay: { replayId, agentId: 'child-1' },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
@@ -977,13 +980,11 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: create(AgentEventSchema, {
           agentId: 'a1',
-          replay: true,
-          replayId,
+          replay: { replayId, agentId: 'a1' },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
           },
-          replayAgentId: 'a1',
         }),
       },
     })
@@ -1067,15 +1068,16 @@ describe('useWatchEventsStreams', () => {
         case: 'agentEvent',
         value: create(AgentEventSchema, {
           agentId: 'a1',
-          replay: true,
-          replayId: wrongLifetime
-            ? replayId + 1n
-            : replayId,
+          replay: {
+            replayId: wrongLifetime
+              ? replayId + 1n
+              : replayId,
+            agentId: origin,
+          },
           event: {
             case: 'catchUpComplete',
             value: { latestSeq: 0n },
           },
-          replayAgentId: origin,
         }),
       },
     }))
@@ -1891,8 +1893,8 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
 
-    // Deliver an event through the reopened stream. That event resets the reconnect delay and
-    // starts a new quiet period for the next outage.
+    // Keep the reopened stream open for the healthy window. That ends the streak
+    // and starts a new quiet period for the next outage.
 
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       const h = makeHandle()
@@ -1902,9 +1904,7 @@ describe('useWatchEventsStreams', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     await flush()
     const reopened = handles[handles.length - 1]!
-    reopened._emit({
-      event: { case: 'agentEvent', value: {} },
-    } as never)
+    await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS)
     await flush()
 
     vi.mocked(watchEventsViaChannel).mockImplementation(failOpen as never)
@@ -1959,6 +1959,175 @@ describe('useWatchEventsStreams', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(3)
+  })
+
+  describe('reconnect streak', () => {
+    /** Mount one stream of an agent tab. */
+    async function mountOneStream() {
+      const { harness } = mount(
+        () => new Map([
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
+        ]),
+      )
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '1',
+        workerId: 'w1',
+      })
+      await flush()
+    }
+
+    /** Deliver a frame that decodes, then fail the stream as a frame that does not decode fails it. */
+    async function sendGoodThenBadFrame() {
+      const stream = handles.at(-1)!
+      stream._emit({
+        event: { case: 'agentEvent', value: {} },
+      } as never)
+      stream._error(new ChannelError('client', 'decode a message of stream WatchEvents: bad wire type'))
+      await flush()
+    }
+
+    // A worker that replays a bad frame delivers the frames in front of it on
+    // each attempt. A good frame must not reset the streak: the reconnect would
+    // come at the minimum delay for the life of the page, and it would stay
+    // below the toast threshold, with the worker never marked offline.
+    it('keeps the streak when a good frame precedes the bad one', async () => {
+      await mountOneStream()
+
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(handles).toHaveLength(2)
+
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(1999)
+      await flush()
+      expect(handles, 'the second reconnect waits for the doubled delay').toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(handles).toHaveLength(3)
+
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(3999)
+      await flush()
+      expect(handles, 'the third reconnect doubles again').toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(handles).toHaveLength(4)
+      expect(showWarnToastWithLoggedCause, 'the failures reach the outage toast').toHaveBeenCalledOnce()
+    })
+
+    it('starts a new streak after a stream that stayed open for the healthy window', async () => {
+      await mountOneStream()
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      expect(handles).toHaveLength(3)
+
+      await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS)
+      await sendGoodThenBadFrame()
+
+      await vi.advanceTimersByTimeAsync(999)
+      await flush()
+      expect(handles).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(handles, 'the streak restarts at the minimum delay').toHaveLength(4)
+      expect(showWarnToastWithLoggedCause, 'a stream that proved healthy starts a new quiet period').not.toHaveBeenCalled()
+    })
+
+    it('keeps the streak of a stream that ended before the healthy window closed', async () => {
+      await mountOneStream()
+      await sendGoodThenBadFrame()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+
+      await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS - 1)
+      await sendGoodThenBadFrame()
+
+      await vi.advanceTimersByTimeAsync(1999)
+      await flush()
+      expect(handles, 'one millisecond short of the window proves nothing').toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(handles).toHaveLength(3)
+    })
+
+    // A plan change opens a stream during the wait for a redial, and the redial
+    // timer of the lost stream stays armed. Its firing must not abort the signal
+    // that the loads of the new stream use.
+    it('ignores the redial timer of a lost stream once a plan change opened a new one', async () => {
+      const [agents, setAgents] = createSignal(['a1'])
+      const { harness, hook } = mount(
+        () => new Map([
+          [
+            'w1',
+            {
+              agents: agents().map(agentId => ({ agentId, mode: WatchMode.FULL }) as never),
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
+        ]),
+      )
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '1',
+        workerId: 'w1',
+      })
+      await flush()
+      handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+      await flush()
+
+      setAgents(['a1', 'a2'])
+      await flush()
+      expect(handles, 'the plan change opens a stream before the delay ends').toHaveLength(2)
+      const signal = hook.abortSignalFor('w1')
+
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+
+      expect(handles, 'the timer opens no second stream').toHaveLength(2)
+      expect(signal?.aborted, 'the timer leaves the signal of the open stream alone').toBe(false)
+      expect(hook.abortSignalFor('w1')).toBe(signal)
+    })
+
+    // A failed open never held a stream, so it proves nothing about the next one.
+    it('keeps the streak across a failed open that follows a healthy stream', async () => {
+      await mountOneStream()
+      await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS)
+      vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+        throw new ChannelError('transport', 'channel disconnected')
+      })
+      handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
+      await flush()
+
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1999)
+      await flush()
+      expect(watchEventsViaChannel, 'the failed open keeps the doubled delay').toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(watchEventsViaChannel).toHaveBeenCalledTimes(3)
+    })
   })
 
   // A fatal relay refusal rejects another open before network access. Schedule no repeated

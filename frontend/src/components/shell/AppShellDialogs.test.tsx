@@ -6,10 +6,9 @@ import type { useTabOperations } from './useTabOperations'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
@@ -29,10 +28,12 @@ import { AppShellDialogs } from './AppShellDialogs'
 // missing export on property ACCESS, not at link time, and no dialog in
 // this suite reaches another workerRpc call.
 vi.mock('~/api/workerRpc', () => ({
-  inspectBranchDeletion: vi.fn(),
-  inspectWorktreeRemoval: vi.fn(),
-  deleteBranch: vi.fn(),
-  pushBranch: vi.fn(),
+  workerGit: {
+    inspectBranchDeletion: vi.fn(),
+    inspectWorktreeRemoval: vi.fn(),
+    deleteBranch: vi.fn(),
+    pushBranch: vi.fn(),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -271,12 +272,12 @@ async function chooseSwitchToAndConfirm(branch: string) {
 describe('AppShellDialogs branch dialogs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
-    vi.mocked(workerRpc.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    vi.mocked(workerGit.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
     // The worktree delete path preflights the removal before it hands the
     // tab closes off. Nothing here tests a refusal, so answer "no known
     // refusal" and let the delete proceed.
-    vi.mocked(workerRpc.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
+    vi.mocked(workerGit.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
   })
 
   // Regression: a delete of the checked-out branch left the deleted branch's
@@ -318,7 +319,7 @@ describe('AppShellDialogs branch dialogs', () => {
   // window in which the seed is the sole source: once the response lands it
   // answers for itself, and a dropped payload field would go unnoticed.
   it('delete branch: seeds the dialog from the payload before the inspect lands', async () => {
-    vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(new Promise(() => {}))
+    vi.mocked(workerGit.inspectBranchDeletion).mockReturnValue(new Promise(() => {}))
     const { dialogs } = renderDialogs()
     dialogs.deleteBranch.open({
       workerId: 'w1',
@@ -399,14 +400,14 @@ describe('AppShellDialogs branch dialogs', () => {
 
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
     expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w9', gitToplevel: '/second-repo' }), 'main')
-    expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0]?.[1]).toMatchObject({ path: '/second-repo' })
+    expect(vi.mocked(workerGit.deleteBranch).mock.calls[0]?.[1]).toMatchObject({ path: '/second-repo' })
   })
 
   it('delete branch: the worktree path forwards the payload\'s tab snapshot', async () => {
     // The worktree path is the only consumer that reads `tabs` after an
     // await. Pin that it still receives exactly the tabs that the sidebar
     // opened the dialog with, by identity and not by value.
-    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+    vi.mocked(workerGit.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const { dialogs, closeWorktreeTabs, onBranchChanged } = renderDialogs()
@@ -493,7 +494,7 @@ describe('AppShellDialogs branch dialogs', () => {
     expect(dialogs[which].value()).toBeNull()
   })
 
-  it('keyPinConfirm resolves its decision, so the confirm chain is not stranded', async () => {
+  it('resolves the keyPinConfirm decision, so the confirm chain is not stranded', async () => {
     const { dialogs } = renderDialogs()
     const resolve = vi.fn()
     dialogs.keyPinConfirm.open({

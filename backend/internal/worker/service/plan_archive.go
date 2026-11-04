@@ -49,13 +49,14 @@ type planArchiveStats struct {
 // StartPlanArchiveLoop spawns a background goroutine that compresses old plan
 // year directories into per-year zip files (`<dataDir>/plans/<YYYY>.zip`).
 // Runs once shortly after worker startup and then once per
-// planArchiveInterval, honoring ctx.Done() for graceful shutdown.
+// planArchiveInterval, honoring ctx.Done() for graceful shutdown. The returned
+// channel closes after the loop stops.
 //
 // Distinct from snapshotPlanFile in output_plan.go: that operation
 // timestamps an individual plan revision in place; this one rolls an entire
 // year of revisions into a single zip and removes the source dir.
-func StartPlanArchiveLoop(ctx context.Context, dataDir string, queries *db.Queries) {
-	periodic.Start(ctx, periodic.Schedule{Interval: planArchiveInterval, Jitter: planArchiveJitter}, func(ctx context.Context) {
+func StartPlanArchiveLoop(ctx context.Context, dataDir string, queries *db.Queries) <-chan struct{} {
+	return periodic.Start(ctx, periodic.Schedule{Interval: planArchiveInterval, Jitter: planArchiveJitter}, func(ctx context.Context) {
 		runPlanArchive(ctx, dataDir, queries, time.Now().UTC())
 	})
 }
@@ -101,7 +102,9 @@ func runPlanArchive(ctx context.Context, dataDir string, queries *db.Queries, no
 		if year > cutoffYear {
 			continue
 		}
-		if err := archivePlanYear(ctx, plansDir, year, queries); err != nil {
+		// Shutdown cancels a pass in progress and waits for it, so a year that
+		// the cancel ended is no failure.
+		if err := archivePlanYear(ctx, plansDir, year, queries); err != nil && ctx.Err() == nil {
 			slog.Error("plan archive: year failed", "year", year, "error", err)
 		}
 	}

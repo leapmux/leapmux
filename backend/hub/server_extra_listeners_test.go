@@ -48,7 +48,7 @@ func startTestServerIn(t *testing.T, cfg *config.Config, dataDir, localListen st
 }
 
 // writeExtraListeners stores an address list through the settings manager, the
-// same path AdminSettingsService.UpdateSetting takes.
+// same path AdminSettingsService.UpdateSettings takes.
 //
 // The document is built by hand rather than by marshalling ExtraListenValue,
 // and that is deliberate: `addresses` carries `omitempty`, so an EMPTY list

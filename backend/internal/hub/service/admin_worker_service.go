@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/nilcheck"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -19,14 +20,27 @@ import (
 // per-user worker view lives in WorkerManagementService.
 type AdminWorkerService struct {
 	store store.Store
+	// workers answers whether a Worker is connected right now.
+	workers workerPresence
 	// deregisterEffects runs the out-of-database half of a deregistration.
-	// The same instance reaches WorkerManagementService, so an
-	// administrator's force-deregister does exactly what the owner's does.
+	// WorkerManagementService holds the same instance, so an administrator's
+	// force-deregister does exactly what the owner's does.
 	deregisterEffects *WorkerDeregisterEffects
 }
 
-func NewAdminWorkerService(st store.Store, deregisterEffects *WorkerDeregisterEffects) *AdminWorkerService {
-	return &AdminWorkerService{store: st, deregisterEffects: deregisterEffects}
+// workerPresence is the one registry question this service asks: whether a
+// Worker holds a connection. *workermgr.Manager satisfies it.
+type workerPresence interface {
+	OnlineForTrustedPath(workerID string) bool
+}
+
+func NewAdminWorkerService(st store.Store, workers workerPresence, deregisterEffects *WorkerDeregisterEffects) *AdminWorkerService {
+	// A missing registry must never read as "every Worker is offline": that
+	// would silently disable the bundled-Worker guard below.
+	if nilcheck.IsNilDependency(workers) {
+		panic("service: NewAdminWorkerService requires a worker registry")
+	}
+	return &AdminWorkerService{store: st, workers: workers, deregisterEffects: deregisterEffects}
 }
 
 func adminWorkerToProto(w store.WorkerWithOwner) *leapmuxv1.AdminWorker {
@@ -44,13 +58,13 @@ func adminWorkerToProto(w store.WorkerWithOwner) *leapmuxv1.AdminWorker {
 }
 
 func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.AdminWorkerServiceListWorkersRequest) (*leapmuxv1.AdminWorkerServiceListWorkersResponse, error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUser())
 	if err != nil {
 		return nil, err
 	}
 	params := store.ListWorkersAdminParams{
 		UserID:     userFilter,
-		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams: pageParams(req.GetPage()),
 	}
 	if st := req.GetStatus(); st != leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED {
 		params.Status = &st
@@ -63,7 +77,7 @@ func (s *AdminWorkerService) ListWorkers(ctx context.Context, req *leapmuxv1.Adm
 	for _, w := range page.Rows {
 		workers = append(workers, adminWorkerToProto(w))
 	}
-	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: workers, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.AdminWorkerServiceListWorkersResponse{Workers: workers, Page: pageResponse(page.NextCursor)}, nil
 }
 
 func (s *AdminWorkerService) GetWorker(ctx context.Context, req *leapmuxv1.AdminWorkerServiceGetWorkerRequest) (*leapmuxv1.AdminWorkerServiceGetWorkerResponse, error) {
@@ -100,6 +114,9 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 		}
 		return nil, storeConnectError(err, "deregister worker")
 	}
+	if err := refuseConnectedBundledWorker(&w.Worker, s.workers.OnlineForTrustedPath(w.ID)); err != nil {
+		return nil, err
+	}
 	n, err := s.store.Workers().ForceDeregister(ctx, req.GetId())
 	if err != nil {
 		return nil, storeConnectError(err, "deregister worker")
@@ -115,7 +132,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 
 func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leapmuxv1.ListRegistrationKeysRequest) (*leapmuxv1.ListRegistrationKeysResponse, error) {
 	page, err := s.store.RegistrationKeys().ListAdmin(ctx, store.ListRegistrationKeysAdminParams{
-		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		PageParams:     pageParams(req.GetPage()),
 		IncludeExpired: req.GetIncludeExpired(),
 	})
 	if err != nil {
@@ -132,10 +149,10 @@ func (s *AdminWorkerService) ListRegistrationKeys(ctx context.Context, req *leap
 			ExpiresAt:       timestamppb.New(k.ExpiresAt),
 		})
 	}
-	return &leapmuxv1.ListRegistrationKeysResponse{Keys: keys, NextCursor: page.NextCursor}, nil
+	return &leapmuxv1.ListRegistrationKeysResponse{Keys: keys, Page: pageResponse(page.NextCursor)}, nil
 }
 
-func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *leapmuxv1.RevokeRegistrationKeyRequest) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
+func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyRequest) (*leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse, error) {
 	if err := requireField(req.GetId(), "id"); err != nil {
 		return nil, err
 	}
@@ -144,9 +161,26 @@ func (s *AdminWorkerService) RevokeRegistrationKey(ctx context.Context, req *lea
 		return nil, storeConnectError(err, "revoke registration key")
 	}
 	if n == 0 {
-		return nil, connect.Errorf(connect.CodeNotFound, "registration key not found: %s", req.GetId())
+		return nil, s.deadRegistrationKeyError(ctx, req.GetId())
 	}
-	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
+	return &leapmuxv1.AdminWorkerServiceRevokeRegistrationKeyResponse{}, nil
+}
+
+// deadRegistrationKeyError answers a revoke that changed no row. The revoke
+// query matches only a live key, so the row is either absent or dead, and this
+// read tells a mistyped id from a key that an operator can still see in the
+// listing with expired keys. The owner's revoke keeps both cases as one answer,
+// because there the difference would disclose that another owner's key exists.
+// This surface has no ownership filter, so it has nothing to hide.
+func (s *AdminWorkerService) deadRegistrationKeyError(ctx context.Context, keyID string) error {
+	if _, err := s.store.RegistrationKeys().GetByID(ctx, keyID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return connect.Errorf(connect.CodeNotFound, "registration key not found: %s", keyID)
+		}
+		return storeConnectError(err, "revoke registration key")
+	}
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"registration key %s is already revoked, consumed or expired", keyID)
 }
 
 // maxRegistrationKeyPurgeBatches is the runaway limit on one purge, not

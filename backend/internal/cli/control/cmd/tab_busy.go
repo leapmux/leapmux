@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"google.golang.org/protobuf/proto"
@@ -21,9 +22,9 @@ import (
 //
 //   - `workspace delete` is destructive by name, carries its own --force, and
 //     its fan-out never inspects an individual tab.
-//   - tab_spawn.go's closeOrphanAgent and its terminal rollback unwind a `tab
-//     open` that already failed. They close what this command itself created
-//     moments ago, so there is no user work to lose.
+//   - tab_spawn.go's closeOrphanTab unwinds a `tab open` that already failed,
+//     for an agent and for a terminal. It closes what this command itself
+//     created moments ago, so there is no user work to lose.
 //   - `agent interrupt` aborts a turn without closing anything. Interrupting IS
 //     the intent, and a guard would ask the user to confirm what they asked for.
 
@@ -77,7 +78,7 @@ func agentBusyDetail(info *leapmuxv1.AgentInfo) string {
 	if info == nil {
 		return ""
 	}
-	// A SUBAGENT tab closes in the UI only. CloseAgent on a child keeps the row
+	// A SUBAGENT tab closes in the UI only. CloseTab on a child keeps the row
 	// and the transcript and stops no process, so the run continues and the tab
 	// can be revived -- there is nothing for a close to interrupt, whatever the
 	// child's own registry row says. The browser's probe carves the same case
@@ -167,7 +168,7 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
 	details := make(map[string]string)
 	if len(agentIDs) > 0 {
 		resp := &leapmuxv1.ListAgentsResponse{}
-		if err := call("ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, resp); err == nil {
+		if err := call(leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: agentIDs}, resp); err == nil {
 			for _, a := range resp.GetAgents() {
 				if d := agentBusyDetail(a); d != "" {
 					details[a.GetId()] = d
@@ -177,7 +178,7 @@ func inspectTabsBusy(call workerCaller, tabs []tabRef) []tabBusyReason {
 	}
 	if len(terminalIDs) > 0 {
 		resp := &leapmuxv1.InspectTerminalProcessesResponse{}
-		if err := call("InspectTerminalProcesses", &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err == nil {
+		if err := call(leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: terminalIDs}, resp); err == nil {
 			for _, t := range resp.GetTerminals() {
 				if d := terminalBusyDetail(t); d != "" {
 					details[t.GetTerminalId()] = d

@@ -5,7 +5,7 @@ import { BootSplash } from '~/components/common/BootSplash'
 import { PasswordSetupGate } from '~/components/common/PasswordSetupGate'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
-import { isAutoAuthenticated, isPasswordSetupGate } from '~/lib/systemInfo'
+import { isAutoAuthenticated, isPasswordSetupGate, isSystemInfoLoaded, systemInfoLoadFailure } from '~/lib/systemInfo'
 import { centeredFull } from '~/styles/shared.css'
 
 /**
@@ -46,13 +46,20 @@ type GuardState
  * a hub that has one. That rule lives there rather than here because four
  * routes outside this guard need it too.
  *
- * `isAutoAuthenticated()` derives from the systemInfo snapshot signal: it is a safe
- * read because `AuthProvider` awaits `loadSystemInfo()` before it clears
- * `loading()` — by the time `state` is computed past its first line it has
- * its real value, and a later forced refresh re-evaluates this memo
- * reactively. And if that load FAILED it never got a real value at all,
- * which is why the `bootstrapError()` branch sits above every read of it: the
- * guard shows the panel instead of a decision made on fabricated defaults.
+ * The guard decides nothing on fabricated system info. Every decision below
+ * the `bootstrapError()` branch reads the systemInfo snapshot
+ * (`isPasswordSetupGate()`, `isAutoAuthenticated()`), and before a load
+ * succeeds those reads answer defaults that nobody asked the hub for. So
+ * while `isSystemInfoLoaded()` is false, the guard shows the load's failure
+ * (`systemInfoLoadFailure()`) with a Retry, or the boot splash while no load
+ * failed. This holds whatever path ended `loading()`. The bootstrap alone
+ * cannot promise it: it records a failed load as `bootstrapError` only while
+ * it is the current auth operation, and a sign-in that supersedes it, or that
+ * follows a failed load, clears that error and ends `loading()` on a snapshot
+ * that never loaded. Retry re-runs the bootstrap, whose first step loads the
+ * system info again. A later forced refresh re-evaluates this memo
+ * reactively, and its failure changes nothing here while an earlier snapshot
+ * stays loaded.
  */
 export const AuthGuard: ParentComponent = (props) => {
   const auth = useAuth()
@@ -72,6 +79,21 @@ export const AuthGuard: ParentComponent = (props) => {
         kind: 'failed',
         title: 'Could not reach the hub.',
         detail: bootstrapFailure,
+      }
+    }
+
+    // Above every read of the snapshot below. A sign-in can end `loading()`
+    // before the system info loads, or after a failed load whose
+    // `bootstrapError` it cleared.
+    if (!isSystemInfoLoaded()) {
+      const loadFailure = systemInfoLoadFailure()
+      // Compared with null: an empty message is still a failure.
+      if (loadFailure === null)
+        return { kind: 'loading' }
+      return {
+        kind: 'failed',
+        title: 'Could not reach the hub.',
+        detail: loadFailure,
       }
     }
 

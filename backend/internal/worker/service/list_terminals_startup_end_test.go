@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -36,7 +37,7 @@ func listTerminalsDuringGit(t *testing.T, d *channel.Dispatcher, terminalID stri
 	listed := make(chan struct{})
 	go func() {
 		defer close(listed)
-		dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, w)
+		dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, w)
 	}()
 	require.Eventually(t, func() bool { _, err := os.Stat(gitStarted); return err == nil }, inputQueueWait, 10*time.Millisecond,
 		"ListTerminals must reach the git status of its terminal")
@@ -102,8 +103,37 @@ func TestListTerminals_ReportsReadyWhenTheStartupEndsWhileGitRuns(t *testing.T) 
 
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), info.GetStatus().String(),
 		"a terminal whose startup ended during the call is READY in the reply")
-	assert.False(t, info.GetExited(), "the shell of that terminal runs")
 	assert.Empty(t, info.GetStartupMessage(), "the phase label of the startup must not outlive the startup")
+}
+
+// A restart that succeeds while ListTerminals runs git clears the persisted
+// startup_error of its terminal, but the call read the row before git, so the
+// row it holds still carries the old failure. The reply must say READY with no
+// error. A browser that applied the READY broadcast first takes a
+// STARTUP_FAILED reply over it, and then it shows the error of a startup that a
+// later one replaced, over a shell that runs.
+func TestListTerminals_ReportsReadyWhenARestartSucceedsWhileGitRuns(t *testing.T) {
+	ctx := testutil.DeadlineContext(t)
+	svc, d, _ := setupTestService(t)
+	const id = "terminal-restarting"
+	workingDir := createTerminalRow(ctx, t, svc, id)
+	svc.persistTerminalStartupError(id, "old failure")
+	row, err := svc.Queries.GetTerminal(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "old failure", row.StartupError, "precondition: the row holds the old failure before the call")
+	handle := svc.TerminalStartup.begin(id, func() {})
+	require.NotNil(t, handle)
+
+	info := listTerminalsDuringGit(t, d, id, func() {
+		// The restart ends now, in the order of runTerminalRestart.
+		startTerminalProcess(ctx, t, svc, id, workingDir)
+		svc.succeedTerminalStartup(id, handle)
+		svc.TerminalStartup.finishEntry(handle)
+	})
+
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), info.GetStatus().String(),
+		"a terminal whose restart succeeded during the call is READY in the reply")
+	assert.Empty(t, info.GetStartupError(), "the error of the replaced startup must not reach the reply")
 }
 
 // A startup that is still running when git ends is STARTING in the reply. The
@@ -163,5 +193,5 @@ func TestListTerminals_ReportsExitedWhenTheShellExitsWhileGitRuns(t *testing.T) 
 		svc.Terminals.WaitForExit(id)
 	})
 
-	assert.True(t, info.GetExited(), "a shell that exited during the call is exited in the reply")
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, info.GetStatus(), "a shell that exited during the call is EXITED in the reply")
 }

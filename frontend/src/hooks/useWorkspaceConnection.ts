@@ -1,5 +1,5 @@
 import type { CatchUpPhase } from './agentEvents'
-import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
@@ -12,23 +12,24 @@ import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
+import type { WorkerOnlineStore } from '~/stores/workerOnline.store'
+import { batch, createEffect, createMemo, onCleanup, untrack } from 'solid-js'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/components/terminal/TerminalView'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { assertNever } from '~/lib/assertNever'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WatchMode } from '~/generated/proto/leapmux/v1/watch_pb'
+import { sameKeys } from '~/lib/sameKeys'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { isPublishedActivityState } from '~/stores/agentActivity.store'
 import { exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
 import { parseTabKey } from '~/stores/tab.helpers'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import {
   clearPerTurnLiveState,
   handleActivityChanged,
   handleAgentMessage,
   handleAgentStatusChange,
-  handleControlCancellation,
   handleControlRequest,
 } from './agentEvents'
 import {
@@ -87,31 +88,16 @@ export function enqueuePendingTerminalData(
   return evicted
 }
 
-/** Remove queued frames after the terminal tab closes or receives another placement. */
-export function dropPendingTerminalData(pending: Map<string, PendingTerminalDataFrame[]>, terminalId: string): void {
-  pending.delete(terminalId)
-}
-
 /**
- * Collect the supplied tabs whose worker went offline.
+ * Collect the agent tabs of the supplied offline workers.
  * The caller supplies tabs from every workspace in the account.
  * A tab that another worker hosts retains its connected state.
  */
-export function collectWorkerOfflineTargets(
+export function collectOfflineAgents(
   tabs: readonly Tab[],
-  workerId: string,
-): { terminals: Set<string>, agents: AgentTab[] } {
-  const terminals = new Set<string>()
-  const agents: AgentTab[] = []
-  for (const tab of tabs) {
-    if (tab.workerId !== workerId)
-      continue
-    if (tab.type === TabType.TERMINAL && tab.status === TerminalStatus.READY)
-      terminals.add(tab.id)
-    else if (tab.type === TabType.AGENT)
-      agents.push(tab)
-  }
-  return { terminals, agents }
+  offlineWorkerIds: ReadonlySet<string>,
+): AgentTab[] {
+  return tabs.filter((tab): tab is AgentTab => isAgentTab(tab) && offlineWorkerIds.has(tab.workerId ?? ''))
 }
 
 /**
@@ -206,6 +192,23 @@ export interface WorkspaceConnectionParams {
    * The working tree needs a refresh at the turn boundary in either case.
    */
   onTurnEndRefresh?: (agentId: string) => void
+  /**
+   * Called once each time a worker that this client marked offline becomes
+   * reachable again, with that worker's id.
+   *
+   * The watch replay after a reconnect cannot move every tab to the state of
+   * the worker: it states a status only for a terminal in FULL mode, so a
+   * background terminal learns nothing from it.
+   *
+   * AppShell passes `reaskWorkerTerminals` of `useTabHydrators`, which asks the
+   * worker again for every terminal on it.
+   */
+  onWorkerReconnected?: (workerId: string) => void
+  /**
+   * The workers whose watch stream this client lost. This hook is the one
+   * writer, and the surfaces that show a terminal status read the store.
+   */
+  workerOnline: WorkerOnlineStore
 }
 
 type ReplayTopic = 'activity' | 'goal' | 'tasks'
@@ -218,36 +221,8 @@ interface RequestedReplay {
   liveClaims: Set<ReplayTopic>
 }
 
-/** Require each payload agent ID to match the frame destination. */
-function replayPayloadMatchesAgent(agentEvent: AgentEvent): boolean {
-  const inner = agentEvent.event
-  switch (inner.case) {
-    case 'statusChange':
-    case 'controlRequest':
-    case 'controlResponseChanged':
-    case 'controlCancel':
-    case 'todosChanged':
-    case 'goalChanged':
-    case 'backgroundTasksChanged':
-      return inner.value.agentId === agentEvent.agentId
-    case 'inputQueueChanged':
-      return inner.value.snapshot?.agentId === agentEvent.agentId
-    case 'agentMessage':
-    case 'catchUpStart':
-    case 'catchUpComplete':
-    case 'turnEnd':
-    case 'activityChanged':
-      return true
-    case undefined:
-      return false
-    default:
-      return assertNever(inner)
-  }
-}
-
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, agentActivityStore, settingsLoading, repoGitStore } = params
-  const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Retain each transmitted FULL receipt and its independent live topic claims.
   const resumeTails = new Map<string, RequestedReplay>()
@@ -295,32 +270,36 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     flushPendingTerminalData(id)
   }))
 
-  const workerOnline = (workerId: string): boolean => {
-    if (!workerId)
-      return true
-    return !offlineWorkers().has(workerId)
-  }
+  // The terminals that the view holds, placed or detached. Compared as a set, so
+  // the sweep below runs when one leaves and not for each change of a tab.
+  const viewTerminalIds = createMemo<Set<string>>(() => new Set([
+    ...view.all().filter(isTerminalTab),
+    ...view.detachedTerminalTabs(),
+  ].map(tab => tab.id)), new Set(), { equals: sameKeys })
+
+  // Release the queue of a terminal that left the view. No instance mounts for
+  // it, and no later frame arrives to notice, because the watch plan drops the
+  // terminal with its tab. This is the one release, for every way that a
+  // terminal leaves: a close here, a close on another client, or a quake panel
+  // that lets go of its shell.
+  createEffect(() => {
+    const terminalIds = viewTerminalIds()
+    for (const terminalId of pendingTerminalData.keys()) {
+      if (!terminalIds.has(terminalId))
+        pendingTerminalData.delete(terminalId)
+    }
+  })
 
   const setWorkerOnline = (workerId: string, online: boolean) => {
-    // A removed tab supplies an empty worker ID.
-    // Keep that ID outside the offline set because workerOnline treats it as connected.
-    if (!workerId)
+    if (!params.workerOnline.setOnline(workerId, online) || !online)
       return
     // Release optimistic branch pins when the worker reconnects. Retain the branch values.
     // A pin rejects a broadcast that still reports the branch before a successful local change.
     // The lost connection ends that claim.
     // Without this release, a background tab can retain its pin until the page closes.
     // Such a tab issues no refresh that can confirm the new branch and remove the pin.
-    if (online && untrack(offlineWorkers).has(workerId))
-      repoGitStore.releaseBranchPinsForWorker(workerId)
-    setOfflineWorkers((prev) => {
-      const next = new Set(prev)
-      if (online)
-        next.delete(workerId)
-      else
-        next.add(workerId)
-      return next
-    })
+    repoGitStore.releaseBranchPinsForWorker(workerId)
+    params.onWorkerReconnected?.(workerId)
   }
 
   /**
@@ -393,19 +372,18 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   /** Validate the exact transmitted origin before any replay effect. */
   function activeReplayFor(agentEvent: AgentEvent, streamWorkerId: string): RequestedReplay | undefined {
-    const origin = agentEvent.replayAgentId
+    const origin = agentEvent.replay?.agentId ?? ''
+    const replayId = agentEvent.replay?.replayId ?? 0n
     const requested = resumeTails.get(origin)
     if (!origin || !requested || requested.workerId !== streamWorkerId
-      || requested.replayId !== agentEvent.replayId
-      || !agentSessionStore.acceptsReplay(origin, agentEvent.replayId)) {
+      || requested.replayId !== replayId
+      || !agentSessionStore.acceptsReplay(origin, replayId)) {
       return undefined
     }
     if (view.getAgentTab(origin)?.workerId !== streamWorkerId)
       return undefined
     const destination = view.getAgentTab(agentEvent.agentId)
     if (destination && destination.workerId !== streamWorkerId)
-      return undefined
-    if (!replayPayloadMatchesAgent(agentEvent))
       return undefined
     if (agentEvent.agentId !== origin) {
       const kind = agentEvent.event.case
@@ -432,11 +410,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
-    const replayId = agentEvent.replayId
-    const requested = agentEvent.replay
+    const isReplay = agentEvent.replay !== undefined
+    const replayId = agentEvent.replay?.replayId ?? 0n
+    const requested = isReplay
       ? activeReplayFor(agentEvent, streamWorkerId)
       : undefined
-    if (agentEvent.replay && !requested && inner.case !== 'agentMessage')
+    if (isReplay && !requested && inner.case !== 'agentMessage')
       return
     const resumeTail = requested?.cursorSeq
 
@@ -448,7 +427,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     // - A plan title.
     // - INACTIVE cleanup.
     // See AgentEvent.replay.
-    const catchUpPhase: CatchUpPhase = agentEvent.replay ? 'catchingUp' : 'live'
+    const catchUpPhase: CatchUpPhase = isReplay ? 'catchingUp' : 'live'
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
         return
@@ -480,7 +459,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           },
           catchUpPhase,
           replayId,
-          agentEvent.replay && !requested
+          isReplay && !requested
             ? 'retain-transcript'
             : 'apply-current-state',
         )
@@ -501,7 +480,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             repoGitStore,
           },
           settingsLoading,
-          online => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', online),
+          () => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', true),
           streamWorkerId,
         )
         break
@@ -524,11 +503,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           },
         )
         break
-      case 'controlCancel': {
-        const cc = inner.value
-        handleControlCancellation(cc, controlStore)
+      case 'controlCancel':
+        controlStore.cancelRequest(agentId, inner.value)
         break
-      }
       case 'turnEnd':
         // Refresh git status and the directory tree after each turn ends.
         // The working tree can change even when a subagent still runs.
@@ -537,12 +514,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         params.onTurnEndRefresh?.(agentId)
         break
       case 'inputQueueChanged': {
-        agentInputQueueStore.apply(inner.value.snapshot)
+        agentInputQueueStore.apply(agentId, inner.value.snapshot)
         break
       }
       case 'todosChanged': {
         const tc = inner.value
-        chatStore.todos.replace(tc.agentId, tc.todos)
+        chatStore.todos.replace(agentId, tc.todos)
         break
       }
       case 'goalChanged': {
@@ -551,11 +528,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const gc = inner.value
         if (requested?.liveClaims.has('goal'))
           break
-        const outcome = chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
+        const outcome = chatStore.goal.replace(agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
         if (catchUpPhase === 'live' && outcome !== 'stale') {
-          claimRootTopic(streamWorkerId, gc.agentId, 'goal')
+          claimRootTopic(streamWorkerId, agentId, 'goal')
           if (outcome === 'progress-cleared')
-            agentSessionStore.claimGoalProgressClear(gc.agentId, { phase: 'live' })
+            agentSessionStore.claimGoalProgressClear(agentId, { phase: 'live' })
         }
         break
       }
@@ -565,9 +542,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const bc = inner.value
         if (requested?.liveClaims.has('tasks'))
           break
-        chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
+        chatStore.backgroundTasks.replace(agentId, bc.tasks)
         if (catchUpPhase === 'live')
-          claimRootTopic(streamWorkerId, bc.agentId, 'tasks')
+          claimRootTopic(streamWorkerId, agentId, 'tasks')
         break
       }
       case 'activityChanged': {
@@ -627,6 +604,34 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
+   * The one client transition for a shell that exited.
+   *
+   * A shell exit reaches this client in two shapes:
+   * - A live `closed` event.
+   * - A replayed EXITED status, for a shell that exited before the watch began.
+   *
+   * Both take this path, so every later exit step applies to both shapes.
+   *
+   * A quake terminal retracts its panel and releases its instance. The worker
+   * writes no exit notice into a quake terminal, so a panel that stayed open
+   * would show a dead shell that drops every key.
+   *
+   * A terminal tab is marked EXITED. The tab stays and offers a restart.
+   *
+   * The queued frames stay with the terminal. A terminal tab shows them when its
+   * instance mounts, and the frame queued just before a replayed EXITED is the
+   * last screen, because the worker replays the screen of a terminal before its
+   * status. The sweep of `viewTerminalIds` releases them when the terminal
+   * leaves the view.
+   */
+  const applyShellExit = (terminalId: string) => {
+    if (params.quakeStore.isQuakeTerminal(terminalId))
+      params.quakeStore.handleShellExit(terminalId)
+    else
+      markTerminalExited(metadata, terminalId)
+  }
+
+  /**
    * Find a quake terminal by ID and apply the same visibility rule as its watch entry.
    * The bell and notification handlers receive only that ID.
    * A separate rule could make watch mode and desktop notifications disagree about the visible shell.
@@ -642,12 +647,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     switch (termEvent.event.case) {
       case 'data': {
         const { data, isSnapshot, endOffset } = termEvent.event.value
-        // Discard frames when the terminal tab leaves the view.
-        // No instance can mount to consume them after the tab closes or receives another placement.
-        if (!view.getTerminalTab(terminalId)) {
-          dropPendingTerminalData(pendingTerminalData, terminalId)
+        // Discard a frame of a terminal that left the view, because no instance can mount to read it.
+        if (!view.getTerminalTab(terminalId))
           break
-        }
         const instance = getTerminalInstance(terminalId)
         if (!instance) {
           // Advance lastOffset only after a live instance receives the bytes.
@@ -689,14 +691,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'closed':
-        // Close the quake terminal when its shell exits. Its next open starts a fresh shell.
-        // Call handleShellExit before markTerminalExited so the panel shows no exit notice or prompt to press Enter.
-        if (params.quakeStore.isQuakeTerminal(terminalId))
-          params.quakeStore.handleShellExit(terminalId)
-        else
-          markTerminalExited(metadata, terminalId)
-        // The pseudoterminal closed, so no instance can receive its buffered frames.
-        dropPendingTerminalData(pendingTerminalData, terminalId)
+        // A quake terminal closes, and its next open starts a fresh shell. A
+        // terminal tab reads EXITED and offers a restart.
+        applyShellExit(terminalId)
         break
       case 'statusChange':
         applyTerminalStatusChange(
@@ -705,6 +702,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           view.getTerminalTab(terminalId),
           terminalId,
           termEvent.event.value,
+          applyShellExit,
           streamWorkerId,
         )
         break
@@ -792,7 +790,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   })
   abortSignalFor = streams.abortSignalFor
 
-  // Mark the offline worker's running terminals disconnected and clear its agents' live indicators.
+  // Clear the live indicators of each offline worker's agents.
+  // A terminal needs no write: its surfaces derive DISCONNECTED from the same store (terminalDisplayStatus).
   // Retain the git store's last known working-tree state, as RepoGitStore.refresh does after a failed read.
   // Tab.gitToplevel also survives the outage. branchKeys.repoKeyAndLabel still groups tabs by that field.
   // Removing the git entry here would leave those groups without their branch labels.
@@ -806,36 +805,20 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Permanent removal has a separate caller. useWorkerSection retains git entries after worker deregistration also.
   // RepoGitState.nonRepoProbeIgnored permits later non-repository answers if the repository disappears during the outage.
   createEffect(() => {
-    const offline = offlineWorkers()
+    const offline = params.workerOnline.offlineIds()
     if (offline.size === 0)
       return
     untrack(() => {
-      // Include detached quake terminals because view.all contains placed tabs only.
-      // Without their separate list, they would retain READY throughout the outage.
-      // Build both lists once before the loop because neither depends on the worker.
-      // A Hub restart can add several offline workers at once.
-      const searchable = [
-        ...params.view.all(),
-        ...params.view.detachedTerminalTabs(),
-      ]
-      for (const workerId of offline) {
-        const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(searchable, workerId)
-        batch(() => {
-          if (affectedTerminals.size > 0) {
-            params.metadata.patchMatching(
-              (_meta, tabId) => affectedTerminals.has(tabId),
-              { terminalStatus: TerminalStatus.DISCONNECTED },
-            )
-          }
-          for (const tab of agents) {
-            // This direct status patch does not call handleAgentInactive.
-            // Clear the live indicators here before that patch.
-            clearOfflineAgentState(tab.id, { chatStore, agentSessionStore, agentActivityStore })
-            if (tab.agentStatus === AgentStatus.ACTIVE)
-              metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
-          }
-        })
-      }
+      const agents = collectOfflineAgents(params.view.all(), offline)
+      batch(() => {
+        for (const tab of agents) {
+          // This direct status patch does not call handleAgentInactive.
+          // Clear the live indicators here before that patch.
+          clearOfflineAgentState(tab.id, { chatStore, agentSessionStore, agentActivityStore })
+          if (tab.agentStatus === AgentStatus.ACTIVE)
+            metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
+        }
+      })
     })
   })
 
@@ -877,8 +860,4 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       void chatStore.jumpToLatestMessages(workerId, agentId, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },
   }))
-
-  return {
-    workerOnline,
-  }
 }

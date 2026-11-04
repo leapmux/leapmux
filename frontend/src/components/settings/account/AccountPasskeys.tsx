@@ -20,7 +20,7 @@ import {
   loadPasskeys,
 } from '~/lib/passkeyManagement'
 import { passkeyBlocker } from '~/lib/systemInfo'
-import { passkeyBlockerMessage, passkeyErrorMessage, signalAcceptedPasskeys, signalPasskeyRemoved, startRegistration } from '~/lib/webauthn'
+import { passkeyBlockerMessage, passkeyErrorMessage, registerForChallenge, signalAcceptedPasskeys, signalPasskeyRemoved } from '~/lib/webauthn'
 import { warningText } from '~/styles/shared.css'
 import * as styles from './accountFields.css'
 import * as listStyles from './credentialList.css'
@@ -89,30 +89,22 @@ export const AccountPasskeys: Component = () => {
   /**
    * Adopt a new local list. Nothing else: no round trip.
    *
-   * Use it for a write that cannot change what OTHER surfaces read -- a
+   * That is enough for a write that cannot change what OTHER surfaces read -- a
    * rename, and the initial load, whose count the bootstrap already carried.
+   *
+   * A write that adds or removes a passkey changes more. The account's passkey
+   * COUNT and its `passwordSet` flag live on auth.user(), and other surfaces
+   * read them -- the step-up prompt offers the passkey factor only when the
+   * account has one. Such a write also adopts the account that its reply
+   * carries, which keeps that single source of truth current rather than
+   * threading a second count through a prop that can disagree with it.
+   *
+   * The adoption is AWAITED. A fire-and-forget adoption would let a deactivation
+   * resolve before the cached user landed, so the Password button still read
+   * "Set Password" for an account that just set one, and a prompt opened in
+   * that window offered a passkey factor for passkeys that no longer existed.
    */
   const setLocalList = (list: PasskeyInfo[]) => setPasskeys(list)
-
-  /**
-   * Adopt a new local list AND re-read the cached account.
-   *
-   * The account's passkey COUNT and its `passwordSet` flag live on
-   * auth.user(), and other surfaces read them -- the step-up prompt offers
-   * the passkey factor only when the account has one. Refreshing here keeps
-   * that single source of truth current, rather than threading a second
-   * count through a prop that can disagree with it.
-   *
-   * AWAITED, and the caller waits on the result. A fire-and-forget refresh
-   * let a deactivation resolve before the cached user landed, so the Password
-   * button still read "Set Password" for an account that just set one,
-   * and a prompt opened in that window offered a passkey factor for passkeys
-   * that no longer existed.
-   */
-  const applyLocalList = async (list: PasskeyInfo[]) => {
-    setLocalList(list)
-    await auth.refreshUser()
-  }
 
   const forceCloseModal = () => {
     setModal(null)
@@ -126,9 +118,9 @@ export const AccountPasskeys: Component = () => {
     try {
       const list = await loadPasskeys()
       setRpId(list.rpId)
-      // setLocalList, not applyLocalList: a READ cannot have changed the
-      // count, and the bootstrap already carried it. Refreshing here spent a
-      // GetCurrentUser round trip every time the panel opened.
+      // The list alone: a READ cannot have changed the count, and the bootstrap
+      // already carried it. Refreshing here spent a GetCurrentUser round trip
+      // every time the panel opened.
       setLocalList(list.passkeys)
     }
     catch (e) {
@@ -207,10 +199,13 @@ export const AccountPasskeys: Component = () => {
     setModalMessage(null)
     try {
       const begin = await userClient.beginPasskeyRegistration({})
-      const credentialJson = await startRegistration(begin.optionsJson)
+      const credential = await registerForChallenge(begin.challenge)
+      // Opened BEFORE the request leaves, so a reply that lands after an
+      // identity change re-reads the new identity instead of adopting this one.
+      // Opened AFTER the ceremony, so it holds the identity of this request.
+      const adopt = auth.openUserAdoption()
       const finish = await userClient.finishPasskeyRegistration({
-        sessionId: begin.sessionId,
-        credentialJson,
+        credential,
         friendlyName: friendlyName().trim() || 'Passkey',
       })
       forceCloseModal()
@@ -228,14 +223,14 @@ export const AccountPasskeys: Component = () => {
       // cached passkey COUNT is what ElevateForm reads to decide whether to
       // offer the passkey factor -- a Finish that echoes no row would leave the
       // count one short and hide a factor the account holds.
-      await auth.refreshUser()
+      await adopt(finish.user)
       const userId = auth.user()?.id
       if (userId && rpId()) {
         const ids = new Set(passkeys().map(pk => pk.credentialId).filter(Boolean))
         const fromFinish = finish.passkey?.credentialId
         if (fromFinish)
           ids.add(fromFinish)
-        const fromJson = credentialIdFromRegistrationJson(credentialJson)
+        const fromJson = credentialIdFromRegistrationJson(credential.credentialJson ?? '')
         if (fromJson)
           ids.add(fromJson)
         signalAcceptedPasskeys(rpId(), userId, [...ids])
@@ -264,7 +259,9 @@ export const AccountPasskeys: Component = () => {
     setBusy(true)
     setModalMessage(null)
     try {
-      await userClient.deletePasskey({
+      // Opened BEFORE the request leaves; see `handleAddPasskey`.
+      const adopt = auth.openUserAdoption()
+      const resp = await userClient.deletePasskey({
         id: passkey.id,
         newPassword: deleteIsDeactivation()
           ? newPassword()
@@ -275,7 +272,8 @@ export const AccountPasskeys: Component = () => {
       const wasDeactivation = deleteIsDeactivation()
       forceCloseModal()
       setMessage({ type: 'success', text: 'Passkey removed.' })
-      await applyLocalList(passkeys().filter(pk => pk.id !== passkey.id))
+      setLocalList(passkeys().filter(pk => pk.id !== passkey.id))
+      await adopt(resp.user)
       // Only the last-passkey deactivation flips passwordSet; a plain
       // delete changed nothing the local list does not already carry.
       if (wasDeactivation)
@@ -297,7 +295,9 @@ export const AccountPasskeys: Component = () => {
     setBusy(true)
     setModalMessage(null)
     try {
-      await userClient.deactivatePasskeyAuth({
+      // Opened BEFORE the request leaves; see `handleAddPasskey`.
+      const adopt = auth.openUserAdoption()
+      const resp = await userClient.deactivatePasskeyAuth({
         newPassword: passwordSet()
           ? ''
           : newPassword(),
@@ -308,7 +308,8 @@ export const AccountPasskeys: Component = () => {
       }
       forceCloseModal()
       setMessage({ type: 'success', text: 'Passkey sign-in disabled.' })
-      await applyLocalList([])
+      setLocalList([])
+      await adopt(resp.user)
       // Deactivation always flips passwordSet on a passkey-only account.
       await refresh({ preserveSuccess: true })
     }

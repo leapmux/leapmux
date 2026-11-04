@@ -3,7 +3,7 @@ import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createCloseFlow } from '~/components/shell/closeFlow'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 interface TestCtx {
   tileId: string
@@ -172,7 +172,7 @@ describe('createCloseFlow', () => {
     dispose()
   }))
 
-  it('closeAll suppresses the per-tab busy prompt, since the dialog already asked', async () => createRoot(async (dispose) => {
+  it('suppresses the per-tab busy prompt in closeAll, since the dialog already asked', async () => createRoot(async (dispose) => {
     const handleTabClose = vi.fn((_tab: Tab, _opts?: { skipBusyConfirm?: boolean }) => Promise.resolve(true))
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => [],
@@ -228,7 +228,7 @@ describe('createCloseFlow', () => {
     dispose()
   }))
 
-  it('closeAll iterates tabs in order, calls finalize, and clears the signal', async () => {
+  it('iterates tabs in order, calls finalize, and clears the signal when closeAll runs', async () => {
     await createRoot(async (dispose) => {
       const handleTabClose = vi.fn().mockResolvedValue(true)
       const finalize = vi.fn()
@@ -256,7 +256,7 @@ describe('createCloseFlow', () => {
     })
   })
 
-  it('closeAll bails on first false return; signal stays open with busy:false; finalize never fires', async () => {
+  it('bails on the first false return from closeAll, keeps the signal open with busy:false, and never fires finalize', async () => {
     await createRoot(async (dispose) => {
       const finalize = vi.fn()
       const handleTabClose = vi.fn()
@@ -285,7 +285,7 @@ describe('createCloseFlow', () => {
     })
   })
 
-  it('closeAll sets busy:true while iterating', async () => {
+  it('sets busy:true while closeAll iterates', async () => {
     await createRoot(async (dispose) => {
       const observedBusy: boolean[] = []
       const flow = createCloseFlow<TestCtx>({
@@ -345,7 +345,7 @@ describe('createCloseFlow', () => {
     })
   })
 
-  it('closeAll bails when no ctx is open', async () => {
+  it('makes closeAll bail when no ctx is open', async () => {
     await createRoot(async (dispose) => {
       const plan = vi.fn().mockReturnValue({
         tabs: [],

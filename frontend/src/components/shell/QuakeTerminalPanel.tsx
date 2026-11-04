@@ -33,6 +33,8 @@ export interface QuakeTerminalPanelProps {
   onContentReady: (terminalId: string) => void
   /** Whether a tab rename is open anywhere; see TerminalViewProps.tabEditing. */
   tabEditing?: () => boolean
+  /** See TerminalViewProps.isWorkerStreamOnline. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   /** See TerminalViewProps.confirmLink. A quake terminal's links raise the same dialog. */
   confirmLink: UntrustedLinkConfirm
 }
@@ -194,6 +196,7 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
           <div class={styles.quakeBody}>
             <TerminalView
               terminals={terminals()}
+              isWorkerStreamOnline={props.isWorkerStreamOnline}
               activeTerminalId={entry()?.terminalId || null}
               visible={open()}
               // The panel takes focus while it is open, which is what makes

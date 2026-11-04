@@ -33,22 +33,39 @@ var (
 )
 
 // AuthenticateWorkerBearer resolves an HTTP "Authorization: Bearer …"
-// header value to a live Worker row. Returns one of the package's
-// Err* sentinels on any auth failure so callers can map them to the
-// wire status of their RPC framework.
+// header value to a live Worker row.
+//
+// A rejected credential returns one of ErrMissingBearer, ErrInvalidWorkerToken
+// or ErrWorkerDeleted, which IsWorkerCredentialError recognizes, so a caller
+// can answer it as unauthenticated. Any other error is a failure of the store,
+// which says nothing about the credential: a caller must answer it as an
+// internal error, because Unauthenticated tells the caller that its credential
+// is bad, which a store fault does not show.
 func AuthenticateWorkerBearer(ctx context.Context, st store.Store, headerValue string) (*store.Worker, error) {
 	bearer, ok := BearerToken(headerValue)
 	if !ok {
 		return nil, ErrMissingBearer
 	}
-	w, err := st.Workers().GetByAuthToken(ctx, bearer)
-	if err != nil {
+	w, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, bearer)
+	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrInvalidWorkerToken
 	}
+	if err != nil {
+		return nil, fmt.Errorf("look up worker auth token: %w", err)
+	}
+	// The one place a deleted worker is refused on every credential path, now
+	// that the lookup returns it too.
 	if w.DeletedAt != nil {
 		return nil, ErrWorkerDeleted
 	}
 	return w, nil
+}
+
+// IsWorkerCredentialError reports whether an error from
+// AuthenticateWorkerBearer rejects the caller's credential, as opposed to
+// reporting a store failure.
+func IsWorkerCredentialError(err error) bool {
+	return errors.Is(err, ErrMissingBearer) || errors.Is(err, ErrInvalidWorkerToken) || errors.Is(err, ErrWorkerDeleted)
 }
 
 // HTTPAuthOpts collects everything AuthenticateHTTP needs.

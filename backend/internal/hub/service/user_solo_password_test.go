@@ -98,7 +98,7 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 
 	before, err := authSvc.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.False(t, before.GetUser().GetPasswordSet(),
+	assert.False(t, before.GetSessionReport().GetUser().GetPasswordSet(),
 		"a solo account with no hash holds no password, whatever the column claims")
 
 	_, err = svc.ChangePassword(ctx, &leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"})
@@ -106,7 +106,7 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 
 	after, err := authSvc.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.True(t, after.GetUser().GetPasswordSet(),
+	assert.True(t, after.GetSessionReport().GetUser().GetPasswordSet(),
 		"the stored password must reach the row that offers to change it")
 }
 

@@ -32,13 +32,16 @@ export const AccountLinkedProviders: Component = () => {
       token: providerId,
       fallback: 'Failed to unlink provider',
       work: async () => {
-        await userClient.unlinkOAuthProvider({ providerId })
+        // Opened BEFORE the request leaves, so a reply that lands after an
+        // identity change re-reads the new identity instead of adopting this one.
+        const adopt = auth.openUserAdoption()
+        const resp = await userClient.unlinkOAuthProvider({ providerId })
         // AWAITED, and inside the work: `busy` clears when this resolves, so
-        // an unawaited refresh would re-enable the control while the stale
+        // an unawaited adoption would re-enable the control while the stale
         // user still lists the provider that the hub just detached. A second click
         // sends the same request, the hub answers NotFound, and this panel
         // reports a failure for an operation that SUCCEEDED.
-        await auth.refreshUser()
+        await adopt(resp.user)
         // The row disappears, which is the whole report.
         return null
       },

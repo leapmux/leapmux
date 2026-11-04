@@ -6,231 +6,31 @@
  * sees the plaintext content.
  */
 
-import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
-import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
-import type {
-  ApproveAutoReviewDenialResponse,
-  BeginQueuedAgentInputEditResponse,
-  CancelQueuedAgentInputEditResponse,
-  CloseAgentResponse,
-  DeleteQueuedAgentInputResponse,
-  EnqueueAgentInputResponse,
-  GetAgentMessageResponse,
-  GetAgentSpanMessagesResponse,
-  InterruptAgentResponse,
-  ListAgentMessagesResponse,
-  ListAgentSessionsResponse,
-  ListAgentsResponse,
-  ListAvailableProvidersResponse,
-  ListMessageMarksResponse,
-  MoveQueuedAgentInputResponse,
-  OpenAgentResponse,
-  PreemptQueuedAgentInputResponse,
-  RenameAgentResponse,
-  RetryAgentTurnResponse,
-  RetryQueuedAgentInputResponse,
-  SendAgentRawMessageResponse,
-  SendControlResponseResponse,
-  SetAgentInputQueuePausedResponse,
-  SteerQueuedAgentInputResponse,
-  UpdateAgentGoalResponse,
-  UpdateAgentSettingsResponse,
-  UpdateQueuedAgentInputResponse,
-} from '~/generated/proto/leapmux/v1/agent_pb'
-import type { EncryptionMode, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
-import type {
-  ListDirectoryResponse,
-  ListFilesystemRootsResponse,
-  ReadFileResponse,
-  StatFileResponse,
-} from '~/generated/proto/leapmux/v1/file_pb'
-import type {
-  CheckoutBranchResponse,
-  CreateBranchResponse,
-  DeleteBranchResponse,
-  GetGitFileStatusResponse,
-  GetGitInfoResponse,
-  InspectBranchChangeResponse,
-  InspectBranchDeletionResponse,
-  InspectLastTabCloseResponse,
-  InspectWorktreeRemovalResponse,
-  ListGitBranchesResponse,
-  ListGitWorktreesResponse,
-  PushBranchResponse,
-  ReadGitFileResponse,
-} from '~/generated/proto/leapmux/v1/git_pb'
-import type {
-  CloseTerminalResponse,
-  InspectTerminalProcessesResponse,
-  ListAvailableShellsResponse,
-  ListTerminalsResponse,
-  OpenTerminalResponse,
-  ResizeTerminalResponse,
-  RestartTerminalResponse,
-  SendInputResponse,
-  UpdateTerminalTitleResponse,
-} from '~/generated/proto/leapmux/v1/terminal_pb'
-import type {
-  GetWorkerSystemInfoResponse,
-} from '~/generated/proto/leapmux/v1/worker_pb'
-import type {
-  GetTabPayloadResponse,
-  RegisterTabPayloadResponse,
-  RevokeTabPayloadResponse,
-} from '~/generated/proto/leapmux/v1/worker_private_pb'
-import type {
-  CleanupWorkspaceResponse,
-  WatchEventsResponse,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { DescMessage, DescMethod, DescMethodUnary, DescService, Message, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
+import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
+import type { WatchEventsRequestSchema, WatchEventsResponse } from '~/generated/proto/leapmux/v1/watch_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
-import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import { Code, createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
-import { WORKER_RPC_METHOD } from '~/generated/contracts/worker-vocab'
-import {
-  ApproveAutoReviewDenialRequestSchema,
-  ApproveAutoReviewDenialResponseSchema,
-  BeginQueuedAgentInputEditRequestSchema,
-  BeginQueuedAgentInputEditResponseSchema,
-  CancelQueuedAgentInputEditRequestSchema,
-  CancelQueuedAgentInputEditResponseSchema,
-  CloseAgentRequestSchema,
-  CloseAgentResponseSchema,
-  DeleteQueuedAgentInputRequestSchema,
-  DeleteQueuedAgentInputResponseSchema,
-  EnqueueAgentInputRequestSchema,
-  EnqueueAgentInputResponseSchema,
-  GetAgentMessageRequestSchema,
-  GetAgentMessageResponseSchema,
-  GetAgentSpanMessagesRequestSchema,
-  GetAgentSpanMessagesResponseSchema,
-  InterruptAgentRequestSchema,
-  InterruptAgentResponseSchema,
-  ListAgentMessagesRequestSchema,
-  ListAgentMessagesResponseSchema,
-  ListAgentSessionsRequestSchema,
-  ListAgentSessionsResponseSchema,
-  ListAgentsRequestSchema,
-  ListAgentsResponseSchema,
-  ListAvailableProvidersRequestSchema,
-  ListAvailableProvidersResponseSchema,
-  ListMessageMarksRequestSchema,
-  ListMessageMarksResponseSchema,
-  MoveQueuedAgentInputRequestSchema,
-  MoveQueuedAgentInputResponseSchema,
-  OpenAgentRequestSchema,
-  OpenAgentResponseSchema,
-  PreemptQueuedAgentInputRequestSchema,
-  PreemptQueuedAgentInputResponseSchema,
-  RenameAgentRequestSchema,
-  RenameAgentResponseSchema,
-  RetryAgentTurnRequestSchema,
-  RetryAgentTurnResponseSchema,
-  RetryQueuedAgentInputRequestSchema,
-  RetryQueuedAgentInputResponseSchema,
-  SendAgentRawMessageRequestSchema,
-  SendAgentRawMessageResponseSchema,
-  SendControlResponseRequestSchema,
-  SendControlResponseResponseSchema,
-  SetAgentInputQueuePausedRequestSchema,
-  SetAgentInputQueuePausedResponseSchema,
-  SteerQueuedAgentInputRequestSchema,
-  SteerQueuedAgentInputResponseSchema,
-  UpdateAgentGoalRequestSchema,
-  UpdateAgentGoalResponseSchema,
-  UpdateAgentSettingsRequestSchema,
-  UpdateAgentSettingsResponseSchema,
-  UpdateQueuedAgentInputRequestSchema,
-  UpdateQueuedAgentInputResponseSchema,
-} from '~/generated/proto/leapmux/v1/agent_pb'
+import { WorkerAgentInputService, WorkerAgentService } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
-import {
-  ListDirectoryRequestSchema,
-  ListDirectoryResponseSchema,
-  ListFilesystemRootsRequestSchema,
-  ListFilesystemRootsResponseSchema,
-  ReadFileRequestSchema,
-  ReadFileResponseSchema,
-  StatFileRequestSchema,
-  StatFileResponseSchema,
-} from '~/generated/proto/leapmux/v1/file_pb'
-import {
-  CheckoutBranchRequestSchema,
-  CheckoutBranchResponseSchema,
-  CreateBranchRequestSchema,
-  CreateBranchResponseSchema,
-  DeleteBranchRequestSchema,
-  DeleteBranchResponseSchema,
-  GetGitFileStatusRequestSchema,
-  GetGitFileStatusResponseSchema,
-  GetGitInfoRequestSchema,
-  GetGitInfoResponseSchema,
-  InspectBranchChangeRequestSchema,
-  InspectBranchChangeResponseSchema,
-  InspectBranchDeletionRequestSchema,
-  InspectBranchDeletionResponseSchema,
-  InspectLastTabCloseRequestSchema,
-  InspectLastTabCloseResponseSchema,
-  InspectWorktreeRemovalRequestSchema,
-  InspectWorktreeRemovalResponseSchema,
-  ListGitBranchesRequestSchema,
-  ListGitBranchesResponseSchema,
-  ListGitWorktreesRequestSchema,
-  ListGitWorktreesResponseSchema,
-  PushBranchRequestSchema,
-  PushBranchResponseSchema,
-  ReadGitFileRequestSchema,
-  ReadGitFileResponseSchema,
-} from '~/generated/proto/leapmux/v1/git_pb'
-import {
-  CloseTerminalRequestSchema,
-  CloseTerminalResponseSchema,
-  InspectTerminalProcessesRequestSchema,
-  InspectTerminalProcessesResponseSchema,
-  ListAvailableShellsRequestSchema,
-  ListAvailableShellsResponseSchema,
-  ListTerminalsRequestSchema,
-  ListTerminalsResponseSchema,
-  OpenTerminalRequestSchema,
-  OpenTerminalResponseSchema,
-  ResizeTerminalRequestSchema,
-  ResizeTerminalResponseSchema,
-  RestartTerminalRequestSchema,
-  RestartTerminalResponseSchema,
-  SendInputRequestSchema,
-  SendInputResponseSchema,
-  UpdateTerminalTitleRequestSchema,
-  UpdateTerminalTitleResponseSchema,
-} from '~/generated/proto/leapmux/v1/terminal_pb'
-import {
-  GetWorkerSystemInfoRequestSchema,
-  GetWorkerSystemInfoResponseSchema,
-} from '~/generated/proto/leapmux/v1/worker_pb'
-import {
-  GetTabPayloadRequestSchema,
-  GetTabPayloadResponseSchema,
-  RegisterTabPayloadRequestSchema,
-  RegisterTabPayloadResponseSchema,
-  RevokeTabPayloadRequestSchema,
-  RevokeTabPayloadResponseSchema,
-} from '~/generated/proto/leapmux/v1/worker_private_pb'
-import {
-  CleanupWorkspaceRequestSchema,
-  CleanupWorkspaceResponseSchema,
-  WatchEventsRequestSchema,
-  WatchEventsResponseSchema,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
+import { WorkerFileService } from '~/generated/proto/leapmux/v1/file_pb'
+import { WorkerGitService } from '~/generated/proto/leapmux/v1/git_pb'
+import { WorkerTerminalService } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
+import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { ChannelError } from '~/lib/channelError'
 import { emitDevEvent } from '~/lib/devInstrument'
-import { createLogger } from '~/lib/logger'
+import { procedureOf } from '~/lib/rpcProcedure'
 import { sleep } from '~/lib/sleep'
-
-const log = createLogger('workerRpc')
+import { workerKeyBundleFromWire } from '~/lib/workerKeyBundle'
 
 // ---- Browser-specific channel transport ----
 
@@ -268,11 +68,9 @@ class BrowserChannelTransport implements ChannelTransport {
   async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
     const resp = await channelRpcClient.getWorkerHandshakeParams({ workerId })
     return {
-      keys: {
-        x25519PublicKey: resp.publicKey,
-        mlkemPublicKey: resp.mlkemPublicKey,
-        slhdsaPublicKey: resp.slhdsaPublicKey,
-      },
+      // Refuses an absent key set and a key of the wrong size, before the
+      // caller makes any pin decision.
+      keys: workerKeyBundleFromWire(workerId, resp.keys),
       encryptionMode: resp.encryptionMode,
     }
   }
@@ -327,10 +125,18 @@ export const channelManager = new ChannelManager(new BrowserChannelTransport(), 
 export const UNAVAILABLE_MAX_RETRIES = 3
 export const UNAVAILABLE_RETRY_BASE_MS = 200
 
+/** What every worker RPC takes besides the request. */
+interface WorkerCallOptions {
+  /** Limits each attempt, not the whole sequence of retries. See `callWorker`. */
+  timeoutMs?: number
+  /** Stops the call, including during a retry backoff. */
+  signal?: AbortSignal
+}
+
 /** Whether an error is the worker saying "I could not answer; ask again". */
 function isWorkerUnavailable(err: unknown): err is ChannelError {
   // `source === 'rpc'` is the load-bearing half. It is set only from a
-  // DECRYPTED InnerRpcResponse.errorCode, so the hub cannot forge it, and
+  // DECRYPTED InnerRpcResponse.error.code, so the hub cannot forge it, and
   // it separates the worker's own refusal from a transport failure that
   // happens to carry the same numeric code.
   return err instanceof ChannelError && err.source === 'rpc' && err.code === Code.Unavailable
@@ -355,26 +161,22 @@ function isWorkerUnavailable(err: unknown): err is ChannelError {
  * A retry cannot double-apply a write: every site the worker answers
  * `Unavailable` from returns before it mutates anything.
  */
-async function callWorker<
-  ReqSchema extends GenMessage<any>,
-  RespSchema extends GenMessage<any>,
->(
+async function callWorker<I extends DescMessage, O extends DescMessage>(
   workerId: string,
-  method: string,
-  reqSchema: ReqSchema,
-  respSchema: RespSchema,
-  req: MessageInitShape<ReqSchema>,
-  opts?: { timeoutMs?: number, signal?: AbortSignal },
-): Promise<MessageShape<RespSchema>> {
+  method: DescMethodUnary<I, O>,
+  req: MessageInitShape<I>,
+  opts?: WorkerCallOptions,
+): Promise<MessageShape<O>> {
+  const procedure = procedureOf(method)
   for (let attempt = 0; ; attempt++) {
     emitDevEvent('leapmux:rpc-send', () => ({
-      method,
+      method: procedure,
       at: performance.now(),
     }))
     try {
-      const resp = await channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+      const resp = await channelManager.callWorker(workerId, method, req, opts)
       emitDevEvent('leapmux:rpc-recv', () => ({
-        method,
+        method: procedure,
         at: performance.now(),
         ok: true,
       }))
@@ -382,7 +184,7 @@ async function callWorker<
     }
     catch (err) {
       emitDevEvent('leapmux:rpc-recv', () => ({
-        method,
+        method: procedure,
         at: performance.now(),
         ok: false,
       }))
@@ -393,335 +195,127 @@ async function callWorker<
   }
 }
 
-// ---------------------------------------------------------------------------
-// System Info (via E2EE channel to worker)
-// ---------------------------------------------------------------------------
+/** Whether a message declares no field, so that an init of it says nothing. */
+type HasNoField<M extends DescMessage> = [Exclude<keyof MessageShape<M>, keyof Message>] extends [never] ? true : false
 
-export function getWorkerSystemInfo(workerId: string): Promise<GetWorkerSystemInfoResponse> {
-  return callWorker(workerId, 'GetWorkerSystemInfo', GetWorkerSystemInfoRequestSchema, GetWorkerSystemInfoResponseSchema, {})
+/**
+ * One unary worker RPC as a function. A request message with no field asks
+ * about the machine, and the channel already identifies the machine, so the
+ * caller may leave the request out.
+ */
+type WorkerMethodCall<M> = M extends DescMethodUnary<infer I, infer O>
+  ? HasNoField<I> extends true
+    ? (workerId: string, req?: MessageInitShape<I>, opts?: WorkerCallOptions) => Promise<MessageShape<O>>
+    : (workerId: string, req: MessageInitShape<I>, opts?: WorkerCallOptions) => Promise<MessageShape<O>>
+  : never
+
+/**
+ * The unary methods of a worker service, keyed by their local names.
+ *
+ * A streaming method has no place here, because a stream has a handle rather
+ * than one reply: `watchEventsViaChannel` and `ChannelManager.stream` serve
+ * those.
+ */
+export type WorkerServiceClient<S extends DescService> = {
+  [K in keyof S['method'] as S['method'][K] extends DescMethodUnary ? K : never]: WorkerMethodCall<S['method'][K]>
 }
 
-// ---------------------------------------------------------------------------
-// Workspace Cleanup (via E2EE channel to worker)
-// ---------------------------------------------------------------------------
-
-export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof CleanupWorkspaceRequestSchema>): Promise<CleanupWorkspaceResponse> {
-  return callWorker(workerId, 'CleanupWorkspace', CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, req)
-}
-
-// ---------------------------------------------------------------------------
-// File-tab paths (E2EE-only — hub never sees the path)
-// ---------------------------------------------------------------------------
-
-export function registerTabPayload(
-  workerId: string,
-  req: MessageInitShape<typeof RegisterTabPayloadRequestSchema>,
-): Promise<RegisterTabPayloadResponse> {
-  return callWorker(workerId, 'RegisterTabPayload', RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema, req)
-}
-
-export function getTabPayload(
-  workerId: string,
-  req: MessageInitShape<typeof GetTabPayloadRequestSchema>,
-): Promise<GetTabPayloadResponse> {
-  return callWorker(workerId, 'GetTabPayload', GetTabPayloadRequestSchema, GetTabPayloadResponseSchema, req)
-}
-
-export function revokeTabPayload(
-  workerId: string,
-  req: MessageInitShape<typeof RevokeTabPayloadRequestSchema>,
-): Promise<RevokeTabPayloadResponse> {
-  return callWorker(workerId, 'RevokeTabPayload', RevokeTabPayloadRequestSchema, RevokeTabPayloadResponseSchema, req)
-}
-
-// ---------------------------------------------------------------------------
-// Agent
-// ---------------------------------------------------------------------------
-
-export function openAgent(workerId: string, req: MessageInitShape<typeof OpenAgentRequestSchema>): Promise<OpenAgentResponse> {
-  return callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, req, {
-    timeoutMs: apiLoadingTimeoutMs(),
-  })
-}
-
-export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseAgentRequestSchema>): Promise<CloseAgentResponse> {
-  return callWorker(workerId, 'CloseAgent', CloseAgentRequestSchema, CloseAgentResponseSchema, req)
-}
-
-export function enqueueAgentInput(workerId: string, req: MessageInitShape<typeof EnqueueAgentInputRequestSchema>): Promise<EnqueueAgentInputResponse> {
-  return callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, req)
-}
-
-export function beginQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof BeginQueuedAgentInputEditRequestSchema>): Promise<BeginQueuedAgentInputEditResponse> {
-  return callWorker(workerId, 'BeginQueuedAgentInputEdit', BeginQueuedAgentInputEditRequestSchema, BeginQueuedAgentInputEditResponseSchema, req)
-}
-
-export function updateQueuedAgentInput(workerId: string, req: MessageInitShape<typeof UpdateQueuedAgentInputRequestSchema>): Promise<UpdateQueuedAgentInputResponse> {
-  return callWorker(workerId, 'UpdateQueuedAgentInput', UpdateQueuedAgentInputRequestSchema, UpdateQueuedAgentInputResponseSchema, req)
-}
-
-export function cancelQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof CancelQueuedAgentInputEditRequestSchema>): Promise<CancelQueuedAgentInputEditResponse> {
-  return callWorker(workerId, 'CancelQueuedAgentInputEdit', CancelQueuedAgentInputEditRequestSchema, CancelQueuedAgentInputEditResponseSchema, req)
-}
-
-export function deleteQueuedAgentInput(workerId: string, req: MessageInitShape<typeof DeleteQueuedAgentInputRequestSchema>): Promise<DeleteQueuedAgentInputResponse> {
-  return callWorker(workerId, 'DeleteQueuedAgentInput', DeleteQueuedAgentInputRequestSchema, DeleteQueuedAgentInputResponseSchema, req)
-}
-
-export function moveQueuedAgentInput(workerId: string, req: MessageInitShape<typeof MoveQueuedAgentInputRequestSchema>): Promise<MoveQueuedAgentInputResponse> {
-  return callWorker(workerId, 'MoveQueuedAgentInput', MoveQueuedAgentInputRequestSchema, MoveQueuedAgentInputResponseSchema, req)
-}
-
-export function setAgentInputQueuePaused(workerId: string, req: MessageInitShape<typeof SetAgentInputQueuePausedRequestSchema>): Promise<SetAgentInputQueuePausedResponse> {
-  return callWorker(workerId, 'SetAgentInputQueuePaused', SetAgentInputQueuePausedRequestSchema, SetAgentInputQueuePausedResponseSchema, req)
-}
-
-export function steerQueuedAgentInput(workerId: string, req: MessageInitShape<typeof SteerQueuedAgentInputRequestSchema>): Promise<SteerQueuedAgentInputResponse> {
-  return callWorker(workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, req)
-}
-
-export function preemptQueuedAgentInput(workerId: string, req: MessageInitShape<typeof PreemptQueuedAgentInputRequestSchema>): Promise<PreemptQueuedAgentInputResponse> {
-  return callWorker(workerId, 'PreemptQueuedAgentInput', PreemptQueuedAgentInputRequestSchema, PreemptQueuedAgentInputResponseSchema, req)
-}
-
-export function retryQueuedAgentInput(workerId: string, req: MessageInitShape<typeof RetryQueuedAgentInputRequestSchema>): Promise<RetryQueuedAgentInputResponse> {
-  return callWorker(workerId, 'RetryQueuedAgentInput', RetryQueuedAgentInputRequestSchema, RetryQueuedAgentInputResponseSchema, req)
-}
-
-export function sendAgentRawMessage(workerId: string, req: MessageInitShape<typeof SendAgentRawMessageRequestSchema>): Promise<SendAgentRawMessageResponse> {
-  return callWorker(workerId, 'SendAgentRawMessage', SendAgentRawMessageRequestSchema, SendAgentRawMessageResponseSchema, req)
-}
-
-export function listAgents(workerId: string, req: MessageInitShape<typeof ListAgentsRequestSchema>): Promise<ListAgentsResponse> {
-  return callWorker(workerId, 'ListAgents', ListAgentsRequestSchema, ListAgentsResponseSchema, req)
-}
-
-export function listAgentMessages(workerId: string, req: MessageInitShape<typeof ListAgentMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListAgentMessagesResponse> {
-  return callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, req, opts)
-}
-
-export function listMessageMarks(workerId: string, req: MessageInitShape<typeof ListMessageMarksRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListMessageMarksResponse> {
-  return callWorker(workerId, 'ListMessageMarks', ListMessageMarksRequestSchema, ListMessageMarksResponseSchema, req, opts)
-}
-
-export function getAgentMessage(workerId: string, req: MessageInitShape<typeof GetAgentMessageRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentMessageResponse> {
-  return callWorker(workerId, 'GetAgentMessage', GetAgentMessageRequestSchema, GetAgentMessageResponseSchema, req, opts)
-}
-
-export function getAgentSpanMessages(workerId: string, req: MessageInitShape<typeof GetAgentSpanMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetAgentSpanMessagesResponse> {
-  return callWorker(workerId, WORKER_RPC_METHOD.GetAgentSpanMessages, GetAgentSpanMessagesRequestSchema, GetAgentSpanMessagesResponseSchema, req, opts)
-}
-
-export function renameAgent(workerId: string, req: MessageInitShape<typeof RenameAgentRequestSchema>): Promise<RenameAgentResponse> {
-  return callWorker(workerId, 'RenameAgent', RenameAgentRequestSchema, RenameAgentResponseSchema, req)
-}
-
-export function interruptAgent(workerId: string, req: MessageInitShape<typeof InterruptAgentRequestSchema>): Promise<InterruptAgentResponse> {
-  return callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, req)
+function isUnary(method: DescMethod): method is DescMethodUnary {
+  return method.methodKind === 'unary'
 }
 
 /**
- * Set, clear, pause or resume the agent's session goal.
+ * The client of one worker service, derived from its descriptor, so a new RPC
+ * needs no line here. Every method goes through `callWorker`, and takes the
+ * same options, so any caller can pass an abort signal or a timeout.
  *
- * ONE call for all four actions rather than four wrappers: they share a
- * response, a scope and an idempotency story, and the worker refuses an action
- * the running agent does not support -- so a browser acting on a stale
- * capability list gets a refusal instead of a silent no-op.
- *
- * The browser writes no optimistic state. A side-band provider reports the
- * change, while a text-route provider updates state after queue delivery.
+ * Each method is an own property that uses no `this`, so a caller can pass a
+ * method on as a function, and a test can spy on one.
  */
-export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof UpdateAgentGoalRequestSchema>): Promise<UpdateAgentGoalResponse> {
-  return callWorker(workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, req)
+function createWorkerServiceClient<S extends DescService>(service: S): WorkerServiceClient<S> {
+  const client: Record<string, WorkerMethodCall<DescMethodUnary>> = {}
+  for (const method of service.methods) {
+    if (isUnary(method))
+      client[method.localName] = (workerId, req, opts) => callWorker(workerId, method, req ?? {}, opts)
+  }
+  // TypeScript cannot follow a loop over the runtime list to the mapped type.
+  return client as WorkerServiceClient<S>
 }
 
 /**
- * Record the reader's approval of one action that the agent's automatic reviewer
- * denied, so the agent may retry it once. The worker reads the denial from its own
- * stored row, so the request states only which row and which review.
+ * Agents and their transcripts, through the E2EE channel to the worker.
+ *
+ * - `openAgent` starts the agent's process. The call waits as long as the
+ *   loading UI: the channel manager's default timeout is `apiLoadingTimeoutMs`.
+ * - `updateAgentGoal` sets, clears, pauses or resumes the agent's session goal.
+ *   It is ONE call for all four actions rather than four: they share a
+ *   response, a scope and an idempotency story, and the worker refuses an
+ *   action the running agent does not support -- so a browser acting on a stale
+ *   capability list gets a refusal instead of a silent no-op. The browser
+ *   writes no optimistic state. A side-band provider reports the change, while
+ *   a text-route provider updates state after queue delivery.
+ * - `approveAutoReviewDenial` records the reader's approval of one action that
+ *   the agent's automatic reviewer denied, so the agent may retry it once. The
+ *   worker reads the denial from its own stored row, so the request states only
+ *   which row and which review.
+ * - `retryAgentTurn` stops the running turn and sends its input again on
+ *   another model, in a new provider thread that excludes the stopped attempt.
+ *   File changes and other actions that the stopped attempt already took stay.
+ *   The worker refuses the call unless its running agent offers this retry for
+ *   this turn, so a browser that acts on a stale offer gets a refusal instead
+ *   of a turn that it never saw. The worker answers when it accepts the retry,
+ *   and it then stops the turn and starts the new one. The transcript reports a
+ *   failure of those later steps, so a resolved call does not mean that the new
+ *   turn started.
+ * - `listAgentSessions` lists the sessions this worker can offer to resume in
+ *   one working directory. The worker merges its own records with the selected
+ *   provider's on-disk session store, so the answer changes with BOTH the
+ *   provider and the directory -- pass a fresh `signal` per call and let a later
+ *   one supersede an earlier.
  */
-export function approveAutoReviewDenial(workerId: string, req: MessageInitShape<typeof ApproveAutoReviewDenialRequestSchema>): Promise<ApproveAutoReviewDenialResponse> {
-  return callWorker(workerId, 'ApproveAutoReviewDenial', ApproveAutoReviewDenialRequestSchema, ApproveAutoReviewDenialResponseSchema, req)
-}
+export const workerAgent = createWorkerServiceClient(WorkerAgentService)
+
+/** The input queue of an agent. */
+export const workerAgentInput = createWorkerServiceClient(WorkerAgentInputService)
 
 /**
- * Stop the running turn and send its input again on another model, in a new
- * provider thread that excludes the stopped attempt. File changes and other
- * actions that the stopped attempt already took stay.
+ * The worker's file system.
  *
- * The worker refuses the call unless its running agent offers this retry for
- * this turn, so a browser that acts on a stale offer gets a refusal instead of
- * a turn that it never saw. The worker answers when it accepts the retry, and
- * it then stops the turn and starts the new one. The transcript reports a
- * failure of those later steps, so a resolved call does not mean that the new
- * turn started.
+ * `listFilesystemRoots` answers with the roots of the worker's own filesystem:
+ * `["/"]` on POSIX, the drive roots that carry a volume (`"C:\\"`, `"D:\\"`) on
+ * Windows. It lets the tree pick a top node and a drive menu fill itself,
+ * instead of the browser guessing either from the shape of a path.
  */
-export function retryAgentTurn(workerId: string, req: MessageInitShape<typeof RetryAgentTurnRequestSchema>): Promise<RetryAgentTurnResponse> {
-  return callWorker(workerId, 'RetryAgentTurn', RetryAgentTurnRequestSchema, RetryAgentTurnResponseSchema, req)
-}
+export const workerFile = createWorkerServiceClient(WorkerFileService)
 
-export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {
-  return callWorker(workerId, 'SendControlResponse', SendControlResponseRequestSchema, SendControlResponseResponseSchema, req)
-}
+/** Git state and branch operations on the worker. */
+export const workerGit = createWorkerServiceClient(WorkerGitService)
 
-export function updateAgentSettings(workerId: string, req: MessageInitShape<typeof UpdateAgentSettingsRequestSchema>): Promise<UpdateAgentSettingsResponse> {
-  return callWorker(workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, req)
-}
+/** Tab payloads, which only the E2EE channel carries: the hub never sees a path. */
+export const workerPrivate = createWorkerServiceClient(WorkerPrivateService)
+
+/** The worker's own machine. */
+export const workerSystem = createWorkerServiceClient(WorkerSystemService)
 
 /**
- * The sessions this worker can offer to resume in one working directory.
+ * Tabs of any type, and the worktree cleanup of a workspace.
  *
- * The worker merges its own records with the selected provider's on-disk
- * session store, so the answer changes with BOTH the provider and the
- * directory -- pass a fresh `signal` per call and let a later one supersede an
- * earlier.
+ * `closeTab` closes one tab of any type. Partial failures come back in-band; see
+ * CloseTabResponse.
  */
-export function listAgentSessions(
-  workerId: string,
-  req: MessageInitShape<typeof ListAgentSessionsRequestSchema>,
-  opts?: { signal?: AbortSignal },
-): Promise<ListAgentSessionsResponse> {
-  return callWorker(workerId, 'ListAgentSessions', ListAgentSessionsRequestSchema, ListAgentSessionsResponseSchema, req, opts)
-}
-
-export function listAvailableProviders(
-  workerId: string,
-  opts?: { signal?: AbortSignal },
-): Promise<ListAvailableProvidersResponse> {
-  return callWorker(workerId, 'ListAvailableProviders', ListAvailableProvidersRequestSchema, ListAvailableProvidersResponseSchema, {}, opts)
-}
-
-// ---------------------------------------------------------------------------
-// Terminal
-// ---------------------------------------------------------------------------
-
-export function openTerminal(workerId: string, req: MessageInitShape<typeof OpenTerminalRequestSchema>): Promise<OpenTerminalResponse> {
-  return callWorker(workerId, 'OpenTerminal', OpenTerminalRequestSchema, OpenTerminalResponseSchema, req)
-}
-
-export function closeTerminal(workerId: string, req: MessageInitShape<typeof CloseTerminalRequestSchema>): Promise<CloseTerminalResponse> {
-  return callWorker(workerId, 'CloseTerminal', CloseTerminalRequestSchema, CloseTerminalResponseSchema, req)
-}
-
-export function restartTerminal(workerId: string, req: MessageInitShape<typeof RestartTerminalRequestSchema>): Promise<RestartTerminalResponse> {
-  return callWorker(workerId, 'RestartTerminal', RestartTerminalRequestSchema, RestartTerminalResponseSchema, req)
-}
-
-export function sendInput(workerId: string, req: MessageInitShape<typeof SendInputRequestSchema>, opts?: { timeoutMs?: number, signal?: AbortSignal }): Promise<SendInputResponse> {
-  return callWorker(workerId, 'SendInput', SendInputRequestSchema, SendInputResponseSchema, req, opts)
-}
-
-export function resizeTerminal(workerId: string, req: MessageInitShape<typeof ResizeTerminalRequestSchema>): Promise<ResizeTerminalResponse> {
-  return callWorker(workerId, 'ResizeTerminal', ResizeTerminalRequestSchema, ResizeTerminalResponseSchema, req)
-}
-
-/** Explicit user rename — PTY OSC titles are persisted worker-side instead. */
-export function updateTerminalTitle(workerId: string, req: MessageInitShape<typeof UpdateTerminalTitleRequestSchema>): Promise<UpdateTerminalTitleResponse> {
-  return callWorker(workerId, 'UpdateTerminalTitle', UpdateTerminalTitleRequestSchema, UpdateTerminalTitleResponseSchema, req)
-}
-
-export function listTerminals(workerId: string, req: MessageInitShape<typeof ListTerminalsRequestSchema>): Promise<ListTerminalsResponse> {
-  return callWorker(workerId, 'ListTerminals', ListTerminalsRequestSchema, ListTerminalsResponseSchema, req)
-}
+export const workerTab = createWorkerServiceClient(WorkerTabService)
 
 /**
- * What is running inside each named terminal, so a close guard can state the
- * reason before it tears the tab down. Batched: closing a tile asks about every
- * terminal it holds in one round trip.
- */
-export function inspectTerminalProcesses(workerId: string, req: MessageInitShape<typeof InspectTerminalProcessesRequestSchema>): Promise<InspectTerminalProcessesResponse> {
-  return callWorker(workerId, 'InspectTerminalProcesses', InspectTerminalProcessesRequestSchema, InspectTerminalProcessesResponseSchema, req)
-}
-
-export function listAvailableShells(workerId: string, req: MessageInitShape<typeof ListAvailableShellsRequestSchema>): Promise<ListAvailableShellsResponse> {
-  return callWorker(workerId, 'ListAvailableShells', ListAvailableShellsRequestSchema, ListAvailableShellsResponseSchema, req)
-}
-
-// ---------------------------------------------------------------------------
-// File
-// ---------------------------------------------------------------------------
-
-export function listDirectory(workerId: string, req: MessageInitShape<typeof ListDirectoryRequestSchema>): Promise<ListDirectoryResponse> {
-  return callWorker(workerId, 'ListDirectory', ListDirectoryRequestSchema, ListDirectoryResponseSchema, req)
-}
-
-/**
- * The roots of the worker's own filesystem: `["/"]` on POSIX, the drive roots
- * that carry a volume (`"C:\\"`, `"D:\\"`) on Windows.
+ * Terminals.
  *
- * Lets the tree pick a top node and a drive menu fill itself, instead of the
- * browser guessing either from the shape of a path.
- *
- * Takes no request, like `getWorkerSystemInfo`: it asks about the machine, and
- * the channel already identifies it.
+ * - `renameTerminal` is the explicit user rename. A PTY's OSC title reaches
+ *   clients as a live overlay (TerminalTitleChanged) instead.
+ * - `inspectTerminalProcesses` states what is running inside each terminal that
+ *   the request lists, so a close guard can state the reason before it tears
+ *   the tab down. It is batched: closing a tile asks about every terminal it
+ *   holds in one round trip.
  */
-export function listFilesystemRoots(workerId: string): Promise<ListFilesystemRootsResponse> {
-  return callWorker(workerId, 'ListFilesystemRoots', ListFilesystemRootsRequestSchema, ListFilesystemRootsResponseSchema, {})
-}
-
-export function readFile(workerId: string, req: MessageInitShape<typeof ReadFileRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ReadFileResponse> {
-  return callWorker(workerId, 'ReadFile', ReadFileRequestSchema, ReadFileResponseSchema, req, opts)
-}
-
-export function statFile(workerId: string, req: MessageInitShape<typeof StatFileRequestSchema>): Promise<StatFileResponse> {
-  return callWorker(workerId, 'StatFile', StatFileRequestSchema, StatFileResponseSchema, req)
-}
-
-// ---------------------------------------------------------------------------
-// Git
-// ---------------------------------------------------------------------------
-
-export function getGitInfo(workerId: string, req: MessageInitShape<typeof GetGitInfoRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitInfoResponse> {
-  return callWorker(workerId, 'GetGitInfo', GetGitInfoRequestSchema, GetGitInfoResponseSchema, req, opts)
-}
-
-export function getGitFileStatus(workerId: string, req: MessageInitShape<typeof GetGitFileStatusRequestSchema>, opts?: { signal?: AbortSignal }): Promise<GetGitFileStatusResponse> {
-  return callWorker(workerId, 'GetGitFileStatus', GetGitFileStatusRequestSchema, GetGitFileStatusResponseSchema, req, opts)
-}
-
-export function readGitFile(workerId: string, req: MessageInitShape<typeof ReadGitFileRequestSchema>): Promise<ReadGitFileResponse> {
-  return callWorker(workerId, 'ReadGitFile', ReadGitFileRequestSchema, ReadGitFileResponseSchema, req)
-}
-
-export function inspectLastTabClose(workerId: string, req: MessageInitShape<typeof InspectLastTabCloseRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectLastTabCloseResponse> {
-  return callWorker(workerId, 'InspectLastTabClose', InspectLastTabCloseRequestSchema, InspectLastTabCloseResponseSchema, req, opts)
-}
-
-export function pushBranch(workerId: string, req: MessageInitShape<typeof PushBranchRequestSchema>): Promise<PushBranchResponse> {
-  return callWorker(workerId, 'PushBranch', PushBranchRequestSchema, PushBranchResponseSchema, req)
-}
-
-export function listGitBranches(workerId: string, req: MessageInitShape<typeof ListGitBranchesRequestSchema>): Promise<ListGitBranchesResponse> {
-  return callWorker(workerId, 'ListGitBranches', ListGitBranchesRequestSchema, ListGitBranchesResponseSchema, req)
-}
-
-export function listGitWorktrees(workerId: string, req: MessageInitShape<typeof ListGitWorktreesRequestSchema>): Promise<ListGitWorktreesResponse> {
-  return callWorker(workerId, 'ListGitWorktrees', ListGitWorktreesRequestSchema, ListGitWorktreesResponseSchema, req)
-}
-
-export function inspectBranchDeletion(workerId: string, req: MessageInitShape<typeof InspectBranchDeletionRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchDeletionResponse> {
-  return callWorker(workerId, 'InspectBranchDeletion', InspectBranchDeletionRequestSchema, InspectBranchDeletionResponseSchema, req, opts)
-}
-
-export function inspectWorktreeRemoval(workerId: string, req: MessageInitShape<typeof InspectWorktreeRemovalRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectWorktreeRemovalResponse> {
-  return callWorker(workerId, 'InspectWorktreeRemoval', InspectWorktreeRemovalRequestSchema, InspectWorktreeRemovalResponseSchema, req, opts)
-}
-
-export function inspectBranchChange(workerId: string, req: MessageInitShape<typeof InspectBranchChangeRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchChangeResponse> {
-  return callWorker(workerId, 'InspectBranchChange', InspectBranchChangeRequestSchema, InspectBranchChangeResponseSchema, req, opts)
-}
-
-export function checkoutBranch(workerId: string, req: MessageInitShape<typeof CheckoutBranchRequestSchema>): Promise<CheckoutBranchResponse> {
-  return callWorker(workerId, 'CheckoutBranch', CheckoutBranchRequestSchema, CheckoutBranchResponseSchema, req)
-}
-
-export function createBranch(workerId: string, req: MessageInitShape<typeof CreateBranchRequestSchema>): Promise<CreateBranchResponse> {
-  return callWorker(workerId, 'CreateBranch', CreateBranchRequestSchema, CreateBranchResponseSchema, req)
-}
-
-export function deleteBranch(workerId: string, req: MessageInitShape<typeof DeleteBranchRequestSchema>): Promise<DeleteBranchResponse> {
-  return callWorker(workerId, 'DeleteBranch', DeleteBranchRequestSchema, DeleteBranchResponseSchema, req)
-}
+export const workerTerminal = createWorkerServiceClient(WorkerTerminalService)
 
 // ---------------------------------------------------------------------------
 // Event Streaming (WatchEvents via E2EE channel)
@@ -755,29 +349,17 @@ export async function watchEventsViaChannel(
   request: MessageInitShape<typeof WatchEventsRequestSchema>,
 ): Promise<WatchEventsHandle> {
   const channelId = await channelManager.getOrOpenChannel(workerId)
-  const msg = create(WatchEventsRequestSchema, request)
-  const payload = toBinary(WatchEventsRequestSchema, msg)
-
-  const streamHandle = channelManager.stream(channelId, 'WatchEvents', payload)
+  const streamHandle = channelManager.stream(channelId, WorkerWatchService.method.watchEvents, request)
 
   // Buffer messages that arrive before the consumer wires its callbacks.
   // See streamBuffer.ts for the full rationale.
-  const buffered = bufferStreamHandle<InnerStreamMessage, WatchEventsResponse>(streamHandle, (msg) => {
-    const resp = fromBinary(WatchEventsResponseSchema, msg.payload)
-    log.debug('WatchEvents stream message', {
-      response: toJsonString(WatchEventsResponseSchema, resp),
-    })
-    return resp
-  })
+  const buffered = bufferStreamHandle(streamHandle)
 
   return {
     onEvent: buffered.onEvent,
     onEnd: buffered.onEnd,
     onError: buffered.onError,
-    update: (req) => {
-      const next = create(WatchEventsRequestSchema, req)
-      streamHandle.send(toBinary(WatchEventsRequestSchema, next))
-    },
+    update: req => streamHandle.send(req),
     close: () => { streamHandle.cancel() },
   }
 }

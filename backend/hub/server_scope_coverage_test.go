@@ -16,51 +16,26 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// declaredProcedures walks the whole leapmux.v1 registry and returns every
-// method's Connect path, so this test sees a service nobody thought to list.
-func declaredProcedures(t *testing.T) []string {
-	t.Helper()
-	var out []string
-	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		services := fd.Services()
-		for i := range services.Len() {
-			svc := services.Get(i)
-			if !strings.HasPrefix(string(svc.FullName()), "leapmux.v1.") {
-				return true
-			}
-			for j := range svc.Methods().Len() {
-				out = append(out, "/"+string(svc.FullName())+"/"+string(svc.Methods().Get(j).Name()))
-			}
-		}
-		return true
-	})
-	require.NotEmpty(t, out, "the descriptor walk found no leapmux.v1 methods; it proved nothing")
-	return out
-}
-
-// TestScopeClassificationMatchesTheMountedMux cross-checks the scope map's
-// ScopeNotHubServed claim against what NewServer actually mounts.
+// TestScopeClassificationMatchesTheMountedMux cross-checks each service's
+// (leapmux.v1.host) option against what NewServer actually mounts: a method is
+// mounted on the Hub's Connect mux if and only if its service's host is HUB.
 //
-// procedure_scopes.go records two service families as "the Hub's Connect mux
-// never mounts this" -- the Worker's local IPC socket and the methods dispatched
-// by NAME inside a Noise channel. That record makes the descriptor walk TOTAL,
-// which is what keeps a newly declared procedure from being unclassified. But
-// the claim is only a comment: nothing in that package can see the mux.
-//
-// So this is the other half. Mounting one of those procedures on the Hub turns
-// the record into a test failure rather than a procedure that answers with a
-// scope requirement nobody assigned it.
+// The host option is what internal/hub/auth derives ScopeNotHubServed from, and
+// what keeps procedureScopes total over the declared methods. But the option is
+// only a declaration: nothing in that package can see the mux. So this is the
+// other half. Mounting a WORKER or WORKER_IPC method on the Hub, or forgetting
+// to mount a HUB one, turns the declaration into a test failure rather than a
+// procedure that answers with a scope requirement nobody assigned it.
 func TestScopeClassificationMatchesTheMountedMux(t *testing.T) {
 	srv := startTestServer(t, &config.Config{})
 	handler := srv.server.Handler
@@ -84,21 +59,22 @@ func TestScopeClassificationMatchesTheMountedMux(t *testing.T) {
 		return !servedTheSPA
 	}
 
-	for _, path := range declaredProcedures(t) {
-		requirement := auth.ScopeRequirementFor(path)
-		require.Truef(t, requirement.IsAssigned(),
-			"procedure %q has no scope classification; internal/hub/auth's own walk should have caught this first", path)
-
-		t.Run(path, func(t *testing.T) {
-			if requirement.IsHubServed() {
-				assert.Truef(t, mounted(path),
-					"%q carries a scope classification that assumes the Hub serves it, but NewServer mounts no handler for it -- "+
-						"either mount it or classify it ScopeNotHubServed", path)
+	methods := rpcaccess.All()
+	require.NotEmpty(t, methods, "the descriptor index found no leapmux.v1 methods; it proved nothing")
+	for _, m := range methods {
+		t.Run(m.Procedure, func(t *testing.T) {
+			hubHosted := m.Host == leapmuxv1.ServiceHost_SERVICE_HOST_HUB
+			assert.Equalf(t, hubHosted, auth.ScopeRequirementFor(m.Procedure).IsHubServed(),
+				"%q: the auth table and the host option disagree", m.Procedure)
+			if hubHosted {
+				assert.Truef(t, mounted(m.Procedure),
+					"%q belongs to a HUB service, but NewServer mounts no handler for it -- "+
+						"either mount it or change the service's host", m.Procedure)
 				return
 			}
-			assert.Falsef(t, mounted(path),
-				"%q is classified ScopeNotHubServed, but NewServer mounts it -- "+
-					"the scope rung now guards a procedure whose record says it is unreachable", path)
+			assert.Falsef(t, mounted(m.Procedure),
+				"%q belongs to a %s service, but NewServer mounts it -- "+
+					"the scope rung now guards a procedure whose host says it is unreachable", m.Procedure, m.Host)
 		})
 	}
 }

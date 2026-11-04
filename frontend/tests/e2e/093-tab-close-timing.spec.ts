@@ -8,6 +8,10 @@ import type { Page, TestInfo } from '@playwright/test'
 import type { ClockAnchor, LogLine, PhaseMark, RpcMark, TimingWorker } from './helpers/timingFixture'
 import process from 'node:process'
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '~/lib/regexp'
+import { procedureOf } from '~/lib/rpcProcedure'
+import { WorkerGitService } from '../../src/generated/proto/leapmux/v1/git_pb'
+import { WorkerTabService } from '../../src/generated/proto/leapmux/v1/worker_tab_pb'
 import { test as base } from './fixtures'
 import { deleteWorkspaceViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
@@ -22,8 +26,10 @@ import {
 
 // ─── Browser instrumentation ──────────────────────────────────────────
 
-/** The RPC that closes a tab: CloseAgent for an agent tab, CloseTerminal for a terminal tab. */
-const CLOSE_RPC_METHOD = /^Close(?:Agent|Terminal)$/
+/** Matches the procedure of CloseTab, the one RPC that closes a tab of any type, exactly. */
+function closeProcedurePattern(): RegExp {
+  return new RegExp(`^${escapeRegExp(procedureOf(WorkerTabService.method.closeTab))}$`)
+}
 
 interface TimingWindow {
   __rpcMarks?: RpcMark[]
@@ -104,10 +110,12 @@ function buildTimeline(
   const marks: PhaseMark[] = [
     { name: 'ui:click', tMs: tClickMs },
   ]
-  const inspectSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && m.method === 'InspectLastTabClose')
-  const inspectRecv = raw.rpcMarks.find(m => m.type === 'rpc-recv' && m.method === 'InspectLastTabClose')
-  const closeSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
-  const closeRecv = raw.rpcMarks.find(m => m.type === 'rpc-recv' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
+  const inspectProcedure = procedureOf(WorkerGitService.method.inspectLastTabClose)
+  const closeProcedure = procedureOf(WorkerTabService.method.closeTab)
+  const inspectSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && m.method === inspectProcedure)
+  const inspectRecv = raw.rpcMarks.find(m => m.type === 'rpc-recv' && m.method === inspectProcedure)
+  const closeSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && m.method === closeProcedure)
+  const closeRecv = raw.rpcMarks.find(m => m.type === 'rpc-recv' && m.method === closeProcedure)
   if (inspectSend)
     marks.push({ name: `ui:rpc-send ${inspectSend.method}`, tMs: inspectSend.at })
   marks.push(...workerMarks)
@@ -158,7 +166,7 @@ async function captureCloseTimeline(
   await expect.poll(async () => (await snapshotMarks(page)).rpcMarks)
     .toContainEqual(expect.objectContaining({
       type: 'rpc-recv',
-      method: expect.stringMatching(CLOSE_RPC_METHOD),
+      method: expect.stringMatching(closeProcedurePattern()),
     }))
   await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null).toBeTruthy()
   const closedTabID = findClosedTabID(srv.logLines, logsBefore)!

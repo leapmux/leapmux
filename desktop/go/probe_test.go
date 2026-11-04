@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
@@ -39,7 +41,7 @@ func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 	var finalHit bool
 	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/leapmux.v1.AuthService/GetSystemInfo":
+		case leapmuxv1connect.SystemServiceGetSystemInfoProcedure:
 			http.Redirect(w, r, "/final", http.StatusFound)
 		case "/final":
 			finalHit = true
@@ -54,13 +56,39 @@ func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 }
 
 // The happy path: a reachable hub that answers 200 makes the probe succeed.
+// The hub answers only the Connect JSON call of the generated GetSystemInfo
+// procedure, so a probe that posts anywhere else fails here.
 func TestProbeHubSucceedsOnOK(t *testing.T) {
-	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	type probeRequest struct {
+		method      string
+		path        string
+		contentType string
+		body        string
+	}
+	requests := make(chan probeRequest, 1)
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- probeRequest{method: r.Method, path: r.URL.Path, contentType: r.Header.Get("Content-Type"), body: string(body)}
+		if r.URL.Path != leapmuxv1connect.SystemServiceGetSystemInfoProcedure {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(hub.Close)
 
 	require.NoError(t, probeHub(context.Background(), endpointFor(t, hub.URL)))
+	got := <-requests
+	assert.Equal(t, probeRequest{
+		method:      http.MethodPost,
+		path:        leapmuxv1connect.SystemServiceGetSystemInfoProcedure,
+		contentType: "application/json",
+		body:        "{}",
+	}, got)
 }
 
 // A non-200 status is surfaced as an error so ConnectDistributed does not treat an

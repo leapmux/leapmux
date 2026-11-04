@@ -32,7 +32,7 @@ func NewPinStore(dataDir string) (*PinStore, error) {
 		Path:             filepath.Join(dataDir, "cross_worker_pins.json"),
 		DirMode:          0o700,
 		FileMode:         0o600,
-		MismatchHintTmpl: "pin previously recorded; clear with `leapmux worker cross-worker-pins remove --target-worker-id=%s`",
+		MismatchHintTmpl: "the target worker keeps its keys while it stays registered; clear the pin only after the presented fingerprint matches the one the target worker logs when it starts: `leapmux worker cross-worker-pins remove --target-worker-id=%s`",
 	})
 	if err != nil {
 		return nil, err

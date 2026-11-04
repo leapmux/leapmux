@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -65,7 +66,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"SetUserAdmin": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
-					Id: subjectID, IsAdmin: true,
+					User: service.SelectUserByID(subjectID), IsAdmin: true,
 				}, token))
 				return err
 			},
@@ -79,7 +80,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"ResetPassword": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
-					Id: subjectID, Password: adminCommitResetPassword,
+					User: service.SelectUserByID(subjectID), Password: adminCommitResetPassword,
 				}, token))
 				return err
 			},
@@ -93,7 +94,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"DeleteUser": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
-					Id: subjectID,
+					User: service.SelectUserByID(subjectID),
 				}, token))
 				return err
 			},
@@ -111,7 +112,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"UpdateUser": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
-					Id: subjectID, DisplayName: proto.String("Renamed"),
+					User: service.SelectUserByID(subjectID), DisplayName: proto.String("Renamed"),
 				}, token))
 				return err
 			},
@@ -125,7 +126,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		"IssueAPIToken": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
 				_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
-					UserId: subjectID, InstallationName: "ci-bot",
+					User: service.SelectUserByID(subjectID), InstallationName: "ci-bot",
 				}, token))
 				return err
 			},
@@ -188,7 +189,7 @@ func TestAdminUserService_CommitRefusesAWithdrawnActingSession(t *testing.T) {
 			// validated UserInfo. That entry is the staleness the re-read
 			// exists to answer, and it is what makes the handler -- rather
 			// than the interceptor -- the thing under test.
-			_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+			_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, env.token))
 			require.NoError(t, err)
 
 			// An administrator takes the acting session away. This writes the

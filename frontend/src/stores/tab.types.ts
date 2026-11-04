@@ -1,6 +1,6 @@
-import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 /**
  * Module note: tab types live here so the store, op emitters, helpers,
@@ -8,6 +8,18 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
  * factory (which transitively imports SolidJS reactivity primitives).
  * Importing only the types keeps the bundle dependency graph shallow.
  */
+
+/**
+ * The display state of a terminal whose worker channel the client lost. Only
+ * the client can observe it, so it is no TerminalStatus value.
+ *
+ * `terminalDisplayStatus` in `~/stores/tab.helpers` derives it on each read, and
+ * no tab or metadata row stores it.
+ */
+export const TERMINAL_DISCONNECTED = 'disconnected' as const
+
+/** A terminal status as a tab shows it: the worker's status, or the client's own disconnected state. */
+export type TerminalDisplayStatus = TerminalStatus | typeof TERMINAL_DISCONNECTED
 
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
@@ -96,10 +108,12 @@ export interface AgentTab extends BaseTab {
   acceptsMessages?: boolean | undefined
   /** Whether this agent's turn can be interrupted from its own tab (the worker's AgentInfo.accepts_interrupt). */
   acceptsInterrupt?: boolean | undefined
-  /** Whether the live provider accepts an explicit queue-head steer. */
-  supportsSteering?: boolean | undefined
-  /** Whether the live provider can only pre-empt: interrupt the turn, then send. */
-  supportsPreemption?: boolean | undefined
+  /**
+   * How the queue head reaches the agent while its turn runs: Steer, Preempt,
+   * or neither. The worker computes it from the live provider, and the client
+   * reads UNSPECIFIED as NONE.
+   */
+  queueHeadDispatch?: QueueHeadDispatch | undefined
   /**
    * The ROOT owner agent id (top of the parentAgentId chain). Equals the tab's
    * own id for a root. Set on hydration from AgentInfo.root_agent_id; the
@@ -111,6 +125,7 @@ export interface AgentTab extends BaseTab {
 /** TERMINAL tab. Worker-driven PTY + screen snapshot. */
 export interface TerminalTab extends BaseTab {
   type: TabType.TERMINAL
+  /** The status that the worker reported. A surface shows `terminalDisplayStatus`. */
   status?: TerminalStatus | undefined
   /** Working directory the shell was originally spawned in. */
   shellStartDir?: string | undefined

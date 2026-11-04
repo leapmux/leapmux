@@ -25,7 +25,9 @@ vi.mock('~/components/tree/DirectoryTree', () => ({
 
 const listFilesystemRoots = vi.fn<(...args: unknown[]) => Promise<{ roots: string[] }>>(async () => ({ roots: [] }))
 vi.mock('~/api/workerRpc', () => ({
-  listFilesystemRoots: (...args: unknown[]) => listFilesystemRoots(...args),
+  workerFile: {
+    listFilesystemRoots: (...args: unknown[]) => listFilesystemRoots(...args),
+  },
 }))
 
 const workerOs = vi.fn<() => string | undefined>(() => 'linux')
@@ -113,7 +115,7 @@ function renderSelector(workingDir?: string | (() => string)) {
 }
 
 describe('DirectorySelector', () => {
-  it('refreshFileTree invokes the current tree state refreshTree', () => {
+  it('makes refreshFileTree invoke the current tree state refreshTree', () => {
     const { refreshTree } = renderSelector()
 
     refreshFileTree()
@@ -121,7 +123,7 @@ describe('DirectorySelector', () => {
     expect(refreshTree).toHaveBeenCalledOnce()
   })
 
-  it('toggleHiddenFiles updates the visible button title through the registry callback', () => {
+  it('updates the visible button title through the registry callback when toggleHiddenFiles runs', () => {
     renderSelector()
 
     expect(screen.getByRole('button', { name: 'Hide hidden files' })).toBeInTheDocument()

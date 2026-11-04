@@ -71,7 +71,7 @@ describe('createAnchorRepin state machine', () => {
     expect(repin.currentAnchor()).toBe(null)
   })
 
-  it('setAnchor pins a row; followTail and setAnchor(null) return to following', () => {
+  it('pins a row with setAnchor; followTail and setAnchor(null) return to following', () => {
     const { repin } = setup()
     repin.setAnchor(anchorAt('m1'))
     expect(repin.isFollowing()).toBe(false)
@@ -86,7 +86,7 @@ describe('createAnchorRepin state machine', () => {
     expect(repin.isFollowing()).toBe(true)
   })
 
-  it('captureAnchor pins the viewport-midpoint row and rebases fling-settle', () => {
+  it('pins the viewport-midpoint row and rebases fling-settle in captureAnchor', () => {
     const { repin, el, virt, flingSettle } = setup()
     el.scrollTop = 200
     repin.captureAnchor()
@@ -95,7 +95,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
   })
 
-  it('captureTopAnchor pins the viewport-top row and rebases fling-settle', () => {
+  it('pins the viewport-top row and rebases fling-settle in captureTopAnchor', () => {
     const { repin, el, virt, flingSettle } = setup()
     el.scrollTop = 200
     repin.captureTopAnchor()
@@ -104,7 +104,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).toHaveBeenCalledTimes(1)
   })
 
-  it('captureRowTopAnchor pins the given row TOP (offsetWithinRow 0) and rebases fling-settle', () => {
+  it('pins the given row TOP (offsetWithinRow 0) and rebases fling-settle in captureRowTopAnchor', () => {
     const { repin, el, virt, flingSettle } = setup({ clientHeight: 500 })
     el.scrollTop = 100
     virt.scrollTopForAnchor.mockReturnValue(300) // the toggled row's top sits at content-Y 300
@@ -131,7 +131,7 @@ describe('createAnchorRepin state machine', () => {
     expect(writes).toEqual([])
   })
 
-  it('captureRowTopAnchor bails (keeping the existing anchor) when the row top is above the viewport top', () => {
+  it('makes captureRowTopAnchor bail (keeping the existing anchor) when the row top is above the viewport top', () => {
     // A row taller than the viewport whose OWN top is scrolled off the top edge (e.g. the user
     // toggles an inner tool-result expander below the fold). A top-edge pin can't hold scrollTop
     // invariant there -- the re-pin floors the pinned line at ratio 0, so clamping would JUMP
@@ -148,7 +148,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).not.toHaveBeenCalled()
   })
 
-  it('captureRowTopAnchor bails when the row top is below the viewport bottom (ratio > 1)', () => {
+  it('makes captureRowTopAnchor bail when the row top is below the viewport bottom (ratio > 1)', () => {
     // The mirror case: the row's top sits below the viewport bottom, so ratio > 1 and a clamp
     // to 1 would jump the row top down to the viewport bottom. Bail, leaving the mode untouched.
     const { repin, el, virt, flingSettle } = setup({ clientHeight: 500 })
@@ -160,7 +160,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).not.toHaveBeenCalled()
   })
 
-  it('captureRowTopAnchor still pins at the exact edges (ratio 0 and ratio 1 are in range)', () => {
+  it('still pins at the exact edges in captureRowTopAnchor (ratio 0 and ratio 1 are in range)', () => {
     // The bail is for STRICTLY off-screen tops; a row top exactly at the viewport top (ratio 0)
     // or exactly at the viewport bottom (ratio 1) is on-screen and pins normally.
     const atTop = setup({ clientHeight: 500 })
@@ -176,7 +176,7 @@ describe('createAnchorRepin state machine', () => {
     expect(atBottom.repin.currentAnchorState()?.viewportOffsetRatio).toBe(1)
   })
 
-  it('captureRowTopAnchor tolerates a SUB-PIXEL mismatch at the viewport top (clamps onto the edge)', () => {
+  it('tolerates a SUB-PIXEL mismatch at the viewport top in captureRowTopAnchor (clamps onto the edge)', () => {
     // scrollTop is a device-pixel-quantized DOM read while the row top is a Float64
     // offset-map sum, so a row whose top sits exactly at the viewport top routinely
     // computes an epsilon-NEGATIVE ratio. A strict `ratio < 0` bail here dropped the pin
@@ -204,7 +204,7 @@ describe('createAnchorRepin state machine', () => {
     expect(offscreen.repin.captureRowTopAnchor('m3')).toBe(false)
   })
 
-  it('captureRowTopAnchor is a no-op when the row is not in the offset map (trimmed away)', () => {
+  it('makes captureRowTopAnchor a no-op when the row is not in the offset map (trimmed away)', () => {
     const { repin, flingSettle, virt } = setup()
     virt.scrollTopForAnchor.mockReturnValue(null)
     repin.captureRowTopAnchor('gone')
@@ -212,7 +212,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).not.toHaveBeenCalled()
   })
 
-  it('captureRowTopAnchor is a no-op when the viewport has no height', () => {
+  it('makes captureRowTopAnchor a no-op when the viewport has no height', () => {
     const { repin, virt, flingSettle } = setup({ clientHeight: 0 })
     repin.captureRowTopAnchor('m1')
     expect(repin.isFollowing()).toBe(true)
@@ -220,7 +220,7 @@ describe('createAnchorRepin state machine', () => {
     expect(flingSettle.rebase).not.toHaveBeenCalled()
   })
 
-  it('captureAnchor pins the TOP row (ratio 0) at the very top edge, not the midpoint', () => {
+  it('pins the TOP row (ratio 0) at the very top edge in captureAnchor, not the midpoint', () => {
     const { repin, el, writes, virt } = setup()
     el.scrollTop = 0 // at the very top edge (<= EDGE_INTENT_TOLERANCE_PX)
     repin.captureAnchor()
@@ -296,7 +296,7 @@ describe('createAnchorRepin edge-aware capture', () => {
 })
 
 describe('createAnchorRepin row-top hold', () => {
-  it('captureRowTopAnchor arms the hold; releaseRowTopHold downgrades it but KEEPS the anchor', () => {
+  it('arms the hold in captureRowTopAnchor; releaseRowTopHold downgrades it but KEEPS the anchor', () => {
     const { repin, el, virt } = setup({ clientHeight: 500 })
     el.scrollTop = 100
     virt.scrollTopForAnchor.mockReturnValue(300)
@@ -313,7 +313,7 @@ describe('createAnchorRepin row-top hold', () => {
     expect(repin.currentAnchor()).toEqual({ id: 'm5', offsetWithinRow: 0 })
   })
 
-  it('releaseRowTopHold is a no-op when the current anchor is a normal viewport capture', () => {
+  it('makes releaseRowTopHold a no-op when the current anchor is a normal viewport capture', () => {
     // A user gesture calls releaseRowTopHold on every wheel/key/touch/pointer; when the anchor
     // is an ordinary viewport pin (origin 'viewport'), it must leave the mode -- including the
     // viewport ratio -- untouched, never reconstructing it.
@@ -590,7 +590,7 @@ describe('createAnchorRepin deferred-during-animation', () => {
     expect(writes).toEqual([100]) // the deferred shift is absorbed now
   })
 
-  it('resetDeferredRepin drops a deferred re-pin without applying it (natural animation end)', () => {
+  it('drops a deferred re-pin without applying it when resetDeferredRepin runs (natural animation end)', () => {
     const { repin, el, writes, virt, setAnimating } = setup()
     el.scrollTop = 0
     repin.setAnchor(anchorAt('m1'))

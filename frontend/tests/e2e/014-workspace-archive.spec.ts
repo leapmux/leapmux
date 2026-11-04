@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test'
+import { procedureOf } from '~/lib/rpcProcedure'
 import { frontendRoot } from '~/test-support/sourceTree'
 import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { WorkerTerminalService } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { test } from './fixtures'
 import { withCleanup } from './helpers/cleanup'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
@@ -181,15 +183,15 @@ test.describe('workspace archive', () => {
     await terminalTab.click()
     await waitForTerminalText(page, 'ARCHIVE_SCREEN_PRESERVED')
 
-    await page.evaluate(() => {
+    await page.evaluate((restartProcedure) => {
       ;(window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls = 0
       window.addEventListener('leapmux:rpc-send', ((event: CustomEvent<{ method?: string }>) => {
-        if (event.detail?.method === 'RestartTerminal') {
+        if (event.detail?.method === restartProcedure) {
           const state = window as unknown as { __archiveRestartCalls?: number }
           state.__archiveRestartCalls = (state.__archiveRestartCalls ?? 0) + 1
         }
       }) as EventListener)
-    })
+    }, procedureOf(WorkerTerminalService.method.restartTerminal))
     expect(await sendActiveTerminalInput(page, '\r')).toBe(true)
     expect(await page.evaluate(() => (window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls)).toBe(0)
 

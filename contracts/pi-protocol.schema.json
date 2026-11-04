@@ -13,6 +13,7 @@
     "dialogMethods",
     "extensionMethods",
     "toolNames",
+    "questionDialogs",
     "planDialogs",
     "planActions",
     "supplement",
@@ -151,6 +152,9 @@
       "$ref": "#/$defs/table"
     },
     "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "questionDialogs": {
       "$ref": "#/$defs/table"
     },
     "planDialogs": {

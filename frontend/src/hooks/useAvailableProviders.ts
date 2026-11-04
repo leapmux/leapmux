@@ -2,7 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
 import { createSignal } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
 
 export interface UseAvailableProvidersArgs {
@@ -55,11 +55,11 @@ export function useAvailableProviders(
 
   // Every rule about WHEN to fetch, when to retry and when to clear lives in
   // `createWorkerScopedList`. This hook keeps only the payload it stores.
-  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerRpc.listAvailableProviders>>>({
+  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerAgent.listAvailableProviders>>>({
     workerId,
     enabled,
     args: () => ({}),
-    fetch: (args, signal) => workerRpc.listAvailableProviders(args.workerId, { signal }),
+    fetch: (args, signal) => workerAgent.listAvailableProviders(args.workerId, {}, { signal }),
     applySuccess: resp => setProviders([...resp.providers]),
     // The previous worker's list is not an answer for this one, and
     // `undefined` is the "not asked yet" state a caller distinguishes from `[]`.

@@ -125,7 +125,7 @@ describe('createGuardedFetch', () => {
     })
   })
 
-  it('applySuccess runs inside a batch with loading=false', async () => {
+  it('runs applySuccess inside a batch with loading=false', async () => {
     // Regression: GitOptions.fetchBranches relies on the loading flag and
     // the branch list being committed in the same render pass. Verify the
     // helper preserves that invariant by observing the signals from
@@ -150,7 +150,7 @@ describe('createGuardedFetch', () => {
     })
   })
 
-  it('onError runs inside a batch with loading=false', async () => {
+  it('runs onError inside a batch with loading=false', async () => {
     // Mirrors the applySuccess batch invariant: callers that touch
     // multiple signals from onError (e.g. setError + clear cached data)
     // must observe loading=false atomically with their writes. Without
@@ -504,7 +504,7 @@ describe('createGuardedFetch', () => {
     }
   })
 
-  it('skipLoadingFlash suppresses the setLoading(true) for that run', async () => {
+  it('suppresses the setLoading(true) for that run when skipLoadingFlash returns true', async () => {
     const d = deferred<string>()
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {

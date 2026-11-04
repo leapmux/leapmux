@@ -10,9 +10,12 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/hubrpc"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -52,18 +55,12 @@ type CRDTBootstrap struct {
 // Tenancy is the authenticated session, implied by the bearer -- no
 // user_id is sent on the wire.
 func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
-	var initial *leapmuxv1.UserMaterialized
-	var err error
-	if c.IsWorkerIPC() {
-		initial, err = crdtBootstrapLocal(ctx, c, workspaceIDs)
-	} else {
-		initial, err = crdtBootstrapHub(ctx, c, workspaceIDs)
-	}
+	initial, err := fetchMaterialized(ctx, c, workspaceIDs)
 	if err != nil {
 		return nil, err
 	}
 	if initial == nil {
-		return nil, errors.New("crdt bootstrap: stream closed before initial materialized event")
+		return nil, errors.New("crdt bootstrap: the hub returned no materialized state")
 	}
 	clock := crdt.NewClock(originClientID())
 	clock.Observe(initial.GetMaxHlc())
@@ -75,57 +72,30 @@ func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string
 	}, nil
 }
 
-func crdtBootstrapHub(ctx context.Context, c *control.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
-	// One-shot snapshot via the unary GetMaterialized RPC. Avoids the
-	// WS handshake + first-event-await dance the streaming
-	// `/ws/userevents` path requires per CLI invocation.
+// fetchMaterialized reads the snapshot through the unary GetMaterialized RPC,
+// which avoids the WebSocket handshake and the wait for a first event that the
+// streaming `/ws/userevents` path costs on each CLI invocation.
+//
+// hubCallUnary selects the transport, so both transports share one error
+// rule: a local-IPC failure keeps its code, as a hub-transport failure does.
+func fetchMaterialized(ctx context.Context, c *control.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
 	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	var resp leapmuxv1.GetMaterializedResponse
-	if err := hubCallUnary(ctx, c, "GetMaterialized", req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, leapmuxv1connect.UserCRDTGetMaterializedProcedure, req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.GetState(), nil
 }
 
-func crdtBootstrapLocal(ctx context.Context, c *control.Client, workspaceIDs []string) (*leapmuxv1.UserMaterialized, error) {
-	// Local-IPC path routes through the worker's ControlIPC tunnel,
-	// which proxies to the hub's unary GetMaterialized for the same
-	// one-shot semantics as the remote path.
-	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
-	payload, err := proto.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal getmaterialized: %w", err)
-	}
-	innerReq := &leapmuxv1.CallInnerRequest{
-		Method:  "hub.GetMaterialized",
-		Payload: payload,
-	}
-	ipc, err := c.ControlIPCService()
-	if err != nil {
-		return nil, err
-	}
-	innerResp, err := ipc.CallInner(ctx, innerReq)
-	if err != nil {
-		return nil, fmt.Errorf("crdt bootstrap (local IPC): %w", err)
-	}
-	if innerResp.GetIsError() {
-		return nil, fmt.Errorf("crdt bootstrap (local IPC): %s", innerResp.GetErrorMessage())
-	}
-	var resp leapmuxv1.GetMaterializedResponse
-	if err := proto.Unmarshal(innerResp.GetPayload(), &resp); err != nil {
-		return nil, fmt.Errorf("decode getmaterialized response: %w", err)
-	}
-	return resp.GetState(), nil
-}
-
-// streamWatchUserLocal opens a hub.WatchUser StreamInner against the
-// agent's local-IPC peer and drives `onEvent` for every decoded
-// `WatchUserEvent`. `onEvent` returns (stop=true, _) to terminate the
+// streamWatchUserLocal opens a StreamInner of the hub's user-event stream
+// (hubrpc.WatchUserStream) against the agent's local-IPC peer and drives
+// `onEvent` for every decoded `WatchUserEvent`. `onEvent` returns
+// (stop=true, _) to terminate the
 // loop after the current event (e.g. once the initial frame lands)
 // or (_, err) to propagate an error. The stream is closed when
-// streamWatchUserLocal returns. Sole caller is `events --local`
-// (runEventsLocal), which stays open until ctx cancellation; the
-// bootstrap path uses the unary GetMaterialized instead.
+// streamWatchUserLocal returns. Its one caller is runEventsLocal, which
+// `events watch` runs on a local-IPC client and which stays open until ctx
+// cancellation; the bootstrap path uses the unary GetMaterialized instead.
 func streamWatchUserLocal(
 	ctx context.Context,
 	c *control.Client,
@@ -138,7 +108,7 @@ func streamWatchUserLocal(
 		return fmt.Errorf("marshal watchuser: %w", err)
 	}
 	streamReq := &leapmuxv1.StreamInnerRequest{
-		Method:          "hub.WatchUser",
+		Method:          "hub." + hubrpc.WatchUserStream,
 		Payload:         payload,
 		ClientRequestId: id.Generate(),
 	}
@@ -163,8 +133,9 @@ func streamWatchUserLocal(
 			break
 		}
 		env := msg
-		if env.GetIsError() {
-			return errors.New(env.GetErrorMessage())
+		if err := channelwire.ErrorOf(env.GetError()); err != nil {
+			// Keep the in-band code, as hubCallLocalIPC does for a unary call.
+			return inBandError(err)
 		}
 		if len(env.GetPayload()) == 0 {
 			continue
@@ -211,7 +182,7 @@ func crdtSubmitBatch(
 		Batches: []*leapmuxv1.OpBatch{batch},
 	}
 	var resp leapmuxv1.SubmitOpsResponse
-	if err := hubCallUnary(ctx, c, "SubmitOps", req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, leapmuxv1connect.UserCRDTSubmitOpsProcedure, req, &resp); err != nil {
 		return nil, err
 	}
 	if len(resp.GetResults()) != 1 {
@@ -351,7 +322,7 @@ func nowMillis() int64 {
 func opTombstoneTab(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) *leapmuxv1.CrdtOp {
 	op := envelope(bs)
 	op.Body = &leapmuxv1.CrdtOp_TombstoneTab{
-		TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: tabType, TabId: tabID},
+		TombstoneTab: &leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}},
 	}
 	return op
 }
@@ -369,7 +340,7 @@ func opTombstoneNode(bs *CRDTBootstrap, nodeID string) *leapmuxv1.CrdtOp {
 // variant. Used by every opSetTab* helper below.
 func newSetTabRegisterOp(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.CrdtOp, *leapmuxv1.SetTabRegisterOp) {
 	op := envelope(bs)
-	inner := &leapmuxv1.SetTabRegisterOp{TabType: tabType, TabId: tabID}
+	inner := &leapmuxv1.SetTabRegisterOp{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}}
 	op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: inner}
 	return op, inner
 }

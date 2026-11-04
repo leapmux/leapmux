@@ -62,6 +62,10 @@ type errorSend struct {
 	requestID uint64
 	code      int32
 	message   string
+	// stream sends the error as a stream error frame that ends the stream,
+	// for a correlation id that the client holds as a stream. Otherwise the
+	// error is a unary InnerRpcResponse.
+	stream    bool
 	afterSend func(error)
 }
 
@@ -267,13 +271,14 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	// has no legitimate path to do. Refuse rather than install a session with one.
 	//
 	// A session's UserID is the ONLY thing scoping every handler on this channel:
-	// requireWorkerOwner matches it against the Worker's registrant, and the
+	// the owner gate (ownerOnlyRegistrar.gate in internal/worker/service) matches it
+	// against the Worker's registrant, and the
 	// owner-scoped stores (worker_tab_payloads, worktree_tabs) bind it as half their
-	// key. An empty one would simply run as nobody -- denied by requireWorkerOwner
+	// key. An empty one would simply run as nobody -- denied by the owner gate
 	// but reaching no row either way, with every audit line recording nobody.
 	//
 	// This is the fourth boundary of this handshake, and the same rule the other
-	// three already apply: requireWorkerOwner refuses an empty identity on either
+	// three already apply: the owner gate refuses an empty identity on either
 	// side rather than matching two empty strings, verifyDelegationWorkerScope
 	// refuses an unrecorded minter, and both channel clients reject a Hub response
 	// that omits the identity. Fail closed here too.
@@ -564,7 +569,7 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 			// queue so this receive-goroutine send can neither block the loop
 			// under backpressure nor spawn a goroutine per frame (see
 			// channelSender.errorSends).
-			sess.sender.queueError(requestID, int32(codes.Unimplemented), "no dispatcher configured")
+			sess.sender.queueError(errorSend{requestID: requestID, code: int32(codes.Unimplemented), message: "no dispatcher configured"})
 		}
 
 	case *leapmuxv1.InnerMessage_RekeyRequest:
@@ -580,7 +585,9 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 				}
 				cleanup()
 			}
-			if !sess.sender.enqueueError(errorSend{requestID: requestID, code: int32(codes.ResourceExhausted), message: err.Error(), afterSend: afterSend}) {
+			// The frame arrived on a live stream's correlation id, which the
+			// client holds as a stream, so the error is a stream error frame.
+			if !sess.sender.enqueueError(errorSend{requestID: requestID, code: int32(streamFrameErrorCode(err)), message: err.Error(), stream: true, afterSend: afterSend}) {
 				afterSend(ErrStreamInboxFull)
 			}
 		}
@@ -788,7 +795,7 @@ func (m *Manager) reactToReassembly(
 			"correlation_id", requestID,
 			"count", outcome.incomplete,
 		)
-		sess.sender.queueError(requestID, int32(codes.ResourceExhausted), "too many incomplete chunked messages")
+		sess.sender.queueError(errorSend{requestID: requestID, code: int32(codes.ResourceExhausted), message: "too many incomplete chunked messages"})
 		return nil, false
 	case reassemblyTooLarge:
 		slog.Warn("chunked message exceeds max size",
@@ -797,8 +804,11 @@ func (m *Manager) reactToReassembly(
 			"size", outcome.size,
 			"max", sess.sender.maxReassembled,
 		)
-		sess.sender.queueError(requestID, int32(codes.ResourceExhausted),
-			fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, sess.sender.maxReassembled))
+		sess.sender.queueError(errorSend{
+			requestID: requestID,
+			code:      int32(codes.ResourceExhausted),
+			message:   fmt.Sprintf("chunked message too large: %d bytes exceeds %d byte limit", outcome.size, sess.sender.maxReassembled),
+		})
 		return nil, false
 	case reassemblyBuffered:
 		slog.Debug("buffered chunk",
@@ -941,11 +951,11 @@ type channelSender struct {
 // streaming violations, and in both cases the error response is best-effort
 // -- the caller's own RPC timeout is the backstop, exactly as if the frame
 // had been lost in flight.
-func (s *channelSender) queueError(requestID uint64, code int32, message string) {
-	if !s.enqueueError(errorSend{requestID: requestID, code: code, message: message}) {
+func (s *channelSender) queueError(response errorSend) {
+	if !s.enqueueError(response) {
 		slog.Debug("dropping error response: error-send queue is full",
 			"channel_id", s.channelID,
-			"correlation_id", requestID,
+			"correlation_id", response.requestID,
 		)
 	}
 }
@@ -972,7 +982,7 @@ func (s *channelSender) drainErrorSends() {
 		case <-life:
 			return
 		case es := <-s.errorSends:
-			err := s.sendError(es.requestID, es.code, es.message)
+			err := s.sendQueuedError(es)
 			if es.afterSend != nil {
 				es.afterSend(err)
 			}
@@ -987,6 +997,14 @@ func (s *channelSender) drainErrorSends() {
 			}
 		}
 	}
+}
+
+// sendQueuedError sends one queued error in the shape that it states.
+func (s *channelSender) sendQueuedError(es errorSend) error {
+	if es.stream {
+		return s.sendStream(es.requestID, channelwire.NewStreamError(es.code, es.message))
+	}
+	return s.sendError(es.requestID, es.code, es.message)
 }
 
 // sendEncrypted marshals an InnerMessage envelope, encrypts it, and sends it as
@@ -1178,9 +1196,9 @@ func (b *boundSender) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 		"channel_id", b.sender.channelID,
 		"correlation_id", b.requestID,
 		"method", b.method,
-		"is_error", resp.GetIsError(),
-		"error_code", resp.GetErrorCode(),
-		"error_message", resp.GetErrorMessage(),
+		"is_error", resp.GetError() != nil,
+		"error_code", resp.GetError().GetCode(),
+		"error_message", resp.GetError().GetMessage(),
 		"payload_len", len(resp.GetPayload()),
 	)
 	if err := b.sender.sendResponse(b.requestID, resp); err != nil {
@@ -1203,10 +1221,17 @@ func (b *boundSender) SendError(code int32, message string) error {
 	return nil
 }
 
-// QueueError hands an error to the session's error-send drainer without
-// blocking. Implements errorQueuer for DispatchAsync's unknown-method arm.
+// QueueError hands a unary error to the session's error-send drainer without
+// blocking. Implements errorQueuer for DispatchAsync's own refusals.
 func (b *boundSender) QueueError(code int32, message string) {
-	b.sender.queueError(b.requestID, code, message)
+	b.sender.queueError(errorSend{requestID: b.requestID, code: code, message: message})
+}
+
+// QueueStreamError hands a stream error frame to the session's error-send
+// drainer without blocking. Implements errorQueuer for DispatchAsync's own
+// refusals.
+func (b *boundSender) QueueStreamError(code int32, message string) {
+	b.sender.queueError(errorSend{requestID: b.requestID, code: code, message: message, stream: true})
 }
 
 func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
@@ -1215,9 +1240,9 @@ func (b *boundSender) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
 		"correlation_id", b.requestID,
 		"method", b.method,
 		"end", msg.GetEnd(),
-		"is_error", msg.GetIsError(),
-		"error_code", msg.GetErrorCode(),
-		"error_message", msg.GetErrorMessage(),
+		"is_error", msg.GetError() != nil,
+		"error_code", msg.GetError().GetCode(),
+		"error_message", msg.GetError().GetMessage(),
 		"payload_len", len(msg.GetPayload()),
 	)
 	if err := b.sender.sendStream(b.requestID, msg); err != nil {

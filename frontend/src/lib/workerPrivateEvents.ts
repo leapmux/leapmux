@@ -6,17 +6,13 @@
 // `worker_tab_payloads` row the caller owns) so a late-joining client
 // receives the full payload cache before any live events.
 
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { channelManager } from '~/api/workerRpc'
-import {
-  WatchWorkerPrivateEventsRequestSchema,
-  WorkerPrivateEventSchema,
-} from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
-import { createExponentialBackoff } from '~/lib/retry'
+import { createExponentialBackoff, streamProvedHealthy } from '~/lib/retry'
 import { tabPayloadView } from '~/lib/tabPayload'
 
 const log = createLogger('workerPrivateEvents')
@@ -92,11 +88,8 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
   const start = async () => {
     // eslint-disable-next-line no-unmodified-loop-condition
     while (!stopped) {
-      // A fresh (re)connect: reset the backoff streak once this attempt proves
-      // healthy by delivering its first event (the worker's bootstrap replay or
-      // a live update), mirroring useUserEvents' reset-on-bootstrap so a merely
-      // opened-then-immediately-dropped stream keeps backing off.
-      let healthy = false
+      // Set once this attempt holds a stream. See `streamProvedHealthy`.
+      let openedAt: number | undefined
       try {
         const channelId = await channelManager.getOrOpenChannel(opts.workerId)
         // Teardown may have run while we were awaiting the (genuinely async,
@@ -107,21 +100,18 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
         // attemptDisposed guard).
         if (stopped)
           return
-        const req = create(WatchWorkerPrivateEventsRequestSchema, {})
-        const payload = toBinary(WatchWorkerPrivateEventsRequestSchema, req)
-        const handle = channelManager.stream(channelId, 'WatchWorkerPrivateEvents', payload)
+        const handle = channelManager.stream(channelId, WorkerPrivateService.method.watchWorkerPrivateEvents, {})
         currentClose = () => handle.cancel()
+        openedAt = Date.now()
 
         await new Promise<void>((resolve) => {
           wakeStream = resolve
-          handle.onMessage((msg) => {
-            if (!healthy) {
-              healthy = true
-              reconnectBackoff.reset(RECONNECT_KEY)
-            }
+          handle.onMessage((evt) => {
+            // A frame that does not decode reaches onError below, so this try
+            // holds for a throw from a callback alone. The stream stays healthy
+            // then, and one bad callback costs no reconnect.
             try {
-              const evt = fromBinary(WorkerPrivateEventSchema, msg.payload)
-              switch (evt.event?.case) {
+              switch (evt.event.case) {
                 case 'tabRenamed': {
                   const r = evt.event.value
                   opts.onTabRenamed({
@@ -156,7 +146,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
               }
             }
             catch (err) {
-              log.warn('failed to decode private event', { workerId: opts.workerId, err })
+              log.warn('a private event callback threw', { workerId: opts.workerId, err })
             }
           })
           handle.onEnd(() => resolve())
@@ -173,6 +163,8 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
       currentClose = null
       if (stopped)
         return
+      if (streamProvedHealthy(openedAt))
+        reconnectBackoff.reset(RECONNECT_KEY)
       // Wait out the jittered backoff before retrying; teardown resolves this
       // early via wakeReconnect so a stopped stream doesn't linger.
       await new Promise<void>((resolve) => {

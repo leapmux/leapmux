@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { AgentGoalAction, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalAction, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from '../helpers/api'
 import { goalAction, nativeGoalProbeTurn } from '../helpers/goalsAndTodos'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
@@ -17,13 +17,11 @@ junieTest.describe('junie unsupported controls', () => {
     const actions = await retryUntilPass(async () => {
       const response = await channel.callWorker(
         leapmuxServer.workerId,
-        'ListAgentMessages',
-        ListAgentMessagesRequestSchema,
-        ListAgentMessagesResponseSchema,
+        WorkerAgentService.method.listAgentMessages,
         { agentId, limit: 1 },
       )
-      expect(response.goalSupportedActions, 'the Worker states the goal actions of the agent').toContain(AgentGoalAction.CLEAR)
-      return response.goalSupportedActions
+      expect(response.goal?.supportedActions, 'the Worker states the goal actions of the agent').toContain(AgentGoalAction.CLEAR)
+      return response.goal?.supportedActions ?? []
     })
     expect(actions).not.toContain(AgentGoalAction.SET)
     await expect(goalAction(page, 'set')).toHaveCount(0)

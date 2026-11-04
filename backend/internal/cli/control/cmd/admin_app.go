@@ -37,7 +37,7 @@ func RunAdminAppList(rawCtx any, args []string) error {
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AppService().ListApps(context.Background(), &leapmuxv1.ListAppsRequest{
-				Cursor: page.Cursor, Limit: int32(page.Limit), IncludeRevoked: includeRevoked,
+				Page: page.request(), IncludeRevoked: includeRevoked,
 			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
@@ -48,7 +48,7 @@ func RunAdminAppList(rawCtx any, args []string) error {
 			}
 			return control.EmitData(map[string]any{
 				"apps":                      rows,
-				"next_cursor":               resp.GetNextCursor(),
+				"next_cursor":               resp.GetPage().GetNextCursor(),
 				"open_registration_enabled": resp.GetOpenRegistrationEnabled(),
 			})
 		},

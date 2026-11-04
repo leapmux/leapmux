@@ -3,7 +3,7 @@ import type { ServerInfo } from './fixtures'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { test } from './fixtures'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { clearRecordedToasts, getRecordedToasts } from './helpers/toast'
@@ -175,7 +175,7 @@ test.describe('file tab close', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0)
 
     // The tab count above is OPTIMISTIC local state: the CRDT tombstone
-    // applies speculatively, so the tab leaves the bar while CloseAgent is
+    // applies speculatively, so the tab leaves the bar while CloseTab is
     // still running its teardown on the worker. The next close asks the
     // WORKER whether a sibling tab still holds this branch, and an agent
     // row that is not closed YET answers yes -- which takes the no-prompt

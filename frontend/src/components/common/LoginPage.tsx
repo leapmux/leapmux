@@ -1,4 +1,3 @@
-import type { Timestamp } from '@bufbuild/protobuf/wkt'
 import type { Component } from 'solid-js'
 
 import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
@@ -13,7 +12,7 @@ import { useAuth } from '~/context/AuthContext'
 import { USERNAME_SOLO } from '~/generated/contracts/validate'
 import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
-import { postAuthNavigate } from '~/lib/postAuthNavigate'
+import { followDestination, postSignInDestination } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
 import { isEmailEnabled, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
@@ -93,31 +92,46 @@ export const LoginPage: Component = () => {
     void loadOAuthProviders().then(setOAuthProviders)
   })
 
-  const navigateAfterAuth = (verificationRequired: boolean, nextResendAvailableAt?: Timestamp) => {
-    if (verificationRequired) {
-      auth.setVerificationResendAvailableAt(nextResendAvailableAt)
-      navigate('/verify-email', { replace: true })
-      return
-    }
-    // Through postAuthNavigate, not navigate: a CLI login bounces here with
-    // `?redirect=/oauth/authorize...`, and that address belongs to the hub's
-    // mux. A client-side transition would render the SPA's 404 page while
-    // the CLI waits for a consent screen nobody ever sees.
-    postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
+  const canSubmit = () => {
+    if (!username() || captcha.blocksSubmit())
+      return false
+    if (effectiveMethod() === 'passkey')
+      return true
+    return !!password()
   }
+
+  /** Whether a submit must not start a sign-in now. The button and the handler both read it. */
+  const submitBlocked = () => submitting() || !canSubmit()
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
+    // The same rule as the button. A password manager can submit the form
+    // itself, past a disabled button. While the system info is pending, the
+    // form cannot tell whether the hub requires a captcha, so a sign-in sent
+    // then can arrive without a captcha that the hub requires.
+    if (submitBlocked())
+      return
     setSubmitting(true)
     try {
+      // The redirect rides the sign-in, because a sign-in that could not
+      // report its account recovers, and recovery owns the navigation then.
+      const redirect = stringParam(searchParams.redirect)
+      const opts = { redirect }
       const result = effectiveMethod() === 'passkey'
-        ? await auth.loginWithPasskey(username(), captcha.fields())
-        : await auth.login(username(), password(), captcha.fields())
-      if (auth.user())
-        navigateAfterAuth(result.verificationRequired, result.nextResendAvailableAt)
-      // A success without a user leaves nowhere to navigate; the finally
-      // below re-enables the form instead of leaving a spinner with no
-      // error and no way to resubmit.
+        ? await auth.loginWithPasskey(username(), captcha.fields(), opts)
+        : await auth.login(username(), password(), captcha.fields(), opts)
+      // Only an adopted account is this page's to route. A recovering one
+      // belongs to SignInRecoveryGate, which has replaced this page, and a
+      // superseded one to the newer operation. The sign-in already seeded the
+      // resend cooldown from its report.
+      //
+      // A CLI login bounces here with `?redirect=/oauth/authorize...`, and
+      // that address belongs to the hub's mux, so `followDestination` loads
+      // it as a full document. A client-side transition would render the
+      // SPA's 404 page while the CLI waits for a consent screen nobody ever
+      // sees.
+      if (result.outcome === 'adopted')
+        followDestination(navigate, postSignInDestination(result.verificationRequired, redirect))
     }
     catch (err) {
       // The auth context captures the error. A rejected captcha (expired
@@ -140,14 +154,6 @@ export const LoginPage: Component = () => {
   }
 
   const captchaAction = methodSelection.captchaAction
-
-  const canSubmit = () => {
-    if (!username() || captcha.blocksSubmit())
-      return false
-    if (effectiveMethod() === 'passkey')
-      return true
-    return !!password()
-  }
 
   return (
     <div class={styles.container}>
@@ -206,7 +212,7 @@ export const LoginPage: Component = () => {
           <div class={actionsFooter}>
             <button
               type="submit"
-              disabled={submitting() || !canSubmit()}
+              disabled={submitBlocked()}
             >
               <Show when={submitting()}><Spinner /></Show>
               {submitting()

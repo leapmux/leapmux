@@ -1,17 +1,21 @@
 import type { Tab } from './tab.types'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { workerTab, workerTerminal } from '~/api/workerRpc'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { createQuakeTerminalStore, quakeKeyForTab, quakeKeyId } from './quakeTerminal.store'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 vi.mock('~/api/workerRpc', () => ({
-  listTerminals: vi.fn(async () => ({ terminals: [], verdicts: [] })),
-  openTerminal: vi.fn(async () => ({ terminalId: 'quake-1', title: 'Terminal Alpha' })),
-  // Mocked so a call can be REFUSED by assertion. The store must never make
-  // one: the worker closes a quake terminal itself.
-  closeTerminal: vi.fn(async () => ({ result: {} })),
+  workerTerminal: {
+    listTerminals: vi.fn(async () => ({ terminals: [], verdicts: [] })),
+    openTerminal: vi.fn(async () => ({ terminalId: 'quake-1', title: 'Terminal Alpha' })),
+  },
+  workerTab: {
+    // Mocked so a call can be REFUSED by assertion. The store must never make
+    // one: the worker closes a quake terminal itself.
+    closeTab: vi.fn(async () => ({})),
+  },
 }))
 
 const disposeInstance = vi.fn()
@@ -24,9 +28,9 @@ vi.mock('~/components/common/Toast', () => ({
   showWarnToast: (...args: unknown[]) => warnToast(...args),
 }))
 
-const listTerminals = workerRpc.listTerminals as unknown as ReturnType<typeof vi.fn>
-const openTerminal = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
-const closeTerminal = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
+const listTerminals = workerTerminal.listTerminals as unknown as ReturnType<typeof vi.fn>
+const openTerminal = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
+const closeTab = workerTab.closeTab as unknown as ReturnType<typeof vi.fn>
 
 const AGENT: Tab = {
   type: TabType.AGENT,
@@ -142,7 +146,10 @@ describe('createQuakeTerminalStore', () => {
       quakeWorkingDirs: ['/repo'],
     })
     expect(openTerminal).toHaveBeenCalledOnce()
+    expect(openTerminal.mock.calls[0]?.[0]).toBe('w1')
     expect(openTerminal.mock.calls[0]?.[1]).toMatchObject({ quake: true, shell: '', workingDir: '/repo' })
+    // The worker id routes the call and stays out of the request body.
+    expect(openTerminal.mock.calls[0]?.[1]).not.toHaveProperty('workerId')
     expect(store.entryFor(KEY)?.terminalId).toBe('quake-1')
     dispose()
   })
@@ -544,7 +551,7 @@ describe('createQuakeTerminalStore', () => {
       tabs.live = []
       store.retireStaleKeys()
 
-      expect(closeTerminal).not.toHaveBeenCalled()
+      expect(closeTab).not.toHaveBeenCalled()
       dispose()
     })
 
@@ -605,9 +612,9 @@ describe('createQuakeTerminalStore', () => {
     expect(warnToast, 'closing a tab is not an open failure').not.toHaveBeenCalled()
     expect(store.entryFor(KEY)).toBeUndefined()
     // The shell the worker may have spawned in that window is the WORKER's to
-    // reclaim -- see `retireStaleKeys`. A CloseTerminal from here would race
+    // reclaim -- see `retireStaleKeys`. A CloseTab call from here would race
     // closeQuakeTerminalIfUnused and the orphan reconciler.
-    expect(closeTerminal).not.toHaveBeenCalled()
+    expect(closeTab).not.toHaveBeenCalled()
     dispose()
   })
 

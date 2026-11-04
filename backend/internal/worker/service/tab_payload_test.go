@@ -526,11 +526,12 @@ func TestTabPayload_CallerFaultsCarryTheInvalidSentinel(t *testing.T) {
 	}
 }
 
-// TabTypeOf must distinguish "no such row" from "the read failed". The revoke
-// handler falls back to FILE only for the first: an absent row's worktree link
-// is already dead either way, while guessing FILE for an IMAGE tab whose read
-// merely failed makes the worktree lookup miss, so a requested REMOVE degrades
-// to KEEP with nothing reported and the link outlives its payload row.
+// TabTypeOf must distinguish "no such row" from "the read failed". The CloseTab
+// handler falls back to the kind the caller stated only for the first: an
+// absent row's worktree link is already dead either way, while a guessed kind
+// for a tab whose read merely failed can make the worktree lookup miss, so a
+// requested REMOVE degrades to KEEP with nothing reported and the link outlives
+// its payload row.
 func TestTabPayload_TabTypeOfReportsNotFoundDistinctly(t *testing.T) {
 	t.Parallel()
 

@@ -17,8 +17,8 @@ import { isGrantableScope } from '~/generated/contracts/scopes'
 import { AppClientType, AppVisibility } from '~/generated/proto/leapmux/v1/app_pb'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { formatErrorMessage } from '~/lib/errors'
+import { fetchAllPages } from '~/lib/fetchAllPages'
 import * as styles from './credentialList.css'
-import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
 import { closeScopes, impliedScopes, SCOPE_CATEGORIES } from './scopeCatalogue'
 import { scopeToken } from './scopeToken'
 
@@ -435,8 +435,8 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
     setLoading(true)
     setLoadFailed(false)
     try {
-      // EVERY page through the shared fetchAllPages, at the sibling panel's
-      // constants: an administrator with open registration on can pass a
+      // EVERY page through the shared fetchAllPages, which asks for the hub's
+      // maximum page: an administrator with open registration on can pass a
       // smaller page size without lifting a finger, and a registration the
       // panel never drew was one whose Edit and Retire controls did not exist.
       // The hub's own switch rides the listing; the last page's value is the
@@ -449,24 +449,22 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
         ? AppVisibility.HUB_WIDE
         : undefined
       const collected = await fetchAllPages(
-        async (cursor) => {
+        async (page) => {
           // includeRevoked: a retired app stays readable because a live
           // credential on one must still be explainable (app.proto states the
           // contract), and the retired badge and the gates below key on it --
           // without the flag the row vanishes on the refresh that retires it.
           const resp = await appClient.listApps({
-            cursor,
-            limit: PAGE_SIZE,
+            page,
             includeRevoked: true,
             ...(reach === undefined
               ? {}
               : { visibility: reach }),
           })
           openRegistrationEnabled = resp.openRegistrationEnabled
-          return { items: resp.apps, nextCursor: resp.nextCursor }
+          return { items: resp.apps, page: resp.page }
         },
         {
-          maxPages: MAX_PAGES,
           keyOf: app => app.clientId,
         },
       )

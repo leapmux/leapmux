@@ -72,7 +72,7 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(mockWorker).toHaveBeenCalledTimes(1)
   })
 
-  it('skipCache returns a plain placeholder and does NOT dispatch a worker render (streaming)', () => {
+  it('returns a plain placeholder and does NOT dispatch a worker render with skipCache (streaming)', () => {
     const html = renderMarkdown('```js\nconst z = 3\n```', true)
     expect(html).toContain('const z = 3')
     expect(html).not.toContain('class="shiki')
@@ -149,7 +149,7 @@ describe('renderMarkdown off-thread highlight path', () => {
     expect(mockWorker).toHaveBeenCalledTimes(2)
   })
 
-  it('skipCache (streaming) does not populate the placeholder cache', () => {
+  it('does not populate the placeholder cache with skipCache (streaming)', () => {
     mockWorker.mockReturnValue(new Promise(() => {}))
     renderMarkdown('streaming frame', true)
     // Streaming feeds a new distinct text every frame; caching each would churn the

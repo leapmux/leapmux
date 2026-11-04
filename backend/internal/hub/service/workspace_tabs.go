@@ -64,40 +64,6 @@ func (s *WorkspaceService) ListTabs(
 	}, nil
 }
 
-// GetTab resolves a single workspace tab from the materialized
-// rendered-tab view.
-func (s *WorkspaceService) GetTab(
-	ctx context.Context,
-	req *leapmuxv1.GetTabRequest,
-) (*leapmuxv1.GetTabResponse, error) {
-	user, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := loadWorkspaceForRead(ctx, s.store, req.GetWorkspaceId(), user); err != nil {
-		return nil, err
-	}
-	// loadWorkspaceForRead proved the caller owns the workspace; user.ID is
-	// therefore the owner whose rendered tabs live in it. Binding it keeps the
-	// lookup owner-scoped: tab ids are unique only within one user, and the
-	// composite workspace key makes every row of this workspace the owner's.
-	row, err := s.store.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
-		UserID:      user.ID,
-		WorkspaceID: req.GetWorkspaceId(),
-		TabType:     req.GetTabType(),
-		TabID:       req.GetTabId(),
-	})
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.Errorf(connect.CodeNotFound, "tab not found")
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get tab: %w", err))
-	}
-	return &leapmuxv1.GetTabResponse{
-		Tab: workspaceTabToProto(row),
-	}, nil
-}
-
 // LocateTab finds a tab by (tab_type, tab_id) without a workspace
 // filter. The store layer scopes the search to workspaces the user
 // owns, so the lookup is safe without leaking other users' tabs. Used
@@ -196,8 +162,7 @@ func workspaceTabToProto(row *store.WorkspaceTabRow) *leapmuxv1.WorkspaceTab {
 		return nil
 	}
 	return &leapmuxv1.WorkspaceTab{
-		TabType:     row.TabType,
-		TabId:       row.TabID,
+		Tab:         &leapmuxv1.TabIdent{TabType: row.TabType, TabId: row.TabID},
 		Position:    row.Position,
 		TileId:      row.TileID,
 		WorkerId:    row.WorkerID,

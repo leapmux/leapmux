@@ -12,7 +12,7 @@ import { GROK_OPTION } from '../../../src/generated/contracts/grok-protocol'
 import { KIRO_CONFIG } from '../../../src/generated/contracts/kiro-protocol'
 import { MIMO_OPTION } from '../../../src/generated/contracts/mimo-protocol'
 import { REASONIX_CONFIG } from '../../../src/generated/contracts/reasonix-protocol'
-import { AgentGoalAction, AgentStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalAction, AgentStatus, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel } from './api'
 import { expandGoalsAndTodosSection, goalAction, goalsAndTodosSection, openGoalMenu } from './goalsAndTodos'
 import { sendNativeAnswer } from './nativeConversation'
@@ -224,12 +224,10 @@ export async function expectUnsupportedGoalActions(
   const channel = await getTestChannel(context.leapmuxServer.hubUrl, context.leapmuxServer.adminToken)
   const before = await channel.callWorker(
     context.leapmuxServer.workerId,
-    'ListAgentMessages',
-    ListAgentMessagesRequestSchema,
-    ListAgentMessagesResponseSchema,
+    WorkerAgentService.method.listAgentMessages,
     { agentId: agent.id, limit: 1 },
   )
-  expect(before.goalLoaded).toBe(true)
+  expect(before.goal, 'the Worker read the goal snapshot').toBeDefined()
   if (await goalsAndTodosSection(context.page).count() > 0)
     await expandGoalsAndTodosSection(context.page)
   const menu = context.page.locator('[data-testid="goal-actions-trigger"]:visible')
@@ -239,13 +237,11 @@ export async function expectUnsupportedGoalActions(
     const word = GOAL_ACTION_WORDS.get(action)
     if (!word)
       throw new Error('the negative goal proof received an unspecified action')
-    expect(before.goalSupportedActions).not.toContain(action)
+    expect(before.goal?.supportedActions).not.toContain(action)
     await expect(goalAction(context.page, word)).toHaveCount(0)
     await expect(channel.callWorker(
       context.leapmuxServer.workerId,
-      'UpdateAgentGoal',
-      UpdateAgentGoalRequestSchema,
-      UpdateAgentGoalResponseSchema,
+      WorkerAgentService.method.updateAgentGoal,
       { agentId: agent.id, action, objective: options.objective ?? 'Keep this negative goal probe until the operator clears it.' },
     )).rejects.toMatchObject({
       source: 'rpc',
@@ -256,11 +252,9 @@ export async function expectUnsupportedGoalActions(
   await context.page.keyboard.press('Escape')
   const after = await channel.callWorker(
     context.leapmuxServer.workerId,
-    'ListAgentMessages',
-    ListAgentMessagesRequestSchema,
-    ListAgentMessagesResponseSchema,
+    WorkerAgentService.method.listAgentMessages,
     { agentId: agent.id, limit: 1 },
   )
-  expect(after.goalSupportedActions).toEqual(before.goalSupportedActions)
-  expect(after.goal).toEqual(before.goal)
+  expect(after.goal?.supportedActions).toEqual(before.goal?.supportedActions)
+  expect(after.goal?.goal).toEqual(before.goal?.goal)
 }

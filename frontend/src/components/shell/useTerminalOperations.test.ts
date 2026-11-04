@@ -1,19 +1,19 @@
-import type { CloseTerminalResponse } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTab, workerTerminal } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { useTerminalOperations } from '~/components/shell/useTerminalOperations'
 import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { handleTerminalBell } from '~/hooks/terminalEvents'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
-import { deferred, flush } from '~/test-support/async'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
+import { deferred, flush, settle } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 
@@ -36,22 +36,24 @@ vi.mock('~/api/clients', () => ({
 // exercise its real implementation, which formats the worktree-failure
 // message and forwards to the mocked showWarnToast.
 vi.mock('~/api/workerRpc', () => ({
-  sendInput: vi.fn(async () => ({})),
-  restartTerminal: vi.fn(async () => ({})),
-  listAvailableShells: vi.fn(async () => ({ shells: [], defaultShell: '' })),
-  openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
-  closeTerminal: vi.fn(async () => ({
-    result: { worktreeId: '', failureMessage: '' },
-  })),
-  resizeTerminal: vi.fn(async () => ({})),
+  workerTerminal: {
+    sendInput: vi.fn(async () => ({})),
+    restartTerminal: vi.fn(async () => ({})),
+    listAvailableShells: vi.fn(async () => ({ shells: [], defaultShell: '' })),
+    openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
+    resizeTerminal: vi.fn(async () => ({})),
+  },
+  workerTab: {
+    closeTab: vi.fn(async () => ({ worktreeId: '', failureMessage: '' })),
+  },
 }))
 
-const sendInputMock = workerRpc.sendInput as unknown as ReturnType<typeof vi.fn>
-const restartTerminalMock = workerRpc.restartTerminal as unknown as ReturnType<typeof vi.fn>
-const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
-const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
-const listAvailableShellsMock = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
-const resizeTerminalMock = workerRpc.resizeTerminal as unknown as ReturnType<typeof vi.fn>
+const sendInputMock = workerTerminal.sendInput as unknown as ReturnType<typeof vi.fn>
+const restartTerminalMock = workerTerminal.restartTerminal as unknown as ReturnType<typeof vi.fn>
+const openTerminalMock = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
+const closeTabMock = workerTab.closeTab as unknown as ReturnType<typeof vi.fn>
+const listAvailableShellsMock = workerTerminal.listAvailableShells as unknown as ReturnType<typeof vi.fn>
+const resizeTerminalMock = workerTerminal.resizeTerminal as unknown as ReturnType<typeof vi.fn>
 const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
 
 /**
@@ -82,16 +84,14 @@ beforeEach(() => {
   sendInputMock.mockClear()
   restartTerminalMock.mockClear()
   openTerminalMock.mockClear()
-  closeTerminalMock.mockClear()
+  closeTabMock.mockClear()
   listAvailableShellsMock.mockClear()
   showWarnToastMock.mockClear()
   // Reset to default success — individual tests override per scenario.
   restartTerminalMock.mockImplementation(async () => ({}))
   sendInputMock.mockImplementation(async () => ({}))
   openTerminalMock.mockImplementation(async () => ({ terminalId: 'new-tid', title: '' }))
-  closeTerminalMock.mockImplementation(async () => ({
-    result: { worktreeId: '', failureMessage: '' },
-  }))
+  closeTabMock.mockImplementation(async () => ({ worktreeId: '', failureMessage: '' }))
   listAvailableShellsMock.mockImplementation(async () => ({ shells: [], defaultShell: '' }))
 })
 
@@ -140,6 +140,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
 
+  const workerOnline = createWorkerOnlineStore()
   let ops!: ReturnType<typeof useTerminalOperations>
   const dispose = createRoot((d) => {
     stores = createTestTabStores('ws-1')
@@ -172,6 +173,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       setNewShellLoading: () => {},
       repoGitStore: createRepoGitStore(),
       isQuakeTerminal,
+      isWorkerStreamOnline: workerOnline.isOnline,
     })
     return d
   })
@@ -179,6 +181,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
   return {
     ops,
     ...stores,
+    workerOnline,
     /** Place a terminal on the seeded root tile — the only tile that exists. */
     add: (id: string, fields: TabOverrides & Record<string, unknown> = {}) =>
       addTerminal(stores, harness.rootTileId, { id, ...fields }),
@@ -232,6 +235,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
       repoGitStore: createRepoGitStore(),
       isQuakeTerminal: () => false,
+      isWorkerStreamOnline: () => true,
     })
     return d
   })
@@ -268,8 +272,8 @@ describe('useTerminalOperations.handleopenterminal', () => {
     expect(openTerminalMock).toHaveBeenCalledTimes(1)
     // Shell is empty (default-shell quick action). shellStartDir is
     // forwarded as empty string when the caller didn't pass one.
+    expect(openTerminalMock.mock.calls[0]?.[0]).toBe('worker-1')
     expect(openTerminalMock.mock.calls[0]?.[1]).toMatchObject({
-      workerId: 'worker-1',
       workingDir: '/tmp',
       shell: '',
       shellStartDir: '',
@@ -421,7 +425,6 @@ describe('useTerminalOperations.handleopenterminalwithshell', () => {
     expect(openTerminalMock).toHaveBeenCalledTimes(1)
     expect(openTerminalMock.mock.calls[0]?.[0]).toBe('worker-2')
     expect(openTerminalMock.mock.calls[0]?.[1]).toMatchObject({
-      workerId: 'worker-2',
       workingDir: '/other/worktree',
       shell: '/bin/zsh',
     })
@@ -537,16 +540,16 @@ describe('useTerminalOperations.handleterminalinput', () => {
   })
 
   it('keeps draining through a transient disconnect', async () => {
-    const { ops, metadata } = setup(TerminalStatus.READY)
+    const { ops, workerOnline } = setup(TerminalStatus.READY)
     const parked = parkSendInputOnce()
 
     const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
     await Promise.resolve()
     void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
-    // DISCONNECTED is a client-derived status that a false-positive sweep
-    // can set while the data path still delivers. The queued keystroke must
-    // not be discarded on it — the send attempt itself decides.
-    metadata.patch('tid-1', { terminalStatus: TerminalStatus.DISCONNECTED })
+    // A lost watch stream says nothing about the data path, which can still
+    // deliver. The queued keystroke must not be discarded on it — the send
+    // attempt itself decides.
+    workerOnline.setOnline('worker-1', false)
     parked.release()
     await first
 
@@ -668,6 +671,214 @@ describe('useTerminalOperations.handleterminalinput', () => {
     })
   })
 
+  // A READY terminal of an offline worker has no PTY this client can reach, and
+  // a STARTUP_FAILED one never had one. Both still record the new size for the
+  // reflow of the buffer, and neither sends the resize RPC.
+  it('records the resize of a STARTUP_FAILED terminal and sends no RPC', async () => {
+    resizeTerminalMock.mockClear()
+    const { ops, view } = setup(TerminalStatus.STARTUP_FAILED)
+
+    await ops.handleTerminalResize('tid-1', 132, 50)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 132, rows: 50 })
+    expect(resizeTerminalMock).not.toHaveBeenCalled()
+  })
+
+  it('records the resize of a READY terminal of an offline worker and sends no RPC', async () => {
+    resizeTerminalMock.mockClear()
+    const { ops, view, workerOnline } = setup(TerminalStatus.READY)
+    workerOnline.setOnline('worker-1', false)
+
+    await ops.handleTerminalResize('tid-1', 132, 50)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 132, rows: 50 })
+    expect(resizeTerminalMock).not.toHaveBeenCalled()
+  })
+
+  it('sends the resize as soon as the worker reconnects', async () => {
+    resizeTerminalMock.mockClear()
+    const { ops, workerOnline } = setup(TerminalStatus.READY)
+    workerOnline.setOnline('worker-1', false)
+    await ops.handleTerminalResize('tid-1', 132, 50)
+    expect(resizeTerminalMock).not.toHaveBeenCalled()
+
+    workerOnline.setOnline('worker-1', true)
+    await ops.handleTerminalResize('tid-1', 140, 50)
+
+    expect(resizeTerminalMock).toHaveBeenCalledTimes(1)
+    expect(resizeTerminalMock.mock.calls[0]?.[1]).toMatchObject({ terminalId: 'tid-1', cols: 140 })
+  })
+
+  // The ResizeObserver fires only when the size changes, so nothing else sends a
+  // size that the outage held back, and the shell keeps wrapping at the old width.
+  describe('resendUnsentSizes', () => {
+    beforeEach(() => {
+      resizeTerminalMock.mockReset()
+      resizeTerminalMock.mockImplementation(async () => ({}))
+    })
+
+    it('sends the current size once when the worker comes back', async () => {
+      const { ops, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 120, 40)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+      expect(resizeTerminalMock).not.toHaveBeenCalled()
+
+      workerOnline.setOnline('worker-1', true)
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock, 'the two resizes of the outage collapse into the current size').toHaveBeenCalledOnce()
+      expect(resizeTerminalMock).toHaveBeenCalledWith('worker-1', { terminalId: 'tid-1', cols: 132, rows: 50 })
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+      expect(resizeTerminalMock, 'one reconnect resends once').toHaveBeenCalledOnce()
+    })
+
+    // A resize that changes nothing still costs the shell a repaint, and it
+    // would override the size of another client.
+    it('sends nothing for a terminal whose size reached the PTY', async () => {
+      const { ops } = setup(TerminalStatus.READY)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+    })
+
+    it('sends nothing for a terminal that the outage did not touch', async () => {
+      const { ops, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      workerOnline.setOnline('worker-1', true)
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).not.toHaveBeenCalled()
+    })
+
+    it('leaves the terminal of another worker for the return of that worker', async () => {
+      const { ops, add, workerOnline } = setup(TerminalStatus.READY)
+      add('tid-2', { workerId: 'worker-2', terminalStatus: TerminalStatus.READY })
+      workerOnline.setOnline('worker-1', false)
+      workerOnline.setOnline('worker-2', false)
+      await ops.handleTerminalResize('tid-1', 120, 40)
+      await ops.handleTerminalResize('tid-2', 90, 20)
+
+      workerOnline.setOnline('worker-1', true)
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+      expect(resizeTerminalMock).toHaveBeenCalledWith('worker-1', { terminalId: 'tid-1', cols: 120, rows: 40 })
+
+      workerOnline.setOnline('worker-2', true)
+      ops.resendUnsentSizes('worker-2')
+      await settle()
+      expect(resizeTerminalMock).toHaveBeenCalledTimes(2)
+      expect(resizeTerminalMock).toHaveBeenLastCalledWith('worker-2', { terminalId: 'tid-2', cols: 90, rows: 20 })
+    })
+
+    it('sends nothing to a shell that exited during the outage', async () => {
+      const { ops, metadata, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+
+      workerOnline.setOnline('worker-1', true)
+      metadata.patch('tid-1', { terminalStatus: TerminalStatus.EXITED })
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).not.toHaveBeenCalled()
+    })
+
+    it('sends nothing for a terminal that closed during the outage', async () => {
+      const { ops, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+      ops.handleTerminalClose('tid-1')
+
+      workerOnline.setOnline('worker-1', true)
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).not.toHaveBeenCalled()
+    })
+
+    // The link can drop again before the resend lands.
+    it('keeps the size for the next reconnect when the resend fails', async () => {
+      const { ops, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+      workerOnline.setOnline('worker-1', true)
+      resizeTerminalMock.mockRejectedValueOnce(new Error('worker unreachable'))
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+      expect(resizeTerminalMock).toHaveBeenCalledTimes(2)
+    })
+
+    // The watch stream reports an outage after the link drops, so a resize in
+    // that window reaches the RPC and fails there.
+    it('resends a size whose RPC failed before the outage was known', async () => {
+      const { ops } = setup(TerminalStatus.READY)
+      resizeTerminalMock.mockRejectedValueOnce(new Error('worker unreachable'))
+      await expect(ops.handleTerminalResize('tid-1', 132, 50)).resolves.toBeUndefined()
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).toHaveBeenCalledTimes(2)
+      expect(resizeTerminalMock).toHaveBeenLastCalledWith('worker-1', { terminalId: 'tid-1', cols: 132, rows: 50 })
+    })
+
+    it('sends nothing more once a later resize reached the PTY', async () => {
+      const { ops, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 120, 40)
+      workerOnline.setOnline('worker-1', true)
+      await ops.handleTerminalResize('tid-1', 132, 50)
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).toHaveBeenCalledOnce()
+    })
+
+    it('reads the current size at the resend', async () => {
+      const { ops, metadata, workerOnline } = setup(TerminalStatus.READY)
+      workerOnline.setOnline('worker-1', false)
+      await ops.handleTerminalResize('tid-1', 120, 40)
+      metadata.patch('tid-1', { cols: 132, rows: 50 })
+
+      workerOnline.setOnline('worker-1', true)
+      ops.resendUnsentSizes('worker-1')
+      await settle()
+
+      expect(resizeTerminalMock).toHaveBeenCalledWith('worker-1', { terminalId: 'tid-1', cols: 132, rows: 50 })
+    })
+  })
+
+  // The backend stashes a resize that lands before READY, so the PTY spawns at
+  // the final size. An offline worker changes nothing about a STARTING tab,
+  // which keeps its status, so the attempt still goes out and can fail alone.
+  it('still sends the resize of a STARTING terminal of an offline worker', async () => {
+    resizeTerminalMock.mockClear()
+    const { ops, workerOnline } = setup(TerminalStatus.STARTING)
+    workerOnline.setOnline('worker-1', false)
+
+    await ops.handleTerminalResize('tid-1', 132, 50)
+
+    expect(resizeTerminalMock).toHaveBeenCalledTimes(1)
+  })
+
   it('ignores non-Enter input on an EXITED terminal', async () => {
     const { ops } = setup(TerminalStatus.EXITED)
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x61])) // 'a'
@@ -677,8 +888,46 @@ describe('useTerminalOperations.handleterminalinput', () => {
     expect(sendInputMock).not.toHaveBeenCalled()
   })
 
-  it('drops input on STARTING/DISCONNECTED/STARTUP_FAILED', async () => {
-    for (const status of [TerminalStatus.STARTING, TerminalStatus.DISCONNECTED, TerminalStatus.STARTUP_FAILED]) {
+  it('drops input while the worker is offline, and accepts it as soon as the worker reconnects', async () => {
+    sendInputMock.mockClear()
+    restartTerminalMock.mockClear()
+    const { ops, workerOnline, metadata } = setup(TerminalStatus.READY)
+    workerOnline.setOnline('worker-1', false)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x61]))
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(sendInputMock).not.toHaveBeenCalled()
+    expect(restartTerminalMock, 'a READY terminal offers no restart').not.toHaveBeenCalled()
+    expect(metadata.get('tid-1')?.terminalStatus, 'the outage rewrites no status').toBe(TerminalStatus.READY)
+
+    workerOnline.setOnline('worker-1', true)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x62]))
+
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[0]?.[1].data)).toBe('b')
+  })
+
+  it('keeps accepting input while only another worker is offline', async () => {
+    sendInputMock.mockClear()
+    const { ops, workerOnline } = setup(TerminalStatus.READY)
+    workerOnline.setOnline('worker-2', false)
+
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x61]))
+
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('still restarts an EXITED terminal of an offline worker on Enter', async () => {
+    restartTerminalMock.mockClear()
+    const { ops, workerOnline } = setup(TerminalStatus.EXITED)
+    workerOnline.setOnline('worker-1', false)
+
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+
+    expect(restartTerminalMock, 'the attempt decides, and a failure shows a toast').toHaveBeenCalledTimes(1)
+  })
+
+  it('drops input on STARTING/STARTUP_FAILED', async () => {
+    for (const status of [TerminalStatus.STARTING, TerminalStatus.STARTUP_FAILED]) {
       sendInputMock.mockClear()
       restartTerminalMock.mockClear()
       const { ops } = setup(status)
@@ -751,10 +1000,7 @@ describe('useTerminalOperations.availableshells', () => {
     await flush()
     await flush()
     expect(listAvailableShellsMock).toHaveBeenCalledTimes(1)
-    expect(listAvailableShellsMock).toHaveBeenCalledWith(
-      'worker-1',
-      expect.objectContaining({ workerId: 'worker-1' }),
-    )
+    expect(listAvailableShellsMock).toHaveBeenCalledWith('worker-1')
     expect(ops.availableShells()).toEqual(['/bin/zsh', '/bin/bash'])
     expect(ops.defaultShell()).toBe('/bin/zsh')
   })
@@ -798,18 +1044,18 @@ describe('terminal bell via watch events', () => {
 })
 
 describe('useTerminalOperations.handleterminalclose', () => {
-  it('removes the terminal tab synchronously and fires closeTerminal with KEEP by default', () => {
+  it('removes the terminal tab synchronously and fires closeTab with KEEP by default', () => {
     const { ops, view, add } = setup()
     add('term-close', { workerId: 'w-1' })
 
     // Never resolves so the test stays in the synchronous-effects window.
-    closeTerminalMock.mockReturnValueOnce(new Promise(() => {}))
+    closeTabMock.mockReturnValueOnce(new Promise(() => {}))
 
     ops.handleTerminalClose('term-close')
 
     expect(view.getTerminalTab('term-close')).toBeUndefined()
-    expect(closeTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
-      terminalId: 'term-close',
+    expect(closeTabMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      tab: { tabType: TabType.TERMINAL, tabId: 'term-close' },
       worktreeAction: WorktreeAction.KEEP,
     }))
   })
@@ -829,7 +1075,7 @@ describe('useTerminalOperations.handleterminalclose', () => {
     const { ops, add } = setup()
     add('term-order', { workerId: 'w-1' })
     vi.mocked(disposeTerminalInstance).mockClear()
-    closeTerminalMock.mockReturnValueOnce(new Promise(() => {}))
+    closeTabMock.mockReturnValueOnce(new Promise(() => {}))
 
     ops.handleTerminalClose('term-order')
 
@@ -840,18 +1086,16 @@ describe('useTerminalOperations.handleterminalclose', () => {
     const { ops, add } = setup()
     add('term-remove', { workerId: 'w-1' })
 
-    closeTerminalMock.mockResolvedValueOnce({
-      result: {
-        worktreeId: '',
-        failureMessage: '',
-      },
-    } as CloseTerminalResponse)
+    closeTabMock.mockResolvedValueOnce({
+      worktreeId: '',
+      failureMessage: '',
+    } as CloseTabResponse)
 
     ops.handleTerminalClose('term-remove', WorktreeAction.REMOVE)
     await flush()
 
-    expect(closeTerminalMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
-      terminalId: 'term-remove',
+    expect(closeTabMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      tab: { tabType: TabType.TERMINAL, tabId: 'term-remove' },
       worktreeAction: WorktreeAction.REMOVE,
     }))
   })
@@ -860,14 +1104,12 @@ describe('useTerminalOperations.handleterminalclose', () => {
     const { ops, add } = setup()
     add('term-fail', { workerId: 'w-1' })
 
-    closeTerminalMock.mockResolvedValueOnce({
-      result: {
-        worktreeId: 'wt-1',
-        worktreePath: '/some/wt',
-        failureMessage: 'Failed to remove worktree',
-        failureDetail: 'git worktree remove exit 128',
-      },
-    } as CloseTerminalResponse)
+    closeTabMock.mockResolvedValueOnce({
+      worktreeId: 'wt-1',
+      worktreePath: '/some/wt',
+      failureMessage: 'Failed to remove worktree',
+      failureDetail: 'git worktree remove exit 128',
+    } as CloseTabResponse)
 
     ops.handleTerminalClose('term-fail', WorktreeAction.REMOVE)
     await flush()
@@ -880,7 +1122,7 @@ describe('useTerminalOperations.handleterminalclose', () => {
     add('term-reject', { workerId: 'w-1' })
 
     const err = new Error('offline')
-    closeTerminalMock.mockRejectedValueOnce(err)
+    closeTabMock.mockRejectedValueOnce(err)
 
     ops.handleTerminalClose('term-reject')
     await flush()

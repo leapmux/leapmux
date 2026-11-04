@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test'
-import { InspectTerminalProcessesRequestSchema, InspectTerminalProcessesResponseSchema, TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
+import { TerminalStatus, WorkerTerminalService } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { test } from './fixtures'
 import { getTestChannel } from './helpers/api'
 import { retryUntilPass } from './helpers/retryUntilPass'
@@ -33,9 +33,7 @@ test.describe('Terminal', () => {
     const sleepProcess = await retryUntilPass(async () => {
       const response = await channel.callWorker(
         leapmuxServer.workerId,
-        'InspectTerminalProcesses',
-        InspectTerminalProcessesRequestSchema,
-        InspectTerminalProcessesResponseSchema,
+        WorkerTerminalService.method.inspectTerminalProcesses,
         {
           terminalIds: [terminalId],
         },

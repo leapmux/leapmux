@@ -1,5 +1,6 @@
-import { sectionClient } from '~/api/clients'
+import { workspaceClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
+import { WorkspaceArchiveState } from '~/generated/proto/leapmux/v1/common_pb'
 import { appendPosition } from '~/lib/lexorank'
 
 /**
@@ -49,7 +50,14 @@ export function placeWorkspaceInSection(
   // unique lexorank rather than colliding with whichever item already sits
   // at the head.
   const position = appendPosition(deps.sectionStore.getItemsForSection(targetSectionId))
-  sectionClient.moveWorkspace({ workspaceId, sectionId: targetSectionId, position })
+  // CreateWorkspace just made this workspace, and a new workspace is active.
+  // The Hub refuses the move if another client archived it meanwhile.
+  workspaceClient.moveWorkspace({
+    workspaceId,
+    sectionId: targetSectionId,
+    position,
+    expectedArchiveState: WorkspaceArchiveState.ACTIVE,
+  })
     .catch((err) => {
       showWarnToast('Failed to move the workspace into its section', err)
     })

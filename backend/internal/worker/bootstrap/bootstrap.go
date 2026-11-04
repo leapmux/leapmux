@@ -1,20 +1,19 @@
 // Package bootstrap wires a worker's service, channel manager and
 // dispatcher into a running whole.
 //
-// It exists because the worker has two entry points -- `worker.Run` (the
-// solo binary and the desktop sidecar) and `runWorker` (the `leapmux
-// worker` CLI) -- whose wiring sequences drifted apart while both were
-// maintained by hand. The drift was not theoretical: the CLI shipped
-// without `svc.ControlIPC`, so `leapmux control` inside an agent it started
-// found no socket even though the docs promise one, and `worker.Run`
-// shipped without the dispatcher's cleanup binding, so its Shutdown
-// waited on an always-zero WaitGroup. Both are the same defect -- a step
-// one entry point performs and the other silently omits -- and neither is
-// catchable by a compiler.
+// worker.Run is its one caller, and every way to start a worker goes through
+// worker.Run. The sequence once lived in two entry points, `worker.Run` and the
+// `leapmux worker` command, which drifted apart while both were maintained by
+// hand. The drift was not theoretical: the CLI shipped without
+// `svc.ControlIPC`, so `leapmux control` inside an agent it started found no
+// socket even though the docs promise one, and `worker.Run` shipped without the
+// dispatcher's cleanup binding, so its Shutdown waited on an always-zero
+// WaitGroup. Both are the same defect -- a step one entry point performs and the
+// other silently omits -- and neither is catchable by a compiler.
 //
-// So the sequence lives here once. What remains in each entry point is
-// only what genuinely differs: how it obtains its keypair and token, and
-// how it decides to stop.
+// So the sequence lives here once. What remains in each caller of worker.Run
+// is only what genuinely differs: how it obtains its keypair and token, and how
+// it decides to stop.
 package bootstrap
 
 import (
@@ -37,12 +36,13 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
-// Params is everything Wire needs that an entry point already knows.
+// Params is everything Wire needs that worker.Run already knows.
 //
-// Every field is supplied by both entry points except SeedRegisteredBy,
-// which only the in-process launchers can read from their own DB.
+// SeedRegisteredBy is the one field that depends on who started the worker: only
+// the in-process launchers can read it from their own DB.
 type Params struct {
 	// Ctx limits every background loop Wire starts.
 	Ctx    context.Context
@@ -72,7 +72,7 @@ type Params struct {
 
 	// SeedRegisteredBy is a DB-sourced guess at the worker owner. The Hub
 	// overrides it on every connect and is the authority; leaving it empty
-	// is correct for any entry point that has no local copy.
+	// is correct for any worker that has no local copy.
 	SeedRegisteredBy string
 
 	AgentStartupTimeout time.Duration
@@ -92,7 +92,7 @@ type Params struct {
 // Only the Service is exposed. The channel manager and dispatcher are
 // fully wired into the Client before Wire returns, so handing them back
 // would offer callers a handle on objects whose safe write window has
-// already closed -- and neither entry point ever wanted one.
+// already closed -- and worker.Run never wanted one.
 type Wiring struct {
 	Service *service.Service
 	// Resumer is the boot-time agent resume sweep. Exposed so a wiring test can
@@ -101,15 +101,15 @@ type Wiring struct {
 	// comes to be dropped silently.
 	Resumer *service.AgentResumer
 	// client is retained solely so Shutdown can flush it. Unexported for the
-	// same reason the manager and dispatcher are absent: the entry points
-	// already hold the Client they passed in, and a second handle here would
-	// only invite a caller to reach past Shutdown.
+	// same reason the manager and dispatcher are absent: worker.Run already
+	// holds the Client it passed in, and a second handle here would only invite
+	// a caller to reach past Shutdown.
 	client *hub.Client
 }
 
 // Shutdown drains the worker and then flushes everything that drain wrote to
 // the Hub. Both halves, in this order, are the contract -- and it lives here
-// rather than in each entry point because half of it is silent when omitted.
+// rather than in the caller because half of it is silent when omitted.
 //
 // Service.Shutdown broadcasts the terminal "[Worker disconnected - Press Enter
 // to restart]" notice, but Client.Send only ENQUEUES onto the outbound queue.
@@ -139,6 +139,16 @@ func (w *Wiring) Shutdown() {
 // Nothing the connect loop can reach is published until every handler is
 // registered behind it.
 func Wire(p Params) *Wiring {
+	// FIRST, before any side effect: PrepareAgentDirs starts a background sweep
+	// and the control IPC factory starts delegation.RunJanitor, so a keypair
+	// without a complete key set must fail before either can run. A restored or
+	// generated keypair always yields a complete set, so this is a wiring
+	// mistake, and Wire already panics on those.
+	keys, err := workerkeys.Of(p.CompositeKey)
+	if err != nil {
+		panic(fmt.Sprintf("bootstrap: %v", err))
+	}
+
 	// Built first because the service needs it for channel-session
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
@@ -229,37 +239,25 @@ func Wire(p Params) *Wiring {
 	// Only now is the manager reachable from the connect loop.
 	p.Client.SetChannelMgr(channelMgr)
 	p.Client.EncryptionMode = p.EncryptionMode
-	p.Client.PublicKey = p.CompositeKey.X25519Public
+	p.Client.PublicKeys = keys
 	// All three keys go out regardless of mode, because they are the
 	// worker's IDENTITY, not this session's cipher choice. What selects
 	// the handshake is EncryptionMode above, read on its own by
 	// newInitiatorHandshaker (backend/tunnel/channel.go), so a classic
 	// worker advertising them still gets the classical handshake.
 	//
-	// Gating them on mode -- which the CLI did, and which unifying the
-	// two entry points spread to solo/desktop -- makes a classic
-	// heartbeat overwrite the stored PQ keys with empty blobs
-	// (UpdatePublicKey writes all three columns unconditionally). Every
-	// client that had pinned that worker then fails TOFU verification in
-	// pinStore.Verify and cannot open a channel until the pin is cleared
-	// by hand. Registration already sends them unconditionally, so
-	// gating here also made the two disagree.
-	p.Client.MlkemPublicKey = p.CompositeKey.MlkemPublicKeyBytes()
-	slhdsaPub, _ := p.CompositeKey.SlhdsaPublicKeyBytes()
-	p.Client.SlhdsaPublicKey = slhdsaPub
+	// Sending them only in post-quantum mode -- which the CLI did, and which
+	// unifying the two entry points spread to solo/desktop -- makes a classic
+	// worker's WorkerHello carry empty ML-KEM and SLH-DSA keys. The Hub refuses
+	// such a hello with InvalidArgument, because it pins the complete key set
+	// the worker registered with, so the worker could not connect at all.
 
 	// The Hub owns workers.registered_by and re-delivers it on every
 	// connect, so the worker never caches it. It arrives before any
-	// ChannelOpen on the same stream, hence before any handler the owner
-	// gates can run. UpdateRegisteredBy is the service's own method rather
-	// than a closure over SetRegisteredBy, so the drift warning and the
-	// empty-owner refusal are shared by both entry points.
-	//
-	// startBackgroundLoops wraps this to nudge the reconciler as well, because
-	// the owner arriving is what unblocks the resume sweep. Assigned here first
-	// so a Wire that never starts the loops still delivers the identity.
-	p.Client.OnWorkerIdentity = svc.UpdateRegisteredBy
-
+	// ChannelOpen on the same stream, hence before any handler that requires
+	// the owner can run. startBackgroundLoops installs the handler
+	// (nudgeOnNewOwner over the service's ApplyWorkerIdentity), so the drift
+	// warning and the empty-owner refusal are shared by every worker.
 	resumer := startBackgroundLoops(p, svc)
 
 	return &Wiring{Service: svc, Resumer: resumer, client: p.Client}
@@ -308,13 +306,14 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 	}
 
 	return &controlipc.Factory{
-		WorkerID:    p.WorkerID,
-		Dispatcher:  dispatcher,
-		CrossWorker: cwClient,
-		HubBridge:   hubBridge,
-		HubStreams:  hubStreams,
-		Streams:     svc,
-		Delegation:  delegation,
+		WorkerID:      p.WorkerID,
+		Dispatcher:    dispatcher,
+		CrossWorker:   cwClient,
+		HubBridge:     hubBridge,
+		HubStreams:    hubStreams,
+		Streams:       svc,
+		Delegation:    delegation,
+		OwnerUsername: svc.OwnerUsername,
 	}
 }
 
@@ -351,8 +350,8 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 	}
 }
 
-// startBackgroundLoops starts every periodic task the worker owns. All of
-// them stop with p.Ctx.
+// startBackgroundLoops starts every periodic task the worker owns. All of them
+// stop with p.Ctx, and Shutdown stops them earlier when it comes first.
 func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer {
 	queries := db.New(p.DB)
 
@@ -422,10 +421,20 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		},
 	)
 	go reconciler.Run(p.Ctx)
-	// Hand Shutdown a way to stop both loops. Their teardowns are not registered
-	// with svc.Cleanup, and the entry points call Shutdown BEFORE cancelling
-	// p.Ctx, so without this a nudge-triggered pass -- or a resume sweep that
-	// still has candidates left -- could write when the caller closes the DB.
+
+	// The periodic loops take a context of their own, so that Shutdown can stop
+	// them while p.Ctx is live. The orphan sweep periodically reclaims in-memory
+	// agent tracker state orphaned by a closed/deleted agent that never routed
+	// through a cleanup path (the per-exit handler keeps the state for a possible
+	// relaunch).
+	periodicCtx, cancelPeriodic := context.WithCancel(p.Ctx)
+	periodicLoops := append(startRetentionLoops(periodicCtx, p.DB, p.DataDir), svc.StartOrphanSweepLoop(periodicCtx))
+
+	// Hand Shutdown a way to stop every loop. Their teardowns are not registered
+	// with svc.Cleanup, a deregistered worker calls Shutdown BEFORE p.Ctx ends,
+	// and a canceled loop still finishes its current pass. So without this a
+	// nudge-triggered pass, a resume sweep that still has candidates left, or a
+	// retention pass could write when the caller closes the DB.
 	//
 	// The resumer stops FIRST: it starts agents, and each start runs DB reads and
 	// registers a remote-IPC cleanup. Stopping the reconciler first would leave
@@ -433,9 +442,11 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	svc.SetStopBackgroundLoops(func() {
 		resumer.Stop()
 		reconciler.Stop()
+		stopPeriodicLoops(cancelPeriodic, periodicLoops)
 	})
 
-	// Nudge the reconciler the moment the Hub names this worker's owner.
+	// Nudge the reconciler the moment the Hub identifies this worker's owner,
+	// and only then (see nudgeOnNewOwner).
 	//
 	// Without it the sweep's own precondition can outlive its retry. A converged
 	// pass is reachable before the owner arrives (the hub branch needs only the auth
@@ -444,11 +455,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// sweep refuses for a zero owner, the reconciler stops retrying, and the next
 	// pass is the hourly tick -- an hour with every agent cold on a worker that
 	// is otherwise healthy.
-	deliverIdentity := svc.UpdateRegisteredBy
-	p.Client.OnWorkerIdentity = func(userID string) {
-		deliverIdentity(userID)
-		reconciler.Trigger()
-	}
+	p.Client.OnWorkerIdentity = nudgeOnNewOwner(svc, reconciler.Trigger)
 
 	// The Hub's connect-time WorkerTabInventory reply only signals that the
 	// hub has finished its side of the reconciliation; trigger the
@@ -465,27 +472,55 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// subprocess kept running (and burning tokens) until the next tick.
 	p.Client.OnReconcileNudge = reconciler.Trigger
 
-	// Periodically reclaim in-memory agent tracker state orphaned by a
-	// closed/deleted agent that never routed through a cleanup path (the
-	// per-exit handler keeps the state for a possible relaunch).
-	svc.StartOrphanSweepLoop(p.Ctx)
-
-	StartRetentionLoops(p.Ctx, p.DB, p.DataDir)
-
 	return resumer
 }
 
-// StartRetentionLoops starts the two data-retention loops. It is exported
-// separately because worker.Run runs them even on its degenerate
-// no-composite-key path, where there is no service to wire at all.
-func StartRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) {
+// stopPeriodicLoops ends the loops of one context and waits until each returned.
+// A canceled loop finishes the pass in progress, and the caller closes the
+// database that the pass uses.
+func stopPeriodicLoops(cancel context.CancelFunc, stopped []<-chan struct{}) {
+	cancel()
+	for _, loopStopped := range stopped {
+		<-loopStopped
+	}
+}
+
+// nudgeOnNewOwner returns the WorkerIdentity handler that applies each identity
+// the Hub delivers, and runs nudge only when the delivery stored a new owner.
+// The handler reports whether the worker holds an owner after the delivery, which
+// the client's identity watchdog reads.
+//
+// An owner that arrives, or that changes, is what the resume sweep waits for.
+// The Hub also re-delivers the identity on every account change of the owner,
+// such as a rename or an elevation, and a re-delivery for the same owner
+// unblocks nothing, so it starts no pass. A refused identity, one with an empty
+// owner, stores nothing and starts no pass either.
+//
+// A refusal keeps an owner that the worker holds, seeded or delivered earlier, and
+// the owner gate still admits that owner. A forced reconnect could not improve on
+// that, and it would drop every browser channel of this worker on each greeting.
+// So the handler reports the owner, not the outcome of this delivery.
+func nudgeOnNewOwner(svc *service.Service, nudge func()) func(*leapmuxv1.WorkerIdentity) bool {
+	return func(identity *leapmuxv1.WorkerIdentity) bool {
+		if svc.ApplyWorkerIdentity(identity) == service.IdentityNewOwner {
+			nudge()
+		}
+		return !svc.RegisteredBy().IsZero()
+	}
+}
+
+// startRetentionLoops starts the two data-retention loops, and returns the
+// channels that close after each one stops.
+func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) []<-chan struct{} {
 	// Hard-delete agents and terminals closed for longer than the
 	// retention period.
-	service.StartCleanupLoop(ctx, db.New(sqlDB))
+	cleanupStopped := service.StartCleanupLoop(ctx, db.New(sqlDB))
 
 	// Roll up old plan year directories (`<data_dir>/plans/<YYYY>/`) into
 	// per-year zip files.
-	service.StartPlanArchiveLoop(ctx, dataDir, db.New(sqlDB))
+	planArchiveStopped := service.StartPlanArchiveLoop(ctx, dataDir, db.New(sqlDB))
+
+	return []<-chan struct{}{cleanupStopped, planArchiveStopped}
 }
 
 // BuildTabSync constructs a WorkerTabInventory message from the worker's
@@ -522,7 +557,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 		return nil, fmt.Errorf("list payload-backed tab ids: %w", err)
 	}
 
-	var tabs []*leapmuxv1.TabRef
+	var tabs []*leapmuxv1.TabIdent
 	// One default-less switch over every TabType, so `exhaustive` (enabled in
 	// .golangci.yml) fails the BUILD when a type is added. That matters more here
 	// than almost anywhere: the hub tombstones every owned tab this report omits,
@@ -571,7 +606,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			return nil, fmt.Errorf("list %s ids: %w", tabType, err)
 		}
 		for _, id := range ids {
-			tabs = append(tabs, &leapmuxv1.TabRef{TabType: tabType, TabId: id})
+			tabs = append(tabs, &leapmuxv1.TabIdent{TabType: tabType, TabId: id})
 		}
 	}
 

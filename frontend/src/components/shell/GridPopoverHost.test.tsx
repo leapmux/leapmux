@@ -84,7 +84,7 @@ describe('GridPopoverHost', () => {
     expect(secondOnSelect).toHaveBeenCalledWith(1, 1)
   })
 
-  it('useGridPopover() outside a provider returns undefined (so callers can fall back)', () => {
+  it('returns undefined from useGridPopover() outside a provider (so callers can fall back)', () => {
     let host: GridPopoverHost | undefined
     render(() => (
       <HostHarness

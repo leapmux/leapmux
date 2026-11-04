@@ -314,7 +314,7 @@ func TestManagerVerifyRejectsForeignSecret(t *testing.T) {
 
 	// Force re-provisioning with a different secret by resetting the row
 	// to its default; the old secret produced the challenge's signature.
-	require.NoError(t, e.set.Reset(context.Background(), AltchaKey))
+	require.NoError(t, e.set.ResetMany(context.Background(), []settings.Descriptor{AltchaKey}))
 
 	_, err = e.m.AltchaChallengeJSON(context.Background()) // provisions a new secret
 	require.NoError(t, err)

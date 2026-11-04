@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect/v2"
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
@@ -119,30 +120,90 @@ func AdoptWireMaxMessageSize(wire uint64) (int, error) {
 }
 
 // NewErrorResponse is the single constructor for an error InnerRpcResponse, the
-// envelope both Go receivers (the tunnel client's Channel.deliverRPCError and
-// the worker session's channelSender.sendError) emit when an inner RPC fails.
-// Routing both through one constructor keeps the IsError+ErrorCode+ErrorMessage
-// shape in one place, alongside contracts.PingMethod and the chunk/message ceilings both
-// ends of the channel must also agree on -- so a future field (a retryable bit,
-// a category) lands once instead of in two packages whose tests would only
-// notice the day they disagree.
+// envelope that every Go sender of one emits when an inner RPC fails:
+//
+//   - the tunnel client's Channel.deliverRPCError
+//   - the worker session's channelSender.sendError
+//   - the worker control-IPC Router, in CallInner, dispatchLocal and
+//     responseCollector.toResponse
+//
+// Routing every sender through one constructor keeps the error shape in one
+// place, alongside the chunk/message ceilings both ends of the channel must
+// also agree on -- so a future field (a retryable bit, a category) lands once
+// instead of in several packages whose tests would only notice the day they
+// disagree.
 func NewErrorResponse(code int32, message string) *leapmuxv1.InnerRpcResponse {
-	return &leapmuxv1.InnerRpcResponse{IsError: true, ErrorCode: code, ErrorMessage: message}
+	return &leapmuxv1.InnerRpcResponse{Result: &leapmuxv1.InnerRpcResponse_Error{
+		Error: &leapmuxv1.RpcError{Code: code, Message: message},
+	}}
+}
+
+// NewPayloadResponse is the constructor for a successful InnerRpcResponse that
+// carries payload, the serialized response message. It selects the payload
+// case even for an empty payload, so a reader that switches on the result
+// case sees a success.
+func NewPayloadResponse(payload []byte) *leapmuxv1.InnerRpcResponse {
+	return &leapmuxv1.InnerRpcResponse{Result: &leapmuxv1.InnerRpcResponse_Payload{Payload: payload}}
+}
+
+// RPCError is the Go error for an RpcError, the error that an inner RPC
+// answered in-band: in InnerRpcResponse.error or InnerStreamMessage.error.
+// Code is a google.rpc.Code value, which gRPC and Connect number alike.
+//
+// Every Go reader of an in-band error builds this one type through ErrorOf, so
+// each path keeps the code and states the error in one wording, and a caller
+// reads the code with errors.As instead of parsing a message. A tunnel channel
+// reports a frame that it rejects with this type too, as ResourceExhausted, so
+// CallRPC returns one shape whether the worker or the channel failed the call.
+type RPCError struct {
+	Code    int32
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("rpc error (code %d): %s", e.Code, e.Message)
+}
+
+// ConnectError returns e as a Connect error with the same code and message,
+// and with e as its cause. Connect numbers its codes as google.rpc.Code does,
+// from Canceled (1) to Unauthenticated (16). Any other value, OK (0) included,
+// becomes Unknown: an in-band error is a failure even when its code states
+// none, and Unknown is the code that no caller reads as a specific failure.
+func (e *RPCError) ConnectError() *connect.Error {
+	code := connect.CodeUnknown
+	if e.Code >= int32(connect.CodeCanceled) && e.Code <= int32(connect.CodeUnauthenticated) {
+		code = connect.Code(e.Code)
+	}
+	return connect.NewError(code, e.Message).WithCause(e)
+}
+
+// ErrorOf returns the error that rpcErr carries, as an *RPCError, or nil when
+// rpcErr is nil. It returns the error interface, not the pointer, so that a
+// caller that returns its result directly can never return a non-nil error
+// that holds a nil pointer.
+func ErrorOf(rpcErr *leapmuxv1.RpcError) error {
+	if rpcErr == nil {
+		return nil
+	}
+	return &RPCError{Code: rpcErr.GetCode(), Message: rpcErr.GetMessage()}
+}
+
+// NewStreamError is the single constructor for the InnerStreamMessage that
+// fails a stream. It sets End as well as Error, because the frame ends the
+// stream, and a reader that checks only End must stop too.
+func NewStreamError(code int32, message string) *leapmuxv1.InnerStreamMessage {
+	return &leapmuxv1.InnerStreamMessage{End: true, Error: &leapmuxv1.RpcError{Code: code, Message: message}}
 }
 
 // NewChannelMessage wraps one encrypted chunk in the ChannelMessage envelope
-// both Go senders put on the wire. The protocol version is
-// contracts.ProtocolVersion (contracts/wire.json), so a version bump is one
-// edit that moves every sender -- this constructor, the senders that bypass
-// it, and the browser's channelSession -- instead of a literal in each.
+// both Go senders put on the wire.
 func NewChannelMessage(channelID string, correlationID uint64,
 	flags leapmuxv1.ChannelMessageFlags, ciphertext []byte) *leapmuxv1.ChannelMessage {
 	return &leapmuxv1.ChannelMessage{
-		ProtocolVersion: contracts.ProtocolVersion,
-		ChannelId:       channelID,
-		CorrelationId:   correlationID,
-		Flags:           flags,
-		Ciphertext:      ciphertext,
+		ChannelId:     channelID,
+		CorrelationId: correlationID,
+		Flags:         flags,
+		Ciphertext:    ciphertext,
 	}
 }
 

@@ -11,13 +11,12 @@ import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 
 import { describe, expect, it } from 'vitest'
+import { AEAD_TAG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 import { hkdf } from './noise'
 import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
-const DH_LEN = 32
-const AEAD_TAG_SIZE = 16
 /** The error of `chacha20poly1305` from `@noble/ciphers` when the tag does not authenticate the ciphertext. */
 const AEAD_TAG_FAILURE = 'invalid tag'
 
@@ -52,7 +51,7 @@ function responderHandshake(
   send: SimpleCipherState
   receive: SimpleCipherState
 } {
-  const noiseMsg1Len = DH_LEN + AEAD_TAG_SIZE // 48
+  const noiseMsg1Len = X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE // 48
   const mlkemCT = message1.slice(noiseMsg1Len)
 
   // Init symmetric state.
@@ -102,13 +101,13 @@ function responderHandshake(
   mixHash(x25519Pub)
 
   // Read message 1: -> e, es
-  const re = message1.slice(0, DH_LEN)
+  const re = message1.slice(0, X25519_PUBLIC_KEY_SIZE)
   mixHash(re)
 
   const dhES = x25519.getSharedSecret(x25519Priv, re)
   mixKey(dhES)
 
-  decryptAndHash(message1.slice(DH_LEN, noiseMsg1Len))
+  decryptAndHash(message1.slice(X25519_PUBLIC_KEY_SIZE, noiseMsg1Len))
 
   // Bind ML-KEM ciphertext into the handshake hash (matches initiator's mixHash).
   mixHash(mlkemCT)

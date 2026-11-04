@@ -53,7 +53,7 @@ type OrphanReconciler struct {
 	closeTab func(tabType leapmuxv1.TabType, userID, tabID string)
 	// applyArchiveState reconciles the Hub's lifecycle state before the pass
 	// reports convergence and before the initial agent resume sweep can start.
-	applyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error)
+	applyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error)
 	resumeAgents      func([]string)
 	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
 	onConverged func()
@@ -105,8 +105,9 @@ type OrphanReconcilerOptions struct {
 	// ApplyArchiveState applies grouped authoritative tab states. Production
 	// wires it to Service.ApplyTabArchiveState, which is the ONLY way this
 	// Worker learns its archive state -- there is no RPC for it. Required when
-	// listFn is set.
-	ApplyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error)
+	// listFn is set. The owner is the hub response's owner_user_id, which owns
+	// every tab of one response.
+	ApplyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error)
 	// ResumeAgents schedules agent IDs only after the whole pass converges. It
 	// is required when listFn is set.
 	ResumeAgents func([]string)
@@ -374,48 +375,44 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// it does not know. The reap loops below key on (tab_type, tab_id), so a
 	// dropped row simply never matches, exactly as before the archive pass
 	// existed.
-	var archivedTabs, activeTabs []*leapmuxv1.TabRef
-	for _, tab := range hubTabs {
+	var archivedTabs, activeTabs []*leapmuxv1.TabIdent
+	for _, state := range hubTabs {
+		// The response's owner goes to the archive pass with each bucket:
+		// worker_tab_payloads is keyed (user_id, tab_id), and a client-minted
+		// id is unique only within one account, so a payload-backed tab is
+		// addressable only with its owner. AGENT and TERMINAL ids are globally
+		// unique, so the owner is simply unused for them.
+		tab := state.GetTab()
 		if !archivableTabType(tab.GetTabType()) {
 			r.logger.Warn("orphan reconciler: hub returned a tab type this worker cannot archive",
 				"tab_id", tab.GetTabId(), "tab_type", tab.GetTabType())
 			continue
 		}
-		// The owner rides along, and dropping it here is what used to make a
-		// payload-backed tab unaddressable: worker_tab_payloads is keyed
-		// (user_id, tab_id), and a client-minted id is unique only within one
-		// account. AGENT and TERMINAL ids are globally unique, so the field is
-		// simply unused for them.
-		ref := &leapmuxv1.TabRef{
-			TabType: tab.GetTabType(),
-			TabId:   tab.GetTabId(),
-			UserId:  tab.GetUserId(),
-		}
-		switch tab.GetArchiveState() {
+		switch state.GetArchiveState() {
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
-			archivedTabs = append(archivedTabs, ref)
+			archivedTabs = append(archivedTabs, tab)
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:
-			activeTabs = append(activeTabs, ref)
+			activeTabs = append(activeTabs, tab)
 		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED:
 			r.logger.Warn("orphan reconciler: hub returned an unspecified archive state",
 				"tab_id", tab.GetTabId())
 		default:
 			r.logger.Warn("orphan reconciler: hub returned an unknown archive state",
-				"tab_id", tab.GetTabId(), "archive_state", tab.GetArchiveState())
+				"tab_id", tab.GetTabId(), "archive_state", state.GetArchiveState())
 		}
 	}
 	// Each tab lands in exactly one bucket, so the order of these two calls
 	// does not decide any tab's outcome. Archived runs first only so that a
 	// pass which stops processes does that before it schedules any resume.
-	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, archivedTabs) {
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, owner, archivedTabs) {
 		return false
 	}
-	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, activeTabs) {
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, owner, activeTabs) {
 		return false
 	}
 	hubByKey := make(map[ownedTabKey]*leapmuxv1.WorkerTabState, len(hubTabs))
 	for _, t := range hubTabs {
-		hubByKey[newOwnedTabKey(t.GetTabType(), t.GetTabId(), t.GetUserId())] = t
+		hubByKey[newOwnedTabKey(t.GetTab().GetTabType(), t.GetTab().GetTabId(), owner.String())] = t
 	}
 
 	// Only the file-tab pass takes the owner. Local agents / terminals carry no
@@ -514,11 +511,11 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 // applyArchiveBucket applies one archive state to the tabs the Hub reports in
 // it, and records the agents whose state changed to active. It reports whether
 // the pass may continue.
-func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) bool {
+func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) bool {
 	if len(tabs) == 0 {
 		return true
 	}
-	resumeAgentIDs, err := r.applyArchiveState(ctx, state, tabs)
+	resumeAgentIDs, err := r.applyArchiveState(ctx, state, owner, tabs)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: apply archive state", "state", state, "error", err)
 		return false
@@ -684,7 +681,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 			// (closed_at != NULL just keeps it from being respawned
 			// on the NEXT worker startup); for long-running
 			// workers that's an open-ended leak.
-			// Route through the SAME teardown an online CloseAgent runs.
+			// Route through the SAME teardown an online CloseTab runs.
 			// Doing only the DB close plus StopAgent -- which is what this used
 			// to do -- skipped the startup cancel, the runtime-state clear, and
 			// the registered cleanups; the last of those is the remote-IPC

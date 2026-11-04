@@ -9,7 +9,11 @@ import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/ch
 const { listAgentMessages } = vi.hoisted(() => ({
   listAgentMessages: vi.fn(),
 }))
-vi.mock('~/api/workerRpc', () => ({ listAgentMessages }))
+vi.mock('~/api/workerRpc', () => ({
+  workerAgent: {
+    listAgentMessages,
+  },
+}))
 
 const { createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
 const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
@@ -28,8 +32,6 @@ function page(messages: AgentChatMessage[], hasMore: boolean, latestSeq?: bigint
     messages,
     hasMore,
     latestSeq,
-    todos: [],
-    todosLoaded: false,
   }
 }
 
@@ -90,6 +92,7 @@ function harness(init: {
   const caughtUpToLiveTail = init.caughtUp
     ?? ((agentId: string) => (lastServer(agentId) ?? 0n) >= recordedLiveTail)
   const applyMessages = vi.fn()
+  const replaceTodos = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
   const replaceGoal = vi.fn()
@@ -132,7 +135,7 @@ function harness(init: {
     addMessage,
     trimOldestEnd,
     trimNewestEnd,
-    replaceTodos: vi.fn(),
+    replaceTodos,
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
     replaceGoal,
@@ -151,6 +154,7 @@ function harness(init: {
     bumpLiveTail,
     caughtUpToLiveTail,
     getRecordedLiveTail: () => recordedLiveTail,
+    replaceTodos,
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
     replaceGoal,
@@ -635,7 +639,7 @@ describe('chatHistoryPaginator', () => {
       expect(h.state.tailFillDeferred.a).toBe(true)
     })
 
-    it('resumeDeferredTailFill no-ops when no deferral is armed', async () => {
+    it('makes resumeDeferredTailFill a no-op when no deferral is armed', async () => {
       const h = harness({
         messages: [
           makeMsg(1n),
@@ -659,7 +663,7 @@ describe('chatHistoryPaginator', () => {
       expect(h.state.tailFillDeferred.a).toBe(false)
     })
 
-    it('resumeDeferredTailFill resumes a parked fill and clears the deferral once the storm subsides', async () => {
+    it('resumes a parked fill in resumeDeferredTailFill and clears the deferral once the storm subsides', async () => {
       let caught = false
       const h = harness({
         messages: [
@@ -837,14 +841,17 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     listAgentMessages.mockReset()
   })
 
+  // The worker omits a snapshot it could not read.
   function latestPage(loaded: boolean) {
     return {
       messages: [],
       hasMore: false,
-      todos: [],
-      todosLoaded: true,
-      backgroundTasks: [],
-      backgroundTasksLoaded: loaded,
+      todos: { todos: [] },
+      ...(loaded
+        ? {
+            backgroundTasks: { tasks: [] },
+          }
+        : {}),
     }
   }
 
@@ -865,14 +872,41 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     await h.paginator.loadInitialMessages('w', 'a')
 
     expect(h.markBackgroundTasksLoadFailed).toHaveBeenCalledWith('a')
-    // ...and the registry is NOT overwritten: an empty repeated field on a
-    // failed query would wipe whatever the client already had.
+    // ...and the registry is NOT overwritten: the absent snapshot says the
+    // query failed, not that the registry is empty.
     expect(h.replaceBackgroundTasks).not.toHaveBeenCalled()
   })
 
+  it('applies the to-do list only when the page carries its snapshot', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue({
+      ...latestPage(true),
+      todos: {
+        todos: [
+          { content: 'Run tests' },
+        ],
+      },
+    })
+
+    await h.paginator.loadInitialMessages('w', 'a')
+    expect(h.replaceTodos).toHaveBeenCalledWith('a', [
+      { content: 'Run tests' },
+    ])
+
+    const absent = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+      backgroundTasks: { tasks: [] },
+    })
+
+    await absent.paginator.loadInitialMessages('w', 'a')
+    expect(absent.replaceTodos, 'an absent snapshot leaves the list alone').not.toHaveBeenCalled()
+  })
+
   /**
-   * The OTHER way the registry cannot be read. The in-band flag only travels on
-   * a response that arrived; when the call itself rejects, nothing applies the
+   * The OTHER way the registry cannot be read. An absent in-band snapshot only
+   * travels on a response that arrived; when the call itself rejects, nothing applies the
    * page at all -- and the section, which is hidden while empty, would leave the
    * screen with nothing to say why.
    */
@@ -896,10 +930,11 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     const goal = { objective: 'ship it' }
     listAgentMessages.mockResolvedValue({
       ...latestPage(true),
-      goal,
-      goalLoaded: true,
-      goalSupportedActions: [1],
-      goalUpdatedAt: '2026-09-06T10:00:00.000Z',
+      goal: {
+        goal,
+        supportedActions: [1],
+        goalUpdatedAt: '2026-09-06T10:00:00.000Z',
+      },
     })
 
     await h.paginator.loadInitialMessages('w', 'a')
@@ -908,7 +943,7 @@ describe('chatHistoryPaginator background-task snapshot', () => {
   })
 
   /**
-   * A CHILD agent answers loaded=true with an ABSENT goal, and that write is
+   * A CHILD agent answers a present snapshot with an ABSENT goal, and that write is
    * what clears a goal a tab inherited from a previous root -- so an absent goal
    * still has to be applied, with its stamp.
    */
@@ -916,10 +951,7 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     const h = harness({ messages: [] })
     listAgentMessages.mockResolvedValue({
       ...latestPage(true),
-      goal: undefined,
-      goalLoaded: true,
-      goalSupportedActions: [],
-      goalUpdatedAt: '2026-09-06T10:00:00.000Z',
+      goal: { goal: undefined, supportedActions: [], goalUpdatedAt: '2026-09-06T10:00:00.000Z' },
     })
 
     await h.paginator.loadInitialMessages('w', 'a')
@@ -927,17 +959,11 @@ describe('chatHistoryPaginator background-task snapshot', () => {
     expect(h.replaceGoal).toHaveBeenCalledWith('a', undefined, [], '2026-09-06T10:00:00.000Z')
   })
 
-  // A DB error leaves goal_loaded false, and skipping the write is what stops a
+  // A DB error omits the goal snapshot, and skipping the write is what stops a
   // transient failure from blanking a live card.
   it('leaves the goal alone when the worker could not read it', async () => {
     const h = harness({ messages: [] })
-    listAgentMessages.mockResolvedValue({
-      ...latestPage(true),
-      goal: undefined,
-      goalLoaded: false,
-      goalSupportedActions: [],
-      goalUpdatedAt: '',
-    })
+    listAgentMessages.mockResolvedValue(latestPage(true))
 
     await h.paginator.loadInitialMessages('w', 'a')
 

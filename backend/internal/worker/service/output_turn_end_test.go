@@ -68,17 +68,19 @@ func newTurnEndFixture(t *testing.T) (*agentOutputSink, *turnEndCapturingWriter)
 	return sink, mock
 }
 
-func TestPersistTurnEnd_BroadcastsTurnEndWithToolUses(t *testing.T) {
+// The turn end broadcasts its event, and the turn's tool count waits for the
+// activity settle, which carries it to the client (AgentActivityChanged).
+func TestPersistTurnEnd_BroadcastsTurnEndAndRecordsToolUses(t *testing.T) {
 	t.Parallel()
 
 	sink, mock := newTurnEndFixture(t)
 
 	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","num_tool_uses":4}`)}, agent.SpanInfo{}))
 
-	te := mock.lastTurnEnd()
-	require.NotNil(t, te)
-	require.NotNil(t, te.NumToolUses)
-	assert.Equal(t, int32(4), te.GetNumToolUses())
+	require.NotNil(t, mock.lastTurnEnd())
+	count := unspentToolCount(sink.h, "agent-turn-end")
+	require.NotNil(t, count, "the settle that follows spends the count the turn end recorded")
+	assert.Equal(t, int32(4), *count)
 }
 
 func TestPersistTurnEnd_BroadcastsTurnEndWithoutToolUsesWhenAbsent(t *testing.T) {
@@ -88,7 +90,7 @@ func TestPersistTurnEnd_BroadcastsTurnEndWithoutToolUsesWhenAbsent(t *testing.T)
 
 	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{}))
 
-	te := mock.lastTurnEnd()
-	require.NotNil(t, te)
-	assert.Nil(t, te.NumToolUses, "missing num_tool_uses must leave the optional unset, not 0")
+	require.NotNil(t, mock.lastTurnEnd())
+	assert.Nil(t, unspentToolCount(sink.h, "agent-turn-end"),
+		"a missing num_tool_uses leaves the count unknown, not 0")
 }

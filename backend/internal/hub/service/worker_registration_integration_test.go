@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
@@ -31,7 +32,7 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			}
 			env := regKeyEnvFromStore(t, st, testConfig(), maxWorkersPerUser(1), func(st store.Store) store.Store {
 				return registrationOverlapStore{Store: st, coordinator: coordinator}
-			})
+			}, nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			owner := userid.MustNew(env.adminID(t))
@@ -48,7 +49,9 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			register := func(key string, done chan<- result) {
 				requestCtx, info := connect.NewClientContext(ctx)
 				info.RequestHeader().Set("Authorization", "Bearer "+key)
-				response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{Version: "v"})
+				response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{
+					Keys: workerkeystest.Keys(0x31),
+				})
 				done <- result{response: response, err: err}
 			}
 			firstDone, secondDone := make(chan result, 1), make(chan result, 1)

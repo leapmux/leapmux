@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it } from 'vitest'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
@@ -157,7 +157,7 @@ describe('openTabInFocusedTile', () => {
   })
 
   /** The pre-RPC form of the refusals above, consulted by every tab-creation path. */
-  it('hasPlaceableTab answers whether placement is possible right now', () => {
+  it('answers from hasPlaceableTab whether placement is possible right now', () => {
     createRoot((dispose) => {
       const ready = setup()
       ready.layoutStore.setFocusedTile(ready.harness.rootTileId)

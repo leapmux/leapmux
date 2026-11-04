@@ -8,13 +8,14 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
 // RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
-// worker-side teardown (CloseAgent / CloseTerminal / RevokeTabPayload).
+// worker-side teardown (CloseTab).
 // The hub's remove-wins semantics mean the tab id is dead afterward;
 // recreating at the UI level mints a fresh id. The resolver derives
 // workspace + tab-type from --tab-id when only the id is given.
@@ -79,7 +80,7 @@ func RunTabClose(rawCtx any, args []string) error {
 
 		// `tab close` issues up to three inner-RPCs against the SAME worker --
 		// InspectLastTabClose, an optional PushBranch, and the
-		// CloseAgent/CloseTerminal/RevokeTabPayload teardown -- with the CRDT
+		// CloseTab teardown -- with the CRDT
 		// tombstone in between. Hoisting one Noise_NK channel over the sequence
 		// pays the handshake once rather than per call.
 		//
@@ -88,143 +89,153 @@ func RunTabClose(rawCtx any, args []string) error {
 		// tombstoneable. withBestEffortWorkerChannel falls back to opening per
 		// call, which reproduces the exact channel_open_failed code this
 		// command's unreachable-worker fallback keys on.
-		var w workerCall
-		if err := withBestEffortWorkerChannel(ctx, c, got.WorkerID, func(bound workerCall) error {
-			w = bound
-			return nil
-		}); err != nil {
-			return err
-		}
-		callWorker := func(method string, in, out proto.Message) error {
-			return w.Call(ctx, method, in, out)
-		}
-
-		// Last-tab worktree gate, for every tab type. A file tab holds a
-		// worktree open exactly like an agent or terminal does (the worker
-		// ref-counts worktree_tabs type-agnostically) and answers branch
-		// questions from its own working dir, so skipping the inspect for it
-		// meant the CLI closed the last tab on a worktree without the
-		// forced --worktree choice the UI puts in front of the same close.
-		worktreeAction := wt.worktreeAction()
-		var inspectHint string
-		inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
-		if ierr != nil {
-			// Worker unreachable / not found is the same fallback the
-			// frontend uses: skip the dialog, proceed with implicit
-			// KEEP. The CRDT tombstone still runs and the worker's
-			// reconciler eventually catches up.
-			if !isWorkerUnreachable(ierr) {
-				return control.EmitErrorWith("inspect_failed", ierr)
-			}
-		}
-
-		// Refuse an ineligible discard before the tombstone, even when no dialog applies.
-		if msg := discardRefusalMessage(wt, inspected); msg != "" {
-			return control.EmitError("invalid_request", msg)
-		}
-
-		// Busy-tab gate, BEFORE the tombstone for the same reason the discard
-		// refusal is: after the tab is destroyed a refusal has nowhere to go.
 		//
-		// Only when the worktree gate did NOT fire. The two prompts are mutually
-		// exclusive, and the worktree one wins: its forced --worktree choice
-		// already makes the user state an intent for this close, and stacking a
-		// second required flag on the same command would send them back twice for
-		// one close. The browser splits the same two dialogs on the same rule.
-		busyOverridden := false
-		// Skipped entirely when the inspect failed: the worker is unreachable, so
-		// the busy probe would only spend two more round trips to learn the same
-		// thing, and it fails open regardless.
-		if ierr == nil && !inspected.GetShouldPrompt() {
-			if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.TabID}}); len(busy) > 0 {
-				if !allowBusy {
-					return errTabBusyRefused(busy)
-				}
-				busyOverridden = true
-			}
-		}
-
-		if inspected.GetShouldPrompt() {
-			if wt == closeWorktreeUnspecified {
-				return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
-			}
-			if wt == closeWorktreePush {
-				if !inspected.GetGitState().GetCanPush() {
-					return control.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
-				}
-				if err := callWorker("PushBranch", &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
-					return emitInnerRPCError(err)
-				}
-			}
-		}
-		// Carry the degraded-close hint into the output so a CLI user
-		// sees the close proceeded without the git-state check (mirrors
-		// the frontend's warn toast on the same field). Safe on the
-		// unreachable-worker path above: `inspected` is nil there, and a
-		// generated getter on a nil message answers the zero value.
-		inspectHint = inspected.GetErrorHint()
-
-		if err := cc.submitOps(closeBatchOps(cc.bs, tt, got.TabID, inspected.GetDescendantAgentIds())); err != nil {
-			return err
-		}
-
-		// Worker-side teardown. Mirrors useTabOperations.handleTabClose:
-		// the CRDT tombstone is the authoritative removal, and these
-		// inner-RPCs are fire-and-forget cleanup (PTY teardown, optional
-		// worktree removal). callInnerRPC failures are demoted to envelope
-		// fields so the user sees both the close success and the cleanup
-		// outcome.
-		subagents, closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
-
-		// Anything the inspect did not already cover. The worker reads the tree
-		// again AFTER its teardown, so this catches a subagent the provider
-		// spawned while it drained -- which the inspect, taken before any of
-		// that, could not have seen.
-		//
-		// The ids the first batch carried are excluded: they are tombstoned
-		// already, and the hub rejects a tombstone for a record whose tile id a
-		// tombstone stripped -- which would fail this whole batch.
-		//
-		// Best-effort: the parent is already tombstoned and its worker-side
-		// teardown already ran, so a rejected batch here must not turn a
-		// completed close into a command failure. It is reported instead.
-		var subagentErr error
-		if ops := subagentTombstoneOps(cc.bs, exceptAlreadySubmitted(subagents, inspected.GetDescendantAgentIds())); len(ops) > 0 {
-			// trySubmitOps, not submitOps: the emitting variant would print an
-			// error envelope over the success this command already earned.
-			// It reports a rejection as an error too, so one branch covers both.
-			if _, _, err := cc.trySubmitOps(ops); err != nil {
-				subagentErr = err
-			}
-		}
-
-		out := map[string]any{
-			"tab_id":     got.TabID,
-			"tab_type":   tabTypeName(got.TabType),
-			"tombstoned": true,
-		}
-		if wt != closeWorktreeUnspecified {
-			out["worktree"] = string(wt)
-		}
-		// Reported only when the flag actually suppressed a refusal, so a script
-		// can tell "closed an idle tab" from "closed over running work".
-		if busyOverridden {
-			out["busy_override"] = true
-		}
-		if inspectHint != "" {
-			out["inspect_hint"] = inspectHint
-		}
-		if closeErr != nil {
-			out["worker_close_error"] = closeErr.Error()
-		}
-		if len(subagents) > 0 {
-			out["closed_subagent_tab_ids"] = subagents
-		}
-		if subagentErr != nil {
-			out["subagent_close_error"] = subagentErr.Error()
-		}
-		return control.EmitData(out)
+		// The whole close runs inside the body, because the channel closes when
+		// the body returns. Each error of the close is already an envelope.
+		return withBestEffortWorkerChannel(ctx, c, got.WorkerID, func(w workerCall) error {
+			return closeTabOnWorker(ctx, w, cc, got, wt, allowBusy)
+		})
 	})
+}
+
+// closeTabOnWorker runs the close from the inspect to the final envelope, and
+// it makes every worker call on w. Every error that it returns is an envelope
+// that it already printed.
+//
+// w is valid only inside the body of withBestEffortWorkerChannel, which closes
+// the shared channel when it returns. A parameter keeps each use inside that
+// body, where a variable outside the body would allow a call after the close.
+func closeTabOnWorker(ctx context.Context, w workerCall, cc *crdtCall, got resolve.Resolved, wt tabCloseWorktree, allowBusy bool) error {
+	tt := got.TabType
+	callWorker := func(method string, in, out proto.Message) error {
+		return w.Call(ctx, method, in, out)
+	}
+
+	// Last-tab worktree gate, for every tab type. A file tab holds a
+	// worktree open exactly like an agent or terminal does (the worker
+	// ref-counts worktree_tabs type-agnostically) and answers branch
+	// questions from its own working dir, so skipping the inspect for it
+	// meant the CLI closed the last tab on a worktree without the
+	// forced --worktree choice the UI puts in front of the same close.
+	worktreeAction := wt.worktreeAction()
+	var inspectHint string
+	inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
+	if ierr != nil {
+		// Worker unreachable / not found is the same fallback the
+		// frontend uses: skip the dialog, proceed with implicit
+		// KEEP. The CRDT tombstone still runs and the worker's
+		// reconciler eventually catches up.
+		if !isWorkerUnreachable(ierr) {
+			return control.EmitErrorWith("inspect_failed", ierr)
+		}
+	}
+
+	// Refuse an ineligible discard before the tombstone, even when no dialog applies.
+	if msg := discardRefusalMessage(wt, inspected); msg != "" {
+		return control.EmitError("invalid_request", msg)
+	}
+
+	// Busy-tab gate, BEFORE the tombstone for the same reason the discard
+	// refusal is: after the tab is destroyed a refusal has nowhere to go.
+	//
+	// Only when the worktree gate did NOT fire. The two prompts are mutually
+	// exclusive, and the worktree one wins: its forced --worktree choice
+	// already makes the user state an intent for this close, and stacking a
+	// second required flag on the same command would send them back twice for
+	// one close. The browser splits the same two dialogs on the same rule.
+	busyOverridden := false
+	// Skipped entirely when the inspect failed: the worker is unreachable, so
+	// the busy probe would only spend two more round trips to learn the same
+	// thing, and it fails open regardless.
+	if ierr == nil && !inspected.GetShouldPrompt() {
+		if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.TabID}}); len(busy) > 0 {
+			if !allowBusy {
+				return errTabBusyRefused(busy)
+			}
+			busyOverridden = true
+		}
+	}
+
+	if inspected.GetShouldPrompt() {
+		if wt == closeWorktreeUnspecified {
+			return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
+		}
+		if wt == closeWorktreePush {
+			if !inspected.GetGitState().GetCanPush() {
+				return control.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
+			}
+			if err := callWorker(leapmuxv1connect.WorkerGitServicePushBranchProcedure, &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
+				return emitInnerRPCError(err)
+			}
+		}
+	}
+	// Carry the degraded-close hint into the output so a CLI user
+	// sees the close proceeded without the git-state check (mirrors
+	// the frontend's warn toast on the same field). Safe on the
+	// unreachable-worker path above: `inspected` is nil there, and a
+	// generated getter on a nil message answers the zero value.
+	inspectHint = inspected.GetErrorHint()
+
+	if err := cc.submitOps(closeBatchOps(cc.bs, tt, got.TabID, inspected.GetDescendantAgentIds())); err != nil {
+		return err
+	}
+
+	// Worker-side teardown. Mirrors useTabOperations.handleTabClose:
+	// the CRDT tombstone is the authoritative removal, and these
+	// inner-RPCs are fire-and-forget cleanup (PTY teardown, optional
+	// worktree removal). callInnerRPC failures are demoted to envelope
+	// fields so the user sees both the close success and the cleanup
+	// outcome.
+	subagents, closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
+
+	// Anything the inspect did not already cover. The worker reads the tree
+	// again AFTER its teardown, so this catches a subagent the provider
+	// spawned while it drained -- which the inspect, taken before any of
+	// that, could not have seen.
+	//
+	// The ids the first batch carried are excluded: they are tombstoned
+	// already, and the hub rejects a tombstone for a record whose tile id a
+	// tombstone stripped -- which would fail this whole batch.
+	//
+	// Best-effort: the parent is already tombstoned and its worker-side
+	// teardown already ran, so a rejected batch here must not turn a
+	// completed close into a command failure. It is reported instead.
+	var subagentErr error
+	if ops := subagentTombstoneOps(cc.bs, exceptAlreadySubmitted(subagents, inspected.GetDescendantAgentIds())); len(ops) > 0 {
+		// trySubmitOps, not submitOps: the emitting variant would print an
+		// error envelope over the success this command already earned.
+		// It reports a rejection as an error too, so one branch covers both.
+		if _, _, err := cc.trySubmitOps(ops); err != nil {
+			subagentErr = err
+		}
+	}
+
+	out := map[string]any{
+		"tab_id":     got.TabID,
+		"tab_type":   tabTypeName(got.TabType),
+		"tombstoned": true,
+	}
+	if wt != closeWorktreeUnspecified {
+		out["worktree"] = string(wt)
+	}
+	// Reported only when the flag actually suppressed a refusal, so a script
+	// can tell "closed an idle tab" from "closed over running work".
+	if busyOverridden {
+		out["busy_override"] = true
+	}
+	if inspectHint != "" {
+		out["inspect_hint"] = inspectHint
+	}
+	if closeErr != nil {
+		out["worker_close_error"] = closeErr.Error()
+	}
+	if len(subagents) > 0 {
+		out["closed_subagent_tab_ids"] = subagents
+	}
+	if subagentErr != nil {
+		out["subagent_close_error"] = subagentErr.Error()
+	}
+	return control.EmitData(out)
 }
 
 // tabCloseWorktree is the parsed --worktree flag. Unspecified is
@@ -278,7 +289,7 @@ type workerCaller func(method string, in proto.Message, out proto.Message) error
 // The context rides on the bound caller, so this takes none of its own.
 func inspectLastTabCloseBest(call workerCaller, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	resp := &leapmuxv1.InspectLastTabCloseResponse{}
-	if err := call("InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{TabType: tabType, TabId: tabID}, resp); err != nil {
+	if err := call(leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure, &leapmuxv1.InspectLastTabCloseRequest{Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID}}, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -363,7 +374,7 @@ func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {
 // with this one, then the tab itself.
 //
 // The ORDER is the point, and it is why the inspect reports the subtree at all.
-// A client that learned the ids only from the CloseAgent response would have to
+// A client that learned the ids only from the CloseTab response would have to
 // tombstone the parent first and the children a round trip later; every peer
 // would then promote the orphaned children to top-level rows claiming a lineage
 // the user can no longer see, for as long as the worker teardown takes -- which
@@ -381,7 +392,7 @@ func closeBatchOps(bs *CRDTBootstrap, tt leapmuxv1.TabType, tabID string, descen
 // hold, preserving order.
 //
 // A `tab close` learns the subtree twice: from the inspect, before the parent's
-// tombstone, and from CloseAgent, after the teardown. The second answer is a
+// tombstone, and from CloseTab, after the teardown. The second answer is a
 // superset -- it also holds anything the provider spawned while it drained --
 // so only the difference belongs in the second batch. Re-tombstoning an id the
 // first batch already retired would fail the whole batch, because the hub
@@ -443,41 +454,21 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 	if got.WorkerID == "" {
 		return nil, nil
 	}
-	switch tt {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		resp := &leapmuxv1.CloseAgentResponse{}
-		if err := call("CloseAgent",
-			&leapmuxv1.CloseAgentRequest{AgentId: got.TabID, WorktreeAction: action},
-			resp); err != nil {
-			return nil, err
-		}
-		return resp.GetDescendantAgentIds(), nil
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return nil, call("CloseTerminal",
-			&leapmuxv1.CloseTerminalRequest{
-				TerminalId:     got.TabID,
-				WorktreeAction: action,
-			},
-			&leapmuxv1.CloseTerminalResponse{})
-	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
-		// A payload-backed tab DOES have a worker-side row:
-		// worker_tab_payloads, plus the worktree_tabs link that ref-counts its
-		// worktree. Revoking is what drives the shared closeTabCommon flow --
-		// the same one CloseAgent and CloseTerminal drive -- so
-		// `--worktree=discard` actually removes the worktree and the link does
-		// not linger as a strand for the orphan reconciler to sweep later. This
-		// used to fall through to the default and dispatch nothing, on the
-		// belief that the CRDT tombstone was the whole teardown; it is not, and
-		// the frontend's own close has always called this RPC.
-		return nil, call("RevokeTabPayload",
-			&leapmuxv1.RevokeTabPayloadRequest{
-				TabId:          got.TabID,
-				WorktreeAction: action,
-			},
-			&leapmuxv1.RevokeTabPayloadResponse{})
-	default:
-		// UNSPECIFIED never reaches here -- the caller resolved a concrete tab
-		// before dispatching.
-		return nil, nil
+	// One RPC for every tab type. A FILE or IMAGE tab DOES have a worker-side
+	// row: worker_tab_payloads, plus the worktree_tabs link that ref-counts its
+	// worktree. Closing it drives the shared closeTabCommon flow, so
+	// `--worktree=discard` actually removes the worktree and the link does not
+	// linger as a strand for the orphan reconciler to sweep later. UNSPECIFIED
+	// never reaches here -- the caller resolved a concrete tab before
+	// dispatching -- and the worker refuses it.
+	resp := &leapmuxv1.CloseTabResponse{}
+	if err := call(leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
+		&leapmuxv1.CloseTabRequest{
+			Tab:            &leapmuxv1.TabIdent{TabType: tt, TabId: got.TabID},
+			WorktreeAction: action,
+		},
+		resp); err != nil {
+		return nil, err
 	}
+	return resp.GetDescendantAgentIds(), nil
 }

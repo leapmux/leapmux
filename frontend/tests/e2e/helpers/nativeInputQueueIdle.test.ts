@@ -1,9 +1,16 @@
-import type { WatchAgentState } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import type { WatchAgentState, WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
-import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import {
+  AgentInputKind,
+  AgentInputQueuePauseReason,
+  AgentInputQueueSnapshotSchema,
+  AgentInputState,
+  ListAgentInputQueueResponseSchema,
+  WorkerAgentInputService,
+} from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason, WatchReplayMode, WorkerWatchService } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { AGENT_WATCH_UPDATE_ID } from './agentEventWatch'
 import { NativeInputQueueIdleCollector, readNativeInputQueue, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
 import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
@@ -21,14 +28,14 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, options: { agentId?: string, agentStates?: WatchAgentState[] } = {}): Uint8Array {
+function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, options: { agentId?: string, agentStates?: WatchAgentState[] } = {}): WatchEventsResponse {
   const agentId = options.agentId ?? 'agent-1'
   const agentStates = options.agentStates ?? (rejectedAgent === agentId
     ? []
     : [
         create(WatchAgentStateSchema, { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }),
       ])
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'updateAck',
       value: {
@@ -41,11 +48,11 @@ function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: strin
         agentStates,
       },
     },
-  }))
+  })
 }
 
-function queueFrame(agentId: string, options: { revision?: bigint, active?: boolean, paused?: boolean, innerId?: string, absent?: boolean } = {}): Uint8Array {
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+function queueFrame(agentId: string, options: { revision?: bigint, active?: boolean, paused?: boolean, absent?: boolean } = {}): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
     event: {
       case: 'agentEvent',
       value: {
@@ -56,16 +63,17 @@ function queueFrame(agentId: string, options: { revision?: bigint, active?: bool
             ? {}
             : {
                 snapshot: {
-                  agentId: options.innerId ?? agentId,
                   revision: options.revision ?? 1n,
                   activeTurn: options.active ?? true,
-                  paused: options.paused ?? false,
+                  pauseReason: options.paused
+                    ? AgentInputQueuePauseReason.MANUAL
+                    : AgentInputQueuePauseReason.UNSPECIFIED,
                 },
               },
         },
       },
     },
-  }))
+  })
 }
 
 describe('NativeInputQueueIdleCollector', () => {
@@ -118,7 +126,7 @@ describe('NativeInputQueueIdleCollector', () => {
     collector.accept(acknowledgement(2n, 'unrelated-agent'))
     expect(collector.subscribed).toBe(false)
     collector.accept(acknowledgement())
-    expect(collector.idleSnapshot).toMatchObject({ agentId: 'agent-1', revision: 0n, activeTurn: false })
+    expect(collector.idleSnapshot).toMatchObject({ revision: 0n, activeTurn: false })
   })
 
   it('keeps an acknowledged active turn pending until its newer idle revision', () => {
@@ -135,7 +143,7 @@ describe('NativeInputQueueIdleCollector', () => {
   it.each(['canSteer', 'canPreempt'] as const)('accepts a native %s refresh without a queue revision change', (capability) => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
     const initial = capability === 'canSteer'
-    const frame = (enabled: boolean) => toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+    const frame = (enabled: boolean) => create(WatchEventsResponseSchema, {
       event: {
         case: 'agentEvent',
         value: {
@@ -144,15 +152,15 @@ describe('NativeInputQueueIdleCollector', () => {
             case: 'inputQueueChanged',
             value: {
               snapshot: {
-                agentId: 'agent-1',
                 revision: 7n,
                 activeTurn: true,
                 activeTurnSteerable: capability === 'canSteer',
-                paused: capability === 'canSteer',
+                pauseReason: capability === 'canSteer'
+                  ? AgentInputQueuePauseReason.MANUAL
+                  : AgentInputQueuePauseReason.UNSPECIFIED,
                 items: [
                   {
                     id: 'queued-native-input',
-                    agentId: 'agent-1',
                     kind: capability === 'canSteer'
                       ? AgentInputKind.USER_MESSAGE
                       : AgentInputKind.PLAN_EXECUTION,
@@ -165,13 +173,13 @@ describe('NativeInputQueueIdleCollector', () => {
           },
         },
       },
-    }))
+    })
     collector.accept(acknowledgement())
     collector.accept(frame(initial))
     expect(() => collector.accept(frame(!initial))).not.toThrow()
     expect(collector.idleSnapshot).toBeUndefined()
     collector.accept(queueFrame('agent-1', { revision: 8n, active: false }))
-    expect(collector.idleSnapshot).toMatchObject({ agentId: 'agent-1', revision: 8n, activeTurn: false })
+    expect(collector.idleSnapshot).toMatchObject({ revision: 8n, activeTurn: false })
   })
 
   it('accepts a repeated identical revision without changing its native state', () => {
@@ -209,7 +217,7 @@ describe('NativeInputQueueIdleCollector', () => {
 
   it('ignores unrelated native agent events', () => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
-    collector.accept(toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+    collector.accept(create(WatchEventsResponseSchema, {
       event: {
         case: 'agentEvent',
         value: {
@@ -217,7 +225,7 @@ describe('NativeInputQueueIdleCollector', () => {
           event: { case: 'catchUpComplete', value: {} },
         },
       },
-    })))
+    }))
     expect(collector.idleSnapshot).toBeUndefined()
   })
 
@@ -226,19 +234,10 @@ describe('NativeInputQueueIdleCollector', () => {
     expect(() => collector.accept(queueFrame('agent-1', { absent: true }))).toThrow('no queue snapshot')
   })
 
-  it.each(['', 'different-agent'])('rejects an inner snapshot with a different agent ID: %j', (innerId) => {
-    const collector = new NativeInputQueueIdleCollector('agent-1')
-    expect(() => collector.accept(queueFrame('agent-1', { innerId }))).toThrow('different agent')
-  })
-
   it('rejects a refused subscription', () => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
     expect(() => collector.accept(acknowledgement(1n, 'agent-1'))).toThrow('refused')
     expect(collector.subscribed).toBe(false)
-  })
-
-  it('rejects malformed protobuf data', () => {
-    expect(() => new NativeInputQueueIdleCollector('agent-1').accept(Uint8Array.of(0xFF))).toThrow('The Worker sent an invalid input queue subscription frame.')
   })
 
   it.each(['', ' \n\t'])('rejects an empty agent ID: %j', (agentId) => {
@@ -263,8 +262,8 @@ describe('waitForNativeInputQueueIdle', () => {
       throw new Error('The input queue wait did not create its native stream.')
     const [channelId, method, payload] = request
     expect(channelId).toBe('native-channel')
-    expect(method).toBe('WatchEvents')
-    expect(fromBinary(WatchEventsRequestSchema, payload)).toMatchObject({
+    expect(method).toBe(WorkerWatchService.method.watchEvents)
+    expect(create(WatchEventsRequestSchema, payload)).toMatchObject({
       agents: [
         {
           agentId: 'agent-1',
@@ -278,7 +277,7 @@ describe('waitForNativeInputQueueIdle', () => {
     stream.message(queueFrame('agent-1', { active: false }))
     expect(stream.cancel).not.toHaveBeenCalled()
     stream.message(acknowledgement())
-    await expect(waiting).resolves.toMatchObject({ agentId: 'agent-1', activeTurn: false })
+    await expect(waiting).resolves.toMatchObject({ activeTurn: false })
     expect(stream.cancel).toHaveBeenCalledExactlyOnceWith()
   })
 
@@ -299,10 +298,6 @@ describe('waitForNativeInputQueueIdle', () => {
     {
       frame: queueFrame('agent-1', { absent: true }),
       message: 'no queue snapshot',
-    },
-    {
-      frame: queueFrame('agent-1', { innerId: 'other-agent' }),
-      message: 'different agent',
     },
     {
       frame: acknowledgement(1n, 'agent-1'),
@@ -495,7 +490,7 @@ describe('waitForNativeInputQueueIdle', () => {
     expect(stream.cancel).not.toHaveBeenCalled()
     stream.message(acknowledgement())
     stream.message(queueFrame('agent-1', { active: false }))
-    await expect(waiting).resolves.toMatchObject({ agentId: 'agent-1' })
+    await expect(waiting).resolves.toMatchObject({ activeTurn: false })
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -508,15 +503,16 @@ describe('waitForNativeInputQueueIdle', () => {
     await Promise.all([first.ready, second.ready])
     first.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, { agentId: 'agent-1' }))
     second.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, { agentId: 'agent-2' }))
-    first.message(queueFrame('agent-2', { active: false }))
-    second.message(queueFrame('agent-1', { active: false }))
+    // A distinct revision per agent identifies which agent's snapshot each wait returned.
+    first.message(queueFrame('agent-2', { active: false, revision: 22n }))
+    second.message(queueFrame('agent-1', { active: false, revision: 11n }))
     expect(first.cancel).not.toHaveBeenCalled()
     expect(second.cancel).not.toHaveBeenCalled()
-    first.message(queueFrame('agent-1', { active: false }))
-    await expect(firstWait).resolves.toMatchObject({ agentId: 'agent-1' })
+    first.message(queueFrame('agent-1', { active: false, revision: 11n }))
+    await expect(firstWait).resolves.toMatchObject({ revision: 11n })
     expect(second.cancel).not.toHaveBeenCalled()
-    second.message(queueFrame('agent-2', { active: false }))
-    await expect(secondWait).resolves.toMatchObject({ agentId: 'agent-2' })
+    second.message(queueFrame('agent-2', { active: false, revision: 22n }))
+    await expect(secondWait).resolves.toMatchObject({ revision: 22n })
     expect(first.cancel).toHaveBeenCalledOnce()
     expect(second.cancel).toHaveBeenCalledOnce()
   })
@@ -524,10 +520,9 @@ describe('waitForNativeInputQueueIdle', () => {
 
 describe('readNativeInputQueue', () => {
   const snapshot = create(AgentInputQueueSnapshotSchema, {
-    agentId: 'agent-1',
     revision: 3n,
     activeTurn: true,
-    paused: true,
+    pauseReason: AgentInputQueuePauseReason.MANUAL,
   })
 
   it('returns the queue snapshot that the Worker of the agent states', async () => {
@@ -535,7 +530,7 @@ describe('readNativeInputQueue', () => {
     getTestChannel.mockResolvedValue({ callWorker })
     await expect(readNativeInputQueue(server, 'agent-1')).resolves.toEqual(snapshot)
     expect(getTestChannel).toHaveBeenCalledWith('http://mock.invalid', 'mock-admin')
-    expect(callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, { agentId: 'agent-1' })
+    expect(callWorker).toHaveBeenCalledExactlyOnceWith('worker-1', WorkerAgentInputService.method.listAgentInputQueue, { agentId: 'agent-1' })
   })
 
   it('refuses a response with no snapshot, which states no queue', async () => {
@@ -543,15 +538,6 @@ describe('readNativeInputQueue', () => {
       callWorker: async () => create(ListAgentInputQueueResponseSchema, {}),
     })
     await expect(readNativeInputQueue(server, 'agent-1')).rejects.toThrow('The Worker sent no input queue snapshot for agent agent-1.')
-  })
-
-  it('refuses a snapshot of another agent', async () => {
-    getTestChannel.mockResolvedValue({
-      callWorker: async () => create(ListAgentInputQueueResponseSchema, {
-        snapshot: { ...snapshot, agentId: 'agent-2' },
-      }),
-    })
-    await expect(readNativeInputQueue(server, 'agent-1')).rejects.toThrow('The Worker sent the input queue of agent agent-2 for agent agent-1.')
   })
 
   it('keeps the error of a failed Worker read', async () => {

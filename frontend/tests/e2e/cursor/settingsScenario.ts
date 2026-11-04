@@ -1,7 +1,7 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AgentOptionSettlementState, UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentOptionSettlementState, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
@@ -91,7 +91,7 @@ export async function exerciseCursorNativePlanRPC(context: ManagedNativeScenario
   if (!agent)
     throw new Error('Cursor has no running agent for the mode request.')
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const response = await channel.callWorker(server.workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, {
+  const response = await channel.callWorker(server.workerId, WorkerAgentService.method.updateAgentSettings, {
     agentId: agent.id,
     settings: {
       options: { permissionMode: 'plan' },

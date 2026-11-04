@@ -50,7 +50,7 @@ A grant is a set of named permissions. Each one is a sentence on the consent scr
 | `account:read` | Read your profile: your username, your email address and whether you are an administrator. |
 | `account:write` | Change your profile and your account settings, including your password. |
 | `workspace:read` | Read your workspaces, your tabs and your layout. |
-| `workspace:write` | Create, rename, move and close your workspaces and tabs. |
+| `workspace:write` | Create, rename, move and close your workspaces and tabs. Closing a tab stops its agent or terminal. |
 | `worker:read` | List your workers and connect to one. |
 | `worker:admin` | Rename and deregister your workers, and manage the keys that let a machine join. |
 | `agent:read` | Read your coding-agent sessions, including every message in them. |

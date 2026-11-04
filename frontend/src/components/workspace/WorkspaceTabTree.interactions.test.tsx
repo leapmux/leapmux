@@ -4,16 +4,19 @@ import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { stubBranchRefActions } from '~/test-support/branchMenu'
 import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import * as iconButtonStyles from '../common/IconButton.css'
 import { label as workingTreeLabel } from '../common/WorkingTree.css'
+import * as terminalStatusStyles from '../shell/terminalStatus.css'
 import { labelWithStats } from '../tree/sharedTree.css'
 import { WorkspaceTabTree } from './WorkspaceTabTree'
 import { buildTree } from './workspaceTabTree.model'
@@ -161,6 +164,7 @@ describe('WorkspaceTabTree interactions', () => {
           onClose: () => {},
         }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -187,6 +191,7 @@ describe('WorkspaceTabTree interactions', () => {
         onTabClick={onTabClick}
         tabItemOps={{ onClose: onTabClose }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -210,6 +215,7 @@ describe('WorkspaceTabTree interactions', () => {
         onTabClick={() => {}}
         tabItemOps={{ onClose: onTabClose }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -235,6 +241,7 @@ describe('WorkspaceTabTree interactions', () => {
         onTabClick={() => {}}
         archived
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -256,6 +263,7 @@ describe('WorkspaceTabTree interactions', () => {
           closingKeys: new Set([`${TabType.AGENT}:a1`]),
         }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -275,6 +283,7 @@ describe('WorkspaceTabTree interactions', () => {
         onTabClick={() => {}}
         tabItemOps={{ onRename }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -300,6 +309,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -322,6 +332,7 @@ describe('WorkspaceTabTree interactions', () => {
           onRename: vi.fn(),
         }}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -359,6 +370,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -393,6 +405,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -427,6 +440,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -459,6 +473,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -490,6 +505,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => false}
         branchActions={branchActions}
@@ -526,6 +542,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
         branchActions={branchActions}
@@ -559,6 +576,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -572,9 +590,9 @@ describe('WorkspaceTabTree interactions', () => {
 
   /**
    * The gate has to track, not just read once. Its whole premise is that the
-   * menu renders from the last Worker state the Hub pushed, so when a
-   * WORKERS_CHANGED frame flips a Worker back online the already-open menu must
-   * become usable without a remount.
+   * menu renders from the last Worker list the client fetched, so when a
+   * `workersChanged` user event makes that list read a Worker online again, the
+   * already-open menu must become usable without a remount.
    */
   it('re-enables the branch actions when the worker comes back online', async () => {
     const [online, setOnline] = createSignal(false)
@@ -588,6 +606,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => online()}
         branchActions={branchActions}
@@ -627,6 +646,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
         branchActions={stubBranchRefActions()}
@@ -678,6 +698,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           archived={archived}
           branchActions={branchActions}
@@ -729,6 +750,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -760,6 +782,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -833,6 +856,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           {...(opts.noWorkerInfo
             ? {}
@@ -964,6 +988,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           workerInfoFn={lookup}
         />
@@ -1018,6 +1043,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           workerInfoFn={() => info()}
         />
@@ -1054,6 +1080,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -1125,6 +1152,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={stubBranchRefActions()}
       />
@@ -1147,6 +1175,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1180,6 +1209,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={stubBranchRefActions()}
       />
@@ -1201,6 +1231,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         archived
         branchActions={stubBranchRefActions()}
@@ -1224,6 +1255,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         tabItemOps={{
           onClose: vi.fn(),
@@ -1247,6 +1279,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         tabItemOps={{
           onClose: vi.fn(),
@@ -1269,6 +1302,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         tabItemOps={{
           onClose: vi.fn(),
@@ -1298,6 +1332,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -1404,6 +1439,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1483,6 +1519,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1550,6 +1587,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1637,6 +1675,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1682,7 +1721,7 @@ describe('WorkspaceTabTree interactions', () => {
       gitToplevel: '/repo',
     } as Tab
 
-    function renderTabs(initial: Tab[]) {
+    function renderTabs(initial: Tab[], isWorkerStreamOnline: (workerId: string) => boolean = () => true) {
       const [tabs, setTabs] = createSignal<Tab[]>(initial)
       renderTree(() => (
         <WorkspaceTabTree
@@ -1691,6 +1730,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={isWorkerStreamOnline}
           workspaceId="ws-1"
         />
       ))
@@ -1751,6 +1791,46 @@ describe('WorkspaceTabTree interactions', () => {
       ])
       expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus)
         .toBe(String(TerminalStatus.EXITED))
+    })
+
+    // DISCONNECTED is the client's own status, not a worker value, and the
+    // row still shows it: the leaf states it, and the label fades. The tab
+    // does not change, so only the store can move the row, in both directions.
+    it('shows a READY terminal as disconnected for as long as its worker is offline', () => {
+      const workerOnline = createWorkerOnlineStore()
+      const term = {
+        ...bareAgent,
+        type: TabType.TERMINAL,
+        id: 't1',
+        title: 'zsh',
+        workerId: 'w-1',
+        status: TerminalStatus.READY,
+      } as Tab
+      renderTabs([term], workerOnline.isOnline)
+      const label = () => within(screen.getByTestId('tab-tree-leaf')).getByText('zsh')
+      expect(label()).not.toHaveClass(terminalStatusStyles.disconnected)
+
+      workerOnline.setOnline('w-1', false)
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus).toBe(TERMINAL_DISCONNECTED)
+      expect(label()).toHaveClass(terminalStatusStyles.disconnected)
+
+      workerOnline.setOnline('w-1', true)
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus).toBe(String(TerminalStatus.READY))
+      expect(label()).not.toHaveClass(terminalStatusStyles.disconnected)
+    })
+
+    it('keeps a STARTING terminal of an offline worker as STARTING', () => {
+      const term = {
+        ...bareAgent,
+        type: TabType.TERMINAL,
+        id: 't1',
+        title: 'zsh',
+        workerId: 'w-1',
+        status: TerminalStatus.STARTING,
+      } as Tab
+      renderTabs([term], () => false)
+
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus).toBe(String(TerminalStatus.STARTING))
     })
 
     /**
@@ -1827,6 +1907,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={branchActions}
         />
@@ -1852,6 +1933,7 @@ describe('WorkspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -1898,6 +1980,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1917,6 +2000,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1941,6 +2025,7 @@ describe('WorkspaceTabTree interactions', () => {
           onTabClick={() => {}}
           workspaceId="ws-1"
           isLocalWorkerFn={() => true}
+          isWorkerStreamOnline={() => true}
           branchActions={stubBranchRefActions()}
         />
       ))
@@ -1960,6 +2045,7 @@ describe('WorkspaceTabTree interactions', () => {
           onTabClick={() => {}}
           workspaceId="ws-1"
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           branchActions={stubBranchRefActions()}
         />
       ))
@@ -1985,6 +2071,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -2007,6 +2094,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -2048,6 +2136,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           archived
           branchActions={stubBranchRefActions()}
@@ -2067,6 +2156,7 @@ describe('WorkspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           isLocalWorkerFn={() => false}
+          isWorkerStreamOnline={() => true}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -2125,6 +2215,7 @@ describe('WorkspaceTabTree subagent nesting', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -2146,6 +2237,7 @@ describe('WorkspaceTabTree subagent nesting', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -2167,6 +2259,7 @@ describe('WorkspaceTabTree subagent nesting', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -2189,6 +2282,7 @@ describe('WorkspaceTabTree subagent nesting', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-1"
       />
     ))
@@ -2237,6 +2331,7 @@ describe('WorkspaceTabTree activity marker', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId={workspaceId}
       />
     ))
@@ -2322,6 +2417,7 @@ describe('WorkspaceTabTree activity marker', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         isLocalWorkerFn={() => false}
+        isWorkerStreamOnline={() => true}
         workspaceId="ws-marker-live"
       />
     ))

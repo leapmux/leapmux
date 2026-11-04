@@ -2,10 +2,10 @@ import type { Accessor, Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
 import type { RepoCheckout } from './repoCheckouts'
 import type { BranchGroup, BranchRef, RepoGroup, TabNode, WorkerProjectionEntry } from './workspaceTabTree.model'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import type { Tab, TabItemOps } from '~/stores/tab.types'
+import type { Tab, TabItemOps, TerminalDisplayStatus } from '~/stores/tab.types'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import X from 'lucide-solid/icons/x'
@@ -26,8 +26,7 @@ import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromRepo } from '~/stores/repoGit'
-import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import { isTerminalTab } from '~/stores/tab.types'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
@@ -82,6 +81,8 @@ export const RolledUpNotificationDot: Component<{
 
 const TabLeaf: Component<{
   tab: Tab
+  /** What the row shows for a terminal; undefined for the other kinds. */
+  terminalStatus: TerminalDisplayStatus | undefined
   workspaceId: string
   depth: number
   isActive: boolean
@@ -160,9 +161,7 @@ const TabLeaf: Component<{
       // that rather than on the presence of a hashed style class.
       data-active={props.isActive ? 'true' : 'false'}
       data-tab-id={props.tab.id}
-      data-terminal-status={isTerminalTab(props.tab)
-        ? props.tab.status
-        : undefined}
+      data-terminal-status={props.terminalStatus}
     >
       <div class={shared.chevronPlaceholder} />
       <TabTypeIcon tab={props.tab} class={css.tabIcon} />
@@ -198,9 +197,7 @@ const TabLeaf: Component<{
         <Tooltip text={tabTooltipText(props.tab)} showWhen={tabTooltipShowWhen(props.tab)}>
           <span
             class={css.tabLabel}
-            classList={terminalStatusClassList(isTerminalTab(props.tab)
-              ? props.tab.status
-              : undefined)}
+            classList={terminalStatusClassList(props.terminalStatus)}
           >
             {tabDisplayLabel(props.tab)}
           </span>
@@ -279,6 +276,8 @@ interface RowSelectionContextValue {
   setCollapsedMany: (keys: readonly string[], collapsed: boolean) => void
   /** Whether a Worker is THIS machine. See `~/lib/workerLocality`. */
   isLocalWorker: (workerId: string) => boolean
+  /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   /**
    * The tab a key identifies RIGHT NOW, straight off `props.tabs` -- never off the
    * cached tree. Reactive: reading it inside a row subscribes that row to its
@@ -374,6 +373,7 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   return (
     <TabLeaf
       tab={props.tab}
+      terminalStatus={terminalDisplayStatus(props.tab, sel.isWorkerStreamOnline)}
       workspaceId={sel.workspaceId()}
       depth={props.depth}
       isActive={tabKey(props.tab) === sel.activeTabKey()}
@@ -819,6 +819,15 @@ export interface WorkspaceTabTreeProps {
    * say anything but `() => false`.
    */
   isLocalWorkerFn: (workerId: string) => boolean
+  /**
+   * Whether this client's watch stream reaches a Worker, for the status of a
+   * terminal row. See `WorkerOnlineStore.isOnline`.
+   *
+   * REQUIRED, for the reason `isLocalWorkerFn` gives. This is not
+   * `isWorkerKnownOnline`: that one reads the worker list that this client last
+   * fetched, and only this one says whether this client can reach a shell.
+   */
+  isWorkerStreamOnline: (workerId: string) => boolean
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -1013,6 +1022,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     toggleCollapsed,
     setCollapsedMany,
     isLocalWorker: workerId => props.isLocalWorkerFn(workerId),
+    isWorkerStreamOnline: workerId => props.isWorkerStreamOnline(workerId),
     liveTab: key => tabByKey().get(key),
     liveTabs: tabs => tabs
       .map(t => tabByKey().get(tabKey(t)))

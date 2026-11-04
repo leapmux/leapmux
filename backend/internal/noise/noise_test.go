@@ -1,16 +1,47 @@
 package noise
 
 import (
+	"bytes"
+	"crypto/mlkem"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/cloudflare/circl/sign/slhdsa"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/curve25519"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
+
+// The contract states these sizes for both languages, and the handshake runs on
+// these libraries. A size that differed from theirs would refuse every valid
+// worker or admit a value that the handshake cannot use.
+func TestSizeContractsMatchTheCryptographyLibraries(t *testing.T) {
+	assert.Equal(t, curve25519.PointSize, contracts.X25519PublicKeySize)
+	assert.Equal(t, mlkem.EncapsulationKeySize1024, contracts.MlkemPublicKeySize)
+	assert.Equal(t, slhdsa.SHAKE_256f.Scheme().PublicKeySize(), contracts.SlhdsaPublicKeySize)
+	assert.Equal(t, slhdsa.SHAKE_256f.Scheme().SignatureSize(), contracts.SlhdsaSignatureSize)
+	assert.Equal(t, chacha20poly1305.Overhead, contracts.NoiseAEADAuthTagSize)
+}
+
+// The sizes of a real keypair, as the second opinion on each library constant.
+func TestGeneratedKeysHaveTheContractSizes(t *testing.T) {
+	key, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPub, err := key.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+
+	assert.Len(t, key.X25519Public, contracts.X25519PublicKeySize)
+	assert.Len(t, key.MlkemPublicKeyBytes(), contracts.MlkemPublicKeySize)
+	assert.Len(t, slhdsaPub, contracts.SlhdsaPublicKeySize)
+}
 
 func TestHandshakeRoundtrip(t *testing.T) {
 	// Worker generates composite keypair.
@@ -185,12 +216,12 @@ func TestPlaintextSizeLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Exactly at limit should succeed.
-	atLimit := make([]byte, MaxPlaintextSize)
+	atLimit := make([]byte, contracts.MaxPlaintextPerChunk)
 	_, err = session.Encrypt(atLimit)
 	require.NoError(t, err)
 
 	// One byte over limit should fail.
-	overLimit := make([]byte, MaxPlaintextSize+1)
+	overLimit := make([]byte, contracts.MaxPlaintextPerChunk+1)
 	_, err = session.Encrypt(overLimit)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plaintext too large")
@@ -337,11 +368,11 @@ func TestSessionNeedsRekeyEither(t *testing.T) {
 
 	assert.False(t, session.NeedsRekeyEither())
 
-	send.SetNonceForTest(SoftNonceLimit + 1)
+	send.SetNonceForTest(contracts.SoftNonceLimit + 1)
 	assert.True(t, session.NeedsRekeyEither(), "send soft nonce must trip either")
 
 	send.SetNonceForTest(0)
-	recv.SetNonceForTest(SoftNonceLimit + 1)
+	recv.SetNonceForTest(contracts.SoftNonceLimit + 1)
 	assert.True(t, session.NeedsRekeyEither(), "receive soft nonce must trip either")
 }
 
@@ -552,12 +583,11 @@ func TestNonceLimitsConst(t *testing.T) {
 	// Pin the literal nonce limits and plaintext size so a regression in the
 	// constant expression (e.g. shifting the exponent or misplacing a `-1`)
 	// is caught here rather than only by downstream behavior.
-	assert.Equal(t, uint64(2147483647), SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
-	assert.Equal(t, uint64(4294967295), HardNonceLimit, "HardNonceLimit should be 2^32-1")
-	// MaxPlaintextSize now aliases contracts.MaxPlaintextPerChunk; the pin
-	// keeps the frozen derivation (65535 ciphertext cap - 16 tag bytes) red if
+	assert.Equal(t, uint64(2147483647), contracts.SoftNonceLimit, "SoftNonceLimit should be 2^31-1")
+	assert.Equal(t, uint64(4294967295), contracts.HardNonceLimit, "HardNonceLimit should be 2^32-1")
+	// The pin keeps the frozen derivation (65535 ciphertext cap - 16 tag bytes) red if
 	// wire.json retunes either primitive without this suite noticing.
-	assert.Equal(t, 65519, MaxPlaintextSize, "MaxPlaintextSize should be contracts.MaxPlaintextPerChunk (65535-16)")
+	assert.Equal(t, 65519, contracts.MaxPlaintextPerChunk, "MaxPlaintextPerChunk should be 65535-16")
 }
 
 func TestMessageSizes(t *testing.T) {
@@ -677,4 +707,168 @@ func TestX25519PublicFromSeedRejectsBadSeed(t *testing.T) {
 	_, err := X25519PublicFromSeed([]byte("too-short"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "X25519 seed")
+}
+
+// RestoreCompositeKeypair takes only the private halves and derives each public
+// one, so a keypair that survived a save/restore round trip is the one that was
+// generated. If it were not, the Worker would pin keys it cannot use.
+func TestRestoreCompositeKeypairRoundTripsAPrivateOnlyTriple(t *testing.T) {
+	generated, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPriv, err := generated.SlhdsaPrivateKey.MarshalBinary()
+	require.NoError(t, err)
+
+	restored, err := RestoreCompositeKeypair(
+		generated.X25519Private,
+		generated.MlkemDecapsulationKey.Bytes(),
+		slhdsaPriv,
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, generated.X25519Public, restored.X25519Public, "the public point is derived from the scalar")
+	assert.Equal(t, generated.X25519Private, restored.X25519Private)
+	assert.Equal(t, generated.MlkemPublicKeyBytes(), restored.MlkemPublicKeyBytes())
+	generatedSlhdsa, err := generated.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	restoredSlhdsa, err := restored.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	assert.Equal(t, generatedSlhdsa, restoredSlhdsa)
+	assert.Equal(t, generated.Fingerprint(), restored.Fingerprint())
+}
+
+func TestRestoreCompositeKeypairRefusesBadKeyMaterial(t *testing.T) {
+	generated, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	mlkemSeed := generated.MlkemDecapsulationKey.Bytes()
+	slhdsaPriv, err := generated.SlhdsaPrivateKey.MarshalBinary()
+	require.NoError(t, err)
+
+	// FIPS 205 slh_keygen reads SK.seed, SK.prf and PK.seed, so the private
+	// key is four n-byte fields in that order.
+	n := contracts.SlhdsaPublicKeySize / 2
+	require.Len(t, slhdsaPriv, 4*n)
+
+	alteredSeed := append([]byte(nil), slhdsaPriv...)
+	alteredSeed[0] ^= 0xFF
+	alteredRoot := append([]byte(nil), slhdsaPriv...)
+	alteredRoot[3*n] ^= 0xFF
+
+	for name, tc := range map[string]struct {
+		x25519Priv []byte
+		mlkemSeed  []byte
+		slhdsaPriv []byte
+		want       string
+	}{
+		"a short X25519 private key": {
+			x25519Priv: generated.X25519Private[:31], mlkemSeed: mlkemSeed, slhdsaPriv: slhdsaPriv,
+			want: "X25519",
+		},
+		"an ML-KEM seed of 63 bytes": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed[:63], slhdsaPriv: slhdsaPriv,
+			want: "ML-KEM",
+		},
+		"an SLH-DSA private key of 127 bytes": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: slhdsaPriv[:127],
+			want: "SLH-DSA",
+		},
+		"an SLH-DSA secret seed that does not match its embedded public key": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: alteredSeed,
+			want: "does not match its public key",
+		},
+		"an SLH-DSA PK.root that does not match the seeds": {
+			x25519Priv: generated.X25519Private, mlkemSeed: mlkemSeed, slhdsaPriv: alteredRoot,
+			want: "does not match its public key",
+		},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			ck, err := RestoreCompositeKeypair(tc.x25519Priv, tc.mlkemSeed, tc.slhdsaPriv)
+			require.Error(t, err)
+			assert.Nil(t, ck)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// staticPublicKeys returns the three static public keys of a fresh keypair.
+func staticPublicKeys(t *testing.T) (x25519Pub, mlkemPub, slhdsaPub []byte) {
+	t.Helper()
+	ck, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPub, err = ck.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	return ck.X25519Public, ck.MlkemPublicKeyBytes(), slhdsaPub
+}
+
+// A key of the right size can still be one that every handshake refuses, and a
+// pin can never change afterwards. Each of the two checks past the size check
+// has its own case, because a size check alone passes both.
+func TestValidateStaticPublicKeys(t *testing.T) {
+	x25519Pub, mlkemPub, slhdsaPub := staticPublicKeys(t)
+
+	t.Run("accepts a generated set", func(t *testing.T) {
+		require.NoError(t, ValidateStaticPublicKeys(x25519Pub, mlkemPub, slhdsaPub))
+	})
+
+	// orderEightPoint is a point of order 8 on Curve25519, encoded as an X25519
+	// public key: every X25519 private key multiplies it to the all-zero output.
+	orderEightPoint, err := hex.DecodeString("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800")
+	require.NoError(t, err)
+	// Every 12-bit coefficient of this key is 0xFFF, above the 3329 modulus.
+	outOfRangeMlkem := bytes.Repeat([]byte{0xFF}, contracts.MlkemPublicKeySize)
+
+	for _, tc := range []struct {
+		name    string
+		x25519  []byte
+		mlkem   []byte
+		slhdsa  []byte
+		wantErr string
+	}{
+		{"an absent x25519 key", nil, mlkemPub, slhdsaPub, "worker x25519 public key is 0 bytes"},
+		{"a short x25519 key", x25519Pub[:31], mlkemPub, slhdsaPub, "worker x25519 public key is 31 bytes"},
+		{"a long x25519 key", append(slices.Clone(x25519Pub), 0), mlkemPub, slhdsaPub, "worker x25519 public key is 33 bytes"},
+		{"an absent mlkem key", x25519Pub, nil, slhdsaPub, "worker mlkem public key is 0 bytes"},
+		{"a short mlkem key", x25519Pub, mlkemPub[:1567], slhdsaPub, "worker mlkem public key is 1567 bytes"},
+		{"a long mlkem key", x25519Pub, append(slices.Clone(mlkemPub), 0), slhdsaPub, "worker mlkem public key is 1569 bytes"},
+		{"an absent slhdsa key", x25519Pub, mlkemPub, nil, "worker slhdsa public key is 0 bytes"},
+		{"a short slhdsa key", x25519Pub, mlkemPub, slhdsaPub[:63], "worker slhdsa public key is 63 bytes"},
+		{"a long slhdsa key", x25519Pub, mlkemPub, append(slices.Clone(slhdsaPub), 0), "worker slhdsa public key is 65 bytes"},
+		{"32 zero bytes as the x25519 key", make([]byte, contracts.X25519PublicKeySize), mlkemPub, slhdsaPub, "low-order point"},
+		{"an x25519 key of order 8", orderEightPoint, mlkemPub, slhdsaPub, "low-order point"},
+		{"mlkem coefficients out of range", x25519Pub, outOfRangeMlkem, slhdsaPub, "not a valid ML-KEM-1024 encapsulation key"},
+	} {
+		t.Run("refuses "+tc.name, func(t *testing.T) {
+			err := ValidateStaticPublicKeys(tc.x25519, tc.mlkem, tc.slhdsa)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// ValidateStaticPublicKeys checks only the size of the SLH-DSA key, because the
+// parser refuses no value of that size. If a new version of the library starts to
+// refuse one, this test fails, and the validation needs the parse.
+func TestSlhdsaParserAcceptsEveryKeyOfTheContractSize(t *testing.T) {
+	t.Parallel()
+
+	for _, fill := range []byte{0x00, 0xFF} {
+		key := slhdsa.PublicKey{ID: slhdsa.SHAKE_256f}
+		require.NoError(t, key.UnmarshalBinary(bytes.Repeat([]byte{fill}, contracts.SlhdsaPublicKeySize)))
+	}
+}
+
+// The keys that the check accepts are the keys that the handshake uses, so an
+// accepted set completes a handshake.
+func TestValidateStaticPublicKeysAcceptsWhatTheHandshakeParses(t *testing.T) {
+	worker, err := GenerateCompositeKeypair()
+	require.NoError(t, err)
+	slhdsaPub, err := worker.SlhdsaPublicKeyBytes()
+	require.NoError(t, err)
+	require.NoError(t, ValidateStaticPublicKeys(worker.X25519Public, worker.MlkemPublicKeyBytes(), slhdsaPub))
+
+	hs, msg1, err := InitiatorHandshake1(worker.X25519Public, worker.MlkemPublicKeyBytes())
+	require.NoError(t, err)
+	msg2, _, err := ResponderHandshake(worker, msg1)
+	require.NoError(t, err)
+	_, err = InitiatorHandshake2(hs, msg2, slhdsaPub)
+	require.NoError(t, err)
 }

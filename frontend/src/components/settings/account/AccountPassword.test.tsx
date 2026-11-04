@@ -6,7 +6,14 @@ import { AccountPassword } from './AccountPassword'
 
 const mockChangePassword = vi.fn()
 const mockUser = vi.fn()
-const mockRefreshUser = vi.fn()
+// The adoption the surface opens before the write leaves. The order records when
+// it opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -17,7 +24,7 @@ vi.mock('~/api/clients', () => ({
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
-    refreshUser: mockRefreshUser,
+    openUserAdoption: mockOpenUserAdoption,
   }),
 }))
 
@@ -44,7 +51,8 @@ describe('AccountPassword', () => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     mockUser.mockReturnValue(withPassword)
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
     mockChangePassword.mockResolvedValue({})
     // Restated, not merely cleared: `clearAllMocks` and `resetSystemInfoMock`
     // both forget the CALLS and keep the implementation, so the rejecting case
@@ -192,7 +200,7 @@ describe('AccountPassword', () => {
     await submit('Set Password')
 
     expect(await screen.findByText('Password set.')).toBeInTheDocument()
-    expect(mockRefreshUser).toHaveBeenCalled()
+    expect(mockAdopt).toHaveBeenCalled()
     // FORCED, or the cached snapshot answers with the state before the write.
     expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
   })
@@ -204,16 +212,54 @@ describe('AccountPassword', () => {
     await submit('Change Password')
 
     expect(await screen.findByText('Password changed.')).toBeInTheDocument()
-    expect(mockRefreshUser).toHaveBeenCalled()
+    expect(mockAdopt).toHaveBeenCalled()
     expect(mockLoadSystemInfo).not.toHaveBeenCalled()
   })
 
-  // The hub stored the password before either re-read ran. Reporting a failure
+  // Opened before the request leaves, so a reply that lands after an identity
+  // change re-reads the new identity instead of adopting this one.
+  it('adopts the stored account through an adoption opened first', async () => {
+    const stored = { ...withPassword, displayName: 'Alice (stored)' }
+    mockChangePassword.mockImplementation(async () => {
+      callOrder.push('change')
+      return { user: stored }
+    })
+    render(() => <AccountPassword />)
+    await submit('Change Password')
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored))
+    expect(callOrder).toEqual(['open', 'change'])
+  })
+
+  // The message states what the user did, so it reads the flag from before the
+  // adoption, which moves it.
+  it('says "set" for a first password although the adoption moves the flag', async () => {
+    mockUser.mockReturnValue(withoutPassword)
+    mockChangePassword.mockResolvedValue({ user: withPassword })
+    mockAdopt.mockImplementationOnce(async (user) => {
+      mockUser.mockReturnValue(user)
+    })
+    render(() => <AccountPassword />)
+    await submit('Set Password')
+
+    expect(await screen.findByText('Password set.')).toBeInTheDocument()
+  })
+
+  // The hub stored the password before either update ran. Reporting a failure
   // here would tell the user to retry a write that landed -- and the retry
   // meets the sign-in rule that the write armed.
   it('reports the change although the snapshot re-read fails', async () => {
     setSystemInfoMock({ soloMode: true })
     mockLoadSystemInfo.mockRejectedValue(new Error('the hub did not answer'))
+    render(() => <AccountPassword />)
+    await submit('Change Password')
+
+    expect(await screen.findByText('Password changed.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to change password/)).not.toBeInTheDocument()
+  })
+
+  it('reports the change although the adoption rejects', async () => {
+    mockAdopt.mockRejectedValueOnce(new Error('the account read failed'))
     render(() => <AccountPassword />)
     await submit('Change Password')
 

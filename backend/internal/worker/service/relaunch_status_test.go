@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -104,7 +105,7 @@ func (r *processChangeRig) listedStatus() leapmuxv1.AgentStatus {
 func (r *processChangeRig) listedStatusOf(agentID string) leapmuxv1.AgentStatus {
 	r.t.Helper()
 	w := newTestWriter()
-	dispatch(r.d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
+	dispatch(r.d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
 	require.Empty(r.t, w.errors)
 	require.Len(r.t, w.responses, 1)
 	var resp leapmuxv1.ListAgentsResponse
@@ -134,7 +135,7 @@ func TestListAgents_ReportsStartingWhileAProcessIsReplaced(t *testing.T) {
 				return agent.RestartRequiredSettings(applied)
 			}
 			w := newTestWriter()
-			dispatch(rig.d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			dispatch(rig.d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  rig.id,
 				Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "sonnet"}},
 			}, w)
@@ -239,7 +240,7 @@ func TestListAgents_ReportsStartingFromTheOpenToTheEndOfTheStartup(t *testing.T)
 	rig := newProcessChangeRig(t)
 	w := newTestWriter()
 
-	dispatch(rig.d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(rig.d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: rig.provider,
 	}, w)

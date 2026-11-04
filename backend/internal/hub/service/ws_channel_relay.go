@@ -243,11 +243,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 //
 // The answer is the same for a channel that does not exist and for one that this
 // connection may not use, so it reveals nothing about which channel IDs exist.
-// The reserved Hub control channel is no frontend channel, so it gets none.
 func (h *ChannelRelayHandler) answerUnavailableChannel(writer *relayWriter, channelID string) {
-	if channelID == contracts.HubControlChannelID {
-		return
-	}
 	if err := writer.enqueue(channelmgr.CloseNotification(channelID)); err != nil {
 		slog.Debug("channel relay: failed to answer an unavailable channel",
 			"channel_id", channelID, "error", err)

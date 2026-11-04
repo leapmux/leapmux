@@ -3,6 +3,7 @@ import type { Tab } from './tab.types'
 import type { installTestBridge } from '~/test-support/crdtBridge'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   HLCSchema,
   LWWNodeKindSchema,
@@ -10,7 +11,6 @@ import {
   NodeKind,
   NodeRecordSchema,
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { withTestBridge } from '~/test-support/crdtBridge'
 import { tabKey } from './tab.helpers'
 import {
@@ -528,7 +528,7 @@ describe('tabOps', () => {
   // up as a tab landing in the wrong slot after a drop or a cross-workspace
   // move, with no error anywhere.
   describe('position helpers', () => {
-    it('positionAtEnd sorts after every existing tab', () => {
+    it('returns a position that sorts after every existing tab from positionAtEnd', () => {
       const tabs = [
         tab('a1', 't', 'A'),
         tab('a2', 't', 'B'),
@@ -537,11 +537,11 @@ describe('tabOps', () => {
       expect(pos > 'B').toBe(true)
     })
 
-    it('positionAtEnd handles an empty tile', () => {
+    it('handles an empty tile in positionAtEnd', () => {
       expect(positionAtEnd([])).toBeTruthy()
     })
 
-    it('positionAfterKey slots between the named tab and its successor', () => {
+    it('slots between the tab that the key identifies and its successor in positionAfterKey', () => {
       const tabs = [
         tab('a1', 't', 'A'),
         tab('a2', 't', 'B'),
@@ -552,7 +552,7 @@ describe('tabOps', () => {
       expect(pos < 'B').toBe(true)
     })
 
-    it('positionAfterKey appends when no key is given', () => {
+    it('appends when positionAfterKey receives no key', () => {
       // "after nothing" means the end, not the front: the callers that pass
       // undefined are dropping onto empty tile space, which appends.
       const tabs = [
@@ -562,7 +562,7 @@ describe('tabOps', () => {
       expect(positionAfterKey(tabs, undefined) > 'C').toBe(true)
     })
 
-    it('positionAfterKey falls back to the end for an unknown key', () => {
+    it('falls back to the end when positionAfterKey receives an unknown key', () => {
       const tabs = [
         tab('a1', 't', 'A'),
         tab('a2', 't', 'B'),

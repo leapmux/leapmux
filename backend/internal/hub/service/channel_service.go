@@ -94,8 +94,10 @@ func NewChannelService(
 	}
 }
 
-// GetWorkerHandshakeParams returns the persisted public key material and the
-// live encryption mode a client needs to start a Noise_NK handshake.
+// GetWorkerHandshakeParams returns the public keys and the encryption mode a
+// client needs to start a Noise_NK handshake. Both come from the hello of the
+// one connection that requireOnlineWorker selects, so the keys and the mode can
+// never come from two different connections. It reads no store row.
 func (s *ChannelService) GetWorkerHandshakeParams(
 	ctx context.Context,
 	req *leapmuxv1.GetWorkerHandshakeParamsRequest,
@@ -115,29 +117,11 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 		return nil, err
 	}
 
-	keys, err := s.store.Workers().GetPublicKey(ctx, workerID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
-	}
-
-	if len(keys.PublicKey) == 0 {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition, "worker has no public key")
-	}
-
-	encMode := conn.EncryptionMode()
-	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
-		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
-	}
-
-	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
-		PublicKey:       keys.PublicKey,
-		MlkemPublicKey:  keys.MlkemPublicKey,
-		SlhdsaPublicKey: keys.SlhdsaPublicKey,
-		EncryptionMode:  encMode,
-	}, nil
+	// The keys and the mode both come from the WorkerHello of the connection
+	// requireOnlineWorker selected, which the hub validated before it
+	// registered that connection. No store row is read, so the two can never
+	// belong to two different connections.
+	return conn.Handshake(), nil
 }
 
 func (s *ChannelService) OpenChannel(

@@ -44,17 +44,17 @@ var protectedAuthenticatedRationale = map[string]string{
 // passes the auth package's rationale test, and ships the procedure
 // unprotected.
 var captchaExemptRationale = map[string]string{
-	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:             "solo disables captcha; ratelimit.OpSoloPasswordSetup caps its Argon2 hash by address instead",
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                      "cheap pre-login read",
-	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  "cheap pre-login read",
-	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              "read keyed by a single-use pending id; no expensive action",
-	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:                 "issues the ALTCHA challenges themselves; protecting it would be circular",
-	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:                 "consumes a short-lived ceremony session; expensive work is in Begin",
-	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:                "consumes a short-lived ceremony session; expensive work is in Begin",
-	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure:       "consumes a short-lived ceremony session the captcha'd Begin minted",
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                "caller is a worker process with a registration key, not a human form",
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                 "caller is a worker process with an auth_token, not a human form",
-	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: "caller is a worker process with an auth_token, not a human form",
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:            "solo disables captcha; ratelimit.OpSoloPasswordSetup caps its Argon2 hash by address instead",
+	leapmuxv1connect.SystemServiceGetSystemInfoProcedure:                   "cheap pre-login read",
+	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                 "cheap pre-login read",
+	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:             "read keyed by a single-use pending id; no expensive action",
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:                "issues the ALTCHA challenges themselves; protecting it would be circular",
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:                "consumes a short-lived ceremony session; expensive work is in Begin",
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:               "consumes a short-lived ceremony session; expensive work is in Begin",
+	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure:      "consumes a short-lived ceremony session the captcha'd Begin minted",
+	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:               "caller is a worker process with a registration key, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                "caller is a worker process with an auth_token, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure: "caller is a worker process with an auth_token, not a human form",
 }
 
 func TestProtectedProceduresAreClassified(t *testing.T) {

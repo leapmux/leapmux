@@ -63,9 +63,8 @@ func TestProject_OrphansDropped(t *testing.T) {
 	}, hlcAt(2, 1, "a")))
 	// Add a tab whose tile_id points at the orphan.
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t-orphan",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "orphan"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-orphan"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "orphan"},
 	}, hlcAt(3, 0, "a")))
 
 	proj := crdt.Project(state)
@@ -86,9 +85,8 @@ func TestProject_OrphansDropped(t *testing.T) {
 func TestProject_LiveTabReachable_RendersInBothViews(t *testing.T) {
 	state := seedWorkspaceWithRoot("w1", "root1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t1",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(5, 0, "a")))
 	proj := crdt.Project(state)
 	require.Len(t, proj.OwnedTabs, 1)
@@ -152,9 +150,8 @@ func ownedTileFor(proj *crdt.Projection, tabID string) (string, bool) {
 func placeTab(t *testing.T, state *leapmuxv1.UserCrdtState, tabID, tileID string, phys int64) {
 	t.Helper()
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   tabID,
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: tileID},
 	}, hlcAt(phys, 0, "a")))
 }
 
@@ -165,7 +162,7 @@ func placeTab(t *testing.T, state *leapmuxv1.UserCrdtState, tabID, tileID string
 //
 // RenderedTabs deliberately keeps reporting the RAW tile_id anyway. It is an
 // addressable index, not a view: it feeds the rendered rows of
-// `workspace_tab_owned`, which back LocateTab / GetTab / ListTabs, and the CLI
+// `workspace_tab_owned`, which back LocateTab and ListTabs, and the CLI
 // derives `--tile-id` from a `--tab-id` through exactly that path and then
 // emits SetTabRegister(tile_id) with it. `validateTabPlacement` requires a
 // LEAF, so handing back the collapsed SPLIT's id would turn
@@ -243,13 +240,11 @@ func TestProject_GridChild_KeepsItsOwnTileID(t *testing.T) {
 func TestProject_TombstonedTabsExcluded(t *testing.T) {
 	state := seedWorkspaceWithRoot("w1", "root1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t-doomed",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-doomed"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(2, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t-doomed",
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-doomed"},
 	}, hlcAt(3, 0, "a")))
 
 	proj := crdt.Project(state)
@@ -263,9 +258,8 @@ func TestProject_TombstonedTabsExcluded(t *testing.T) {
 func TestProject_OrphanTabsDroppedFromBothSlices(t *testing.T) {
 	state := seedWorkspaceWithRoot("w1", "root1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:   "t-orphan",
-		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t-orphan"},
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "ghost-tile"},
 	}, hlcAt(2, 0, "a")))
 
 	proj := crdt.Project(state)

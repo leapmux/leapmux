@@ -9,8 +9,8 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
 import { formatErrorMessage } from '~/lib/errors'
+import { fetchAllPages } from '~/lib/fetchAllPages'
 import * as styles from './credentialList.css'
-import { fetchAllPages, MAX_PAGES, PAGE_SIZE } from './fetchAllPages'
 
 /**
  * One app and every credential this account holds for it.
@@ -76,8 +76,10 @@ export const AccountConnectedApps: Component = () => {
    *
    * The loop does NOT trust the cursor to end it. A client loop whose only
    * exit is a value the server chooses is a hang the server can cause, so it
-   * also stops when the cursor fails to advance and when it read MAX_PAGES.
-   * Both limits are far above any real account.
+   * also stops when the cursor fails to advance and after MAX_PAGES pages.
+   * Either stop fails the load, as a failed page read does, so the panel never
+   * draws part of the listing as all of it. MAX_PAGES is far above any real
+   * account.
    */
   const refresh = async () => {
     setLoading(true)
@@ -86,13 +88,11 @@ export const AccountConnectedApps: Component = () => {
       // The shared every-page loop owns the runaway cap, the stalled-cursor
       // guard and the keyed dedupe this panel taught the codebase.
       const tokens = await fetchAllPages(
-        async cursor => await userClient.listMyAPITokens({
-          cursor,
-          limit: BigInt(PAGE_SIZE),
-        })
-          .then(resp => ({ items: resp.tokens, nextCursor: resp.nextCursor ?? '' })),
+        async (page) => {
+          const resp = await userClient.listMyAPITokens({ page })
+          return { items: resp.tokens, page: resp.page }
+        },
         {
-          maxPages: MAX_PAGES,
           keyOf: token => token.id,
         },
       )

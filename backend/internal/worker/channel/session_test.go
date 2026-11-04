@@ -15,9 +15,11 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -459,7 +461,6 @@ func decryptInnerResponse(t *testing.T, initiatorSession *noiseutil.Session, msg
 
 	chMsg := msg.GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	require.Equal(t, uint32(1), chMsg.GetProtocolVersion())
 
 	respPlaintext, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
 	require.NoError(t, err)
@@ -552,7 +553,7 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 // caller is anonymous. Installing the session anyway would run every
 // workspace-scoped family (agent, terminal, tab moves, cleanup) as nobody: those
 // gate on the Hub-supplied accessible-workspace set and never look at the user id,
-// so unlike the machine-scoped families -- which requireWorkerOwner fails closed on
+// so unlike the machine-scoped families -- which the owner gate fails closed on
 // for exactly this input -- an empty id is not self-limiting there.
 func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
 	t.Parallel()
@@ -612,10 +613,8 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 
 	// Set up a dispatcher with a test handler.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
-			Payload: req.GetPayload(),
-		})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -631,10 +630,9 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	// Send the encrypted message.
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-echo",
-		Ciphertext:      ct,
-		CorrelationId:   42,
+		ChannelId:     "ch-echo",
+		Ciphertext:    ct,
+		CorrelationId: 42,
 	})
 
 	// Wait for the async handler to send the response.
@@ -644,7 +642,7 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 	innerResp := decryptInnerResponse(t, initiatorSession, msgs[len(msgs)-1])
 	assert.Equal(t, uint64(42), msgs[len(msgs)-1].GetChannelMessageResp().GetCorrelationId())
 	assert.Equal(t, []byte("hello"), innerResp.GetPayload())
-	assert.False(t, innerResp.GetIsError())
+	assert.Nil(t, innerResp.GetError())
 }
 
 // A frame whose flags value is one no conformant sender emits (e.g. MORE|CLOSE
@@ -657,8 +655,8 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -672,11 +670,10 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 	})
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-flags",
-		Ciphertext:      ct1,
-		CorrelationId:   41,
-		Flags:           leapmuxv1.ChannelMessageFlags(3), // MORE|CLOSE combined
+		ChannelId:     "ch-flags",
+		Ciphertext:    ct1,
+		CorrelationId: 41,
+		Flags:         leapmuxv1.ChannelMessageFlags(3), // MORE|CLOSE combined
 	})
 	assert.Len(t, sender.messages(), msgsBefore, "an out-of-spec frame must produce no response")
 
@@ -688,10 +685,9 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 		Payload: []byte("delivered"),
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-flags",
-		Ciphertext:      ct2,
-		CorrelationId:   42,
+		ChannelId:     "ch-flags",
+		Ciphertext:    ct2,
+		CorrelationId: 42,
 	})
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	require.Greater(t, len(msgs), msgsBefore)
@@ -707,9 +703,8 @@ func TestHandleMessage_UnknownChannel(t *testing.T) {
 
 	// Sending to a non-existent channel should not panic.
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "nonexistent",
-		Ciphertext:      []byte("garbage"),
+		ChannelId:  "nonexistent",
+		Ciphertext: []byte("garbage"),
 	})
 }
 
@@ -726,10 +721,9 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 	})
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-no-disp",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-no-disp",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	// Wait for async UNIMPLEMENTED error response. It is the session's FIRST
@@ -738,8 +732,8 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 	require.Len(t, msgs, 1)
 
 	innerResp := decryptInnerResponse(t, initiatorSession, msgs[0])
-	assert.True(t, innerResp.GetIsError())
-	assert.Equal(t, int32(12), innerResp.GetErrorCode()) // UNIMPLEMENTED
+	assert.NotNil(t, innerResp.GetError())
+	assert.Equal(t, int32(12), innerResp.GetError().GetCode()) // UNIMPLEMENTED
 }
 
 // A request must be served immediately after the handshake, with no in-channel
@@ -757,9 +751,9 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 
 	gotUserID := make(chan userid.UserID, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("whoami", func(_ context.Context, caller Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("whoami", Registration{}, func(_ context.Context, caller Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		gotUserID <- caller.UserID
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
+		_ = s.SendResponse(channelwire.NewPayloadResponse([]byte("ok")))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -767,10 +761,9 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 	session := performHandshake(t, mgr, kp, "ch-noclaim", "hub-user")
 	ct := sendRequest(t, session, "ch-noclaim", &leapmuxv1.InnerRpcRequest{Method: "whoami"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-noclaim",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-noclaim",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	select {
@@ -782,7 +775,7 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 
 	msgs := sender.waitForMessages(1)
 	require.Len(t, msgs, 1, "the request is answered, not gated behind a claim")
-	assert.False(t, decryptInnerResponse(t, session, msgs[0]).GetIsError())
+	assert.False(t, decryptInnerResponse(t, session, msgs[0]).GetError() != nil)
 }
 
 // A correlation id ABOVE 2^32 must survive the round trip intact.
@@ -799,8 +792,8 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -815,10 +808,9 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 	const wideID uint64 = 1<<40 | 7
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-wide",
-		Ciphertext:      ct,
-		CorrelationId:   wideID,
+		ChannelId:     "ch-wide",
+		Ciphertext:    ct,
+		CorrelationId: wideID,
 	})
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -943,7 +935,7 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 
 	gotCtxC := make(chan context.Context, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("inspect", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("inspect", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		gotCtxC <- ctx
 		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
@@ -953,10 +945,9 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 
 	ct := sendRequest(t, initiatorSession, "ch-inspect", &leapmuxv1.InnerRpcRequest{Method: "inspect"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-inspect",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-inspect",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	// Wait for the handler-supplied ctx with a generous deadline so the
@@ -1003,10 +994,8 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 
 	// Set up a dispatcher with a handler that sends a response.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("slow", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
-			Payload: []byte("done"),
-		})
+	dispatcher.Handle("slow", Registration{}, func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse([]byte("done")))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1019,10 +1008,9 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 		Method: "slow",
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-block",
-		Ciphertext:      occupy,
-		CorrelationId:   1,
+		ChannelId:     "ch-block",
+		Ciphertext:    occupy,
+		CorrelationId: 1,
 	})
 
 	// Wait for that send to enter the blocked state.
@@ -1037,9 +1025,8 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-block",
-			Ciphertext:      ct,
+			ChannelId:  "ch-block",
+			Ciphertext: ct,
 		})
 		close(done)
 	}()
@@ -1063,10 +1050,8 @@ func TestMultipleChannels(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("ping", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{
-			Payload: []byte("pong-" + caller.UserID.String()),
-		})
+	dispatcher.Handle("ping", Registration{}, func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse([]byte("pong-" + caller.UserID.String())))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1076,11 +1061,11 @@ func TestMultipleChannels(t *testing.T) {
 	// Send on ch-a.
 	ct1 := sendRequest(t, session1, "ch-a", &leapmuxv1.InnerRpcRequest{Method: "ping"})
 	msgsBefore := len(sender.messages())
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: "ch-a", Ciphertext: ct1, CorrelationId: 1})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-a", Ciphertext: ct1, CorrelationId: 1})
 
 	// Send on ch-b.
 	ct2 := sendRequest(t, session2, "ch-b", &leapmuxv1.InnerRpcRequest{Method: "ping"})
-	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ProtocolVersion: 1, ChannelId: "ch-b", Ciphertext: ct2, CorrelationId: 2})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-b", Ciphertext: ct2, CorrelationId: 2})
 
 	// Wait for both async handlers to complete.
 	msgs := sender.waitForMessages(msgsBefore + 2)
@@ -1121,8 +1106,8 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1135,10 +1120,9 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 	})
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-single",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-single",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -1161,8 +1145,8 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: largePayload})
+	dispatcher.Handle("big", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(largePayload))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1171,10 +1155,9 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 	ct := sendRequest(t, session, "ch-multi", &leapmuxv1.InnerRpcRequest{Method: "big"})
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-multi",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-multi",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	// Should get at least 2 messages (chunked).
@@ -1225,9 +1208,7 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	findPayloadSize := func(target int) int {
 		for size := target; size > 0; size-- {
 			env := &leapmuxv1.InnerMessage{
-				Kind: &leapmuxv1.InnerMessage_Response{Response: &leapmuxv1.InnerRpcResponse{
-					Payload: make([]byte, size),
-				}},
+				Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewPayloadResponse(make([]byte, size))},
 			}
 			data, _ := proto.Marshal(env)
 			if len(data) == target {
@@ -1244,17 +1225,16 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	exactPayloadSize := findPayloadSize(contracts.MaxPlaintextPerChunk)
 	require.Greater(t, exactPayloadSize, 0)
 
-	dispatcher.Register("exact", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize)})
+	dispatcher.Handle("exact", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(make([]byte, exactPayloadSize)))
 	})
 
 	ct := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "exact"})
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-exact",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-exact",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	// Should fit in 1 chunk.
@@ -1264,17 +1244,16 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	// Now add 1 more byte to the payload, which should cause it to overflow.
-	dispatcher.Register("overflow", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, exactPayloadSize+1)})
+	dispatcher.Handle("overflow", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(make([]byte, exactPayloadSize+1)))
 	})
 
 	ct2 := sendRequest(t, session, "ch-exact", &leapmuxv1.InnerRpcRequest{Method: "overflow"})
 	msgsBefore = len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-exact",
-		Ciphertext:      ct2,
-		CorrelationId:   2,
+		ChannelId:     "ch-exact",
+		Ciphertext:    ct2,
+		CorrelationId: 2,
 	})
 
 	// Should produce exactly 2 chunks.
@@ -1289,9 +1268,9 @@ func TestReassembly_E2E(t *testing.T) {
 
 	var receivedPayload []byte
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		receivedPayload = req.GetPayload()
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: []byte("ok")})
+		_ = s.SendResponse(channelwire.NewPayloadResponse([]byte("ok")))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1335,11 +1314,10 @@ func TestReassembly_E2E(t *testing.T) {
 		}
 
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-reasm",
-			Ciphertext:      ct,
-			CorrelationId:   42,
-			Flags:           flags,
+			ChannelId:     "ch-reasm",
+			Ciphertext:    ct,
+			CorrelationId: 42,
+			Flags:         flags,
 		})
 	}
 
@@ -1367,11 +1345,10 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxsize",
-		Ciphertext:      ct1,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-maxsize",
+		Ciphertext:    ct1,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	chunk2 := make([]byte, 60)
@@ -1380,11 +1357,10 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 
 	// This should be dropped (total 120 > 100 max).
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxsize",
-		Ciphertext:      ct2,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-maxsize",
+		Ciphertext:    ct2,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Subsequent messages on other correlation IDs should still work: the oversize
@@ -1392,10 +1368,9 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 	before := len(sender.messages())
 	ct3 := sendRequest(t, session, "ch-maxsize", &leapmuxv1.InnerRpcRequest{Method: "anything"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxsize",
-		Ciphertext:      ct3,
-		CorrelationId:   2,
+		ChannelId:     "ch-maxsize",
+		Ciphertext:    ct3,
+		CorrelationId: 2,
 	})
 
 	// An UNIMPLEMENTED error comes back, proving the channel is still functional.
@@ -1420,11 +1395,10 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 		require.NoError(t, err)
 
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-maxinc",
-			Ciphertext:      ct,
-			CorrelationId:   i,
-			Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+			ChannelId:     "ch-maxinc",
+			Ciphertext:    ct,
+			CorrelationId: i,
+			Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 		})
 	}
 
@@ -1434,11 +1408,10 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxinc",
-		Ciphertext:      ct,
-		CorrelationId:   3,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-maxinc",
+		Ciphertext:    ct,
+		CorrelationId: 3,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Verify the session still works by completing one of the sequences.
@@ -1449,11 +1422,10 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 	// This completes correlation 1, freeing a slot. It won't unmarshal cleanly
 	// but proves the reassembly path isn't stuck.
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxinc",
-		Ciphertext:      ctFinal,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
+		ChannelId:     "ch-maxinc",
+		Ciphertext:    ctFinal,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
 	})
 }
 
@@ -1468,8 +1440,8 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 	// and one that arrives after the test finishes asserts on a dead *T.
 	sendErr := make(chan error, 1)
 	dispatcher := NewDispatcher()
-	dispatcher.Register("big", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		sendErr <- s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
+	dispatcher.Handle("big", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		sendErr <- s.SendResponse(channelwire.NewPayloadResponse(make([]byte, 200)))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -1478,10 +1450,9 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 
 	ct := sendRequest(t, session, "ch-sendmax", &leapmuxv1.InnerRpcRequest{Method: "big"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-sendmax",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-sendmax",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 
 	select {
@@ -1513,11 +1484,10 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-finalover",
-		Ciphertext:      ct1,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-finalover",
+		Ciphertext:    ct1,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Send a final chunk that pushes total over the limit (60 + 60 = 120 > 100).
@@ -1527,11 +1497,10 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-finalover",
-		Ciphertext:      ct2,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
+		ChannelId:     "ch-finalover",
+		Ciphertext:    ct2,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED,
 	})
 
 	// Should get a RESOURCE_EXHAUSTED error response.
@@ -1539,10 +1508,10 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 	lastMsg := msgs[len(msgs)-1]
 
 	resp := decryptInnerResponse(t, session, lastMsg)
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(8), resp.GetErrorCode()) // RESOURCE_EXHAUSTED
-	assert.Contains(t, resp.GetErrorMessage(), "too large")
-	assert.Contains(t, resp.GetErrorMessage(), "exceeds")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(8), resp.GetError().GetCode()) // RESOURCE_EXHAUSTED
+	assert.Contains(t, resp.GetError().GetMessage(), "too large")
+	assert.Contains(t, resp.GetError().GetMessage(), "exceeds")
 }
 
 func TestReassembly_ErrorResponseContent(t *testing.T) {
@@ -1561,11 +1530,10 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-errcontent",
-		Ciphertext:      ct1,
-		CorrelationId:   42,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-errcontent",
+		Ciphertext:    ct1,
+		CorrelationId: 42,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	chunk2 := make([]byte, 60)
@@ -1574,11 +1542,10 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-errcontent",
-		Ciphertext:      ct2,
-		CorrelationId:   42,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-errcontent",
+		Ciphertext:    ct2,
+		CorrelationId: 42,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Verify the full error response structure.
@@ -1591,9 +1558,9 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, chMsg.GetFlags())
 
 	resp := decryptInnerResponse(t, session, lastMsg)
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(8), resp.GetErrorCode()) // RESOURCE_EXHAUSTED
-	assert.Contains(t, resp.GetErrorMessage(), "120 bytes exceeds 100 byte limit")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(8), resp.GetError().GetCode()) // RESOURCE_EXHAUSTED
+	assert.Contains(t, resp.GetError().GetMessage(), "120 bytes exceeds 100 byte limit")
 }
 
 func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
@@ -1613,11 +1580,10 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 		require.NoError(t, err)
 
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-maxincerr",
-			Ciphertext:      ct,
-			CorrelationId:   i,
-			Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+			ChannelId:     "ch-maxincerr",
+			Ciphertext:    ct,
+			CorrelationId: i,
+			Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 		})
 	}
 
@@ -1628,11 +1594,10 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-maxincerr",
-		Ciphertext:      ct,
-		CorrelationId:   3,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-maxincerr",
+		Ciphertext:    ct,
+		CorrelationId: 3,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Should get a RESOURCE_EXHAUSTED error response.
@@ -1640,9 +1605,9 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 	lastMsg := msgs[len(msgs)-1]
 
 	resp := decryptInnerResponse(t, session, lastMsg)
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(8), resp.GetErrorCode()) // RESOURCE_EXHAUSTED
-	assert.Contains(t, resp.GetErrorMessage(), "too many incomplete")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(8), resp.GetError().GetCode()) // RESOURCE_EXHAUSTED
+	assert.Contains(t, resp.GetError().GetMessage(), "too many incomplete")
 }
 
 func TestHandleClose_MidChunk(t *testing.T) {
@@ -1659,11 +1624,10 @@ func TestHandleClose_MidChunk(t *testing.T) {
 	require.NoError(t, err)
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-midclose",
-		Ciphertext:      ct,
-		CorrelationId:   1,
-		Flags:           leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
+		ChannelId:     "ch-midclose",
+		Ciphertext:    ct,
+		CorrelationId: 1,
+		Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 	})
 
 	// Close the channel mid-chunk — should not panic.
@@ -1701,10 +1665,9 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 
 	// Send a message with corrupted ciphertext.
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-decrypt-fail",
-		Ciphertext:      []byte("this-is-not-valid-ciphertext"),
-		CorrelationId:   42,
+		ChannelId:     "ch-decrypt-fail",
+		Ciphertext:    []byte("this-is-not-valid-ciphertext"),
+		CorrelationId: 42,
 	})
 
 	// Verify a CLOSE notification was sent to the frontend.
@@ -1730,10 +1693,9 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 	ct, encErr := session.Encrypt([]byte("should be ignored"))
 	require.NoError(t, encErr)
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-decrypt-fail",
-		Ciphertext:      ct,
-		CorrelationId:   43,
+		ChannelId:     "ch-decrypt-fail",
+		Ciphertext:    ct,
+		CorrelationId: 43,
 	})
 
 	// No additional messages should have been sent.
@@ -1772,11 +1734,10 @@ func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       channelID,
-			Ciphertext:      ct,
-			CorrelationId:   correlationID,
-			Flags:           flags,
+			ChannelId:     channelID,
+			Ciphertext:    ct,
+			CorrelationId: correlationID,
+			Flags:         flags,
 		})
 	}
 
@@ -1793,9 +1754,9 @@ func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	resp := decryptInnerResponse(t, session, msgs[len(msgs)-1])
-	require.True(t, resp.GetIsError())
-	require.Equal(t, int32(8), resp.GetErrorCode()) // RESOURCE_EXHAUSTED
-	require.Contains(t, resp.GetErrorMessage(), "120 bytes exceeds 100 byte limit")
+	require.NotNil(t, resp.GetError())
+	require.Equal(t, int32(8), resp.GetError().GetCode()) // RESOURCE_EXHAUSTED
+	require.Contains(t, resp.GetError().GetMessage(), "120 bytes exceeds 100 byte limit")
 
 	poisoned := buffer()
 	require.NotNil(t, poisoned, "the breached id must leave a tombstone, not be deleted")
@@ -1853,7 +1814,7 @@ func TestQueueErrorDoesNotBlockWhenFull(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := range errorSendQueueSize + 8 {
-			sender.queueError(uint64(i), 1, "overflow")
+			sender.queueError(errorSend{requestID: uint64(i), code: 1, message: "overflow"})
 		}
 	}()
 	select {
@@ -1911,7 +1872,7 @@ func TestSendStream_ReportsAGoneTransportAtDebug(t *testing.T) {
 			maxReassembled: 1 << 20,
 		},
 		requestID: 10,
-		method:    "WatchEvents",
+		method:    leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 	}
 
 	require.Error(t, sender.SendStream(&leapmuxv1.InnerStreamMessage{End: true}))
@@ -1921,8 +1882,54 @@ func TestSendStream_ReportsAGoneTransportAtDebug(t *testing.T) {
 	assert.Contains(t, out, "level=DEBUG")
 	assert.Contains(t, out, "failed to send inner stream message",
 		"the diagnostic itself is kept -- only its level changes")
-	assert.Contains(t, out, "method=WatchEvents",
+	assert.Contains(t, out, "method="+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 		"and it keeps the attributes that make it diagnosable")
+}
+
+// The send log reads the error from the reply's error field, which is now the
+// only thing that marks a failure. A reply without one logs as a success.
+func TestBoundSenderLogsTheErrorOfAReply(t *testing.T) {
+	workerSession, _ := setupTestSessions(t)
+	newSender := func() *boundSender {
+		return &boundSender{
+			sender: &channelSender{
+				channelID:      "test-ch",
+				session:        workerSession,
+				sendFn:         func(*leapmuxv1.ConnectRequest) error { return nil },
+				maxReassembled: 1 << 20,
+			},
+			requestID: 10,
+			method:    leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
+		}
+	}
+
+	t.Run("an error response", func(t *testing.T) {
+		buf := testutil.CaptureDefaultLogger(t)
+		require.NoError(t, newSender().SendResponse(channelwire.NewErrorResponse(5, "denied")))
+		out := buf.String()
+		assert.Contains(t, out, "is_error=true")
+		assert.Contains(t, out, "error_code=5")
+		assert.Contains(t, out, "error_message=denied")
+	})
+
+	t.Run("an error stream frame", func(t *testing.T) {
+		buf := testutil.CaptureDefaultLogger(t)
+		require.NoError(t, newSender().SendStream(channelwire.NewStreamError(13, "broken")))
+		out := buf.String()
+		assert.Contains(t, out, "end=true")
+		assert.Contains(t, out, "is_error=true")
+		assert.Contains(t, out, "error_code=13")
+		assert.Contains(t, out, "error_message=broken")
+	})
+
+	t.Run("a successful response", func(t *testing.T) {
+		buf := testutil.CaptureDefaultLogger(t)
+		require.NoError(t, newSender().SendResponse(channelwire.NewPayloadResponse([]byte("ok"))))
+		out := buf.String()
+		assert.Contains(t, out, "is_error=false")
+		assert.Contains(t, out, "error_code=0")
+		assert.Contains(t, out, "payload_len=2")
+	})
 }
 
 // TestSendStream_SurfacesTransportGone pins that the sentinel survives the
@@ -2088,7 +2095,7 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 	// sendResponse here would deadlock on the same permit.
 	smallDone := make(chan error, 1)
 	go func() {
-		smallDone <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("hi")})
+		smallDone <- cs.sendResponse(2, channelwire.NewPayloadResponse([]byte("hi")))
 	}()
 
 	// Wait for the small send to be QUEUED on the permit, do not guess at it.
@@ -2212,7 +2219,7 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 	}
 
 	go func() {
-		_ = cs.sendResponse(1, &leapmuxv1.InnerRpcResponse{Payload: []byte("hold")})
+		_ = cs.sendResponse(1, channelwire.NewPayloadResponse([]byte("hold")))
 	}()
 	select {
 	case <-started:
@@ -2222,7 +2229,7 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("parked")})
+		done <- cs.sendResponse(2, channelwire.NewPayloadResponse([]byte("parked")))
 	}()
 	select {
 	case err := <-done:
@@ -2242,6 +2249,8 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 
 // DispatchAsync's unknown-method arm must QueueError (not SendError inline) when
 // the writer offers an errorQueuer -- the receive loop must not park on the gate.
+// An unknown method has no registration to state a reply shape, so the queued
+// error is unary.
 func TestDispatchAsyncUnknownMethodIsQueued(t *testing.T) {
 	t.Parallel()
 
@@ -2250,11 +2259,37 @@ func TestDispatchAsyncUnknownMethodIsQueued(t *testing.T) {
 	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
 		&leapmuxv1.InnerRpcRequest{Method: "no-such-method"}, w)
 	assert.Equal(t, int32(1), w.queued.Load(), "unknown method must go through QueueError")
+	assert.Zero(t, w.queuedStream.Load(), "an unknown method has no stream to refuse")
 	assert.Zero(t, w.sent.Load(), "unknown method must not SendError inline on an errorQueuer")
 }
 
+// A streaming method whose stream cannot be prepared is refused through the
+// queue, as a stream error frame, before its handler runs. The client holds the
+// correlation id as a stream, so a unary error there carries no End frame.
+func TestDispatchAsync_QueuesAStreamErrorForAStreamItCannotPrepare(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	var invoked atomic.Bool
+	d.Handle("stream", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		invoked.Store(true)
+	})
+	w := &unpreparableStreamWriter{}
+	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "stream"}, w)
+
+	assert.Equal(t, int32(1), w.queuedStream.Load(), "the refusal must be a queued stream error")
+	assert.Equal(t, int32(codes.FailedPrecondition), w.lastCode.Load())
+	assert.Zero(t, w.queued.Load(), "a streaming method is never refused with a unary error")
+	assert.Zero(t, w.sent.Load(), "the refusal must not be sent inline on the receive goroutine")
+	// DispatchAsync launches no goroutine for a stream it could not prepare, so
+	// the handler cannot run after this point either.
+	assert.False(t, invoked.Load(), "a stream that cannot be prepared never reaches its handler")
+}
+
 type queueTrackingWriter struct {
-	queued, sent atomic.Int32
+	queued, queuedStream, sent atomic.Int32
+	lastCode                   atomic.Int32
 }
 
 func (w *queueTrackingWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error { return nil }
@@ -2262,13 +2297,29 @@ func (w *queueTrackingWriter) SendError(int32, string) error {
 	w.sent.Add(1)
 	return nil
 }
-func (w *queueTrackingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error { return nil }
-func (*queueTrackingWriter) ChannelID() string                                { return "" }
-func (*queueTrackingWriter) MaxPayloadBudget() int                            { return 0 }
+func (w *queueTrackingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error {
+	w.sent.Add(1)
+	return nil
+}
+func (*queueTrackingWriter) ChannelID() string     { return "" }
+func (*queueTrackingWriter) MaxPayloadBudget() int { return 0 }
 func (*queueTrackingWriter) BindStream(StreamController) (func(), bool) {
 	return func() {}, false
 }
-func (w *queueTrackingWriter) QueueError(int32, string) { w.queued.Add(1) }
+func (w *queueTrackingWriter) QueueError(code int32, _ string) {
+	w.lastCode.Store(code)
+	w.queued.Add(1)
+}
+func (w *queueTrackingWriter) QueueStreamError(code int32, _ string) {
+	w.lastCode.Store(code)
+	w.queuedStream.Add(1)
+}
+
+// unpreparableStreamWriter is a queueTrackingWriter whose stream can never be
+// prepared, as a boundSender's cannot once its session closed the registry.
+type unpreparableStreamWriter struct{ queueTrackingWriter }
+
+func (*unpreparableStreamWriter) prepareStream() (func(), bool) { return nil, false }
 
 // Decrypt-failure CLOSE must go through trySendFn BEFORE HandleClose tears the
 // session down, so the CLOSE is enqueued on the connection writer's FIFO ahead
@@ -2310,10 +2361,9 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 	_ = performHandshake(t, mgr, ck, channelID, "user-1")
 
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       channelID,
-		Ciphertext:      []byte("not-valid-ciphertext"),
-		CorrelationId:   1,
+		ChannelId:     channelID,
+		Ciphertext:    []byte("not-valid-ciphertext"),
+		CorrelationId: 1,
 	})
 
 	mu.Lock()
@@ -2344,10 +2394,9 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 		ct, err := initiator.Encrypt(pt)
 		require.NoError(t, err)
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-rekey",
-			Ciphertext:      ct,
-			CorrelationId:   corr,
+			ChannelId:     "ch-rekey",
+			Ciphertext:    ct,
+			CorrelationId: corr,
 		})
 		return ri
 	}
@@ -2403,8 +2452,8 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 
 	// Post-rekey RPC still works.
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 	ct := sendRequest(t, initiator, "ch-rekey", &leapmuxv1.InnerRpcRequest{
@@ -2413,10 +2462,9 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 	})
 	msgsBefore = len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-rekey",
-		Ciphertext:      ct,
-		CorrelationId:   102,
+		ChannelId:     "ch-rekey",
+		Ciphertext:    ct,
+		CorrelationId: 102,
 	})
 	msgs = sender.waitForMessages(msgsBefore + 1)
 	innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
@@ -2454,10 +2502,9 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 	require.NoError(t, err)
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       channelID,
-		Ciphertext:      ct,
-		CorrelationId:   200,
+		ChannelId:     channelID,
+		Ciphertext:    ct,
+		CorrelationId: 200,
 	})
 
 	// sess.cancel() fires synchronously: the session's lifetime context is done.
@@ -2498,10 +2545,9 @@ func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 	ct, err := initiator.Encrypt(pt)
 	require.NoError(t, err)
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       channelID,
-		Ciphertext:      ct,
-		CorrelationId:   201,
+		ChannelId:     channelID,
+		Ciphertext:    ct,
+		CorrelationId: 201,
 	})
 
 	require.Error(t, sess.ctx.Err(), "bad mlkem_ct must cancel the session lifetime")
@@ -2538,10 +2584,9 @@ func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
 	require.NoError(t, err)
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       channelID,
-		Ciphertext:      ct,
-		CorrelationId:   300,
+		ChannelId:     channelID,
+		Ciphertext:    ct,
+		CorrelationId: 300,
 	})
 
 	msgs := sender.waitForMessages(msgsBefore + 1)
@@ -2583,8 +2628,8 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 	// Still inside MinRekeyInterval after handshake. Align both ends at the soft
 	// ceiling so decrypting the Request advances Receive past SoftNonceLimit and
 	// AllowRekey's soft-nonce bypass accepts.
-	initiator.Send.SetNonceForTest(noiseutil.SoftNonceLimit)
-	sess.Session.Receive.SetNonceForTest(noiseutil.SoftNonceLimit)
+	initiator.Send.SetNonceForTest(contracts.SoftNonceLimit)
+	sess.Session.Receive.SetNonceForTest(contracts.SoftNonceLimit)
 
 	envelope, ri := initiatorStartRekey(t, kp.MlkemPublicKeyBytes())
 	pt, err := proto.Marshal(envelope)
@@ -2594,10 +2639,9 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-rekey-soft",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-rekey-soft",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
@@ -2629,8 +2673,8 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 	// so Ack decrypt still matches after Encrypt under SoftNonceLimit+1.
 	// Receive stays under the limit even after decrypting the Request, so Ack
 	// must come from peekSendNeedsRekey (not Receive.NeedsRekey).
-	sess.Session.Send.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
-	initiator.Receive.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
+	sess.Session.Send.SetNonceForTest(contracts.SoftNonceLimit + 1)
+	initiator.Receive.SetNonceForTest(contracts.SoftNonceLimit + 1)
 	assert.False(t, sess.Session.Receive.NeedsRekey())
 	assert.True(t, sess.Session.Send.NeedsRekey())
 
@@ -2642,10 +2686,9 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-rekey-send-soft",
-		Ciphertext:      ct,
-		CorrelationId:   1,
+		ChannelId:     "ch-rekey-send-soft",
+		Ciphertext:    ct,
+		CorrelationId: 1,
 	})
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
@@ -2705,10 +2748,9 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 	go func() {
 		defer close(done)
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-rekey-frame",
-			Ciphertext:      ct,
-			CorrelationId:   7,
+			ChannelId:     "ch-rekey-frame",
+			Ciphertext:    ct,
+			CorrelationId: 7,
 		})
 	}()
 
@@ -2753,8 +2795,8 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	require.NotNil(t, sess)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("echo", func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		_ = s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: req.GetPayload()})
+	dispatcher.Handle("echo", Registration{}, func(_ context.Context, _ Caller, req *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		_ = s.SendResponse(channelwire.NewPayloadResponse(req.GetPayload()))
 	})
 	mgr.SetDispatcher(dispatcher)
 
@@ -2766,10 +2808,9 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 		})
 		msgsBefore := len(sender.messages())
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-rekey-load",
-			Ciphertext:      ct,
-			CorrelationId:   corr,
+			ChannelId:     "ch-rekey-load",
+			Ciphertext:    ct,
+			CorrelationId: corr,
 		})
 		msgs := sender.waitForMessages(msgsBefore + 1)
 		innerResp := decryptInnerResponse(t, initiator, msgs[len(msgs)-1])
@@ -2786,10 +2827,9 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	require.NoError(t, err)
 	msgsBefore := len(sender.messages())
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-rekey-load",
-		Ciphertext:      ct,
-		CorrelationId:   2,
+		ChannelId:     "ch-rekey-load",
+		Ciphertext:    ct,
+		CorrelationId: 2,
 	})
 	msgs := sender.waitForMessages(msgsBefore + 1)
 	chMsg := msgs[len(msgs)-1].GetChannelMessageResp()
@@ -2815,7 +2855,7 @@ func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
 	ready := make(chan struct{})
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("stream", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2829,25 +2869,23 @@ func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
 		Method: "stream", Payload: []byte("open"),
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-stream-req",
-		Ciphertext:      openCT,
-		CorrelationId:   7,
+		ChannelId:     "ch-stream-req",
+		Ciphertext:    openCT,
+		CorrelationId: 7,
 	})
 
 	<-ready
 
 	updateCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
-			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("update")},
+			StreamRequest: revisionFrame([]byte("update")),
 		},
 	})
 	require.NoError(t, err)
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-stream-req",
-		Ciphertext:      updateCT,
-		CorrelationId:   7,
+		ChannelId:     "ch-stream-req",
+		Ciphertext:    updateCT,
+		CorrelationId: 7,
 	})
 
 	require.Eventually(t, func() bool {
@@ -2866,18 +2904,72 @@ func TestHandleMessage_StreamRequestUnboundIdIsDropped(t *testing.T) {
 
 	updateCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
-			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("orphan")},
+			StreamRequest: revisionFrame([]byte("orphan")),
 		},
 	})
 	require.NoError(t, err)
 	// Must not panic or log as "unexpected kind" — unbound is a quiet drop.
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-unbound",
-		Ciphertext:      updateCT,
-		CorrelationId:   99,
+		ChannelId:     "ch-unbound",
+		Ciphertext:    updateCT,
+		CorrelationId: 99,
 	})
 	assert.Empty(t, sender.messages())
+}
+
+// A client frame that selects neither a revision nor a cancel states nothing
+// that the worker could apply. The worker fails the stream with
+// InvalidArgument, in a stream error frame on the stream's correlation id, and
+// cancels the stream's controller.
+func TestHandleMessage_StreamRequestWithNoActionFailsTheStream(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, sender := setupTestManager(t)
+	ctrl := &streamRequestRecordingController{}
+	ready := make(chan struct{})
+
+	dispatcher := NewDispatcher()
+	dispatcher.Handle("stream", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		release, _ := s.BindStream(ctrl)
+		defer release()
+		close(ready)
+		<-ctx.Done()
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-no-action", "user-no-action")
+	openCT := sendRequest(t, initiatorSession, "ch-no-action", &leapmuxv1.InnerRpcRequest{Method: "stream"})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-no-action", Ciphertext: openCT, CorrelationId: 7})
+	<-ready
+
+	frameCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{StreamRequest: &leapmuxv1.InnerStreamRequest{}},
+	})
+	require.NoError(t, err)
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{ChannelId: "ch-no-action", Ciphertext: frameCT, CorrelationId: 7})
+
+	require.Eventually(t, func() bool { return len(sender.messages()) > 0 }, 30*time.Second, 10*time.Millisecond)
+	first := sender.messages()[0].GetChannelMessageResp()
+	require.NotNil(t, first)
+	assert.Equal(t, uint64(7), first.GetCorrelationId(), "the error answers the stream's correlation id")
+	plaintext, err := initiatorSession.Decrypt(first.GetCiphertext())
+	require.NoError(t, err)
+	var envelope leapmuxv1.InnerMessage
+	require.NoError(t, proto.Unmarshal(plaintext, &envelope))
+	streamErr := envelope.GetStream().GetError()
+	require.NotNil(t, streamErr, "the worker answers with a stream error frame, got %T", envelope.GetKind())
+	assert.Equal(t, int32(codes.InvalidArgument), streamErr.GetCode())
+	assert.Contains(t, streamErr.GetMessage(), "selects no action")
+	assert.True(t, envelope.GetStream().GetEnd(), "the error frame ends the stream")
+
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return ctrl.cancelled
+	}, 30*time.Second, 10*time.Millisecond, "the failed stream's controller is cancelled")
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	assert.Empty(t, ctrl.payloads, "a frame with no action reaches no controller as a revision")
 }
 
 func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
@@ -2889,7 +2981,7 @@ func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	order := make(chan string, 2)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("stream", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2903,10 +2995,9 @@ func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 		Method: "stream", Payload: []byte("open"),
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-close-order",
-		Ciphertext:      openCT,
-		CorrelationId:   3,
+		ChannelId:     "ch-close-order",
+		Ciphertext:    openCT,
+		CorrelationId: 3,
 	})
 	<-ready
 
@@ -2939,7 +3030,7 @@ func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 	order := make(chan string, 2)
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("stream", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -2953,10 +3044,9 @@ func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
 		Method: "stream", Payload: []byte("open"),
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-closeall-order",
-		Ciphertext:      openCT,
-		CorrelationId:   3,
+		ChannelId:     "ch-closeall-order",
+		Ciphertext:    openCT,
+		CorrelationId: 3,
 	})
 	<-ready
 
@@ -2988,7 +3078,7 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 	ready := make(chan struct{})
 
 	dispatcher := NewDispatcher()
-	dispatcher.Register("stream", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+	dispatcher.Handle("stream", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
 		release, _ := s.BindStream(ctrl)
 		defer release()
 		close(ready)
@@ -3001,17 +3091,16 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 		Method: "stream", Payload: []byte("open"),
 	})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-		ProtocolVersion: 1,
-		ChannelId:       "ch-chunk-sr",
-		Ciphertext:      openCT,
-		CorrelationId:   11,
+		ChannelId:     "ch-chunk-sr",
+		Ciphertext:    openCT,
+		CorrelationId: 11,
 	})
 	<-ready
 
 	payload := bytes.Repeat([]byte("x"), contracts.MaxPlaintextPerChunk+50)
 	envelope, err := proto.Marshal(&leapmuxv1.InnerMessage{
 		Kind: &leapmuxv1.InnerMessage_StreamRequest{
-			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: payload},
+			StreamRequest: revisionFrame(payload),
 		},
 	})
 	require.NoError(t, err)
@@ -3030,11 +3119,10 @@ func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
 			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
 		}
 		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
-			ProtocolVersion: 1,
-			ChannelId:       "ch-chunk-sr",
-			Ciphertext:      ct,
-			CorrelationId:   11,
-			Flags:           flags,
+			ChannelId:     "ch-chunk-sr",
+			Ciphertext:    ct,
+			CorrelationId: 11,
+			Flags:         flags,
 		})
 	}
 

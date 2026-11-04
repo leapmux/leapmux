@@ -150,18 +150,17 @@ func (sink *agentOutputSink) buildStatusChange(row db.Agent, status leapmuxv1.Ag
 		(row.ClosedAt.Valid || sink.h.agentClosing != nil && sink.h.agentClosing(sink.rootAgentID)) {
 		status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
 	}
-	steering, preemption := false, false
-	if sink.h.supportsSteering != nil {
-		steering = sink.h.supportsSteering(sink.agentID)
-	}
-	if sink.h.supportsPreemption != nil {
-		preemption = sink.h.supportsPreemption(sink.agentID)
+	// After the downgrade above, so a closing agent's INACTIVE status cannot
+	// offer STEER or PREEMPT: an agent that does not run answers NONE.
+	dispatch := leapmuxv1.QueueHeadDispatch_QUEUE_HEAD_DISPATCH_NONE
+	if sink.h.queueHeadDispatch != nil {
+		dispatch = sink.h.queueHeadDispatch(&row, status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE)
 	}
 	return &leapmuxv1.AgentStatusChange{
-		AgentId: sink.agentID, Status: status, AgentSessionId: sessionID, WorkerOnline: true,
+		Status: status, AgentSessionId: sessionID,
 		GitStatus: gitutil.GetGitStatus(bgCtx(), row.WorkingDir), AgentProvider: sink.agentProvider,
-		OptionGroups:     optionGroupsView(sink.h.agents, &row, nil),
-		SupportsSteering: steering, SupportsPreemption: preemption,
+		OptionGroups:      optionGroupsView(sink.h.agents, &row, nil),
+		QueueHeadDispatch: dispatch,
 	}
 }
 
@@ -207,7 +206,7 @@ func (sink *agentOutputSink) prepareCatalog(request catalogRequest, row db.Agent
 	prepared.write = !request.startup && len(prepared.groups) > 0 && !optionGroupsEqual(parseOptionGroups(row.OptionGroups), prepared.groups)
 	if request.kind == catalogConfirmation && prepared.write {
 		prepared.status = &leapmuxv1.AgentStatusChange{
-			AgentId: sink.agentID, AgentProvider: sink.agentProvider, WorkerOnline: true, OptionGroups: prepared.groups,
+			AgentProvider: sink.agentProvider, OptionGroups: prepared.groups,
 		}
 	}
 	if prepared.write {

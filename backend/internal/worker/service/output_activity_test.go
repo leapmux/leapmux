@@ -8,6 +8,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -1367,7 +1368,7 @@ func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
 
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "InspectTerminalProcesses", &leapmuxv1.InspectTerminalProcessesRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure, &leapmuxv1.InspectTerminalProcessesRequest{
 		// A blank id, and one no PTY was ever started for.
 		TerminalIds: []string{"", "no-such-terminal"},
 	}, w)

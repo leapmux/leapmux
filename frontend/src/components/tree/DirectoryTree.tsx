@@ -10,7 +10,7 @@ import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
-import * as workerRpc from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
@@ -1115,7 +1115,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       const version = ++statVersion
       if (!workerId || !enabled)
         return
-      workerRpc.statFile(workerId, { workerId, path: root })
+      workerFile.statFile(workerId, { path: root })
         .then((resp) => {
           if (version === statVersion && workerId === props.workerId && root === rootPath())
             setRootModTime(resp.info?.modTime ?? '')

@@ -7,7 +7,7 @@ import type { FileViewMode } from '~/lib/fileType'
 import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.types'
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
-import * as workerRpc from '~/api/workerRpc'
+import { workerFile, workerGit } from '~/api/workerRpc'
 import { DiffView, rawDiffToHunks } from '~/components/chat/diff'
 import { diffAdded, diffRemoved } from '~/components/chat/diff/diffStyles.css'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
@@ -219,12 +219,13 @@ export const FileViewer: Component<{
 
   // Shared first-chunk fetch used by the working-copy load, the diff
   // effect's head-vs-working fallback, and "Show anyway".
-  const fetchFirstChunk = (workerId: string, filePath: string) =>
-    workerRpc.readFile(workerId, {
-      workerId,
+  const fetchFirstChunk = (workerId: string, filePath: string, signal?: AbortSignal) =>
+    workerFile.readFile(workerId, {
       path: filePath,
       limit: BigInt(MAX_FILE_SIZE),
-    })
+    }, signal
+      ? { signal }
+      : undefined)
 
   // Load working copy content.
   createEffect(on(
@@ -234,6 +235,10 @@ export const FileViewer: Component<{
       currentBytesPromise = new Promise<Uint8Array | null>((r) => {
         resolveBytes = r
       })
+      // A newer path or an unmount ends this load. The abort stops its RPCs,
+      // and `active` turns the rejection that the abort causes into a stale
+      // result: `active` is cleared BEFORE the abort, so each handler below
+      // ignores that rejection as it ignores a late answer.
       const controller = new AbortController()
       let active = true
       onCleanup(() => {
@@ -269,7 +274,7 @@ export const FileViewer: Component<{
         // Known-binary: only need the size to populate the unsupported
         // card. Never read bytes.
         if (isLikelyBinaryExt(fileExt)) {
-          const statResp = await workerRpc.statFile(workerId, { workerId, path: filePath })
+          const statResp = await workerFile.statFile(workerId, { path: filePath }, { signal: controller.signal })
           if (!active)
             return
           batch(() => {
@@ -291,11 +296,7 @@ export const FileViewer: Component<{
               maxBytes: MAX_FILE_IMAGE_BYTES,
               signal: controller.signal,
             })
-          : await workerRpc.readFile(workerId, {
-              workerId,
-              path: filePath,
-              limit: BigInt(MAX_FILE_SIZE),
-            })
+          : await fetchFirstChunk(workerId, filePath, controller.signal)
         if (!active)
           return
         const respTotalSize = Number(readResp.totalSize)
@@ -358,7 +359,24 @@ export const FileViewer: Component<{
       diffSourceMode(),
     ] as const,
     async ([workerId, filePath, mode]) => {
+      // The same lifetime rule as the working-copy load: a newer mode or path,
+      // or an unmount, aborts this run's reads, and `active` makes every
+      // handler below ignore their late answers and the abort's rejection.
+      // Without it, a HEAD read that answered after a switch to the staged
+      // copy replaced the staged text on screen.
+      const controller = new AbortController()
+      const rpcOpts = { signal: controller.signal }
+      let active = true
+      onCleanup(() => {
+        active = false
+        controller.abort()
+      })
+
+      // Each run takes the flag over at its start. A superseded run leaves the
+      // flag alone in its `finally`, and this branch reads nothing, so nothing
+      // else would clear a flag that the read it replaced had set.
       if (mode === 'working') {
+        setDiffLoading(false)
         setDiffOldContent(null)
         setDiffNewContent(null)
         return
@@ -370,7 +388,9 @@ export const FileViewer: Component<{
           const ref = mode === 'head'
             ? GitFileRef.HEAD
             : GitFileRef.STAGED
-          const resp = await workerRpc.readGitFile(workerId, { workerId, path: filePath, ref })
+          const resp = await workerGit.readGitFile(workerId, { path: filePath, ref }, rpcOpts)
+          if (!active)
+            return
           if (resp.exists) {
             setDiffOldContent(new TextDecoder().decode(resp.content))
           }
@@ -393,19 +413,22 @@ export const FileViewer: Component<{
           // HEAD ref runs in parallel with whatever the "new" side
           // needs — they target the same worker but don't depend on
           // each other.
-          const headPromise = workerRpc.readGitFile(workerId, {
-            workerId,
+          const headPromise = workerGit.readGitFile(workerId, {
             path: filePath,
             ref: GitFileRef.HEAD,
-          })
+          }, rpcOpts)
+          // Handled here as well as at the await below. When the new side
+          // fails first, or this run is superseded, the function leaves
+          // before it awaits the HEAD read, and the abort above then rejects
+          // that read with nobody listening.
+          headPromise.catch(() => {})
           const decoder = new TextDecoder()
           let newText: string
           if (mode === 'diff:head-vs-staged') {
-            const stagedResp = await workerRpc.readGitFile(workerId, {
-              workerId,
+            const stagedResp = await workerGit.readGitFile(workerId, {
               path: filePath,
               ref: GitFileRef.STAGED,
-            })
+            }, rpcOpts)
             newText = stagedResp.exists
               ? decoder.decode(stagedResp.content)
               : ''
@@ -422,11 +445,13 @@ export const FileViewer: Component<{
               newText = decoder.decode(bytes)
             }
             else {
-              const workingResp = await fetchFirstChunk(workerId, filePath)
+              const workingResp = await fetchFirstChunk(workerId, filePath, controller.signal)
               newText = decoder.decode(workingResp.content)
             }
           }
           const headResp = await headPromise
+          if (!active)
+            return
           setDiffOldContent(headResp.exists
             ? decoder.decode(headResp.content)
             : '')
@@ -434,12 +459,17 @@ export const FileViewer: Component<{
         }
       }
       catch {
-        // If git read fails, clear diff content.
-        setDiffOldContent(null)
-        setDiffNewContent(null)
+        // If git read fails, clear diff content. A superseded run's failure,
+        // the abort included, describes reads that nobody waits for.
+        if (active) {
+          setDiffOldContent(null)
+          setDiffNewContent(null)
+        }
       }
       finally {
-        setDiffLoading(false)
+        // A newer run owns the flag from its start.
+        if (active)
+          setDiffLoading(false)
       }
     },
   ))

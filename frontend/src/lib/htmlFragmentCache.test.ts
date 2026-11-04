@@ -56,7 +56,7 @@ describe('htmlFragmentCache', () => {
   // render-effect re-run past the assertions (a vacuous pass for the
   // skip case, a false failure for the re-apply case).
 
-  it('cachedInnerHtml skips the DOM when a re-evaluation yields the same string', () => {
+  it('skips the DOM in cachedInnerHtml when a re-evaluation yields the same string', () => {
     const [flip, setFlip] = createSignal(0)
     // Depends on `flip` but always yields the same string -- the equality
     // guard must keep the exact nodes (text-selection stability relies on
@@ -77,7 +77,7 @@ describe('htmlFragmentCache', () => {
     dispose()
   })
 
-  it('cachedInnerHtml re-applies when the string actually changes', () => {
+  it('re-applies in cachedInnerHtml when the string actually changes', () => {
     const [text, setText] = createSignal('one')
     const el = document.createElement('div')
     let dispose!: () => void

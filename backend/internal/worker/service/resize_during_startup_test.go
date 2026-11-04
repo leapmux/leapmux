@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -51,7 +52,7 @@ func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
 		return svc.Terminals.StartTerminal(ctx, opts, outFn, exitFn)
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      testutil.TestShell(),
 		Cols:       80,
@@ -74,7 +75,7 @@ func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
 	}
 
 	wResize := newTestWriter()
-	dispatch(d, "ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
 		TerminalId: terminalID,
 		Cols:       180,
 		Rows:       50,

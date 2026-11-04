@@ -6,9 +6,11 @@
  * Authentication uses session cookies (Cookie header) instead of Bearer tokens.
  */
 
+import type { EncryptionMode } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
-import { EncryptionMode } from '../../../src/generated/proto/leapmux/v1/channel_pb'
+import { fromJson } from '@bufbuild/protobuf'
+import { GetWorkerHandshakeParamsResponseSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import { hydrateStorageAccount, setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'
@@ -41,23 +43,16 @@ class FetchChannelTransport implements ChannelTransport {
       const body = await resp.text().catch(() => '')
       throw new Error(`GetWorkerHandshakeParams failed: ${resp.status} ${body}`)
     }
-    const data = await resp.json() as {
-      publicKey: string
-      mlkemPublicKey: string
-      slhdsaPublicKey: string
-      encryptionMode: string
-    }
-    // UNSPECIFIED and POST_QUANTUM both use hybrid PQ; CLASSIC maps to X25519-only.
-    const encryptionMode = data.encryptionMode === 'ENCRYPTION_MODE_CLASSIC'
-      ? EncryptionMode.CLASSIC
-      : EncryptionMode.POST_QUANTUM
+    // Decode through the schema, so the nested keys and an omitted empty key
+    // read exactly as the browser's Connect client reads them.
+    const params = fromJson(GetWorkerHandshakeParamsResponseSchema, await resp.json())
     return {
       keys: {
-        x25519PublicKey: base64ToBytes(data.publicKey),
-        mlkemPublicKey: base64ToBytes(data.mlkemPublicKey),
-        slhdsaPublicKey: base64ToBytes(data.slhdsaPublicKey),
+        x25519PublicKey: params.keys?.x25519 ?? new Uint8Array(),
+        mlkemPublicKey: params.keys?.mlkem ?? new Uint8Array(),
+        slhdsaPublicKey: params.keys?.slhdsa ?? new Uint8Array(),
       },
-      encryptionMode,
+      encryptionMode: params.encryptionMode,
     }
   }
 

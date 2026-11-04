@@ -7,7 +7,9 @@ import { input } from '../testUtils'
 import './plugin'
 
 vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: vi.fn(),
+  workerAgent: {
+    updateAgentSettings: vi.fn(),
+  },
 }))
 
 /** A turn end that Grok states for a turn it started by itself. */

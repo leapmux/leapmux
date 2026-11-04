@@ -183,6 +183,9 @@ func newUserEventsSubscriber(
 		UserID:                user.ID.String(),
 		ClientID:              clientID,
 		RequestedWorkspaceIDs: requested,
+		// This endpoint requires only workspace:read, so the worker-list event
+		// asks for its own scope (see crdt.Subscriber.MayReadWorkers).
+		MayReadWorkers: user.Scopes.Allows(leapmuxv1.Scope_SCOPE_WORKER_READ),
 		// Filter is resolved and installed under subscribeExpandMu by
 		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {

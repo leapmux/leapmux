@@ -322,7 +322,7 @@ func TestDeliverOnConnect_AfterARestart(t *testing.T) {
 	e := newEnv(t)
 	reg := newFakeRegistry(t, e.worker, true) // a new notifier and registry: nothing flagged
 	sender := ackSender()
-	worker, err := e.st.Workers().GetByAuthToken(context.Background(), mustAuthToken(t, e.st, e.worker))
+	worker, err := e.st.Workers().GetByAuthTokenIncludeDeleted(context.Background(), mustAuthToken(t, e.st, e.worker))
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
 

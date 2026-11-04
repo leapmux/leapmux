@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { settle } from '~/test-support/async'
 import { mockLoadSystemInfo } from '~/test-support/systemInfoMock'
 import { PasswordSetupGate } from './PasswordSetupGate'
 
@@ -43,9 +44,12 @@ describe('PasswordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSetInitialSoloPassword.mockResolvedValue({
-      user: { id: 'solo-id', username: 'solo' },
-      elevationExpiresAt: soloElevation,
+      sessionReport: {
+        user: { id: 'solo-id', username: 'solo' },
+        elevationExpiresAt: soloElevation,
+      },
     })
+    mockSetAuth.mockResolvedValue('adopted')
     // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
@@ -87,21 +91,64 @@ describe('PasswordSetupGate', () => {
 
     await vi.waitFor(() => {
       expect(mockSetInitialSoloPassword).toHaveBeenCalledWith({ password: 'correct-horse-battery-staple' })
-      // The elevation the SAME reply granted travels with the user, so the
-      // client's elevation state never depends on the follow-up refresh. That
-      // refresh swallows its own failure, so recovering the window from it
-      // would prompt the operator for the password they just chose.
-      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'solo-id', username: 'solo' }, soloElevation)
+      // The account AND the elevation the same reply granted travel in its
+      // report, so neither depends on a second round trip that can fail.
+      expect(mockSetAuth).toHaveBeenCalledWith({
+        user: { id: 'solo-id', username: 'solo' },
+        elevationExpiresAt: soloElevation,
+      })
       // FORCED, because the gate reads exactly this snapshot: without it the
       // screen stays up over a hub that no longer needs it.
       expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
-      // BOTH copies of "does this account hold a password". The snapshot takes
-      // this screen down; the ACCOUNT is what Preferences -> Account renders
-      // its button and its solo warning from, and nothing else re-reads it for
-      // the life of the page. Without this the operator who just set the first
-      // password finds a screen offering to set one.
-      expect(mockRefreshUser).toHaveBeenCalled()
     })
+    // The report is the complete account projection, `passwordSet` included,
+    // so the gate does not read the account a second time before the snapshot
+    // read that takes it down.
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+  })
+
+  // The password is stored, but the reply could not report the account. The
+  // adoption starts sign-in recovery, which replaces this screen and owns the
+  // account, so the gate reports no failure and does not re-read the account.
+  // It still re-reads the hub: recovery ends on a route this gate guards, and a
+  // snapshot that still asks for the password would show this screen again for
+  // a password the hub refuses to set twice.
+  it('leaves a recovering adoption to sign-in recovery', async () => {
+    mockSetInitialSoloPassword.mockResolvedValue({
+      sessionReport: { elevationExpiresAt: soloElevation },
+    })
+    mockSetAuth.mockResolvedValue('recovering')
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledWith({ elevationExpiresAt: soloElevation }))
+    await vi.waitFor(() => expect(mockLoadSystemInfo).toHaveBeenCalledWith(true))
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+  })
+
+  // A newer auth operation replaced this adoption, so the account belongs to
+  // it. The gate does not re-read an account it did not adopt, and it reports
+  // no failure for a password the hub stored. It still re-reads the hub, so
+  // that the stored password takes this screen down.
+  it('leaves a superseded adoption to the newer operation', async () => {
+    mockSetAuth.mockResolvedValue('superseded')
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    await vi.waitFor(() => expect(mockSetAuth).toHaveBeenCalledOnce())
+    await settle()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+    expect(screen.queryByText(/The password is set/)).toBeNull()
+    // The gate can stay on screen, so the form must be usable again rather
+    // than stuck on "Setting...".
+    expect(screen.getByRole('button', { name: 'Set Password' })).toBeEnabled()
   })
 
   it('reports a refusal rather than leaving the form silent', async () => {
@@ -129,6 +176,22 @@ describe('PasswordSetupGate', () => {
     expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
     expect(screen.queryByText(/Failed to set the password/)).toBeNull()
     expect(mockSetInitialSoloPassword).toHaveBeenCalledTimes(1)
+  })
+
+  // A superseded adoption can leave this gate on screen, so a failed re-read
+  // there must say the same thing, and give the form back.
+  it('says the password landed when the re-read after a superseded adoption failed', async () => {
+    mockSetAuth.mockResolvedValue('superseded')
+    mockLoadSystemInfo.mockRejectedValue(new Error('connection reset'))
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Set Password' })).toBeEnabled()
   })
 
   it('explains the restricted TCP setup state', () => {

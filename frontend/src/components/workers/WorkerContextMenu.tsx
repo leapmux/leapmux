@@ -13,10 +13,13 @@ import { dangerMenuItem } from '~/styles/shared.css'
 
 interface WorkerContextMenuProps extends ContextMenuTargetProps {
   workerInfo: WorkerInfo | null
-  // True for the in-process worker the solo launcher auto-registers.
-  // The deregister handler refuses these (it would just re-register on
-  // next start), so the menu item would be a dead-end click.
+  // True for the in-process worker the solo launcher auto-registers. The hub
+  // refuses to deregister such a worker only while it is connected, because the
+  // next start would register a fresh one. A dead-end click stays hidden, and an
+  // orphan from a lost solo state file stays removable.
   autoRegistered: boolean
+  // The hub's last-known liveness of this worker. See `autoRegistered`.
+  online: boolean
   hasTunnels: boolean
   onAddTunnel: () => void
   onDeleteAllTunnels: () => void
@@ -83,7 +86,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           </button>
         </Show>
       </Show>
-      <Show when={!props.autoRegistered}>
+      <Show when={!props.autoRegistered || !props.online}>
         <hr />
         <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDeregister()}>
           Deregister...

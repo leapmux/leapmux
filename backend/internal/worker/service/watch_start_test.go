@@ -6,6 +6,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/stretchr/testify/require"
@@ -30,7 +31,7 @@ func TestWatchStartupDoesNotReplaceANewerRevision(t *testing.T) {
 	initial, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{UpdateId: 1, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}})
 	require.NoError(t, err)
 	updating := &watchUpdatingBindWriter{testResponseWriter: writer, update: update}
-	dispatcher.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: "WatchEvents", Payload: initial}, updating)
+	dispatcher.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: initial}, updating)
 	require.Eventually(t, func() bool {
 		ack := lastWatchUpdateAck(t, writer)
 		return ack != nil && ack.UpdateId == 2

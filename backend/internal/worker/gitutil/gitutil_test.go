@@ -416,7 +416,7 @@ func TestBatchGetGitStatus_AllEmptyPathsYieldNilSlice(t *testing.T) {
 }
 
 // TestGetGitStatus_HonorsCtxCancellation pins the cancellation contract
-// runAgentStartup depends on: when CloseAgent lands during the phase-1
+// runAgentStartup depends on: when CloseTab lands during the phase-1
 // "Checking Git status…" shell-out, the startup context cancels and the
 // in-flight `git` processes must not continue — GetGitStatus returns nil
 // (the failure path) and does not block past the cancel.

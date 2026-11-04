@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
@@ -47,7 +47,7 @@ export const PushBranchButton: Component<PushBranchButtonProps> = (props) => {
 
   const handleClick = () => {
     void run(async () => {
-      await workerRpc.pushBranch(props.workerId, { workingDir: props.workingDir })
+      await workerGit.pushBranch(props.workerId, { workingDir: props.workingDir })
       await props.onPushed()
       showInfoToast('Branch pushed successfully')
     })

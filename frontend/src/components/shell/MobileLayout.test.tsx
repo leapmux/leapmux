@@ -188,7 +188,7 @@ describe('createMobileOverlayState', () => {
     })
   })
 
-  it('toggleDrawer opens and closes its own drawer', () => {
+  it('opens and closes its own drawer on toggleDrawer', () => {
     createRoot((dispose) => {
       const s = createMobileOverlayState()
       s.toggleDrawer('left')
@@ -215,7 +215,7 @@ describe('createMobileOverlayState', () => {
     })
   })
 
-  it('toggleSheet toggles, and closeSheet closes only the sheet', () => {
+  it('toggles with toggleSheet, and closes only the sheet with closeSheet', () => {
     createRoot((dispose) => {
       const s = createMobileOverlayState()
       s.toggleSheet()
@@ -230,7 +230,7 @@ describe('createMobileOverlayState', () => {
     })
   })
 
-  it('applySwipe drives the drawers through the same one owner', () => {
+  it('makes applySwipe drive the drawers through the same one owner', () => {
     createRoot((dispose) => {
       const s = createMobileOverlayState()
       s.applySwipe('right')
@@ -252,7 +252,7 @@ describe('createMobileOverlayState', () => {
     })
   })
 
-  it('closeAll closes whatever is up', () => {
+  it('closes whichever overlay is open when closeAll runs', () => {
     createRoot((dispose) => {
       const s = createMobileOverlayState()
       s.toggleSheet()

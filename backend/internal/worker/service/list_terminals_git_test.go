@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
@@ -52,7 +53,7 @@ func TestListTerminals_AttachesTheGitStatusOfEachTerminalsOwnDirectory(t *testin
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
 	}))
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{"live", "row-only", "plain"}}, w)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{"live", "row-only", "plain"}}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -85,7 +86,7 @@ func TestListTerminals_AnIdWithNoTerminalRunsNoGit(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{"missing"}}, w)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{"missing"}}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)

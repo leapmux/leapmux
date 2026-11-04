@@ -33,7 +33,7 @@ func NewPinStore(hubURL string) (*PinStore, error) {
 		Path:             filepath.Join(dir, host, "pins.json"),
 		DirMode:          0o755,
 		FileMode:         0o644,
-		MismatchHintTmpl: "clear with `leapmux control worker pins remove --worker-id=%s`",
+		MismatchHintTmpl: "a worker keeps its keys while it stays registered; clear the pin only after the presented fingerprint matches the one the worker logs when it starts: `leapmux control worker pins remove --worker-id=%s`",
 	})
 	if err != nil {
 		return nil, err

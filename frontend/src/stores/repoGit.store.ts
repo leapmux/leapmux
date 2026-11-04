@@ -2,7 +2,7 @@ import type { GitFilterTab, RepoGitRefreshOpts, RepoGitState, RepoKey } from './
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import { createMemo, createSignal, untrack } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
@@ -428,7 +428,7 @@ export function createRepoGitStore() {
     beginLoading()
     let writtenKey: RepoKey | undefined
     try {
-      const resp = await workerRpc.getGitFileStatus(workerId, { workerId, path })
+      const resp = await workerGit.getGitFileStatus(workerId, { path })
       if (probeGen.get(probeId) !== mine) {
         releaseStaleRefreshPins(mine, myKeys)
         return undefined

@@ -49,7 +49,7 @@ You do not run a separate command. A refused command prints an address and a sho
 
 **When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart.
 
-Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
+`list`, `get`, `set`, `set-secret`, and `reset` each state the class in a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
 
 [Configuration](/docs/admin/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
 

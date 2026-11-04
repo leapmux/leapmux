@@ -3,7 +3,7 @@ import type { PasskeyBlocker } from '~/lib/systemInfo'
 import { createSignal } from 'solid-js'
 import { vi } from 'vitest'
 
-import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 
 /**
  * The one shared mock of `~/lib/systemInfo`. Every getter reads through a
@@ -28,6 +28,11 @@ import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_p
 export interface SystemInfoMockState {
   /** Answers `isSystemInfoLoaded`; flip to false to test the fail-closed bootstrap window. */
   loaded: boolean
+  /**
+   * Answers `systemInfoLoadFailure`: why the last load failed, or null. Set it
+   * with `loaded: false` to state a failed load rather than one in flight.
+   */
+  loadFailure: string | null
   soloMode: boolean
   /** Answers all connection access helpers from one exclusive wire state. */
   soloAccess: SoloAccess
@@ -60,6 +65,7 @@ export interface SystemInfoMockState {
 
 const defaultState: SystemInfoMockState = {
   loaded: true,
+  loadFailure: null,
   soloMode: false,
   soloAccess: SoloAccess.UNSPECIFIED,
   soloPasswordSet: false,
@@ -93,6 +99,7 @@ export const systemInfoMock = {
   passkeyBlocker: () => state().passkeyBlocker,
   passkeysUsableHere: () => state().passkeyBlocker === null,
   isSystemInfoLoaded: () => state().loaded,
+  systemInfoLoadFailure: () => state().loadFailure,
   isCaptchaEnabled: () => state().captchaEnabled,
   isCaptchaUnsolvableHere: () => state().captchaUnsolvableHere,
   getCaptchaProvider: () => state().captchaProvider,

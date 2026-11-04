@@ -280,6 +280,38 @@ func TestRenewBearerLeasesZeroExpiryClearsDeadline(t *testing.T) {
 	assert.NoError(t, ctx.Err(), "a never-expires lease must not be canceled")
 }
 
+// A user-info observer sees every invalidation of a real user, in order, after
+// the cache eviction -- and with no auth-context registry too, because the
+// observer follows a copy of the profile that lives outside that cache. A blank
+// user reaches no observer.
+func TestCredentialLifecycleEffectsUserInfoInvalidationTellsEachObserver(t *testing.T) {
+	var first, second []string
+	registry := &AuthContextRegistry{state: &authState{}}
+	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
+	cached := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), Credential: APICredential("token")}}
+	registry.state.bearers.Store(key, cached)
+	registry.state.indexBearerCacheEntry(key, cached)
+	effects := NewCredentialLifecycleEffects(registry, nil, nil,
+		WithUserInfoObserver(func(userID string) {
+			_, stillCached := registry.state.bearers.Load(key)
+			assert.False(t, stillCached, "the observer runs after the eviction")
+			first = append(first, userID)
+		}),
+		WithUserInfoObserver(nil),
+		WithUserInfoObserver(func(userID string) { second = append(second, userID) }))
+
+	effects.UserInfoInvalidated("user")
+	effects.UserInfoInvalidated("")
+
+	assert.Equal(t, []string{"user"}, first)
+	assert.Equal(t, []string{"user"}, second, "every observer runs, and a nil one is skipped")
+
+	withoutRegistry := NewCredentialLifecycleEffects(nil, nil, nil,
+		WithUserInfoObserver(func(userID string) { first = append(first, userID) }))
+	withoutRegistry.UserInfoInvalidated("other")
+	assert.Equal(t, []string{"user", "other"}, first, "an observer runs without an auth-context registry")
+}
+
 func TestCredentialLifecycleEffectsUserInfoInvalidationDoesNotCloseChannels(t *testing.T) {
 	registry := &AuthContextRegistry{state: &authState{}}
 	closer := &recordingCredentialCloser{}

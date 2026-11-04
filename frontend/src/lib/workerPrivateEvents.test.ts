@@ -1,7 +1,9 @@
-import { create, toBinary } from '@bufbuild/protobuf'
+import type { WorkerPrivateEvent } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WorkerPrivateEventSchema } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WorkerPrivateEventSchema, WorkerPrivateService } from '~/generated/proto/leapmux/v1/worker_private_pb'
+import { STREAM_HEALTHY_AFTER_MS } from './retry'
 
 // Mock the E2EE channel transport so we can drive connect / message / error
 // entirely from the test.
@@ -19,7 +21,7 @@ const { openWorkerPrivateEventStream } = await import('./workerPrivateEvents')
 interface FakeStream {
   requestId: string
   cancel: ReturnType<typeof vi.fn>
-  emitMessage: (payload: Uint8Array) => void
+  emitMessage: (event: WorkerPrivateEvent) => void
   emitError: (err: Error) => void
   emitEnd: () => void
 }
@@ -27,7 +29,7 @@ interface FakeStream {
 let nextReq = 0
 
 function makeFakeStream(): { handle: unknown, control: FakeStream } {
-  let onMsg: ((m: { payload: Uint8Array }) => void) | undefined
+  let onMsg: ((event: WorkerPrivateEvent) => void) | undefined
   let onEnd: (() => void) | undefined
   let onErr: ((err: Error) => void) | undefined
   const requestId = `req-${nextReq++}`
@@ -35,7 +37,7 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
   const handle = {
     requestId,
     cancel,
-    onMessage: (cb: (m: { payload: Uint8Array }) => void) => { onMsg = cb },
+    onMessage: (cb: (event: WorkerPrivateEvent) => void) => { onMsg = cb },
     onEnd: (cb: () => void) => { onEnd = cb },
     onError: (cb: (err: Error) => void) => { onErr = cb },
   }
@@ -44,15 +46,15 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
     control: {
       requestId,
       cancel,
-      emitMessage: p => onMsg?.({ payload: p }),
+      emitMessage: event => onMsg?.(event),
       emitError: e => onErr?.(e),
       emitEnd: () => onEnd?.(),
     },
   }
 }
 
-function encodeTabRenamed(tabId: string): Uint8Array {
-  const evt = create(WorkerPrivateEventSchema, {
+function tabRenamed(tabId: string): WorkerPrivateEvent {
+  return create(WorkerPrivateEventSchema, {
     event: {
       case: 'tabRenamed',
       value: {
@@ -63,7 +65,6 @@ function encodeTabRenamed(tabId: string): Uint8Array {
       },
     },
   })
-  return toBinary(WorkerPrivateEventSchema, evt)
 }
 
 describe('openWorkerPrivateEventStream reconnect backoff', () => {
@@ -111,7 +112,22 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     return s
   }
 
-  it('backs off exponentially on repeated failures and resets after a healthy message', async () => {
+  // The stream travels under the generated descriptor, so the procedure on
+  // the wire matches the handler the worker registers.
+  it('opens the stream on the worker\'s channel under the WatchWorkerPrivateEvents descriptor', async () => {
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
+    await tick(0)
+
+    expect(getOrOpenChannel).toHaveBeenCalledWith('w')
+    expect(stream).toHaveBeenCalledOnce()
+    expect(stream).toHaveBeenCalledWith('chan', WorkerPrivateService.method.watchWorkerPrivateEvents, {})
+    stop()
+  })
+
+  it('backs off exponentially on repeated failures and resets after the healthy window', async () => {
     const stop = openWorkerPrivateEventStream({
       workerId: 'w',
       onTabRenamed: () => {},
@@ -133,29 +149,42 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     await tick(1)
     expect(stream).toHaveBeenCalledTimes(3)
 
-    // A healthy message resets the streak, so the next reconnect is 250ms again
-    // (not 1000ms).
-    const renamed: string[] = []
+    // A stream that stays open for the healthy window ends the streak, so the
+    // next reconnect is 250ms again (not 1000ms). It delivered no message: a
+    // quiet stream is as healthy as a busy one.
+    await tick(STREAM_HEALTHY_AFTER_MS)
+    streamAt(2).emitError(new Error('drop'))
+    await tick(249)
+    expect(stream).toHaveBeenCalledTimes(3)
+    await tick(1)
+    expect(stream).toHaveBeenCalledTimes(4)
+
     stop()
-    const stop2 = openWorkerPrivateEventStream({
+  })
+
+  // Only `streamProvedHealthy` ends a streak, so a stream that delivers a message
+  // and then drops at once keeps backing off.
+  it('keeps the streak of a stream that drops soon after a message', async () => {
+    const renamed: string[] = []
+    const stop = openWorkerPrivateEventStream({
       workerId: 'w',
       onTabRenamed: (e: { tabId: string }) => renamed.push(e.tabId),
     })
     await tick(0)
-    const baseline = stream.mock.calls.length
-    streamAt(streams.length - 1).emitMessage(encodeTabRenamed('tab-1'))
-    expect(renamed).toEqual(['tab-1'])
-    // Grow the streak once, then a healthy message, then drop again.
-    streamAt(streams.length - 1).emitError(new Error('drop'))
+    streamAt(0).emitMessage(tabRenamed('tab-1'))
+    streamAt(0).emitError(new Error('drop'))
     await tick(250)
-    expect(stream).toHaveBeenCalledTimes(baseline + 1)
-    streamAt(streams.length - 1).emitMessage(encodeTabRenamed('tab-2'))
-    streamAt(streams.length - 1).emitError(new Error('drop'))
-    // After the reset, the next delay is the initial 250ms, not the doubled 500.
-    await tick(250)
-    expect(stream).toHaveBeenCalledTimes(baseline + 2)
+    expect(stream).toHaveBeenCalledTimes(2)
 
-    stop2()
+    streamAt(1).emitMessage(tabRenamed('tab-2'))
+    streamAt(1).emitError(new Error('drop'))
+    await tick(499)
+    expect(stream, 'the message did not restart the delay at 250ms').toHaveBeenCalledTimes(2)
+    await tick(1)
+    expect(stream).toHaveBeenCalledTimes(3)
+
+    expect(renamed).toEqual(['tab-1', 'tab-2'])
+    stop()
   })
 
   it('teardown calls cancel on the stream handle (#337)', async () => {

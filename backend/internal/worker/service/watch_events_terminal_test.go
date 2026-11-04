@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // collectTerminalData drains all TerminalData events (snapshot or
@@ -56,7 +59,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	// First subscribe: after_offset=0 delivers a cold-catch-up event with
 	// the current screen contents.
 	w1 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w1)
 
@@ -76,7 +79,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	require.Greater(t, currentOffset, int64(0))
 
 	w2 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
@@ -116,7 +119,7 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	// Resubscribe at firstOffset. Must receive an incremental delta with
 	// is_snapshot=false containing only the new bytes.
 	w2 := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-delta", AfterOffset: firstOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
@@ -153,7 +156,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	wantEndOffset := freezeAndInjectAltScreenPastRing(t, svc, "t-altrecover")
 
 	w := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
@@ -244,7 +247,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	// Cold subscribe — after_offset=0 is now well below the retained
 	// window.
 	w := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-wrap", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
@@ -272,4 +275,130 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 		"end_offset is the cumulative counter, not truncated to the ring")
 	assert.Greater(t, snap.GetEndOffset(), int64(ringSize),
 		"end_offset reflects the cumulative counter, which is > ring size once the ring has wrapped")
+}
+
+// A replay of a terminal whose shell already exited states EXITED. The worker
+// reports the exit itself; a replay that said READY would offer input to a
+// shell that no longer runs.
+func TestWatchEvents_Terminal_ReplayOfAnExitedTerminalStatesExited(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	// A row with no live shell: the manager holds no terminal for it.
+	seedTerminal(t, svc, "exited-term")
+
+	w := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: "exited-term",
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, w)
+	waitWatchUpdateAck(t, w)
+
+	var status leapmuxv1.TerminalStatus
+	require.Eventually(t, func() bool {
+		for _, s := range w.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if sc := resp.GetTerminalEvent().GetStatusChange(); sc != nil {
+				status = sc.GetStatus()
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "the catch-up replay must state the terminal's status")
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
+}
+
+// replayTerminalCatchUp states the derived status in one TerminalStatusChange,
+// with the startup error only on STARTUP_FAILED and the phase message only on
+// STARTING. Every status deriveTerminalStatus answers is covered, so a status
+// change that carried a field of another status, or lost its own, fails here.
+func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		setup       func(t *testing.T, svc *Service, id string) db.Terminal
+		wantStatus  leapmuxv1.TerminalStatus
+		wantError   string
+		wantMessage string
+	}{
+		{
+			name: "a startup in flight states its phase message",
+			setup: func(t *testing.T, svc *Service, id string) db.Terminal {
+				require.NotNil(t, svc.TerminalStartup.begin(id, func() {}))
+				svc.TerminalStartup.setMessage(id, "Starting zsh…")
+				return db.Terminal{ID: id}
+			},
+			wantStatus:  leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
+			wantMessage: "Starting zsh…",
+		},
+		{
+			name: "a failed startup states the error from the registry",
+			setup: func(t *testing.T, svc *Service, id string) db.Terminal {
+				handle := svc.TerminalStartup.begin(id, func() {})
+				require.NotNil(t, handle)
+				svc.TerminalStartup.setMessage(id, "Starting zsh…")
+				svc.TerminalStartup.fail(handle, "spawn failed")
+				return db.Terminal{ID: id}
+			},
+			wantStatus: leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
+			wantError:  "spawn failed",
+		},
+		{
+			name: "a failure that predates the worker states the persisted error",
+			setup: func(*testing.T, *Service, string) db.Terminal {
+				return db.Terminal{ID: "persisted-failure", StartupError: "fork: permission denied"}
+			},
+			wantStatus: leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
+			wantError:  "fork: permission denied",
+		},
+		{
+			name: "a running shell states READY",
+			setup: func(t *testing.T, svc *Service, id string) db.Terminal {
+				startTerminalWithOutputFn(t, svc, id)
+				row, err := svc.Queries.GetTerminal(t.Context(), id)
+				require.NoError(t, err)
+				return row
+			},
+			wantStatus: leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
+		},
+		{
+			name: "a row with no live shell states EXITED",
+			setup: func(*testing.T, *Service, string) db.Terminal {
+				return db.Terminal{ID: "no-shell"}
+			},
+			wantStatus: leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, _, _ := setupTestService(t)
+			row := tc.setup(t, svc, "term-replay")
+			w := newTestWriter()
+			svc.replayTerminalCatchUp(newReplaySink(w, 0, nil), row.ID, 0, row)
+			waitForWireTerminalStatuses(t, w, 1)
+
+			var changes []*leapmuxv1.TerminalStatusChange
+			for _, s := range w.streamsSnapshot() {
+				var resp leapmuxv1.WatchEventsResponse
+				require.NoError(t, proto.Unmarshal(s.GetPayload(), &resp))
+				if sc := resp.GetTerminalEvent().GetStatusChange(); sc != nil {
+					assert.Equal(t, row.ID, resp.GetTerminalEvent().GetTerminalId())
+					changes = append(changes, sc)
+				}
+			}
+			require.Len(t, changes, 1, "the replay states the status exactly once")
+			assert.Equal(t, tc.wantStatus.String(), changes[0].GetStatus().String())
+			assert.Equal(t, tc.wantError, changes[0].GetStartupError())
+			assert.Equal(t, tc.wantMessage, changes[0].GetStartupMessage())
+			assert.Nil(t, changes[0].GetGitStatus(), "a replayed status carries no git status")
+		})
+	}
 }

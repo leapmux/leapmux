@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connectproto"
+	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -22,30 +26,39 @@ import (
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/util/validate"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
 // CRDTRegistry is the subset of *crdt.Registry that
 // WorkerConnectorService consumes — used by the worker tab-sync path
 // to fetch a manager and submit hub-internal tombstones for tabs the
-// worker no longer hosts. Modeled as an interface so tests can pass a
-// nil-equivalent stub and so the wiring in hub/server.go doesn't
-// require constructing the full registry before this service is
-// reachable.
+// worker no longer hosts, and by Register to tell the registrant's
+// /ws/userevents subscribers that its worker list changed. Modeled as an
+// interface so tests can pass a nil-equivalent stub and so the wiring in
+// hub/server.go doesn't require constructing the full registry before this
+// service is reachable.
 type CRDTRegistry interface {
 	Get(ctx context.Context, userID string) (*crdt.Manager, error)
+	// BroadcastWorkersChanged reaches the user's live subscribers whose
+	// credential holds worker:read, through an already-loaded manager, and
+	// never bootstraps one.
+	BroadcastWorkersChanged(userID string)
 }
 
 type WorkerConnectorService struct {
 	store        store.Store
 	workerMgr    *workermgr.Manager
 	channelMgr   *channelmgr.Manager
-	broadcaster  *HubEventBroadcaster
 	pending      *workermgr.PendingRequests
 	notifier     *notifier.Notifier
 	crdtRegistry CRDTRegistry
+	// clock drives the hello deadline and the receive-idle timer of every
+	// Connect stream, so a test can move both deadlines instead of waiting.
+	clock quartz.Clock
+	// identityDeliveries orders every WorkerIdentity frame, the greeting
+	// included; see ownerDeliveryLocks.
+	identityDeliveries ownerDeliveryLocks
 	// queuePool is the WORKER outbound queue budget every Connect stream's
 	// writer draws from. Deliberately not shared with the frontend relays:
 	// reclaiming can only ever cost a member of the same pool, and dropping a
@@ -76,26 +89,40 @@ func NewWorkerConnectorService(
 	st store.Store,
 	mgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
-	b *HubEventBroadcaster,
 	pr *workermgr.PendingRequests,
 	n *notifier.Notifier,
 	registry CRDTRegistry,
 	queuePool *sendq.Pool,
+	clock quartz.Clock,
 ) *WorkerConnectorService {
 	if queuePool == nil {
 		panic("service: NewWorkerConnectorService requires a queue pool")
+	}
+	if clock == nil {
+		panic("service: NewWorkerConnectorService requires a clock")
 	}
 	return &WorkerConnectorService{
 		store:        st,
 		workerMgr:    mgr,
 		channelMgr:   cMgr,
-		broadcaster:  b,
 		pending:      pr,
 		notifier:     n,
 		crdtRegistry: registry,
 		queuePool:    queuePool,
+		clock:        clock,
 	}
 }
+
+// workerIdleTimeout is how long a Connect stream may stay silent: before the
+// worker's hello arrives, and between two messages afterwards. The worker
+// sends a heartbeat well inside it.
+const workerIdleTimeout = 10 * time.Second
+
+// Timer tags for the two Connect deadlines, so a test can trap each one.
+const (
+	workerHelloTimerTag = "worker-hello"
+	workerIdleTimerTag  = "worker-idle"
+)
 
 // SetMaxWorkersPerUser bounds how many Workers one user may have registered at
 // once; 0 (the zero value) is unlimited. Call once at startup before serving.
@@ -164,6 +191,25 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 	return wrappedConnectError(connect.CodeResourceExhausted, limitErr)
 }
 
+// newWorkerConnectRefusalError builds a Connect refusal that reconnecting
+// cannot fix, tagged with the WorkerConnectRefusal detail the worker acts on.
+//
+// The detail is what makes a refusal actionable: a proxy in front of the Hub can
+// answer 401 or 403 by itself and a non-200 response carries no details, so the
+// worker must never infer "I was deleted" from a status code alone.
+func newWorkerConnectRefusalError(
+	code connect.Code, reason leapmuxv1.WorkerConnectRefusalReason, message string,
+) *connect.Error {
+	connectErr := connect.NewError(code, message)
+	detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: reason})
+	if err != nil {
+		// Marshalling a one-field message this file owns cannot fail; a bare
+		// error still beats a panic in a request path.
+		return connectErr
+	}
+	return connectErr.WithDetail(detail)
+}
+
 // Register handles the worker → hub registration RPC.
 //
 // The session-cookie auth interceptor lets this RPC through (it's in the
@@ -181,13 +227,12 @@ func (s *WorkerConnectorService) Register(
 		return nil, connect.NewError(connect.CodeUnauthenticated, "registration key required")
 	}
 
-	if _, err := validate.ValidateProperty("version", req.GetVersion()); err != nil {
-		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
+	// Before the registration key is read, let alone consumed: a malformed key
+	// set must not burn it. The keys are the Worker's identity, and the Hub pins
+	// them to the row this call creates.
+	if err := workerkeys.Validate(req.GetKeys()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
-
-	publicKey := ptrconv.OrEmpty(req.GetPublicKey())
-	mlkemPublicKey := ptrconv.OrEmpty(req.GetMlkemPublicKey())
-	slhdsaPublicKey := ptrconv.OrEmpty(req.GetSlhdsaPublicKey())
 
 	workerID := id.Generate()
 	authToken := id.Generate()
@@ -229,12 +274,10 @@ func (s *WorkerConnectorService) Register(
 			return err
 		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       authToken,
-			RegisteredBy:    registrantUID,
-			PublicKey:       publicKey,
-			MlkemPublicKey:  mlkemPublicKey,
-			SlhdsaPublicKey: slhdsaPublicKey,
+			ID:           workerID,
+			AuthToken:    authToken,
+			RegisteredBy: registrantUID,
+			PublicKeys:   store.WorkerPublicKeysFromProto(req.GetKeys()),
 		}); err != nil {
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 		}
@@ -258,7 +301,9 @@ func (s *WorkerConnectorService) Register(
 		"worker_id", workerID,
 		"registered_by", registeredBy,
 	)
-	s.broadcaster.NotifyWorkersChanged(registeredBy)
+	// After the commit, never inside the transaction: a subscriber that
+	// re-fetches the list at once must see the new worker.
+	s.announceWorkersChanged(registeredBy)
 
 	// registered_by is deliberately NOT returned here. The worker learns its owner
 	// from WorkerIdentity on every Connect instead: handing it over once at
@@ -271,61 +316,268 @@ func (s *WorkerConnectorService) Register(
 	}, nil
 }
 
+// workerIdentityReadTimeout caps each username read, because each one runs
+// under the owner's delivery lock: Connect's greeting read, and the read of
+// RedeliverWorkerIdentity, which runs inside a user-info observer and has no
+// request context of its own. A stalled read would otherwise hold every delivery
+// for the owners on that stripe, and the user-info observers and the revocation
+// watcher that run them. With the cap it holds the stripe for at most this long.
+const workerIdentityReadTimeout = 5 * time.Second
+
+// workerIdentityReadTimerTag tags the timer of workerIdentityReadTimeout, so a
+// test can move it.
+const workerIdentityReadTimerTag = "worker-identity-read"
+
+// identityReadContext returns the context of one username read under the
+// owner's delivery lock. It ends when parent ends, or workerIdentityReadTimeout
+// after this call on s.clock. Call the returned function when the read is
+// done; it stops the timer and releases the context.
+func (s *WorkerConnectorService) identityReadContext(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := s.clock.AfterFunc(workerIdentityReadTimeout, func() {
+		cancel(context.DeadlineExceeded)
+	}, workerIdentityReadTimerTag)
+	return ctx, func() {
+		timer.Stop(workerIdentityReadTimerTag)
+		cancel(context.Canceled)
+	}
+}
+
+// ownerDeliveryLocks serializes, per owner, every identity delivery as one
+// critical section: read the username, then publish the name. Connect publishes
+// by registering the connection, whose greeting carries the name (see
+// registerGreetedConn). RedeliverWorkerIdentity takes its snapshot of the owner's
+// connections inside the section, reads, and enqueues to each one.
+//
+// Frames then reach a worker in the order of their reads. A rename's re-delivery
+// starts after the rename commits, so its read sees the new name, and a delivery
+// whose read started earlier finishes before it. The last frame a worker
+// receives therefore never holds a name older than the newest rename:
+//   - A Connect that read the old name holds the lock until the registry holds
+//     its connection, so the re-delivery's snapshot finds that connection.
+//   - A Connect that starts after the re-delivery reads the new name.
+//
+// Without it, a read that returned the old name could enqueue after the
+// re-delivery of the new one, or a re-delivery could miss a connection that was
+// about to register. The worker would keep the old name until the next account
+// change.
+//
+// The locks are striped by a hash of the owner id, so memory stays fixed
+// however many accounts exist. Two owners on one stripe only wait for each
+// other. The zero value is ready to use.
+type ownerDeliveryLocks struct {
+	stripes [64]sync.Mutex
+}
+
+// lock takes owner's stripe and returns the function that releases it.
+func (l *ownerDeliveryLocks) lock(owner string) (unlock func()) {
+	mu := l.forOwner(owner)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (l *ownerDeliveryLocks) forOwner(owner string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(owner))
+	return &l.stripes[h.Sum32()%uint32(len(l.stripes))]
+}
+
+// workerIdentityFrame is the WorkerIdentity message for a worker that owner
+// registered. ownerUsername is empty when the username is unknown.
+func workerIdentityFrame(owner, ownerUsername string) *leapmuxv1.ConnectResponse {
+	return &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: owner, RegisteredByUsername: ownerUsername},
+		},
+	}
+}
+
+// ownerUsername reads the username of the account that registered a worker,
+// and reports whether the read succeeded.
+//
+// The username is display only, so a failed read never refuses or drops a
+// connection: the caller sends no username, or keeps the one it sent. A
+// missing account is not logged, because a DEREGISTERING worker can outlive
+// its deleted owner; any other failure is.
+func (s *WorkerConnectorService) ownerUsername(ctx context.Context, owner string) (string, bool) {
+	user, err := s.store.Users().GetByID(ctx, owner)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			// The cause separates the read cap from a disconnect. ctx.Err() reads
+			// context.Canceled for both, because identityReadContext cancels ctx.
+			slog.Warn("read the worker owner's username", "owner", owner, "error", err, "cause", context.Cause(ctx))
+		}
+		return "", false
+	}
+	return user.Username, true
+}
+
+// RedeliverWorkerIdentity sends the WorkerIdentity frame again to every worker
+// that owner registered and that is connected to this Hub, so each follows a
+// rename of its owner. It is a user-info observer (auth.WithUserInfoObserver):
+// UserInfoInvalidated runs for a change in this process and, through the
+// revocation watcher, for one in another Hub process, so every Hub updates the
+// workers it holds.
+//
+// A user-info event also fires for changes that keep the username, such as an
+// administrator flag. The frame is then identical to the last one, and the
+// worker stores the same value again.
+//
+// It can wait behind a Connect's greeting read for the owner, or for another
+// owner on the stripe, for at most workerIdentityReadTimeout per read.
+func (s *WorkerConnectorService) RedeliverWorkerIdentity(owner string) {
+	unlock := s.identityDeliveries.lock(owner)
+	defer unlock()
+	conns := s.workerMgr.OwnerConnsForTrustedPath(owner)
+	if len(conns) == 0 {
+		return
+	}
+	ctx, release := s.identityReadContext(context.Background())
+	defer release()
+	username, ok := s.ownerUsername(ctx, owner)
+	if !ok {
+		// Keep the username each worker holds: a failed read is no news.
+		return
+	}
+	frame := workerIdentityFrame(owner, username)
+	for _, conn := range conns {
+		if err := conn.SendControl(frame); err != nil {
+			slog.Debug("re-deliver the worker identity", "owner", owner, "error", err)
+		}
+	}
+}
+
+// registerGreetedConn reads the username of the worker's owner, builds the
+// connection that greets the worker with it, and registers the connection. It
+// returns the connection and its pump, and what workermgr.Manager.Register
+// answers.
+//
+// The read and the registration are one critical section of the owner's delivery
+// lock; see ownerDeliveryLocks. The section ends when Register returns, on both
+// outcomes, and the deferred unlock also covers a panic in the read or in
+// Register. A failed read greets with no username; see ownerUsername. The worker
+// then holds none until the next account change or reconnect.
+//
+// The greeting goes through Register rather than a send here, because Register
+// enqueues it before it publishes the conn. With a single handler drain it is
+// mechanically the first frame written, which the worker needs: the worker's
+// owner gate guards every machine-scoped family on the owner, and a session can
+// exist the moment the conn is reachable.
+//
+// worker.RegisteredBy is already in hand from Connect's
+// AuthenticateWorkerBearer call, so neither the greeting's owner nor the owner
+// handed to NewConn costs a query.
+func (s *WorkerConnectorService) registerGreetedConn(
+	connCtx context.Context,
+	cancelConn context.CancelFunc,
+	worker *store.Worker,
+	hello *leapmuxv1.WorkerHello,
+	stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream,
+) (conn *workermgr.Conn, pump *workermgr.SendPump, replaced bool, err error) {
+	owner := worker.RegisteredBy
+	unlock := s.identityDeliveries.lock(owner)
+	defer unlock()
+	readCtx, release := s.identityReadContext(connCtx)
+	defer release()
+	username, _ := s.ownerUsername(readCtx, owner)
+	conn, pump = workermgr.NewConn(connCtx, cancelConn, worker.ID, owner, s.queuePool, stream.Send,
+		workerIdentityFrame(owner, username), hello)
+	replaced, err = s.workerMgr.Register(conn)
+	return conn, pump, replaced, err
+}
+
+// announceWorkersChanged tells ownerID's live /ws/userevents subscribers whose
+// credential holds worker:read that the owner's worker list reads differently:
+// a worker registered, came online or went offline. A client then re-fetches
+// the list. The online bit matters as much as membership, because the client
+// loads a worker's name only while the list reads it online, and a worker
+// registers before it connects.
+func (s *WorkerConnectorService) announceWorkersChanged(ownerID string) {
+	if s.crdtRegistry != nil {
+		s.crdtRegistry.BroadcastWorkersChanged(ownerID)
+	}
+}
+
 func (s *WorkerConnectorService) Connect(
 	ctx context.Context,
 	stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream,
 ) error {
 	info := serverCallInfo(ctx)
-	token, ok := auth.BearerToken(info.RequestHeader().Get("Authorization"))
-	if !ok {
-		return connect.Errorf(connect.CodeUnauthenticated, "auth_token required")
-	}
-
-	worker, err := s.store.Workers().GetByAuthToken(ctx, token)
+	// One credential rule for every worker path: AuthenticateWorkerBearer.
+	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return connect.Errorf(connect.CodeUnauthenticated, "invalid auth token")
+		switch {
+		case errors.Is(err, auth.ErrWorkerDeleted):
+			// Positive proof only: the Hub holds a row with this token and its
+			// deleted_at is set. A token the Hub has never seen gets a bare
+			// Unauthenticated below, because a worker pointed at the wrong Hub, a
+			// Hub restored from an older backup, or a proxy that rewrote the
+			// Authorization header must not destroy the worker's identity.
+			return newWorkerConnectRefusalError(connect.CodeUnauthenticated,
+				leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+				"this worker was deleted")
+		case auth.IsWorkerCredentialError(err):
+			return wrappedConnectError(connect.CodeUnauthenticated, err)
+		default:
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
-		return wrappedConnectError(connect.CodeInternal, err)
 	}
-	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
-	// DELETED worker (`deleted_at IS NULL`), and a DEREGISTERING one must still
-	// be able to hold this stream -- that is how it receives the deregister
+	// A live row proceeds, whatever its state: a DEREGISTERING worker must still
+	// be able to hold this stream, because that is how it receives the deregister
 	// instruction and wipes its local state. Refusing it here would leave the
 	// machine running with nobody able to tell it to stop.
 
-	// Register the connection. Replacement cancels this derived context to
-	// terminate the superseded handler without affecting the request context of
-	// the newly connected worker.
+	// The connection's context exists before its hello, because the one receive
+	// pump of this stream reads under it. Replacement cancels this derived
+	// context to terminate the superseded handler without affecting the request
+	// context of the newly connected worker.
 	connCtx, cancelConn := context.WithCancel(ctx)
 	defer cancelConn()
-	conn, pump := workermgr.NewConn(connCtx, cancelConn, worker.ID, worker.RegisteredBy, s.queuePool, stream.Send,
-		// Greet the worker with its own identity. Register enqueues this before
-		// it publishes the conn, so with a single handler drain it is
-		// mechanically the first frame written -- which the worker needs,
-		// because requireWorkerOwner gates every machine-scoped family on the
-		// owner and a session can exist the moment the conn is reachable.
-		// Handing it to Register rather than sending it here is what makes
-		// that ordering impossible to get wrong.
-		//
-		// worker.RegisteredBy is already in hand from the GetByAuthToken above,
-		// so neither it nor the owner handed to NewConn costs a query.
-		&leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
-				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: worker.RegisteredBy},
-			},
-		},
-	)
-	replaced, err := s.workerMgr.Register(conn)
+	received := startWorkerReceivePump(connCtx, stream)
+
+	// The hello comes before registration. Until a connection's hello is read
+	// and validated, the registry keeps the connection it already holds, so
+	// GetWorkerHandshakeParams can never pair this connection's mode with the
+	// previous one's keys. Nothing is persisted, so no write can fail or
+	// interleave with a concurrent connection.
+	hello, err := s.receiveHello(connCtx, received)
+	if err != nil {
+		// Logged, because the worker retries every refusal of this phase, and
+		// nothing else on the Hub would record why it keeps reconnecting.
+		slog.Warn("worker stream ended before a valid hello", "worker_id", worker.ID, "reason", err)
+		return err
+	}
+	if hello == nil {
+		slog.Info("worker closed the stream before its hello", "worker_id", worker.ID)
+		return nil
+	}
+
+	// The pin. A stolen auth token must not attach other keys to this worker:
+	// without this check it could replace the live connection and every client
+	// without a pin would trust the attacker's keys. Refusing here, before
+	// workermgr.NewConn, is what keeps the refused connection from replacing the
+	// live one.
+	pinned := worker.PublicKeys.Proto()
+	if !workerkeys.Equal(hello.GetKeys(), pinned) {
+		slog.Warn("refusing a worker whose hello keys differ from the keys it registered with",
+			"worker_id", worker.ID,
+			"registered_fingerprint", workerkeys.Fingerprint(pinned),
+			"presented_fingerprint", workerkeys.Fingerprint(hello.GetKeys()))
+		return newWorkerConnectRefusalError(connect.CodePermissionDenied,
+			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER,
+			"the worker's public keys differ from the keys it registered with")
+	}
+
+	conn, pump, replaced, err := s.registerGreetedConn(connCtx, cancelConn, worker, hello, stream)
 	if err != nil {
 		if errors.Is(err, workermgr.ErrRegistryFenced) {
 			// This connection passed the shutdown interceptor a moment before
 			// the Hub began fencing. Unavailable, not Internal: nothing is
 			// wrong with the worker or the request, and a server that is going
-			// away is what the code means. Today's worker retries either way
-			// (ConnectWithReconnect gives up only on Unauthenticated), so this
-			// is for the operator reading logs and for any proxy or future
-			// client that does distinguish the two.
+			// away is what the code means. A worker retries every refusal that
+			// carries no WorkerConnectRefusal detail, this one included, so this
+			// is for the operator reading logs and for any proxy or client that
+			// distinguishes the two.
 			return wrappedConnectError(connect.CodeUnavailable, err)
 		}
 		if errors.Is(err, workermgr.ErrTooManyWorkers) {
@@ -342,6 +594,27 @@ func (s *WorkerConnectorService) Connect(
 		}
 		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
 	}
+	// Teardown order is deliberate and lives in ONE defer so it cannot drift
+	// via LIFO comment mistakes:
+	//  1. Unregister removes the conn from the registry (no new Hub sends).
+	//  2. Drain writes every remaining frame while this handler still owns
+	//     the stream (write-after-finish proof).
+	//  3. Fence closes the queue and cancels Done.
+	//  4. closeWorkerChannels and the offline announcement only if we were
+	//     still the registered conn. A superseded conn leaves the worker
+	//     online under its replacement.
+	// It is deferred right after Register succeeds, so a panic anywhere below
+	// still removes the conn: a conn left registered reads the worker online
+	// through a queue that nobody drains.
+	defer func() {
+		removed := s.workerMgr.Unregister(worker.ID, conn)
+		_ = pump.Drain()
+		conn.Fence()
+		if removed {
+			s.closeWorkerChannels(worker.ID)
+			s.announceWorkersChanged(worker.RegisteredBy)
+		}
+	}()
 	if replaced {
 		// A new worker process replaced an older connection. The old
 		// connection's Unregister will return false (it's no longer the
@@ -349,6 +622,10 @@ func (s *WorkerConnectorService) Connect(
 		// We must close old channels now so the Frontend detects the
 		// disconnect and opens fresh channels to the new worker.
 		s.closeWorkerChannels(worker.ID)
+	} else {
+		// The worker came online. A replacement leaves it online, so only
+		// this case changes what the owner's worker list reads.
+		s.announceWorkersChanged(worker.RegisteredBy)
 	}
 	// The request context, kept before ctx is shadowed by connCtx below. The
 	// ctx.Done exit distinguishes its two causes by it: a request context
@@ -356,21 +633,6 @@ func (s *WorkerConnectorService) Connect(
 	// a live one means this conn was fenced or replaced out from under it.
 	reqCtx := ctx
 	ctx = connCtx
-	// Teardown order is deliberate and lives in ONE defer so it cannot drift
-	// via LIFO comment mistakes:
-	//  1. Unregister removes the conn from the registry (no new Hub sends).
-	//  2. Drain writes every remaining frame while this handler still owns
-	//     the stream (write-after-finish proof).
-	//  3. Fence closes the queue and cancels Done.
-	//  4. closeWorkerChannels only if we were still the registered conn.
-	defer func() {
-		removed := s.workerMgr.Unregister(worker.ID, conn)
-		_ = pump.Drain()
-		conn.Fence()
-		if removed {
-			s.closeWorkerChannels(worker.ID)
-		}
-	}()
 
 	// Read the worker again, now that Register made the connection reachable,
 	// and decide on the DEREGISTER delivery from this read, never from the
@@ -428,31 +690,10 @@ func (s *WorkerConnectorService) Connect(
 		}()
 	}
 
-	// Main message loop: read messages from worker and process them.
-	// Run stream.Receive() in a goroutine so we can also detect idle
+	// Main message loop: process what the receive pump reads, and detect idle
 	// timeouts (dead workers that didn't close the TCP connection cleanly).
-	type receiveResult struct {
-		msg *leapmuxv1.ConnectRequest
-		err error
-	}
-	msgCh := make(chan receiveResult, 1)
-	go func() {
-		for {
-			msg, err := stream.Receive()
-			select {
-			case msgCh <- receiveResult{msg, err}:
-			case <-ctx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	const workerIdleTimeout = 10 * time.Second
-	idleTimer := time.NewTimer(workerIdleTimeout)
-	defer idleTimer.Stop()
+	idleTimer := s.clock.NewTimer(workerIdleTimeout, workerIdleTimerTag)
+	defer idleTimer.Stop(workerIdleTimerTag)
 	// Deregistering workers must not compete with the receive-idle timer:
 	// DeliverOnConnect parks in SendAndWait and a quiet worker would otherwise
 	// be torn down mid-ack. Nil select case blocks forever.
@@ -468,19 +709,19 @@ func (s *WorkerConnectorService) Connect(
 		if notifyDone != nil {
 			return
 		}
-		if !idleTimer.Stop() {
+		if !idleTimer.Stop(workerIdleTimerTag) {
 			select {
 			case <-idleTimer.C:
 			default:
 			}
 		}
-		idleTimer.Reset(workerIdleTimeout)
+		idleTimer.Reset(workerIdleTimeout, workerIdleTimerTag)
 	}
 
 	// recvErr holds the receive error that ended the stream, written by
 	// handle (handler goroutine only) and read by the exit paths below.
 	var recvErr error
-	handle := func(result receiveResult) error {
+	handle := func(result workerReceiveResult) error {
 		if result.err != nil {
 			recvErr = result.err
 			return errWorkerStreamClosed
@@ -508,7 +749,7 @@ func (s *WorkerConnectorService) Connect(
 
 	for {
 		select {
-		case result := <-msgCh:
+		case result := <-received:
 			if err := handle(result); err != nil {
 				return onHandleErr(err)
 			}
@@ -516,9 +757,9 @@ func (s *WorkerConnectorService) Connect(
 		case <-idleC:
 			// A message may have arrived at the same instant the timer
 			// fired. Go's select picks randomly among ready cases, so
-			// drain msgCh before deciding to disconnect.
+			// drain received before deciding to disconnect.
 			select {
-			case result := <-msgCh:
+			case result := <-received:
 				if err := handle(result); err != nil {
 					return onHandleErr(err)
 				}
@@ -557,6 +798,104 @@ func (s *WorkerConnectorService) Connect(
 	}
 }
 
+// workerReceiveResult is one outcome of a Receive on a Connect stream.
+type workerReceiveResult struct {
+	msg *leapmuxv1.ConnectRequest
+	err error
+}
+
+// workerMessageSource is the one method of a Connect stream that the receive
+// pump calls.
+type workerMessageSource interface {
+	Receive() (*leapmuxv1.ConnectRequest, error)
+}
+
+// startWorkerReceivePump starts the one goroutine that reads a Connect stream,
+// and returns the channel that carries each outcome in order. The hello wait and
+// the main loop read the same channel, so a stream has one reader by
+// construction. The pump stops after it delivers a receive error.
+//
+// Receive cannot be interrupted, so the handler waits on this channel instead,
+// beside its deadlines. The pump reads one message ahead of the handler, and the
+// channel holds one more, so a message that arrives during the pin check waits
+// here. A refused connection drops it.
+//
+// The goroutine never leaks. Pass the connection's context, which Connect
+// cancels as it returns. Connect's return also ends the stream, which unblocks
+// Receive, and a message that Receive then returns finds the context ended.
+func startWorkerReceivePump(ctx context.Context, stream workerMessageSource) <-chan workerReceiveResult {
+	received := make(chan workerReceiveResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Receive()
+			select {
+			case received <- workerReceiveResult{msg, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return received
+}
+
+// receiveHello takes the first message of a Connect stream from its receive pump
+// and returns its validated WorkerHello. It returns (nil, nil) when the worker
+// closed the stream before sending anything. It waits at most workerIdleTimeout.
+func (s *WorkerConnectorService) receiveHello(
+	ctx context.Context,
+	received <-chan workerReceiveResult,
+) (*leapmuxv1.WorkerHello, error) {
+	timer := s.clock.NewTimer(workerIdleTimeout, workerHelloTimerTag)
+	defer timer.Stop(workerHelloTimerTag)
+	select {
+	case result := <-received:
+		if errors.Is(result.err, io.EOF) {
+			return nil, nil
+		}
+		if result.err != nil {
+			return nil, result.err
+		}
+		hello, err := validateWorkerHello(result.msg)
+		if err != nil {
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
+		}
+		return hello, nil
+	case <-timer.C:
+		return nil, connect.Errorf(connect.CodeDeadlineExceeded,
+			"the worker sent no hello within %s", workerIdleTimeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// validateWorkerHello checks that a Connect stream's first message is a
+// WorkerHello a client can open a channel with.
+//
+// The key set must be COMPLETE whatever the mode. The three keys are the
+// Worker's identity, not this session's cipher choice, so a partial set can
+// never equal the set the Worker registered with and is refused here rather
+// than at the pin comparison. UNSPECIFIED and any unknown mode are refused: the
+// mode stays on the connection because it selects the handshake.
+func validateWorkerHello(msg *leapmuxv1.ConnectRequest) (*leapmuxv1.WorkerHello, error) {
+	hello := msg.GetHello()
+	if hello == nil {
+		return nil, errors.New("the first message on a Connect stream must be a hello")
+	}
+	if err := workerkeys.Validate(hello.GetKeys()); err != nil {
+		return nil, err
+	}
+	switch mode := hello.GetEncryptionMode(); mode {
+	case leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC:
+	default:
+		return nil, fmt.Errorf("hello encryption mode %s is not supported", mode)
+	}
+	return hello, nil
+}
+
 // streamEndReason names why the worker's Connect stream stopped producing
 // messages. A nil error means the receive loop never observed one (the
 // handler exited through another select arm and handle classified the close
@@ -580,7 +919,7 @@ var errWorkerStreamClosed = errors.New("worker stream closed")
 // Returns a non-nil error to terminate the connection (e.g. invalid config).
 //
 // registeredBy is the worker's registrant, already in hand from Connect's
-// GetByAuthToken. It is threaded here purely for the tab-sync path, which needs
+// AuthenticateWorkerBearer call. It is threaded here purely for the tab-sync path, which needs
 // the owner axis workspace_tab_owned is keyed by.
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,
@@ -588,40 +927,16 @@ func (s *WorkerConnectorService) processWorkerMessage(
 	workerID, registeredBy string,
 	msg *leapmuxv1.ConnectRequest,
 ) error {
+	// A hello opens the stream and is read before the main loop starts, so one
+	// here is a second hello -- a protocol error.
+	if msg.GetHello() != nil {
+		return errors.New("worker sent a second hello on one Connect stream")
+	}
+
 	// Update last seen periodically on heartbeats.
-	if hb := msg.GetHeartbeat(); hb != nil {
+	if msg.GetHeartbeat() != nil {
 		if err := s.store.Workers().UpdateLastSeen(ctx, workerID); err != nil && ctx.Err() == nil {
 			slog.Warn("failed to update worker last seen on heartbeat", "worker_id", workerID, "error", err)
-		}
-		// Cache encryption mode on the live connection (not persisted to DB).
-		encMode := hb.GetEncryptionMode()
-		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
-			if conn.EncryptionMode() != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
-				// The worker already declared a mode; sending UNSPECIFIED
-				// afterwards is a bug — reject the connection.
-				return fmt.Errorf("worker sent unspecified encryption mode after previously declaring %v", conn.EncryptionMode())
-			}
-			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
-		}
-		conn.SetEncryptionMode(encMode)
-		// Persist worker's public keys if provided (sent with the initial heartbeat).
-		if pk := hb.GetPublicKey(); len(pk) > 0 {
-			mlkemPK := hb.GetMlkemPublicKey()
-			if mlkemPK == nil {
-				mlkemPK = []byte{}
-			}
-			slhdsaPK := hb.GetSlhdsaPublicKey()
-			if slhdsaPK == nil {
-				slhdsaPK = []byte{}
-			}
-			if err := s.store.Workers().UpdatePublicKey(ctx, store.UpdateWorkerPublicKeyParams{
-				ID:              workerID,
-				PublicKey:       pk,
-				MlkemPublicKey:  mlkemPK,
-				SlhdsaPublicKey: slhdsaPK,
-			}); err != nil {
-				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
-			}
 		}
 		// Heartbeat is a must-deliver control frame.
 		if err := conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -831,8 +1146,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 				OpId: id.Generate(),
 				Body: &leapmuxv1.CrdtOp_TombstoneTab{
 					TombstoneTab: &leapmuxv1.TombstoneTabOp{
-						TabType: ht.TabType,
-						TabId:   ht.TabID,
+						Tab: &leapmuxv1.TabIdent{TabType: ht.TabType, TabId: ht.TabID},
 					},
 				},
 			})

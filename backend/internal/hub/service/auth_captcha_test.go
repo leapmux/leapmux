@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
@@ -32,7 +31,7 @@ import (
 // encrypt provider secrets the resolver can decrypt), the store so tests
 // can inspect the config row's provisioning side effects, and the shared
 // settings manager (the admin CLI's write handle).
-func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServiceClient, *keystore.Keystore, store.Store, *settings.Manager) {
+func setupCaptchaAuthService(t *testing.T, solo bool) (authTestClient, *keystore.Keystore, store.Store, *settings.Manager) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -55,11 +54,11 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), ks, st, set
+	return newAuthTestClient(server.Client(), server.URL), ks, st, set
 }
 
 func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
@@ -102,7 +101,8 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	set := servicetest.NewSettingsManager(t, st, nil)
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
@@ -114,7 +114,7 @@ func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	var info *leapmuxv1.GetSystemInfoResponse
 	_, err = callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
 		var callErr error
-		info, callErr = authSvc.GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		info, callErr = service.NewSystemService(authSvc, set).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
 		var callErr error
-		resp, callErr = authSvc.GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		resp, callErr = service.NewSystemService(authSvc, authDeps.Settings).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
 		return callErr
 	})
 	require.NoError(t, err)

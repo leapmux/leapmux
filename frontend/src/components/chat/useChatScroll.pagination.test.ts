@@ -882,7 +882,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
       })
     }))
 
-  it('forceScrollToBottom resumes a buffer-fill paused by a forced stop (stop -> jump wedge)', () =>
+  it('makes forceScrollToBottom resume a buffer-fill paused by a forced stop (stop -> jump wedge)', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {

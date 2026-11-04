@@ -65,7 +65,7 @@ func TestGoalUpdateClean_KeepsTheLineBreaksInAnObjective(t *testing.T) {
 	assert.Equal(t, "Fix the flake\nthen ship it", got.Objective)
 }
 
-// One invalid byte makes proto.Marshal reject the complete AgentGoalChanged message.
+// One invalid byte makes proto.Marshal reject the complete AgentGoalSnapshot message.
 // Without this repair, a provider byte could keep the panel empty without an explanatory log.
 func TestGoalUpdateClean_DropsBytesThatWouldFailProtoMarshal(t *testing.T) {
 	t.Parallel()

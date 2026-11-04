@@ -7,8 +7,8 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createImperativeRef } from '~/lib/imperativeRef'
@@ -21,6 +21,7 @@ import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { makeMessage, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
@@ -63,14 +64,26 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
  * turn each of those into undefined.
  */
 const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
-const updateTerminalTitle = vi.hoisted(() => vi.fn(async () => ({})))
+const renameTerminal = vi.hoisted(() => vi.fn(async () => ({})))
 const enqueueAgentInput = vi.hoisted(() => vi.fn(async () => ({ snapshot: undefined })))
-vi.mock('~/api/workerRpc', async importOriginal => ({
-  ...(await importOriginal<typeof import('~/api/workerRpc')>()),
-  renameAgent,
-  updateTerminalTitle,
-  enqueueAgentInput,
-}))
+vi.mock('~/api/workerRpc', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/api/workerRpc')>()
+  return {
+    ...actual,
+    workerAgent: {
+      ...actual.workerAgent,
+      renameAgent,
+    },
+    workerTerminal: {
+      ...actual.workerTerminal,
+      renameTerminal,
+    },
+    workerAgentInput: {
+      ...actual.workerAgentInput,
+      enqueueAgentInput,
+    },
+  }
+})
 
 vi.mock('~/components/terminal/TerminalView', () => ({
   TerminalView: (props: { terminals: Array<{ id: string }> }) => (
@@ -141,6 +154,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
+        workerOnline: createWorkerOnlineStore(),
       },
       // The shell builds this once and shares it with the close guard, so the
       // chip and the prompt cannot scope "this tab's rows" differently.
@@ -773,7 +787,7 @@ describe('TileRenderer auto-review approval', () => {
 describe('TileRenderer tab rename', () => {
   beforeEach(() => {
     renameAgent.mockClear()
-    updateTerminalTitle.mockClear()
+    renameTerminal.mockClear()
   })
 
   /** Open the inline editor on the first tab of the strip and commit `typed`. */
@@ -838,7 +852,7 @@ describe('TileRenderer tab rename', () => {
     expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
   })
 
-  // The sidebar's old inline copy never called UpdateTerminalTitle, so a
+  // The sidebar's old inline copy never called RenameTerminal, so a
   // terminal renamed there lost its name on the next reload. This asserts the
   // strip's copy reaches the worker AND clears the PTY title, which is what
   // lets a manual rename outlive the next TitleChanged event.
@@ -852,7 +866,7 @@ describe('TileRenderer tab rename', () => {
 
     renameFirstTab('Build watcher')
 
-    expect(updateTerminalTitle).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
+    expect(renameTerminal).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
     await waitFor(() => expect(s.view.getTerminalTab('t1')?.title).toBe('Build watcher'))
     expect(s.view.getTerminalTab('t1')?.ptyTitle).toBe('')
   })

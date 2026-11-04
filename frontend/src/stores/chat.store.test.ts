@@ -14,8 +14,10 @@ import { testMessageContext } from '~/test-support/messageContext'
 const mockListAgentMessages = vi.fn()
 const mockListMessageMarks = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
-  listMessageMarks: (...args: unknown[]) => mockListMessageMarks(...args),
+  workerAgent: {
+    listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args),
+    listMessageMarks: (...args: unknown[]) => mockListMessageMarks(...args),
+  },
 }))
 
 function makeMessage(id: string, seq: bigint) {
@@ -1068,7 +1070,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail drops phantom rows above the tail and clamps the live tail', () => {
+  it('drops phantom rows above the tail and clamps the live tail in reconcileAuthoritativeTail', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [
@@ -1088,7 +1090,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail skips an unset (indeterminate) latest_seq (worker could not determine the tail)', () => {
+  it('skips an unset (indeterminate) latest_seq in reconcileAuthoritativeTail (worker could not determine the tail)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [
@@ -1104,7 +1106,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail PROBES on an indeterminate CatchUpComplete (nudges the live tail past the loaded tail)', () => {
+  it('makes reconcileAuthoritativeTail PROBE on an indeterminate CatchUpComplete (nudges the live tail past the loaded tail)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [
@@ -1127,7 +1129,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail does NOT probe an indeterminate CatchUpStart (default), leaving the tail untouched', () => {
+  it('does NOT probe an indeterminate CatchUpStart (default) in reconcileAuthoritativeTail, leaving the tail untouched', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [
@@ -1144,7 +1146,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail keeps hasMoreNewer set when the window tail still lags the authoritative tail', () => {
+  it('keeps hasMoreNewer set in reconcileAuthoritativeTail when the window tail still lags the authoritative tail', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Scrolled-up window holding [1,2] with the live tail recorded much higher.
@@ -1164,7 +1166,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail with a reap ceiling exempts a live arrival raced in during catch-up', () => {
+  it('exempts a live arrival raced in during catch-up when reconcileAuthoritativeTail receives a reap ceiling', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Replay began with the tail at 3 ([1,2,3] loaded). During catch-up m3 (seq 3)
@@ -1192,7 +1194,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail with no ceiling reaps every row beyond the tail (indeterminate-cursor fallback)', () => {
+  it('reaps every row beyond the tail when reconcileAuthoritativeTail receives no ceiling (indeterminate-cursor fallback)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       store.setMessages('a1', [
@@ -1210,7 +1212,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail at CatchUpStart bounds the reap by the resume cursor, exempting a post-subscribe live arrival', () => {
+  it('caps the reap at the resume cursor when reconcileAuthoritativeTail runs at CatchUpStart, exempting a post-subscribe live arrival', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // The client subscribed with its loaded tail at 3 ([1,2,3]). During catch-up m3
@@ -1233,7 +1235,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('reconcileAuthoritativeTail at CatchUpComplete with an indeterminate start tail uses the resume cursor, NOT a reap-everything fallback', () => {
+  it('uses the resume cursor, NOT a reap-everything fallback, when reconcileAuthoritativeTail runs at CatchUpComplete with an indeterminate start tail', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // CatchUpComplete arrives with a DETERMINATE latest_seq (2) but an INDETERMINATE
@@ -1260,7 +1262,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('addMessage drops a live arrival beyond a catch-up gap rather than tearing the window', () => {
+  it('drops a live arrival beyond a catch-up gap in addMessage rather than tearing the window', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Reconnect catch-up: a bounded WatchEvents replay has loaded only [1..50], while
@@ -1290,7 +1292,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('addMessage keeps a contiguous replay frame within the known catch-up tail', () => {
+  it('keeps a contiguous replay frame within the known catch-up tail in addMessage', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Same catch-up state: loaded [1..50], known tail 100, hasMoreNewer false.
@@ -1308,7 +1310,7 @@ describe('createChatStore', () => {
     })
   })
 
-  it('addMessage appends a contiguous live arrival at a followed tail (no spurious catch-up drop)', () => {
+  it('appends a contiguous live arrival at a followed tail in addMessage (no spurious catch-up drop)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Caught up: the recorded tail equals the window tail (no unfilled gap).
@@ -1501,7 +1503,7 @@ describe('createChatStore', () => {
         })
       })
 
-      it('saveViewportScrollForRemount persists while the chat window is live', () => {
+      it('persists while the chat window is live when saveViewportScrollForRemount runs', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // A loaded window marks the agent's chat as live (initialLoadComplete).
@@ -1519,7 +1521,7 @@ describe('createChatStore', () => {
         })
       })
 
-      it('saveViewportScrollForRemount skips a window that never finished its initial load', () => {
+      it('skips a window that never finished its initial load when saveViewportScrollForRemount runs', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // No setMessages: initialLoadComplete is ABSENT (not merely deleted). A cold
@@ -1531,7 +1533,7 @@ describe('createChatStore', () => {
         })
       })
 
-      it('saveViewportScrollForRemount does NOT resurrect an entry for a reaped agent', () => {
+      it('does NOT resurrect an entry for a reaped agent when saveViewportScrollForRemount runs', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.setMessages('a1', [
@@ -1547,7 +1549,7 @@ describe('createChatStore', () => {
         })
       })
 
-      it('saveViewportScrollForRemount saves a live window whose TAB was scoped out (workspace switch)', () => {
+      it('saves a live window whose TAB was scoped out (workspace switch) when saveViewportScrollForRemount runs', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // A workspace switch removes the tab (a tabStore concern) but never calls
@@ -1981,7 +1983,7 @@ describe('createChatStore', () => {
         })
       })
 
-      it('resumeDeferredTailFill stops fetching when its WatchEvents signal is already aborted', async () => {
+      it('stops fetching in resumeDeferredTailFill when its WatchEvents signal is already aborted', async () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
@@ -3311,7 +3313,7 @@ describe('createChatStore', () => {
     // The chat store does not extract todos from message content — the
     // worker persists every event in agent_todos and ships the current
     // snapshot via ListAgentMessagesResponse.todos and the
-    // AgentTodosChanged broadcast. These tests cover the
+    // todos_changed broadcast. These tests cover the
     // server-authoritative hydration path.
 
     const sampleTodos = [
@@ -3327,8 +3329,7 @@ describe('createChatStore', () => {
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: sampleTodos,
-          todosLoaded: true,
+          todos: { todos: sampleTodos },
         })
 
         await store.loadInitialMessages('w1', 'a1')
@@ -3356,19 +3357,18 @@ describe('createChatStore', () => {
       })
     })
 
-    it('treats an empty todos response as authoritative ("agent has none") when todosLoaded', async () => {
+    it('treats a present empty todos snapshot as authoritative ("agent has none")', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        // Seed a non-empty list, then deliver an authoritative empty snapshot
-        // (todosLoaded true): it overwrites to empty.
+        // Seed a non-empty list, then deliver an authoritative empty snapshot:
+        // it overwrites to empty.
         store.todos.replace('a1', sampleTodos)
         mockListAgentMessages.mockResolvedValueOnce({
           messages: [
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: [],
-          todosLoaded: true,
+          todos: { todos: [] },
         })
 
         await store.loadInitialMessages('w1', 'a1')
@@ -3377,21 +3377,18 @@ describe('createChatStore', () => {
       })
     })
 
-    it('leaves an existing list intact when todos failed to load (empty + todosLoaded false)', async () => {
+    it('leaves an existing list intact when todos failed to load (no snapshot)', async () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
-        // A populated list (e.g. from a prior AgentTodosChanged broadcast).
+        // A populated list (e.g. from a prior todos_changed broadcast).
         store.todos.replace('a1', sampleTodos)
-        // jump-to-latest whose backend LoadTodos failed: todos=[] but NOT loaded.
-        // Must NOT wipe the populated list (the wire can't otherwise distinguish a
-        // failed load from a genuine empty list).
+        // jump-to-latest whose backend LoadTodos failed: the page carries no
+        // to-do snapshot. It must NOT wipe the populated list.
         mockListAgentMessages.mockResolvedValueOnce({
           messages: [
             makeMessage('m1', 1n),
           ],
           hasMore: false,
-          todos: [],
-          todosLoaded: false,
         })
 
         await store.loadInitialMessages('w1', 'a1')
@@ -3400,7 +3397,7 @@ describe('createChatStore', () => {
       })
     })
 
-    it('addMessage does not mutate todos (broadcasts drive the list)', () => {
+    it('does not mutate todos when addMessage runs (broadcasts drive the list)', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.addMessage('a1', makeTodoWriteMessage('m1', 1n, [
@@ -3433,7 +3430,7 @@ describe('createChatStore', () => {
   })
 
   describe('message sequence endpoints', () => {
-    it('getFirstSeq returns the first message sequence', () => {
+    it('returns the first message sequence from getFirstSeq', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.setMessages('a1', [
@@ -3509,7 +3506,7 @@ describe('createChatStore', () => {
   })
 
   describe('scroll-rail marks', () => {
-    it('addMessage records a mark for a marked message, keeping the mark type', () => {
+    it('records a mark for a marked message in addMessage, keeping the mark type', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
@@ -3568,7 +3565,7 @@ describe('createChatStore', () => {
       })
     })
 
-    it('reconcileAuthoritativeTail drops the marks of reaped phantom rows (no ghost dot after a disconnected delete)', () => {
+    it('drops the marks of reaped phantom rows in reconcileAuthoritativeTail (no ghost dot after a disconnected delete)', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         // Two marked rows in the window; m2 was deleted server-side while the client was
@@ -3590,7 +3587,7 @@ describe('createChatStore', () => {
       })
     })
 
-    it('forgetAgent clears an agent\'s marks', () => {
+    it('clears an agent\'s marks in forgetAgent', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
@@ -3601,7 +3598,7 @@ describe('createChatStore', () => {
       })
     })
 
-    it('getRailData takes the live-tail high-water over the seeded max', () => {
+    it('takes the live-tail high-water over the seeded max in getRailData', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.messageMarks.seed('a1', [
@@ -3620,7 +3617,7 @@ describe('createChatStore', () => {
       })
     })
 
-    it('loadMessageMarks seeds from the RPC and survives an RPC failure', async () => {
+    it('seeds from the RPC and survives an RPC failure in loadMessageMarks', async () => {
       mockListMessageMarks.mockResolvedValueOnce({
         marks: [
           { seq: 3n, type: MarkType.USER_MESSAGE },

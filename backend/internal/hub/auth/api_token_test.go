@@ -18,8 +18,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 func newTestStore(t *testing.T) store.Store {
@@ -50,12 +52,10 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 	ctx := context.Background()
 	workerID = id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,

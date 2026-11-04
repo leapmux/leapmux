@@ -103,7 +103,9 @@ func (s *WorkspaceService) drainLifecycleOutbox(ctx context.Context, userID stri
 
 // buildSeedRootOps returns the two ops a freshly-created workspace
 // needs: a SetNodeRegister(root_id, kind=LEAF) plus a
-// SetWorkspaceRootNodeOp registering the root.
+// CreateWorkspaceOp creating the workspace record with that root. The
+// SetNodeRegister comes first: validateRootAssignment needs the root node to
+// exist in the post-batch state when the create is checked.
 func buildSeedRootOps(workspaceID, rootID string) []*leapmuxv1.CrdtOp {
 	return []*leapmuxv1.CrdtOp{
 		{
@@ -117,8 +119,8 @@ func buildSeedRootOps(workspaceID, rootID string) []*leapmuxv1.CrdtOp {
 		},
 		{
 			OpId: id.Generate(),
-			Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
-				SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{
+			Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+				CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{
 					WorkspaceId: workspaceID,
 					RootNodeId:  rootID,
 				},

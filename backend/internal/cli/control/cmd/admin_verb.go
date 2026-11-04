@@ -4,8 +4,9 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/internal/hub/service"
 )
 
 // adminArgs is the parsed command line that an admin verb body reads: the
@@ -49,8 +50,8 @@ func (a adminArgs) AnyPassed() bool {
 // and --cursor directly: the spec binds the pair AND checks the limit
 // before the dial, so the two cannot separate.
 //
-// The hub normalizes the page too (service.NormalizePageParams), which is what
-// protects every other client. The check here is for the ANSWER an operator
+// The hub normalizes the page too (normalizePageParams in hub/service), which
+// is what protects every other client. The check here is for the ANSWER an operator
 // gets: it runs before the dial, so `--limit 0` identifies the flag and its
 // range instead of quietly returning a page of a size nobody asked for.
 // Both sides read the same constants, so the range the CLI states is the
@@ -62,8 +63,15 @@ type adminPageFlags struct {
 }
 
 func (p *adminPageFlags) bind(fs *flag.FlagSet) {
-	fs.Int64Var(&p.Limit, "limit", service.DefaultPageLimit, "page size")
+	fs.Int64Var(&p.Limit, "limit", contracts.DefaultPageLimit, "page size")
 	fs.StringVar(&p.Cursor, "cursor", "", "pagination cursor from the previous page")
+}
+
+// request builds the page a listing RPC sends. The verb framework already
+// refused a limit outside [minListLimit, contracts.MaxPageLimit], so the
+// narrowing to int32 cannot overflow.
+func (p *adminPageFlags) request() *leapmuxv1.PageRequest {
+	return &leapmuxv1.PageRequest{Limit: int32(p.Limit), Cursor: p.Cursor}
 }
 
 // adminVerbSpec declares one `control admin ...` leaf. Run is required.

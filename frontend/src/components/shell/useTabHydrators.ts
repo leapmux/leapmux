@@ -3,16 +3,14 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
-import { getTabPayload, listAgents, listTerminals } from '~/api/workerRpc'
-import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
-import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { workerAgent, workerPrivate, workerTerminal } from '~/api/workerRpc'
+import { TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
 import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
-import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutLiveCatalogFields, withoutLiveStatusFields } from '~/stores/tab.helpers'
+import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutClientHeldTerminalFields, withoutLiveCatalogFields, withoutLiveStatusFields } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
@@ -23,12 +21,9 @@ const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
  * Every tab a hydrator may act on.
  *
  * `view.all()` holds the PLACED tabs, and a quake terminal -- the shell behind
- * a quake panel -- is deliberately absent from it. That absence made the
- * worker-offline sweep a one-way door: the sweep writes DISCONNECTED onto a
- * quake terminal's metadata row, the READY event refuses to move
- * a DISCONNECTED tab back, and the terminal hydrator that exists to re-ask on
- * exactly that state never saw the row. Every keystroke into a live-looking
- * panel then disappeared until a page reload.
+ * a quake panel -- is deliberately absent from it. A hydrator that read only
+ * that list would never ask again about a quake terminal after an outage, so
+ * the panel would keep a status from before the outage until a page reload.
  */
 function hydratableTabsOf(view: TabView) {
   return [
@@ -88,6 +83,60 @@ function resolveHydratableIn(view: TabView, tab: { type: TabType, id: string }) 
 }
 
 /**
+ * Tabs that must be asked again although they are already `hydrated`.
+ *
+ * The set is what makes the flag re-armable WITHOUT making `hydrated` itself
+ * mean something weaker. A batch drops the marks of the tabs it asked about
+ * once the worker answers, whatever the reply says, so a tab the worker no
+ * longer knows cannot stay armed and re-ask forever. A failed ask keeps them,
+ * so the retry asks again.
+ */
+function createReaskSet() {
+  const [ids, setIds] = createSignal<ReadonlySet<string>>(new Set())
+  return {
+    /** Whether `tabId` waits for a re-ask. Reactive. */
+    has: (tabId: string): boolean => ids().has(tabId),
+    /** Mark each of `tabIds` for a re-ask. */
+    arm: (tabIds: readonly string[]): void => {
+      if (tabIds.length === 0)
+        return
+      setIds(prev => new Set([
+        ...prev,
+        ...tabIds,
+      ]))
+    },
+    /** Clear the mark of each of `tabIds`. Keeps the same set when none was marked. */
+    drop: (tabIds: Iterable<string>): void => {
+      setIds((prev) => {
+        let next: Set<string> | undefined
+        for (const id of tabIds) {
+          if (!prev.has(id))
+            continue
+          next ??= new Set(prev)
+          next.delete(id)
+        }
+        return next ?? prev
+      })
+    },
+  }
+}
+
+/** What `useTabHydrators` gives its caller. */
+export interface TabHydrators {
+  /**
+   * Ask `workerId` again for every terminal on it, the hydrated ones included.
+   *
+   * For a worker that this client reconnected to. The worker replays a status
+   * only for a terminal in FULL mode, so a background terminal learns nothing of
+   * the outage from the watch stream.
+   *
+   * The reply leaves alone what this client keeps current by itself: see
+   * `withoutClientHeldTerminalFields`.
+   */
+  reaskWorkerTerminals: (workerId: string) => void
+}
+
+/**
  * Per-tab-type hydration of CRDT-projected tabs that arrived without
  * their worker-side metadata (path / agent record / terminal title).
  * The hub strips file paths and agent/terminal payloads from the
@@ -140,7 +189,7 @@ export interface UseTabHydratorsOpts {
   settingsPendingAxes?: (agentId: string) => ReadonlySet<string>
 }
 
-export function useTabHydrators(opts: UseTabHydratorsOpts): void {
+export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
   type Tab = ReturnType<typeof opts.view.all>[number]
   const hydratableTabs = (): Tab[] => hydratableTabsOf(opts.view)
   const resolveHydratable = (tab: Tab): Tab | undefined => resolveHydratableIn(opts.view, tab)
@@ -158,29 +207,20 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
    * Agent tabs whose worker came back and that must be asked again, although
    * they are already `hydrated`.
    *
-   * An agent tab has no other re-arm. A terminal tab re-arms on DISCONNECTED,
-   * which is why a terminal repaired itself after an outage and an agent did
-   * not: its title, status and option catalogs stayed at whatever was true
-   * before the link dropped, for the life of the page.
+   * An agent tab has no other re-arm. Without one, its title, status and option
+   * catalogs stay at whatever was true before the link dropped, for the life of
+   * the page.
    *
-   * The set is what makes the flag re-armable WITHOUT making `hydrated` itself
-   * mean something weaker. A re-ask is safe only because the batch now applies
-   * the reply through `resolveSettingsTabFields`; see `settingsPendingAxes`.
+   * A re-ask is safe only because the batch now applies the reply through
+   * `resolveSettingsTabFields`; see `settingsPendingAxes`.
    */
-  const [reaskAgentTabIds, setReaskAgentTabIds] = createSignal<ReadonlySet<string>>(new Set())
+  const reaskAgents = createReaskSet()
 
-  const dropReask = (tabIds: Iterable<string>) => {
-    setReaskAgentTabIds((prev) => {
-      let next: Set<string> | undefined
-      for (const id of tabIds) {
-        if (!prev.has(id))
-          continue
-        next ??= new Set(prev)
-        next.delete(id)
-      }
-      return next ?? prev
-    })
-  }
+  /**
+   * Terminal tabs of a worker that this client reconnected to, to be asked
+   * again although they are already `hydrated`. See `reaskWorkerTerminals`.
+   */
+  const reaskTerminals = createReaskSet()
 
   interface BaseSpec {
     predicate: (tab: Tab) => boolean
@@ -446,9 +486,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     // exactly as it was. Nothing about that is visible to `matches`, so without
     // this the tabs stay bare until the user opens another one on that worker.
     //
-    // Keyed on the OFF -> ON transition, not on membership: the hub re-pushes
-    // the worker list on every `WORKERS_CHANGED` frame, and a worker that was
-    // online through all of them has nothing to retry.
+    // Keyed on the OFF -> ON transition, not on membership: the client
+    // re-fetches the worker list on every `workersChanged` user event and on
+    // every user-events bootstrap, and a worker that was online through all of
+    // those reads has nothing to retry.
     if (opts.onlineWorkerIds) {
       let wasOnline: ReadonlySet<string> = new Set()
       createEffect(() => {
@@ -492,9 +533,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
    * is not a candidate, so it could never reach one. This marks those tabs so
    * the predicate admits them, and the same effect then dispatches the batch.
    *
-   * Keyed on the OFF -> ON transition, not on membership: the hub re-pushes the
-   * worker list on every `WORKERS_CHANGED` frame, and a worker that stayed
-   * online through all of them has nothing to re-ask.
+   * Keyed on the OFF -> ON transition, not on membership: the client re-fetches
+   * the worker list on every `workersChanged` user event and on every
+   * user-events bootstrap, and a worker that stayed online through all of those
+   * reads has nothing to re-ask.
    */
   if (opts.onlineWorkerIds) {
     let wasOnline: ReadonlySet<string> | undefined
@@ -523,15 +565,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       if (cameOnline.length === 0)
         return
       untrack(() => {
-        const ids = opts.view.all()
+        reaskAgents.arm(opts.view.all()
           .filter(t => t.type === TabType.AGENT && t.workerId && cameOnline.includes(t.workerId))
-          .map(t => t.id)
-        if (ids.length === 0)
-          return
-        setReaskAgentTabIds(prev => new Set([
-          ...prev,
-          ...ids,
-        ]))
+          .map(t => t.id))
       })
     })
   }
@@ -565,7 +601,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       // re-check narrows the optional field for TypeScript.
       if (!tab.workerId)
         return
-      const resp = await getTabPayload(tab.workerId, { tabId: tab.id })
+      const resp = await workerPrivate.getTabPayload(tab.workerId, { tabId: tab.id })
       const payload = tabPayloadView(resp.payload)
       // A payload this client cannot read patches nothing, and the tab is still
       // marked hydrated by `runFor` -- which is correct, however it reads.
@@ -603,17 +639,17 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     kind: 'batched',
     predicate: tab => tab.type === TabType.AGENT
       && Boolean(tab.workerId)
-      && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
+      && (!isHydrated(tab.id) || reaskAgents.has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
       const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
-      const resp = await listAgents(workerId, {
+      const resp = await workerAgent.listAgents(workerId, {
         tabIds: tabs.map(t => t.id),
       })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
       // The ask happened, so drop the re-ask marks whatever the reply says. A
       // tab the worker no longer knows must not stay armed and re-ask forever.
-      dropReask(tabs.map(t => t.id))
+      reaskAgents.drop(tabs.map(t => t.id))
       for (const tab of tabs) {
         const agent = byId.get(tab.id)
         if (!agent)
@@ -701,27 +737,21 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // not landed yet was retired from the candidate set before the worker ever
   // answered -- permanently, since the candidate hash then stops changing.
   //
-  // DISCONNECTED re-arms the predicate, and that second clause is load-bearing.
-  // `hydrated` is write-once, so on its own it means a terminal marked
-  // DISCONNECTED by the worker-offline sweep can never be re-asked: the
-  // reconnect's `statusChange{READY}` is deliberately ignored for a
-  // DISCONNECTED tab ("Preserve DISCONNECTED / EXITED" in
-  // `useWorkspaceConnection`), and this hook is the only production caller of
-  // `listTerminals`. The tab would stay read-only -- input dropped, restart
-  // gated on EXITED -- until a full page reload. DISCONNECTED is precisely the
-  // state only the worker can resolve, which is what makes it a hydration
-  // trigger rather than a payload sniff; the predicate goes false again as soon
-  // as the reply writes a real status.
+  // The second clause asks again about every terminal of a worker that is
+  // reachable again; see `reaskWorkerTerminals`.
   createTabHydration({
     kind: 'batched',
     predicate: tab => tab.type === TabType.TERMINAL
       && Boolean(tab.workerId)
-      && (!isHydrated(tab.id) || tab.status === TerminalStatus.DISCONNECTED),
+      && (!isHydrated(tab.id) || reaskTerminals.has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
       const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
-      const resp = await listTerminals(workerId, {
+      const resp = await workerTerminal.listTerminals(workerId, {
         tabIds: tabs.map(t => t.id),
       })
+      // The ask happened, so drop the re-ask marks whatever the reply says, as
+      // the agent batch does.
+      reaskTerminals.drop(tabs.map(t => t.id))
       const byId = new Map(resp.terminals.map(t => [t.terminalId, t]))
       const resolved = new Set<string>()
       for (const tab of tabs) {
@@ -730,9 +760,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           // The reply holds the lifecycle as the worker read it before the reply
           // left. A status event that landed since is newer, and nothing sends it
           // again, so the reply keeps what the live stream wrote and gives only
-          // the rest. A reply that says the shell exited still applies in full:
-          // see `keepLiveTerminalStatus`.
-          const fields = terminalMetadata(workerId, term)
+          // the rest: see `keepLiveTerminalStatus`. The reply also fills only what
+          // this client does not hold, read now rather than before the request
+          // left: the cursor and the size can change while it is pending.
+          const fields = withoutClientHeldTerminalFields(terminalMetadata(workerId, term), opts.metadata.get(tab.id))
           opts.metadata.patch(tab.id, landed.status(tab.id)
             ? keepLiveTerminalStatus(fields)
             : fields)
@@ -749,4 +780,18 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       return { resolved, verdicts: resp.verdicts }
     },
   })
+
+  return {
+    reaskWorkerTerminals: (workerId) => {
+      if (!workerId)
+        return
+      // `untrack`: a caller can run this inside an effect, and the tab list
+      // must not become that effect's dependency.
+      untrack(() => {
+        reaskTerminals.arm(hydratableTabs()
+          .filter(t => t.type === TabType.TERMINAL && t.workerId === workerId)
+          .map(t => t.id))
+      })
+    },
+  }
 }

@@ -1,7 +1,7 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { CURSOR_OPTION } from '../../../src/generated/contracts/cursor-protocol'
-import { AgentOptionSettlementState, UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentOptionSettlementState, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
@@ -42,7 +42,7 @@ cursorTest('keeps native Bypass enabled and requires a new session to restore pe
   const enabled = await currentNativeAgent(native)
   const server = native.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
-  const response = await channel.callWorker(server.workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, {
+  const response = await channel.callWorker(server.workerId, WorkerAgentService.method.updateAgentSettings, {
     agentId: enabled.id,
     settings: {
       options: { [CURSOR_OPTION.BypassPermissions]: 'false', model: 'mock-grok' },

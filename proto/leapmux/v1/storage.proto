@@ -1,6 +1,9 @@
 syntax = "proto3";
 package leapmux.v1;
 
+// The storage vocabularies of the hub and the worker: each enum numbers a
+// column of their own tables. No message or RPC lives here.
+
 // ControlDeliveryKind identifies the operation that owns a durable delivery.
 enum ControlDeliveryKind {
   CONTROL_DELIVERY_KIND_UNSPECIFIED = 0;

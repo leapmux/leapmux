@@ -1,42 +1,34 @@
 import type { Accessor } from 'solid-js'
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
-import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
+import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { InputQueueDrain } from '~/lib/inputQueue'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
+import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
+import { untrack } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
-import * as workerRpc from '~/api/workerRpc'
+import { workerTerminal } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
-import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
+import { closeTabOnWorker } from '~/components/shell/closeTabOnWorker'
 import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createSharedInputQueues } from '~/lib/inputQueue'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/lib/terminal'
-import { openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, planOptimisticRepoGit, terminalDisplayStatus } from '~/stores/tab.helpers'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { warnUnlessPlaceableTab } from './placeableTabGuard'
-
-/**
- * The proto close responses carry `result` as present-but-undefined when the
- * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
- */
-function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined
-    ? {}
-    : { result: resp.result }
-}
 
 // xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
@@ -73,6 +65,8 @@ export interface UseTerminalOperationsProps {
   repoGitStore: ReturnType<typeof createRepoGitStore>
   /** Whether a terminal id is a quake companion rather than a tab. */
   isQuakeTerminal: (terminalId: string) => boolean
+  /** Whether this client's watch stream reaches a worker. See `WorkerOnlineStore.isOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
 }
 
 export function useTerminalOperations(props: UseTerminalOperationsProps) {
@@ -99,11 +93,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const view = props.view
   const terminalInputDrain: InputQueueDrain<string, TerminalInputContext> = {
     // Re-resolve the tab before each batch. Only a tab that is gone, or a
-    // terminal that EXITED, stops the drain: a transient status such as
-    // DISCONNECTED (a client-derived status that a false-positive sweep
-    // can set while the data path still delivers) must not silently
-    // discard what the user already typed — the send attempt itself
-    // decides, and a failed attempt keeps draining for a reconnect.
+    // terminal that EXITED, stops the drain. The stored status decides, and
+    // not `terminalDisplayStatus`: a lost watch stream must not silently
+    // discard what the user already typed, because the data path can still
+    // deliver. The send attempt itself decides, and a failed attempt keeps
+    // draining for a reconnect.
     resolve: (id) => {
       const t = view.getTerminalTab(id)
       if (!t || t.status === TerminalStatus.EXITED)
@@ -115,7 +109,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         : { workerId: t.workerId }
     },
     send: async (id, t, batch) => {
-      await workerRpc.sendInput(t.workerId ?? '', { terminalId: id, data: batch })
+      await workerTerminal.sendInput(t.workerId ?? '', { terminalId: id, data: batch })
     },
     // The deadline the queue races each send against is the canonical RPC
     // deadline (1.5 × the worker's context deadline, ~/api/transport), for
@@ -174,12 +168,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       return
     args.setLoading(true)
     try {
-      const resp = await workerRpc.openTerminal(ctx.workerId, {
+      const resp = await workerTerminal.openTerminal(ctx.workerId, {
         cols: DEFAULT_TERMINAL_COLS,
         rows: DEFAULT_TERMINAL_ROWS,
         workingDir: ctx.workingDir,
         shell: args.shell,
-        workerId: ctx.workerId,
         shellStartDir: args.shellStartDir ?? '',
       })
 
@@ -255,7 +248,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     if (!tab)
       return
 
-    if (tab.status === TerminalStatus.READY) {
+    if (terminalDisplayStatus(tab, props.isWorkerStreamOnline) === TerminalStatus.READY) {
       return terminalInputQueues.enqueue(terminalId, data, terminalInputDrain)
     }
 
@@ -276,7 +269,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
         return
       try {
         await restartInflight.run(terminalId, async () => {
-          await workerRpc.restartTerminal(tab.workerId ?? '', {
+          await workerTerminal.restartTerminal(tab.workerId ?? '', {
             terminalId,
             cols: tab.cols ?? DEFAULT_TERMINAL_COLS,
             rows: tab.rows ?? DEFAULT_TERMINAL_ROWS,
@@ -289,34 +282,74 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
+  // The terminals whose latest size did not reach their PTY: the outage held the
+  // RPC back, or the RPC failed. `resendUnsentSizes` sends each one again, because
+  // nothing else does. The ResizeObserver fires only when the size changes, so
+  // the shell would keep the old size until the next real resize.
+  const unsentSizes = new Set<string>()
+
+  /**
+   * Send a size to the PTY of `tab`, unless no PTY can take it.
+   *
+   * There is no PTY to signal for an EXITED or a STARTUP_FAILED terminal. Its
+   * xterm still reflows in TerminalView, for a user who reads the dead output.
+   *
+   * This does not require READY: the ResizeObserver's first fit() fires before
+   * the backend broadcasts READY, and the backend stashes that resize so the PTY
+   * spawns at the final size.
+   */
+  const sendSize = async (tab: TerminalTab, cols: number, rows: number) => {
+    const status = terminalDisplayStatus(tab, props.isWorkerStreamOnline)
+    if (status === TerminalStatus.EXITED || status === TerminalStatus.STARTUP_FAILED)
+      return
+    if (status === TERMINAL_DISCONNECTED) {
+      unsentSizes.add(tab.id)
+      return
+    }
     try {
-      const tab = props.view.getTerminalTab(terminalId)
-      if (!tab)
-        return
-      // Mirror the live xterm dims into the tab so a later
-      // RestartTerminal sends the user's actual window size, not the
-      // dims persisted at last exit. Updated on every fit() (including
-      // for EXITED tabs) so the post-exit window shrink/grow is captured.
-      if (tab.cols !== cols || tab.rows !== rows)
-        props.metadata.patch(terminalId, { cols, rows })
-      // Skip the RPC once the PTY can't be the target of a SIGWINCH.
-      // xterm's fitAddon.fit() in TerminalView still runs (frontend-only
-      // reflow of the existing buffer for users reading dead output);
-      // only the worker-side resize is gated. We do NOT gate on
-      // status === READY: the ResizeObserver's first fit() fires before
-      // the backend broadcasts READY, and the backend stashes that
-      // resize so the PTY spawns at the final size.
-      if (tab.status === TerminalStatus.EXITED
-        || tab.status === TerminalStatus.DISCONNECTED
-        || tab.status === TerminalStatus.STARTUP_FAILED) {
-        return
-      }
-      await workerRpc.resizeTerminal(tab.workerId ?? '', { terminalId, cols, rows })
+      await workerTerminal.resizeTerminal(tab.workerId ?? '', { terminalId: tab.id, cols, rows })
+      unsentSizes.delete(tab.id)
     }
     catch {
-      // ignore resize errors
+      // Not worth a toast: the next reconnect sends the size again.
+      unsentSizes.add(tab.id)
     }
+  }
+
+  const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
+    const tab = props.view.getTerminalTab(terminalId)
+    if (!tab)
+      return
+    // Mirror the live xterm dims into the tab so a later
+    // RestartTerminal sends the user's actual window size, not the
+    // dims persisted at last exit. Updated on every fit() (including
+    // for EXITED tabs) so the post-exit window shrink/grow is captured.
+    if (tab.cols !== cols || tab.rows !== rows)
+      props.metadata.patch(terminalId, { cols, rows })
+    await sendSize(tab, cols, rows)
+  }
+
+  /**
+   * Send the current size of each terminal of `workerId` whose size did not
+   * reach its PTY. For a worker that this client reconnected to.
+   *
+   * It reads the size from the tab, so the resizes of one outage collapse into
+   * one RPC. It sends nothing for any other terminal, because a resize with no
+   * cause would override the size that another client set.
+   */
+  const resendUnsentSizes = (workerId: string) => {
+    // `untrack`: a caller can run this inside an effect, and the tab list must
+    // not become that effect's dependency.
+    untrack(() => {
+      for (const terminalId of [...unsentSizes]) {
+        const tab = props.view.getTerminalTab(terminalId)
+        if (tab && tab.workerId !== workerId)
+          continue
+        unsentSizes.delete(terminalId)
+        if (tab?.cols !== undefined && tab.rows !== undefined)
+          void sendSize(tab, tab.cols, tab.rows)
+      }
+    })
   }
 
   // Close a terminal.
@@ -324,7 +357,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // Symmetric to handleAgentClose: store mutations run synchronously;
   // the worker close RPC and Hub unregister are fire-and-forget with
   // failure surfaced via toast.
-  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResult | undefined> => {
+  const handleTerminalClose = (terminalId: string, worktreeAction: WorktreeAction = WorktreeAction.KEEP): Promise<CloseTabResponse | undefined> => {
     const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
     // Release the xterm instance (WebGL context, listeners) BEFORE the tab
     // disappears. TerminalView's per-view ownership tracking only releases
@@ -346,24 +379,11 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
 
     // `emitRemoveTab` above emitted the TombstoneTab op via the CRDT
     // bridge; the hub broadcasts it to peer clients via /ws/userevents.
-    if (!workerId) {
-      // Local tab is gone, but with no worker the close RPC can't fire — a
-      // REMOVE therefore can't reach the worktree. Surface it instead of
-      // letting the caller assume removal happened.
-      warnWorktreeUnreachable(worktreeAction)
-      return Promise.resolve(undefined)
-    }
-
+    //
     // Background: PTY close, DB close, optional worktree removal. The
     // resolved result lets the delete-branch flow report the actual
     // worktree outcome.
-    return awaitCloseResult(
-      workerRpc.closeTerminal(workerId, {
-        terminalId,
-        worktreeAction,
-      }).then(closeResultView),
-      'Failed to close terminal',
-    )
+    return closeTabOnWorker(workerId, { type: TabType.TERMINAL, id: terminalId }, worktreeAction, 'Failed to close terminal')
   }
 
   return {
@@ -376,6 +396,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     handleOpenTerminalWithShell,
     handleTerminalInput,
     handleTerminalResize,
+    resendUnsentSizes,
     handleTerminalClose,
   }
 }

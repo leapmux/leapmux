@@ -5,12 +5,13 @@ lint:
   use:
     - STANDARD
   except:
-    # Streaming RPCs return event-style messages whose names don't fit
-    # the "<RpcName>Response" convention (WorkerPrivateEvent,
-    # StreamInnerEnvelope). The naming is
-    # intentional — these are event payloads, not request-response
-    # pairs — so we suppress the lint here rather than rename them
-    # everywhere.
+    # Some RPCs return messages whose names don't fit the
+    # "<RpcName>Response" convention: the streaming
+    # WatchWorkerPrivateEvents (WorkerPrivateEvent), StreamInner
+    # (InnerStreamMessage) and OpenTunnelConn (TunnelConnEvent) return
+    # event payloads, and the unary CallInner returns the shared
+    # InnerRpcResponse envelope. The naming is intentional, so we suppress
+    # the lint here rather than rename them everywhere.
     - RPC_RESPONSE_STANDARD_NAME
     # BatchRejectionReason values are referenced as BATCH_REJECTION_X
     # in the CRDT validator and the frontend pendingOps reject

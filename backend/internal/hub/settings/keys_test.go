@@ -248,14 +248,13 @@ func TestValidateMaxMessageSizeDelegates(t *testing.T) {
 }
 
 // TestTimeoutsRefuseAValueTheWireCannotCarry pins the ceiling that makes
-// UserService.GetTimeouts safe. Without it a stored int64 wrapped on the
+// SystemService.GetTimeouts safe. Without it a stored int64 wrapped on the
 // int32 narrowing and handed the client an arbitrary — often negative —
 // timeout, which every request budget derives from.
 func TestTimeoutsRefuseAValueTheWireCannotCarry(t *testing.T) {
 	over := TimeoutsValue{
 		APITimeoutSeconds:          MaxTimeoutSeconds + 1,
 		AgentStartupTimeoutSeconds: 300,
-		WorktreeCreateSecs:         60,
 	}
 	require.Error(t, KeyTimeouts.Validate(over), "a budget past the cap must be refused")
 
@@ -264,7 +263,6 @@ func TestTimeoutsRefuseAValueTheWireCannotCarry(t *testing.T) {
 	atMax := TimeoutsValue{
 		APITimeoutSeconds:          MaxTimeoutSeconds,
 		AgentStartupTimeoutSeconds: MaxTimeoutSeconds,
-		WorktreeCreateSecs:         MaxTimeoutSeconds,
 	}
 	require.NoError(t, KeyTimeouts.Validate(atMax))
 	assert.LessOrEqual(t, int64(MaxTimeoutSeconds), int64(math.MaxInt32),
@@ -272,8 +270,34 @@ func TestTimeoutsRefuseAValueTheWireCannotCarry(t *testing.T) {
 
 	// The floor is unchanged.
 	require.Error(t, KeyTimeouts.Validate(TimeoutsValue{
-		APITimeoutSeconds: 0, AgentStartupTimeoutSeconds: 300, WorktreeCreateSecs: 60,
+		APITimeoutSeconds: 0, AgentStartupTimeoutSeconds: 300,
 	}))
+}
+
+// The admin screen offers only timeouts that something reads. Each one that acts
+// on a subset of the deployment states which subset.
+func TestTimeoutsOfferOnlyTheTimeoutsThatTakeEffect(t *testing.T) {
+	ui := KeyTimeouts.UI()
+	assert.Equal(t, "API and agent-startup timeouts in seconds", ui.Summary)
+
+	names := make([]string, 0, len(ui.Fields))
+	for _, field := range ui.Fields {
+		names = append(names, field.Name)
+	}
+	assert.Equal(t, []string{"api_seconds", "agent_startup_seconds"}, names)
+
+	assert.Empty(t, ui.Fields[0].Help, "the API timeout acts on every deployment")
+	assert.Equal(t,
+		"Applies to the worker that solo and dev run inside the hub. A standalone worker uses its --agent-startup-timeout flag.",
+		ui.Fields[1].Help)
+}
+
+// The field that no reader used is gone, so a document that sets it fails like
+// any other misspelled field instead of reporting a change that does nothing.
+func TestTimeoutsRefuseTheRemovedWorktreeCreateField(t *testing.T) {
+	_, err := KeyTimeouts.ApplyPartial(DefaultTimeouts, json.RawMessage(`{"worktree_create_seconds":60}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree_create_seconds")
 }
 
 // TestDecodeAndApplyPartialDoNotAliasTheirInputs pins the isolation that

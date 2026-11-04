@@ -17,14 +17,17 @@ type workerStore struct{ conn *sqliteConn }
 var _ store.WorkerStore = (*workerStore)(nil)
 
 func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
 	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:              p.ID,
 		AuthToken:       p.AuthToken,
 		RegisteredBy:    p.RegisteredBy.String(),
-		PublicKey:       p.PublicKey,
-		MlkemPublicKey:  p.MlkemPublicKey,
-		SlhdsaPublicKey: p.SlhdsaPublicKey,
 		AutoRegistered:  ptrconv.BoolToInt64(p.AutoRegistered),
+		X25519PublicKey: p.PublicKeys.X25519,
+		MlkemPublicKey:  p.PublicKeys.Mlkem,
+		SlhdsaPublicKey: p.PublicKeys.Slhdsa,
 	}))
 }
 
@@ -53,24 +56,12 @@ func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWit
 	return &out, nil
 }
 
-func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
-	row, err := s.conn.q.GetWorkerByAuthToken(ctx, token)
+func (s *workerStore) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
+	row, err := s.conn.q.GetWorkerByAuthTokenIncludeDeleted(ctx, token)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	return fromDBWorker(row), nil
-}
-
-func (s *workerStore) GetPublicKey(ctx context.Context, id string) (*store.WorkerPublicKeys, error) {
-	row, err := s.conn.q.GetWorkerPublicKey(ctx, id)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &store.WorkerPublicKeys{
-		PublicKey:       row.PublicKey,
-		MlkemPublicKey:  row.MlkemPublicKey,
-		SlhdsaPublicKey: row.SlhdsaPublicKey,
-	}, nil
 }
 
 func (s *workerStore) GetOwned(ctx context.Context, p store.GetOwnedWorkerParams) (*store.Worker, error) {
@@ -157,15 +148,6 @@ func (s *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
 	return mapErr(s.conn.q.UpdateWorkerLastSeen(ctx, id))
 }
 
-func (s *workerStore) UpdatePublicKey(ctx context.Context, p store.UpdateWorkerPublicKeyParams) error {
-	return mapErr(s.conn.q.UpdateWorkerPublicKey(ctx, gendb.UpdateWorkerPublicKeyParams{
-		PublicKey:       p.PublicKey,
-		MlkemPublicKey:  p.MlkemPublicKey,
-		SlhdsaPublicKey: p.SlhdsaPublicKey,
-		ID:              p.ID,
-	}))
-}
-
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
 	owner, ok := userid.OwnerFilter(p.RegisteredBy)
 	if !ok {
@@ -199,15 +181,17 @@ func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy use
 
 func fromDBWorker(w gendb.Worker) *store.Worker {
 	return &store.Worker{
-		ID:              w.ID,
-		AuthToken:       w.AuthToken,
-		RegisteredBy:    w.RegisteredBy,
+		ID:           w.ID,
+		AuthToken:    w.AuthToken,
+		RegisteredBy: w.RegisteredBy,
+		PublicKeys: store.WorkerPublicKeys{
+			X25519: w.X25519PublicKey,
+			Mlkem:  w.MlkemPublicKey,
+			Slhdsa: w.SlhdsaPublicKey,
+		},
 		Status:          store.WorkerStatusOf(w.DeregisteringAt.Ptr(), w.DeletedAt.Ptr()),
 		CreatedAt:       w.CreatedAt.Time,
 		LastSeenAt:      w.LastSeenAt.Ptr(),
-		PublicKey:       w.PublicKey,
-		MlkemPublicKey:  w.MlkemPublicKey,
-		SlhdsaPublicKey: w.SlhdsaPublicKey,
 		AutoRegistered:  ptrconv.Int64ToBool(w.AutoRegistered),
 		DeregisteringAt: w.DeregisteringAt.Ptr(),
 		DeletedAt:       w.DeletedAt.Ptr(),

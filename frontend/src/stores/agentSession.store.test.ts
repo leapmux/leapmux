@@ -258,7 +258,7 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
-  it('clearThinkingTokens drops only the estimate', () => {
+  it('drops only the estimate when clearThinkingTokens runs', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-clear', { totalCostUsd: 0.5 })
@@ -273,7 +273,7 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
-  it('clearOutputBytes drops both output fields and keeps other state', () => {
+  it('drops both output fields and keeps other state when clearOutputBytes runs', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-output', { totalCostUsd: 0.5 })
@@ -293,7 +293,7 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
-  it('clearThinkingTokens is a no-op when no estimate is set', () => {
+  it('makes clearThinkingTokens a no-op when no estimate is set', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-noop', { totalCostUsd: 0.5 })
@@ -321,7 +321,7 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
-  it('clearThinkingTokens on an untouched agent is a safe no-op', () => {
+  it('makes clearThinkingTokens a safe no-op on an untouched agent', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       // Every provider clears at turn end, including an agent with no loaded estimate.

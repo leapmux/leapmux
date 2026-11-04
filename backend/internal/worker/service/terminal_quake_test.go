@@ -13,7 +13,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -30,7 +32,7 @@ import (
 func openQuakeTerminal(t *testing.T, svc *Service, d *channel.Dispatcher, workingDir string) (string, string) {
 	t.Helper()
 	w := newTestWriter()
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: workingDir,
 		Quake:      true,
@@ -253,7 +255,7 @@ func TestListTerminals_ResolvesAQuakeTerminalByItsWorkingDir(t *testing.T) {
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
 
 	w := newTestWriter()
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListTerminalsResponse
@@ -274,7 +276,7 @@ func TestListTerminals_ADirectoryWithNoQuakeTerminalAnswersEmpty(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{t.TempDir()}}, w)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{t.TempDir()}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListTerminalsResponse
@@ -304,7 +306,7 @@ func TestListTerminals_ResolvesAQuakeTerminalWithFileReadAndTerminalRead(t *test
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	w := newTestWriter()
-	dispatchScoped(d, mustScopes("worker:read terminal:read file:read"), "ListTerminals",
+	dispatchScoped(d, mustScopes("worker:read terminal:read file:read"), leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
 		&leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -329,7 +331,7 @@ func TestListTerminals_RefusesADirectoryProbeWithoutFileRead(t *testing.T) {
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	w := newTestWriter()
-	dispatchScoped(d, mustScopes("worker:read terminal:read"), "ListTerminals",
+	dispatchScoped(d, mustScopes("worker:read terminal:read"), leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
 		&leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{dir}}, w)
 	require.Empty(t, w.errors, "the request is answered, with the probe simply unanswered")
 	require.Len(t, w.responses, 1)
@@ -354,7 +356,7 @@ func TestCloseAgent_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
@@ -378,7 +380,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAnotherTabWorksInTheDirectory(t *t
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
@@ -404,7 +406,7 @@ func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(quakeID) }, "spawn")
 
 	closeAgent := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, closeAgent)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
 
 	kept, err := svc.Queries.GetTerminal(context.Background(), quakeID)
@@ -412,7 +414,7 @@ func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	require.False(t, kept.ClosedAt.Valid, "the terminal tab still references the directory")
 
 	closeTab := newTestWriter()
-	dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: tabID}, closeTab)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: terminalTabIdent(tabID)}, closeTab)
 	require.Empty(t, closeTab.errors)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), quakeID)
@@ -458,7 +460,7 @@ func TestCloseChildAgent_LeavesTheQuakeTerminalAlone(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "child-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("child-1")}, w)
 	require.Empty(t, w.errors)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
@@ -478,12 +480,11 @@ func TestOpenTerminal_RefusesAQuakeTerminalWithAGitMode(t *testing.T) {
 	dir := t.TempDir()
 
 	w := newTestWriter()
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		Shell:          testutil.TestShell(),
-		WorkingDir:     dir,
-		Quake:          true,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/x",
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		Shell:      testutil.TestShell(),
+		WorkingDir: dir,
+		Quake:      true,
+		GitSetup:   createWorktreeSetup("feature/x", ""),
 	}, w)
 
 	require.Len(t, w.errors, 1, "a quake terminal must not create a worktree")
@@ -588,7 +589,7 @@ func TestRestartTerminal_RefusesAQuakeTerminal(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "RestartTerminal", &leapmuxv1.RestartTerminalRequest{TerminalId: "exited-quake"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{TerminalId: "exited-quake"}, w)
 
 	require.Len(t, w.errors, 1, "a quake terminal must refuse a restart")
 	assert.Contains(t, w.errors[0].message, "quake terminal")
@@ -640,7 +641,8 @@ func TestApplyTabArchiveState_ClosesTheQuakeTerminalOfAnArchivedDirectory(t *tes
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -670,7 +672,8 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -682,7 +685,8 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 	// Archive the second one too, and the directory loses its last reference.
 	_, err = svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "agent-2", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-2"}},
 	)
 	require.NoError(t, err)
 
@@ -704,7 +708,7 @@ func TestListTerminals_IgnoresAnEmptyQuakeWorkingDir(t *testing.T) {
 	openTerminalViaRPC(t, svc, d, w, dir)
 
 	reply := newTestWriter()
-	dispatchScoped(d, mustScopes("worker:read terminal:read"), "ListTerminals",
+	dispatchScoped(d, mustScopes("worker:read terminal:read"), leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
 		&leapmuxv1.ListTerminalsRequest{QuakeWorkingDirs: []string{""}}, reply)
 
 	require.Empty(t, reply.errors)
@@ -733,7 +737,7 @@ func TestSetQuakePanel_IsServedWithTerminalWriteAlone(t *testing.T) {
 	}
 
 	w := newTestWriter()
-	dispatchScoped(d, mustScopes("worker:read terminal:write"), "SetQuakePanel", req, w)
+	dispatchScoped(d, mustScopes("worker:read terminal:write"), leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, req, w)
 	assert.Empty(t, w.errors, "a caller that writes terminals is served")
 }
 
@@ -746,7 +750,7 @@ func TestSetQuakePanel_RefusesADirectoryItCannotNormalize(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+	dispatch(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, &leapmuxv1.SetQuakePanelRequest{
 		WorkingDir: "relative/path",
 		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN,
 	}, w)
@@ -762,7 +766,7 @@ func TestSetQuakePanel_RefusesAnUnspecifiedAction(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{WorkingDir: t.TempDir()}, w)
+	dispatch(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, &leapmuxv1.SetQuakePanelRequest{WorkingDir: t.TempDir()}, w)
 
 	require.Len(t, w.errors, 1)
 	assert.Contains(t, w.errors[0].message, "open, close or toggle")
@@ -787,7 +791,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAFileTabWorksInTheDirectory(t *tes
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	w := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
 	require.Empty(t, w.errors)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
@@ -799,7 +803,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAFileTabWorksInTheDirectory(t *tes
 // The other half: closing the LAST viewer is what ends the shell. The payload
 // close path had no reap at all, so this case waited for the orphan
 // reconciler -- an hour by default.
-func TestRevokeTabPayload_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.T) {
+func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.T) {
 	t.Parallel()
 
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
@@ -812,14 +816,14 @@ func TestRevokeTabPayload_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
 
 	closeAgent := newTestWriter()
-	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, closeAgent)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
 	require.Empty(t, closeAgent.errors)
 	kept, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
 	require.False(t, kept.ClosedAt.Valid, "the file tab still references the directory")
 
 	revoke := newTestWriter()
-	dispatch(d, "RevokeTabPayload", &leapmuxv1.RevokeTabPayloadRequest{TabId: "file-1"}, revoke)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: fileTabIdent("file-1")}, revoke)
 	require.Empty(t, revoke.errors)
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
@@ -834,8 +838,8 @@ func TestRevokeTabPayload_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 //
 // This is what worker_tab_payloads.workspace_archived buys, and the flag needs
 // an OWNER: the table is keyed (user_id, tab_id) because a payload-backed tab
-// id is minted client-side and unique only within one account. TabRef.user_id
-// is what carries it.
+// id is minted client-side and unique only within one account. The owner
+// argument is what carries it.
 func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -850,9 +854,10 @@ func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *t
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{
-			{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
-			{TabId: "file-1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, UserId: "user-1"},
+		userid.MustNew("user-1"),
+		[]*leapmuxv1.TabIdent{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"},
 		},
 	)
 	require.NoError(t, err)
@@ -877,11 +882,12 @@ func TestApplyTabArchiveState_RefusesAPayloadTabWithNoOwner(t *testing.T) {
 
 	_, err := svc.ApplyTabArchiveState(context.Background(),
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "file-1", TabType: leapmuxv1.TabType_TAB_TYPE_FILE}},
+		userid.UserID{},
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-1"}},
 	)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "user_id")
+	assert.Contains(t, err.Error(), "needs an owner")
 }
 
 // The archive sweep must act on the directories THIS request changed and no
@@ -905,7 +911,8 @@ func TestApplyTabArchiveState_LeavesAQuakeTerminalInAnUnrelatedDirectory(t *test
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "agent-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
 	)
 	require.NoError(t, err)
 
@@ -931,7 +938,8 @@ func TestApplyTabArchiveState_NoFlagChangeSweepsNothing(t *testing.T) {
 	// A tab id no row matches: persistArchiveFlags reports zero changes.
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		[]*leapmuxv1.TabRef{{TabId: "agent-absent", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
+		testTabOwner,
+		[]*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-absent"}},
 	)
 	require.NoError(t, err)
 
@@ -951,7 +959,7 @@ func TestOpenTerminal_RefusesAQuakeTerminalWithNoWorkingDir(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell: testutil.TestShell(),
 		Quake: true,
 		Cols:  200,
@@ -973,7 +981,7 @@ func TestSetQuakePanel_RefusesAnEmptyWorkingDir(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+	dispatch(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, &leapmuxv1.SetQuakePanelRequest{
 		Action: leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_TOGGLE,
 	}, w)
 
@@ -1030,7 +1038,7 @@ func TestSetQuakePanel_RefusesAnOpeningCommandForADirectoryWithNoTab(t *testing.
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+	dispatch(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, &leapmuxv1.SetQuakePanelRequest{
 		WorkingDir: t.TempDir(),
 		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_OPEN,
 	}, w)
@@ -1049,7 +1057,7 @@ func TestSetQuakePanel_AllowsACloseForADirectoryWithNoTab(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	w := newTestWriter()
-	dispatch(d, "SetQuakePanel", &leapmuxv1.SetQuakePanelRequest{
+	dispatch(d, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, &leapmuxv1.SetQuakePanelRequest{
 		WorkingDir: t.TempDir(),
 		Action:     leapmuxv1.QuakePanelAction_QUAKE_PANEL_ACTION_CLOSE,
 	}, w)

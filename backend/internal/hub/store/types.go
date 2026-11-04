@@ -9,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -163,21 +164,51 @@ type ActiveSession struct {
 // which orders by (last_active_at DESC, id DESC) -- not created_at.
 func (s ActiveSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s.ID }
 
+// WorkerPublicKeys is the set of static public keys a Worker registered with.
+// The Hub pins it: Connect refuses a hello that presents any other key, so a
+// stolen auth token alone cannot attach other keys to the Worker.
+//
+// A plain struct rather than a protobuf message, like every other type in this
+// package: a *Worker holding a proto message would make assert.Equal run
+// reflect.DeepEqual over proto internal state.
+type WorkerPublicKeys struct {
+	X25519 []byte
+	Mlkem  []byte
+	Slhdsa []byte
+}
+
+// WorkerPublicKeysFromProto converts the wire form to the stored form.
+func WorkerPublicKeysFromProto(k *leapmuxv1.WorkerPublicKeys) WorkerPublicKeys {
+	return WorkerPublicKeys{
+		X25519: k.GetX25519(),
+		Mlkem:  k.GetMlkem(),
+		Slhdsa: k.GetSlhdsa(),
+	}
+}
+
+// Proto converts the stored form to the wire form.
+func (k WorkerPublicKeys) Proto() *leapmuxv1.WorkerPublicKeys {
+	return &leapmuxv1.WorkerPublicKeys{X25519: k.X25519, Mlkem: k.Mlkem, Slhdsa: k.Slhdsa}
+}
+
 // Worker represents a registered worker node.
 type Worker struct {
-	ID              string
-	AuthToken       string
-	RegisteredBy    string
-	Status          leapmuxv1.WorkerStatus
-	CreatedAt       time.Time
-	LastSeenAt      *time.Time
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
+	ID           string
+	AuthToken    string
+	RegisteredBy string
+	Status       leapmuxv1.WorkerStatus
+	CreatedAt    time.Time
+	LastSeenAt   *time.Time
+	// PublicKeys is the pinned key set. Nothing updates it; new keys need a
+	// new registration, which creates a new row.
+	PublicKeys WorkerPublicKeys
 	// AutoRegistered marks rows created by Server.RegisterWorker (the
-	// in-process bypass for the solo launcher's co-located worker).
-	// DeregisterWorker refuses these to keep users from accidentally
-	// tearing down the bundled desktop worker.
+	// in-process bypass for the solo launcher's co-located worker). The owner's
+	// path (WorkerManagementService.DeregisterWorker) refuses to deregister
+	// these, and the admin path (AdminWorkerService.DeregisterWorker) refuses one
+	// while it is connected, to keep users from accidentally tearing down the
+	// running bundled desktop worker. An administrator can remove an offline one,
+	// such as the row that a launch leaves behind when its state file was lost.
 	AutoRegistered bool
 	// DeregisteringAt is when the worker was deregistered, or nil. Status is
 	// derived from it and DeletedAt (see WorkerStatusOf).
@@ -205,13 +236,6 @@ func WorkerStatusOf(deregisteringAt, deletedAt *time.Time) leapmuxv1.WorkerStatu
 // and, via the WorkerWithOwner embedding, ListAdmin), which order by
 // (created_at DESC, id DESC).
 func (w Worker) PageCursor() (time.Time, string) { return w.CreatedAt, w.ID }
-
-// WorkerPublicKeys holds a worker's public key material.
-type WorkerPublicKeys struct {
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
-}
 
 // WorkerWithOwner is the result of admin worker listing (JOIN with users).
 type WorkerWithOwner struct {
@@ -846,23 +870,26 @@ type ListUserSessionsParams struct {
 }
 
 type CreateWorkerParams struct {
-	ID              string
-	AuthToken       string
-	RegisteredBy    userid.UserID
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
+	ID           string
+	AuthToken    string
+	RegisteredBy userid.UserID
 	// AutoRegistered must be true only on the solo launcher's
 	// in-process bypass path (Server.RegisterWorker). All
 	// registration-key driven Register RPCs leave it false.
 	AutoRegistered bool
+	// PublicKeys is the set the Worker will present in every WorkerHello. The
+	// Hub pins it here, and Connect refuses a hello that differs.
+	PublicKeys WorkerPublicKeys
 }
 
-type UpdateWorkerPublicKeyParams struct {
-	ID              string
-	PublicKey       []byte
-	MlkemPublicKey  []byte
-	SlhdsaPublicKey []byte
+// Validate reports whether the row is insertable. The key set is the only
+// field the store can check, and it must: the pins are NOT NULL columns, and a
+// partial set could never match a complete hello.
+func (p CreateWorkerParams) Validate() error {
+	if err := workerkeys.Validate(p.PublicKeys.Proto()); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	return nil
 }
 
 type DeregisterWorkerParams struct {
@@ -978,23 +1005,12 @@ type UpsertTabParams struct {
 	Rendered    bool
 }
 
-// GetRenderedTabParams identifies a single rendered-tab row.
-//
-// UserID is the tenancy axis and is REQUIRED, for the reason spelled out on
-// GetOwnedTabParams: tab ids are client-minted and unique only within one
-// user, so (workspace_id, tab_type, tab_id) is not a key. The composite
-// workspace key makes the row's user the workspace's owner, so binding the
-// caller's id also refuses a caller who does not own the workspace.
-type GetRenderedTabParams struct {
-	UserID      userid.UserID
-	WorkspaceID string
-	TabType     leapmuxv1.TabType
-	TabID       string
-}
-
 // ListRenderedTabsByWorkspaceIDsParams scopes the rendered-tab listing to one
-// owner across a set of workspaces. See GetRenderedTabParams for why the
-// workspace set alone is not a tenancy scope.
+// owner across a set of workspaces. The workspace set alone is not a tenancy
+// scope: tab ids are client-minted and unique only within one user (see
+// GetOwnedTabParams). The composite workspace key makes the row's user the
+// workspace's owner, so binding the caller's id also refuses a caller who does
+// not own a listed workspace.
 type ListRenderedTabsByWorkspaceIDsParams struct {
 	UserID       userid.UserID
 	WorkspaceIDs []string

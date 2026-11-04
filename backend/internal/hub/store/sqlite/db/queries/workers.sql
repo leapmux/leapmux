@@ -1,5 +1,6 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, auth_token, registered_by, public_key, mlkem_public_key, slhdsa_public_key, auto_registered)
+INSERT INTO workers (id, auth_token, registered_by, auto_registered,
+                     x25519_public_key, mlkem_public_key, slhdsa_public_key)
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetWorkerByID :one
@@ -8,9 +9,11 @@ SELECT * FROM workers WHERE id = ? AND deleted_at IS NULL;
 -- name: GetWorkerByIDIncludeDeleted :one
 SELECT * FROM workers WHERE id = ?;
 
--- name: GetWorkerByAuthToken :one
--- A deregistering worker must still connect: that is how it is told to stop.
-SELECT * FROM workers WHERE auth_token = ? AND deleted_at IS NULL;
+-- name: GetWorkerByAuthTokenIncludeDeleted :one
+-- The token read of AuthenticateWorkerBearer, which every worker credential
+-- check uses. It returns a deleted row too; AuthenticateWorkerBearer refuses
+-- one with ErrWorkerDeleted.
+SELECT * FROM workers WHERE auth_token = ?;
 
 -- name: ListWorkersByUserID :many
 SELECT * FROM workers
@@ -37,12 +40,6 @@ UPDATE workers SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE regi
 
 -- name: UpdateWorkerLastSeen :exec
 UPDATE workers SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
-
--- name: UpdateWorkerPublicKey :exec
-UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? WHERE id = ?;
-
--- name: GetWorkerPublicKey :one
-SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ? AND deleted_at IS NULL;
 
 -- Each state and owner filter has its own query. Literal predicates let
 -- the planner select an ordered index for exactly the requested population.

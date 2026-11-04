@@ -135,15 +135,32 @@ function readTitle(source: string, from: number): { title: string, start: number
   }
 }
 
+interface FoundTitle {
+  title: string
+  line: number
+  /** An `it` or a `test`, as opposed to a suite. `test.describe` is a suite. */
+  isCase: boolean
+}
+
+// A line that a comment opens or continues. Prose such as "publishes it (`x`)" has
+// the shape of a title call. A tokenizer that tracks whole comments is not an
+// option here: it must also recognize a regex literal, because a quote inside one
+// would open a string that hides every later title in the file.
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/
+
+/** Reports whether the line that holds `index` is a comment up to that index. */
+function isOnCommentLine(source: string, index: number): boolean {
+  return COMMENT_LINE.test(source.slice(source.lastIndexOf('\n', index) + 1, index))
+}
+
 /** Every suite and case title in one file, with the line each one sits on. */
-function findTitles(source: string): Array<{ title: string, line: number }> {
-  const found: Array<{ title: string, line: number }> = []
-  // A fresh RegExp per call: a shared /g/ literal carries `lastIndex` between
-  // calls and would skip matches in the next file.
-  const scanner = new RegExp(TITLE_CALL.source, 'g')
-  let match = scanner.exec(source)
-  while (match !== null) {
+function findTitles(source: string): FoundTitle[] {
+  const found: FoundTitle[] = []
+  // `matchAll` scans a copy, so `TITLE_CALL` keeps no `lastIndex` between files.
+  for (const match of source.matchAll(TITLE_CALL)) {
     const openParen = match.index + match[0].length - 1
+    if (isOnCommentLine(source, openParen))
+      continue
     // `it.each(rows)('title', fn)` carries the title in a second call, so when
     // the first argument is not a string literal, look in the group that
     // follows the first one.
@@ -153,9 +170,13 @@ function findTitles(source: string): Array<{ title: string, line: number }> {
       if (source[afterFirstCall] === '(')
         read = readTitle(source, afterFirstCall + 1)
     }
-    if (read !== null)
-      found.push({ title: read.title, line: source.slice(0, read.start).split('\n').length })
-    match = scanner.exec(source)
+    if (read !== null) {
+      found.push({
+        title: read.title,
+        line: source.slice(0, read.start).split('\n').length,
+        isCase: !match[0].includes('describe'),
+      })
+    }
   }
   return found
 }
@@ -164,7 +185,27 @@ function findTitles(source: string): Array<{ title: string, line: number }> {
 export function findMangledTitles(source: string, path: string): MangledTitle[] {
   return findTitles(source)
     .filter(found => isMangledTitle(found.title))
-    .map(found => ({ path, ...found }))
+    .map(({ title, line }) => ({ path, line, title }))
+}
+
+// The THIRD signature, which applies to a case and not to a suite. A case title
+// is a sentence that continues "it", so it opens with a verb. A title that opens
+// with a code symbol reads "it createWorkspace preserves ...": the symbol under
+// test belongs in the enclosing `describe`, or later in the sentence.
+// `CAMEL_CASE_IDENTIFIERS` exempts nothing here, because it only separates a real
+// identifier from a mangled one, and this rule refuses both.
+const SYMBOL_OPENING = /^[a-z]+[A-Z]/
+
+/** Reports whether a title opens with a camelCase code symbol. */
+export function opensWithSymbol(title: string): boolean {
+  return SYMBOL_OPENING.test(title)
+}
+
+/** Extracts every case title from one file and keeps the ones that open with a code symbol. */
+export function findSymbolFirstCaseTitles(source: string, path: string): MangledTitle[] {
+  return findTitles(source)
+    .filter(found => found.isCase && opensWithSymbol(found.title))
+    .map(({ title, line }) => ({ path, line, title }))
 }
 
 // The SECOND signature, and nothing about the lint autofix produces it. A title
@@ -254,7 +295,7 @@ export function findFlattenedTitles(source: string, path: string): MangledTitle[
     return correct === undefined || correct === firstWord
       ? []
       : [
-          { path, ...found },
+          { path, line: found.line, title: found.title },
         ]
   })
 }
@@ -390,6 +431,22 @@ describe('test-title casing', () => {
     expect(findMangledTitles(source, 'fixture.test.ts')).toEqual([])
   })
 
+  it('skips a title call inside a comment', () => {
+    // A real JSDoc sentence ended in "publishes it (`onAskUser`)", and the scanner
+    // read it as a case whose title is `onAskUser`.
+    const source = [
+      '/**',
+      ` * The worker publishes ${callSite('it', 'onAskUser')}.`,
+      ' */',
+      `  // ${callSite('test', 'runTool refuses')}`,
+      callSite('it', 'createWorkspace preserves a set root'),
+    ].join('\n')
+
+    expect(findSymbolFirstCaseTitles(source, 'fixture.test.ts')).toEqual([
+      { path: 'fixture.test.ts', line: 5, title: 'createWorkspace preserves a set root' },
+    ])
+  })
+
   it('keeps no scan state between files', () => {
     const source = callSite('describe', 'lANGUAGES')
     expect(findMangledTitles(source, 'a.test.ts')).toHaveLength(1)
@@ -407,6 +464,59 @@ function importLine(names: string, from = './module'): string {
     `'${from}'`,
   ].join(' ')
 }
+
+describe('test-title form', () => {
+  it('has no case title that opens with a code symbol, under src/ or tests/', () => {
+    const offenders: MangledTitle[] = []
+    for (const file of collectTestFiles())
+      offenders.push(...findSymbolFirstCaseTitles(readFileSync(file, 'utf8'), posixRelative(frontendRoot, file)))
+
+    const detail = offenders.map(o => `${o.path}:${o.line}  ${JSON.stringify(o.title)}`).join('\n  ')
+    expect(
+      offenders,
+      'An `it` or `test` title is a lowercase sentence that continues "it", per the Tests section of '
+      + 'AGENTS.md, so it opens with a verb. Put the symbol under test in the enclosing `describe`, or '
+      + `later in the sentence:\n  ${detail}`,
+    ).toEqual([])
+  })
+
+  it('finds a symbol-first title in every case form, with its line number', () => {
+    const source = [
+      callSite('it', 'createWorkspace preserves a set root'),
+      callSite('test', 'toGitSetup(Current) leaves the setup absent'),
+      callSite('it.skip', 'switchBranch selects checkout_branch'),
+      callSite('it.each([1])', 'zOrder keeps its stack'),
+    ].join('\n')
+
+    expect(findSymbolFirstCaseTitles(source, 'fixture.test.ts')).toEqual([
+      { path: 'fixture.test.ts', line: 1, title: 'createWorkspace preserves a set root' },
+      { path: 'fixture.test.ts', line: 2, title: 'toGitSetup(Current) leaves the setup absent' },
+      { path: 'fixture.test.ts', line: 3, title: 'switchBranch selects checkout_branch' },
+      { path: 'fixture.test.ts', line: 4, title: 'zOrder keeps its stack' },
+    ])
+  })
+
+  it('leaves a suite title alone, because a suite spells its symbol', () => {
+    const source = [
+      callSite('describe', 'createStableContext'),
+      callSite('describe.skip', 'createWorkspace'),
+      callSite('test.describe', 'channelManager openChannel'),
+    ].join('\n')
+
+    expect(findSymbolFirstCaseTitles(source, 'fixture.test.ts')).toEqual([])
+  })
+
+  it('accepts a sentence that opens with a verb and states the symbol later', () => {
+    const titles = [
+      'returns null for an empty payload',
+      'keeps createWorkspace set-once',
+      'refuses a stale iPv4 address',
+      '',
+    ]
+
+    expect(titles.filter(opensWithSymbol)).toEqual([])
+  })
+})
 
 describe('test-title flattening', () => {
   it('has no title that dropped an identifier\'s capitals, under src/ or tests/', () => {

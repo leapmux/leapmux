@@ -15,9 +15,16 @@ const mockSignalPasskeyRemoved = vi.fn()
 const mockSignalAcceptedPasskeys = vi.fn()
 const mockBeginPasskeyRegistration = vi.fn()
 const mockFinishPasskeyRegistration = vi.fn()
-const mockStartRegistration = vi.fn()
+const mockRegisterForChallenge = vi.fn()
 const mockUser = vi.fn()
-const mockRefreshUser = vi.fn()
+// The adoption the surface opens before the write leaves. The order records when
+// it opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -37,7 +44,7 @@ vi.mock('~/api/clients', () => ({
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
-    refreshUser: mockRefreshUser,
+    openUserAdoption: mockOpenUserAdoption,
   }),
 }))
 
@@ -52,7 +59,7 @@ vi.mock('~/lib/systemInfo', async () => {
 // text a user reads.
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
-  startRegistration: (...args: unknown[]) => mockStartRegistration(...args),
+  registerForChallenge: (...args: unknown[]) => mockRegisterForChallenge(...args),
   startAuthentication: vi.fn(),
   passkeyErrorMessage: (_e: unknown, fallback: string) => fallback,
   signalPasskeyRemoved: (...args: unknown[]) => mockSignalPasskeyRemoved(...args),
@@ -113,7 +120,8 @@ describe('AccountPasskeys', () => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     setElevationPrompter(null)
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
       passkeys: [
@@ -130,8 +138,10 @@ describe('AccountPasskeys', () => {
     mockDeactivatePasskeyAuth.mockResolvedValue({})
     mockRenamePasskey.mockResolvedValue({})
     mockChangePassword.mockResolvedValue({})
-    mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
-    mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
+    mockBeginPasskeyRegistration.mockResolvedValue({
+      challenge: { sessionId: 'sess-1', optionsJson: '{}' },
+    })
+    mockRegisterForChallenge.mockResolvedValue({ sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' })
     mockFinishPasskeyRegistration.mockResolvedValue({
       passkey: {
         id: 'pk-2',
@@ -154,15 +164,52 @@ describe('AccountPasskeys', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await vi.waitFor(() => {
       expect(mockFinishPasskeyRegistration).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: 'sess-1',
-        credentialJson: '{"id":"cred-new"}',
+        credential: { sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' },
       }))
     })
+    // The ceremony runs on the challenge that Begin returned.
+    expect(mockRegisterForChallenge).toHaveBeenCalledExactlyOnceWith({ sessionId: 'sess-1', optionsJson: '{}' })
     expect(mockSignalAcceptedPasskeys).toHaveBeenCalledWith(
       'localhost',
       'user-1',
       expect.arrayContaining(['cred-abc', 'cred-new']),
     )
+  })
+
+  // The Finish can echo no row. The id the browser minted, read from the
+  // registration JSON, still reaches the accepted-credential signal, so the
+  // authenticator keeps the new passkey.
+  it('signals the id from the registration JSON when the Finish echoes no passkey', async () => {
+    mockRegisterForChallenge.mockResolvedValueOnce({ sessionId: 'sess-1', credentialJson: '{"id":"cred-json"}' })
+    mockFinishPasskeyRegistration.mockResolvedValueOnce({})
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    await vi.waitFor(() => expect(mockSignalAcceptedPasskeys).toHaveBeenCalledOnce())
+    const [rpId, userId, ids] = mockSignalAcceptedPasskeys.mock.calls[0] ?? []
+    expect([rpId, userId]).toEqual(['localhost', 'user-1'])
+    expect([...ids].sort()).toEqual(['cred-abc', 'cred-json'])
+  })
+
+  // The credential's JSON is an optional field. Without it the signal still
+  // carries every id the page knows, and the add still succeeds.
+  it('signals the known ids for a credential that carries no JSON', async () => {
+    mockRegisterForChallenge.mockResolvedValueOnce({ sessionId: 'sess-1' })
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    await vi.waitFor(() => expect(mockSignalAcceptedPasskeys).toHaveBeenCalledOnce())
+    expect([
+      ...(mockSignalAcceptedPasskeys.mock.calls[0]?.[2] ?? []),
+    ].sort()).toEqual(['cred-abc', 'cred-new'])
+    expect(mockFinishPasskeyRegistration).toHaveBeenCalledWith(expect.objectContaining({
+      credential: { sessionId: 'sess-1' },
+    }))
+    expect(await screen.findByText('Passkey added.')).toBeInTheDocument()
   })
 
   it('renames a passkey without prompting again', async () => {
@@ -314,44 +361,101 @@ describe('AccountPasskeys', () => {
   // read them -- the step-up prompt offers the passkey factor only when the
   // account has one. A write that moves either must re-read the cached
   // account, and a write that moves neither must not spend a round trip doing
-  // it. Neither half was pinned, so a future edit could drop the refresh
+  // it. Neither half was pinned, so a future edit could drop the adoption
   // (leaving the prompt offering a factor that no longer exists) or add one to
   // every keystroke, and the suite would stay green.
-  it('re-reads the cached account after a write that changes the count', async () => {
+  it('adopts the account of a write that changes the count, through an adoption opened first', async () => {
+    const stored = { ...passwordUser, passkeyCount: 0 }
+    mockDeletePasskey.mockImplementation(async () => {
+      callOrder.push('delete')
+      return { user: stored }
+    })
     render(() => <AccountPasskeys />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
     // Opening the panel is a READ: the bootstrap already carried the count.
-    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockOpenUserAdoption).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove passkey' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 
-    await vi.waitFor(() => {
-      expect(mockRefreshUser).toHaveBeenCalled()
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored))
+    expect(callOrder).toEqual(['open', 'delete'])
+  })
+
+  it('adopts the account of a deactivation, through an adoption opened first', async () => {
+    const stored = { ...passwordUser, passkeyCount: 0 }
+    mockDeactivatePasskeyAuth.mockImplementation(async () => {
+      callOrder.push('deactivate')
+      return { user: stored }
     })
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable passkey sign-in' }))
+    const confirmButtons = await screen.findAllByRole('button', { name: 'Disable passkey sign-in' })
+    fireEvent.click(confirmButtons.at(-1)!)
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored))
+    expect(callOrder).toEqual(['open', 'deactivate'])
+  })
+
+  // After the ceremony, so that the adoption compares the identity that the
+  // Finish request carries, and not the one from before the ceremony.
+  it('opens the adoption after the ceremony and before the Finish', async () => {
+    const stored = { ...passwordUser, passkeyCount: 2 }
+    mockRegisterForChallenge.mockImplementation(async () => {
+      callOrder.push('ceremony')
+      return { sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' }
+    })
+    mockFinishPasskeyRegistration.mockImplementation(async () => {
+      callOrder.push('finish')
+      return { user: stored }
+    })
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored))
+    expect(callOrder).toEqual(['ceremony', 'open', 'finish'])
+  })
+
+  // A refused write changed nothing, so nothing is adopted.
+  it('adopts nothing when the hub refuses a removal', async () => {
+    mockDeletePasskey.mockRejectedValue(new Error('refused'))
+    render(() => <AccountPasskeys />)
+    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove passkey' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
+
+    expect(await screen.findByText('Failed to remove passkey')).toBeInTheDocument()
+    expect(mockAdopt).not.toHaveBeenCalled()
   })
 
   // EVERY successful Finish, whether or not it echoed a row. The success
   // message is unconditional, and the cached count is what ElevateForm reads to
-  // decide whether to offer the passkey factor -- so a refresh that sat inside
+  // decide whether to offer the passkey factor -- so an update that sat inside
   // `if (finish.passkey)` left an account one passkey short of its own truth
   // and hid a factor it holds.
-  it('re-reads the cached account when the Finish echoes no passkey', async () => {
+  it('adopts the account when the Finish echoes no passkey', async () => {
     mockFinishPasskeyRegistration.mockResolvedValue({})
 
     render(() => <AccountPasskeys />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
-    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockAdopt).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
 
     expect(await screen.findByText('Passkey added.')).toBeInTheDocument()
-    expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+    expect(mockAdopt).toHaveBeenCalledTimes(1)
   })
 
-  it('does not re-read the cached account after a rename', async () => {
+  it('does not touch the cached account after a rename', async () => {
     render(() => <AccountPasskeys />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
 
@@ -362,7 +466,7 @@ describe('AccountPasskeys', () => {
       expect(mockRenamePasskey).toHaveBeenCalled()
     })
     // A rename moves neither the count nor passwordSet.
-    expect(mockRefreshUser).not.toHaveBeenCalled()
+    expect(mockOpenUserAdoption).not.toHaveBeenCalled()
   })
 })
 
@@ -391,7 +495,8 @@ describe('AccountPasskeys on a page that cannot run a ceremony', () => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     setElevationPrompter(null)
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({ passkeys: [], rpId: 'localhost' })
   })
@@ -520,7 +625,8 @@ describe('AccountPasskeys opens its dialogs on the click', () => {
     })
     vi.clearAllMocks()
     resetSystemInfoMock()
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
       passkeys: [
@@ -533,8 +639,10 @@ describe('AccountPasskeys opens its dialogs on the click', () => {
       ],
       rpId: 'localhost',
     })
-    mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
-    mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
+    mockBeginPasskeyRegistration.mockResolvedValue({
+      challenge: { sessionId: 'sess-1', optionsJson: '{}' },
+    })
+    mockRegisterForChallenge.mockResolvedValue({ sessionId: 'sess-1', credentialJson: '{"id":"cred-new"}' })
     mockFinishPasskeyRegistration.mockResolvedValue({
       passkey: {
         id: 'pk-2',

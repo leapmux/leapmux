@@ -18,6 +18,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
@@ -448,7 +449,7 @@ func TestReadFile_CarriesModTime(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, repeatedByte(4096, 'a'), 0o644))
 		require.NoError(t, os.Chtimes(path, want, want))
 
-		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 			Path:                path,
 			Limit:               limit,
 			MetaOnlyIfTruncated: metaOnly,
@@ -476,7 +477,7 @@ func TestReadFile_CarriesModTime(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte("x"), 0o644))
 		require.NoError(t, os.Chtimes(path, want, want))
 
-		dispatch(d, "StatFile", &leapmuxv1.StatFileRequest{Path: path}, w)
+		dispatch(d, leapmuxv1connect.WorkerFileServiceStatFileProcedure, &leapmuxv1.StatFileRequest{Path: path}, w)
 		require.Len(t, w.responses, 1)
 		var statResp leapmuxv1.StatFileResponse
 		require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &statResp))
@@ -496,7 +497,7 @@ func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
 		const totalSize = 4096
 		require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'a'), 0o644))
 
-		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 			Path:                path,
 			Limit:               1024,
 			MetaOnlyIfTruncated: true,
@@ -518,7 +519,7 @@ func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
 		payload := repeatedByte(100, 'x')
 		require.NoError(t, os.WriteFile(path, payload, 0o644))
 
-		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 			Path:                path,
 			Limit:               1024,
 			MetaOnlyIfTruncated: true,
@@ -541,7 +542,7 @@ func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
 		const limit = 1024
 		require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'b'), 0o644))
 
-		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 			Path:  path,
 			Limit: limit,
 		}, w)
@@ -564,7 +565,7 @@ func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
 
 		// offset + limit = 4096 = totalSize, so the read window covers the
 		// whole file and the meta-only short-circuit must NOT fire.
-		dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+		dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 			Path:                path,
 			Offset:              3072,
 			Limit:               1024,
@@ -619,7 +620,7 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 	require.NoError(t, f.Truncate(totalSize))
 	require.NoError(t, f.Close())
 
-	dispatch(d, "ReadFile", &leapmuxv1.ReadFileRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
 		Path: path,
 		// Far above the ceiling, and above the file: without the clamp
 		// offset+limit exceeds total_size, so nothing looks truncated.
@@ -766,7 +767,7 @@ func TestListFilesystemRoots(t *testing.T) {
 	t.Parallel()
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListFilesystemRoots", &leapmuxv1.ListFilesystemRootsRequest{}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, &leapmuxv1.ListFilesystemRootsRequest{}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 
@@ -792,7 +793,7 @@ func TestListFilesystemRoots_RootsAreListable(t *testing.T) {
 	t.Parallel()
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListFilesystemRoots", &leapmuxv1.ListFilesystemRootsRequest{}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure, &leapmuxv1.ListFilesystemRootsRequest{}, w)
 	require.Len(t, w.responses, 1)
 	var roots leapmuxv1.ListFilesystemRootsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &roots))
@@ -800,7 +801,7 @@ func TestListFilesystemRoots_RootsAreListable(t *testing.T) {
 	require.NotEmpty(t, roots.GetRoots())
 	for _, root := range roots.GetRoots() {
 		lw := &testResponseWriter{channelID: testChannelID}
-		dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: root, DirsOnly: true}, lw)
+		dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: root, DirsOnly: true}, lw)
 
 		// One outcome or the other, never neither. Without this the loop below
 		// is vacuous for an unregistered handler, an owner gate that refused
@@ -1045,7 +1046,7 @@ func TestListDirectory_SingleListingWithoutFromRoot(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "a", "b"), 0o755))
 
 	root := pathutil.Canonicalize(svc.HomeDir)
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path: filepath.Join(root, "a"),
 	}, w)
 
@@ -1058,7 +1059,7 @@ func TestListDirectory_ChainIsOutermostFirst(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "a", "b", "c"), 0o755))
 
 	root := pathutil.Canonicalize(svc.HomeDir)
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a", "b", "c"),
 		FromRoot: root,
 	}, w)
@@ -1076,7 +1077,7 @@ func TestListDirectory_ChainOfOneWhenFromRootEqualsPath(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	root := pathutil.Canonicalize(svc.HomeDir)
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: root, FromRoot: root}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: root, FromRoot: root}, w)
 
 	assert.Equal(t, []string{root}, listingPaths(t, w))
 }
@@ -1088,7 +1089,7 @@ func TestListDirectory_ChainRejectsAFromRootThatIsNotAnAncestor(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "b"), 0o755))
 	root := pathutil.Canonicalize(svc.HomeDir)
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a"),
 		FromRoot: filepath.Join(root, "b"),
 	}, w)
@@ -1108,7 +1109,7 @@ func TestListDirectory_ChainRejectsASiblingWithASharedNamePrefix(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(svc.HomeDir, "foobar"), 0o755))
 	root := pathutil.Canonicalize(svc.HomeDir)
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "foobar"),
 		FromRoot: filepath.Join(root, "foo"),
 	}, w)
@@ -1131,7 +1132,7 @@ func TestListDirectory_ChainAcceptsASymlinkedFromRoot(t *testing.T) {
 	link := filepath.Join(svc.HomeDir, "link")
 	require.NoError(t, os.Symlink(real, link))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(link, "a"),
 		FromRoot: link,
 	}, w)
@@ -1151,7 +1152,7 @@ func TestListDirectory_ChainEndsAtTheParentOfANonDirectory(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644))
 	root := pathutil.Canonicalize(svc.HomeDir)
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a", "b", "f.txt"),
 		FromRoot: root,
 	}, w)
@@ -1172,7 +1173,7 @@ func TestListDirectory_WithoutFromRootAFileIsStillAnError(t *testing.T) {
 	path := filepath.Join(svc.HomeDir, "f.txt")
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o644))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: path}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: path}, w)
 
 	require.Len(t, w.errors, 1)
 	assert.Empty(t, w.responses)
@@ -1192,7 +1193,7 @@ func TestListDirectory_ChainStopsAtTheListingCap(t *testing.T) {
 	}
 	require.NoError(t, os.MkdirAll(deep, 0o755))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
 
 	paths := listingPaths(t, w)
 	assert.Len(t, paths, maxChainListings)
@@ -1219,7 +1220,7 @@ func TestListDirectory_ChainStopsAtThePayloadBudget(t *testing.T) {
 		}
 	}
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: deep, FromRoot: root}, w)
 
 	paths := listingPaths(t, w)
 	require.NotEmpty(t, paths)
@@ -1247,7 +1248,7 @@ func TestListDirectory_ChainFromTheFilesystemRoot(t *testing.T) {
 		root = filepath.VolumeName(target) + `\`
 	}
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     target,
 		FromRoot: root,
 		DirsOnly: true,
@@ -1275,7 +1276,7 @@ func TestListDirectory_ChainRefusesAnUnsanitizableFromRoot(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := &testResponseWriter{channelID: testChannelID}
-			dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+			dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 				Path:     target,
 				FromRoot: fromRoot,
 			}, w)
@@ -1287,7 +1288,7 @@ func TestListDirectory_ChainRefusesAnUnsanitizableFromRoot(t *testing.T) {
 			// The SAME spelling in `path` answers the same way. This is the
 			// property the split codes broke.
 			pw := &testResponseWriter{channelID: testChannelID}
-			dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: fromRoot}, pw)
+			dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: fromRoot}, pw)
 			require.Len(t, pw.errors, 1)
 			assert.Equal(t, w.errors[0].code, pw.errors[0].code,
 				"one rejected spelling must not carry two status codes")
@@ -1305,7 +1306,7 @@ func TestListDirectory_ChainRejectsAValidFromRootThatIsNotAnAncestor(t *testing.
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "b"), 0o755))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a"),
 		FromRoot: filepath.Join(root, "b"),
 	}, w)
@@ -1333,7 +1334,7 @@ func TestListDirectory_ChainStopsAtAnUnreadableDirectory(t *testing.T) {
 	// Restored so t.TempDir's own cleanup can remove the tree.
 	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(blocked, "inner"),
 		FromRoot: root,
 	}, w)
@@ -1385,7 +1386,7 @@ func TestListDirectory_ChainReportsTheUnreadableDirectory(t *testing.T) {
 	require.NoError(t, os.Chmod(blocked, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(blocked, "inner"),
 		FromRoot: root,
 	}, w)
@@ -1408,7 +1409,7 @@ func TestListDirectory_ACompleteChainReportsNoUnreadableDirectory(t *testing.T) 
 	root := pathutil.Canonicalize(svc.HomeDir)
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o755))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a", "b"),
 		FromRoot: root,
 	}, w)
@@ -1436,7 +1437,7 @@ func TestListDirectory_ChainFailsWhenTheRootIsUnreadable(t *testing.T) {
 	require.NoError(t, os.Chmod(root, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "inner"),
 		FromRoot: root,
 	}, w)
@@ -1461,7 +1462,7 @@ func TestListDirectory_CarriesTruncationOnTheListing(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.txt", i)), []byte("x"), 0o644))
 	}
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: dir}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: dir}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -1489,7 +1490,7 @@ func TestListDirectory_ChainCarriesTruncationOnADeeperListing(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.txt", i)), []byte("x"), 0o644))
 	}
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{Path: dir, FromRoot: root}, w)
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{Path: dir, FromRoot: root}, w)
 
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
@@ -1516,7 +1517,7 @@ func TestListDirectory_ChainAppliesMaxDepthToEveryListing(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b", "c"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "other"), 0o755))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(root, "a", "b", "c"),
 		FromRoot: root,
 		MaxDepth: 5,
@@ -1569,7 +1570,7 @@ func TestListDirectory_ChainAppliesDirsOnlyToEveryListing(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "root-file.txt"), []byte("x"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(mid, "mid-file.txt"), []byte("x"), 0o644))
 
-	dispatch(d, "ListDirectory", &leapmuxv1.ListDirectoryRequest{
+	dispatch(d, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure, &leapmuxv1.ListDirectoryRequest{
 		Path:     filepath.Join(mid, "leaf"),
 		FromRoot: root,
 		DirsOnly: true,

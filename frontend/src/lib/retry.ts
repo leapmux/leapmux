@@ -194,3 +194,28 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
     attemptCount: key => attempts.get(key) ?? 0,
   }
 }
+
+/**
+ * How long a stream must stay open before its end starts a new reconnect streak.
+ *
+ * Keep this short. The outage toast of the watch stream reads the same streak, so
+ * a long window would announce an outage for a phone that reconnects a few times
+ * in a row.
+ */
+export const STREAM_HEALTHY_AFTER_MS = 10_000
+
+/**
+ * Whether a stream that opened at `openedAt` lasted long enough to prove healthy.
+ * `undefined` means that the stream never opened. Ask this when the stream ends,
+ * and reset the reconnect streak only on a yes.
+ *
+ * Only time can tell here, for every stream alike. Neither an open nor a decoded
+ * frame proves anything: a worker that replays a frame this client cannot decode
+ * delivers the good frames in front of it on each attempt, so a streak that a
+ * good frame reset would reconnect at the minimum delay for the life of the page.
+ * A stream that fails late in a long replay can still pass this test, but it
+ * then reconnects at most once per window.
+ */
+export function streamProvedHealthy(openedAt: number | undefined): boolean {
+  return openedAt !== undefined && Date.now() - openedAt >= STREAM_HEALTHY_AFTER_MS
+}

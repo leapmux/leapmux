@@ -1,3 +1,4 @@
+import type { DescMethod } from '@bufbuild/protobuf'
 import type { Locator, Page, TestInfo } from '@playwright/test'
 import type { AgentInfo, ListAgentMessagesResponse } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
@@ -22,7 +23,7 @@ const calls = vi.hoisted(() => ({
   selectedId: 'original-worker-agent' as string | null,
   io: undefined as NativeToolOutputFileIO | undefined,
   agent: vi.fn<(context: unknown, id: string) => Promise<AgentInfo | null>>(),
-  worker: vi.fn<(id: string, method: string, requestSchema: unknown, responseSchema: unknown, request: unknown) => Promise<ListAgentMessagesResponse>>(),
+  worker: vi.fn<(id: string, method: DescMethod, request: unknown) => Promise<ListAgentMessagesResponse>>(),
   lifecycle: vi.fn<typeof import('../helpers/nativeLifecycle')['exerciseSessionResume']>(),
 }))
 
@@ -274,8 +275,8 @@ describe('captureGeminiResumeEvidence', () => {
     expect(object(result.workerRead).state).toBe('complete-observation')
     expect(objects(result.messages).map(item => item.seq)).toEqual(['1', '9007199254740993'])
     expect(calls.agent).toHaveBeenCalledTimes(2)
-    expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: f.agent.id, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({
+    expect(calls.worker.mock.calls[0]?.[2]).toEqual({ agentId: f.agent.id, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[2]).toEqual({
       agentId: f.agent.id,
       anchor: MessagePageAnchor.AFTER,
       cursorSeq: 1n,

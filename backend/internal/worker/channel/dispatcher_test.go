@@ -9,8 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -49,12 +51,10 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 		method string
 	}
 
-	d.Register("test.method", func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+	d.Handle("test.method", Registration{}, func(_ context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		calledWith.userID = caller.UserID
 		calledWith.method = req.GetMethod()
-		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{
-			Payload: []byte("ok"),
-		})
+		_ = sender.SendResponse(channelwire.NewPayloadResponse([]byte("ok")))
 	})
 
 	workerSession, initiatorSession := setupTestSessions(t)
@@ -80,7 +80,6 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	require.Equal(t, uint32(1), chMsg.GetProtocolVersion())
 
 	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
 	require.NoError(t, err)
@@ -99,7 +98,7 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 
 	d := NewDispatcher()
 
-	d.Register("panicking", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
+	d.Handle("panicking", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		panic("test panic in handler")
 	})
 
@@ -136,16 +135,16 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 	respKind, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_Response)
 	require.True(t, ok, "expected InnerMessage_Response, got %T", envelope.GetKind())
 	resp := respKind.Response
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(13), resp.GetErrorCode()) // INTERNAL
-	assert.Contains(t, resp.GetErrorMessage(), "internal error")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(13), resp.GetError().GetCode()) // INTERNAL
+	assert.Contains(t, resp.GetError().GetMessage(), "internal error")
 }
 
 func TestDispatcher_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
-	d.Register("known", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
+	d.Handle("known", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
 
 	workerSession, initiatorSession := setupTestSessions(t)
 
@@ -167,7 +166,6 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 
 	chMsg := msgs[0].GetChannelMessageResp()
 	require.NotNil(t, chMsg)
-	require.Equal(t, uint32(1), chMsg.GetProtocolVersion())
 
 	respPt, err := initiatorSession.Decrypt(chMsg.GetCiphertext())
 	require.NoError(t, err)
@@ -177,9 +175,9 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 	respKind, ok := envelope.GetKind().(*leapmuxv1.InnerMessage_Response)
 	require.True(t, ok, "expected InnerMessage_Response, got %T", envelope.GetKind())
 	resp := respKind.Response
-	assert.True(t, resp.GetIsError())
-	assert.Equal(t, int32(12), resp.GetErrorCode())
-	assert.Contains(t, resp.GetErrorMessage(), "unknown")
+	assert.NotNil(t, resp.GetError())
+	assert.Equal(t, int32(12), resp.GetError().GetCode())
+	assert.Contains(t, resp.GetError().GetMessage(), "unknown")
 }
 
 // TestDispatcher_CtxPropagated pins the dispatcher → handler ctx hand-off
@@ -195,7 +193,7 @@ func TestDispatcher_CtxPropagated(t *testing.T) {
 	d := NewDispatcher()
 
 	gotCtxC := make(chan context.Context, 1)
-	d.Register("inspect-ctx", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+	d.Handle("inspect-ctx", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		gotCtxC <- ctx
 		_ = sender.SendResponse(&leapmuxv1.InnerRpcResponse{})
 	})
@@ -239,7 +237,7 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 	d := NewDispatcher()
 
 	seenC := make(chan bool, 1)
-	d.Register("watch", func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+	d.Handle("watch", Registration{}, func(ctx context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		select {
 		case <-ctx.Done():
 			seenC <- true
@@ -265,10 +263,213 @@ func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
 	require.True(t, <-seenC, "handler must see ctx.Done() synchronously when parent is pre-cancelled")
 }
 
-// stubWriter is a minimal ResponseWriter for DispatchAsync tests that
-// don't care about encrypted round-trips. Captures send calls so a
-// future assertion can verify response shape if needed; today the
-// tests below only need the writer to satisfy the interface.
+// streamRecordingWriter records the stream frames a handler sends.
+type streamRecordingWriter struct {
+	stubWriter
+	mu     sync.Mutex
+	frames []*leapmuxv1.InnerStreamMessage
+}
+
+func (w *streamRecordingWriter) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.frames = append(w.frames, msg)
+	return nil
+}
+
+// A streaming method answers a handler panic in the stream's own shape: one
+// frame that fails the stream with Internal and ends it.
+func TestDispatcher_PanicInAStreamHandlerSendsAStreamErrorFrame(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	d.Handle("panicking-stream", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		panic("test panic in a stream handler")
+	})
+
+	w := &streamRecordingWriter{}
+	require.NotPanics(t, func() {
+		d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "panicking-stream"}, w)
+	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.frames, 1)
+	frame := w.frames[0]
+	require.NotNil(t, frame.GetError())
+	assert.Equal(t, int32(codes.Internal), frame.GetError().GetCode())
+	assert.Equal(t, "internal error", frame.GetError().GetMessage())
+	assert.True(t, frame.GetEnd())
+	assert.Zero(t, w.sent.Load(), "a streaming method answers in-band, never with a unary error")
+}
+
+// The registration decides the reply shape, so a streaming handler that answers
+// with SendError cannot leave the client holding a stream with no End.
+func TestDispatcher_StreamingHandlerSendErrorArrivesAsOneStreamFrame(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	d.Handle("stream", Registration{Streaming: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+		_ = sender.SendError(int32(codes.NotFound), "no such stream")
+	})
+
+	w := &streamRecordingWriter{}
+	d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "stream"}, w)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.frames, 1)
+	frame := w.frames[0]
+	require.NotNil(t, frame.GetError())
+	assert.Equal(t, int32(codes.NotFound), frame.GetError().GetCode())
+	assert.Equal(t, "no such stream", frame.GetError().GetMessage())
+	assert.True(t, frame.GetEnd(), "the error frame must end the stream")
+	assert.Zero(t, w.sent.Load(), "a streaming method never answers with a unary error")
+}
+
+// A handler may retain its writer past return, as WatchEvents does, so the
+// retained writer must keep the declared shape after the dispatcher returned.
+func TestDispatcher_RetainedStreamWriterKeepsItsShape(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	var retained ResponseWriter
+	d.Handle("stream", Registration{Streaming: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+		retained = sender
+	})
+
+	w := &streamRecordingWriter{}
+	d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "stream"}, w)
+	require.NotNil(t, retained)
+	require.NoError(t, retained.SendError(int32(codes.Internal), "late failure"))
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.frames, 1)
+	assert.Equal(t, int32(codes.Internal), w.frames[0].GetError().GetCode())
+	assert.True(t, w.frames[0].GetEnd())
+	assert.Zero(t, w.sent.Load())
+}
+
+// The shape changes SendError alone: a stream's data frames, its writer's
+// metadata and its stream binding still reach the transport's writer.
+func TestDispatcher_StreamWriterForwardsEverythingButSendError(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	inner := &streamMetadataWriter{}
+	d.Handle("stream", Registration{Streaming: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+		assert.Equal(t, "channel-1", sender.ChannelID())
+		assert.Equal(t, 4096, sender.MaxPayloadBudget())
+		_, ok := sender.BindStream(nil)
+		assert.True(t, ok)
+		assert.NoError(t, sender.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("data")}))
+	})
+
+	d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "stream"}, inner)
+
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	require.Len(t, inner.frames, 1)
+	assert.Equal(t, []byte("data"), inner.frames[0].GetPayload())
+	assert.Nil(t, inner.frames[0].GetError())
+	assert.False(t, inner.frames[0].GetEnd())
+	assert.Equal(t, 1, inner.binds)
+}
+
+// streamMetadataWriter is a streamRecordingWriter that also states a channel and
+// counts its stream bindings.
+type streamMetadataWriter struct {
+	streamRecordingWriter
+	binds int
+}
+
+func (*streamMetadataWriter) ChannelID() string     { return "channel-1" }
+func (*streamMetadataWriter) MaxPayloadBudget() int { return 4096 }
+func (w *streamMetadataWriter) BindStream(StreamController) (func(), bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.binds++
+	return func() {}, true
+}
+
+// unpreparableInlineWriter records stream frames, can never prepare a stream,
+// and offers no error queue, so the dispatcher must send its refusal inline.
+type unpreparableInlineWriter struct{ streamRecordingWriter }
+
+func (*unpreparableInlineWriter) prepareStream() (func(), bool) { return nil, false }
+
+// A writer with no error queue still receives the refusal of a stream that
+// cannot be prepared, inline and in the stream's shape, instead of no reply at
+// all.
+func TestDispatcher_RefusesAStreamItCannotPrepareInlineWithoutAQueue(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	var invoked atomic.Bool
+	d.Handle("stream", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		invoked.Store(true)
+	})
+	w := &unpreparableInlineWriter{}
+	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "stream"}, w)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Len(t, w.frames, 1)
+	frame := w.frames[0]
+	require.NotNil(t, frame.GetError())
+	assert.Equal(t, int32(codes.FailedPrecondition), frame.GetError().GetCode())
+	assert.True(t, frame.GetEnd())
+	assert.Zero(t, w.sent.Load(), "a streaming method is never refused with a unary error")
+	assert.False(t, invoked.Load(), "a stream that cannot be prepared never reaches its handler")
+}
+
+// A second registration for a method must fail loudly. A silent overwrite would
+// replace the first handler, with its owner gate and its reply shape, and
+// nothing would show it. The check ignores the Registration, so a method
+// registered with one of them is refused with each of the others.
+func TestDispatcher_HandlePanicsOnADuplicateMethod(t *testing.T) {
+	t.Parallel()
+
+	registrations := map[string]Registration{
+		"plain":              {},
+		"tracked":            {Tracked: true},
+		"streaming":          {Streaming: true},
+		"tracked, streaming": {Tracked: true, Streaming: true},
+	}
+	const method = "/leapmux.v1.WorkerSystemService/Ping"
+	for firstName, first := range registrations {
+		for secondName, second := range registrations {
+			t.Run(firstName+" then "+secondName, func(t *testing.T) {
+				d := NewDispatcher()
+				var firstCalls atomic.Int32
+				d.Handle(method, first, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+					firstCalls.Add(1)
+				})
+
+				assert.PanicsWithValue(t, "duplicate inner RPC handler: "+method, func() {
+					d.Handle(method, second, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+						t.Error("the refused handler must never run")
+					})
+				})
+
+				// The refusal left the first handler in place.
+				d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+					&leapmuxv1.InnerRpcRequest{Method: method}, &stubWriter{})
+				assert.Equal(t, int32(1), firstCalls.Load(), "the first handler still serves the method")
+				assert.Equal(t, []string{method}, d.Methods())
+			})
+		}
+	}
+}
+
+// stubWriter is a minimal ResponseWriter for the tests that do not need an
+// encrypted round trip. It counts the calls that send a reply.
 type stubWriter struct{ sent atomic.Int32 }
 
 func (s *stubWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error {
@@ -293,7 +494,7 @@ func (*stubWriter) BindStream(StreamController) (func(), bool) {
 }
 
 // TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine pins the
-// happens-before invariant that motivated the RegisterTracked /
+// happens-before invariant that motivated the Registration.Tracked /
 // BindCleanup / DispatchAsync trio. Add(1) MUST execute before
 // DispatchAsync returns, so a caller that immediately calls Wait() on
 // the bound WaitGroup is forced to wait for the handler to finish.
@@ -312,7 +513,7 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 	// pre-completion WaitGroup state from outside.
 	release := make(chan struct{})
 	handlerEntered := make(chan struct{})
-	d.RegisterTracked("slow-mutation", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
+	d.Handle("slow-mutation", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		close(handlerEntered)
 		<-release
 	})
@@ -356,8 +557,8 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 }
 
 // TestDispatcher_DispatchAsync_UntrackedNoOp pins that untracked
-// methods don't touch the bound WaitGroup, so plain Register stays
-// fire-and-forget on Shutdown for read-only probes.
+// methods don't touch the bound WaitGroup, so a handler registered without
+// Tracked stays fire-and-forget on Shutdown for read-only probes.
 func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 	t.Parallel()
 
@@ -366,14 +567,14 @@ func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 	d.BindCleanup(&wg)
 
 	done := make(chan struct{})
-	d.Register("readonly", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
+	d.Handle("readonly", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		close(done)
 	})
 
 	w := &stubWriter{}
 	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")), &leapmuxv1.InnerRpcRequest{Method: "readonly"}, w)
 
-	// wg.Wait() must return immediately — Register (untracked) does
+	// wg.Wait() must return immediately — an untracked registration does
 	// NOT Add(1).
 	waitDone := make(chan struct{})
 	go func() {
@@ -405,8 +606,8 @@ func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
 
-	d.RegisterTracked("ok", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
-	d.RegisterTracked("boom", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
+	d.Handle("ok", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
+	d.Handle("boom", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
 		panic("handler panic")
 	})
 
@@ -466,17 +667,18 @@ func TestDispatcher_DispatchAsync_UnknownMethod(t *testing.T) {
 	require.Equal(t, int32(1), w.sent.Load(), "DispatchAsync must still send a response for an unknown method")
 }
 
-// TestDispatcher_InvokePassesWriterThrough pins that invoke hands the
-// ResponseWriter to the handler by identity — no wrapping pass-through
-// layer between DispatchWith and the handler. Reintroducing a wrapper
-// (e.g. the deleted Sender) would allocate per dispatch and break Same.
+// TestDispatcher_InvokePassesWriterThrough pins that invoke hands a unary
+// method's ResponseWriter to the handler by identity — no wrapping pass-through
+// layer between DispatchWith and the handler. Only a streaming method needs the
+// reply shape of shapedWriter. Reintroducing a wrapper for a unary method (e.g.
+// the deleted Sender) would allocate per dispatch and break Same.
 func TestDispatcher_InvokePassesWriterThrough(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
 
 	var got ResponseWriter
-	d.Register("identity", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+	d.Handle("identity", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		got = sender
 	})
 
@@ -487,14 +689,14 @@ func TestDispatcher_InvokePassesWriterThrough(t *testing.T) {
 
 // TestDispatcher_AsyncPassesWriterThrough is the DispatchAsync twin of
 // TestDispatcher_InvokePassesWriterThrough — both entry points share
-// invoke, so a future wrap must fail both paths.
+// invoke, so a future wrap of a unary writer must fail both paths.
 func TestDispatcher_AsyncPassesWriterThrough(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
 
 	gotC := make(chan ResponseWriter, 1)
-	d.Register("identity", func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
+	d.Handle("identity", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, sender ResponseWriter) {
 		gotC <- sender
 	})
 

@@ -105,11 +105,13 @@ type Config[T any] struct {
 	// the wall-clock stall bound. The clock restarts on idle: this socket may
 	// have no keepalive, so idle time is not stalled time.
 	MaxStall time.Duration
-	// OnGiveUp cancels the connection. Called at most once, when the writer
-	// gives up. The reason is separate from the error so a caller can count
-	// give-ups by cause without parsing a message: "this client was slow" and
-	// "the Hub was out of shared queue memory" look alike in a log line and
-	// have completely different fixes.
+	// OnGiveUp ends the connection. Called at most once, when the writer gives
+	// up. A caller may end it by cancelling it, or, when the write failed because
+	// the peer already ended the stream, by leaving that stream to its reader,
+	// which reports the peer's status. The reason is separate from the error so a
+	// caller can count give-ups by cause without parsing a message: "this client
+	// was slow" and "the Hub was out of shared queue memory" look alike in a log
+	// line and have completely different fixes.
 	OnGiveUp func(GiveUpReason, error)
 	// OnDiscard reports frames/bytes discarded on teardown. Optional.
 	OnDiscard func(frames int, bytes int64)
@@ -1221,7 +1223,9 @@ func (w *Writer[T]) QueuedLen() int {
 	return len(w.queue)
 }
 
-// IsClosed reports whether Close (or an over-budget kill) has run. For tests.
+// IsClosed reports whether Close (or an over-budget kill) has run. A sender
+// uses it to tell a writer that is gone from one whose reserve is full, because
+// a failed enqueue on a closed writer needs no recovery.
 func (w *Writer[T]) IsClosed() bool {
 	return w.isClosed()
 }

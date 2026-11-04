@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,15 +20,21 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/util/clockjump"
 )
 
 // RunConfig holds configuration for running the worker as a library.
 type RunConfig struct {
 	HubURL string // Hub server URL: http[s]://host:port, unix:<socket-path>, or npipe:<name>
+	// HubEndpoint, when non-nil, replaces HubURL. A caller that registered this
+	// worker passes the endpoint it registered through, so registration, the
+	// Connect stream and every hub call a spawned agent makes share one
+	// connection pool per protocol and one h2c verdict.
+	HubEndpoint *hubtransport.Endpoint
 
 	DataDir              string                      // Directory for persistent state
-	AuthToken            string                      // Pre-provisioned auth token (skip registration)
+	AuthToken            string                      // Pre-provisioned auth token Run connects with
 	CompositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
 	WorkerID             string                      // Worker ID (from registration)
 	Name                 string                      // Worker display name (from LEAPMUX_WORKER_NAME, defaults to hostname)
@@ -44,8 +51,8 @@ type RunConfig struct {
 	AgentStartupConcurrency int
 	EncryptionMode          leapmuxv1.EncryptionMode // Encryption mode (classic, post-quantum)
 	UseLoginShell           bool                     // Wrap claude invocation in user's login shell
-	// RegisteredBy seeds the worker's owner, which gates every machine-scoped RPC
-	// family (tunnels, file, git, sysinfo) -- see service.requireWorkerOwner. It is a
+	// RegisteredBy seeds the worker's owner, which restricts every machine-scoped
+	// RPC family (tunnels, file, git, sysinfo) -- see service.ownerOnlyRegistrar. It is a
 	// DB-sourced seed for the in-process launchers (solo reads it from
 	// workers.registered_by); the Hub's connect-time WorkerIdentity overrides it, and
 	// is the authority. Leave it empty and the Hub still establishes it.
@@ -62,17 +69,58 @@ type RunConfig struct {
 	// most once, on the shutdown path only; a Run that fails before shutdown
 	// never calls it, so callers must not treat it as a required signal.
 	Drained func()
+	// OnDeregister, when non-nil, is called when the Hub tells this worker to
+	// stop for good: a deregistration notification on the stream, or a Connect
+	// refusal that says the worker was deleted. It runs before the shutdown, so
+	// a caller that must forget this worker does so before anything can stop it.
+	// Run then shuts down, calls Drained and returns nil, with ctx still live.
+	OnDeregister func()
 }
 
-// Run starts the worker and blocks until ctx is cancelled.
-// If AuthToken is set, registration is skipped and the worker connects directly.
+// Run starts the worker and blocks until ctx is cancelled, the Hub stops this
+// worker for good, or a local failure ends it, such as a database that does not
+// open. The Hub stops a worker by deregistering it, reporting it deleted, or
+// refusing its keys. A nil return with ctx still live means that the Hub deleted
+// or deregistered the worker. A refusal of the keys returns an error that wraps
+// hub.ErrKeysRefused.
+//
+// Run can return while ctx is still live, so nothing it starts depends on ctx to
+// end. Wiring.Shutdown stops and waits for every loop that reads the database
+// before Run closes it: the reconciler, the resume sweep and the periodic loops.
+// Run also waits for its own goroutine that watches ctx. Everything else is only
+// cancelled, and ends shortly after Run returns: the delegation janitor, the
+// clock-jump detector and the goroutines of the Hub connection.
+//
+// It requires a keypair with a complete key set, an auth token and an
+// encryption mode. The Hub pins the keys a Worker registers with and refuses a
+// hello that presents others, so a Worker with no usable keypair could never
+// connect. An empty token, and an unspecified encryption mode, are refused for
+// ever. So Run states all three as errors instead of starting a process that
+// cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
+// solo, dev and the desktop app all reach, and the `leapmux worker` command.
 func Run(ctx context.Context, cfg RunConfig) error {
+	// workerkeys.Of refuses a nil keypair too. Checking here, before anything
+	// opens, also keeps bootstrap.Wire from panicking on a keypair it cannot
+	// describe, on a goroutine that solo does not recover.
+	if _, err := workerkeys.Of(cfg.CompositeKey); err != nil {
+		return fmt.Errorf("worker: RunConfig.CompositeKey must hold a complete key set, because the Hub pins the keys a Worker registers with: %w", err)
+	}
+	if cfg.AuthToken == "" {
+		return errors.New("worker: RunConfig.AuthToken is required: the Hub refuses a Worker with no auth token")
+	}
+	if cfg.EncryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+		return errors.New("worker: RunConfig.EncryptionMode is required: the Hub refuses a Worker hello with no encryption mode")
+	}
+
 	// Report the periods in which this process did not run. A standalone Worker
 	// suspends with its laptop exactly as the desktop app does, and wakes into
 	// closed streams and a Hub that already dropped its registration; without
 	// this each of those reads as its own failure. Process-wide and idempotent,
-	// so a solo process that also runs a Hub reports each pause once.
-	clockjump.StartLoop(ctx)
+	// so a solo process that also runs a Hub reports each pause once. Its context
+	// ends with Run, which can return while ctx is live.
+	clockCtx, cancelClock := context.WithCancel(ctx)
+	defer cancelClock()
+	clockjump.StartLoop(clockCtx)
 
 	// Open the Worker-local database for persistent state.
 	dbPath := filepath.Join(cfg.DataDir, "worker.db")
@@ -97,76 +145,77 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	// ONE endpoint for the whole process: the worker's own Connect stream and
 	// every hub call a spawned agent makes then share one connection pool per
 	// protocol and one h2c verdict.
-	hubEndpoint, err := hubtransport.New(cfg.HubURL)
-	if err != nil {
-		return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
+	hubEndpoint := cfg.HubEndpoint
+	if hubEndpoint == nil {
+		hubEndpoint, err = hubtransport.New(cfg.HubURL)
+		if err != nil {
+			return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
+		}
 	}
 	client := hub.New(hubEndpoint)
 	defer client.Stop()
+
+	homeDir, _ := os.UserHomeDir()
+
+	wakeLockTracker := wakelock.NewActivityTracker()
+	defer wakeLockTracker.Close()
+
+	workerName := cfg.Name
+	switch {
+	case workerName != "":
+	case os.Getenv("LEAPMUX_WORKER_NAME") != "":
+		workerName = os.Getenv("LEAPMUX_WORKER_NAME")
+	default:
+		workerName, _ = os.Hostname()
+	}
+
+	// wireCtx limits what Wire starts: the delegation janitor, the cross-worker
+	// client and the background loops, which runShutdown stops first. It ends with
+	// ctx, and Run also ends it after its teardown, because Run can return while
+	// ctx is live, when the Hub stops this worker for good. Deferred before
+	// runShutdown, so it ends after the drain.
+	wireCtx, cancelWire := context.WithCancel(ctx)
+	defer cancelWire()
+
+	wiring := bootstrap.Wire(bootstrap.Params{
+		Ctx:                  wireCtx,
+		Client:               client,
+		DB:                   sqlDB,
+		CompositeKey:         cfg.CompositeKey,
+		EncryptionMode:       cfg.EncryptionMode,
+		MaxIncompleteChunked: cfg.MaxIncompleteChunked,
+		MaxMessageSize:       cfg.MaxMessageSize,
+		WorkerID:             cfg.WorkerID,
+		Name:                 workerName,
+		HomeDir:              homeDir,
+		DataDir:              cfg.DataDir,
+		AuthToken:            cfg.AuthToken,
+		SeedRegisteredBy:     cfg.RegisteredBy,
+		AgentStartupTimeout:  cfg.AgentStartupTimeout,
+		APITimeout:           cfg.APITimeout,
+		// 0 (the default) lets the worker resolve the concurrency from this
+		// machine's core count.
+		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
+		UseLoginShell:           cfg.UseLoginShell,
+		WakeLock:                wakeLockTracker,
+	})
 
 	// runShutdown drains service state. It must run BEFORE the bidi
 	// stream is torn down, not merely before client.Stop(): Client.Connect
 	// unregisters every watcher via channelMgr.CloseAll() as it unwinds,
 	// so a Shutdown deferred behind ConnectWithReconnect broadcasts the
 	// "[Worker disconnected - Press Enter to restart]" notice to an empty
-	// registry and only reaches the database. The `leapmux worker` CLI
-	// already ordered it this way; this entry point did not, which is the
-	// same one-does-it-the-other-doesn't defect the bootstrap package
-	// exists to remove -- startup was unified, teardown was not.
+	// registry and only reaches the database. The sync.Once lets all exit paths
+	// (ctx, a deregistration, the deferred fallback) converge on one invocation.
 	var shutdownOnce sync.Once
-	runShutdown := func() {}
-
-	// Set up E2EE channel manager if composite key is provided.
-	if cfg.CompositeKey != nil {
-		homeDir, _ := os.UserHomeDir()
-
-		wakeLockTracker := wakelock.NewActivityTracker()
-		defer wakeLockTracker.Close()
-
-		workerName := cfg.Name
-		switch {
-		case workerName != "":
-		case os.Getenv("LEAPMUX_WORKER_NAME") != "":
-			workerName = os.Getenv("LEAPMUX_WORKER_NAME")
-		default:
-			workerName, _ = os.Hostname()
-		}
-
-		wiring := bootstrap.Wire(bootstrap.Params{
-			Ctx:                  ctx,
-			Client:               client,
-			DB:                   sqlDB,
-			CompositeKey:         cfg.CompositeKey,
-			EncryptionMode:       cfg.EncryptionMode,
-			MaxIncompleteChunked: cfg.MaxIncompleteChunked,
-			MaxMessageSize:       cfg.MaxMessageSize,
-			WorkerID:             cfg.WorkerID,
-			Name:                 workerName,
-			HomeDir:              homeDir,
-			DataDir:              cfg.DataDir,
-			AuthToken:            cfg.AuthToken,
-			SeedRegisteredBy:     cfg.RegisteredBy,
-			AgentStartupTimeout:  cfg.AgentStartupTimeout,
-			APITimeout:           cfg.APITimeout,
-			// 0 (the default) lets the worker resolve the concurrency from this
-			// machine's core count.
-			AgentStartupConcurrency: cfg.AgentStartupConcurrency,
-			UseLoginShell:           cfg.UseLoginShell,
-			WakeLock:                wakeLockTracker,
+	runShutdown := func() {
+		shutdownOnce.Do(func() {
+			slog.Info("draining worker state for graceful shutdown")
+			wiring.Shutdown()
+			slog.Info("worker state drained")
 		})
-
-		runShutdown = func() {
-			shutdownOnce.Do(func() {
-				wiring.Shutdown()
-			})
-		}
-		defer runShutdown()
-	} else {
-		// No composite key means no E2EE channel and therefore no service
-		// to wire, but the retention loops are about rows on disk and still
-		// have to run.
-		bootstrap.StartRetentionLoops(ctx, sqlDB, cfg.DataDir)
 	}
+	defer runShutdown()
 
 	// Detach the connect loop from ctx so cancellation reaches it only
 	// after runShutdown has finished. Watching ctx directly here instead
@@ -174,19 +223,48 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	// cancellation, and CloseAll could win.
 	runCtx, cancelRun := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRun()
-	go func() {
-		<-ctx.Done()
-		runShutdown()
-		// Announced BEFORE cancelRun, which is the whole point: everything after
-		// this line is local teardown, so a launcher waiting on this can stop
-		// the Hub as soon as the last frame is away instead of outliving a
-		// database close it has no stake in.
-		if cfg.Drained != nil {
-			cfg.Drained()
+
+	// stopGracefully is the one shutdown order of a worker that was told to
+	// stop. Announcing Drained BEFORE cancelRun is the whole point: everything
+	// after it is local teardown, so a launcher waiting on it can stop the Hub
+	// as soon as the last frame is away instead of outliving a database close it
+	// has no stake in.
+	var stopOnce sync.Once
+	stopGracefully := func() {
+		stopOnce.Do(func() {
+			runShutdown()
+			if cfg.Drained != nil {
+				cfg.Drained()
+			}
+			cancelRun()
+		})
+	}
+
+	client.OnDeregister = func() {
+		if cfg.OnDeregister != nil {
+			cfg.OnDeregister()
 		}
-		cancelRun()
+		stopGracefully()
+	}
+
+	// The goroutine that waits for ctx also ends when Run returns, and Run
+	// waits for it. Run can return while ctx is live (the Hub stopped this
+	// worker for good), and a goroutine still waiting then would hold the
+	// whole wiring until the caller's context ends, and would call Drained
+	// after Run had already torn down what Drained reports on.
+	runReturned := make(chan struct{})
+	var watcher sync.WaitGroup
+	watcher.Go(func() {
+		select {
+		case <-ctx.Done():
+			stopGracefully()
+		case <-runReturned:
+		}
+	})
+	defer func() {
+		close(runReturned)
+		watcher.Wait()
 	}()
 
-	client.ConnectWithReconnect(runCtx, cfg.AuthToken)
-	return nil
+	return client.ConnectWithReconnect(runCtx, cfg.AuthToken)
 }

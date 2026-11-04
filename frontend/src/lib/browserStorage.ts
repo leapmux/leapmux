@@ -1069,7 +1069,8 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
   // cannot install its rows over the mirror this one is keeping.
   //
   // This is not only an optimization. `AuthContext.setUser` runs on every
-  // `refreshUser`, and ten settings call sites make one -- so without this a
+  // `refreshUser` and every adopted account reply, and each settings mutation
+  // causes one -- so without this a
   // routine profile save re-reads the whole synchronous tier and rebuilds the
   // mirror from disk, discarding any write this tab issued but has not flushed.
   // The BroadcastChannel keeps the mirror current across tabs, and the sweep

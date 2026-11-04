@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/tunnel"
 )
@@ -74,7 +75,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	require.NoError(t, err)
 	// CallRPC surfaces the inner error as a Go error, so the assertion reads
 	// err rather than the response.
-	_, err = ch.CallRPC(ctx, "ReadFile", readPayload)
+	_, err = ch.CallRPC(ctx, leapmuxv1connect.WorkerFileServiceReadFileProcedure, readPayload)
 	require.Error(t, err, "the file does not exist, so the handler must say so")
 	assert.Contains(t, err.Error(), "not found",
 		"file:read must reach the handler, which then fails on its own argument")
@@ -88,7 +89,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 		TerminalId: "t-does-not-exist", Data: []byte("echo hi\n"),
 	})
 	require.NoError(t, err)
-	_, err = ch.CallRPC(ctx, "SendInput", inputPayload)
+	_, err = ch.CallRPC(ctx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, inputPayload)
 	require.Error(t, err, "terminal:write was not granted, so SendInput must be refused")
 	assert.Contains(t, err.Error(), "terminal:write",
 		"the refusal names the permission, so an app operator can ask for it")
@@ -96,7 +97,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	// The CHANNEL survives the refusal: a scope denial is one call's answer,
 	// not a transport fault. Without this the assertion above would also pass
 	// for a worker that tore the session down.
-	_, err = ch.CallRPC(ctx, "ReadFile", readPayload)
+	_, err = ch.CallRPC(ctx, leapmuxv1connect.WorkerFileServiceReadFileProcedure, readPayload)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found", "the channel stays usable after a refusal")
 
@@ -112,7 +113,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(wideCh.Close)
 
-	_, err = wideCh.CallRPC(ctx, "SendInput", inputPayload)
+	_, err = wideCh.CallRPC(ctx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, inputPayload)
 	require.Error(t, err, "the terminal id is still bogus")
 	assert.NotContains(t, err.Error(), "terminal:write",
 		"a granted credential must reach the handler and fail on its own arguments")
@@ -219,7 +220,7 @@ func TestChannelOpenReadsTheAnnouncedGrant(t *testing.T) {
 		TerminalId: "t-does-not-exist", Data: []byte("echo hi\n"),
 	})
 	require.NoError(t, err)
-	_, err = ch.CallRPC(ctx, "SendInput", inputPayload)
+	_, err = ch.CallRPC(ctx, leapmuxv1connect.WorkerTerminalServiceSendInputProcedure, inputPayload)
 	require.Error(t, err, "the terminal id is bogus")
 	assert.NotContains(t, err.Error(), "permission",
 		"an unscoped caller must be refused by nothing the scope model owns")

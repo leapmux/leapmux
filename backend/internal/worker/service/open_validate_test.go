@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -55,10 +56,9 @@ func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/ bad name", // contains space -> rejected by ValidateBranchName
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup("feature/ bad name", ""), // contains space -> rejected by ValidateBranchName
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -73,10 +73,9 @@ func TestOpenAgent_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     notARepo,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/x",
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: notARepo,
+		GitSetup:   createWorktreeSetup("feature/x", ""),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -93,10 +92,9 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/taken",
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup("feature/taken", ""),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -111,11 +109,9 @@ func TestOpenAgent_Validate_BaseBranchMissing(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:         repoDir,
-		CreateWorktree:     true,
-		WorktreeBranch:     "feature/x",
-		WorktreeBaseBranch: "does-not-exist",
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup("feature/x", "does-not-exist"),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -133,10 +129,9 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -151,9 +146,9 @@ func TestOpenAgent_Validate_CheckoutBranchMissing(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:     repoDir,
-		CheckoutBranch: "nonexistent",
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   checkoutBranchSetup("nonexistent"),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -170,9 +165,9 @@ func TestOpenAgent_Validate_CreateBranchAlreadyExists(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:   repoDir,
-		CreateBranch: "feature/taken",
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createBranchSetup("feature/taken", ""),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -189,9 +184,9 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir:      repoDir,
-		UseWorktreePath: bogusPath,
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir: repoDir,
+		GitSetup:   useWorktreePathSetup(bogusPath),
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -214,7 +209,7 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:     repoDir,
 		AgentSessionId: "session\x00bad",
 	}, w)
@@ -235,7 +230,7 @@ func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"permissionMode": "bogus-mode"},
@@ -256,7 +251,7 @@ func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"model": "a-future-model-not-in-the-seed"},
@@ -276,7 +271,7 @@ func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"permissionMode": "plan"},
@@ -296,11 +291,10 @@ func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/ bad name",
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup("feature/ bad name", ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	requireInvalidArgument(t, w)
@@ -314,11 +308,10 @@ func TestOpenTerminal_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     notARepo,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/x",
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: notARepo,
+		GitSetup:   createWorktreeSetup("feature/x", ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	requireInvalidArgument(t, w)
@@ -334,11 +327,10 @@ func TestOpenTerminal_Validate_BranchAlreadyExists(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: "feature/taken",
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup("feature/taken", ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	requireInvalidArgument(t, w)
@@ -355,11 +347,10 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CreateWorktree: true,
-		WorktreeBranch: branchName,
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   createWorktreeSetup(branchName, ""),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	requireInvalidArgument(t, w)
@@ -373,10 +364,10 @@ func TestOpenTerminal_Validate_CheckoutBranchMissing(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:     repoDir,
-		CheckoutBranch: "nonexistent",
-		Shell:          testutil.TestShell(),
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+		WorkingDir: repoDir,
+		GitSetup:   checkoutBranchSetup("nonexistent"),
+		Shell:      testutil.TestShell(),
 	}, w)
 
 	requireInvalidArgument(t, w)

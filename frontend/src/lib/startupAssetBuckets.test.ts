@@ -16,7 +16,7 @@ describe('classifyStartupUrl', () => {
     expect(classifyStartupUrl('http://localhost/_build/assets/shikiWorker-DUdJhQep.js')).toBe('workers')
     expect(classifyStartupUrl('http://localhost/_build/assets/markdownWorker-ByKVGkjx.js')).toBe('workers')
     expect(classifyStartupUrl('http://localhost/_build/assets/wasm-BnjxR4X6.js')).toBe('workers')
-    expect(classifyStartupUrl('http://localhost/leapmux.v1.AuthService/GetSystemInfo')).toBe('rpc')
+    expect(classifyStartupUrl('http://localhost/leapmux.v1.SystemService/GetSystemInfo')).toBe('rpc')
     expect(classifyStartupUrl('http://localhost/_build/assets/AuthContext-YaQM1q0h.js')).toBe('critical_modules')
     expect(classifyStartupUrl('http://localhost/_build/assets/shikiWorkerClient-BPYyHIt_.js')).toBe('critical_modules')
     expect(classifyStartupUrl('http://localhost/_build/assets/entry-client-BQG5vqNI.css')).toBe('other')

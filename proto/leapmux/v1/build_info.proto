@@ -1,0 +1,14 @@
+syntax = "proto3";
+package leapmux.v1;
+
+// BuildInfo identifies the build of one LeapMux binary: the hub, a worker, or
+// the desktop app. One message, so every surface that reports a build reports
+// the same fields. It sits alone in this file, so the desktop's Rust build
+// compiles it without pulling in any other leapmux.v1 message.
+message BuildInfo {
+  string version = 1;
+  string commit_hash = 2; // Optional git commit ID injected at build time.
+  string commit_time = 3; // Optional commit timestamp injected at build time.
+  string build_time = 4;  // Optional build timestamp injected at build time.
+  string branch = 5;      // Optional git ref (branch or tag); empty for a detached HEAD.
+}

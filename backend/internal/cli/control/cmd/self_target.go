@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
@@ -45,7 +46,7 @@ func locateCallingTab(ctx context.Context, c *control.Client) (workspaceID, tile
 		TabId:   self,
 	}
 	var resp leapmuxv1.LocateTabResponse
-	if err := hubCallUnary(ctx, c, "LocateTab", req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, leapmuxv1connect.WorkspaceServiceLocateTabProcedure, req, &resp); err != nil {
 		return "", ""
 	}
 	t := resp.GetTab()

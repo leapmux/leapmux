@@ -9,12 +9,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -25,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // Tests in this file do NOT call t.Parallel(), unlike the rest of the package.
@@ -61,7 +65,7 @@ func (j *tabSyncJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) erro
 	j.batchIDs = append(j.batchIDs, c.Batch.GetBatchId())
 	for _, op := range c.Batch.GetOps() {
 		if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab); ok {
-			j.byUser[c.UserID] = append(j.byUser[c.UserID], body.TombstoneTab.GetTabId())
+			j.byUser[c.UserID] = append(j.byUser[c.UserID], body.TombstoneTab.GetTab().GetTabId())
 		}
 	}
 	return nil
@@ -122,6 +126,11 @@ func (r *recordingRegistry) Get(ctx context.Context, userID string) (*crdt.Manag
 	return r.inner.Get(ctx, userID)
 }
 
+// BroadcastWorkersChanged forwards to the wrapped registry; it records nothing.
+func (r *recordingRegistry) BroadcastWorkersChanged(userID string) {
+	r.inner.BroadcastWorkersChanged(userID)
+}
+
 func (r *recordingRegistry) seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -161,7 +170,7 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
@@ -210,7 +219,7 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	var sent atomic.Int32
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
@@ -244,7 +253,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
@@ -256,7 +265,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 
 	// The worker hosts the tab, in alice's workspace, exactly as her row says.
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabRef{
+		Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "dup-tab"},
 		},
 	})
@@ -290,7 +299,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 
 	logs := testutil.CaptureDefaultLogger(t)
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	sent := 0
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
 		sent++
@@ -298,7 +307,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	})
 
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabRef{
+		Tabs: []*leapmuxv1.TabIdent{
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "not-in-crdt"},
 		},
@@ -335,7 +344,7 @@ func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) st
 // the channels go, whatever else is happening to the process.
 func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 
 	cMgr.RegisterWithAuthInfo("ch1", "w1", "u1", channelmgr.AuthInfo{}, nil)
 	cMgr.RegisterWithAuthInfo("ch2", "w1", "u1", channelmgr.AuthInfo{}, nil)
@@ -352,7 +361,7 @@ func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 // shutdown, and they must leave no trace: nothing to close means nothing to say.
 func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
 	buf := testutil.CaptureDefaultLogger(t)
 
 	svc.closeWorkerChannels("w-with-no-channels")
@@ -372,4 +381,252 @@ func TestStreamEndReason(t *testing.T) {
 	assert.Equal(t,
 		"worker stream failed: read unix /hub.sock->: i/o timeout",
 		streamEndReason(errors.New("read unix /hub.sock->: i/o timeout")))
+}
+
+func TestValidateWorkerHello(t *testing.T) {
+	t.Parallel()
+
+	// A complete, valid set: every defect case below starts from it, so exactly
+	// one thing is wrong with each.
+	complete := workerkeystest.Keys(workerkeystest.SeededWorkerFill)
+	hello := func(mode leapmuxv1.EncryptionMode, mutate func(*leapmuxv1.WorkerPublicKeys)) *leapmuxv1.ConnectRequest {
+		keys := proto.Clone(complete).(*leapmuxv1.WorkerPublicKeys)
+		if mutate != nil {
+			mutate(keys)
+		}
+		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{
+			Keys:           keys,
+			EncryptionMode: mode,
+		}}}
+	}
+	classic := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC
+	pq := leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+
+	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
+		"classic with every key":      hello(classic, nil),
+		"post-quantum with every key": hello(pq, nil),
+	} {
+		t.Run("accepts "+name, func(t *testing.T) {
+			got, err := validateWorkerHello(msg)
+			require.NoError(t, err)
+			assert.Same(t, msg.GetHello(), got)
+		})
+	}
+
+	// A first message that is not a hello, or a mode that is not supported.
+	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
+		"a nil message":       nil,
+		"a heartbeat":         {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
+		"an unspecified mode": hello(leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, nil),
+		"an unknown mode":     hello(leapmuxv1.EncryptionMode(99), nil),
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			_, err := validateWorkerHello(msg)
+			require.Error(t, err)
+		})
+	}
+
+	t.Run("refuses a hello with no keys", func(t *testing.T) {
+		_, err := validateWorkerHello(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Hello{
+			Hello: &leapmuxv1.WorkerHello{EncryptionMode: classic},
+		}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing")
+	})
+
+	// Every key defect, each on an otherwise complete set, and each error must
+	// identify the key that is wrong.
+	for name, tc := range map[string]struct {
+		msg *leapmuxv1.ConnectRequest
+		key string
+	}{
+		"classic with mlkem but no slhdsa": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = nil }), key: "slhdsa",
+		},
+		"classic with slhdsa but no mlkem": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = nil }), key: "mlkem",
+		},
+		"a short x25519": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = k.X25519[:31] }), key: "x25519",
+		},
+		"a long x25519": {
+			msg: hello(classic, func(k *leapmuxv1.WorkerPublicKeys) { k.X25519 = append(k.X25519, 0) }), key: "x25519",
+		},
+		"a short mlkem": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) { k.Mlkem = k.Mlkem[:100] }), key: "mlkem",
+		},
+		"a short slhdsa": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) { k.Slhdsa = k.Slhdsa[:10] }), key: "slhdsa",
+		},
+		"an mlkem key of the right size filled with 0xff": {
+			msg: hello(pq, func(k *leapmuxv1.WorkerPublicKeys) {
+				for i := range k.Mlkem {
+					k.Mlkem[i] = 0xFF
+				}
+			}),
+			key: "mlkem",
+		},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			_, err := validateWorkerHello(tc.msg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.key, "the error must identify the defective key")
+		})
+	}
+}
+
+// The queue pool and the clock carry no nil-tolerant default, so the
+// constructor refuses each one loudly rather than let the first Connect panic.
+func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a queue pool", func() {
+		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, nil, quartz.NewReal())
+	})
+	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a clock", func() {
+		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), nil)
+	})
+}
+
+// scriptedWorkerStream answers each Receive from a channel that the test feeds.
+// A Receive with nothing to answer blocks, as a real stream does.
+type scriptedWorkerStream struct {
+	results chan workerReceiveResult
+}
+
+func newScriptedWorkerStream() *scriptedWorkerStream {
+	return &scriptedWorkerStream{results: make(chan workerReceiveResult, 8)}
+}
+
+func (s *scriptedWorkerStream) Receive() (*leapmuxv1.ConnectRequest, error) {
+	result := <-s.results
+	return result.msg, result.err
+}
+
+func (s *scriptedWorkerStream) feed(results ...workerReceiveResult) {
+	for _, result := range results {
+		s.results <- result
+	}
+}
+
+func heartbeatMessage(requestID string) *leapmuxv1.ConnectRequest {
+	return &leapmuxv1.ConnectRequest{
+		RequestId: requestID,
+		Payload:   &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}
+}
+
+// Each case below ends inside a synctest bubble, which fails the test when a
+// goroutine outlives the bubble's main goroutine. That is the proof that the
+// pump stops: no case can observe an exit any other way.
+
+// The hello wait and the main loop read one channel, so the pump delivers every
+// outcome in stream order, and a receive error ends it.
+func TestStartWorkerReceivePump_DeliversInOrderAndStopsAfterAnError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := newScriptedWorkerStream()
+		received := startWorkerReceivePump(t.Context(), stream)
+
+		stream.feed(
+			workerReceiveResult{msg: heartbeatMessage("first")},
+			workerReceiveResult{msg: heartbeatMessage("second")},
+			workerReceiveResult{err: io.EOF},
+		)
+		assert.Equal(t, "first", (<-received).msg.GetRequestId())
+		assert.Equal(t, "second", (<-received).msg.GetRequestId())
+		assert.ErrorIs(t, (<-received).err, io.EOF)
+		synctest.Wait()
+	})
+}
+
+// A handler that stopped reading leaves the pump parked on a full channel, and
+// the connection's context is what ends it.
+func TestStartWorkerReceivePump_StopsWhenTheContextEndsWithAFullChannel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		stream := newScriptedWorkerStream()
+		received := startWorkerReceivePump(ctx, stream)
+
+		stream.feed(
+			workerReceiveResult{msg: heartbeatMessage("buffered")},
+			workerReceiveResult{msg: heartbeatMessage("read ahead")},
+		)
+		synctest.Wait()
+		require.Len(t, received, 1, "precondition: the channel is full, and the pump holds the next message")
+
+		cancel()
+		synctest.Wait()
+		assert.Equal(t, "buffered", (<-received).msg.GetRequestId(), "a parked pump delivers nothing more")
+	})
+}
+
+// A handler that returns ends the stream, which unblocks Receive with an error,
+// and cancels the context. The pump stops whichever way that error goes.
+func TestStartWorkerReceivePump_StopsWhenTheStreamEndsAfterTheContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		stream := newScriptedWorkerStream()
+		startWorkerReceivePump(ctx, stream)
+		synctest.Wait()
+
+		cancel()
+		stream.feed(workerReceiveResult{err: errors.New("the stream ended")})
+		synctest.Wait()
+	})
+}
+
+// receiveHello reads the stream only through the pump's channel, so each outcome
+// of the hello wait is one result on that channel.
+func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
+	t.Parallel()
+
+	svc := &WorkerConnectorService{clock: quartz.NewReal()}
+
+	t.Run("reports a worker that closed the stream", func(t *testing.T) {
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: io.EOF}
+		hello, err := svc.receiveHello(t.Context(), received)
+		require.NoError(t, err)
+		assert.Nil(t, hello)
+	})
+
+	t.Run("returns a receive failure", func(t *testing.T) {
+		failure := errors.New("the transport failed")
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: failure}
+		_, err := svc.receiveHello(t.Context(), received)
+		assert.ErrorIs(t, err, failure)
+	})
+
+	t.Run("refuses a first message that is not a hello", func(t *testing.T) {
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{msg: heartbeatMessage("first")}
+		_, err := svc.receiveHello(t.Context(), received)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a hello")
+	})
+
+	t.Run("returns the context's error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := svc.receiveHello(ctx, make(chan workerReceiveResult))
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+// A read that the identity cap ended and a read that a disconnect ended both leave
+// ctx.Err() as context.Canceled. Only the cause tells an operator that the cap
+// fired and held the owner's delivery lock for its whole length.
+func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	st := hubtestutil.OpenTestStore(t)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(context.DeadlineExceeded)
+
+	username, ok := svc.ownerUsername(ctx, "owner-1")
+
+	assert.False(t, ok)
+	assert.Empty(t, username)
+	assert.Contains(t, logs.String(), "cause=\"context deadline exceeded\"")
 }

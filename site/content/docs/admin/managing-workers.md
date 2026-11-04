@@ -96,7 +96,7 @@ On the target machine, run the generated command. What happens next:
 
 - **First run, no key** → the Worker refuses to start, and the error tells you to pass a registration key from the hub UI. A bare Worker cannot self-register; it always needs a key.
 - **First run, valid key** → the Worker registers, saves its credentials to `state.json`, logs that it saved them, and connects. It is now active.
-- **Already registered, but a key was passed anyway** → the Worker refuses, and the error tells you to remove `--registration-key` or to wipe the local state. This protects you from accidentally consuming a fresh key on a machine that is already set up. After the first successful run, drop `--registration-key` from your command, env, or config — the saved token handles reconnection.
+- **Already registered, but a key was passed anyway** → the Worker refuses, and the error tells you to remove `--registration-key`, or to deregister the Worker, delete its `state.json`, and register it again. This protects you from accidentally consuming a fresh key on a machine that is already set up. After the first successful run, drop `--registration-key` from your command, env, or config — the saved token handles reconnection.
 
 The `--registration-key` value is **never written to disk**; only the resulting auth token is persisted.
 
@@ -112,7 +112,7 @@ Because keys are one-shot and expire in 5 minutes, a key that worked a moment ag
 
 ### Auto-registered Workers (solo and dev)
 
-In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered* and **cannot be deregistered** — re-registration on the next launch would just undo it. See [Running LeapMux](/docs/admin/running-leapmux/).
+In **solo** and **dev** modes the launcher auto-registers a co-located Worker in-process, bypassing the key flow entirely. These Workers are flagged *auto-registered*. The Hub refuses to deregister one while it is connected, from the UI and from `leapmux control admin worker deregister`, because the next launch would just register a fresh one. You can remove an offline one, such as the entry that a launch leaves behind when the app's Worker state file was lost: its context menu offers **Deregister...**, and an administrator can use that command. The app then registers a fresh Worker with a new Worker ID, and the old Worker's tabs do not move to it. See [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## Worker status: online and offline
 
@@ -132,7 +132,7 @@ Right-click a Worker row (or open its context menu) to:
 
 - View and copy its details — **Name**, **Version** (with commit hash), and **OS** (with architecture) are always shown when the Worker's info is available; a **Built at** row appears only when the Worker reports a build time. Clicking the info block copies the full metadata as JSON to your clipboard.
 - Manage [tunnels](#tunnels-desktop-app) (when available and you own the Worker).
-- **Deregister...** the Worker — shown only for Workers that are *not* auto-registered.
+- **Deregister...** the Worker — shown for every Worker except a connected auto-registered one.
 
 ## Selecting which Worker hosts a new tab
 
@@ -161,19 +161,25 @@ A registered Worker reconnects on its own. If the connection drops — Hub resta
 | Jitter | ±20% |
 | Backoff reset | After a connection survives ≥ 30 seconds |
 
-So a Worker that briefly loses its link reconnects within seconds, while a Worker that can't reach a down Hub backs off to at most ~3 minutes between attempts. Once a connection holds for at least 30 seconds, the backoff resets, so the *next* outage starts fresh from 1 second again.
+So a Worker that briefly loses its link reconnects within seconds, while a Worker that can't reach a down Hub backs off from 1 s, doubling to 180 s, with ±20% jitter, so one wait reaches at most about 3.6 minutes. Once a connection holds for at least 30 seconds, the backoff resets, so the *next* outage starts fresh from 1 second again.
 
 When the Hub shuts down gracefully it tells the Worker how long to wait before reconnecting; the Worker honors that requested delay once, then resumes normal backoff.
 
 {{< callout type="info" >}}
-Auto-reconnect handles transient failures, **not** revocation. If the Hub rejects the Worker's token as unauthenticated on reconnect — which happens when an administrator deregisters or deletes the Worker — the Worker clears its local state and exits instead of retrying. Re-registering it requires a fresh registration key.
+Auto-reconnect handles transient failures, **not** revocation. What the Worker does depends on what the Hub tells it:
+
+- When the Hub tells the Worker that it was deregistered or deleted, a standalone Worker (`leapmux worker`) clears its local state and exits, and an auto-registered Worker stops.
+- When the Hub refuses the Worker's keys, the Worker stops and keeps its state.
+- The Worker keeps retrying every other refusal, such as a 401 or 403 from a proxy in front of the Hub.
+
+A standalone Worker needs a fresh registration key to register again. The launcher of an auto-registered Worker registers a fresh Worker at the next launch.
 {{< /callout >}}
 
 ## Deregistering a Worker
 
 Deregistering tells the Hub to forget a Worker and tear down everything running on it.
 
-**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. Auto-registered (bundled local) Workers cannot be deregistered and don't show the option; the Hub refuses the attempt.
+**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. The menu does not offer this for an auto-registered (bundled local) Worker while it is connected, and the Hub refuses such a request. See [Auto-registered Workers (solo and dev)](#auto-registered-workers-solo-and-dev).
 
 **From the control CLI** (administrators):
 
@@ -181,7 +187,7 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 leapmux control admin worker deregister --id <worker-id>
 ```
 
-On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
+On deregistration a standalone Worker (`leapmux worker`) acknowledges the request, shuts down gracefully, clears its local credentials, and exits. The Hub refuses this command for an auto-registered Worker while it is connected. An offline one leaves the Worker list at once. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
 
 ## Tunnels (desktop app)
 
@@ -238,10 +244,10 @@ First connection (trust on first use):
 
 Later connection (key changed):
 
-   ┌────────────┐   sees key K2    ┌──────────────────┐
-   │  Frontend  │   ✗  REJECTED    │      Worker      │
-   │  (browser) │◄─ ─ ─ ─ ─ ─ ─ ─ ─│  static key = K2 │
-   └────────────┘                  └──────────────────┘
+   ┌────────────┐   sees key K2    ┌──────────────────────────┐
+   │  Frontend  │   ✗  REJECTED    │  Hub hands over key = K2 │
+   │  (browser) │◄─ ─ ─ ─ ─ ─ ─ ─ ─│  (not the Worker's K1)   │
+   └────────────┘                  └──────────────────────────┘
          │ pinned K1 ≠ K2
          ▼
    ┌─────────────────────────────────────┐
@@ -262,17 +268,17 @@ browser pin workers independently, and neither sees the other's pins.
 
 ### What a mismatch looks like in the browser
 
-When a Worker's key differs from the one you saw at your last connection, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key.
+When a Worker's key differs from the key pinned for it at an earlier connection, the Frontend stops and shows a dialog titled **Worker public key changed**. It displays the **Expected:** and **Actual:** fingerprints (short, human-comparable four-word strings) and asks you to **Reject** or **Accept** the changed key.
 
-Accept only if you *expected* the change — for example, you deliberately wiped a Worker's `state.json` and re-registered it, regenerating its keypair. Verify the new fingerprint out-of-band first. See [Security & Threat Model](/docs/admin/security/) for the full dialog text, the fingerprint scheme, and the accept-vs-reject reasoning.
+A Worker keeps its keys for as long as it stays registered, so one of the two keys did not come from this Worker. Accept only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. See [Security & Threat Model](/docs/admin/security/) for the full dialog text, the fingerprint scheme, and the accept-vs-reject reasoning.
 
 {{< callout type="warning" >}}
-A key mismatch you did not cause is a serious signal. Do not click **Accept** to "make it work." When in doubt, **Reject** and confirm the Worker's fingerprint directly with whoever runs it.
+Every key mismatch is a serious signal. Do not click **Accept** to make it work. **Reject**, and confirm the fingerprint with whoever runs the Worker.
 {{< /callout >}}
 
 ### What a mismatch looks like on the CLI / a sibling Worker
 
-For non-browser clients there is no dialog — agents and scripts can't answer interactive prompts — so a mismatch **aborts the connection** with an error of the form `worker <id> key mismatch — <hint>`. The hint names the exact command to clear the pin so the next connect re-pins the new key:
+For non-browser clients there is no dialog — agents and scripts can't answer interactive prompts — so a mismatch **aborts the connection** with an error of the form `worker <id> key mismatch: pinned <fingerprint>, presented <fingerprint> — <hint>`. The hint gives the exact command that clears the pin, so the next connect pins the presented key. Confirm the fingerprint before running it:
 
 ```bash
 # A leapmux control agent or script hit a pin mismatch:
@@ -311,8 +317,10 @@ For the complete administrator surface — including sessions, API tokens, and d
 
 A Worker runs in one of two encryption modes, set with `--encryption-mode`:
 
-- `post-quantum` (the default) — the hybrid post-quantum handshake, advertising all three static keys.
-- `classic` — X25519-only.
+- `post-quantum` (the default) — the hybrid post-quantum handshake.
+- `classic` — X25519-only Noise_NK, no post-quantum protection.
+
+Both modes register and advertise all three static keys, because the keys are the Worker's identity: the Hub pins them and refuses a connection that presents others. `classic` only selects the classical handshake.
 
 Leave this at the default unless you have a specific reason to change it; both ends must agree, and the Hub tracks the mode the Worker declares. The cryptographic details are covered in [Security & Threat Model](/docs/admin/security/).
 

@@ -1,6 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isServerRoute, postAuthNavigate } from './postAuthNavigate'
+import {
+  followDestination,
+  isServerRoute,
+  normalizeRoutePath,
+  postAuthDestination,
+  postAuthNavigate,
+  postSignInDestination,
+  VERIFY_EMAIL_PATH,
+} from './postAuthNavigate'
 
 describe('isServerRoute', () => {
   it('claims the hub-served /auth/ family', () => {
@@ -107,6 +115,151 @@ describe('postAuthNavigate', () => {
       expect(navigate).toHaveBeenCalledWith('/', { replace: true })
       expect(assign).not.toHaveBeenCalled()
     }
+  })
+})
+
+// Sign-in recovery reads the destination before it navigates, because it must
+// know whether the document leaves before it waits for the router to arrive.
+describe('postAuthDestination', () => {
+  it('sends a hub route to a full-document load', () => {
+    expect(postAuthDestination('/oauth/authorize?state=s', '/')).toEqual({ kind: 'document', path: '/oauth/authorize?state=s' })
+  })
+
+  it('keeps an in-app path on the router', () => {
+    expect(postAuthDestination('/verify-email', '/')).toEqual({ kind: 'route', path: '/verify-email' })
+  })
+
+  it('falls back when the target is absent or empty', () => {
+    expect(postAuthDestination(undefined, '/')).toEqual({ kind: 'route', path: '/' })
+    expect(postAuthDestination('', '/')).toEqual({ kind: 'route', path: '/' })
+  })
+
+  // The fallback passes the same server-route test as a target does.
+  it('sends a hub-served fallback to a full-document load', () => {
+    expect(postAuthDestination(undefined, '/oauth/device')).toEqual({ kind: 'document', path: '/oauth/device' })
+  })
+
+  it('replaces a target that could leave the origin with the fallback', () => {
+    for (const hostile of [
+      'https://evil.example/',
+      '//evil.example/',
+      '/\\evil.example/',
+    ])
+      expect(postAuthDestination(hostile, '/'), hostile).toEqual({ kind: 'route', path: '/' })
+  })
+
+  // The two functions must never disagree: recovery waits for the router only
+  // when postAuthNavigate takes the router.
+  it('predicts the branch postAuthNavigate takes', () => {
+    const navigate = vi.fn()
+    const assign = vi.fn()
+    vi.stubGlobal('location', { assign })
+    try {
+      for (const target of [
+        '/oauth/authorize?state=s',
+        '/verify-email',
+        '/auth/idp/complete-signup',
+        undefined,
+        'https://evil.example/',
+      ]) {
+        navigate.mockClear()
+        assign.mockClear()
+        postAuthNavigate(navigate, target, '/')
+        const destination = postAuthDestination(target, '/')
+        if (destination.kind === 'document') {
+          expect(assign, String(target)).toHaveBeenCalledWith(destination.path)
+          expect(navigate, String(target)).not.toHaveBeenCalled()
+        }
+        else {
+          expect(navigate, String(target)).toHaveBeenCalledWith(destination.path, { replace: true })
+          expect(assign, String(target)).not.toHaveBeenCalled()
+        }
+      }
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('normalizeRoutePath', () => {
+  it('drops every trailing slash', () => {
+    expect(normalizeRoutePath('/login/')).toBe('/login')
+    expect(normalizeRoutePath('/login//')).toBe('/login')
+    expect(normalizeRoutePath('/recover-account/complete/')).toBe('/recover-account/complete')
+  })
+
+  it('leaves a path without a trailing slash alone', () => {
+    expect(normalizeRoutePath('/login')).toBe('/login')
+  })
+
+  // Trimming the root's slash would leave an empty string, which no router
+  // location ever reports, so the root stays `/`.
+  it('keeps the root as /', () => {
+    expect(normalizeRoutePath('/')).toBe('/')
+    expect(normalizeRoutePath('//')).toBe('/')
+    expect(normalizeRoutePath('')).toBe('/')
+  })
+})
+
+// The one post-sign-in rule that every sign-in surface and sign-in recovery
+// share.
+describe('postSignInDestination', () => {
+  // Verification comes first, even over a consent redirect: the account must
+  // verify its address before it continues anywhere.
+  it('sends an account that must verify to /verify-email, whatever the redirect', () => {
+    for (const redirect of [
+      undefined,
+      '/',
+      '/?from=cli',
+      '/oauth/authorize?state=s',
+      'https://evil.example/',
+    ])
+      expect(postSignInDestination(true, redirect), String(redirect)).toEqual({ kind: 'route', path: VERIFY_EMAIL_PATH })
+  })
+
+  it('continues to a hub-served redirect with a full-document load', () => {
+    expect(postSignInDestination(false, '/oauth/authorize?state=s')).toEqual({ kind: 'document', path: '/oauth/authorize?state=s' })
+  })
+
+  it('continues to an in-app redirect on the router', () => {
+    expect(postSignInDestination(false, '/?from=cli')).toEqual({ kind: 'route', path: '/?from=cli' })
+  })
+
+  it('lands on / without a redirect', () => {
+    expect(postSignInDestination(false, undefined)).toEqual({ kind: 'route', path: '/' })
+    expect(postSignInDestination(false, '')).toEqual({ kind: 'route', path: '/' })
+  })
+
+  it('lands on / for a redirect that could leave the origin', () => {
+    expect(postSignInDestination(false, 'https://evil.example/')).toEqual({ kind: 'route', path: '/' })
+    expect(postSignInDestination(false, '//evil.example/')).toEqual({ kind: 'route', path: '/' })
+  })
+})
+
+describe('followDestination', () => {
+  const navigate = vi.fn()
+  const assign = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('location', { assign })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('loads a document destination as a full document', () => {
+    followDestination(navigate, { kind: 'document', path: '/oauth/authorize?state=s' })
+    expect(assign).toHaveBeenCalledExactlyOnceWith('/oauth/authorize?state=s')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('replaces the history entry for a route destination', () => {
+    followDestination(navigate, { kind: 'route', path: VERIFY_EMAIL_PATH })
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(VERIFY_EMAIL_PATH, { replace: true })
+    expect(assign).not.toHaveBeenCalled()
   })
 })
 

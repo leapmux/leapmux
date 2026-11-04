@@ -41,7 +41,7 @@ type heldStreamChannel struct {
 
 func (transport *heldStreamChannel) Context() context.Context { return transport.ctx }
 
-func (transport *heldStreamChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte, _ bool) error {
+func (transport *heldStreamChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte) error {
 	transport.start.Do(func() { close(transport.started) })
 	select {
 	case <-transport.proceed:

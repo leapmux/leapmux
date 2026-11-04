@@ -28,52 +28,31 @@ import (
 // auth_token in its own header.
 //
 // "Public" here means "the handler authenticates itself", NOT "anyone may
-// call it". Each worker-facing entry below refuses without a credential of its
+// call it". Each worker-facing entry refuses without a credential of its
 // own; the exemption only keeps the interceptor from rejecting that credential
 // as neither a session cookie nor an `lmx_` API token. Adding a procedure that
 // does NOT authenticate itself is an auth bypass.
 //
 // The credential differs by entry, so do not assume one mechanism: Register
-// consumes a registration KEY, Connect resolves a worker auth_token directly
-// through Workers().GetByAuthToken, and ListOwnedTabsForWorker goes through
-// AuthenticateWorkerBearer. The rationale map in the package's test specifies
-// the mechanism per entry, which is the check that keeps this list honest.
+// consumes a registration KEY, while Connect and ListOwnedTabsForWorker both
+// resolve a worker auth_token through AuthenticateWorkerBearer. The rationale
+// map in the package's test specifies the mechanism per entry, which is the
+// check that keeps this list honest.
 //
-// Procedure names come from the generated `leapmuxv1connect` constants
-// so a rename in the proto definition turns a typo here into a build
-// error instead of a silent auth bypass.
-var publicProcedures = map[string]bool{
-	leapmuxv1connect.AuthServiceLoginProcedure:                  true,
-	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure: true,
-	leapmuxv1connect.AuthServiceSignUpProcedure:                 true,
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:          true,
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:    true,
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:     true,
-	// Same worker auth_token as Connect, on a plain unary RPC rather than the
-	// stream. The worker's orphan reconciler is the only caller, and it is what
-	// converges a worker after a close or a cross-workspace move that landed
-	// while the worker was offline -- so without this entry the interceptor
-	// answers `unauthenticated` and the worker never learns a tab is gone.
-	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: true,
-	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  true,
-	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              true,
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:                true,
-	// Public by design: ALTCHA challenges carry no secret and must be
-	// fetchable before login. The captcha interceptor guards the
-	// procedures that consume solutions, not the one that issues
-	// challenges.
-	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:              true,
-	leapmuxv1connect.AuthServiceBeginPasskeyLoginProcedure:               true,
-	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:              true,
-	leapmuxv1connect.AuthServiceBeginPasskeySignUpProcedure:              true,
-	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:             true,
-	leapmuxv1connect.AuthServiceRequestAccountRecoveryProcedure:          true,
-	leapmuxv1connect.AuthServiceCompleteAccountRecoveryPasswordProcedure: true,
-	// The passkey path of recovery: authorized by the emailed recovery token
-	// (attempt-capped at the handler), not by a session, so both procedures
-	// are public like the passkey signup pair above.
-	leapmuxv1connect.AuthServiceBeginAccountRecoveryPasskeyProcedure:  true,
-	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure: true,
+// It is derived at init from procedureScopes: a HUB method whose
+// (leapmux.v1.access) option selects `public` is on it, and nothing else is.
+// The proto option is the one source, so a public method cannot be recorded
+// in one table and missing from the other.
+var publicProcedures = derivePublicProcedures()
+
+func derivePublicProcedures() map[string]bool {
+	out := make(map[string]bool)
+	for procedure, requirement := range procedureScopes {
+		if requirement.IsPublic() {
+			out[procedure] = true
+		}
+	}
+	return out
 }
 
 // PublicProcedures lists every procedure the auth interceptor waives, so
@@ -102,7 +81,7 @@ func PublicProcedures() []string {
 // procedure set the old allowlist listed.
 
 // adminProcedurePrefix is what MAKES a procedure admin-only: every
-// Connect procedure path is /leapmux.v1.<Service>/<Method>, and the four
+// Connect procedure path is /leapmux.v1.<Service>/<Method>, and the five
 // Admin*Service services are the only ones whose name begins with
 // "Admin". enforceAdmin denies on this prefix, so a procedure that
 // admin.proto declares is restricted the moment it is declared.
@@ -114,73 +93,6 @@ func PublicProcedures() []string {
 // TestNoAdminServiceOutsideAdminProto already treats the "Admin" name as
 // authoritative, so the prefix rests on an invariant the suite enforces.
 const adminProcedurePrefix = "/leapmux.v1.Admin"
-
-// adminProcedures lists the procedures of the four Admin*Service
-// services. It is the RECORD, not the enforcement: enforceAdmin denies on
-// adminProcedurePrefix, and the descriptor-walk tests keep this map, the
-// rationale map in admin_procedures_test.go, and the proto in lockstep,
-// so every restricted procedure still carries a stated reason.
-//
-// Ordering note: the admin gate runs AFTER the delegation refusal, so a
-// delegation bearer cannot reach an admin procedure even though its
-// underlying user is an admin (loadUser resolves the full row) — the
-// gate is the only thing standing between a worker-spawned agent and
-// full hub administration. It also runs after the email gate, where
-// admins are exempt by design: an admin who cannot receive mail must
-// still be able to configure SMTP. The solo short-circuit above both
-// returns before enforceAdmin ever runs, so a solo hub serves every
-// admin procedure to its synthetic user whatever IsAdmin holds; bootstrap
-// creates that user as an administrator, and the reserved username rule
-// (usernames.IsReservedSystem) is what keeps a stored row from taking
-// that identity.
-var adminProcedures = map[string]bool{
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: true,
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      true,
-	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        true,
-	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       true,
-
-	// Which addresses the hub answers on, and what this machine could answer
-	// on. It reports no credential and no user data, but it does describe the
-	// host's network, which is an administrator's view of the deployment.
-	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: true,
-
-	leapmuxv1connect.AdminUserServiceListUsersProcedure:             true,
-	leapmuxv1connect.AdminUserServiceGetUserProcedure:               true,
-	leapmuxv1connect.AdminUserServiceCreateUserProcedure:            true,
-	leapmuxv1connect.AdminUserServiceUpdateUserProcedure:            true,
-	leapmuxv1connect.AdminUserServiceDeleteUserProcedure:            true,
-	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:          true,
-	leapmuxv1connect.AdminUserServiceResetPasswordProcedure:         true,
-	leapmuxv1connect.AdminUserServiceListUserSessionsProcedure:      true,
-	leapmuxv1connect.AdminUserServiceListSessionsProcedure:          true,
-	leapmuxv1connect.AdminUserServiceRevokeSessionProcedure:         true,
-	leapmuxv1connect.AdminUserServiceRevokeUserSessionsProcedure:    true,
-	leapmuxv1connect.AdminUserServicePurgeExpiredSessionsProcedure:  true,
-	leapmuxv1connect.AdminUserServiceListAPITokensProcedure:         true,
-	leapmuxv1connect.AdminUserServiceIssueAPITokenProcedure:         true,
-	leapmuxv1connect.AdminUserServiceRevokeAPITokenProcedure:        true,
-	leapmuxv1connect.AdminUserServiceListDelegationTokensProcedure:  true,
-	leapmuxv1connect.AdminUserServiceRevokeDelegationTokenProcedure: true,
-
-	leapmuxv1connect.AdminWorkerServiceListWorkersProcedure:                  true,
-	leapmuxv1connect.AdminWorkerServiceGetWorkerProcedure:                    true,
-	leapmuxv1connect.AdminWorkerServiceDeregisterWorkerProcedure:             true,
-	leapmuxv1connect.AdminWorkerServiceListRegistrationKeysProcedure:         true,
-	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        true,
-	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: true,
-
-	leapmuxv1connect.AdminIdPServiceAddOAuthProviderProcedure:        true,
-	leapmuxv1connect.AdminIdPServiceListOAuthProvidersProcedure:      true,
-	leapmuxv1connect.AdminIdPServiceRemoveOAuthProviderProcedure:     true,
-	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: true,
-}
-
-// No exported accessor for adminProcedures: unlike PublicProcedures,
-// which the captcha package's classification test consumes, every admin
-// tripwire lives in this package and reads the map directly. Export one
-// when a cross-package test needs it, not before.
 
 // unverifiedAllowedProcedures lists RPC procedures that authenticated
 // users may call before their email is verified. The verify endpoint
@@ -1139,6 +1051,18 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // exempt from the email gate, and an admin who cannot receive mail must
 // still be able to configure SMTP.
 //
+// Ordering note: authorize runs enforceScope first, and it refuses a
+// delegation bearer every admin procedure, because delegationCeiling holds
+// no admin scope. So a worker-spawned agent cannot reach hub administration
+// even though its underlying user is an admin (loadUser resolves the full
+// row). The admin gate also runs after the email gate, for the exemption
+// above. The solo short-circuit in authenticate returns before enforceAdmin
+// ever runs, so a solo hub serves every admin procedure to its synthetic
+// user whatever IsAdmin holds; bootstrap creates that user as an
+// administrator, and the reserved username rule
+// (usernames.IsReservedSystem) is what keeps a stored row from taking
+// that identity.
+//
 // It asks about the ACCOUNT alone. The parallel question -- was this
 // CREDENTIAL granted hub administration? -- used to live beside it as
 // enforceAdminScope, reading a single api_tokens.admin_scope boolean. It is
@@ -1147,9 +1071,9 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 // credential minted to administer users can no longer also rewrite the hub's
 // security settings.
 func enforceAdmin(procedure string, userInfo *UserInfo) error {
-	// Deny by PREFIX, never by the map. See adminProcedurePrefix: the map
-	// is the rationale record, and a lookup miss there must not open a
-	// procedure that admin.proto declares.
+	// Deny by PREFIX, never by a list of procedures. See
+	// adminProcedurePrefix: a list that missed a procedure would open one
+	// that admin.proto declares.
 	if !strings.HasPrefix(procedure, adminProcedurePrefix) {
 		return nil
 	}

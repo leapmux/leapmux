@@ -69,7 +69,7 @@ func TestConnectWithReconnect_HubRetryDelayApplied(t *testing.T) {
 	bo := newFastBackoff()
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
 		close(done)
 	}()
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
@@ -109,7 +109,7 @@ func TestConnectWithReconnect_HubRetryDelayConsumedOnce(t *testing.T) {
 	bo := newFastBackoff()
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
 		close(done)
 	}()
 	hubDelay := testutil.WaitForTimer(t, testCtx, newHubTimer)
@@ -164,7 +164,7 @@ func TestConnectWithReconnect_HubRetryDelayResetsBackoff(t *testing.T) {
 	bo := newFastBackoff()
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
 		close(done)
 	}()
 	for i, expected := range []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond} {
@@ -209,7 +209,7 @@ func TestConnectWithReconnect_HubRetryDelayCancelledByContext(t *testing.T) {
 	go func() {
 		defer close(returned)
 		bo := newFastBackoff()
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
 	}()
 	assert.Equal(t, 60*time.Second, testutil.WaitForTimer(t, testCtx, newTimer))
 	cancel()

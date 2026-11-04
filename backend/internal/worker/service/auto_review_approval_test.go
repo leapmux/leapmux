@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -169,7 +170,7 @@ func TestApproveAutoReviewDenial_RecordsTheApprovalOnce(t *testing.T) {
 	registerAgentWatch(svc, "test-ch", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watch)
 
 	w := newTestWriter()
-	dispatch(d, "ApproveAutoReviewDenial", approveRequest(messageID, "review-1"), w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, approveRequest(messageID, "review-1"), w)
 	require.Empty(t, w.errors)
 	require.Equal(t, []string{"review-1"}, approver.approvedReviews())
 	require.Len(t, approver.entries[0], 1, "the provider receives the row's entries, unwrapped")
@@ -184,7 +185,7 @@ func TestApproveAutoReviewDenial_RecordsTheApprovalOnce(t *testing.T) {
 	// A second approval succeeds without reaching the provider again: the row records
 	// the first one.
 	again := newTestWriter()
-	dispatch(d, "ApproveAutoReviewDenial", approveRequest(messageID, "review-1"), again)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, approveRequest(messageID, "review-1"), again)
 	require.Empty(t, again.errors)
 	assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
 	assert.Equal(t, []string{"review-1"}, recordedApprovals(t, svc, messageID))
@@ -384,7 +385,7 @@ func TestApproveAutoReviewDenial_Refusals(t *testing.T) {
 			reviewRowID := startAutoReviewAgent(t, svc, &autoReviewApproverAgent{err: test.approverErr})
 
 			w := newTestWriter()
-			dispatch(d, "ApproveAutoReviewDenial", test.request(t, svc, reviewRowID), w)
+			dispatch(d, leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, test.request(t, svc, reviewRowID), w)
 
 			require.Len(t, w.errors, 1)
 			assert.Equal(t, int32(test.wantCode), w.errors[0].code, w.errors[0].message)
@@ -407,7 +408,7 @@ func TestApproveAutoReviewDenial_RefusesASubagent(t *testing.T) {
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "ApproveAutoReviewDenial", &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: "child", MessageId: "m", ReviewId: "r"}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceApproveAutoReviewDenialProcedure, &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: "child", MessageId: "m", ReviewId: "r"}, w)
 
 	require.Len(t, w.errors, 1)
 	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)

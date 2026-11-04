@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { RESUME_SESSION_ERROR_ID } from '~/components/shell/resumeSession'
 import { ResumeSessionField } from '~/components/shell/ResumeSessionField'
 import { TYPE_A_HANDLE_VALUE } from '~/components/shell/SessionSelect'
@@ -10,10 +10,12 @@ import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { menuOptionValues, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 
 vi.mock('~/api/workerRpc', () => ({
-  listAgentSessions: vi.fn(),
+  workerAgent: {
+    listAgentSessions: vi.fn(),
+  },
 }))
 
-const listAgentSessions = vi.mocked(workerRpc.listAgentSessions)
+const listAgentSessions = vi.mocked(workerAgent.listAgentSessions)
 
 const MENU = 'session-select-menu'
 const LABEL = 'Resume an existing session'

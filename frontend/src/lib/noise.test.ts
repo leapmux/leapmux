@@ -269,14 +269,14 @@ describe('CipherState limits', () => {
     expect(() => cs.encrypt(maxSize)).not.toThrow()
   })
 
-  it('needsRekey should return false initially', () => {
+  it('should return false from needsRekey initially', () => {
     const key = new Uint8Array(32)
     key[0] = 1
     const cs = new CipherState(key)
     expect(cs.needsRekey()).toBe(false)
   })
 
-  it('rekeyWithSecret should change the key, reset nonce, and decrypt new traffic', () => {
+  it('should change the key, reset nonce, and decrypt new traffic when rekeyWithSecret runs', () => {
     const key = new Uint8Array(32)
     for (let i = 0; i < 32; i++) key[i] = i + 1
     const cs = new CipherState(key)
@@ -298,7 +298,7 @@ describe('CipherState limits', () => {
     expect(new TextDecoder().decode(peer.decrypt(ctNew))).toBe('after')
   })
 
-  it('rekeyWithSecret should match the Go fresh-DH interop vector', async () => {
+  it('should match the Go fresh-DH interop vector in rekeyWithSecret', async () => {
     // Fixed vectors from testdata/noise_rekey_vectors.json, shared with
     // backend/internal/noise/noise_test.go so Go and TS stay on the same
     // fresh-DH rekey derivation:
@@ -362,7 +362,7 @@ describe('CipherState limits', () => {
     expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
   })
 
-  it('clearPrev drops the retained previous key so an old-key frame fails', () => {
+  it('drops the retained previous key in clearPrev so an old-key frame fails', () => {
     // clearPrev is the explicit "drop the retained prev" method (exported for
     // tests and any future send path that needs it). The production send
     // rotation goes through rekeyWithSecret(..., false) and never sets prev in
@@ -380,7 +380,7 @@ describe('CipherState limits', () => {
     expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
   })
 
-  it('rekeyWithSecret(retainPrev=false) keeps no previous key (send direction)', () => {
+  it('keeps no previous key when rekeyWithSecret runs with retainPrev=false (send direction)', () => {
     // The send direction keeps no grace window. retainPrev=false must zero the
     // replaced key and NOT retain a prev — structurally, so a caller cannot
     // forget a clearPrev. An old-key frame must fail immediately after the

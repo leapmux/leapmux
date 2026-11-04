@@ -1,5 +1,5 @@
 import type { ReadFileResponse } from '~/generated/proto/leapmux/v1/file_pb'
-import { readFile } from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 
 /**
  * The most bytes one page request asks for.
@@ -27,8 +27,7 @@ export async function readWorkerFile(options: {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
     throw new Error('The file preview limit is invalid')
   signal?.throwIfAborted()
-  const response = await readFile(workerId, {
-    workerId,
+  const response = await workerFile.readFile(workerId, {
     path,
     limit: BigInt(maxBytes),
     metaOnlyIfTruncated: true,
@@ -76,8 +75,7 @@ export async function readWorkerFile(options: {
     let offset = range.start
     while (offset < range.end) {
       signal?.throwIfAborted()
-      const page = await readFile(workerId, {
-        workerId,
+      const page = await workerFile.readFile(workerId, {
         path,
         offset: BigInt(offset),
         limit: BigInt(range.end - offset),

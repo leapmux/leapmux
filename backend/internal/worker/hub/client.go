@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -34,14 +35,15 @@ import (
 // Client manages the connection to the Hub.
 type Client struct {
 	connector  leapmuxv1connect.WorkerConnectorServiceClient
-	reconciler leapmuxv1connect.WorkerReconcilerServiceClient
 	endpoint   *hubtransport.Endpoint
 	authToken  string
 	terminals  *terminal.Manager
 	channelMgr *channel.Manager
 
-	// OnDeregister is called when the Hub sends a deregistration notification.
-	// The worker should clear its state and shut down gracefully.
+	// OnDeregister is called when the Hub tells this worker to stop for good: a
+	// deregistration notification on the stream (the Hub deletes the worker once
+	// it acknowledges), or a Connect refusal with WORKER_DELETED. The worker
+	// should clear its state and shut down gracefully.
 	OnDeregister func()
 
 	// OnReconcileNudge is called when the Hub asks this worker to run its
@@ -49,36 +51,42 @@ type Client struct {
 	// hosts. Unsolicited, like the heartbeat.
 	OnReconcileNudge func()
 
-	// OnTabSyncResponse is called when the Hub replies to the connect-
-	// time WorkerTabInventory with its orphan / reassignment
-	// classification. Wired by the runner to trigger an immediate
-	// orphan-reconciler pass so reconnects converge worker state with
-	// the hub's CRDT-derived `workspace_tab_owned` view without
-	// waiting for the periodic interval.
+	// OnTabSyncResponse is called when the Hub replies to the connect-time
+	// WorkerTabInventory. The reply is deliberately empty: it only signals that
+	// the Hub finished its side. Wired by bootstrap.Wire to trigger an immediate
+	// orphan-reconciler pass so reconnects converge worker state with the Hub's
+	// CRDT-derived `workspace_tab_owned` view without waiting for the periodic
+	// interval.
 	OnTabSyncResponse func(*leapmuxv1.WorkerTabInventoryResponse)
 
 	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
 	// message on every Connect stream, before it publishes the connection -- so it
 	// fires before any ChannelOpen on the same stream can create a session, and
-	// therefore before any handler requireWorkerOwner gates can be dispatched.
+	// therefore before any handler the owner gate guards can be dispatched. The
+	// Hub sends the message again on a live stream when the owner's account
+	// changes, so the callback can run more than once per connection.
 	//
 	// The Hub is the only authority: it owns workers.registered_by. The worker keeps
 	// no copy, so a reconnect re-establishes the owner rather than trusting a cache
 	// that could have gone missing.
-	OnWorkerIdentity func(registeredBy string)
+	//
+	// It reports whether the worker holds an owner after the delivery. A delivery
+	// that leaves the worker with no owner, such as an empty owner on a worker that
+	// holds none, does not stop the identity watchdog (see identityReceived),
+	// because the owner gate then has nothing to admit. A worker that holds a
+	// seeded owner, or an owner from an earlier delivery, keeps it through such a
+	// delivery, so the watchdog stops.
+	OnWorkerIdentity func(identity *leapmuxv1.WorkerIdentity) (holdsOwner bool)
 
-	// PublicKey is the Worker's X25519 public key for E2EE channels.
-	// Sent to the Hub with the initial heartbeat.
-	PublicKey []byte
-	// MlkemPublicKey is the Worker's ML-KEM-1024 public key.
-	MlkemPublicKey []byte
-	// SlhdsaPublicKey is the Worker's SLH-DSA-SHAKE-256f public key.
-	SlhdsaPublicKey []byte
+	// PublicKeys is the Worker's static public key set, sent in the WorkerHello
+	// that opens every Connect stream. The Hub pinned it at registration and
+	// refuses a hello that presents any other key.
+	PublicKeys *leapmuxv1.WorkerPublicKeys
 	// EncryptionMode is the Worker's encryption mode.
 	EncryptionMode leapmuxv1.EncryptionMode
 
 	// TabSyncProvider returns the current tab state for WorkerTabInventory
-	// on connect. Set by the runner after initializing the worker service.
+	// on connect. Set by bootstrap.Wire after it builds the worker service.
 	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
 
 	mu           sync.Mutex
@@ -86,11 +94,13 @@ type Client struct {
 	connCancel   context.CancelFunc // cancel function for current connection context
 	lastSendTime time.Time          // last time a message was ENQUEUED (for idle heartbeat)
 	stopOnce     sync.Once
-	// identityReceived is set when the Hub delivers WorkerIdentity on the
-	// current connection. A watchdog (see watchForIdentity) force-closes the
-	// stream if it never arrives, so a proxy that strips the oneof, a partial
-	// upgrade, or a Hub bug cannot wedge requireWorkerOwner for the
-	// connection's life with no recovery short of a reconnect.
+	// identityReceived is set when the Hub delivers a WorkerIdentity on the
+	// current connection and OnWorkerIdentity reports that the worker holds an
+	// owner. A watchdog (see watchForIdentity) force-closes the stream if none
+	// arrives, so a proxy that strips the oneof, a partial upgrade, or a Hub bug
+	// that sends an empty owner cannot wedge the owner gate for the connection's
+	// life with no recovery short of a reconnect. With no OnWorkerIdentity,
+	// nothing consumes the owner, so any delivery sets it.
 	identityReceived atomic.Bool
 
 	// hubRetryDelay stores the retry delay (in seconds) requested by the Hub
@@ -133,11 +143,13 @@ func WithClock(clock quartz.Clock) ClientOption {
 // hubtransport.New, which accepts an http(s) URL, a `unix:` socket path or a
 // `npipe:` pipe name.
 //
-// Both services take the HTTP2Only client, and that is a requirement rather
-// than a preference: Connect is a BIDIRECTIONAL gRPC stream, which HTTP/1.1
-// cannot express. Against a cleartext hub with no h2c this client fails with
-// hubtransport.ErrH2CUnsupported, which states the URL and the remedy, instead
-// of degrading to a protocol on which the worker could never connect.
+// The connector client takes the HTTP2Only client and the gRPC protocol, and
+// that is a requirement rather than a preference: Connect is a BIDIRECTIONAL
+// gRPC stream, which HTTP/1.1 cannot express. Against a cleartext hub with no
+// h2c this client fails with hubtransport.ErrH2CUnsupported, which states the
+// URL and the remedy, instead of degrading to a protocol on which the worker
+// could never connect. The unary ListOwnedTabsForWorker uses the same client:
+// it needs no protocol of its own.
 func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 	httpClient := endpoint.HTTP2OnlyClient()
 	connectURL := endpoint.BaseURL()
@@ -147,11 +159,6 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 			connectURL,
 			connecthttp.WithReadMaxBytes(0),
 			connecthttp.WithGRPC(),
-		))),
-		reconciler: leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(
-			httpClient,
-			connectURL,
-			connecthttp.WithReadMaxBytes(0),
 		))),
 		endpoint: endpoint,
 		clock:    quartz.NewReal(),
@@ -275,8 +282,8 @@ const ShutdownFlushTimeout = 5 * time.Second
 // needed them is a browser that will never get another chance to hear from this
 // process.
 //
-// The limit lives here rather than in a parameter because there is one policy
-// and two entry points that would otherwise each restate it.
+// The limit lives here rather than in a parameter because there is one policy,
+// and a parameter would make each caller restate it.
 func (c *Client) FlushSends() error {
 	w := c.currentWriter()
 	if w == nil {
@@ -305,25 +312,63 @@ func (c *Client) TrySend(msg *leapmuxv1.ConnectRequest) bool {
 }
 
 // TrySendOrReset enqueues a must-deliver control frame on the receive
-// goroutine via the control-reserve budget (TryEnqueueControl). A drop
-// still cancels the connection so reconnect recovers the handshake -- that
-// path is reached only when even the reserved headroom is exhausted.
+// goroutine via the control-reserve budget (TryEnqueueControl), and reports
+// whether it did. It is trySendControl for a caller that needs only that
+// answer, such as channel.TrySendFunc.
 func (c *Client) TrySendOrReset(msg *leapmuxv1.ConnectRequest) bool {
+	return c.trySendControl(msg) == controlQueued
+}
+
+// controlSendOutcome is what trySendControl did with a must-deliver control
+// frame.
+type controlSendOutcome int
+
+const (
+	// controlQueued: the frame is queued.
+	controlQueued controlSendOutcome = iota
+	// controlConnectionEnding: the frame is dropped because the connection is
+	// already ending. Its writer is gone or closed, and nothing is cancelled:
+	// the receive loop reports why the connection ended.
+	controlConnectionEnding
+	// controlSaturated: the frame is dropped because even the control reserve
+	// is exhausted, and the connection is cancelled, so the reconnect recovers
+	// the handshake.
+	controlSaturated
+)
+
+// trySendControl enqueues a must-deliver control frame on the receive
+// goroutine via the control-reserve budget (TryEnqueueControl). A frame that
+// the reserve cannot hold cancels the connection so reconnect recovers the
+// handshake -- that path is reached only when even the reserved headroom is
+// exhausted.
+//
+// A writer that is gone or closed is not saturated: the connection is ending
+// already. Its context ended, or the writer gave up. A writer gives up WITHOUT
+// cancelling when the Hub ended the stream (see writerGiveUpCancelsConnection),
+// so the receive loop can still report the Hub's status, and a cancel here
+// would replace that status with Canceled. So the frame is dropped quietly, and
+// no cancel follows. A gone writer has no connection left to cancel: Connect
+// clears the writer and the cancel function together.
+func (c *Client) trySendControl(msg *leapmuxv1.ConnectRequest) controlSendOutcome {
 	w := c.currentWriter()
 	if w == nil {
-		c.cancelConn()
-		return false
+		slog.Debug("dropped a hub control frame: the connection is gone")
+		return controlConnectionEnding
 	}
-	if !w.TryEnqueueControl(msg) {
-		// The only place a saturated control reserve turns into a reconnect
-		// without any other trace. Logged because the disconnect it causes
-		// would otherwise look spontaneous from the outside.
-		slog.Warn("hub connect stream control queue saturated; resetting connection")
-		c.cancelConn()
-		return false
+	if w.TryEnqueueControl(msg) {
+		c.markEnqueued()
+		return controlQueued
 	}
-	c.markEnqueued()
-	return true
+	if w.IsClosed() {
+		slog.Debug("dropped a hub control frame: the connection is ending")
+		return controlConnectionEnding
+	}
+	// The only place a saturated control reserve turns into a reconnect
+	// without any other trace. Logged because the disconnect it causes
+	// would otherwise look spontaneous from the outside.
+	slog.Warn("hub connect stream control queue saturated; resetting connection")
+	c.cancelConn()
+	return controlSaturated
 }
 
 func (c *Client) currentWriter() *sendq.Writer[*leapmuxv1.ConnectRequest] {
@@ -352,7 +397,7 @@ func (c *Client) markEnqueued() {
 	c.mu.Unlock()
 }
 
-// ListOwnedTabsForWorker calls the hub's WorkerReconcilerService.
+// ListOwnedTabsForWorker calls the hub's WorkerConnectorService.ListOwnedTabsForWorker.
 // Authenticated by the worker's auth token (last seen on Connect).
 // Returns nil + error if Connect hasn't been called yet.
 //
@@ -369,7 +414,7 @@ func (c *Client) ListOwnedTabsForWorker(ctx context.Context) (*leapmuxv1.ListOwn
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
 	ctx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	resp, err := c.reconciler.ListOwnedTabsForWorker(ctx, req)
+	resp, err := c.connector.ListOwnedTabsForWorker(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -399,30 +444,37 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		return err
 	}
 
-	// Send an initial heartbeat INLINE on the stream before the writer exists.
-	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first
-	// Send(), and nothing else may enqueue until the writer is published.
+	// Send the WorkerHello INLINE on the stream before the writer exists. The
+	// Hub reads it before it lists this worker online, and answers the handshake
+	// of every channel from it. ConnectRPC with gRPC protocol only sends HTTP/2
+	// headers on the first Send(), and nothing else may enqueue until the writer
+	// is published.
 	//
-	// When the Hub refuses before that write finishes (fenced registry, worker
-	// cap, …), Send wraps io.EOF and Receive carries the real status — see
-	// connect.ClientStream.Send. Surface that status so reconnect logic
-	// sees Unavailable/ResourceExhausted instead of a bare Unknown/EOF.
+	// When the Hub refuses before it reads the hello (a missing, unknown or
+	// deleted token, or a Hub that is shutting down), this write can fail with an
+	// error that wraps io.EOF: connecthttp's duplexHTTPCall.Send maps a closed
+	// request pipe to io.EOF, and grpcClientConn.Receive reads the status.
+	// Surface that status, so that the reconnect loop sees the refusal and its
+	// WorkerConnectRefusal detail. A refusal after the hello read (a key
+	// mismatch, a fenced registry, the worker cap) cannot fail this write,
+	// because the transport takes the hello from the pipe before the Hub reads
+	// it. It can fail a later write with the same io.EOF error. The writer's
+	// give-up hook then leaves the connection to the receive loop, which returns
+	// the status.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{
-				PublicKey:       c.PublicKey,
-				MlkemPublicKey:  c.MlkemPublicKey,
-				SlhdsaPublicKey: c.SlhdsaPublicKey,
-				EncryptionMode:  c.EncryptionMode,
+		Payload: &leapmuxv1.ConnectRequest_Hello{
+			Hello: &leapmuxv1.WorkerHello{
+				Keys:           c.PublicKeys,
+				EncryptionMode: c.EncryptionMode,
 			},
 		},
 	}); err != nil {
 		if errors.Is(err, io.EOF) {
 			if _, recvErr := stream.Receive(); recvErr != nil {
-				return fmt.Errorf("initial heartbeat: %w", recvErr)
+				return fmt.Errorf("hello: %w", recvErr)
 			}
 		}
-		return fmt.Errorf("initial heartbeat: %w", err)
+		return fmt.Errorf("hello: %w", err)
 	}
 
 	writer := sendq.New(connCtx, sendq.Config[*leapmuxv1.ConnectRequest]{
@@ -436,17 +488,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		ControlReserve: sendq.DefaultControlReserve,
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
-		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
-			// Counted like every other sendq writer. The worker serves no
-			// /metrics of its own, but solo runs it in the Hub's process
-			// against the Hub's registry, so this is scrapeable there -- and
-			// an uncounted give-up is indistinguishable from one that never
-			// happened, which is the wrong answer to "why did that reconnect?"
-			metrics.CountSendqGiveUp(metrics.PoolWorkerClient, reason.Label())
-			slog.Warn("hub connect stream writer gave up; reconnecting",
-				"reason", reason.Label(), "error", err)
-			connCancel()
-		},
+		OnGiveUp:       c.connectWriterGiveUpHook(connCancel),
 		OnDiscard: func(frames int, bytes int64) {
 			slog.Debug("hub connect stream discarded queued frames",
 				"frames", frames, "bytes", bytes)
@@ -482,9 +524,10 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	slog.Info("connected to hub", "url", c.endpoint.URL())
 
 	// Reset identity tracking for this connection and arm the watchdog that
-	// force-closes the stream if the Hub never delivers WorkerIdentity. The
-	// Hub sends it before publishing the connection (worker_connector_service.go),
-	// so its absence within the budget signals a stripped/dropped greeting.
+	// force-closes the stream if the Hub never delivers a WorkerIdentity that
+	// leaves the worker with an owner. The Hub sends it before publishing the
+	// connection (worker_connector_service.go), so its absence within the budget
+	// signals a stripped, dropped or empty greeting.
 	c.identityReceived.Store(false)
 	go c.watchForIdentity(connCtx)
 
@@ -546,9 +589,8 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 		}
 
 	case *leapmuxv1.ConnectResponse_WorkerIdentity:
-		c.identityReceived.Store(true)
-		if c.OnWorkerIdentity != nil {
-			c.OnWorkerIdentity(payload.WorkerIdentity.GetRegisteredBy())
+		if c.OnWorkerIdentity == nil || c.OnWorkerIdentity(payload.WorkerIdentity) {
+			c.identityReceived.Store(true)
 		}
 
 	default:
@@ -603,7 +645,7 @@ const heartbeatIdleTimeout = 5 * time.Second
 // connect-time WorkerIdentity greeting before force-closing the stream. The
 // Hub sends it before publishing the connection, so its absence within this
 // budget signals a stripped/dropped greeting -- which would otherwise leave
-// requireWorkerOwner denying every machine-scoped RPC (file, git, sysinfo,
+// the owner gate denying every machine-scoped RPC (file, git, sysinfo,
 // tunnel) for the connection's life, indistinguishable from a genuine
 // cross-tenant refusal. Force-closing triggers ConnectWithReconnect's
 // backoff, which re-runs the greeting on a fresh stream.
@@ -638,8 +680,9 @@ func (c *Client) closeStreamOnCancel(
 	_ = stream.Close()
 }
 
-// watchForIdentity force-closes the connection if the Hub does not deliver
-// WorkerIdentity within workerIdentityTimeout. See Client.identityReceived.
+// watchForIdentity force-closes the connection if the Hub does not deliver,
+// within workerIdentityTimeout, a WorkerIdentity after which OnWorkerIdentity
+// reports an owner. See Client.identityReceived.
 func (c *Client) watchForIdentity(ctx context.Context) {
 	timer := c.clock.NewTimer(workerIdentityTimeout, hubIdentityTimerTag)
 	defer timer.Stop(hubIdentityTimerTag)
@@ -650,7 +693,7 @@ func (c *Client) watchForIdentity(ctx context.Context) {
 		if c.identityReceived.Load() {
 			return
 		}
-		slog.Warn("hub did not deliver worker identity within timeout; forcing reconnect",
+		slog.Warn("hub did not deliver a usable worker identity within timeout; forcing reconnect",
 			"timeout", workerIdentityTimeout)
 		c.cancelConn()
 	}
@@ -685,9 +728,7 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 			if idle >= heartbeatIdleTimeout {
 				if err := c.Send(&leapmuxv1.ConnectRequest{
 					Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-						Heartbeat: &leapmuxv1.Heartbeat{
-							EncryptionMode: c.EncryptionMode,
-						},
+						Heartbeat: &leapmuxv1.Heartbeat{},
 					},
 				}); err != nil {
 					// Debug when the connection was simply going away: the loop races
@@ -702,33 +743,75 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// bareUnauthenticatedRemedyThreshold is the number of consecutive Unauthenticated
+// refusals without a refusal detail at which a worker logs its remedy. One such
+// refusal can be a proxy that restarts. Several in a row mean that the Hub does
+// not know this worker's token, and the worker keeps retrying for ever, so only
+// the log can tell the operator what to do.
+const bareUnauthenticatedRemedyThreshold = 5
+
 // connectFn is a function that establishes a connection to the Hub.
 // Used for dependency injection in tests.
 type connectFn func(ctx context.Context, authToken string) error
 
+// ErrKeysRefused reports that the Hub refused this Worker's public keys because
+// they differ from the keys it registered with. Reconnecting cannot help: the
+// remedy is a new registration, which creates a new Worker.
+var ErrKeysRefused = errors.New("the hub refused this worker's public keys")
+
 // ConnectWithReconnect wraps Connect with automatic reconnection using
 // exponential backoff. Starts at 1s, doubles up to 180s, and resets after a
 // connection lasts longer than resetThreshold.
-func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) {
-	c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
+//
+// It returns nil when ctx ends, and when the Hub tells this worker it was
+// deleted (after running OnDeregister). A refusal of the worker's keys returns
+// an error wrapping ErrKeysRefused. Every other refusal is retried, because a
+// bare status code -- a proxy's 401 or 403, a Hub that does not know the token
+// -- must never destroy the worker's identity or stop it. When such refusals
+// repeat, the worker logs the remedy once (bareUnauthenticatedRemedyThreshold)
+// and keeps retrying.
+func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) error {
+	return c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
 }
 
-func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) {
+func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connectToHub connectFn, bo backoff, threshold time.Duration) error {
+	// The number of consecutive Unauthenticated refusals without a detail.
+	bareUnauthenticated := 0
 	for {
 		start := c.clock.Now(hubReconnectTimeTag)
-		err := connect(ctx, authToken)
+		err := connectToHub(ctx, authToken)
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
-		// If the Hub returns Unauthenticated, the worker has been deleted.
-		// Don't retry — call OnDeregister and exit.
-		if isCodeUnauthenticated(err) {
-			slog.Warn("authentication rejected by hub, worker may be deleted", "error", err)
+		// Only a refusal whose detail says reconnecting cannot help stops the
+		// loop. A bare code carries no such claim.
+		switch connectRefusalReason(err) {
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED:
+			// No detail: the refusal says nothing about whether reconnecting can
+			// help, so the loop backs off and tries again below.
+			if err != nil && connect.CodeOf(err) == connect.CodeUnauthenticated {
+				bareUnauthenticated++
+			} else {
+				bareUnauthenticated = 0
+			}
+			// The count reaches the threshold exactly once per run of refusals,
+			// so the retries that follow do not repeat this record.
+			if bareUnauthenticated == bareUnauthenticatedRemedyThreshold {
+				slog.Error("the hub does not know this worker's token. "+
+					"Check --hub and any proxy in front of the hub. "+
+					"If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.",
+					"refusals", bareUnauthenticated, "error", err)
+			}
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED:
+			slog.Warn("the hub reports that this worker was deleted; stopping", "error", err)
 			if c.OnDeregister != nil {
 				c.OnDeregister()
 			}
-			return
+			return nil
+		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER:
+			slog.Error("the hub refused this worker's public keys; stopping", "error", err)
+			return fmt.Errorf("%w: %w", ErrKeysRefused, err)
 		}
 
 		// If the Hub sent a shutdown notification with a retry delay,
@@ -737,7 +820,7 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		if delay := c.hubRetryDelay.Swap(0); delay > 0 {
 			slog.Info("hub requested reconnect delay", "delay_seconds", delay)
 			if !waitOrCancel(ctx, c.clock, time.Duration(delay)*time.Second, hubRequestedRetryTimerTag) {
-				return
+				return nil
 			}
 			bo.Reset()
 			continue
@@ -751,16 +834,81 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		interval := bo.Next()
 		slog.Warn("disconnected from hub, reconnecting...", "error", err, "backoff", interval)
 		if !waitOrCancel(ctx, c.clock, interval, hubReconnectTimerTag) {
-			return
+			return nil
 		}
 	}
 }
 
-// isCodeUnauthenticated checks if an error is a ConnectRPC Unauthenticated error.
-func isCodeUnauthenticated(err error) bool {
+// connectRefusalReason returns the WorkerConnectRefusal reason carried by err,
+// or UNSPECIFIED when it carries none. Only the detail counts: a bare
+// Unauthenticated, PermissionDenied or Canceled says nothing about whether
+// reconnecting can help.
+func connectRefusalReason(err error) leapmuxv1.WorkerConnectRefusalReason {
 	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
-		return connectErr.Code() == connect.CodeUnauthenticated
+	if !errors.As(err, &connectErr) {
+		return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
 	}
-	return false
+	for _, detail := range connectErr.Details() {
+		// The inverse of the connectproto.NewErrorDetail the Hub builds the
+		// detail with. A detail of a type this binary does not know, or one that
+		// does not decode, says nothing about this refusal.
+		msg, err := connectproto.UnmarshalErrorDetail(detail)
+		if err != nil {
+			continue
+		}
+		if refusal, ok := msg.(*leapmuxv1.WorkerConnectRefusal); ok {
+			return refusal.GetReason()
+		}
+	}
+	return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+}
+
+// writerGiveUpCancelsConnection reports whether a writer give-up must end the
+// connection by cancelling it, or whether the peer already ended the stream and
+// the receive loop will report why.
+//
+// A write that fails because the Hub ended the stream wraps io.EOF:
+// connecthttp's duplexHTTPCall.Send maps a closed request pipe to io.EOF, and
+// grpcClientConn.Receive reads the status from the trailers or from a
+// trailers-only response. Cancelling in that case makes duplexHTTPCall.Read
+// check the context before it reads the response, so Receive returns a bare
+// Canceled and the Hub's status -- with its WorkerConnectRefusal detail -- is
+// lost. Leaving the stream to its reader is what surfaces it.
+//
+// That the reader still ends is not a hope: the request pipe closes only on
+// paths that also end the response read -- connect's CloseWrite after a response
+// error, closeStreamOnCancel, or net/http's HTTP/2 client through
+// abortStreamLocked on RST_STREAM, GOAWAY and connection loss, after which
+// processResetStream or cleanupWriteRequest also closes the response body, and
+// through abortRequestBodyWrite on a status above 299, which connecthttp's
+// grpcValidateResponse turns into the error Receive returns. A write can fail
+// with io.EOF before that error exists, but makeRequest stores it as responseErr
+// before it closes responseReady, and Receive waits for responseReady.
+func writerGiveUpCancelsConnection(reason sendq.GiveUpReason, err error) bool {
+	if reason == sendq.GiveUpWriteError && errors.Is(err, io.EOF) {
+		return false
+	}
+	return true
+}
+
+// connectWriterGiveUpHook builds the connect writer's OnGiveUp hook. It is a
+// method so a test can drive the production hook, and it counts every give-up
+// whether or not it cancels.
+func (c *Client) connectWriterGiveUpHook(connCancel context.CancelFunc) func(sendq.GiveUpReason, error) {
+	return func(reason sendq.GiveUpReason, err error) {
+		// Counted like every other sendq writer. The worker serves no /metrics
+		// of its own, but solo runs it in the Hub's process against the Hub's
+		// registry, so this is scrapeable there -- and an uncounted give-up is
+		// indistinguishable from one that never happened, which is the wrong
+		// answer to "why did that reconnect?"
+		metrics.CountSendqGiveUp(metrics.PoolWorkerClient, reason.Label())
+		if !writerGiveUpCancelsConnection(reason, err) {
+			slog.Debug("hub connect stream writer gave up because the hub ended the stream; the receive loop reports why",
+				"reason", reason.Label(), "error", err)
+			return
+		}
+		slog.Warn("hub connect stream writer gave up; reconnecting",
+			"reason", reason.Label(), "error", err)
+		connCancel()
+	}
 }

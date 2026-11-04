@@ -10,9 +10,11 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // scopeFixture seeds a user who owns one worker, and returns both ids.
@@ -32,12 +34,10 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    userid.MustNew(userID),
-		PublicKey:       []byte("x25519"),
-		MlkemPublicKey:  []byte("mlkem"),
-		SlhdsaPublicKey: []byte("slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: userid.MustNew(userID),
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	return scopeFixture{st: st, userID: userID, workerID: workerID}
 }

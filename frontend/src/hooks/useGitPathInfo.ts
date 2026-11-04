@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createEffect, createMemo, createSignal, on } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { createLogger } from '~/lib/logger'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
@@ -95,7 +95,7 @@ export interface GitPathInfo {
 }
 
 /**
- * Wraps the workerRpc.getGitInfo probe behind a stable reactive surface
+ * Wraps the workerGit.getGitInfo probe behind a stable reactive surface
  * so consumers can drive their own loading/visibility UX. The probe
  * fires whenever workerId/path change (independent of whether
  * GitOptions is mounted), so a consumer can render a spinner during
@@ -154,8 +154,8 @@ export function useGitPathInfo(
       setInfo(buildInfo())
   }
 
-  const fetcher = createGuardedFetch<{ wid: string, p: string }, Awaited<ReturnType<typeof workerRpc.getGitInfo>>>({
-    fetch: ({ wid, p }, signal) => workerRpc.getGitInfo(wid, { workerId: wid, path: p }, { signal }),
+  const fetcher = createGuardedFetch<{ wid: string, p: string }, Awaited<ReturnType<typeof workerGit.getGitInfo>>>({
+    fetch: ({ wid, p }, signal) => workerGit.getGitInfo(wid, { path: p }, { signal }),
     applySuccess: (resp, args) => {
       // First-probe-on-worktree-root → remap: the caller's path setter
       // will switch to the canonical repoRoot, retriggering the probe.

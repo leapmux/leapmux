@@ -1,36 +1,35 @@
 /**
  * The terminal lifecycle transitions, as module-level units.
  *
- * Both arms of `handleTerminalEvent` -- the active workspace's and the
- * background one's -- route through these. Which workspace a terminal lives in
+ * `handleTerminalEvent` in `useWorkspaceConnection` routes every terminal,
+ * whatever its workspace, through these. Which workspace a terminal lives in
  * decides whether there is an xterm instance to write `data` to, and nothing
  * else: status and git fields drive the SIDEBAR, which renders every workspace
- * at once. Re-stating a subset in one arm is how the status half went missing.
+ * at once. A handler that re-stated a subset for one workspace is how the
+ * status half once went missing.
  */
 import type { TerminalNotification, TerminalProgress, TerminalStatusChange, TerminalTitleChanged } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
 import { notifyOs } from '~/lib/osNotification'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { tabKey } from '~/stores/tab.helpers'
 
 /**
- * The terminal-exit transition, in one place.
+ * The metadata half of a terminal TAB's exit, in one place.
  *
- * Both arms that observe a terminal dying write the same three fields, and the
- * two are ~50 lines apart in different branches of the same handler (one for a
- * terminal in a workspace the user is not looking at, one for the active
- * workspace). All three are load-bearing together: the old store's
- * `{...prev, ...fields}` spread let an `undefined` CLEAR `startupMessage`,
- * while `patch` skips undefined -- so a terminal that died DURING startup kept
- * its phase label and never set `contentReady`, and the restart rendered the
- * spinner labelled with the previous attempt's text. A fourth field added to
- * this transition should not have to be found twice.
+ * `applyShellExit` in `useWorkspaceConnection` is the one exit transition, and
+ * it calls this for every terminal that is not a quake terminal. The three
+ * fields are load-bearing together: the old store's `{...prev, ...fields}`
+ * spread let an `undefined` CLEAR `startupMessage`, while `patch` skips
+ * undefined -- so a terminal that died DURING startup kept its phase label and
+ * never set `contentReady`, and the restart rendered the spinner labelled with
+ * the previous attempt's text.
  *
  * It is a live status write, so it goes through `patchLiveStatus`: a
  * `ListTerminals` reply that was pending holds an older answer and must not
@@ -47,23 +46,23 @@ export function markTerminalExited(metadata: TabMetadataStore, terminalId: strin
 /**
  * The terminal `statusChange` transition, in one place.
  *
- * Shared by BOTH arms of `handleTerminalEvent` for the same reason
- * `markTerminalExited` is: which workspace a terminal lives in decides whether
- * there is an xterm instance to write `data` to, and nothing else. Status and
- * git fields drive the SIDEBAR, which renders every workspace at once.
+ * `handleTerminalEvent` routes every terminal through it, whatever its
+ * workspace: which workspace a terminal lives in decides whether there is an
+ * xterm instance to write `data` to, and nothing else. Status and git fields
+ * drive the SIDEBAR, which renders every workspace at once.
  *
  * The background arm used to patch git fields only, so a STARTING -> READY or
  * STARTUP_FAILED transition for a terminal the user was not looking at never
  * reached `WorkspaceTabTree`'s `data-terminal-status` -- the row kept its
  * startup spinner until the user switched in and the resubscribe's catch-up
  * marker repaired it. `useTabHydrators` could not re-arm it either: `hydrated`
- * is write-once and the tab was not DISCONNECTED.
+ * is write-once.
  *
  * Each write of the lifecycle goes through `patchLiveStatus`, so a
  * `ListTerminals` reply that was pending holds an older answer and must not
- * replace it. See `TabMetadataStore.liveStatusEpoch`. An event that the guards
- * below refuse writes nothing and counts for nothing: the reply of a re-ask is
- * what heals a DISCONNECTED tab, and a count would hold that reply back.
+ * replace it. See `TabMetadataStore.liveStatusEpoch`. An event that the checks
+ * below drop writes nothing and counts for nothing, because a count would hold
+ * back a pending reply that still applies.
  */
 export function applyTerminalStatusChange(
   metadata: TabMetadataStore,
@@ -71,6 +70,14 @@ export function applyTerminalStatusChange(
   existingTab: TerminalTab | undefined,
   terminalId: string,
   sc: TerminalStatusChange,
+  /**
+   * The one exit transition, which a live `closed` event takes too.
+   *
+   * Required, so that no caller can apply EXITED by a second path. A quake
+   * terminal must retract its panel on an exit, and only the caller holds the
+   * quake store.
+   */
+  onExited: (terminalId: string) => void,
   /** Watch-stream worker id; used when the tab row is not joined yet. */
   streamWorkerId = '',
 ): void {
@@ -103,9 +110,10 @@ export function applyTerminalStatusChange(
       }
       break
     case TerminalStatus.READY:
-      // Preserve DISCONNECTED / EXITED — a previously-alive terminal
-      // whose worker reconnected should not be dragged back to READY.
-      if (existingTab?.status === TerminalStatus.STARTING || existingTab?.status === undefined) {
+      // READY states that the shell runs, so it applies from any status. The
+      // check drops only a READY that repeats the status of the tab, which every
+      // replay sends: see the note on counting above.
+      if (existingTab?.status !== TerminalStatus.READY) {
         // `''`, not `undefined`: `patch` SKIPS undefined so a caller can
         // send a partial row without blanking fields another source owns.
         // Clearing therefore has to be an explicit empty value — the same
@@ -123,6 +131,12 @@ export function applyTerminalStatusChange(
         startupError: sc.startupError ?? '',
         startupMessage: '',
       })
+      break
+    case TerminalStatus.EXITED:
+      // The worker replays EXITED for a shell that exited before the watch
+      // began, so a page that loads cold learns it here. It is the same
+      // transition as a live exit, from any earlier status.
+      onExited(terminalId)
       break
   }
 }

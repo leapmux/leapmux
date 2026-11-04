@@ -283,7 +283,7 @@ func TestDiffProjectionForBatch_RetileToNonLeafUnrendersInOneUpsert(t *testing.T
 	require.Len(t, crdt.Project(prev).RenderedTabs, 1, "precondition: the tab renders on the leaf child")
 
 	batch := []*leapmuxv1.CrdtOp{stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(4, 0, "a"))}
 	next := crdt.CloneState(state)
@@ -315,19 +315,19 @@ func TestDiffProjection_ReviveBatchReAddsTabRow(t *testing.T) {
 	// 1. Seed a workspace with a leaf root, place a tab on it, then close it.
 	state := seedWorkspaceWithRoot("w1", "root1")
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 	}, hlcAt(10, 0, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
 	}, hlcAt(10, 1, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 	}, hlcAt(10, 2, "a")))
 	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 	}, hlcAt(20, 0, "a")))
 	require.False(t, crdt.HLCIsZero(state.GetTabs()["tA"].GetTombstoneAt()),
 		"precondition: the tab must be tombstoned (closed) before the revive")
@@ -340,18 +340,18 @@ func TestDiffProjection_ReviveBatchReAddsTabRow(t *testing.T) {
 
 	batch := []*leapmuxv1.CrdtOp{
 		stamped(&leapmuxv1.ReviveTabOp{
-			Tab: &leapmuxv1.TabRef{TabId: "tA", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		}, hlcAt(30, 0, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 		}, hlcAt(30, 1, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
 		}, hlcAt(30, 2, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
 		}, hlcAt(30, 3, "a")),
 	}

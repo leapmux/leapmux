@@ -76,13 +76,12 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	token := requestRecoveryLinkFor(t, env, sender, "pkrecover")
 	begin := beginRecoveryPasskey(t, env, token)
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
 	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
-		Token:          token,
-		SessionId:      begin.GetSessionId(),
-		CredentialJson: credentialJSON,
+		Token:      token,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: begin.GetChallenge().GetSessionId(), CredentialJson: credentialJSON},
 	})
 	require.NoError(t, err)
 
@@ -104,11 +103,10 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	loginReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"}
 	loginBegin, err := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), loginReq)
 	require.NoError(t, err)
-	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      loginBegin.GetSessionId(),
-		CredentialJson: assertionJSON,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: loginBegin.GetChallenge().GetSessionId(), CredentialJson: assertionJSON},
 	})
 	require.NoError(t, err)
 
@@ -118,12 +116,11 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	token2 := requestRecoveryLinkFor(t, env, sender, "pkrecover")
 	begin2 := beginRecoveryPasskey(t, env, token2)
 	ceremony2 := newPasskeyCeremony()
-	credentialJSON2, err := ceremony2.registrationResponse(begin2.GetOptionsJson())
+	credentialJSON2, err := ceremony2.registrationResponse(begin2.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
-		Token:          token2,
-		SessionId:      begin2.GetSessionId(),
-		CredentialJson: credentialJSON2,
+		Token:      token2,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: begin2.GetChallenge().GetSessionId(), CredentialJson: credentialJSON2},
 	})
 	require.NoError(t, err)
 	count, err = env.store.PasskeyCredentials().CountByUser(context.Background(), userID)
@@ -133,18 +130,16 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	reloginReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"}
 	reloginBegin, err := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), reloginReq)
 	require.NoError(t, err)
-	oldAssertion, err := ceremony.assertionResponse(reloginBegin.GetOptionsJson())
+	oldAssertion, err := ceremony.assertionResponse(reloginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      reloginBegin.GetSessionId(),
-		CredentialJson: oldAssertion,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: reloginBegin.GetChallenge().GetSessionId(), CredentialJson: oldAssertion},
 	})
 	assert.Error(t, err, "the revoked first-recovery passkey must not sign in")
-	newAssertion, err := ceremony2.assertionResponse(reloginBegin.GetOptionsJson())
+	newAssertion, err := ceremony2.assertionResponse(reloginBegin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      reloginBegin.GetSessionId(),
-		CredentialJson: newAssertion,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: reloginBegin.GetChallenge().GetSessionId(), CredentialJson: newAssertion},
 	})
 	assert.Error(t, err, "a ceremony session is single-use; the second Finish must refuse")
 }
@@ -176,7 +171,7 @@ func TestFinishAccountRecoveryPasskey_TokenSpentByPassword(t *testing.T) {
 	token := requestRecoveryLinkFor(t, env, sender, "racespend")
 	begin := beginRecoveryPasskey(t, env, token)
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
 	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
@@ -186,9 +181,8 @@ func TestFinishAccountRecoveryPasskey_TokenSpentByPassword(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
-		Token:          token,
-		SessionId:      begin.GetSessionId(),
-		CredentialJson: credentialJSON,
+		Token:      token,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: begin.GetChallenge().GetSessionId(), CredentialJson: credentialJSON},
 	})
 	// The password path spent the token, so Finish refuses -- never a
 	// success, never a half-spent write.
@@ -376,8 +370,8 @@ func TestBeginAccountRecoveryPasskey_UndecryptableExistingPasskey(t *testing.T) 
 
 	token := requestRecoveryLinkFor(t, env, sender, "badcipher")
 	begin := beginRecoveryPasskey(t, env, token)
-	require.NotEmpty(t, begin.GetSessionId())
-	require.NotEmpty(t, begin.GetOptionsJson())
+	require.NotEmpty(t, begin.GetChallenge().GetSessionId())
+	require.NotEmpty(t, begin.GetChallenge().GetOptionsJson())
 
 	row, err := env.store.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
@@ -413,12 +407,11 @@ func TestFinishAccountRecoveryPasskey_RefusesAfterForceExpire(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 	ceremony := newPasskeyCeremony()
-	credentialJSON, err := ceremony.registrationResponse(last.GetOptionsJson())
+	credentialJSON, err := ceremony.registrationResponse(last.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
-		Token:          token,
-		SessionId:      last.GetSessionId(),
-		CredentialJson: credentialJSON,
+		Token:      token,
+		Credential: &leapmuxv1.WebAuthnCredential{SessionId: last.GetChallenge().GetSessionId(), CredentialJson: credentialJSON},
 	})
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 

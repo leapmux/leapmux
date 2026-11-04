@@ -15,15 +15,16 @@ export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boo
   return {
     state,
 
-    apply(snapshot: AgentInputQueueSnapshot | undefined): boolean {
-      if (!snapshot?.agentId)
+    /** Apply `agentId`'s snapshot. The carrier states the agent, as the snapshot does not. */
+    apply(agentId: string, snapshot: AgentInputQueueSnapshot | undefined): boolean {
+      if (!agentId || !snapshot)
         return false
-      if (!isLiveAgent(snapshot.agentId))
+      if (!isLiveAgent(agentId))
         return false
-      const current = state.byAgent[snapshot.agentId]
+      const current = state.byAgent[agentId]
       if (current && current.revision > snapshot.revision)
         return false
-      setState('byAgent', snapshot.agentId, snapshot)
+      setState('byAgent', agentId, snapshot)
       return true
     },
 

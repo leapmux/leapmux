@@ -801,14 +801,14 @@ describe('lazy WebGL renderer', () => {
     instance.dispose()
   })
 
-  it('detachWebgl is a no-op when nothing is attached', () => {
+  it('is a no-op in detachWebgl when nothing is attached', () => {
     const instance = createTerminalInstance()
     expect(() => detachWebgl(instance)).not.toThrow()
     expect(instance.webglAddon).toBeUndefined()
     instance.dispose()
   })
 
-  it('refreshTerminalFont re-arms fontsReady and reports change only when the family actually changes', () => {
+  it('re-arms fontsReady and reports change through refreshTerminalFont only when the family actually changes', () => {
     const instance = createTerminalInstance()
     const before = instance.fontsReady
     const currentFamily = instance.terminal.options.fontFamily!

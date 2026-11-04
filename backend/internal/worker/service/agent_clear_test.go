@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -82,7 +83,7 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 
 	registerAgentWatch(svc, w.channelID, "agent-codex", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-codex",
 		Content: `{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}`,
 	}, w)
@@ -140,7 +141,7 @@ func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t 
 
 	registerAgentWatch(svc, w.channelID, "agent-claude", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-claude",
 		Content: `{"type":"control_request","request":{"subtype":"interrupt"}}`,
 	}, w)

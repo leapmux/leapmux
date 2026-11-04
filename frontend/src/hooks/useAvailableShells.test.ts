@@ -3,11 +3,12 @@ import { createRoot, createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'
 
-const listAvailableShells = vi.fn<(workerId: string, req: { workspaceId: string, workerId: string }) => Promise<ListAvailableShellsResponse>>()
+const listAvailableShells = vi.fn<(workerId: string) => Promise<ListAvailableShellsResponse>>()
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableShells: (workerId: string, req: { workspaceId: string, workerId: string }) =>
-    listAvailableShells(workerId, req),
+  workerTerminal: {
+    listAvailableShells: (workerId: string) => listAvailableShells(workerId),
+  },
 }))
 
 const { useAvailableShells } = await import('./useAvailableShells')
@@ -50,10 +51,7 @@ describe('useAvailableShells', () => {
         setWorkerId('A')
         await flush()
         expect(listAvailableShells).toHaveBeenCalledTimes(1)
-        expect(listAvailableShells.mock.calls[0]).toEqual([
-          'A',
-          { workerId: 'A' },
-        ])
+        expect(listAvailableShells.mock.calls[0]).toEqual(['A'])
         expect(hook.shells()).toEqual(['/bin/zsh', '/bin/bash'])
         expect(hook.defaultShell()).toBe('/bin/zsh')
         expect(hook.shell()).toBe('/bin/zsh')
@@ -169,7 +167,7 @@ describe('useAvailableShells', () => {
     })
   })
 
-  it('setShell(null) clears the override and the effective shell follows the default again', async () => {
+  it('clears the override when setShell(null) runs, and the effective shell follows the default again', async () => {
     listAvailableShells.mockResolvedValueOnce(shellsResp(['/bin/zsh', '/bin/bash'], '/bin/zsh'))
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {

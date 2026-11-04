@@ -33,14 +33,18 @@ describe('createCaptchaForm', () => {
 
     captcha.setPayload('solved')
     expect(captcha.blocksSubmit()).toBe(false)
-    expect(captcha.fields()).toEqual({ captchaPayload: 'solved', honeypot: '' })
+    expect(captcha.fields()).toEqual({
+      captcha: { payload: 'solved', honeypot: '' },
+    })
   })
 
   it('never blocks when the hub answers captcha-disabled', () => {
     const captcha = createCaptchaForm()
     expect(captcha.required()).toBe(false)
     expect(captcha.blocksSubmit()).toBe(false)
-    expect(captcha.fields()).toEqual({ captchaPayload: '', honeypot: '' })
+    expect(captcha.fields()).toEqual({
+      captcha: { payload: '', honeypot: '' },
+    })
   })
 
   it('lifts the requirement when the hub answers no challenge, and a reset re-arms', () => {
@@ -70,7 +74,9 @@ describe('createCaptchaForm', () => {
     expect(captcha.payload()).toBeNull()
     // A honeypot an autofill heuristic filled must not make the retry fail.
     expect(captcha.honeypot()).toBe('')
-    expect(captcha.fields()).toEqual({ captchaPayload: '', honeypot: '' })
+    expect(captcha.fields()).toEqual({
+      captcha: { payload: '', honeypot: '' },
+    })
     expect(fieldReset).toHaveBeenCalledOnce()
   })
 

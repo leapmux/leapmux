@@ -174,6 +174,21 @@ func TestAppService_PrivateAppIsInvisibleToEverybodyElse(t *testing.T) {
 	assert.Equal(t, "my-app", row.ClientName)
 }
 
+// A malformed cursor is the caller's input to fix, so the listing answers
+// InvalidArgument, as every other paginated handler does. The store wraps the
+// parse failure in store.ErrInvalidCursor before any query runs.
+func TestListAppsRejectsAMalformedCursor(t *testing.T) {
+	t.Parallel()
+
+	env := setupAppService(t)
+	_, err := env.client.ListApps(authedReq(context.Background(), &leapmuxv1.ListAppsRequest{
+		Page: &leapmuxv1.PageRequest{Cursor: "no-delimiter"},
+	}, env.user))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"a malformed cursor is bad input, not a hub fault")
+}
+
 // An administrator's app is hub-wide, and an ordinary user may neither edit nor
 // delete it -- but the hub-wide catalogue is what every account authorizes
 // against, so its existence is not a secret the way a private app is.

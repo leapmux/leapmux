@@ -2,24 +2,28 @@ import type { RepoCheckout } from './repoCheckouts'
 import type { BranchGroup } from './workspaceTabTree.model'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerTerminal } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { RepoContextMenu } from './RepoContextMenu'
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableProviders: vi.fn(async () => ({
-    providers: [AgentProvider.CLAUDE_CODE],
-  })),
-  listAvailableShells: vi.fn(async () => ({
-    shells: ['/bin/zsh'],
-    defaultShell: '/bin/zsh',
-  })),
+  workerAgent: {
+    listAvailableProviders: vi.fn(async () => ({
+      providers: [AgentProvider.CLAUDE_CODE],
+    })),
+  },
+  workerTerminal: {
+    listAvailableShells: vi.fn(async () => ({
+      shells: ['/bin/zsh'],
+      defaultShell: '/bin/zsh',
+    })),
+  },
 }))
 
-const listProviders = workerRpc.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
-const listShells = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
+const listProviders = workerAgent.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
+const listShells = workerTerminal.listAvailableShells as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -156,8 +160,8 @@ describe('RepoContextMenu', () => {
     expect(listShells).not.toHaveBeenCalled()
 
     openMenu()
-    expect(listProviders).toHaveBeenCalledWith('w1', expect.anything())
-    expect(listShells).toHaveBeenCalledWith('w1', { workerId: 'w1' })
+    expect(listProviders).toHaveBeenCalledWith('w1', {}, expect.anything())
+    expect(listShells).toHaveBeenCalledWith('w1')
   })
 
   // A repository can span two machines, so each checkout asks its OWN Worker
@@ -172,7 +176,7 @@ describe('RepoContextMenu', () => {
     openMenu()
     fireEvent.click(screen.getByTestId('repo-checkout-main-worker-b'))
 
-    expect(listShells).toHaveBeenCalledWith('w2', { workerId: 'w2' })
+    expect(listShells).toHaveBeenCalledWith('w2')
   })
 
   it('collapses every branch of the repository from its own item', () => {

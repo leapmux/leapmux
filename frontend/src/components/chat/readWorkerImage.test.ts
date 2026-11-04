@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFile } from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { base64ToUint8Array } from '~/lib/base64'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { readWorkerImage } from './readWorkerImage'
 
 vi.mock('~/api/workerRpc', () => ({
-  readFile: vi.fn(),
+  workerFile: {
+    readFile: vi.fn(),
+  },
 }))
-const read = vi.mocked(readFile)
+const read = vi.mocked(workerFile.readFile)
 const data = pngBase64(12, 8)
 const content = base64ToUint8Array(data)
 const signal = new AbortController().signal

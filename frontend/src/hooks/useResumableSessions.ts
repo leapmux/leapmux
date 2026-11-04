@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider, AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
 import { batch, createEffect, createMemo, createSignal, on, untrack } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
 import { createLogger } from '~/lib/logger'
 import { shallowEqual } from '~/lib/shallowEqual'
@@ -65,9 +65,8 @@ export function useResumableSessions(
   const [sessions, setSessions] = createSignal<AgentSessionSummary[]>([])
   const [settled, setSettled] = createSignal(false)
 
-  const fetcher = createGuardedFetch<UseResumableSessionsArgs, Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>({
-    fetch: (args, signal) => workerRpc.listAgentSessions(args.workerId, {
-      workerId: args.workerId,
+  const fetcher = createGuardedFetch<UseResumableSessionsArgs, Awaited<ReturnType<typeof workerAgent.listAgentSessions>>>({
+    fetch: (args, signal) => workerAgent.listAgentSessions(args.workerId, {
       workingDir: args.workingDir,
       agentProvider: args.agentProvider,
     }, { signal }),

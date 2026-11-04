@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -119,7 +120,7 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 
 	userID := seedRevocableUser(t, env, "carol")
 	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
-		UserId: userID, InstallationName: "carols-laptop"}, env.token))
+		User: service.SelectUserByID(userID), InstallationName: "carols-laptop"}, env.token))
 	require.NoError(t, err)
 
 	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{
@@ -219,7 +220,7 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	require.NoError(t, err)
 
 	resp, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
-		Id: userID,
+		User: service.SelectUserByID(userID),
 	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), resp.GetApiTokensRevoked())

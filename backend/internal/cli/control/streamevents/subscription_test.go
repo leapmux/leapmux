@@ -196,15 +196,13 @@ func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
 	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
 			AgentId: "a-1",
-			Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{NumToolUses: protoInt32(2)}},
+			Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{}},
 		}},
 	})
 
 	assert.Equal(t, 0, calls, "turn_end must not reach onAgent")
 	assert.Equal(t, int64(0), agents.Get("a-1"), "turn_end must not advance the agent cursor")
 }
-
-func protoInt32(v int32) *int32 { return &v }
 
 // fastRetry is a small, jitterless LOOKUP_FAILED budget for tests that drive
 // the ladder to exhaustion: 3 attempts at a deterministic 10ms → 20ms → 30ms.
@@ -1755,7 +1753,7 @@ func (channel *replayIdentityChannel) SendRPCNoWait(ctx context.Context, method 
 	return channel.fakeChannel.SendRPCNoWait(ctx, method, payload, handlers)
 }
 
-func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte, cancel bool) error {
+func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte) error {
 	channel.mu.Lock()
 	channel.revisions = append(channel.revisions, append([]byte(nil), payload...))
 	fail := channel.failNextUpdate
@@ -1764,7 +1762,7 @@ func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id 
 	if fail {
 		return errors.New("the channel refused the update")
 	}
-	return channel.fakeChannel.SendStreamRequest(ctx, id, payload, cancel)
+	return channel.fakeChannel.SendStreamRequest(ctx, id, payload)
 }
 
 func (channel *replayIdentityChannel) requests(t *testing.T, opening bool) []*leapmuxv1.WatchEventsRequest {

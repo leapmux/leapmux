@@ -15,6 +15,8 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // mockConnectorClient implements WorkerConnectorServiceClient for
@@ -78,7 +80,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		result, err := registerWithClient(t.Context(), mock, "key123", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
 		done <- outcome{result: result, err: err}
 	}()
 	for range failCount {
@@ -108,7 +110,7 @@ func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "", "v", nil, nil, nil, fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
 	require.Error(t, err)
 	_, running := clock.Peek()
 	assert.False(t, running, "a missing key is permanent, so it must arm no retry")
@@ -132,7 +134,7 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		_, err := registerWithClient(ctx, mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
 		errCh <- err
 	}()
 
@@ -167,7 +169,7 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "k", "v", nil, nil, nil, fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
 	require.Error(t, err)
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
 	_, running := clock.Peek()
@@ -208,7 +210,7 @@ func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(t.Context(), mock, "k", "0.0.1", nil, nil, nil, retry)
+		_, err := registerWithClient(t.Context(), mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
 		errCh <- err
 	}()
 	want := []time.Duration{
@@ -280,7 +282,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, retry)
+		result, err := registerWithClient(t.Context(), mock, "key123", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
 		done <- outcome{result: result, err: err}
 	}()
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
@@ -316,9 +318,29 @@ func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
 		attemptTimeout: time.Minute,
 		clock:          clock,
 	}
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, retry)
+	_, err := registerWithClient(ctx, mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	_, running := clock.Peek()
 	assert.False(t, running, "a cancelled caller must not leave a retry armed")
+}
+
+// The registration request carries the public keys the Hub pins, because a
+// hub that pins keys at registration is what makes a stolen auth token useless
+// on its own.
+func TestRegisterWithClient_SendsTheKeys(t *testing.T) {
+	keys := workerkeystest.Keys(workerkeystest.SeededWorkerFill)
+	var seen *leapmuxv1.WorkerPublicKeys
+	mock := &mockConnectorClient{
+		registerFn: func(_ context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+			seen = req.GetKeys()
+			return &leapmuxv1.RegisterResponse{WorkerId: "worker-1", AuthToken: "token-1"}, nil
+		},
+	}
+
+	result, err := registerWithClient(t.Context(), mock, "k", keys, fastRegisterRetry(testutil.NewQuartzMock(t)))
+	require.NoError(t, err)
+	require.NotNil(t, seen, "the request must carry a key set")
+	assert.True(t, workerkeys.Equal(keys, seen))
+	assert.Equal(t, "worker-1", result.WorkerID)
 }

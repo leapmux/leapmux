@@ -8,7 +8,7 @@ import (
 
 type streamChannel interface {
 	Context() context.Context
-	SendStreamRequest(context.Context, uint64, []byte, bool) error
+	SendStreamRequest(context.Context, uint64, []byte) error
 	CancelStream(context.Context, uint64) error
 }
 
@@ -53,7 +53,7 @@ func (controller *crossWorkerStreamCtrl) loop() {
 			return
 		}
 		if pending {
-			if err := controller.ch.SendStreamRequest(ctx, controller.reqID, payload, false); err != nil && ctx.Err() == nil {
+			if err := controller.ch.SendStreamRequest(ctx, controller.reqID, payload); err != nil && ctx.Err() == nil {
 				slog.Warn("cross-worker stream update failed", "correlation_id", controller.reqID, "error", err)
 			}
 		}

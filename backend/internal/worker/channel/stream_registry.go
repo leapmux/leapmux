@@ -1,8 +1,11 @@
 package channel
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
+
+	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -53,6 +56,11 @@ func (r *streamRegistry) bindReserved(id uint64, inbox *StreamInbox, controller 
 	return func() { r.remove(id, inbox); inbox.Release() }, true
 }
 
+// errStreamFrameNoAction is the error of a client frame that selects neither a
+// revision nor a cancel. Such a frame states nothing that the worker could act
+// on, so the worker fails the stream instead of guessing.
+var errStreamFrameNoAction = errors.New("a stream frame selects no action")
+
 // deliver returns cleanup on failure. The caller must send the error before cleanup can emit a clean End.
 func (r *streamRegistry) deliver(id uint64, frame *leapmuxv1.InnerStreamRequest) (func(), error) {
 	r.mu.Lock()
@@ -62,17 +70,31 @@ func (r *streamRegistry) deliver(id uint64, frame *leapmuxv1.InnerStreamRequest)
 		slog.Debug("dropping a frame for an unknown stream", "correlation_id", id)
 		return nil, nil
 	}
-	if frame.GetCancel() {
+	failStream := func() { r.remove(id, inbox); inbox.Cancel() }
+	switch action := frame.GetAction().(type) {
+	case *leapmuxv1.InnerStreamRequest_Cancel:
 		inbox.Cancel()
 		if inbox.IsBound() {
 			r.remove(id, inbox)
 		}
 		return nil, nil
+	case *leapmuxv1.InnerStreamRequest_Payload:
+		if err := inbox.Deliver(action.Payload); err != nil {
+			return failStream, err
+		}
+		return nil, nil
+	default:
+		return failStream, errStreamFrameNoAction
 	}
-	if err := inbox.Deliver(frame.GetPayload()); err != nil {
-		return func() { r.remove(id, inbox); inbox.Cancel() }, err
+}
+
+// streamFrameErrorCode is the code of the stream error frame that answers a
+// client frame that deliver refused.
+func streamFrameErrorCode(err error) codes.Code {
+	if errors.Is(err, errStreamFrameNoAction) {
+		return codes.InvalidArgument
 	}
-	return nil, nil
+	return codes.ResourceExhausted
 }
 
 func (r *streamRegistry) releaseAll() {

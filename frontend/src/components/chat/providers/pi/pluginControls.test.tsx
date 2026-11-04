@@ -2,6 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
+import { PI_QUESTION_DIALOG } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { testMessageContext } from '~/test-support/messageContext'
@@ -100,7 +101,7 @@ describe('pi select control requests', () => {
         id: 'empty',
         method: 'input',
         title: 'Choose any options',
-        placeholder: '1,3',
+        placeholder: PI_QUESTION_DIALOG.MultiSelectPlaceholder,
       },
     }
     const onRespond = vi.fn(async (_content: Uint8Array) => {})
@@ -191,7 +192,7 @@ describe('pi select control requests', () => {
         id: 'dialog',
         method: 'input',
         title: 'Choose\n\n1. A — first\n2. B — second\n\nChoose all that apply',
-        placeholder: '1,3',
+        placeholder: PI_QUESTION_DIALOG.MultiSelectPlaceholder,
       },
     }
     const answerState = makeAskState()

@@ -550,7 +550,7 @@ describe('boot phase checklist', () => {
     getItem.mockRestore()
   })
 
-  it('setBootPhase writes the exact attribute the stylesheet reads', () => {
+  it('writes the exact attribute the stylesheet reads through setBootPhase', () => {
     setBootPhase('session')
     expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('session')
 
@@ -558,7 +558,7 @@ describe('boot phase checklist', () => {
     expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe(BOOT_PHASE_READY)
   })
 
-  it('setBootShell toggles the attribute that reveals shell rows', () => {
+  it('toggles the attribute that reveals shell rows through setBootShell', () => {
     setBootShell(true)
     expect(document.documentElement.hasAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE)).toBe(true)
     setBootShell(false)

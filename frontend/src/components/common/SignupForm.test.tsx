@@ -2,7 +2,8 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider } from '~/generated/proto/leapmux/v1/system_pb'
+import { settle } from '~/test-support/async'
 import { resetCaptchaMocks } from '~/test-support/captchaMocks'
 import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
@@ -24,9 +25,10 @@ vi.mock('~/api/clients', () => ({
 }))
 
 // Mock only the passkey ceremony. Keep the real passkeyErrorMessage classifier to distinguish cancellation from failure.
+const mockRegisterForChallenge = vi.hoisted(() => vi.fn())
 vi.mock('~/lib/webauthn', async importOriginal => ({
   ...await importOriginal<typeof import('~/lib/webauthn')>(),
-  startRegistration: vi.fn().mockResolvedValue('{"id":"cred"}'),
+  registerForChallenge: mockRegisterForChallenge,
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -269,5 +271,145 @@ describe('signup username validation', () => {
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
     expect(mockSignUp).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ username: 'admin', password: 'newpass123' }))
     expect(screen.queryByText(/reserved username/i)).not.toBeInTheDocument()
+  })
+})
+
+// Both sign-up methods hand the caller the session report the hub returned.
+// The caller adopts it through setAuth, which also starts recovery for a
+// report with no account, so the form passes such a report on unchanged.
+describe('signup form success', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetSystemInfoMock()
+    resetCaptchaMocks()
+  })
+
+  function fillPasswordForm() {
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
+  }
+
+  it('hands the password sign-up report to the caller', async () => {
+    const report = {
+      user: { id: 'u-1', username: 'alice' },
+    }
+    mockSignUp.mockResolvedValue({ sessionReport: report })
+    const onSuccess = vi.fn()
+    renderForm({ onSuccess })
+    fillPasswordForm()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
+    expect(onSuccess.mock.calls[0]?.[0]).toEqual({ report })
+    expect(onSuccess.mock.calls[0]?.[0].report).toBe(report)
+  })
+
+  // A password manager can submit the form itself, past the disabled button.
+  // While the system info is pending, the form cannot tell whether the hub
+  // requires a captcha, so a sign-up sent then can arrive without a captcha
+  // that the hub requires. So the handler refuses exactly when the button
+  // does.
+  it('refuses a programmatic submit until bootstrap answers the captcha question', async () => {
+    setSystemInfoMock({ loaded: false })
+    mockSignUp.mockResolvedValue({})
+    renderForm()
+    fillPasswordForm()
+    const form = screen.getByRole('button', { name: 'Create account' }).closest('form')!
+
+    form.requestSubmit()
+    await settle()
+    expect(mockSignUp).not.toHaveBeenCalled()
+
+    setSystemInfoMock({ loaded: true })
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Create account' })).toBeEnabled())
+    form.requestSubmit()
+    await vi.waitFor(() => expect(mockSignUp).toHaveBeenCalledOnce())
+  })
+
+  // The form keeps `submitting` after a success, because the caller navigates
+  // away. A second programmatic submit in that window would create a second
+  // account, or sign in over the first.
+  it('refuses a programmatic submit while a sign-up is in flight', async () => {
+    mockSignUp.mockReturnValue(new Promise<never>(() => {}))
+    renderForm()
+    fillPasswordForm()
+    const form = screen.getByRole('button', { name: 'Create account' }).closest('form')!
+
+    form.requestSubmit()
+    expect(await screen.findByRole('button', { name: 'Creating account...' })).toBeDisabled()
+    form.requestSubmit()
+    await settle()
+
+    expect(mockSignUp).toHaveBeenCalledOnce()
+  })
+
+  // The sign-up succeeded and only the account read-back is missing. The old
+  // form threw here and told the user that a created account failed.
+  it('hands an absent report to the caller instead of reporting a failure', async () => {
+    mockSignUp.mockResolvedValue({})
+    const onSuccess = vi.fn()
+    renderForm({ onSuccess })
+    fillPasswordForm()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledExactlyOnceWith({ report: undefined }))
+    expect(screen.queryByText(/Sign up failed/)).not.toBeInTheDocument()
+  })
+
+  it('runs the passkey ceremony on the challenge and hands its report to the caller', async () => {
+    const challenge = { sessionId: 'sess-1', optionsJson: '{}' }
+    const credential = { sessionId: 'sess-1', credentialJson: '{"id":"cred"}' }
+    const report = {
+      user: { id: 'u-2', username: 'alice' },
+    }
+    mockBeginPasskeySignUp.mockResolvedValue({ challenge })
+    mockRegisterForChallenge.mockResolvedValue(credential)
+    mockFinishPasskeySignUp.mockResolvedValue({ sessionReport: report })
+    const onSuccess = vi.fn()
+    renderForm({ onSuccess })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign up with passkey' }))
+
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
+    expect(mockBeginPasskeySignUp).toHaveBeenCalledWith(expect.objectContaining({ username: 'alice' }))
+    expect(mockRegisterForChallenge).toHaveBeenCalledExactlyOnceWith(challenge)
+    expect(mockFinishPasskeySignUp).toHaveBeenCalledExactlyOnceWith({ credential })
+    expect(onSuccess.mock.calls[0]?.[0].report).toBe(report)
+    expect(mockSignUp).not.toHaveBeenCalled()
+  })
+
+  // A challenge the ceremony refuses is a failure the user reads, and the
+  // form re-arms for another attempt.
+  it('reports a failed passkey ceremony and calls neither finish nor the caller', async () => {
+    mockBeginPasskeySignUp.mockResolvedValue({
+      challenge: { sessionId: 'sess-1', optionsJson: '{}' },
+    })
+    mockRegisterForChallenge.mockRejectedValue(new Error('authenticator broke'))
+    const onSuccess = vi.fn()
+    renderForm({ onSuccess })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign up with passkey' }))
+
+    expect(await screen.findByText(/authenticator broke/)).toBeInTheDocument()
+    expect(mockFinishPasskeySignUp).not.toHaveBeenCalled()
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Sign up with passkey' })).toBeEnabled()
   })
 })

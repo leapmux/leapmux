@@ -5,9 +5,11 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
  * two: `true` online, `false` offline, `undefined` "the list has not
  * mentioned this id".
  *
- * Reads the list the Hub last pushed (`listWorkers`, refreshed on
- * WORKERS_CHANGED); it never opens a channel, because callers run on every
- * menu render and a probe there would surface as UI lag.
+ * Reads the list the client last fetched (`listAllWorkers`, fetched again on
+ * every dataless `workersChanged` user event and on every user-events
+ * bootstrap). The hub sends that event when a worker registers, deregisters,
+ * comes online or goes offline. This function never opens a channel, because
+ * callers run on every menu render and a probe there would surface as UI lag.
  *
  * The third state is the point of this function. An absent id means "the list
  * has not arrived yet" at least as often as it means "the machine is gone" --

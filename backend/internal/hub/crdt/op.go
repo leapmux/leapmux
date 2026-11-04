@@ -211,15 +211,13 @@ type EntityRef struct {
 
 // isHubOnlyOp reports whether `op` is one of the hub-only ops — ops that
 // clients may never submit and the hub drives exclusively through the internal
-// submit pipeline. The set is: SetWorkspaceRootNode (lifecycle create root
-// assignment), SetWorkspaceRegister (lifecycle create record seed), and
-// TombstoneWorkspace (lifecycle delete record removal). validateSetOnce calls
+// submit pipeline. The set is: CreateWorkspace (lifecycle create record and
+// root seed) and TombstoneWorkspace (lifecycle delete record removal). validateSetOnce calls
 // this once at the top so the hub-only policy is enumerable in one place
 // rather than re-stated as a `!internal` arm inside each op's case.
 func isHubOnlyOp(op *leapmuxv1.CrdtOp) bool {
 	switch op.GetBody().(type) {
-	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode,
-		*leapmuxv1.CrdtOp_SetWorkspaceRegister,
+	case *leapmuxv1.CrdtOp_CreateWorkspace,
 		*leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return true
 	}
@@ -275,7 +273,6 @@ func (r EntityRef) ToJSON() map[string]any {
 	}
 }
 
-// OpTarget extracts the EntityRef an op acts on.
 // HasIdentity reports whether this ref actually names an entity.
 //
 // The SINGLE definition of "is this a real target", shared by the submit-path
@@ -285,12 +282,15 @@ func (r EntityRef) ToJSON() map[string]any {
 // total: an identity the encoder can write but the decoder cannot read is a
 // batch that commits fine and then reports itself as a corrupt journal row on
 // every later resume.
+//
+// A tab's identity is its type AND its id. Every tab op a client builds carries
+// both. The validator refuses an op that lacks either, and Apply ignores one.
 func (r EntityRef) HasIdentity() bool {
 	switch r.Kind {
 	case EntityKindNode:
 		return r.NodeID != ""
 	case EntityKindTab:
-		return r.TabID != ""
+		return r.TabID != "" && r.TabType != leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED
 	case EntityKindFloatingWindow:
 		return r.WindowID != ""
 	case EntityKindWorkspaceRoot:
@@ -300,6 +300,7 @@ func (r EntityRef) HasIdentity() bool {
 	}
 }
 
+// OpTarget extracts the EntityRef an op acts on.
 func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 	switch body := op.GetBody().(type) {
 	case *leapmuxv1.CrdtOp_SetNodeRegister:
@@ -309,18 +310,17 @@ func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 	case *leapmuxv1.CrdtOp_SetTabRegister:
 		return EntityRef{
 			Kind:    EntityKindTab,
-			TabType: body.SetTabRegister.GetTabType(),
-			TabID:   body.SetTabRegister.GetTabId(),
+			TabType: body.SetTabRegister.GetTab().GetTabType(),
+			TabID:   body.SetTabRegister.GetTab().GetTabId(),
 		}
 	case *leapmuxv1.CrdtOp_TombstoneTab:
 		return EntityRef{
 			Kind:    EntityKindTab,
-			TabType: body.TombstoneTab.GetTabType(),
-			TabID:   body.TombstoneTab.GetTabId(),
+			TabType: body.TombstoneTab.GetTab().GetTabType(),
+			TabID:   body.TombstoneTab.GetTab().GetTabId(),
 		}
 	case *leapmuxv1.CrdtOp_ReviveTab:
 		// ReviveTabOp clears a tab tombstone so a closed subagent tab can re-open.
-		// The TabType/TabID live on the nested TabRef.
 		return EntityRef{
 			Kind:    EntityKindTab,
 			TabType: body.ReviveTab.GetTab().GetTabType(),
@@ -330,12 +330,26 @@ func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.SetFloatingWindowRegister.GetWindowId()}
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.TombstoneFloatingWindow.GetWindowId()}
-	case *leapmuxv1.CrdtOp_SetWorkspaceRootNode:
-		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRootNode.GetWorkspaceId()}
-	case *leapmuxv1.CrdtOp_SetWorkspaceRegister:
-		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.SetWorkspaceRegister.GetWorkspaceId()}
+	case *leapmuxv1.CrdtOp_CreateWorkspace:
+		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.CreateWorkspace.GetWorkspaceId()}
 	case *leapmuxv1.CrdtOp_TombstoneWorkspace:
 		return EntityRef{Kind: EntityKindWorkspaceRoot, WorkspaceID: body.TombstoneWorkspace.GetWorkspaceId()}
 	}
 	return EntityRef{}
+}
+
+// selectsNoRegister reports whether op is a register op whose field oneof
+// selects no register. Such an op writes nothing, so the validator refuses it
+// and Apply ignores it, together with an op whose target has no identity
+// (EntityRef.HasIdentity).
+func selectsNoRegister(op *leapmuxv1.CrdtOp) bool {
+	switch body := op.GetBody().(type) {
+	case *leapmuxv1.CrdtOp_SetNodeRegister:
+		return body.SetNodeRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetTabRegister:
+		return body.SetTabRegister.GetField() == nil
+	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
+		return body.SetFloatingWindowRegister.GetField() == nil
+	}
+	return false
 }

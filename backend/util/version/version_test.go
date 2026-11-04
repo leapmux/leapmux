@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 func TestFormat_BranchDisplayRules(t *testing.T) {
@@ -59,6 +61,83 @@ func TestFormat_BranchDisplayRules(t *testing.T) {
 			assert.Equal(t, tc.want, Format())
 		})
 	}
+}
+
+func TestBuildInfoProto(t *testing.T) {
+	savedValue, savedHash, savedCommitTime, savedBuild, savedBranch := Value, CommitHash, CommitTime, BuildTime, Branch
+	defer func() {
+		Value, CommitHash, CommitTime, BuildTime, Branch = savedValue, savedHash, savedCommitTime, savedBuild, savedBranch
+	}()
+
+	t.Run("reports every build variable", func(t *testing.T) {
+		Value, CommitHash, CommitTime, BuildTime, Branch = "1.2.3", "abc1234", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "feature/x"
+
+		info := BuildInfoProto()
+		assert.Equal(t, "1.2.3", info.GetVersion())
+		assert.Equal(t, "abc1234", info.GetCommitHash())
+		assert.Equal(t, "2026-10-01T00:00:00Z", info.GetCommitTime())
+		assert.Equal(t, "2026-10-02T00:00:00Z", info.GetBuildTime())
+		assert.Equal(t, "feature/x", info.GetBranch())
+	})
+
+	t.Run("reports an empty branch for a detached HEAD", func(t *testing.T) {
+		Value, CommitHash, CommitTime, BuildTime, Branch = "dev", "", "", "", ""
+
+		info := BuildInfoProto()
+		assert.Equal(t, "dev", info.GetVersion())
+		assert.Empty(t, info.GetBranch())
+		assert.Empty(t, info.GetCommitHash())
+	})
+
+	t.Run("returns a fresh message on every call", func(t *testing.T) {
+		Value = "1.2.3"
+
+		first := BuildInfoProto()
+		first.Version = "changed by a caller"
+		assert.Equal(t, "1.2.3", BuildInfoProto().GetVersion())
+		assert.NotSame(t, first, BuildInfoProto())
+	})
+}
+
+// FormatBuild formats the build it is given, whichever binary reported it, by
+// the rules that Format applies to this binary's own build.
+func TestFormatBuild(t *testing.T) {
+	tests := []struct {
+		name  string
+		build *leapmuxv1.BuildInfo
+		want  string
+	}{
+		{"a nil build", nil, ""},
+		{"an empty build", &leapmuxv1.BuildInfo{}, ""},
+		{"a version alone", &leapmuxv1.BuildInfo{Version: "1.2.3"}, "1.2.3"},
+		{
+			"a commit and a feature branch",
+			&leapmuxv1.BuildInfo{Version: "1.2.3", CommitHash: "abc1234", Branch: "feature/foo"},
+			"1.2.3 · abc1234 · feature/foo",
+		},
+		{
+			"the main branch is omitted",
+			&leapmuxv1.BuildInfo{Version: "1.2.3", CommitHash: "abc1234", Branch: "main"},
+			"1.2.3 · abc1234",
+		},
+		{
+			"a report with no version does not open with a separator",
+			&leapmuxv1.BuildInfo{CommitHash: "abc1234"},
+			"abc1234",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, FormatBuild(tt.build))
+		})
+	}
+}
+
+// The build time is shown in the local timezone, through the one helper.
+func TestFormatBuild_ShowsTheBuildTimeInLocalTime(t *testing.T) {
+	const iso = "2026-04-23T14:45:00Z"
+	assert.Equal(t, "1.2.3 · "+FormatLocalTimestamp(iso),
+		FormatBuild(&leapmuxv1.BuildInfo{Version: "1.2.3", BuildTime: iso}))
 }
 
 func TestFormatLocalTimestamp(t *testing.T) {

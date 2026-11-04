@@ -1,13 +1,15 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
-import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet } from './systemInfo'
+import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getBackendBuildInfo, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet, systemInfoLoadFailure } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
-  authClient: {
+  systemClient: {
     getSystemInfo: (...args: unknown[]) => mockGetSystemInfo(...args),
+  },
+  authClient: {
     getOAuthProviders: vi.fn().mockResolvedValue({ providers: [] }),
   },
 }))
@@ -20,7 +22,6 @@ vi.mock('~/api/platformBridge', () => ({
 
 function systemInfoResponse(overrides: Record<string, unknown> = {}) {
   return {
-    soloMode: false,
     soloAccess: SoloAccess.UNSPECIFIED,
     soloPasswordSet: false,
     signupEnabled: false,
@@ -32,11 +33,13 @@ function systemInfoResponse(overrides: Record<string, unknown> = {}) {
     captchaProvider: CaptchaProvider.ALTCHA,
     captchaSiteKey: '',
     altchaAlgorithm: '',
-    version: '',
-    commitHash: '',
-    commitTime: '',
-    buildTime: '',
-    branch: '',
+    build: {
+      version: '',
+      commitHash: '',
+      commitTime: '',
+      buildTime: '',
+      branch: '',
+    },
     ...overrides,
   }
 }
@@ -46,8 +49,8 @@ describe('loadSystemInfo', () => {
     vi.clearAllMocks()
   })
 
-  // A discarded failure leaves the module's defaults in place -- notably
-  // `soloMode = false` -- with no signal that they are fabrications. On a solo
+  // A discarded failure leaves the module's defaults in place -- notably a
+  // non-solo `soloAccess` -- with no signal that they are fabrications. On a solo
   // hub that means the app renders a "Log out" affordance whose one click sends
   // the user to a login form no credentials can satisfy. Callers must be able
   // to tell "the hub said non-solo" from "nobody got an answer".
@@ -64,15 +67,69 @@ describe('loadSystemInfo', () => {
     mockGetSystemInfo.mockRejectedValueOnce(new Error('not connected'))
     await expect(loadSystemInfo(true)).rejects.toThrow('not connected')
 
-    mockGetSystemInfo.mockResolvedValueOnce(systemInfoResponse({ soloMode: true }))
+    mockGetSystemInfo.mockResolvedValueOnce(systemInfoResponse({ soloAccess: SoloAccess.SIGN_IN_REQUIRED }))
     await loadSystemInfo()
 
     expect(mockGetSystemInfo).toHaveBeenCalledTimes(2)
     expect(isSoloMode()).toBe(true)
   })
 
+  // `AuthGuard` reads this while the snapshot is absent. The bootstrap records
+  // a failed load only while it is the current auth operation, so a sign-in
+  // that supersedes it must not leave the guard with nothing to report.
+  it('records the failure of a rejected load', async () => {
+    mockGetSystemInfo.mockRejectedValueOnce(new Error('network down'))
+
+    await expect(loadSystemInfo(true)).rejects.toThrow('network down')
+
+    expect(systemInfoLoadFailure()).toBe('network down')
+  })
+
+  it('records a non-Error rejection as its text', async () => {
+    mockGetSystemInfo.mockRejectedValueOnce('socket closed')
+
+    await expect(loadSystemInfo(true)).rejects.toBe('socket closed')
+
+    expect(systemInfoLoadFailure()).toBe('socket closed')
+  })
+
+  it('clears the recorded failure when a later load succeeds', async () => {
+    mockGetSystemInfo.mockRejectedValueOnce(new Error('network down'))
+    await expect(loadSystemInfo(true)).rejects.toThrow('network down')
+
+    mockGetSystemInfo.mockResolvedValueOnce(systemInfoResponse())
+    await loadSystemInfo(true)
+
+    expect(systemInfoLoadFailure()).toBeNull()
+    expect(isSystemInfoLoaded()).toBe(true)
+  })
+
+  // A reactive reader, such as the guard's memo, must see the failure arrive
+  // and leave, not only the value at the time it first read.
+  it('re-evaluates a reactive read of the failure', async () => {
+    const { createEffect, createRoot } = await import('solid-js')
+    const seen: (string | null)[] = []
+    const dispose = createRoot((disposeRoot) => {
+      createEffect(() => {
+        seen.push(systemInfoLoadFailure())
+      })
+      return disposeRoot
+    })
+    try {
+      mockGetSystemInfo.mockRejectedValueOnce(new Error('network down'))
+      await expect(loadSystemInfo(true)).rejects.toThrow('network down')
+      mockGetSystemInfo.mockResolvedValueOnce(systemInfoResponse())
+      await loadSystemInfo(true)
+
+      expect(seen.slice(-2)).toEqual(['network down', null])
+    }
+    finally {
+      dispose()
+    }
+  })
+
   it('serves the cached answer on a subsequent unforced call', async () => {
-    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ soloMode: true }))
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ soloAccess: SoloAccess.SIGN_IN_REQUIRED }))
     await loadSystemInfo(true)
     await loadSystemInfo()
 
@@ -180,7 +237,7 @@ describe('loadSystemInfo', () => {
   })
 
   // The one-snapshot design: EVERY getter is reactive, including the
-  // pre-existing ones (soloMode, signupEnabled, ...). A consumer that
+  // pre-existing ones (soloAccess, signupEnabled, ...). A consumer that
   // reads one inside a reactive scope re-evaluates when a forced reload
   // changes it — the LoginPage signup link no longer needs an
   // auth.loading() workaround to appear on a direct load.
@@ -201,6 +258,42 @@ describe('loadSystemInfo', () => {
     await loadSystemInfo(true)
     // A forced reload must re-run effects that read the snapshot.
     expect(seen).toEqual([false, true])
+  })
+
+  // The hub reports its build in one BuildInfo message, shared with the
+  // worker's system info and the desktop startup info.
+  it('reads the backend build from the build message', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      build: {
+        version: '1.2.3',
+        commitHash: 'abc1234',
+        commitTime: '2026-10-01T00:00:00Z',
+        buildTime: '2026-10-02T00:00:00Z',
+        branch: 'main',
+      },
+    }))
+    await loadSystemInfo(true)
+
+    expect(getBackendBuildInfo()).toEqual({
+      version: '1.2.3',
+      commitHash: 'abc1234',
+      commitTime: '2026-10-01T00:00:00Z',
+      buildTime: '2026-10-02T00:00:00Z',
+      branch: 'main',
+    })
+  })
+
+  it('reports an empty backend build when the reply has no build message', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ build: undefined }))
+    await loadSystemInfo(true)
+
+    expect(getBackendBuildInfo()).toEqual({
+      version: '',
+      commitHash: '',
+      commitTime: '',
+      buildTime: '',
+      branch: '',
+    })
   })
 })
 
@@ -409,12 +502,11 @@ describe('the solo connection facts', () => {
     expect(soloPasswordSet()).toBe(false)
   })
 
-  // solo_access is per connection and solo_mode is per hub, so the two
-  // must not be read as synonyms: a solo hub whose account holds a password
-  // asks its network callers to sign in.
+  // isSoloMode answers for the hub and isAutoAuthenticated for the
+  // connection, so the two must not be read as synonyms: a solo hub whose
+  // account holds a password asks its network callers to sign in.
   it('separates the hub fact from the connection fact', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
-      soloMode: true,
       soloAccess: SoloAccess.SIGN_IN_REQUIRED,
       soloPasswordSet: true,
     }))
@@ -427,7 +519,6 @@ describe('the solo connection facts', () => {
 
   it('carries the password-setup demand through', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
-      soloMode: true,
       soloAccess: SoloAccess.PASSWORD_SETUP,
     }))
     await loadSystemInfo(true)
@@ -456,5 +547,20 @@ describe('the solo connection facts', () => {
     }))
     await loadSystemInfo(true)
     expect(isPasswordSetupGate()).toBe(false)
+  })
+
+  // The hub reports solo mode only through solo_access, whose UNSPECIFIED
+  // value means "not a solo hub". Every other state is a solo hub, whatever
+  // the connection, so no combination reads as "solo with no access state".
+  it('answers solo mode from the solo access state alone', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ soloAccess: SoloAccess.UNSPECIFIED }))
+    await loadSystemInfo(true)
+    expect(isSoloMode()).toBe(false)
+
+    for (const access of [SoloAccess.CREDENTIAL_FREE, SoloAccess.PASSWORD_SETUP, SoloAccess.SIGN_IN_REQUIRED]) {
+      mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ soloAccess: access }))
+      await loadSystemInfo(true)
+      expect(isSoloMode(), SoloAccess[access]).toBe(true)
+    }
   })
 })

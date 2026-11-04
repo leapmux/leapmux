@@ -4,20 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -196,7 +206,7 @@ func TestConnectWithReconnect_ReconnectsOnFailure(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
 		close(done)
 	}()
 	for range targetAttempts - 1 {
@@ -229,7 +239,7 @@ func TestConnectWithReconnect_StopsOnContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
 		close(done)
 	}()
 	_ = testutil.WaitForTimer(t, testCtx, newTimer)
@@ -242,6 +252,274 @@ func TestConnectWithReconnect_StopsOnContextCancel(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(1), attempts.Load(), "context cancellation must stop before a second attempt")
+}
+
+// A key refusal cannot be fixed by reconnecting: the loop stops, the error wraps
+// ErrKeysRefused, and nothing clears the worker's state.
+func TestConnectWithReconnect_StopsOnRefusedKeys(t *testing.T) {
+	var attempts atomic.Int32
+	var deregisters atomic.Int32
+	client := &Client{clock: testutil.NewQuartzMock(t), OnDeregister: func() { deregisters.Add(1) }}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	mockConnect := func(_ context.Context, _ string) error {
+		attempts.Add(1)
+		return refusalReasonError(t, connect.CodePermissionDenied,
+			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+	}
+
+	err := client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeysRefused)
+	assert.Equal(t, int32(1), attempts.Load(), "a key refusal must not be retried")
+	assert.Zero(t, deregisters.Load(), "a key refusal must not clear the worker's state")
+}
+
+// A refusal that carries WORKER_DELETED stops the loop and runs OnDeregister.
+// A Client with no OnDeregister stops the same way, because a panic there would
+// end the whole solo or desktop process.
+func TestConnectWithReconnect_DeregistersADeletedWorker(t *testing.T) {
+	t.Parallel()
+
+	for name, withHook := range map[string]bool{"with OnDeregister": true, "with no OnDeregister": false} {
+		t.Run(name, func(t *testing.T) {
+			var attempts atomic.Int32
+			var deregisters atomic.Int32
+			client := &Client{clock: testutil.NewQuartzMock(t)}
+			if withHook {
+				client.OnDeregister = func() { deregisters.Add(1) }
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			mockConnect := func(_ context.Context, _ string) error {
+				attempts.Add(1)
+				return refusalReasonError(t, connect.CodeUnauthenticated,
+					leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+			}
+
+			err := client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+			require.NoError(t, err, "a deleted worker stops cleanly")
+			assert.Equal(t, int32(1), attempts.Load(), "a deleted worker must not be retried")
+			if withHook {
+				assert.Equal(t, int32(1), deregisters.Load())
+			}
+		})
+	}
+}
+
+// A bare PermissionDenied is what a proxy in front of the Hub answers with. It
+// carries no refusal detail, so the worker keeps retrying.
+func TestConnectWithReconnect_RetriesABarePermissionDenied(t *testing.T) {
+	var attempts, deregisters atomic.Int32
+
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock, OnDeregister: func() { deregisters.Add(1) }}
+	testCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
+
+	mockConnect := func(_ context.Context, _ string) error {
+		if attempts.Add(1) >= 2 {
+			cancel()
+		}
+		return connect.NewError(connect.CodePermissionDenied, "forbidden")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		close(done)
+	}()
+
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not stop after cancellation")
+	}
+	assert.Equal(t, int32(2), attempts.Load(), "a bare PermissionDenied must be retried")
+	assert.Zero(t, deregisters.Load(), "only a WorkerConnectRefusal detail may run OnDeregister")
+}
+
+// A bare Unauthenticated is not proof that this worker was deleted. A proxy in
+// front of the hub answers 401 by itself, and a hub database restored from an
+// older backup does not know the worker's token — neither may destroy the
+// worker's identity. Only the WorkerConnectRefusal detail makes a refusal
+// permanent; without one the worker retries, and OnDeregister never runs.
+func TestConnectWithReconnect_RetriesABareUnauthenticated(t *testing.T) {
+	var attempts, deregisters atomic.Int32
+
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock, OnDeregister: func() { deregisters.Add(1) }}
+	testCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
+
+	mockConnect := func(_ context.Context, _ string) error {
+		if attempts.Add(1) >= 2 {
+			cancel() // Stop after the retry proves the loop kept going.
+		}
+		return connect.NewError(connect.CodeUnauthenticated, "unauthorized")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		close(done)
+	}()
+
+	// Fast path: the base reads a bare Unauthenticated as a deletion and returns
+	// at once, so the loop is already over here.
+	select {
+	case <-done:
+		t.Fatalf("a bare Unauthenticated ended the reconnect loop after %d attempt(s) with %d OnDeregister call(s): a proxy's 401 must not delete this worker's identity",
+			attempts.Load(), deregisters.Load())
+	default:
+	}
+
+	// A healthy worker schedules the next attempt instead.
+	call, err := newTimer.Wait(testCtx)
+	if err != nil {
+		t.Fatalf("a bare Unauthenticated scheduled no retry after %d attempt(s) with %d OnDeregister call(s): the loop ended instead of backing off",
+			attempts.Load(), deregisters.Load())
+	}
+	delay := call.Duration
+	call.MustRelease(testCtx)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not stop after cancellation")
+	}
+
+	assert.Equal(t, int32(2), attempts.Load(), "a bare Unauthenticated must be retried")
+	assert.Zero(t, deregisters.Load(), "only a WorkerConnectRefusal detail may run OnDeregister")
+}
+
+// A worker that the hub does not know retries for ever, so it must state its own
+// remedy. The record appears exactly once per run of consecutive bare
+// Unauthenticated refusals, at the attempt that reaches the threshold, and any
+// other outcome starts the count again.
+func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *testing.T) {
+	bareUnauthenticated := connect.NewError(connect.CodeUnauthenticated, "unauthorized")
+	lostConnection := errors.New("connection lost")
+	repeat := func(err error, n int) []error {
+		errs := make([]error, n)
+		for i := range errs {
+			errs[i] = err
+		}
+		return errs
+	}
+
+	tests := []struct {
+		name string
+		errs []error
+		// wantFirstRecordAt is the 1-based attempt whose refusal logged the
+		// remedy, or 0 when no attempt may log it.
+		wantFirstRecordAt int
+	}{
+		{
+			name: "one refusal below the threshold logs nothing",
+			errs: repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold-1),
+		},
+		{
+			name:              "the refusal that reaches the threshold logs once",
+			errs:              repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold),
+			wantFirstRecordAt: bareUnauthenticatedRemedyThreshold,
+		},
+		{
+			name:              "refusals past the threshold do not log again",
+			errs:              repeat(bareUnauthenticated, 3*bareUnauthenticatedRemedyThreshold),
+			wantFirstRecordAt: bareUnauthenticatedRemedyThreshold,
+		},
+		{
+			name: "another failure resets the count",
+			errs: append(append(
+				repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold-1),
+				lostConnection),
+				repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold-1)...),
+		},
+		{
+			name: "a connection that ends cleanly resets the count",
+			errs: append(append(
+				repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold-1),
+				nil),
+				repeat(bareUnauthenticated, bareUnauthenticatedRemedyThreshold-1)...),
+		},
+		{
+			name: "a bare PermissionDenied counts as another outcome",
+			errs: repeat(connect.NewError(connect.CodePermissionDenied, "forbidden"), 2*bareUnauthenticatedRemedyThreshold),
+		},
+	}
+
+	// CaptureDefaultLogger swaps a process-global, so these cases run without
+	// t.Parallel.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			clock := testutil.NewQuartzMock(t)
+			client := &Client{clock: clock}
+			testCtx := testutil.DeadlineContext(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
+
+			// recordsBefore[i] is the record count when attempt i+1 starts, so
+			// it shows which refusal wrote the record. One attempt follows the
+			// last refusal and cancels, because the loop ignores the outcome of
+			// an attempt that ends with a canceled context.
+			var recordsBefore []int
+			mockConnect := func(context.Context, string) error {
+				attempt := len(recordsBefore)
+				recordsBefore = append(recordsBefore, strings.Count(logs.String(), "does not know this worker"))
+				if attempt == len(tt.errs) {
+					cancel()
+					return nil
+				}
+				return tt.errs[attempt]
+			}
+
+			done := make(chan struct{})
+			go func() {
+				_ = client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), time.Hour)
+				close(done)
+			}()
+			for range tt.errs {
+				delay := testutil.WaitForTimer(t, testCtx, newTimer)
+				testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+			}
+			select {
+			case <-done:
+			case <-testCtx.Done():
+				require.FailNow(t, "the reconnect loop did not stop after cancellation")
+			}
+
+			logged := logs.String()
+			require.Len(t, recordsBefore, len(tt.errs)+1)
+			if tt.wantFirstRecordAt == 0 {
+				assert.NotContains(t, logged, "does not know this worker")
+				return
+			}
+			assert.Equal(t, 1, strings.Count(logged, "does not know this worker"), logged)
+			assert.Contains(t, logged, "level=ERROR")
+			assert.Contains(t, logged, "--hub")
+			assert.Contains(t, logged, "state.json")
+			assert.Contains(t, logged, "more than 7 days ago")
+			for i, records := range recordsBefore {
+				want := 0
+				if i+1 > tt.wantFirstRecordAt {
+					want = 1
+				}
+				assert.Equal(t, want, records, "records before attempt %d", i+1)
+			}
+		})
+	}
 }
 
 func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
@@ -288,7 +566,7 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, 50*time.Millisecond)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, 50*time.Millisecond)
 		close(done)
 	}()
 
@@ -335,7 +613,7 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		client.connectWithReconnect(ctx, "token", mockConnect, bo, time.Hour)
+		_ = client.connectWithReconnect(ctx, "token", mockConnect, bo, time.Hour)
 		close(done)
 	}()
 	var waits []time.Duration
@@ -359,27 +637,84 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 		"the sequence must actually reach the cap, or the loop above proves nothing")
 }
 
-func TestIsCodeUnauthenticated(t *testing.T) {
-	t.Run("nil", func(t *testing.T) {
-		assert.False(t, isCodeUnauthenticated(nil))
-	})
-	t.Run("direct connect.Error unauthenticated", func(t *testing.T) {
-		err := connect.Errorf(connect.CodeUnauthenticated, "bad token")
-		assert.True(t, isCodeUnauthenticated(err))
-	})
-	t.Run("wrapped connect.Error unauthenticated", func(t *testing.T) {
-		inner := connect.Errorf(connect.CodeUnauthenticated, "bad token")
-		err := fmt.Errorf("connect to hub: %w", inner)
-		assert.True(t, isCodeUnauthenticated(err), "errors.As should unwrap")
-	})
-	t.Run("other connect code", func(t *testing.T) {
-		err := connect.Errorf(connect.CodeUnavailable, "server down")
-		assert.False(t, isCodeUnauthenticated(err))
-	})
-	t.Run("non-connect error containing the word unauthenticated", func(t *testing.T) {
-		err := fmt.Errorf("some other unauthenticated failure")
-		assert.False(t, isCodeUnauthenticated(err), "string match must not leak through")
-	})
+// refusalReasonError builds the wire shape a refusal arrives in: a connect.Error
+// with one WorkerConnectRefusal detail.
+func refusalReasonError(t *testing.T, code connect.Code, reason leapmuxv1.WorkerConnectRefusalReason) *connect.Error {
+	t.Helper()
+	detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: reason})
+	require.NoError(t, err)
+	return connect.NewError(code, "refused").WithDetail(detail)
+}
+
+func TestConnectRefusalReason(t *testing.T) {
+	t.Parallel()
+
+	keysDiffer := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER
+	deleted := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED
+	unspecified := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+
+	otherTypeDetail := &connect.ErrorDetail{Type: "leapmux.v1.SomeOtherMessage", Value: []byte{0x08, 0x01}}
+	undecodableDetail := &connect.ErrorDetail{Type: "leapmux.v1.WorkerConnectRefusal", Value: []byte{0xFF, 0xFF}}
+
+	for name, tc := range map[string]struct {
+		err  error
+		want leapmuxv1.WorkerConnectRefusalReason
+	}{
+		"nil": {err: nil, want: unspecified},
+		"a non-connect error whose text contains the words": {
+			err: errors.New("unauthenticated: worker was deleted"), want: unspecified,
+		},
+		"a bare code": {
+			err: connect.NewError(connect.CodeUnauthenticated, "invalid auth token"), want: unspecified,
+		},
+		"the detail under a receive wrap": {
+			err:  fmt.Errorf("receive: %w", refusalReasonError(t, connect.CodeUnauthenticated, deleted)),
+			want: deleted,
+		},
+		"the detail under a hello wrap": {
+			err:  fmt.Errorf("hello: %w", refusalReasonError(t, connect.CodePermissionDenied, keysDiffer)),
+			want: keysDiffer,
+		},
+		"the detail under the ErrKeysRefused double wrap": {
+			err: fmt.Errorf("%w: %w", ErrKeysRefused,
+				refusalReasonError(t, connect.CodePermissionDenied, keysDiffer)),
+			want: keysDiffer,
+		},
+		"a detail of another type": {
+			err:  connect.NewError(connect.CodeInternal, "x").WithDetail(otherTypeDetail),
+			want: unspecified,
+		},
+		"the right type with an undecodable value": {
+			err:  connect.NewError(connect.CodeInternal, "x").WithDetail(undecodableDetail),
+			want: unspecified,
+		},
+		"a reason of UNSPECIFIED": {
+			err:  refusalReasonError(t, connect.CodeUnauthenticated, unspecified),
+			want: unspecified,
+		},
+		"a decodable detail of another type, then the refusal": {
+			err: func() error {
+				other, err := connectproto.NewErrorDetail(&leapmuxv1.Heartbeat{})
+				require.NoError(t, err)
+				refusal, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: keysDiffer})
+				require.NoError(t, err)
+				return connect.NewError(connect.CodePermissionDenied, "x").WithDetail(other).WithDetail(refusal)
+			}(),
+			want: keysDiffer,
+		},
+		"two details, the refusal second": {
+			err: func() error {
+				detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: deleted})
+				require.NoError(t, err)
+				return connect.NewError(connect.CodeUnauthenticated, "x").WithDetail(otherTypeDetail).WithDetail(detail)
+			}(),
+			want: deleted,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, connectRefusalReason(tc.err))
+		})
+	}
 }
 
 // TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback pins the
@@ -449,21 +784,117 @@ func TestHandleMessage_ReconcileNudge_NilCallbackIsSafe(t *testing.T) {
 
 // The Hub delivers the worker's owner on every connect; without this dispatch arm
 // handleMessage falls through to the "unhandled hub message" warn and the worker
-// never learns who owns it -- leaving requireWorkerOwner to fail closed against the
+// never learns who owns it -- leaving the owner gate to fail closed against the
 // worker's own legitimate user, permanently and indistinguishably from a genuine
 // cross-tenant refusal.
 func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
-	var captured string
-	c.OnWorkerIdentity = func(registeredBy string) { captured = registeredBy }
+	var captured *leapmuxv1.WorkerIdentity
+	c.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) bool {
+		captured = identity
+		return true
+	}
 
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
-			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1"},
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice"},
 		},
 	})
 
-	assert.Equal(t, "owner-1", captured, "OnWorkerIdentity should receive the Hub's owner")
+	require.NotNil(t, captured, "OnWorkerIdentity should receive the Hub's identity")
+	assert.Equal(t, "owner-1", captured.GetRegisteredBy(), "the callback receives the Hub's owner")
+	assert.Equal(t, "alice", captured.GetRegisteredByUsername(), "the callback receives the owner's username")
+}
+
+// The Hub sends the identity again on a live stream when the owner's account
+// changes. Each delivery reaches the callback in order, so the worker follows a
+// rename without a reconnect.
+func TestHandleMessage_WorkerIdentity_DeliversEveryReDelivery(t *testing.T) {
+	c := newTestClient(t, "http://localhost:0")
+	var captured []*leapmuxv1.WorkerIdentity
+	c.OnWorkerIdentity = func(identity *leapmuxv1.WorkerIdentity) bool {
+		captured = append(captured, identity)
+		return true
+	}
+
+	first := &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice"}
+	renamed := &leapmuxv1.WorkerIdentity{RegisteredBy: "owner-1", RegisteredByUsername: "alice2"}
+	for _, identity := range []*leapmuxv1.WorkerIdentity{first, renamed} {
+		c.handleMessage(&leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: identity},
+		})
+	}
+
+	require.Len(t, captured, 2, "a re-delivery on the same connection is not dropped")
+	assert.Same(t, first, captured[0])
+	assert.Same(t, renamed, captured[1], "the callback receives the Hub's message as it is")
+	assert.True(t, c.identityReceived.Load())
+}
+
+// listOwnedTabsConnector serves only ListOwnedTabsForWorker of the connector
+// service, and records the bearer each call carries.
+type listOwnedTabsConnector struct {
+	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
+	calls atomic.Int32
+	auth  atomic.Pointer[string]
+}
+
+func (s *listOwnedTabsConnector) ListOwnedTabsForWorker(ctx context.Context, _ *leapmuxv1.ListOwnedTabsForWorkerRequest) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+	s.calls.Add(1)
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		auth := info.RequestHeader().Get("Authorization")
+		s.auth.Store(&auth)
+	}
+	return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "owner-1"}, nil
+}
+
+// startListOwnedTabsConnector serves the connector over unencrypted HTTP/2,
+// which is what the worker's client speaks.
+func startListOwnedTabsConnector(t *testing.T) (*listOwnedTabsConnector, string) {
+	t.Helper()
+	svc := &listOwnedTabsConnector{}
+	mux := http.NewServeMux()
+	srv := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(srv, svc)
+	connecthttp.Mount(mux, srv, connecthttp.WithReadMaxBytes(0))
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.Protocols = &http.Protocols{}
+	server.Config.Protocols.SetHTTP1(true)
+	server.Config.Protocols.SetUnencryptedHTTP2(true)
+	server.Start()
+	t.Cleanup(server.Close)
+	return svc, server.URL
+}
+
+// The orphan reconciler's list call is a method of the connector service. A
+// hub that serves only that service answers it, with the worker's own token as
+// the bearer.
+func TestListOwnedTabsForWorker_CallsTheConnectorService(t *testing.T) {
+	svc, url := startListOwnedTabsConnector(t)
+	c := newTestClient(t, url)
+	c.mu.Lock()
+	c.authToken = "worker-token"
+	c.mu.Unlock()
+
+	resp, err := c.ListOwnedTabsForWorker(testutil.DeadlineContext(t))
+	require.NoError(t, err)
+	assert.Equal(t, "owner-1", resp.GetOwnerUserId(), "the whole response reaches the caller")
+	require.Equal(t, int32(1), svc.calls.Load())
+	require.NotNil(t, svc.auth.Load())
+	assert.Equal(t, "Bearer worker-token", *svc.auth.Load())
+}
+
+// Before the first Connect the client holds no token, so it refuses locally
+// rather than asking the hub without credentials.
+func TestListOwnedTabsForWorker_RefusesWithoutAToken(t *testing.T) {
+	svc, url := startListOwnedTabsConnector(t)
+	c := newTestClient(t, url)
+
+	resp, err := c.ListOwnedTabsForWorker(testutil.DeadlineContext(t))
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "no auth token")
+	assert.Zero(t, svc.calls.Load(), "the hub is never asked without a token")
 }
 
 // The optional-callback contract: a client with no identity consumer wired (tests,
@@ -479,6 +910,8 @@ func TestHandleMessage_WorkerIdentity_NilCallbackIsSafe(t *testing.T) {
 			},
 		})
 	})
+	assert.True(t, c.identityReceived.Load(),
+		"with no handler nothing consumes the owner, so the watchdog has nothing to protect")
 }
 
 // TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe documents
@@ -500,7 +933,7 @@ func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
 
 // The worker owner is sourced ONLY from the Hub's connect-time WorkerIdentity
 // greeting; if a proxy strips the oneof, a partial upgrade drops it, or a Hub
-// bug never sends it, requireWorkerOwner would deny every machine-scoped RPC
+// bug never sends it, the owner gate would deny every machine-scoped RPC
 // for the connection's life with no recovery short of a reconnect. A watchdog
 // force-closes the stream when the greeting does not arrive in time, so the
 // reconnect backoff re-runs the greeting on a fresh stream.
@@ -543,11 +976,58 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 		"watchdog must not fire once WorkerIdentity has been received")
 }
 
-// The flag the watchdog reads must be set on every greeting, so the watchdog
-// stops as soon as the Hub delivers the identity.
+// An identity with an empty owner, from a Hub bug or a truncated frame, stores
+// nothing. On a worker that holds no owner the watchdog must still force a
+// reconnect: a greeting that set no owner wedges the owner gate exactly as a missing
+// greeting does. A worker that holds an owner keeps it, so its gate still admits
+// that owner, and a reconnect would only drop every browser channel of this worker.
+func TestWatchForIdentity_ARefusedIdentityForcesAReconnectOnlyWithNoOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		holdsOwner bool
+	}{
+		{name: "a worker with no owner reconnects"},
+		{name: "a worker that keeps its owner stays connected", holdsOwner: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := testutil.NewQuartzMock(t)
+			c := newTestClient(t, "http://localhost:0", WithClock(clock))
+			testCtx := testutil.DeadlineContext(t)
+			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
+			var cancelled atomic.Bool
+			c.connCancel = func() { cancelled.Store(true) }
+			// The handler reports the owner, as nudgeOnNewOwner does after
+			// ApplyWorkerIdentity refused an empty owner.
+			var deliveries int
+			c.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool {
+				deliveries++
+				return tc.holdsOwner
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go c.watchForIdentity(ctx)
+			delay := testutil.WaitForTimer(t, testCtx, newTimer)
+
+			c.handleMessage(&leapmuxv1.ConnectResponse{
+				Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+					WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredByUsername: "nobody"},
+				},
+			})
+			require.Equal(t, 1, deliveries, "the handler still sees the refused identity")
+			assert.Equal(t, tc.holdsOwner, c.identityReceived.Load())
+
+			testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+			assert.Equal(t, !tc.holdsOwner, cancelled.Load())
+		})
+	}
+}
+
+// The flag the watchdog reads must be set on every greeting that the handler
+// applies, so the watchdog stops as soon as the Hub delivers the identity.
 func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
-	c.OnWorkerIdentity = func(string) {}
+	c.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool { return true }
 	assert.False(t, c.identityReceived.Load())
 	c.handleMessage(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
@@ -656,8 +1136,215 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 	})
 }
 
-// A drain write failure must cancel the connection so ConnectWithReconnect
-// re-establishes the stream.
+// fakeConnectStream is a connect.ClientStream the give-up tests drive by hand,
+// shaped after connecthttp's own duplexHTTPCall:
+//
+//   - The hello is accepted.
+//   - Every later Send fails with the configured write error.
+//   - Receive answers only once the test releases it. It answers the queued
+//     messages first, and then the way duplexHTTPCall.Read does: a bare
+//     Canceled when the call's context ended first, the peer's status
+//     otherwise.
+type fakeConnectStream struct {
+	ctx context.Context
+
+	writeErr  error
+	refusal   error
+	receiveOK chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+
+	mu    sync.Mutex
+	sends int
+	// messages are the frames the Hub sent before it ended the stream. Receive
+	// answers them in order, once the test releases it, before the status.
+	messages []*leapmuxv1.ConnectResponse
+}
+
+func newFakeConnectStream(ctx context.Context, writeErr, refusal error) *fakeConnectStream {
+	return &fakeConnectStream{
+		ctx:       ctx,
+		writeErr:  writeErr,
+		refusal:   refusal,
+		receiveOK: make(chan struct{}),
+		closed:    make(chan struct{}),
+	}
+}
+
+func (s *fakeConnectStream) SendHeaders() error { return nil }
+
+func (s *fakeConnectStream) Send(any) error {
+	s.mu.Lock()
+	s.sends++
+	n := s.sends
+	s.mu.Unlock()
+	if n == 1 {
+		// The hello. The transport takes it from the request pipe, so it
+		// succeeds even when the Hub refuses before reading it.
+		return nil
+	}
+	return s.writeErr
+}
+
+func (s *fakeConnectStream) CloseSend() error { return nil }
+
+func (s *fakeConnectStream) Receive(msg any) error {
+	select {
+	case <-s.receiveOK:
+	case <-s.closed:
+		return connect.NewError(connect.CodeCanceled, "stream closed")
+	}
+	s.mu.Lock()
+	var next *leapmuxv1.ConnectResponse
+	if len(s.messages) > 0 {
+		next, s.messages = s.messages[0], s.messages[1:]
+	}
+	s.mu.Unlock()
+	if next != nil {
+		proto.Merge(msg.(*leapmuxv1.ConnectResponse), next)
+		return nil
+	}
+	if err := s.ctx.Err(); err != nil {
+		// duplexHTTPCall.Read checks its context before it reads the response,
+		// so a cancel that wins the race hides the peer's status.
+		return connect.NewError(connect.CodeCanceled, err.Error())
+	}
+	return s.refusal
+}
+
+func (s *fakeConnectStream) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
+
+// fakeConnectTransport hands back the one stream the test prepared.
+type fakeConnectTransport struct{ stream *fakeConnectStream }
+
+func (t *fakeConnectTransport) NewClientStream(ctx context.Context, _ connect.Spec) (connect.ClientStream, error) {
+	t.stream.ctx = ctx
+	return t.stream, nil
+}
+
+// writerStreamClient builds the Client the give-up race needs: a real New over
+// a dummy endpoint, whose one RPC is served by the fake stream, and whose
+// TabSyncProvider makes Connect write a second frame right after the hello --
+// the write that hits an already-refused stream.
+func writerStreamClient(t *testing.T, writeErr, refusal error) (*Client, *fakeConnectStream) {
+	t.Helper()
+	endpoint, err := hubtransport.New("http://127.0.0.1:1")
+	require.NoError(t, err)
+	c := New(endpoint, WithClock(testutil.NewQuartzMock(t)))
+	stream := newFakeConnectStream(context.Background(), writeErr, refusal)
+	c.connector = leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(&fakeConnectTransport{stream: stream}))
+	c.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return &leapmuxv1.WorkerTabInventory{} }
+	return c, stream
+}
+
+// When the Hub has already refused a connection, a later write fails with an
+// error that wraps io.EOF (connecthttp's duplexHTTPCall.Send maps a closed
+// request pipe to io.EOF) while Receive still holds the Hub's real status. The
+// writer's give-up hook must leave that stream to the reader instead of
+// cancelling it: a cancel makes duplexHTTPCall.Read check its context first and
+// report a bare Canceled, which discards the refusal AND its
+// WorkerConnectRefusal detail. The worker then retries a refusal it should
+// obey.
+func TestConnect_ReturnsTheHubStatusWhenAWriteHitsTheEndedStream(t *testing.T) {
+	t.Run("an io.EOF write leaves the refusal to the reader", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// connecthttp's envelopeWriter.write builds exactly this shape.
+			writeErr := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
+			// The refusal the Hub pairs with WORKER_DELETED.
+			refusal := refusalReasonError(t, connect.CodeUnauthenticated,
+				leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+			c, stream := writerStreamClient(t, writeErr, refusal)
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- c.Connect(context.Background(), "token") }()
+
+			// Returns only once every goroutine in the bubble is durably
+			// blocked, which includes the writer having run its give-up hook
+			// and exited.
+			synctest.Wait()
+			close(stream.receiveOK)
+
+			err := <-errCh
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+				"the reader must report the Hub's status, not a Canceled the writer caused")
+			assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+				connectRefusalReason(err), "the refusal's detail must survive the write failure")
+		})
+	})
+
+	t.Run("a write that the Hub did not cause still cancels", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			c, stream := writerStreamClient(t, errors.New("broken pipe"),
+				connect.NewError(connect.CodeUnauthenticated, "auth_token required"))
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- c.Connect(context.Background(), "token") }()
+
+			synctest.Wait()
+			close(stream.receiveOK)
+
+			err := <-errCh
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeCanceled, connect.CodeOf(err),
+				"a genuine write failure must still cancel the connection")
+		})
+	})
+}
+
+// The Hub can send a frame that needs a control reply and then end the stream,
+// for example a ChannelOpen just before it refuses the connection. The write
+// that hits the ended stream fails with io.EOF, and the writer gives up without
+// cancelling, so its closed writer stays installed until the receive loop ends.
+// The reply to the buffered frame then finds a CLOSED writer, not a saturated
+// one: it must not warn that the control queue is saturated, and it must not
+// cancel the connection, or Receive reports Canceled and the Hub's refusal with
+// its detail is lost.
+func TestConnect_AControlReplyOnAnEndedStreamKeepsTheHubStatus(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	synctest.Test(t, func(t *testing.T) {
+		writeErr := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
+		refusal := refusalReasonError(t, connect.CodeUnauthenticated,
+			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+		c, stream := writerStreamClient(t, writeErr, refusal)
+		keys, err := noiseutil.GenerateCompositeKeypair()
+		require.NoError(t, err)
+		c.SetChannelMgr(channel.NewManager(keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+			c.Send, c.TrySendOrReset, 0, 0))
+		stream.messages = []*leapmuxv1.ConnectResponse{{
+			RequestId: "open-1",
+			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
+				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "channel-1"},
+			},
+		}}
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- c.Connect(context.Background(), "token") }()
+
+		// The writer has run its give-up hook and exited once every goroutine in
+		// the bubble is durably blocked.
+		synctest.Wait()
+		close(stream.receiveOK)
+
+		err = <-errCh
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+			"the reply on the closed writer must not replace the Hub's status with Canceled")
+		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+			connectRefusalReason(err), "the refusal's detail must survive the dropped reply")
+		assert.Contains(t, logs.String(), "rejecting channel open",
+			"the receive loop handled the ChannelOpen, so its reply met the closed writer")
+		assert.NotContains(t, logs.String(), "saturated", "a closed writer is not a saturated control queue")
+		assert.NotContains(t, logs.String(), "over budget", "a closed writer is not over budget")
+	})
+}
+
+// The connect writer's give-up hook cancels the connection on a write failure
+// that the Hub did not cause by ending the stream, so ConnectWithReconnect
+// re-establishes it.
 func TestClientWriteFailureCancelsConnection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var cancelled atomic.Bool
@@ -673,15 +1360,55 @@ func TestClientWriteFailureCancelsConnection(t *testing.T) {
 		Size:          connectReqSize,
 		MaxBytes:      sendq.DefaultMaxBytes,
 		FrameOverhead: sendq.DefaultFrameOverhead,
-		OnGiveUp: func(sendq.GiveUpReason, error) {
-			c.cancelConn()
-		},
+		OnGiveUp:      c.connectWriterGiveUpHook(func() { c.cancelConn() }),
 	})
 	t.Cleanup(func() { c.writer.Close() })
 
 	require.NoError(t, c.Send(heartbeatMsg()))
 	require.Eventually(t, cancelled.Load, 2*time.Second, 5*time.Millisecond,
-		"a write failure must cancel the connection")
+		"a write failure the Hub did not cause must cancel the connection")
+}
+
+// A write that failed because the peer ended the stream wraps io.EOF, and the
+// receive loop reports the peer's status. Every other give-up still cancels.
+func TestWriterGiveUpCancelsConnection(t *testing.T) {
+	t.Parallel()
+
+	eofShape := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
+	for name, tc := range map[string]struct {
+		reason sendq.GiveUpReason
+		err    error
+		want   bool
+	}{
+		"a write error wrapping io.EOF directly": {
+			reason: sendq.GiveUpWriteError, err: io.EOF, want: false,
+		},
+		"a write error wrapping io.EOF": {
+			reason: sendq.GiveUpWriteError, err: fmt.Errorf("write: %w", io.EOF), want: false,
+		},
+		"the production write-envelope shape": {
+			reason: sendq.GiveUpWriteError, err: eofShape, want: false,
+		},
+		"a write error the Hub did not cause": {
+			reason: sendq.GiveUpWriteError, err: errors.New("broken pipe"), want: true,
+		},
+		"a write timeout wrapping io.EOF": {
+			reason: sendq.GiveUpWriteTimeout, err: eofShape, want: true,
+		},
+		"a stall wrapping io.EOF": {
+			reason: sendq.GiveUpStall, err: eofShape, want: true,
+		},
+		"an over-budget give-up wrapping io.EOF": {
+			reason: sendq.GiveUpOverBudget, err: eofShape, want: true,
+		},
+		"pool pressure wrapping io.EOF": {
+			reason: sendq.GiveUpPoolPressure, err: eofShape, want: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, writerGiveUpCancelsConnection(tc.reason, tc.err))
+		})
+	}
 }
 
 // TrySend must drop rather than block or give up when the byte budget is full —
@@ -700,8 +1427,8 @@ func TestClientTrySendDropsWhenBudgetFull(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	filler := &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: make([]byte, 400)},
+		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+			ChannelMessageResp: &leapmuxv1.ChannelMessage{Ciphertext: make([]byte, 400)},
 		},
 	}
 	fillSize := connectReqSize(filler)
@@ -747,8 +1474,8 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	filler := &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{PublicKey: make([]byte, 400)},
+		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
+			ChannelMessageResp: &leapmuxv1.ChannelMessage{Ciphertext: make([]byte, 400)},
 		},
 	}
 	fillSize := connectReqSize(filler)
@@ -785,9 +1512,39 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 		"must-deliver control frame must consume the reserved headroom")
 	assert.False(t, cancelled.Load(), "control reserve hit must not cancel")
 
-	assert.False(t, c.TrySendOrReset(filler),
+	assert.Equal(t, controlSaturated, c.trySendControl(filler),
 		"exhausting the full MaxBytes must drop and cancel")
 	assert.True(t, cancelled.Load(), "drop after reserve exhaustion must cancel the connection")
+}
+
+// A control frame that finds no writer, or a closed one, finds a connection that
+// is already ending. trySendControl drops it without cancelling and without the
+// saturation warning, so the receive loop alone reports how the connection
+// ended. Only a full control reserve on a live writer cancels (see
+// TestClientTrySendOrResetUsesControlReserve).
+func TestClientTrySendControlTellsAnEndingConnectionFromASaturatedOne(t *testing.T) {
+	for name, closedWriter := range map[string]bool{"no writer": false, "a closed writer": true} {
+		t.Run(name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			var cancelled atomic.Bool
+			c := newBareClient()
+			c.connCancel = func() { cancelled.Store(true) }
+			if closedWriter {
+				c.writer = sendq.New(t.Context(), sendq.Config[*leapmuxv1.ConnectRequest]{
+					Write:          func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
+					Size:           connectReqSize,
+					MaxBytes:       sendq.DefaultMaxBytes,
+					ControlReserve: sendq.DefaultControlReserve,
+				})
+				c.writer.Close()
+			}
+
+			assert.Equal(t, controlConnectionEnding, c.trySendControl(heartbeatMsg()))
+			assert.False(t, c.TrySendOrReset(heartbeatMsg()), "a frame for an ending connection is not queued")
+			assert.False(t, cancelled.Load(), "an ending connection must not be cancelled again")
+			assert.NotContains(t, logs.String(), "saturated")
+		})
+	}
 }
 
 // lastSendTime must advance on enqueue so the idle heartbeat does not fire

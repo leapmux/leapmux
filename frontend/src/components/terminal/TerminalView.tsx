@@ -15,11 +15,15 @@ import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEF
 import { attachTerminalIme } from '~/lib/terminalIme'
 import { themeStore } from '~/lib/themeStore'
 import { webglPool } from '~/lib/webglTerminalPool'
+import { terminalDisplayStatus } from '~/stores/tab.helpers'
+import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalViewProps {
   terminals: TerminalTab[]
+  /** Whether this client's watch stream reaches a worker. See `WorkerOnlineStore.isOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   activeTerminalId: string | null
   visible: boolean
   /** Whether the enclosing tile is the layout-focused tile. See TerminalContainer.tileFocused. */
@@ -438,7 +442,6 @@ const TerminalContainer: Component<TerminalContainerProps> = (props) => {
           : {}),
       })
       instances.set(id, instance)
-      notifyTerminalInstanceReady(id)
     }
     // On every mount, and for a cached instance too: the prompt belongs to the
     // app shell, and this component is the newest thing that can reach a live
@@ -549,6 +552,14 @@ const TerminalContainer: Component<TerminalContainerProps> = (props) => {
         },
       })
     })
+
+    // After the screen effect above, because effects run in creation order. A
+    // listener flushes the frames that waited for this instance, and the stored
+    // screen resets the terminal, so a frame flushed first would leave the view
+    // while its offset stays applied. onMount, not createEffect: the listener
+    // reads reactive state, and a tracked read would announce the instance again.
+    if (fresh)
+      onMount(() => notifyTerminalInstanceReady(id))
 
     // ResizeObserver on this terminal's container element.
     // Only send resize to worker when dimensions actually change to avoid
@@ -833,6 +844,10 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
             // recomputes (tabView compares with `shallowEqual`), so the memo
             // settles on `===` and the propagation stops here.
             const terminal = createMemo(() => terminalById().get(id))
+            const displayStatus = createMemo(() => {
+              const tab = terminal()
+              return tab && terminalDisplayStatus(tab, props.isWorkerStreamOnline)
+            })
             // The optional half of the row's props, with ABSENT keys rather
             // than undefined values, which is what exactOptionalPropertyTypes
             // demands. A getter so Solid's spread stays deferred and each
@@ -874,8 +889,8 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                       ? transparentTerminalTheme()
                       : terminalTheme()}
                     contentReady={(terminal()?.contentReady ?? false)
-                      || terminal()?.status === TerminalStatus.EXITED
-                      || terminal()?.status === TerminalStatus.DISCONNECTED}
+                      || displayStatus() === TerminalStatus.EXITED
+                      || displayStatus() === TERMINAL_DISCONNECTED}
                     onInput={props.onInput}
                     onResize={props.onResize}
                     onContentReady={props.onContentReady}

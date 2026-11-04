@@ -136,7 +136,7 @@ func (m *Manager) prewarmBatch(batch *leapmuxv1.OpBatch, res ValidationResult) *
 	// the sole writer of m.state, and its commit swap (m.state = working) takes
 	// m.mu.Lock, so each RLock read sees an un-torn map. (Workspace lifecycle
 	// create/delete now flow through SubmitInternal as
-	// SetWorkspaceRegisterOp / TombstoneWorkspaceOp on the manager goroutine,
+	// CreateWorkspaceOp / TombstoneWorkspaceOp on the manager goroutine,
 	// so there is no cross-goroutine writer of m.state.)
 	// buildEntityMaterializedEvent requires that read lock held.
 	materializedCache := map[EntityRef]*MarshaledEvent{}
@@ -874,32 +874,51 @@ func (f *broadcastFrame) get() *MarshaledEvent {
 //
 // A subscriber that arrives during the pre-check pays for its own frame under
 // the lock, exactly as broadcastBatch's late arrivals do.
-func (f *broadcastFrame) prewarm(subs []*Subscriber, workspaceID string) {
+func (f *broadcastFrame) prewarm(subs []*Subscriber, admits subscriberAdmits) {
 	for _, sub := range subs {
-		if sub.Filter.IsAllowed(workspaceID) {
+		if admits(sub) {
 			f.get()
 			return
 		}
 	}
 }
 
+// subscriberAdmits decides which subscribers one fan-out reaches.
+type subscriberAdmits func(*Subscriber) bool
+
+// admitsWorkspace reaches the subscribers whose Filter admits workspaceID.
+func admitsWorkspace(workspaceID string) subscriberAdmits {
+	return func(sub *Subscriber) bool { return sub.Filter.IsAllowed(workspaceID) }
+}
+
+// admitsWorkerReaders reaches the subscribers whose credential holds
+// worker:read, whatever their Filter admits: the worker list belongs to the
+// user, not to one workspace. See Subscriber.MayReadWorkers.
+func admitsWorkerReaders(sub *Subscriber) bool { return sub.MayReadWorkers }
+
 // broadcastTo sends `evt` to every current subscriber whose Filter
 // admits `workspaceID`. The MarshaledEvent wrapper is built once so
 // every subscriber receives the same proto bytes; subscribers that
 // can't see the workspace are skipped.
 func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
+	m.broadcastToAdmitted(admitsWorkspace(workspaceID), evt)
+}
+
+// broadcastToAdmitted sends `evt` to every current subscriber `admits`
+// reaches.
+func (m *Manager) broadcastToAdmitted(admits subscriberAdmits, evt *leapmuxv1.WatchUserEvent) {
 	frame := &broadcastFrame{evt: evt}
 	// Deliberately BEFORE the lock, for the same reason broadcastBatch pre-warms
 	// its fan-out: the subscriber queue forces the marshal when it charges the
 	// frame, and this lock gates every SubmitOps and projection read for the
 	// user. snapshotSubs is safe unlocked (see its doc); what it is NOT is
 	// authoritative about who will be served, which is why this only skips work.
-	frame.prewarm(m.snapshotSubs(), workspaceID)
-	m.fanOutFrame(workspaceID, frame)
+	frame.prewarm(m.snapshotSubs(), admits)
+	m.fanOutFrame(admits, frame)
 }
 
-// fanOutFrame is broadcastTo's locked pass: it delivers `frame` to every
-// subscriber the snapshot admits AS OF the lock.
+// fanOutFrame is broadcastToAdmitted's locked pass: it delivers `frame` to
+// every subscriber the snapshot admits AS OF the lock.
 //
 // Taking m.projection is UNCONDITIONAL -- it is what orders this fan-out against
 // the register-and-capture-until step (see registerLocked), so a subscriber that
@@ -907,15 +926,28 @@ func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchUserEvent)
 // snapshot below is read or registers after this fan-out has finished. Skipping
 // the lock on an empty pre-check is what dropped a presence event in the middle
 // of that window.
-func (m *Manager) fanOutFrame(workspaceID string, frame *broadcastFrame) {
+func (m *Manager) fanOutFrame(admits subscriberAdmits, frame *broadcastFrame) {
 	m.projection.Lock()
 	defer m.projection.Unlock()
 	for _, sub := range m.snapshotSubs() {
-		if !sub.Filter.IsAllowed(workspaceID) {
+		if !admits(sub) {
 			continue
 		}
 		_ = sub.Send(frame.get())
 	}
+}
+
+// BroadcastWorkersChanged tells every subscriber whose credential holds
+// worker:read that the user's worker list changed, whatever workspaces its
+// Filter admits: the worker list belongs to the user, not to a workspace. The
+// event carries no data, so a client re-fetches the list with ListWorkers,
+// which requires worker:read. A subscriber without that scope hears nothing,
+// because the event's timing alone would tell it when the owner's workers
+// register, connect, disconnect or deregister.
+func (m *Manager) BroadcastWorkersChanged() {
+	m.broadcastToAdmitted(admitsWorkerReaders, &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_WorkersChanged{WorkersChanged: &leapmuxv1.WorkersChanged{}},
+	})
 }
 
 // ExpandSubscribersForWorkspace re-checks the read ACL against
@@ -928,7 +960,7 @@ func (m *Manager) fanOutFrame(workspaceID string, frame *broadcastFrame) {
 // the new workspace is by definition not in any existing subscriber's
 // Filter (Filter was computed at subscribe time over the user's
 // then-accessible workspaces). Without pre-expansion, the seed
-// `SetNodeRegister` (root LEAF) and `SetWorkspaceRootNode` ops fall
+// `SetNodeRegister` (root LEAF) and `CreateWorkspace` ops fall
 // into the broadcast filter's "neither pre nor post visible" arm and
 // are silently dropped. Subscribers then observe the eventual
 // `WorkspaceCreated` event but never the entities backing the
@@ -1107,7 +1139,7 @@ func (m *Manager) BroadcastWorkspaceCreated(ctx context.Context, workspaceID, ti
 // batch; BroadcastWorkspaceCreated does so inline) -- this does not re-issue the
 // read-ACL lookup.
 func (m *Manager) broadcastWorkspaceCreatedEvent(workspaceID, title, rootNodeID string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Created{
 			Created: &leapmuxv1.WorkspaceCreated{WorkspaceId: workspaceID, Title: title, RootNodeId: rootNodeID},
 		},
@@ -1115,24 +1147,17 @@ func (m *Manager) broadcastWorkspaceCreatedEvent(workspaceID, title, rootNodeID 
 }
 
 func (m *Manager) BroadcastWorkspaceRenamed(workspaceID, title string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Renamed{
 			Renamed: &leapmuxv1.WorkspaceRenamed{WorkspaceId: workspaceID, Title: title},
 		},
 	})
 }
 
-func (m *Manager) BroadcastWorkspaceDeleted(workspaceID string, workerIDs []string) {
-	m.broadcastWorkspaceLifecycle(workspaceID, &leapmuxv1.WatchUserEvent{
+func (m *Manager) BroadcastWorkspaceDeleted(workspaceID string) {
+	m.broadcastTo(workspaceID, &leapmuxv1.WatchUserEvent{
 		Event: &leapmuxv1.WatchUserEvent_Deleted{
-			Deleted: &leapmuxv1.WorkspaceDeleted{WorkspaceId: workspaceID, WorkerIds: workerIDs},
+			Deleted: &leapmuxv1.WorkspaceDeleted{WorkspaceId: workspaceID},
 		},
 	})
-}
-
-// broadcastWorkspaceLifecycle fans out `evt` to subscribers that admit
-// `workspaceID`. Thin wrapper preserved as a name-readable call site
-// in the Created/Renamed/Deleted helpers.
-func (m *Manager) broadcastWorkspaceLifecycle(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
-	m.broadcastTo(workspaceID, evt)
 }

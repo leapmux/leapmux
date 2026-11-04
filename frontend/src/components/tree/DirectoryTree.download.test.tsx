@@ -29,10 +29,12 @@ const spies = vi.hoisted<SaveActionsSpies>(() => ({
 const listDirectoryImpl = vi.hoisted(() => vi.fn())
 
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: (...args: unknown[]) => listDirectoryImpl(...args),
-  statFile: async () => ({
-    info: { modTime: '2026-01-01T00:00:00Z' },
-  }),
+  workerFile: {
+    listDirectory: (...args: unknown[]) => listDirectoryImpl(...args),
+    statFile: async () => ({
+      info: { modTime: '2026-01-01T00:00:00Z' },
+    }),
+  },
   channelManager: {
     subscribe: () => () => {},
   },

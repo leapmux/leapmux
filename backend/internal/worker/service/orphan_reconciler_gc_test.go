@@ -9,10 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
 	return nil, nil
 }
 
@@ -464,7 +466,7 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 		resp := &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}
 		if present {
 			resp.TabStates = []*leapmuxv1.WorkerTabState{{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent",
+				Tab:          &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent"},
 				ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 			}}
 		}
@@ -494,8 +496,9 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 }
 
 // TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass is the
-// regression for the production failure: an in-flight CloseAgent(REMOVE) whose
-// CRDT tombstone already reached the hub must still find its worktree link.
+// regression for the production failure: an in-flight CloseTab(REMOVE) of an
+// agent tab whose CRDT tombstone already reached the hub must still find its
+// worktree link.
 func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testing.T) {
 	t.Parallel()
 
@@ -545,7 +548,7 @@ func TestWorkspaceCleanupPreservesExistingCheckoutAfterGrace(t *testing.T) {
 	require.NoError(t, err)
 	createAgentForPath(t, svc, "cleanup-nested", nested)
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "cleanup-nested")
-	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{Tabs: []*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "cleanup-nested"}}}, w)
+	dispatch(d, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, &leapmuxv1.CleanupWorkspaceRequest{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "cleanup-nested"}}}, w)
 	require.Empty(t, w.errors)
 	clock := time.Now()
 	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{

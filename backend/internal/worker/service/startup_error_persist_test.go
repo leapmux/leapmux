@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -65,9 +66,10 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 	assert.Empty(t, errStr)
 }
 
-// TestDeriveTerminalStatus_AllBranches is the terminal analogue. The
-// terminal flavor has no "runtime ACTIVE" concept in the derivation
-// (callers decide exited vs running) — only registry > DB > READY.
+// TestDeriveTerminalStatus_AllBranches is the terminal analogue: registry >
+// READY while a shell runs > DB > EXITED.
+// TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError covers
+// the order of the two middle branches.
 func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	t.Parallel()
 
@@ -89,14 +91,23 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "registry error", errStr)
 
-	// 3. Registry cleared → DB column drives STARTUP_FAILED.
+	// 3. Registry cleared, no live shell → DB column drives STARTUP_FAILED.
 	svc.TerminalStartup.cancelAndClear("term-1", keepWorktreeOnClose)
 	status, errStr, _ = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "stale db error", errStr)
 
-	// 4. No registry, no DB column → READY.
+	// 4. No registry, no DB column, no live shell → EXITED.
 	term.StartupError = ""
+	status, errStr, _ = svc.deriveTerminalStatus(&term)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
+	assert.Empty(t, errStr)
+
+	// 5. No registry, no DB column, a live shell → READY.
+	require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{
+		ID: "term-1", Shell: testutil.TestShell(), WorkingDir: t.TempDir(), Cols: 80, Rows: 24,
+	}, func([]byte, int64, []terminal.Signal) {}, nil))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, "term-1")
 	status, errStr, _ = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
 	assert.Empty(t, errStr)
@@ -118,7 +129,7 @@ func TestOpenAgent_PersistsStartupErrorOnFailure(t *testing.T) {
 		return nil, errors.New("boom: forced start failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -198,7 +209,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 		return nil, errors.New("doom")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -215,7 +226,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 	svc.AgentStartup = newAgentStartupRegistry(testutil.NewQuartzMock(t))
 
 	listW := newTestWriter()
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, listW)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, listW)
 	require.Empty(t, listW.errors)
 	require.Len(t, listW.responses, 1)
 	var listResp leapmuxv1.ListAgentsResponse
@@ -251,7 +262,7 @@ func TestEnqueueAgentInput_PersistedStartupErrorPausesFailedInput(t *testing.T) 
 	}))
 	// Register a tab so requireAccessibleAgent succeeds via workspace ACL.
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: agentID,
@@ -278,7 +289,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 		return nil, errors.New("kaput")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -293,7 +304,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	svc.AgentStartup = newAgentStartupRegistry(testutil.NewQuartzMock(t))
 
 	wWatch := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
@@ -335,7 +346,7 @@ func TestOpenTerminal_PersistsStartupErrorOnFailure(t *testing.T) {
 		return errors.New("terminal boom")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      testutil.TestShell(),
 	}, w)
@@ -368,7 +379,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 		return errors.New("pty no")
 	}
 
-	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		WorkingDir: t.TempDir(),
 		Shell:      testutil.TestShell(),
 	}, w)
@@ -381,7 +392,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	svc.TerminalStartup = newTerminalStartupRegistry(testutil.NewQuartzMock(t))
 
 	listW := newTestWriter()
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, listW)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, listW)
 	require.Empty(t, listW.errors)
 	require.Len(t, listW.responses, 1)
 	var listResp leapmuxv1.ListTerminalsResponse
@@ -390,6 +401,68 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	info := listResp.GetTerminals()[0]
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, info.GetStatus())
 	assert.Contains(t, info.GetStartupError(), "pty no")
+}
+
+// RestartTerminal keeps the stopped previous shell in the manager when the
+// respawn fails, and the startup registry evicts the failure after
+// failedEntryTTL. ListTerminals must then read the failure from the persisted
+// startup_error column, as the WatchEvents replay does through
+// deriveTerminalStatus. Otherwise the list reports EXITED with no error while
+// the replay reports STARTUP_FAILED with the error.
+func TestListTerminals_ReportsThePersistedStartupErrorOfAnExitedShellTheManagerHolds(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	const id = "failed-restart"
+	startTestTerminal(t, svc, ctx, id)
+	svc.Terminals.StopTerminal(id)
+	svc.Terminals.WaitForExit(id)
+	require.True(t, svc.Terminals.HasTerminal(id), "precondition: the manager still holds the stopped shell")
+	svc.persistTerminalStartupError(id, "restart failed: no such shell")
+	_, _, _, inRegistry := svc.TerminalStartup.status(id)
+	require.False(t, inRegistry, "precondition: the registry holds no entry, as after the eviction")
+
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure, &leapmuxv1.ListTerminalsRequest{TabIds: []string{id}}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	info := resp.GetTerminals()[0]
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED.String(), info.GetStatus().String())
+	assert.Equal(t, "restart failed: no such shell", info.GetStartupError())
+	assert.Empty(t, info.GetStartupMessage())
+
+	// The replay reads the same row through deriveTerminalStatus, and the two
+	// answers must agree.
+	row, err := svc.Queries.GetTerminal(ctx, id)
+	require.NoError(t, err)
+	status, startupError, _ := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, info.GetStatus().String(), status.String())
+	assert.Equal(t, info.GetStartupError(), startupError)
+}
+
+// A running shell proves that the last startup of its terminal succeeded:
+// every failure path leaves no new shell, and RestartTerminal refuses a
+// terminal whose shell runs. A persisted startup_error beside a live shell is
+// therefore stale, such as a row read before the success cleared the column.
+// The terminal reads READY with no error, as deriveAgentStatus reads a running
+// agent ACTIVE over its persisted error.
+func TestDeriveTerminalStatus_ALiveShellIsReadyOverAPersistedStartupError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "live")
+	row, err := svc.Queries.GetTerminal(ctx, "live")
+	require.NoError(t, err)
+	row.StartupError = "stale failure"
+
+	status, startupError, startupMessage := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY.String(), status.String())
+	assert.Empty(t, startupError, "a live shell must suppress a stale persisted error")
+	assert.Empty(t, startupMessage)
 }
 
 // TestDeriveAgentStatus_ActiveClearsLingeringDBError verifies that once a
@@ -437,4 +510,49 @@ func TestGetAgentByID_StartupErrorSurvivesClose(t *testing.T) {
 	rows, err := svc.Queries.ListAgentsByIDs(ctx, []string{agentID})
 	require.NoError(t, err)
 	assert.Empty(t, rows, "ListAgentsByIDs must not surface closed rows")
+}
+
+// The terminal manager keeps an exited terminal until RestartTerminal or
+// RemoveTerminal, so "the manager holds it" does not mean "its shell runs".
+// deriveTerminalStatus feeds the WatchEvents replay, which must state EXITED for
+// a shell that exited while the manager still holds it, as ListTerminals does.
+// Otherwise a page that loads cold reads READY, and Enter sends input to a dead
+// shell instead of restarting it.
+func TestDeriveTerminalStatus_AnExitedShellTheManagerStillHoldsIsExited(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "exited-in-manager")
+	svc.Terminals.StopTerminal("exited-in-manager")
+	svc.Terminals.WaitForExit("exited-in-manager")
+	require.True(t, svc.Terminals.HasTerminal("exited-in-manager"), "precondition: the manager still holds the terminal")
+
+	row, err := svc.Queries.GetTerminal(ctx, "exited-in-manager")
+	require.NoError(t, err)
+	status, startupError, _ := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
+	assert.Empty(t, startupError)
+}
+
+// A live shell reads READY, and a terminal the manager does not hold reads
+// EXITED: the two other inputs of the rule.
+func TestDeriveTerminalStatus_ReadyWhileTheShellRunsAndExitedWithoutAShell(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "running")
+	row, err := svc.Queries.GetTerminal(ctx, "running")
+	require.NoError(t, err)
+	status, _, _ := svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, status)
+
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: "no-shell", WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	row, err = svc.Queries.GetTerminal(ctx, "no-shell")
+	require.NoError(t, err)
+	status, _, _ = svc.deriveTerminalStatus(&row)
+	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED, status)
 }

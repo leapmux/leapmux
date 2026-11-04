@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
@@ -81,22 +82,22 @@ func requireFlag(value *string, name string) func(adminArgs) error {
 }
 
 // minListLimit is the smallest page a verb may ask for. The ceiling is
-// service.MaxPageLimit — the same constant the hub caps at, so the
-// range this check states is always the hub's own range.
+// contracts.MaxPageLimit — the page-limit contract that the hub caps at, so
+// the range this check states is always the hub's own range.
 const minListLimit = 1
 
 // validateListLimit refuses a --limit outside the page range.
 //
-// The hub normalizes too (service.NormalizePageParams: a non-positive limit
-// takes the default, an oversized one caps), which is what protects every
+// The hub normalizes too (normalizePageParams in hub/service: a non-positive
+// limit takes the default, an oversized one caps), which is what protects every
 // other client. This check exists for the ANSWER an operator gets: it runs
 // before the dial, so `--limit 0` identifies the flag and its range
 // instead of quietly returning a page of a size the operator did not ask
 // for.
 func validateListLimit(limit int64) error {
-	if limit < minListLimit || limit > service.MaxPageLimit {
+	if limit < minListLimit || limit > contracts.MaxPageLimit {
 		return control.EmitError("invalid_request",
-			fmt.Sprintf("limit must be between %d and %d", minListLimit, service.MaxPageLimit))
+			fmt.Sprintf("limit must be between %d and %d", minListLimit, contracts.MaxPageLimit))
 	}
 	return nil
 }
@@ -141,6 +142,19 @@ func propagationName(restart bool) string {
 		return "restart"
 	}
 	return "hot"
+}
+
+// addPropagation states, on a write verb's reply, whether the running hub
+// already applies the written value. `settings set`, `settings set-secret` and
+// `settings reset` all call it, because a reset of a restart-class key also waits
+// for a restart.
+func addPropagation(out map[string]any, restart bool) {
+	out["propagation"] = propagationName(restart)
+	if restart {
+		out["note_restart"] = "this setting applies after a hub restart"
+	} else {
+		out["note_hot"] = "the hub that stored this setting applies it at once; a value written to the shared database outside the hub reaches it within its 30-second settings snapshot"
+	}
 }
 
 // settingDescriptionText appends the domain-verb pointer to the keys whose
@@ -329,26 +343,21 @@ func RunAdminSettingsSet(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().UpdateSetting(context.Background(), &leapmuxv1.UpdateSettingRequest{
+			updated, restart, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
 				Key: a.Rest[0], PartialJson: string(value),
 			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			out := settingValueJSON(resp.GetValue())
-			if resp.GetValue().GetEffectiveJson() != resp.GetValue().GetValueJson() {
+			out := settingValueJSON(updated)
+			if updated.GetEffectiveJson() != updated.GetValueJson() {
 				out["note"] = "the effective value differs from the stored value; see effective_json"
 			}
 			// The write itself reports the propagation class, so this reply
 			// already says whether the running hub applies the new value.
 			// Reading it back through a second ListSettings serialized
 			// every registered key to learn one boolean.
-			out["propagation"] = propagationName(resp.GetRestart())
-			if resp.GetRestart() {
-				out["note_restart"] = "this setting applies after a hub restart"
-			} else {
-				out["note_hot"] = "the hub that stored this setting applies it at once; a value written to the shared database outside the hub reaches it within its 30-second settings snapshot"
-			}
+			addPropagation(out, restart)
 			return control.EmitData(out)
 		},
 	})
@@ -375,13 +384,15 @@ func RunAdminSettingsSetSecret(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().UpdateSettingSecret(context.Background(), &leapmuxv1.UpdateSettingSecretRequest{
-				Key: a.Rest[0], PartialJson: a.Rest[1],
+			updated, restart, err := updateOneSetting(c, &leapmuxv1.SettingWrite{
+				Key: a.Rest[0], SecretPartialJson: a.Rest[1],
 			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.GetValue()))
+			out := settingValueJSON(updated)
+			addPropagation(out, restart)
+			return control.EmitData(out)
 		},
 	})
 }
@@ -392,13 +403,13 @@ func RunAdminSettingsReset(rawCtx any, args []string) error {
 		Positionals: 1,
 		Usage:       "usage: leapmux control admin settings reset KEY",
 		Run: func(c *control.Client, a adminArgs) error {
-			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), &leapmuxv1.ResetSettingRequest{
-				Key: a.Rest[0],
-			})
+			value, restart, err := resetOneSetting(c, a.Rest[0])
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.GetValue()))
+			out := settingValueJSON(value)
+			addPropagation(out, restart)
+			return control.EmitData(out)
 		},
 	})
 }

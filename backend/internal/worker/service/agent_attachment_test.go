@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -24,7 +25,7 @@ func TestEnqueueAgentInput_OneCharMinimum(t *testing.T) {
 	}))
 
 	// A single character should be accepted.
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
@@ -46,7 +47,7 @@ func TestEnqueueAgentInput_EmptyTextRejectedWithoutAttachments(t *testing.T) {
 	}))
 
 	// Empty text with no attachments should be rejected.
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-2",
@@ -69,7 +70,7 @@ func TestEnqueueAgentInput_EmptyTextAllowedWithAttachments(t *testing.T) {
 	}))
 
 	// Empty text with attachments should be accepted.
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-3",
@@ -95,7 +96,7 @@ func TestEnqueueAgentInput_AttachmentSizeLimitEnforced(t *testing.T) {
 
 	// Create an attachment that exceeds 10 MB.
 	bigData := make([]byte, 11*1024*1024) // 11 MB
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-4",
@@ -122,7 +123,7 @@ func TestEnqueueAgentInput_AttachmentMetadataPersisted(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-5", true)
 	require.NoError(t, err)
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-5",
@@ -158,7 +159,7 @@ func TestEnqueueAgentInput_TextOnlyHasNoAttachmentMetadata(t *testing.T) {
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-6", true)
 	require.NoError(t, err)
 
-	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
 		InputId: newTestAgentInputID(),
 		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-6",

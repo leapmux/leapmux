@@ -1,5 +1,5 @@
 import type { MessageMarksStore } from './chatMessageMarks'
-import { listMessageMarks as listMessageMarksRpc } from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 
 // ---------------------------------------------------------------------------
 // Message-mark seeder (the seed-race machine)
@@ -38,7 +38,7 @@ export interface MessageMarkSeederDeps {
    * `load` (never at construction) so building the store stays free of the RPC surface -- matching
    * the codebase's I/O-free store construction. Tests inject a fake here to drive the seed-race.
    */
-  listMessageMarks?: typeof listMessageMarksRpc
+  listMessageMarks?: typeof workerAgent.listMessageMarks
 }
 
 /**
@@ -81,7 +81,7 @@ export function createMessageMarkSeeder(deps: MessageMarkSeederDeps) {
   async function load(workerId: string, agentId: string, watchSignal?: AbortSignal, rescheduleDepth = 0) {
     // Resolve the RPC HERE (not at construction) so building the store touches no RPC binding: the
     // injected fake if a test supplied one, else the real ListMessageMarks. See MessageMarkSeederDeps.
-    const listMessageMarks = deps.listMessageMarks ?? listMessageMarksRpc
+    const listMessageMarks = deps.listMessageMarks ?? workerAgent.listMessageMarks
     // Clear any pending retry FIRST, then bail on an empty workerId or a torn-down subscription:
     // an empty workerId means the agent's worker/tab is gone (getAgentTab returned undefined), so a
     // reseed against it can't happen and the retry chain must STOP rather than keep polling a

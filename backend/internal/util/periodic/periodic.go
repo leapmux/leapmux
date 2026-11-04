@@ -43,7 +43,11 @@ type Schedule struct {
 // Start runs `task(ctx)` in a background goroutine immediately (after a
 // random delay in [0, Schedule.Jitter)) and then once per Schedule.Interval
 // thereafter, with the same jitter applied before every run. The goroutine
-// returns when ctx is canceled.
+// returns when ctx is canceled, after the run in progress returns.
+//
+// The channel that Start returns closes after the goroutine stops. A caller that
+// closes something the task uses, such as a database, cancels ctx and waits on
+// it. A caller with no such need ignores it.
 //
 // A panic inside `task` is recovered and logged so the loop survives. The
 // next scheduled run will fire normally.
@@ -51,14 +55,13 @@ type Schedule struct {
 // Panics if Schedule.Interval <= 0 (which would otherwise crash inside the
 // ticker that the loop arms). This is a programmer-error check intended to
 // fail at process startup, not at runtime.
-func Start(ctx context.Context, schedule Schedule, task func(context.Context)) {
-	start(ctx, quartz.NewReal(), schedule, task)
+func Start(ctx context.Context, schedule Schedule, task func(context.Context)) <-chan struct{} {
+	return start(ctx, quartz.NewReal(), schedule, task)
 }
 
-// start is Start with the clock supplied, and with the exit of the goroutine
-// observable through the returned channel, which closes after the loop stops.
+// start is Start with the clock supplied.
 //
-// The tests take both. A mock clock lets a test assert the ORDER of the steps
+// The tests supply it. A mock clock lets a test assert the ORDER of the steps
 // of the loop and the exact delay each step asks for, instead of racing two
 // real timers: a window that a test sizes at a fraction of Interval holds only
 // while the sleep of the host is accurate, and Windows rounds a sleep up to a

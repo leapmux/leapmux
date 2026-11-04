@@ -292,7 +292,7 @@ In solo mode the two address-keyed limits stay, and the two user-keyed ones are 
 
 ### Limits & Timeouts
 
-- **Timeouts** — the API timeout, the agent-startup timeout, and the worktree-create timeout, each in seconds.
+- **Timeouts** — the API timeout and the agent-startup timeout, each in seconds. The agent-startup timeout applies to the Worker that solo and dev run inside the Hub. A standalone Worker uses its `--agent-startup-timeout` flag.
 - **Per-user caps** — a user's maximum simultaneous connections (default 32) and Workers (default 64); `0` means unlimited.
 
 Shown in solo mode.

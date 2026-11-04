@@ -80,15 +80,18 @@ export const AccountEmail: Component = () => {
     await action.run({
       fallback: 'Failed to request email change',
       work: async () => {
+        // Opened BEFORE the request leaves, so a reply that lands after an
+        // identity change re-reads the new identity instead of adopting this one.
+        const adopt = auth.openUserAdoption()
         const resp = await userClient.requestEmailChange({ newEmail: email })
         // The ordinary end of the draft. The TTL is only the backstop for a
         // round trip the user never finished.
         editEmail('')
         // AWAITED, and inside the work: `busy` clears when this resolves, so
-        // an unawaited refresh would re-enable the button while the user still
+        // an unawaited adoption would re-enable the button while the user still
         // carries the old address and no pending change.
-        await auth.refreshUser()
-        return resp.verificationRequired
+        await adopt(resp.user, resp.emailVerification)
+        return resp.emailVerification?.verificationEmailSent
           ? 'Verification email sent. Check your inbox.'
           : 'Email updated.'
       },

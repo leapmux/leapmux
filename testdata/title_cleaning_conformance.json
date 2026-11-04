@@ -2,9 +2,9 @@
   "_readme": [
     "Cross-language conformance fixture for the tab-title cleaning rule.",
     "",
-    "WHY THIS FILE EXISTS: every writer of a tab title cleans it -- the worker at the three",
-    "title-writing RPCs (OpenAgent, RenameAgent, UpdateTerminalTitle) and at the plan",
-    "auto-rename, and the browser at the inline rename it sends them. No path refuses a",
+    "WHY THIS FILE EXISTS: every writer of a tab title cleans it -- the worker at the four",
+    "title-writing RPCs (OpenAgent, RenameAgent, OpenTerminal, RenameTerminal) and at the",
+    "plan auto-rename, and the browser at the inline rename it sends them. No path refuses a",
     "title. That only holds if the two implementations clean IDENTICALLY: the browser",
     "patches its own tab metadata optimistically, so a rule that drifts leaves the tab strip",
     "showing one title while the worker stores another, with no error anywhere to say so.",

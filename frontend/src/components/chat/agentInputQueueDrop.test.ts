@@ -5,8 +5,9 @@ import {
   AgentInputKind,
   AgentInputState,
   QueuedAgentInputSchema,
+  QueueHeadDispatch,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isLockedInputState, movableSegmentIds, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
+import { isLockedInputState, movableSegmentIds, queueHeadAction, queueHeadIndex, resolveQueueDrop, resolveQueueMove, shareReorderSegment } from './agentInputQueueDrop'
 
 describe('queueHeadIndex', () => {
   it('skips awaiting-echo rows', () => {
@@ -17,6 +18,59 @@ describe('queueHeadIndex', () => {
       pending,
       item('head'),
     ])).toBe(1)
+  })
+})
+
+// The head row and the keyboard chord both read this, so a case here is a
+// case both of them follow.
+describe('queueHeadAction', () => {
+  it('offers Steer on a head that the worker lets steer, for a provider that steers', () => {
+    const head = item('head', { canSteer: true, canPreempt: true })
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [head])).toEqual({ action: 'steer', head })
+  })
+
+  it('offers Preempt on a head that the worker lets preempt, for a provider that preempts', () => {
+    const head = item('head', { canSteer: true, canPreempt: true })
+    expect(queueHeadAction(QueueHeadDispatch.PREEMPT, [head])).toEqual({ action: 'preempt', head })
+  })
+
+  it('offers nothing for a provider that neither steers nor preempts', () => {
+    const head = item('head', { canSteer: true, canPreempt: true })
+    expect(queueHeadAction(QueueHeadDispatch.NONE, [head])).toBeUndefined()
+    expect(queueHeadAction(QueueHeadDispatch.UNSPECIFIED, [head])).toBeUndefined()
+    expect(queueHeadAction(undefined, [head]), 'a tab that has no dispatch yet').toBeUndefined()
+  })
+
+  // A provider that steers never falls back to a preempt.
+  it('offers nothing when the worker refuses the action that the provider takes', () => {
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [
+      item('head', { canPreempt: true }),
+    ])).toBeUndefined()
+    expect(queueHeadAction(QueueHeadDispatch.PREEMPT, [
+      item('head', { canSteer: true }),
+    ])).toBeUndefined()
+  })
+
+  it('offers the action on the head behind an input that awaits its echo', () => {
+    const head = item('head', { canSteer: true })
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [
+      locked('pending', AgentInputState.AWAITING_ECHO),
+      head,
+    ])).toEqual({ action: 'steer', head })
+  })
+
+  it('reads the head alone, although a later item reports the action', () => {
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [
+      item('head'),
+      item('later', { canSteer: true }),
+    ])).toBeUndefined()
+  })
+
+  it('offers nothing for an empty queue or one whose every input awaits its echo', () => {
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [])).toBeUndefined()
+    expect(queueHeadAction(QueueHeadDispatch.STEER, [
+      item('pending', { state: AgentInputState.AWAITING_ECHO, canSteer: true }),
+    ])).toBeUndefined()
   })
 })
 
@@ -37,7 +91,6 @@ describe('isLockedInputState', () => {
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
   return create(QueuedAgentInputSchema, {
     id,
-    agentId: 'agent-1',
     text: `text ${id}`,
     kind: AgentInputKind.USER_MESSAGE,
     state: AgentInputState.QUEUED,

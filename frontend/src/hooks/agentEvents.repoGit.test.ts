@@ -2,7 +2,7 @@ import type { AgentStatusChange } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -16,12 +16,11 @@ import { createTestTabStores } from '~/test-support/tabStores'
 
 const WS = 'ws-agent-repo-git'
 
-function statusChange(overrides: Partial<AgentStatusChange> & { agentId: string }): AgentStatusChange {
+function statusChange(overrides: Partial<AgentStatusChange>): AgentStatusChange {
   return {
     status: AgentStatus.ACTIVE,
     agentSessionId: 'sess-1',
     optionGroups: [],
-    workerOnline: true,
     ...overrides,
   } as AgentStatusChange
 }
@@ -76,7 +75,6 @@ describe('handleAgentStatusChange repo git wiring', () => {
       runStatus(
         'a1',
         statusChange({
-          agentId: 'a1',
           gitStatus: {
             toplevel: '/repo',
             branch: 'feature',
@@ -113,7 +111,6 @@ describe('handleAgentStatusChange repo git wiring', () => {
       runStatus(
         'unjoined',
         statusChange({
-          agentId: 'unjoined',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
         {
@@ -155,7 +152,6 @@ describe('handleAgentStatusChange repo git wiring', () => {
       runStatus(
         'a1',
         statusChange({
-          agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
         {
@@ -196,7 +192,6 @@ describe('handleAgentStatusChange repo git wiring', () => {
       runStatus(
         'a1',
         statusChange({
-          agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'other' } as never,
         }),
         {

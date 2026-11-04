@@ -7,7 +7,9 @@ import { input } from '../testUtils'
 import './plugin'
 
 vi.mock('~/api/workerRpc', () => ({
-  updateAgentSettings: vi.fn(),
+  workerAgent: {
+    updateAgentSettings: vi.fn(),
+  },
 }))
 
 /** Kiro's end of a turn it started by itself, as the worker stores it. */

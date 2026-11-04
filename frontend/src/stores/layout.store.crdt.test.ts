@@ -15,7 +15,7 @@ describe('createLayoutStore (projection-driven)', () => {
     }, { rootTileId: 'root-leaf' })
   })
 
-  it('splitTile emits a 9-op batch that flips T LEAF→SPLIT in the projection', () => {
+  it('emits a 9-op batch that flips T LEAF→SPLIT in the projection when splitTile runs', () => {
     withTestBridge((harness) => {
       const store = createTestLayoutStore()
       const childB = store.splitTile('root-leaf', 'horizontal')
@@ -35,7 +35,7 @@ describe('createLayoutStore (projection-driven)', () => {
     }, { rootTileId: 'root-leaf' })
   })
 
-  it('makeGrid emits a batch with R*C cells under T', () => {
+  it('emits a batch with R*C cells under T when makeGrid runs', () => {
     withTestBridge((harness) => {
       const store = createTestLayoutStore()
       const result = store.makeGrid('root-leaf', 2, 3)
@@ -52,7 +52,7 @@ describe('createLayoutStore (projection-driven)', () => {
     }, { rootTileId: 'root-leaf' })
   })
 
-  it('splitTile then closeTile on a child sibling collapses the projection back to a single leaf', () => {
+  it('collapses the projection back to a single leaf after splitTile then closeTile on a child sibling', () => {
     withTestBridge((_harness) => {
       const store = createTestLayoutStore()
       const childB = store.splitTile('root-leaf', 'horizontal')!
@@ -66,7 +66,7 @@ describe('createLayoutStore (projection-driven)', () => {
     }, { rootTileId: 'root-leaf' })
   })
 
-  it('updateRatios emits a single op', () => {
+  it('emits a single op when updateRatios runs', () => {
     withTestBridge((harness) => {
       const store = createTestLayoutStore()
       store.splitTile('root-leaf', 'horizontal')
@@ -133,7 +133,7 @@ describe('createLayoutStore (projection-driven)', () => {
   // protected` and rolled back every op — agent tab was already
   // closed in a separate batch, but the grid cells stayed alive and
   // the user couldn't get rid of the empty grid.
-  it('removeGrid on the workspace-root grid flips its kind to LEAF instead of tombstoning', () => {
+  it('flips the kind of the workspace-root grid to LEAF instead of tombstoning it when removeGrid runs', () => {
     withTestBridge((harness) => {
       const store = createTestLayoutStore()
       store.makeGrid('root-leaf', 1, 2)

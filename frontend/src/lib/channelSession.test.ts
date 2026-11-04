@@ -72,7 +72,7 @@ const keys = {
 }
 
 describe('channelSession', () => {
-  it('beginHandshake uses classic Noise for CLASSIC mode', () => {
+  it('uses classic Noise for CLASSIC mode in beginHandshake', () => {
     const message1 = new Uint8Array([9, 9])
     const finished = mockCipher()
     const classicHandshake1 = vi.fn((_rs: Uint8Array) => ({
@@ -97,7 +97,7 @@ describe('channelSession', () => {
     expect(classicHandshake2).toHaveBeenCalledWith({ tag: 'classic' }, payload)
   })
 
-  it('beginHandshake uses hybrid Noise for post-quantum mode', () => {
+  it('uses hybrid Noise for post-quantum mode in beginHandshake', () => {
     const message1 = new Uint8Array([8, 8])
     const finished = mockCipher()
     const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => ({
@@ -122,7 +122,7 @@ describe('channelSession', () => {
     expect(handshake2).toHaveBeenCalledWith({ tag: 'hybrid' }, payload, keys.slhdsaPublicKey)
   })
 
-  it('beginHandshake finish propagates handshake-2 failures', () => {
+  it('propagates handshake-2 failures from the finish of beginHandshake', () => {
     const session = new ChannelSession(emptyDeps(), {
       handshake1: () => ({
         message1: new Uint8Array([1]),
@@ -136,7 +136,7 @@ describe('channelSession', () => {
     expect(() => pending.finish(new Uint8Array([1]))).toThrow('bad handshake-2')
   })
 
-  it('beginHandshake treats UNSPECIFIED like post-quantum (hybrid path)', () => {
+  it('treats UNSPECIFIED like post-quantum (hybrid path) in beginHandshake', () => {
     const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => ({
       message1: new Uint8Array([1]),
       handshakeState: {} as any,
@@ -151,7 +151,7 @@ describe('channelSession', () => {
     expect(classic1).not.toHaveBeenCalled()
   })
 
-  it('beginHandshake classic finish propagates handshake-2 failures', () => {
+  it('propagates handshake-2 failures from the classic finish of beginHandshake', () => {
     const session = new ChannelSession(emptyDeps(), {
       classicHandshake1: () => ({
         message1: new Uint8Array([1]),
@@ -184,7 +184,7 @@ describe('channelSession', () => {
     expect(() => session.decrypt(makeChannel({ session: cipher }), new Uint8Array([1]))).toThrow('tag mismatch')
   })
 
-  it('shouldInitiateRekey is true on soft nonce or age', () => {
+  it('returns true from shouldInitiateRekey on soft nonce or age', () => {
     const session = new ChannelSession(emptyDeps())
     const soft = makeChannel({
       session: mockCipher(true, false),
@@ -201,7 +201,7 @@ describe('channelSession', () => {
     expect(session.shouldInitiateRekey(fresh)).toBe(false)
   })
 
-  it('shouldInitiateRekey respects reject backoff unless soft nonce', () => {
+  it('respects reject backoff in shouldInitiateRekey unless soft nonce', () => {
     const session = new ChannelSession(emptyDeps())
     const now = performance.now()
     const backedOff = makeChannel({
@@ -218,20 +218,20 @@ describe('channelSession', () => {
     expect(session.shouldInitiateRekey(soft, now)).toBe(true)
   })
 
-  it('pastHardCeiling tracks absolute age', () => {
+  it('tracks absolute age in pastHardCeiling', () => {
     const session = new ChannelSession(emptyDeps())
     const now = performance.now()
     expect(session.pastHardCeiling(makeChannel({ lastRekeyAt: now }), now)).toBe(false)
     expect(session.pastHardCeiling(makeChannel({ lastRekeyAt: now - SESSION_KEY_HARD_CEILING_MS }), now)).toBe(true)
   })
 
-  it('sendEncryptedMessage rejects oversize with client error', () => {
+  it('rejects an oversize plaintext with a client error in sendEncryptedMessage', () => {
     const session = new ChannelSession(emptyDeps())
     const ch = makeChannel({ maxReassembledMessageSize: 10 })
     expect(() => session.sendEncryptedMessage(ch, new Uint8Array(11), 1)).toThrow(ChannelError)
   })
 
-  it('sendEncryptedMessage sends a single frame for small plaintext', () => {
+  it('sends a single frame for small plaintext in sendEncryptedMessage', () => {
     const sent: Uint8Array[] = []
     const cipher = mockCipher()
     const session = new ChannelSession({
@@ -245,7 +245,7 @@ describe('channelSession', () => {
     expect((cipher.send.encrypt as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
   })
 
-  it('sendEncryptedMessage chunks large payloads', () => {
+  it('chunks large payloads in sendEncryptedMessage', () => {
     const sent: Uint8Array[] = []
     const cipher = mockCipher()
     const session = new ChannelSession({
@@ -263,7 +263,7 @@ describe('channelSession', () => {
     expect((cipher.send.encrypt as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2)
   })
 
-  it('handleRekeyOutcome rekeys ciphers on accept', () => {
+  it('rekeys the ciphers on accept in handleRekeyOutcome', () => {
     const cipher = mockCipher()
     const ch = makeChannel({ session: cipher })
     const wait = vi.fn()
@@ -289,13 +289,13 @@ describe('channelSession', () => {
     expect(wait).toHaveBeenCalledWith(true, 0)
   })
 
-  it('handleRekeyOutcome without wait is a no-op warn path', () => {
+  it('is a no-op warn path when handleRekeyOutcome runs without wait', () => {
     const session = new ChannelSession(emptyDeps())
     // Must not throw.
     session.handleRekeyOutcome(makeChannel(), false, 1000)
   })
 
-  it('handleRekeyOutcome zeroes the fresh secrets on reject', () => {
+  it('zeroes the fresh secrets on reject in handleRekeyOutcome', () => {
     // Pins the F-1 forward-secrecy fix: a RekeyReject must still wipe the
     // in-flight fresh X25519 ephemeral + ML-KEM shared secret, not leave them
     // lingering in the heap until GC. Pre-fix, handleRekeyOutcome nulled
@@ -321,7 +321,7 @@ describe('channelSession', () => {
     expect((cipher.send.rekeyWithSecret as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
   })
 
-  it('handleRekeyOutcome zeroes the fresh secrets on accept-with-bad-responder-pub', () => {
+  it('zeroes the fresh secrets on accept-with-bad-responder-pub in handleRekeyOutcome', () => {
     // Pins the F-1 fail-closed branch: an Ack whose responder ephemeral is the
     // wrong size must close the channel AND wipe the fresh secrets — this is
     // the attacker-controlled-Ack path, so leaking here would be the worst
@@ -356,7 +356,7 @@ describe('channelSession', () => {
     expect(Array.from(mlkemSS).every(b => b === 0)).toBe(true)
   })
 
-  it('ensureRekeyed closes past hard ceiling', async () => {
+  it('closes the channel when past the hard ceiling in ensureRekeyed', async () => {
     const closeChannel = vi.fn(async () => {})
     const session = new ChannelSession({
       sendToWire: () => {},
@@ -368,7 +368,7 @@ describe('channelSession', () => {
     expect(closeChannel).toHaveBeenCalledWith('ch-1')
   })
 
-  it('ensureRekeyed is a no-op when policy does not require rekey', async () => {
+  it('is a no-op in ensureRekeyed when policy does not require rekey', async () => {
     const sendToWire = vi.fn()
     const session = new ChannelSession({
       sendToWire,
@@ -382,7 +382,7 @@ describe('channelSession', () => {
     expect(sendToWire).not.toHaveBeenCalled()
   })
 
-  it('ensureRekeyed sends RekeyRequest and settles on Ack', async () => {
+  it('sends RekeyRequest and settles on Ack in ensureRekeyed', async () => {
     const sent: Uint8Array[] = []
     const session = new ChannelSession({
       sendToWire: buf => sent.push(buf),
@@ -403,7 +403,7 @@ describe('channelSession', () => {
     expect(ch.rekeyNotBefore).toBe(0)
   })
 
-  it('ensureRekeyed on Reject applies retry_after_ms backoff', async () => {
+  it('applies retry_after_ms backoff on Reject in ensureRekeyed', async () => {
     const session = new ChannelSession(emptyDeps())
     const ch = makeChannel({ lastRekeyAt: performance.now() - SESSION_KEY_MAX_AGE_MS - 1 })
     const p = session.ensureRekeyed(ch)
@@ -416,7 +416,7 @@ describe('channelSession', () => {
     expect(ch.rekeyRequestId).toBeNull()
   })
 
-  it('ensureRekeyed closes after Reject once past hard ceiling', async () => {
+  it('closes the channel after Reject once past the hard ceiling in ensureRekeyed', async () => {
     const closeChannel = vi.fn(async () => {})
     const session = new ChannelSession({
       sendToWire: () => {},
@@ -435,7 +435,7 @@ describe('channelSession', () => {
     expect(closeChannel).toHaveBeenCalledWith('ch-1')
   })
 
-  it('ensureRekeyed is a no-op when the channel is already closed', async () => {
+  it('is a no-op in ensureRekeyed when the channel is already closed', async () => {
     const sendToWire = vi.fn()
     const session = new ChannelSession({
       sendToWire,
@@ -450,7 +450,7 @@ describe('channelSession', () => {
     expect(sendToWire).not.toHaveBeenCalled()
   })
 
-  it('ensureRekeyed reports send failure and clears the wait', async () => {
+  it('reports send failure and clears the wait in ensureRekeyed', async () => {
     const onSendFailure = vi.fn()
     const session = new ChannelSession({
       sendToWire: () => {
@@ -466,7 +466,7 @@ describe('channelSession', () => {
     expect(ch.rekeyRequestId).toBeNull()
   })
 
-  it('ensureRekeyed chains concurrent callers onto one Request RTT', async () => {
+  it('chains concurrent callers onto one Request RTT in ensureRekeyed', async () => {
     const sent: Uint8Array[] = []
     const session = new ChannelSession({
       sendToWire: buf => sent.push(buf),
@@ -484,7 +484,7 @@ describe('channelSession', () => {
     expect(sent).toHaveLength(1)
   })
 
-  it('abortRekey rejects the in-flight waiter and clears the slot', async () => {
+  it('rejects the in-flight waiter and clears the slot in abortRekey', async () => {
     const session = new ChannelSession({
       sendToWire: () => {},
       closeChannel: async () => {},
@@ -501,7 +501,7 @@ describe('channelSession', () => {
     expect(ch.rekeyRequestId).toBeNull()
   })
 
-  it('handleRekeyOutcome ignores mismatched correlation ids', () => {
+  it('ignores mismatched correlation ids in handleRekeyOutcome', () => {
     const session = new ChannelSession(emptyDeps())
     const cipher = mockCipher()
     const wait = vi.fn()
@@ -516,7 +516,7 @@ describe('channelSession', () => {
     expect(ch.rekeyWait).toBe(wait)
   })
 
-  it('needsRekeyGate is true for age or hard ceiling', () => {
+  it('returns true from needsRekeyGate for age or hard ceiling', () => {
     const session = new ChannelSession(emptyDeps())
     expect(session.needsRekeyGate(makeChannel({
       lastRekeyAt: performance.now(),

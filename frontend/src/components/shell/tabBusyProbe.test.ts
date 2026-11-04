@@ -3,13 +3,17 @@ import type { Tab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTabBusyProbe } from '~/components/shell/tabBusyProbe'
 import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 const mockInspect = vi.fn()
 const mockListAgents = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  inspectTerminalProcesses: (...args: unknown[]) => mockInspect(...args),
-  listAgents: (...args: unknown[]) => mockListAgents(...args),
+  workerTerminal: {
+    inspectTerminalProcesses: (...args: unknown[]) => mockInspect(...args),
+  },
+  workerAgent: {
+    listAgents: (...args: unknown[]) => mockListAgents(...args),
+  },
 }))
 
 function agentTab(id: string, extra: Partial<Tab> = {}): Tab {
@@ -223,8 +227,8 @@ describe('createTabBusyProbe', () => {
       ])
       agentIs('child-1', AgentActivityState.WORKING)
 
-      // A child tab closes in the UI only: the worker treats CloseAgent on a
-      // child as tab-close-only, the transcript survives and the tab can be
+      // A child tab closes in the UI only: the worker treats CloseTab of a
+      // child agent as tab-close-only, the transcript survives and the tab can be
       // revived. Nothing stops, so there is nothing to warn about.
       expect(await probe.probe(agentTab('child-1', { parentAgentId: 'a1' }))).toBeNull()
       expect(mockListAgents, 'and it is not even asked about').not.toHaveBeenCalled()

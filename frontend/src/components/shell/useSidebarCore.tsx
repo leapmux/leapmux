@@ -118,6 +118,8 @@ export interface SidebarCommonProps {
    */
   localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
+  /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void
@@ -276,6 +278,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get workers() { return props.workers },
     get localSolo() { return props.localSolo },
     workerInfoFn: props.workerInfoFn,
+    isWorkerStreamOnline: props.isWorkerStreamOnline,
     channelStatusFn: props.channelStatusFn,
     onAddTunnel: props.onAddTunnel,
     onDeregisterWorker: props.onDeregisterWorker,

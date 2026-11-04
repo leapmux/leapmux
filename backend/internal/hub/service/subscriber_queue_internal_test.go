@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -645,6 +646,59 @@ func TestNewUserEventsSubscriber_OverflowPolicyDiffersByPhase(t *testing.T) {
 	}
 	require.ErrorIs(t, sub.Send(evt("over-live")), crdt.ErrSubscriberSlow)
 	assert.Error(t, ctx.Err(), "the steady-state arm must cancel, dropping the subscriber")
+}
+
+// /ws/userevents admits a credential that holds only workspace:read, but the
+// worker-list event asks the client to call ListWorkers, which requires
+// worker:read. So the subscriber carries whether its credential holds that
+// scope, and the manager withholds the event from one that does not.
+func TestNewUserEventsSubscriber_MayReadWorkersFollowsTheGrant(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		desc   string
+		scopes authscope.ScopeSet
+		want   bool
+	}{
+		{
+			desc:   "workspace:read alone",
+			scopes: authscope.MustNew(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+			want:   false,
+		},
+		{
+			desc:   "workspace:read and worker:read",
+			scopes: authscope.MustNew(leapmuxv1.Scope_SCOPE_WORKSPACE_READ, leapmuxv1.Scope_SCOPE_WORKER_READ),
+			want:   true,
+		},
+		{
+			desc:   "worker:admin closed at the mint",
+			scopes: authscope.MustNew(leapmuxv1.Scope_SCOPE_WORKSPACE_READ, leapmuxv1.Scope_SCOPE_WORKER_ADMIN).Close(),
+			want:   true,
+		},
+		{
+			desc:   "an unscoped credential",
+			scopes: authscope.UnscopedGrant(),
+			want:   true,
+		},
+		{
+			desc:   "a credential that states no grant",
+			scopes: authscope.ScopeSet{},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+			user := &auth.UserInfo{ID: userid.MustNew(id.Generate()), Scopes: tc.scopes}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			sub, queue := newUserEventsSubscriber(ctx, cancel, user, "client-1", nil, roomyPool(t))
+			t.Cleanup(queue.Close)
+
+			assert.Equal(t, tc.want, sub.MayReadWorkers)
+		})
+	}
 }
 
 // The policy routes on the REFUSAL, not on the queue's phase at the moment it

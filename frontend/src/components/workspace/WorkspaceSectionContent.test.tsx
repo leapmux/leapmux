@@ -4,7 +4,8 @@ import { create } from '@bufbuild/protobuf'
 import { render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabType, WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { sessionStorageClearForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { resetExpandedWorkspacesForTests, setWorkspacesExpanded } from './expandedWorkspaces'
@@ -80,6 +81,7 @@ function renderContent(options: RenderOptions = {}) {
       getTileOrderForWorkspace={() => []}
       onTabClick={noop}
       isLocalWorkerFn={() => false}
+      isWorkerStreamOnline={() => true}
       repoGitStore={createRepoGitStore()}
     />
   ))

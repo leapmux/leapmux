@@ -42,7 +42,9 @@ type payloadTabRef struct {
 
 // ApplyTabArchiveState applies the Hub's authoritative archive state to this
 // Worker's local rows. It returns the agents whose state changed to active, so
-// the caller can schedule their resume.
+// the caller can schedule their resume. The owner owns every tab in tabs; it
+// addresses the payload-backed ones, whose ids are unique only within one
+// account.
 //
 // The orphan reconciler is the only caller. There is deliberately no RPC for
 // this: the Hub nudges a Worker whenever a workspace's archive state or a tab's
@@ -52,13 +54,14 @@ type payloadTabRef struct {
 func (svc *Service) ApplyTabArchiveState(
 	ctx context.Context,
 	state leapmuxv1.WorkspaceArchiveState,
-	tabs []*leapmuxv1.TabRef,
+	owner userid.UserID,
+	tabs []*leapmuxv1.TabIdent,
 ) ([]string, error) {
 	flag, err := workspaceArchiveFlag(state)
 	if err != nil {
 		return nil, err
 	}
-	requested, err := archiveTabIDs(tabs)
+	requested, err := archiveTabIDs(owner, tabs)
 	if err != nil {
 		return nil, err
 	}
@@ -281,13 +284,13 @@ func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (bool, error) {
 // row and converge over the rest, because one row it cannot classify would
 // otherwise stop every reap and every resume on this worker. The reconciler
 // therefore filters before it calls, and this function stays strict.
-func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
+func archiveTabIDs(owner userid.UserID, tabs []*leapmuxv1.TabIdent) (archiveTabSet, error) {
 	agentSeen := make(map[string]struct{})
 	terminalSeen := make(map[string]struct{})
 	payloadSeen := make(map[payloadTabRef]struct{})
 	var set archiveTabSet
 	for _, tab := range tabs {
-		if tab == nil || tab.GetTabId() == "" {
+		if tab.GetTabId() == "" {
 			continue
 		}
 		switch tab.GetTabType() {
@@ -308,12 +311,12 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 			//
 			// REFUSED without an owner, rather than written with a blank one: a
 			// blank user_id matches no row on a write and another account's row
-			// on a read, so a sender that forgot the field must hear about it
+			// on a read, so a caller that forgot the owner must hear about it
 			// rather than have its request half-applied.
-			if tab.GetUserId() == "" {
-				return archiveTabSet{}, fmt.Errorf("tab %q is payload-backed and needs a user_id", tab.GetTabId())
+			if owner.IsZero() {
+				return archiveTabSet{}, fmt.Errorf("tab %q is payload-backed and needs an owner", tab.GetTabId())
 			}
-			key := payloadTabRef{userID: tab.GetUserId(), tabID: tab.GetTabId()}
+			key := payloadTabRef{userID: owner.String(), tabID: tab.GetTabId()}
 			if _, exists := payloadSeen[key]; !exists {
 				payloadSeen[key] = struct{}{}
 				set.payloads = append(set.payloads, key)
@@ -328,7 +331,7 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 }
 
 // archivableTabType reports whether archiveTabIDs accepts this type. The
-// orphan reconciler asks before it builds a TabRef, so a row the Hub sends
+// orphan reconciler asks before it buckets a tab, so a row the Hub sends
 // with a type this Worker does not know drops out of one pass instead of
 // failing it.
 func archivableTabType(tabType leapmuxv1.TabType) bool {
@@ -418,7 +421,7 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 		// returns only after that handler persisted the row, so the exit code
 		// read here is the final one rather than a stale zero, and the repeat is
 		// a repeat rather than a contradiction.
-		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+		svc.Watchers.PublishTerminalStatus(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{
 				ExitCode: int32(exitCode),

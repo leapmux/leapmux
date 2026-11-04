@@ -89,9 +89,6 @@ export const WIRE_GO_NAMES = {
   maxReassembledMessageSizeBytes: 'DefaultMaxReassembledMessageSize',
   maxConfigurableMessageSizeBytes: 'MaxConfigurableMessageSize',
   maxIncompleteChunked: 'DefaultMaxIncompleteChunked',
-  pingMethod: 'PingMethod',
-  protocolVersion: 'ProtocolVersion',
-  hubControlChannelId: 'HubControlChannelID',
   sessionKeyMaxAgeMs: 'SessionKeyMaxAge',
   sessionKeyMinRekeyIntervalMs: 'MinRekeyInterval',
   sessionKeyHardCeilingMs: 'SessionKeyHardCeiling',
@@ -111,20 +108,22 @@ export const WIRE_GO_NAMES = {
   wsSubprotocolChannelRelay: 'WSSubprotocolChannelRelay',
   softNonceLimit: 'SoftNonceLimit',
   hardNonceLimit: 'HardNonceLimit',
+  x25519PublicKeySizeBytes: 'X25519PublicKeySize',
+  mlkemPublicKeySizeBytes: 'MlkemPublicKeySize',
+  slhdsaPublicKeySizeBytes: 'SlhdsaPublicKeySize',
+  slhdsaSignatureSizeBytes: 'SlhdsaSignatureSize',
   lengthPrefixBytes: 'LengthPrefixBytes',
 }
 
 /** JSON key -> the UPPER_SNAKE name the frontend already imports. */
 export const WIRE_TS_NAMES = {
+  noiseAeadTagSizeBytes: 'AEAD_TAG_SIZE',
   maxPlaintextPerChunkBytes: 'MAX_CHUNK_SIZE',
   maxMessageSizeBytes: 'DEFAULT_MAX_MESSAGE_SIZE',
   innerEnvelopeHeadroomBytes: 'INNER_ENVELOPE_HEADROOM',
   maxReassembledMessageSizeBytes: 'DEFAULT_MAX_REASSEMBLED_MESSAGE_SIZE',
   maxConfigurableMessageSizeBytes: 'MAX_CONFIGURABLE_MESSAGE_SIZE',
   maxIncompleteChunked: 'MAX_INCOMPLETE_CHUNKED',
-  pingMethod: 'PING_METHOD',
-  protocolVersion: 'PROTOCOL_VERSION',
-  hubControlChannelId: 'HUB_CONTROL_CHANNEL_ID',
   sessionKeyMaxAgeMs: 'SESSION_KEY_MAX_AGE_MS',
   sessionKeyMinRekeyIntervalMs: 'MIN_REKEY_INTERVAL_MS',
   sessionKeyHardCeilingMs: 'SESSION_KEY_HARD_CEILING_MS',
@@ -144,6 +143,10 @@ export const WIRE_TS_NAMES = {
   wsSubprotocolChannelRelay: 'WS_SUBPROTOCOL_CHANNEL_RELAY',
   softNonceLimit: 'SOFT_NONCE_LIMIT',
   hardNonceLimit: 'HARD_NONCE_LIMIT',
+  x25519PublicKeySizeBytes: 'X25519_PUBLIC_KEY_SIZE',
+  mlkemPublicKeySizeBytes: 'MLKEM_PUBLIC_KEY_SIZE',
+  slhdsaPublicKeySizeBytes: 'SLHDSA_PUBLIC_KEY_SIZE',
+  slhdsaSignatureSizeBytes: 'SLHDSA_SIG_SIZE',
   lengthPrefixBytes: 'LENGTH_PREFIX_BYTES',
 }
 
@@ -157,9 +160,6 @@ function flattenWire(w, d) {
     maxReassembledMessageSizeBytes: d.maxReassembledMessageSizeBytes,
     maxConfigurableMessageSizeBytes: w.maxConfigurableMessageSizeBytes,
     maxIncompleteChunked: w.maxIncompleteChunked,
-    pingMethod: w.pingMethod,
-    protocolVersion: w.protocolVersion,
-    hubControlChannelId: w.hubControlChannelId,
     sessionKeyMaxAgeMs: w.sessionKey.maxAgeMs,
     sessionKeyMinRekeyIntervalMs: w.sessionKey.minRekeyIntervalMs,
     sessionKeyHardCeilingMs: d.sessionKeyHardCeilingMs,
@@ -179,6 +179,10 @@ function flattenWire(w, d) {
     wsSubprotocolChannelRelay: w.ws.subprotocols.channelRelay,
     softNonceLimit: w.noise.softNonceLimit,
     hardNonceLimit: w.noise.hardNonceLimit,
+    x25519PublicKeySizeBytes: w.noise.x25519PublicKeySizeBytes,
+    mlkemPublicKeySizeBytes: w.noise.mlkemPublicKeySizeBytes,
+    slhdsaPublicKeySizeBytes: w.noise.slhdsaPublicKeySizeBytes,
+    slhdsaSignatureSizeBytes: w.noise.slhdsaSignatureSizeBytes,
     lengthPrefixBytes: w.framing.lengthPrefixBytes,
   }
 }
@@ -537,6 +541,21 @@ export function checkChatHistory(v) {
 }
 
 // ---------------------------------------------------------------------------
+// pagination: the page limits of every keyset-paginated listing
+// ---------------------------------------------------------------------------
+
+// PageRequest.limit is an int32 on the wire, so a cap above this cannot be
+// asked for.
+const PAGE_LIMIT_WIRE_MAX = 2 ** 31 - 1
+
+export function checkPagination(v) {
+  mustBe(Number.isSafeInteger(v.defaultPageLimit) && v.defaultPageLimit > 0, 'pagination.json', 'defaultPageLimit must be a positive safe integer')
+  mustBe(Number.isSafeInteger(v.maxPageLimit) && v.maxPageLimit <= PAGE_LIMIT_WIRE_MAX, 'pagination.json', `maxPageLimit must be a safe integer <= ${PAGE_LIMIT_WIRE_MAX} (PageRequest.limit is an int32)`)
+  mustBe(v.maxPageLimit >= v.defaultPageLimit, 'pagination.json', 'maxPageLimit must be >= defaultPageLimit')
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // session-info: the agent_session_info wire vocabulary
 // ---------------------------------------------------------------------------
 
@@ -842,14 +861,6 @@ const (
 ${notif}
 )
 
-// RPCMethod* identifies worker methods that share a generated wire token.
-const (
-${goConstBlock(Object.entries(v.rpcMethods).map(([key, token]) => ({
-  name: `RPCMethod${key}`,
-  value: jsonString(token),
-})))}
-)
-
 // MessageMetadataField* identifies fields calculated by the worker for display.
 const (
 ${goConstBlock(Object.entries(v.messageMetadataFields).map(([key, token]) => ({
@@ -964,11 +975,6 @@ export function emitTsWorkerVocab(v) {
 /** Notification envelope "type" tokens. */
 export const NOTIFICATION_TYPE = {
 ${notif}
-} as const
-
-/** Worker methods with generated wire tokens. */
-export const WORKER_RPC_METHOD = {
-${Object.entries(v.rpcMethods).map(([key, token]) => `  ${key}: ${jsonString(token)},`).join('\n')}
 } as const
 
 /** Fields calculated by the worker for display. */
@@ -1393,7 +1399,7 @@ export function emitTsTabTypes(t, tabEnumValues) {
 // twin reads the same table). The browser writes these tokens to data-tab-type,
 // which the E2E locators address rows by, and keys the shortcut context on them.
 // Parsing stays with the Go twin, which owns the command line.
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 /** enum -> the token every surface spells it with. UNSPECIFIED is the empty string. */
 export const TAB_TYPE_WIRE_TOKEN: Readonly<Record<TabType, string>> = {
@@ -4074,6 +4080,13 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Pi',
     tables: [
       {
+        key: 'questionDialogs',
+        goTable: 'QuestionDialog',
+        tsTable: 'QUESTION_DIALOG',
+        tsType: 'PiQuestionDialog',
+        doc: 'question extension dialog values',
+      },
+      {
         key: 'planDialogs',
         goTable: 'PlanDialog',
         tsTable: 'PLAN_DIALOG',
@@ -6747,19 +6760,6 @@ ${goConstBlock([
 ])}
 )
 
-// PingMethod is the inner-RPC method token both ends must agree on.
-const ${WIRE_GO_NAMES.pingMethod} = ${jsonString(flat.pingMethod)}
-
-// ProtocolVersion is the ChannelMessage envelope version every sender stamps:
-// NewChannelMessage, the senders that bypass it, and the browser's
-// channelSession all read this constant.
-const ${WIRE_GO_NAMES.protocolVersion} = ${flat.protocolVersion}
-
-// HubControlChannelID is the reserved channel ID of the frames that the Hub
-// itself sends to a frontend over the /ws/channel WebSocket. No worker channel
-// uses it.
-const ${WIRE_GO_NAMES.hubControlChannelId} = ${jsonString(flat.hubControlChannelId)}
-
 // Session-key rotation timing. RejectRetryAfter spaces rekey refusals;
 // the hard ceiling outlives the max age by hardCeilingOverrunMs. The verify
 // timeout caps the open-time Ping round trip; the idle interval spaces the
@@ -6849,6 +6849,21 @@ const ${WIRE_GO_NAMES.softNonceLimit} = uint64(${flat.softNonceLimit})
 // implementations refuse to encrypt beyond it.
 const ${WIRE_GO_NAMES.hardNonceLimit} = uint64(${flat.hardNonceLimit})
 
+// The sizes of the worker's Noise keys and of its handshake signature, in bytes.
+// The algorithms fix them. Both languages check what the worker sends against
+// these.
+const (
+\t// ${WIRE_GO_NAMES.x25519PublicKeySizeBytes} is the size of an X25519 public key: the worker's static
+\t// identity key that a registration pins.
+\t${WIRE_GO_NAMES.x25519PublicKeySizeBytes} = ${flat.x25519PublicKeySizeBytes}
+\t// ${WIRE_GO_NAMES.mlkemPublicKeySizeBytes} is the size of an ML-KEM-1024 encapsulation key.
+\t${WIRE_GO_NAMES.mlkemPublicKeySizeBytes} = ${flat.mlkemPublicKeySizeBytes}
+\t// ${WIRE_GO_NAMES.slhdsaPublicKeySizeBytes} is the size of an SLH-DSA-SHAKE-256f public key.
+\t${WIRE_GO_NAMES.slhdsaPublicKeySizeBytes} = ${flat.slhdsaPublicKeySizeBytes}
+\t// ${WIRE_GO_NAMES.slhdsaSignatureSizeBytes} is the size of an SLH-DSA-SHAKE-256f signature.
+\t${WIRE_GO_NAMES.slhdsaSignatureSizeBytes} = ${flat.slhdsaSignatureSizeBytes}
+)
+
 // LengthPrefixBytes is the big-endian length prefix on every multiplexed
 // channel and user-events WebSocket frame.
 const ${WIRE_GO_NAMES.lengthPrefixBytes} = ${flat.lengthPrefixBytes}
@@ -6871,12 +6886,6 @@ ${line('innerEnvelopeHeadroomBytes')}
 ${line('maxReassembledMessageSizeBytes')}
 ${line('maxConfigurableMessageSizeBytes')}
 ${line('maxIncompleteChunked')}
-${line('pingMethod')}
-${line('protocolVersion')}
-
-// The reserved channel ID of the frames that the Hub itself sends over the
-// channel WebSocket. No worker channel uses it.
-${line('hubControlChannelId')}
 
 // Session-key rotation timing, in milliseconds.
 ${line('sessionKeyMaxAgeMs')}
@@ -6908,6 +6917,14 @@ ${line('wsSubprotocolChannelRelay')}
 // hard limit is the wrap bound itself).
 ${line('softNonceLimit')}
 ${line('hardNonceLimit')}
+
+// The sizes of the worker's Noise keys and of its handshake signature, in bytes,
+// and of the AEAD tag on each Noise message. The algorithms fix them.
+${line('x25519PublicKeySizeBytes')}
+${line('mlkemPublicKeySizeBytes')}
+${line('slhdsaPublicKeySizeBytes')}
+${line('slhdsaSignatureSizeBytes')}
+${line('noiseAeadTagSizeBytes')}
 
 // Big-endian length prefix on every multiplexed WebSocket frame.
 ${line('lengthPrefixBytes')}
@@ -7106,6 +7123,37 @@ export const MESSAGE_PAGE_LIMIT = ${v.messagePageLimit} as const
 
 /** The largest sequence gap that the browser drains before it re-anchors. */
 export const CATCH_UP_GAP_LIMIT = ${v.catchUpGapLimit}n
+`
+}
+
+export function emitGoPagination(v) {
+  return `${GO_HEADER('pagination.json')}package contracts
+
+// Page limits of every keyset-paginated listing. The hub resolves an omitted
+// or non-positive limit to DefaultPageLimit and caps a larger one at
+// MaxPageLimit. A client that reads every page asks for MaxPageLimit.
+const (
+${goConstBlock([
+  {
+    name: 'DefaultPageLimit',
+    value: String(v.defaultPageLimit),
+  },
+  {
+    name: 'MaxPageLimit',
+    value: String(v.maxPageLimit),
+  },
+])}
+)
+`
+}
+
+export function emitTsPagination(v) {
+  return `${TS_HEADER('pagination.json')}
+/** The page size the hub returns for an omitted or non-positive limit. */
+export const DEFAULT_PAGE_LIMIT = ${v.defaultPageLimit} as const
+
+/** The largest page the hub returns; a client that reads every page asks for it. */
+export const MAX_PAGE_LIMIT = ${v.maxPageLimit} as const
 `
 }
 
@@ -7405,6 +7453,15 @@ const DOMAINS = [
     },
   },
   {
+    name: 'pagination',
+    emit(out, read) {
+      const v = read('pagination')
+      checkPagination(v)
+      out['backend/generated/contracts/pagination.go'] = emitGoPagination(v)
+      out['frontend/src/generated/contracts/pagination.ts'] = emitTsPagination(v)
+    },
+  },
+  {
     name: 'agent-input',
     emit(out, read) {
       const a = read('agent-input')
@@ -7485,7 +7542,7 @@ const DOMAINS = [
     name: 'tab-types',
     requiresDescriptor: true,
     emit(out, read, descriptorSet) {
-      const tabEnumValues = enumValues(descriptorSet, 'leapmux/v1/workspace.proto', 'TabType')
+      const tabEnumValues = enumValues(descriptorSet, 'leapmux/v1/common.proto', 'TabType')
       const t = read('tab-types')
       checkTabTypes(t, tabEnumValues)
       out['backend/generated/contracts/tab-types.go'] = emitGoTabTypes(t, tabEnumValues)

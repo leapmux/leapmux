@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { AgentWatchServer } from './agentEventWatch'
 import { SESSION_INFO_KEY } from '../../../src/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'

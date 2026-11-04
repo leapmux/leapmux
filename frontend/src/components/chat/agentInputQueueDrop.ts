@@ -1,5 +1,5 @@
 import type { QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputState, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
  * The browser's half of the agent input queue's reorder policy, as pure
@@ -33,6 +33,40 @@ export function isLockedInputState(state: AgentInputState): boolean {
 /** Find the first input that does not await an echo, or return -1. */
 export function queueHeadIndex(items: readonly QueuedAgentInput[]): number {
   return items.findIndex(item => item.state !== AgentInputState.AWAITING_ECHO)
+}
+
+/** The action that the queue offers on its head, and that head. */
+export interface QueueHeadAction {
+  action: 'steer' | 'preempt'
+  head: QueuedAgentInput
+}
+
+/**
+ * The action that the queue offers on its head, or `undefined` when it offers
+ * none.
+ *
+ * The head row and the keyboard chord both read this, so the chord cannot fire
+ * an action that the row hides. At most one action is offered: STEER offers
+ * Steer, PREEMPT offers Preempt, and NONE, UNSPECIFIED or an absent dispatch
+ * offers neither.
+ *
+ * The head is the first input that does not await its echo, as the Worker
+ * defines it. `canSteer` and `canPreempt` come from the Worker, which sets them
+ * on the head alone with the same expression that its guards apply, so the
+ * browser never re-derives the precondition.
+ */
+export function queueHeadAction(
+  dispatch: QueueHeadDispatch | undefined,
+  items: readonly QueuedAgentInput[],
+): QueueHeadAction | undefined {
+  const head = items[queueHeadIndex(items)]
+  if (!head)
+    return undefined
+  if (dispatch === QueueHeadDispatch.STEER && head.canSteer)
+    return { action: 'steer', head }
+  if (dispatch === QueueHeadDispatch.PREEMPT && head.canPreempt)
+    return { action: 'preempt', head }
+  return undefined
 }
 
 /**

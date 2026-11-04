@@ -12,7 +12,20 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
+
+// TestHello returns the WorkerHello the fixtures here build every Conn with: a
+// classic-mode worker presenting the COMPLETE key set, because the Hub refuses a
+// hello that carries only some of the three keys whatever its mode. The bytes
+// come from workerkeystest, so a test can register a row with the same set. A
+// test that registers a Conn of its own passes it to workermgr.NewConn.
+func TestHello() *leapmuxv1.WorkerHello {
+	return &leapmuxv1.WorkerHello{
+		Keys:           workerkeystest.Keys(workerkeystest.SeededWorkerFill),
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}
+}
 
 // Recorder is a mutex-guarded capture of ConnectResponse frames. A drained
 // Conn invokes Write from the pump goroutine, so unguarded counters race under
@@ -99,12 +112,23 @@ func NewRecordedConn(tb testing.TB, workerID string) (*workermgr.Conn, *Recorder
 // -- but a test that DOES set that cap must build its conns with
 // workermgr.NewConn and real owners, or every one of them lands in the same
 // bucket.
+//
+// The Conn is built with TestHello. Use NewConnWithHello for a test that
+// reads the handshake parameters.
 func NewConnWithWrite(tb testing.TB, workerID string, write func(*leapmuxv1.ConnectResponse) error) *workermgr.Conn {
 	tb.Helper()
+	return NewConnWithHello(tb, workerID, TestHello(), write)
+}
+
+// NewConnWithHello is NewConnWithWrite for a Conn opened with the given
+// WorkerHello, so GetWorkerHandshakeParams answers with its keys and mode.
+func NewConnWithHello(tb testing.TB, workerID string, hello *leapmuxv1.WorkerHello, write func(*leapmuxv1.ConnectResponse) error) *workermgr.Conn {
+	tb.Helper()
 	require.NotNil(tb, write)
+	require.NotNil(tb, hello)
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := sendq.NewMaxBytesPoolForTest()
-	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, write, nil)
+	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, write, nil, hello)
 	tb.Cleanup(conn.Fence)
 	go drainUntilDone(conn, pump)
 	return conn

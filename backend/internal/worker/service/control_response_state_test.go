@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -40,7 +41,7 @@ func TestControlResponseReportsDeliveryState(t *testing.T) {
 				_, err := svc.DB.ExecContext(t.Context(), fmt.Sprintf(`CREATE TRIGGER fail_control_recording BEFORE INSERT ON messages WHEN NEW.mark_type=%d BEGIN SELECT RAISE(ABORT, 'response storage unavailable'); END`, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE))
 				require.NoError(t, err)
 			}
-			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: "agent-1", RequestId: "request", ClaimToken: "claim",
 				Content: []byte(`{"id":"request","result":{"decision":"accept"}}`),
 			}, writer)
@@ -55,7 +56,7 @@ func TestControlResponseReportsDeliveryState(t *testing.T) {
 				_, err := svc.DB.ExecContext(t.Context(), "DROP TRIGGER fail_control_recording")
 				require.NoError(t, err)
 			}
-			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 				AgentId: "agent-1", RequestId: "request", ClaimToken: "claim", RecordOnly: true,
 			}, writer)
 			require.Empty(t, writer.errors)
@@ -84,7 +85,7 @@ func TestControlResponseRejectsMismatchedRecordingRequests(t *testing.T) {
 			t.Fatal("invalid recording requests cannot send to the provider")
 			return nil
 		}
-		dispatch(dispatcher, "SendControlResponse", request, writer)
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, request, writer)
 		require.Len(t, writer.errors, 1)
 		require.Empty(t, writer.responses)
 	}
@@ -141,7 +142,7 @@ func TestControlResponseBroadcastsDeliveryProgress(t *testing.T) {
 		require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING, events[len(events)-1].ResponseState)
 		return nil
 	}
-	dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1", RequestId: "request", ClaimToken: first.ClaimToken,
 		Content: []byte(`{"id":"request","result":{"decision":"accept"}}`),
 	}, writer)

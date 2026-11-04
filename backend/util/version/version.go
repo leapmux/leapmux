@@ -8,6 +8,8 @@ package version
 import (
 	"strings"
 	"time"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // Value is the build-time version string, set via ldflags or at startup.
@@ -27,6 +29,20 @@ var BuildTime string
 // outside any named ref.
 var Branch string
 
+// BuildInfoProto returns the running binary's build identity as the one
+// message every surface reports it in: the hub's system information, a
+// worker's system information, and the desktop app's startup information.
+// A fresh message on every call, so a caller may keep or change it.
+func BuildInfoProto() *leapmuxv1.BuildInfo {
+	return &leapmuxv1.BuildInfo{
+		Version:    Value,
+		CommitHash: CommitHash,
+		CommitTime: CommitTime,
+		BuildTime:  BuildTime,
+		Branch:     Branch,
+	}
+}
+
 // Format returns the canonical single-line identity string, e.g.
 //
 //	0.0.1-dev · 9c81b87 · feature/foo · Thu, 4/23/2026, 11:45:00 PM KST
@@ -41,15 +57,25 @@ var Branch string
 //     Release vs. unreleased is encoded by Value's "-dev" suffix.
 //   - BuildTime is formatted in the local timezone when set.
 func Format() string {
-	parts := []string{Value}
-	if CommitHash != "" {
-		parts = append(parts, CommitHash)
+	return FormatBuild(BuildInfoProto())
+}
+
+// FormatBuild is Format for a build that any binary reported, such as a worker's
+// system information. A field that the report leaves empty is omitted, the
+// version included, and a nil build formats as "".
+func FormatBuild(b *leapmuxv1.BuildInfo) string {
+	parts := make([]string, 0, 4)
+	if version := b.GetVersion(); version != "" {
+		parts = append(parts, version)
 	}
-	if Branch != "" && Branch != "main" {
-		parts = append(parts, Branch)
+	if commit := b.GetCommitHash(); commit != "" {
+		parts = append(parts, commit)
 	}
-	if BuildTime != "" {
-		parts = append(parts, FormatLocalTimestamp(BuildTime))
+	if branch := b.GetBranch(); branch != "" && branch != "main" {
+		parts = append(parts, branch)
+	}
+	if buildTime := b.GetBuildTime(); buildTime != "" {
+		parts = append(parts, FormatLocalTimestamp(buildTime))
 	}
 	return strings.Join(parts, " · ")
 }

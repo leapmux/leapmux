@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { workerGit, workerTerminal } from '~/api/workerRpc'
 import { NewTerminalDialog } from '~/components/shell/NewTerminalDialog'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -31,27 +31,38 @@ vi.mock('~/api/clients', () => ({
 // export throws inside the render chain and takes the shells effect down
 // with it, which is exactly what these mocks exist to prevent.
 vi.mock('~/api/workerRpc', () => ({
-  getGitInfo: vi.fn(async () => ({})),
-  getWorkerSystemInfo: vi.fn(async () => ({})),
-  listAvailableShells: vi.fn(async () => ({
-    shells: ['bash', 'zsh'],
-    defaultShell: 'bash',
-  })),
-  statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({
-    listings: [
-      {
-        path: '',
-        entries: [],
-        truncated: false,
-        totalEntries: 0,
-      },
-    ],
-  })),
-  openTerminal: vi.fn(async () => ({ terminalId: 'tid-1', title: 'Terminal 1' })),
+  workerGit: {
+    getGitInfo: vi.fn(async () => ({})),
+    // GitOptions lists both once the directory is a repository root.
+    listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),
+    listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
+  },
+  workerSystem: {
+    getWorkerSystemInfo: vi.fn(async () => ({})),
+  },
+  workerTerminal: {
+    listAvailableShells: vi.fn(async () => ({
+      shells: ['bash', 'zsh'],
+      defaultShell: 'bash',
+    })),
+    openTerminal: vi.fn(async () => ({ terminalId: 'tid-1', title: 'Terminal 1' })),
+  },
+  workerFile: {
+    statFile: vi.fn(async () => ({})),
+    listDirectory: vi.fn(async () => ({
+      listings: [
+        {
+          path: '',
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+        },
+      ],
+    })),
+  },
 }))
 
-const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
+const openTerminalMock = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
 
 function renderDialog(blockedReason?: () => string | undefined) {
   return render(withPreferences(() => (
@@ -179,10 +190,10 @@ describe('NewTerminalDialog shell field', () => {
 
     // Wait for the mount-time fetch to settle, so the click's fetch is the
     // second call rather than a race with the first.
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledOnce())
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByTestId('shell-selector-refresh'))
 
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledTimes(2))
   })
 
   // A failed load writes the dialog's error banner (the RPC's own message,
@@ -190,7 +201,7 @@ describe('NewTerminalDialog shell field', () => {
   // button repopulated the menu and armed Create while the banner still
   // reported the failure -- the one state that button exists to leave.
   it('clears the load failure once a refresh succeeds', async () => {
-    vi.mocked(workerRpc.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
+    vi.mocked(workerTerminal.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
     renderDialog()
 
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
@@ -201,5 +212,58 @@ describe('NewTerminalDialog shell field', () => {
 
     await waitFor(() => expect(screen.queryByText('worker offline')).not.toBeInTheDocument())
     await waitFor(() => expect(createButton).not.toBeDisabled())
+  })
+})
+
+// The git mode reaches the worker as ONE git_setup. Outside a repository the
+// mode is the current state, which is the absent setup: the worker uses the
+// directory as it is.
+describe('NewTerminalDialog git setup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({}) as never)
+  })
+
+  it('sends the create-branch setup with the typed name and the base branch', async () => {
+    vi.mocked(workerGit.getGitInfo).mockImplementation(async () => ({
+      isGitRepo: true,
+      isRepoRoot: true,
+      repoRoot: '/tmp',
+      currentBranch: 'main',
+    }) as never)
+    renderDialog()
+
+    fireEvent.click(await screen.findByLabelText('Create new branch'))
+    fireEvent.input(await screen.findByPlaceholderText('feature-branch'), {
+      target: { value: 'feature-x' },
+    })
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openTerminalMock).toHaveBeenCalledOnce())
+    expect(openTerminalMock.mock.calls[0]?.[1].gitSetup).toEqual({
+      mode: {
+        case: 'createBranch',
+        value: { name: 'feature-x', baseBranch: 'main' },
+      },
+    })
+  })
+
+  it('sends no git setup for a directory outside a repository', async () => {
+    renderDialog()
+
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    fireEvent.click(createButton)
+
+    await waitFor(() => expect(openTerminalMock).toHaveBeenCalledOnce())
+    const [workerId, req] = openTerminalMock.mock.calls[0] ?? []
+    expect(workerId).toBe('w-1')
+    expect(req.workingDir).toBe('/tmp')
+    expect(req.gitSetup).toBeUndefined()
   })
 })

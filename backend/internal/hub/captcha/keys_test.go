@@ -57,10 +57,10 @@ func TestSelectedConfiguredRejectsUnconfiguredSelection(t *testing.T) {
 
 	// Resetting the selected provider's row directly is refused too; the
 	// selection must move first (the CLI wrapper orders them that way).
-	err = m.Reset(ctx, RecaptchaV3Key)
+	err = m.ResetMany(ctx, []settings.Descriptor{RecaptchaV3Key})
 	require.ErrorContains(t, err, "requires its site key and secret")
-	require.NoError(t, m.Reset(ctx, CaptchaSelectedKey))
-	require.NoError(t, m.Reset(ctx, RecaptchaV3Key))
+	require.NoError(t, m.ResetMany(ctx, []settings.Descriptor{CaptchaSelectedKey}))
+	require.NoError(t, m.ResetMany(ctx, []settings.Descriptor{RecaptchaV3Key}))
 
 	// Selecting altcha needs nothing: its row self-provisions.
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"altcha"`)))
@@ -249,7 +249,7 @@ func TestFirstTimeExternalProviderSetupOrder(t *testing.T) {
 	t.Run("selection last succeeds", func(t *testing.T) {
 		m := crossRuleManager(t)
 		require.NoError(t, m.Update(ctx, TurnstileKey, json.RawMessage(`{"site_key":"1x000AA"}`)))
-		require.NoError(t, m.UpdateSecret(ctx, TurnstileKey, json.RawMessage(`{"secret_key":"1x000SS"}`)))
+		require.NoError(t, m.UpdateMany(ctx, []settings.KeyWrite{{Desc: TurnstileKey, Secret: json.RawMessage(`{"secret_key":"1x000SS"}`)}}))
 		require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"turnstile"`)))
 		assert.Equal(t, "turnstile", CaptchaSelectedKey.Of(m.Snapshot(ctx)))
 	})
@@ -279,7 +279,7 @@ func TestSwitchingBackKeepsTheStoredSettings(t *testing.T) {
 	m := crossRuleManager(t)
 
 	require.NoError(t, m.Update(ctx, TurnstileKey, json.RawMessage(`{"site_key":"1x000AA"}`)))
-	require.NoError(t, m.UpdateSecret(ctx, TurnstileKey, json.RawMessage(`{"secret_key":"1x000SS"}`)))
+	require.NoError(t, m.UpdateMany(ctx, []settings.KeyWrite{{Desc: TurnstileKey, Secret: json.RawMessage(`{"secret_key":"1x000SS"}`)}}))
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"turnstile"`)))
 
 	require.NoError(t, m.Update(ctx, CaptchaSelectedKey, json.RawMessage(`"altcha"`)))

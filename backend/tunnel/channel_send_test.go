@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // recordedFrame is one decrypted ChannelMessage observed by the peer recorder.
@@ -132,6 +134,15 @@ func pairedSendChannel(t *testing.T) (ch *Channel, frames <-chan recordedFrame) 
 // Concurrent mixed-size senders must all decrypt, and a small frame must be
 // able to land between a multi-chunk message's chunks (SendGate's reason to
 // exist). Wire-order decryptability is the nonce-order assertion.
+//
+// The two sends run in a synctest bubble, so the test releases the big send
+// only after synctest.Wait sees the small send parked on the frame permit. A
+// wait on FrameWaiters alone races: acquire counts a waiter BEFORE it parks,
+// and a permit released inside that window goes back to the big send. The
+// paired channel and its recorder stay outside the bubble, because they block
+// on network reads that synctest.Wait cannot see past. For the same reason the
+// sends take no lifetime: ch.ctx comes from outside the bubble, and a send
+// parked on its Done channel is not durably blocked.
 func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 	ch, frames := pairedSendChannel(t)
 
@@ -142,9 +153,6 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 	bigPlain := mustMarshalInner(t, "Big", bigPayload)
 	smallPlain := mustMarshalInner(t, "Small", []byte("small"))
 
-	holdFirst := make(chan struct{})
-	started := make(chan struct{})
-	var chunkN atomic.Int32
 	type frameRec struct {
 		id    uint64
 		flags leapmuxv1.ChannelMessageFlags
@@ -153,54 +161,48 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 		mu   sync.Mutex
 		recs []frameRec
 	)
-	writeChunk := func(id uint64) func([]byte, leapmuxv1.ChannelMessageFlags) error {
-		return func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
-			if id == 1 && chunkN.Add(1) == 1 {
-				close(started)
-				<-holdFirst
+	synctest.Test(t, func(t *testing.T) {
+		holdFirst := make(chan struct{})
+		started := make(chan struct{})
+		var chunkN atomic.Int32
+		writeChunk := func(id uint64) func([]byte, leapmuxv1.ChannelMessageFlags) error {
+			return func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
+				if id == 1 && chunkN.Add(1) == 1 {
+					close(started)
+					<-holdFirst
+				}
+				ct, err := ch.session.Encrypt(chunk)
+				if err != nil {
+					return err
+				}
+				mu.Lock()
+				recs = append(recs, frameRec{id: id, flags: flags})
+				mu.Unlock()
+				return channelwire.WriteChannelMessage(ch.ctx, ch.ws,
+					channelwire.NewChannelMessage(ch.channelID, id, flags, ct))
 			}
-			ct, err := ch.session.Encrypt(chunk)
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			recs = append(recs, frameRec{id: id, flags: flags})
-			mu.Unlock()
-			return channelwire.WriteChannelMessage(ch.ctx, ch.ws,
-				channelwire.NewChannelMessage(ch.channelID, id, flags, ct))
 		}
-	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		require.NoError(t, ch.sendGate.Send(context.Background(), ch.ctx, 1, bigPlain, writeChunk(1)))
-	}()
+		bigDone := make(chan error, 1)
+		go func() {
+			bigDone <- ch.sendGate.Send(context.Background(), nil, 1, bigPlain, writeChunk(1))
+		}()
+		// A big send that never starts deadlocks the bubble, which fails the test.
+		<-started
 
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("big send never started")
-	}
+		// Park small on the frame permit while big holds it; releasing holdFirst
+		// lets small win the between-chunk acquire (synchronous Send would deadlock).
+		smallDone := make(chan error, 1)
+		go func() {
+			smallDone <- ch.sendGate.Send(context.Background(), nil, 2, smallPlain, writeChunk(2))
+		}()
+		synctest.Wait()
+		require.Equal(t, 1, ch.sendGate.FrameWaiters(), "the small send must wait before the first frame returns")
+		close(holdFirst)
 
-	// Park small on the frame permit while big holds it; releasing holdFirst
-	// lets small win the between-chunk acquire (synchronous Send would deadlock).
-	smallDone := make(chan error, 1)
-	go func() {
-		smallDone <- ch.sendGate.Send(context.Background(), ch.ctx, 2, smallPlain, writeChunk(2))
-	}()
-	require.Eventually(t, func() bool { return ch.sendGate.FrameWaiters() == 1 },
-		30*time.Second, time.Millisecond, "the small send must wait before the first frame returns")
-	close(holdFirst)
-
-	select {
-	case err := <-smallDone:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("small send did not complete")
-	}
-	wg.Wait()
+		require.NoError(t, <-smallDone)
+		require.NoError(t, <-bigDone)
+	})
 
 	mu.Lock()
 	got := append([]frameRec(nil), recs...)
@@ -216,7 +218,7 @@ func TestChannelSendConcurrentMixedSizeInterleavesAndDecrypts(t *testing.T) {
 		select {
 		case fr := <-frames:
 			require.NotNil(t, fr.plaintext, "decrypt failed: wire order diverged from nonce order")
-		case <-time.After(2 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("recorder did not observe all frames")
 		}
 	}
@@ -283,7 +285,7 @@ func TestDeliverResponseDropsOrphanedPartial(t *testing.T) {
 	ch.pending[reqID] = respCh
 	ch.reassembly[reqID] = &channelwire.ChunkBuffer{Parts: [][]byte{[]byte("partial")}, Total: 7}
 
-	require.True(t, ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("ok")}))
+	require.True(t, ch.deliverResponse(reqID, channelwire.NewPayloadResponse([]byte("ok"))))
 
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
@@ -297,7 +299,7 @@ func TestDeliverResponseDropsOrphanedPartial(t *testing.T) {
 // is one-shot and runAckLoop must not leave registrations behind.
 func TestChannelPendingEmptyAfterWritesAndAcks(t *testing.T) {
 	ch, _ := pairedSendChannel(t)
-	tc := newConn(ch, "conn-pending", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-pending", "example.test", 443)
 
 	const n = 8
 	for range n {
@@ -323,4 +325,51 @@ func TestChannelPendingEmptyAfterWritesAndAcks(t *testing.T) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	assert.Empty(t, ch.pending, "every one-shot pending registration must be consumed")
+}
+
+// The worker fails a live stream whose frame selects no action, so each sender
+// must select its action on the wire. A revision with an empty payload must
+// stay a revision: a WatchEventsRequest that watches nothing encodes to zero
+// bytes, and it leaves the stream open.
+func TestStreamFramesSelectTheirActionOnTheWire(t *testing.T) {
+	decodeAction := func(t *testing.T, frame recordedFrame) *leapmuxv1.InnerStreamRequest {
+		t.Helper()
+		var envelope leapmuxv1.InnerMessage
+		require.NoError(t, proto.Unmarshal(frame.plaintext, &envelope))
+		request := envelope.GetStreamRequest()
+		require.NotNil(t, request, "expected a stream request, got %T", envelope.GetKind())
+		return request
+	}
+	nextFrame := func(t *testing.T, frames <-chan recordedFrame) recordedFrame {
+		t.Helper()
+		select {
+		case frame := <-frames:
+			return frame
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("the channel sent no frame")
+			return recordedFrame{}
+		}
+	}
+
+	for name, payload := range map[string][]byte{"a revision": []byte("update"), "an empty revision": nil} {
+		t.Run(name, func(t *testing.T) {
+			ch, frames := pairedSendChannel(t)
+			require.NoError(t, ch.SendStreamRequest(t.Context(), 7, payload))
+
+			frame := nextFrame(t, frames)
+			assert.Equal(t, uint64(7), frame.correlationID, "the frame addresses the open stream")
+			request := decodeAction(t, frame)
+			require.IsType(t, &leapmuxv1.InnerStreamRequest_Payload{}, request.GetAction())
+			assert.Equal(t, len(payload), len(request.GetPayload()))
+		})
+	}
+
+	t.Run("a cancel", func(t *testing.T) {
+		ch, frames := pairedSendChannel(t)
+		require.NoError(t, ch.CancelStream(t.Context(), 7))
+
+		frame := nextFrame(t, frames)
+		assert.Equal(t, uint64(7), frame.correlationID, "the frame addresses the open stream")
+		require.IsType(t, &leapmuxv1.InnerStreamRequest_Cancel{}, decodeAction(t, frame).GetAction())
+	})
 }

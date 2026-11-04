@@ -14,7 +14,8 @@ import (
 //
 // The TOFU pin store lives next to the worker's data directory so this
 // command runs entirely against local files; no worker process needs to
-// be running. Used to clear a stale pin after a sibling worker re-keys.
+// be running. Used to clear a pin after a mismatch, once the presented
+// fingerprint matches the one the target worker logs when it starts.
 func runWorkerCrossWorkerPins(args []string) error {
 	if len(args) == 0 {
 		return crossWorkerPinsUsage(fmt.Errorf("missing subcommand"))

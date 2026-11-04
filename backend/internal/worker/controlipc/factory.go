@@ -56,6 +56,12 @@ type Factory struct {
 	// instead of leaving the row to expire. nil is allowed (tests) and
 	// disables the revoke-on-close path.
 	Delegation DelegationLifecycle
+
+	// OwnerUsername answers the username Whoami reports for a token's user:
+	// the worker owner's username when the user is the owner, "" otherwise.
+	// It is the worker service's OwnerUsername, read at every Whoami so a
+	// spawned process sees a rename. nil is allowed (tests) and reports "".
+	OwnerUsername func(userid.UserID) string
 }
 
 // HubBridge is the subset of hub-side calls the IPC router needs.
@@ -85,7 +91,7 @@ type Factory struct {
 // `HubClient.CallInner(userID, ...)` calls into `CallHub(userID, ...)`
 // delegation-bearer-authenticated requests.
 type HubBridge interface {
-	CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
+	CallHub(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error)
 }
 
 // spawnCommon carries the union of fields AgentSpawning and
@@ -138,10 +144,11 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 	}
 	router := f.newRouter(sc.UserID)
 	srv, err := Listen(Options{
-		SocketURL: socketURL,
-		Token:     token,
-		TokenInfo: tokenInfo,
-		Router:    router,
+		SocketURL:     socketURL,
+		Token:         token,
+		TokenInfo:     tokenInfo,
+		Router:        router,
+		OwnerUsername: f.OwnerUsername,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -294,9 +301,9 @@ func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID stri
 // it is the whole scope the hub validates on /worker/delegation-tokens/mint.
 type hubBridgeAdapter struct{ b HubBridge }
 
-func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
 	if a.b == nil {
 		return nil, errors.New("hub bridge not configured")
 	}
-	return a.b.CallHub(ctx, userID, method, payload)
+	return a.b.CallHub(ctx, userID, procedure, payload)
 }

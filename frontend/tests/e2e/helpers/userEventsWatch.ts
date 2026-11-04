@@ -20,12 +20,15 @@ export interface UserEventsWatch {
   subscriberClientId: () => string
   /** The active client of `workspaceId` that the newest presence update named, or '' when none named one. */
   activeClient: (workspaceId: string) => string
+  /** How many `workersChanged` events the page received. The hub sends one when a worker registers, deregisters, comes online or goes offline. */
+  workersChangedCount: () => number
 }
 
 /** The state of a {@link UserEventsWatch}. One document of the page holds one state, as the app holds one store. */
 export interface UserEventsState {
   subscriberClientId: string
   activeClients: Map<string, string>
+  workersChanged: number
 }
 
 /**
@@ -60,7 +63,10 @@ export function applyUserEvent(state: UserEventsState, event: WatchUserEvent): v
         state.activeClients.delete(workspaceId)
       else
         state.activeClients.set(workspaceId, activeClientId)
+      return
     }
+    case 'workersChanged':
+      state.workersChanged++
   }
 }
 
@@ -76,6 +82,7 @@ export function watchUserEvents(page: Page): UserEventsWatch {
   let state: UserEventsState = {
     subscriberClientId: '',
     activeClients: new Map(),
+    workersChanged: 0,
   }
   // Playwright emits `framenavigated` also for a history navigation within the same document, which keeps the app's
   // stores. Only a new document makes a navigation request, so the state starts again only after one.
@@ -91,6 +98,7 @@ export function watchUserEvents(page: Page): UserEventsWatch {
     state = {
       subscriberClientId: '',
       activeClients: new Map(),
+      workersChanged: 0,
     }
   })
   page.on('websocket', (socket) => {
@@ -105,6 +113,7 @@ export function watchUserEvents(page: Page): UserEventsWatch {
   return {
     subscriberClientId: () => state.subscriberClientId,
     activeClient: workspaceId => state.activeClients.get(workspaceId) ?? '',
+    workersChangedCount: () => state.workersChanged,
   }
 }
 

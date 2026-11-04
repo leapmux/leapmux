@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { toJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
-import { AgentGoalStatus, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentGoalStatus, BackgroundTaskKind, BackgroundTaskStatus, ListAgentMessagesResponseSchema, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
@@ -125,7 +125,6 @@ kiroTest.describe('Kiro session goal', () => {
       await expect.poll(async () => (await modelScript.status()).requests.length).toBeGreaterThan(0)
       const sessionId = kiroGoalSessionId(setRequest)
       const initial = await readNativeSidebarSnapshot(context, agentId)
-      expect(initial.goalLoaded).toBe(true)
       const workflowId = initial.goal?.nativeId
       if (!workflowId)
         throw new Error('The Worker goal snapshot contains no native workflow ID.')
@@ -292,7 +291,7 @@ kiroTest.describe('Kiro session goal', () => {
         evidence.workerMessages = await Promise.all([agentId, step.childAgentId].map(async (id) => {
           try {
             const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
-            const snapshot = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: id, limit: 100 }, { signal: diagnosticSignal })
+            const snapshot = await channel.callWorker(leapmuxServer.workerId, WorkerAgentService.method.listAgentMessages, { agentId: id, limit: 100 }, { signal: diagnosticSignal })
             return {
               agentId: id,
               snapshot: toJson(ListAgentMessagesResponseSchema, snapshot),

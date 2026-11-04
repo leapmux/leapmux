@@ -53,7 +53,7 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 
 // TestClearAgentRuntimeState_NoPendingIsNoOp ensures the helper is safe to
 // call on agents with nothing to clean up — the common case for stop paths
-// that fire on every CloseAgent / restart regardless of whether a prompt
+// that fire on every CloseTab / restart regardless of whether a prompt
 // was open.
 func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 	t.Parallel()

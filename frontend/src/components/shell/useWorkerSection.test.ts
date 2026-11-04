@@ -1,9 +1,12 @@
 /// <reference types="vitest/globals" />
-import { createComponent, createRoot } from 'solid-js'
+import { create } from '@bufbuild/protobuf'
+import { timestampFromMs } from '@bufbuild/protobuf/wkt'
+import { createComponent, createRoot, createSignal } from 'solid-js'
 import { render } from 'solid-js/web'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HubControlEvent } from '~/generated/proto/leapmux/v1/channel_pb'
+import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createDialogState } from '~/hooks/createDialogState'
+import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { useWorkerSection } from './useWorkerSection'
 
 const mockListWorkers = vi.fn()
@@ -15,39 +18,13 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
-const hubControlHandlers: Array<(frame: { events: HubControlEvent[] }) => void> = []
-
-/**
- * The hub-control handler the connect registered; the throw keeps a missing
- * registration failing loudly and doubles as the type-level guard.
- */
-function invokeHubControl(frame: { events: HubControlEvent[] }): void {
-  const handler = hubControlHandlers[0]
-  if (handler === undefined)
-    throw new Error('expected a hub control handler')
-  handler(frame)
-}
 const mockSetConfirmKeyPin = vi.fn()
 const mockUnregisterKeyPin = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  channelManager: {
-    // Returns an unsubscribe, like the real `ChannelManager.onHubControl`.
-    // A double that returned nothing here would make `onCleanup(...)` throw on
-    // dispose -- and, worse, would let a regression that DROPS the unsubscribe
-    // pass silently, which is the leak this hook had.
-    onHubControl: (fn: (frame: { events: HubControlEvent[] }) => void) => {
-      hubControlHandlers.push(fn)
-      return () => {
-        const i = hubControlHandlers.indexOf(fn)
-        if (i >= 0)
-          hubControlHandlers.splice(i, 1)
-      }
-    },
-  },
+  channelManager: {},
   // Returns a disposer, like the real `setConfirmKeyPin`. A double that
   // returned nothing would make `onCleanup(...)` throw on dispose AND would let
-  // a regression that drops the unregister pass silently -- the same divergence
-  // that hid this hook's leak until the `onHubControl` double was fixed.
+  // a regression that drops the unregister pass silently.
   setConfirmKeyPin: (fn: unknown) => {
     mockSetConfirmKeyPin(fn)
     return mockUnregisterKeyPin
@@ -75,12 +52,15 @@ vi.mock('~/stores/tunnel.store', () => ({
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
+/**
+ * A decoded Worker, as the hub client hands one over. A plain object would
+ * not exercise the cache's comparison, which reads the message schema.
+ */
 function worker(id: string, online = true) {
-  return { id, online, name: id }
+  return create(WorkerSchema, { id, online })
 }
 
 beforeEach(() => {
-  hubControlHandlers.length = 0
   mockListWorkers.mockReset()
   mockListWorkers.mockResolvedValue({
     workers: [
@@ -117,6 +97,34 @@ describe('useWorkerSection', () => {
     })
   })
 
+  // The hub answers one page per call. A sidebar that read only the first page
+  // hid every worker past it, with no sign that more existed.
+  it('lists every worker across pages', async () => {
+    await createRoot(async (dispose) => {
+      mockListWorkers.mockImplementation(async (req: { page?: { cursor?: string } }) => (
+        req.page?.cursor === 'next'
+          ? {
+              workers: [
+                worker('w2'),
+              ],
+              page: { nextCursor: '' },
+            }
+          : {
+              workers: [
+                worker('w1'),
+              ],
+              page: { nextCursor: 'next' },
+            }
+      ))
+      const s = mount()
+      await flush()
+      await flush()
+      expect(s.workers().map(w => w.id)).toEqual(['w1', 'w2'])
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
+      dispose()
+    })
+  })
+
   it('does not fetch before the session restores a user', async () => {
     await createRoot(async (dispose) => {
       mount(() => '')
@@ -142,9 +150,7 @@ describe('useWorkerSection', () => {
       await flush()
       const first = s.workers()[0]
 
-      invokeHubControl({
-        events: [HubControlEvent.WORKERS_CHANGED],
-      })
+      s.refetchWorkers()
       await flush()
 
       expect(mockListWorkers).toHaveBeenCalledTimes(2)
@@ -153,16 +159,121 @@ describe('useWorkerSection', () => {
     })
   })
 
-  it('ignores hub control frames that are not WORKERS_CHANGED', async () => {
+  // A decoded Worker carries its created and last-seen times as nested
+  // Timestamp messages, fresh on every reply. The sidebar keys its rows by
+  // object, so a cache that compared those by reference re-created every
+  // worker row on every refetch, and an open row menu closed with it.
+  it('keeps the object of a worker whose refetch carries the same times', async () => {
     await createRoot(async (dispose) => {
-      mount()
+      mockListWorkers.mockImplementation(async () => ({
+        workers: [
+          create(WorkerSchema, {
+            id: 'w1',
+            online: true,
+            createdAt: timestampFromMs(1_700_000_000_000),
+            lastSeenAt: timestampFromMs(1_700_000_500_000),
+          }),
+        ],
+      }))
+      const s = mount()
+      await flush()
+      const first = s.workers()[0]
+      expect(first?.createdAt, 'the reply carries a created time').toBeDefined()
+
+      s.refetchWorkers()
+      await flush()
+
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
+      expect(s.workers()[0]).toBe(first)
+      dispose()
+    })
+  })
+
+  it('replaces the object of a worker whose last-seen time changed', async () => {
+    await createRoot(async (dispose) => {
+      const lastSeen = { ms: 1_700_000_500_000 }
+      mockListWorkers.mockImplementation(async () => ({
+        workers: [
+          create(WorkerSchema, {
+            id: 'w1',
+            online: true,
+            createdAt: timestampFromMs(1_700_000_000_000),
+            lastSeenAt: timestampFromMs(lastSeen.ms),
+          }),
+        ],
+      }))
+      const s = mount()
+      await flush()
+      const first = s.workers()[0]
+
+      lastSeen.ms += 60_000
+      s.refetchWorkers()
+      await flush()
+
+      expect(s.workers()[0]).not.toBe(first)
+      expect(s.workers()[0]?.lastSeenAt?.seconds).toBe(1_700_000_560n)
+      dispose()
+    })
+  })
+
+  it('coalesces refetches requested during a fetch into exactly one more fetch', async () => {
+    await createRoot(async (dispose) => {
+      const s = mount()
       await flush()
       expect(mockListWorkers).toHaveBeenCalledTimes(1)
 
-      invokeHubControl({ events: [] })
+      let release!: () => void
+      mockListWorkers.mockImplementationOnce(() => new Promise((resolve) => {
+        release = () => resolve({
+          workers: [
+            worker('w1'),
+            worker('w2'),
+          ],
+        })
+      }))
+      s.refetchWorkers()
       await flush()
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
 
-      expect(mockListWorkers).toHaveBeenCalledTimes(1)
+      // Three events arrive while that fetch is in flight.
+      s.refetchWorkers()
+      s.refetchWorkers()
+      s.refetchWorkers()
+      expect(mockListWorkers, 'nothing starts while a fetch runs').toHaveBeenCalledTimes(2)
+
+      release()
+      await flush()
+      await flush()
+      expect(mockListWorkers, 'one more fetch covers all three events').toHaveBeenCalledTimes(3)
+      expect(s.workers().map(w => w.id)).toEqual(['w1'])
+      dispose()
+    })
+  })
+
+  it('starts a new fetch for a refetch requested after the previous one settled', async () => {
+    await createRoot(async (dispose) => {
+      const s = mount()
+      await flush()
+      s.refetchWorkers()
+      await flush()
+      s.refetchWorkers()
+      await flush()
+      expect(mockListWorkers).toHaveBeenCalledTimes(3)
+      dispose()
+    })
+  })
+
+  it('keeps refetching after a failed fetch', async () => {
+    await createRoot(async (dispose) => {
+      const s = mount()
+      await flush()
+      mockListWorkers.mockRejectedValueOnce(new Error('offline'))
+      s.refetchWorkers()
+      await flush()
+      s.refetchWorkers()
+      await flush()
+      expect(mockListWorkers).toHaveBeenCalledTimes(3)
+      expect(s.workers().map(w => w.id)).toEqual(['w1'])
       dispose()
     })
   })
@@ -187,11 +298,11 @@ describe('useWorkerSection', () => {
   // The count alone proves nothing -- the hook calls `setConfirmKeyPin` once,
   // unconditionally, in its body, so `toHaveBeenCalledTimes(1)` after a single
   // mount holds for every implementation that registers at all. What has to be
-  // pinned is the DISPOSE half, and for the same reason as the hub-control
-  // subscription below: the registration outlives the mount otherwise, and a
-  // prompt closed over a dead mount's dialog never settles -- `KeyPinStore`
-  // awaits it with no timeout and queues every later prompt behind it, so one
-  // TOFU mismatch in that window deadlocks key-pinning for the whole page.
+  // pinned is the DISPOSE half: the registration outlives the mount otherwise,
+  // and a prompt closed over a dead mount's dialog never settles --
+  // `KeyPinStore` awaits it with no timeout and queues every later prompt
+  // behind it, so one TOFU mismatch in that window deadlocks key-pinning for
+  // the whole page.
   it('registers the key-pin prompt for the live mount and drops it on dispose', async () => {
     await createRoot(async (dispose) => {
       mount()
@@ -205,31 +316,111 @@ describe('useWorkerSection', () => {
     })
   })
 
-  it('unsubscribes from hub control frames when the owner disposes', async () => {
+  // The queued fetch must survive a failure of the fetch it waited behind:
+  // the event that queued it still describes a change the list lacks.
+  it('runs the queued fetch after the in-flight fetch fails', async () => {
     await createRoot(async (dispose) => {
-      mount()
+      const s = mount()
       await flush()
-      expect(hubControlHandlers).toHaveLength(1)
+      expect(mockListWorkers).toHaveBeenCalledTimes(1)
 
+      let fail!: () => void
+      mockListWorkers.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        fail = () => reject(new Error('offline'))
+      }))
+      mockListWorkers.mockResolvedValueOnce({
+        workers: [
+          worker('w1'),
+          worker('w3'),
+        ],
+      })
+      s.refetchWorkers()
+      await flush()
+      s.refetchWorkers()
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
+
+      fail()
+      await flush()
+      await flush()
+      expect(mockListWorkers, 'the queued fetch runs once the failed one settles').toHaveBeenCalledTimes(3)
+      expect(s.workers().map(w => w.id)).toEqual(['w1', 'w3'])
       dispose()
+    })
+  })
 
-      // `channelManager` is a module-level singleton that outlives this owner.
-      // AppShell really does remount inside one page lifetime (logout navigates
-      // to /login client-side, logging back in navigates to /), so a retained
-      // listener would fan out one `listWorkers` plus a `fetchWorkerInfo` per
-      // online worker for every stale mount, on every WORKERS_CHANGED frame.
-      expect(hubControlHandlers, 'the listener must not outlive the mount').toHaveLength(0)
+  // A sign-in that lands while the previous user's fetch runs joins the
+  // queue rather than racing it, so the list that stays is the new user's.
+  it('fetches again for a user who signs in while a fetch runs', async () => {
+    await createRoot(async (dispose) => {
+      const [userId, setUserId] = createSignal('u1')
+      let release!: () => void
+      mockListWorkers.mockImplementationOnce(() => new Promise((resolve) => {
+        release = () => resolve({
+          workers: [
+            worker('w-old'),
+          ],
+        })
+      }))
+      mockListWorkers.mockResolvedValueOnce({
+        workers: [
+          worker('w-new'),
+        ],
+      })
+      const s = mount(userId)
+      await flush()
+      expect(mockListWorkers).toHaveBeenCalledTimes(1)
+
+      setUserId('u2')
+      await flush()
+      expect(mockListWorkers, 'nothing starts while the first fetch runs').toHaveBeenCalledTimes(1)
+
+      release()
+      await flush()
+      await flush()
+      expect(mockListWorkers).toHaveBeenCalledTimes(2)
+      expect(s.workers().map(w => w.id)).toEqual(['w-new'])
+      dispose()
     })
   })
 
   it('survives a failed listWorkers with an empty list', async () => {
-    await createRoot(async (dispose) => {
-      mockListWorkers.mockRejectedValue(new Error('offline'))
-      const s = mount()
-      await flush()
-      expect(s.workers()).toEqual([])
-      dispose()
-    })
+    const logs = captureLoggerOutput()
+    try {
+      await createRoot(async (dispose) => {
+        mockListWorkers.mockRejectedValue(new Error('offline'))
+        const s = mount()
+        await flush()
+        expect(s.workers()).toEqual([])
+        dispose()
+      })
+    }
+    finally {
+      logs.restore()
+    }
+  })
+
+  // A failed read keeps the last list, and says so in the log: the sidebar
+  // shows nothing to explain a worker that is missing from it.
+  it('logs a failed listing and keeps the last successful list', async () => {
+    const logs = captureLoggerOutput()
+    try {
+      await createRoot(async (dispose) => {
+        const s = mount()
+        await flush()
+        expect(logs.messages('warn', 'workerSection')).toEqual([])
+
+        mockListWorkers.mockRejectedValueOnce(new Error('page 2 unavailable'))
+        s.refetchWorkers()
+        await flush()
+
+        expect(logs.messages('warn', 'workerSection')).toEqual(['Failed to list the workers; keeping the last list'])
+        expect(s.workers().map(w => w.id)).toEqual(['w1'])
+        dispose()
+      })
+    }
+    finally {
+      logs.restore()
+    }
   })
 
   /**

@@ -556,6 +556,55 @@ describe('createControlStore', () => {
   })
 })
 
+// A cancel identifies its agent through the event that carries it, not through
+// the payload. Two agents can hold requests with the same id and token.
+describe('createControlStore cancelRequest', () => {
+  it('retains delivered cancellation state until recording completes', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', {
+      ...makeRequest('record', 'agent-1', {}, 'record-claim'),
+      responseState: ControlResponseState.READY,
+    })
+    store.cancelRequest('agent-1', { requestId: 'record', claimToken: 'record-claim', responseState: ControlResponseState.DELIVERED })
+    expect(store.getRequests('agent-1')[0]?.responseState).toBe(ControlResponseState.DELIVERED)
+    store.cancelRequest('agent-1', { requestId: 'record', claimToken: 'record-claim', responseState: ControlResponseState.COMPLETED })
+    expect(store.getRequests('agent-1')).toEqual([])
+  })
+
+  it('accepts confirmed delivery after cancellation but ignores replay after completion', () => {
+    const store = createControlStore()
+    const request = makeRequest('record', 'agent-1', {}, 'record-claim')
+    store.addRequest('agent-1', request)
+    store.cancelRequest('agent-1', { requestId: 'record', claimToken: 'record-claim', responseState: ControlResponseState.CANCELED })
+    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
+    expect(store.getRequests('agent-1')).toHaveLength(1)
+    store.cancelRequest('agent-1', { requestId: 'record', claimToken: 'record-claim', responseState: ControlResponseState.COMPLETED })
+    store.addRequest('agent-1', { ...request, responseState: ControlResponseState.DELIVERED })
+    expect(store.getRequests('agent-1')).toEqual([])
+  })
+
+  it('cancels the request of the agent the carrier states, and leaves a sibling agent alone', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', makeRequest('request', 'agent-1'))
+    store.addRequest('agent-2', makeRequest('request', 'agent-2'))
+
+    store.cancelRequest('agent-1', { requestId: 'request', claimToken: 'tok-request', responseState: ControlResponseState.CANCELED })
+
+    expect(store.getRequests('agent-1')).toEqual([])
+    expect(store.getRequests('agent-2').map(request => request.requestId)).toEqual(['request'])
+  })
+
+  it('ignores a cancel for an agent that holds no request', () => {
+    const store = createControlStore()
+    store.addRequest('agent-1', makeRequest('request', 'agent-1'))
+
+    store.cancelRequest('agent-unknown', { requestId: 'request', claimToken: 'tok-request', responseState: ControlResponseState.CANCELED })
+
+    expect(store.getRequests('agent-1')).toHaveLength(1)
+    expect(store.getRequests('agent-unknown')).toEqual([])
+  })
+})
+
 describe('shownControlRequest', () => {
   it('returns null for an empty list', () => {
     expect(shownControlRequest([], false)).toBeNull()

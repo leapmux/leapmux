@@ -50,13 +50,15 @@ export interface UseCrdtRuntimeOpts {
    */
   activeClient: ReturnType<typeof createActiveClientStore>
   /**
-   * Called when a workspace is created / archived / deleted anywhere.
-   *
-   * Late-bound by the caller: `useWorkspaceLoader` is instantiated further down
-   * the component, so this fires into a no-op until then. That is safe because
-   * the loader's own `onMount` seeds the initial `listWorkspaces`.
+   * Called when a workspace is created / archived / deleted anywhere. The
+   * loader's own `onMount` seeds the initial `listWorkspaces`.
    */
   onWorkspaceLifecycleChanged: () => void
+  /**
+   * Called when the user's worker list changes, and on every bootstrap. The
+   * worker section's own effect seeds the first `listWorkers`.
+   */
+  onWorkersChanged: () => void
 }
 
 export interface CrdtRuntime {
@@ -595,6 +597,7 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // hydrated confirmedState (the tight T_now), not empty state.
     ready: hydrated,
     onWorkspaceLifecycleChanged: () => opts.onWorkspaceLifecycleChanged(),
+    onWorkersChanged: () => opts.onWorkersChanged(),
     onSubscriberClientId: id => setEffectiveClientId(id),
     onPendingDropped: () => {
     // EntityRemoved dropped at least one pending op (a redacted

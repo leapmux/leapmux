@@ -3,11 +3,14 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
@@ -534,6 +537,145 @@ func TestUserSelectorRefusalsHappenBeforeTheDial(t *testing.T) {
 	}
 }
 
+// TestUserFilterRefusesBothFlagsBeforeTheDial pins the listing filter. The
+// hub's selector holds an id OR a username, so the pair cannot even be sent:
+// the CLI must refuse it, before the dial, stating the flags. Neither flag is
+// "every user" and passes, as does either flag alone.
+func TestUserFilterRefusesBothFlagsBeforeTheDial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(any, []string) error
+	}{
+		{"api-token list", RunAdminAPITokenList},
+		{"delegation-token list", RunAdminDelegationTokenList},
+		{"worker list", RunAdminWorkerList},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run(nil, []string{"--user-id", "usr_1", "--username", "amy"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--user-id and --username are mutually exclusive")
+
+			for _, args := range [][]string{nil, {"--user-id", "usr_1"}, {"--username", "amy"}} {
+				err = tc.run(nil, args)
+				require.Error(t, err, "no hub is reachable in a unit test")
+				assert.NotContains(t, err.Error(), "mutually exclusive",
+					"a filter of at most one flag passes the local check")
+			}
+		})
+	}
+}
+
+// TestUserFilterFlagsBind pins the pair that bind declares. The three
+// listings that take the filter share its help text, so bind states it once.
+func TestUserFilterFlagsBind(t *testing.T) {
+	var f userFilterFlags
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	f.bind(fs)
+
+	require.NoError(t, fs.Parse([]string{"--user-id", "usr_1", "--username", "amy"}))
+	assert.Equal(t, "usr_1", f.ID)
+	assert.Equal(t, "amy", f.Username)
+	require.NotNil(t, fs.Lookup("user-id"))
+	assert.Contains(t, fs.Lookup("user-id").Usage, "soft-deleted users included",
+		"the help states that an id finds a soft-deleted owner too")
+	assert.Contains(t, fs.Lookup("user-id").Usage, "empty = all users")
+}
+
+// TestUserFilterFlagsSelector pins the selector that resolve builds for each
+// flag: none for neither flag, which lists every user, and the one value
+// otherwise.
+func TestUserFilterFlagsSelector(t *testing.T) {
+	none := &userFilterFlags{}
+	require.NoError(t, none.resolve(adminArgs{}))
+	assert.Nil(t, none.Selector())
+
+	byID := &userFilterFlags{ID: "usr_1"}
+	require.NoError(t, byID.resolve(adminArgs{}))
+	assert.Equal(t, "usr_1", byID.Selector().GetId())
+	assert.Empty(t, byID.Selector().GetUsername(), "an id filter carries no username")
+
+	byName := &userFilterFlags{Username: "amy"}
+	require.NoError(t, byName.resolve(adminArgs{}))
+	assert.Equal(t, "amy", byName.Selector().GetUsername())
+	assert.Empty(t, byName.Selector().GetId(), "a username filter carries no id")
+}
+
+// A nil filter means every user, so a listing that forgot to resolve its flags
+// must fail loudly. Sending nil would print every user's rows for a command
+// that asked for one user's.
+func TestUserFilterFlagsSelectorPanicsBeforeResolve(t *testing.T) {
+	assert.Panics(t, func() { (&userFilterFlags{ID: "usr_1"}).Selector() })
+}
+
+// TestUserSelectorFlagsSelector pins the selector that a verb addressing ONE
+// user sends. resolve refuses an empty or ambiguous pair, so exactly one handle
+// is set, and the selector carries that handle alone.
+func TestUserSelectorFlagsSelector(t *testing.T) {
+	byID := &userSelectorFlags{ID: "usr_1", idFlag: "id"}
+	require.NoError(t, byID.resolve(adminArgs{}))
+	require.NotNil(t, byID.Selector)
+	assert.Equal(t, "usr_1", byID.Selector.GetId())
+	assert.Empty(t, byID.Selector.GetUsername())
+
+	byName := &userSelectorFlags{Username: "amy", idFlag: "id"}
+	require.NoError(t, byName.resolve(adminArgs{}))
+	require.NotNil(t, byName.Selector)
+	assert.Equal(t, "amy", byName.Selector.GetUsername())
+	assert.Empty(t, byName.Selector.GetId())
+}
+
+// A refused pair builds no selector for either type, so no verb can send one
+// half of an ambiguous pair.
+func TestUserFlagsBuildNoSelectorForARefusedPair(t *testing.T) {
+	withCapturedStdout(t, func() {
+		required := &userSelectorFlags{ID: "usr_1", Username: "amy", idFlag: "id"}
+		require.Error(t, required.resolve(adminArgs{}))
+		assert.Nil(t, required.Selector)
+
+		empty := &userSelectorFlags{idFlag: "id"}
+		require.Error(t, empty.resolve(adminArgs{}))
+		assert.Nil(t, empty.Selector)
+
+		filter := &userFilterFlags{ID: "usr_1", Username: "amy"}
+		require.Error(t, filter.resolve(adminArgs{}))
+		assert.Panics(t, func() { filter.Selector() }, "a refused pair resolves nothing")
+	})
+}
+
+// TestOnlySettingValue pins the count check on a single-key reply. The hub
+// answers one value for each listed key. Any other count is a hub fault, and
+// reading index 0 of it would print a value for the wrong key or panic.
+func TestOnlySettingValue(t *testing.T) {
+	one := &leapmuxv1.SettingValue{Key: "theme"}
+	got, err := onlySettingValue([]*leapmuxv1.SettingValue{one})
+	require.NoError(t, err)
+	assert.Same(t, one, got)
+
+	for _, values := range [][]*leapmuxv1.SettingValue{
+		nil,
+		{},
+		{one, {Key: "another_key"}},
+	} {
+		got, err := onlySettingValue(values)
+		require.Errorf(t, err, "%d values must be refused", len(values))
+		assert.Nil(t, got)
+		assert.Contains(t, err.Error(), fmt.Sprintf("the hub answered %d setting values for one key", len(values)))
+	}
+}
+
+// TestAdminPageFlagsRequest pins the page that a listing verb sends. The verb
+// framework refuses a limit outside [1, contracts.MaxPageLimit] before the
+// dial, so the narrowing to int32 must keep the largest legal limit intact.
+func TestAdminPageFlagsRequest(t *testing.T) {
+	page := (&adminPageFlags{Limit: 7, Cursor: "c1"}).request()
+	assert.EqualValues(t, 7, page.GetLimit())
+	assert.Equal(t, "c1", page.GetCursor())
+
+	page = (&adminPageFlags{Limit: contracts.MaxPageLimit}).request()
+	assert.EqualValues(t, contracts.MaxPageLimit, page.GetLimit(), "the largest legal limit survives the narrowing")
+	assert.Empty(t, page.GetCursor(), "no cursor reads the first page")
+}
+
 // A missing selector must answer BEFORE the password prompt, for the same
 // reason `user create` checks --username first: an operator must not type a
 // secret into a request that cannot succeed, and with a non-terminal stdin
@@ -661,10 +803,11 @@ func TestRequireAdminClient_RefusesAnEmptyHubAddress(t *testing.T) {
 	assert.Contains(t, err.Error(), "LEAPMUX_CONTROL_SOCK")
 }
 
-// adminRowMapper is one admin row mapper under test: the proto message it
-// renders, the call that renders it, and the JSON key each proto field
-// reaches the operator under.
-type adminRowMapper struct {
+// rowMapper is one row mapper under test: the proto message it renders, the
+// call that renders it, and the JSON key each proto field reaches the
+// operator under. The admin rows use it, and so do the worker and workspace
+// rows that `worker list` and `workspace list` print.
+type rowMapper struct {
 	name   string
 	msg    proto.Message
 	render func() map[string]any
@@ -718,7 +861,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 			"created_at", "last_used_at", "expires_at", "revoked_at")
 	}
 
-	mappers := []adminRowMapper{
+	mappers := []rowMapper{
 		{
 			name: "adminUserJSON", msg: user,
 			render: func() map[string]any { return adminUserJSON(user) },
@@ -765,37 +908,46 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 
 	for _, mapper := range mappers {
 		t.Run(mapper.name, func(t *testing.T) {
-			populateEveryField(t, mapper.msg)
-			row := mapper.render()
-
-			want := map[string]bool{}
-			fields := mapper.msg.ProtoReflect().Descriptor().Fields()
-			for i := range fields.Len() {
-				f := fields.Get(i)
-				name := string(f.Name())
-				key, declared := mapper.keys[name]
-				require.Truef(t, declared,
-					"proto field %q has no JSON key in this table; add it here AND to %s",
-					name, mapper.name)
-				want[key] = true
-				// assert, not require: one run must report EVERY field the
-				// mapper drops, not just the first one.
-				if !assert.Containsf(t, row, key,
-					"proto field %q reaches no operator: %s prints no %q", name, mapper.name, key) {
-					continue
-				}
-				assert.Equalf(t, expectedPrintedValue(t, mapper.msg, f), row[key],
-					"%s prints the wrong source under %q; that key must carry proto field %q",
-					mapper.name, key, name)
-			}
-			for key := range row {
-				assert.Truef(t, want[key],
-					"%s prints %q, which no proto field declares", mapper.name, key)
-			}
-
-			assertBoolFieldsAreNotInterchanged(t, mapper)
+			assertRowMapperCarriesEveryField(t, mapper)
 		})
 	}
+}
+
+// assertRowMapperCarriesEveryField fails when mapper drops a field of its
+// proto message, prints a field under the wrong key, or prints a key that no
+// field declares. TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage
+// states why each of the three is a silent break for an operator's script.
+func assertRowMapperCarriesEveryField(t *testing.T, mapper rowMapper) {
+	t.Helper()
+	populateEveryField(t, mapper.msg)
+	row := mapper.render()
+
+	want := map[string]bool{}
+	fields := mapper.msg.ProtoReflect().Descriptor().Fields()
+	for i := range fields.Len() {
+		f := fields.Get(i)
+		name := string(f.Name())
+		key, declared := mapper.keys[name]
+		require.Truef(t, declared,
+			"proto field %q has no JSON key in this table; add it here AND to %s",
+			name, mapper.name)
+		want[key] = true
+		// assert, not require: one run must report EVERY field the
+		// mapper drops, not just the first one.
+		if !assert.Containsf(t, row, key,
+			"proto field %q reaches no operator: %s prints no %q", name, mapper.name, key) {
+			continue
+		}
+		assert.Equalf(t, expectedPrintedValue(t, mapper.msg, f), row[key],
+			"%s prints the wrong source under %q; that key must carry proto field %q",
+			mapper.name, key, name)
+	}
+	for key := range row {
+		assert.Truef(t, want[key],
+			"%s prints %q, which no proto field declares", mapper.name, key)
+	}
+
+	assertBoolFieldsAreNotInterchanged(t, mapper)
 }
 
 // expectedPrintedValue is the form proto field f must reach the envelope
@@ -852,7 +1004,7 @@ func expectedPrintedValue(t *testing.T, m proto.Message, f protoreflect.FieldDes
 // key printed the right answer for the wrong reason. Setting exactly one
 // boolean at a time is what separates them, and the all-false state that
 // runs first catches a mapper that prints a constant.
-func assertBoolFieldsAreNotInterchanged(t *testing.T, mapper adminRowMapper) {
+func assertBoolFieldsAreNotInterchanged(t *testing.T, mapper rowMapper) {
 	t.Helper()
 	r := mapper.msg.ProtoReflect()
 	fields := r.Descriptor().Fields()

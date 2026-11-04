@@ -436,7 +436,7 @@ func TestAgentResume_ResumedAgentsCarryAControlSocket(t *testing.T) {
 // auto-start path from spawning a process nothing will ever stop.
 //
 // GetAgentByID carries no closed_at predicate, so every caller reads a row a
-// CloseAgent can invalidate before the spawn: the resume sweep from its own
+// CloseTab can invalidate before the spawn: the resume sweep from its own
 // listing, and the three request-driven callers from their own earlier read. A
 // process started for a closed tab holds a CLI and a control socket for the life
 // of the worker, under a tab no client can see and no close path will reach.
@@ -712,7 +712,7 @@ func TestRemintControlIPC_AFailedMintStillReleasesTheDelegation(t *testing.T) {
 // HasAgent is false while one is in flight -- and the send gate refuses only a
 // PERMANENT startup failure. A message that lands in that window used to spawn a
 // second process for the same tab, and its begin() overwrote the open's registry
-// entry, so a later CloseAgent cancelled the wrong context. The claim is what
+// entry, so a later tab close cancelled the wrong context. The claim is what
 // stops that; this test drives the wait past its limit to reach it.
 func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T) {
 	t.Parallel()

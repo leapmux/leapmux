@@ -1,10 +1,11 @@
 import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
-import { createSignal } from 'solid-js'
-import { authClient } from '~/api/clients'
+import { batch, createSignal } from 'solid-js'
+import { authClient, systemClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
-import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/system_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
+import { formatErrorMessage } from '~/lib/errors'
 import { formatLocalDateTime } from './dateFormat'
 
 export type CaptchaProvider = GenCaptchaProvider
@@ -18,7 +19,6 @@ export type CaptchaProvider = GenCaptchaProvider
 // (see DEFAULTS below); isSystemInfoLoaded() distinguishes the two
 // states.
 interface SystemInfoSnapshot {
-  soloMode: boolean
   soloAccess: GenSoloAccess
   soloPasswordSet: boolean
   signupEnabled: boolean
@@ -37,7 +37,6 @@ interface SystemInfoSnapshot {
 // so a consumer that reads before the first load fails closed rather
 // than flashing an affordance the hub may not support.
 const DEFAULTS: SystemInfoSnapshot = {
-  soloMode: false,
   soloAccess: GenSoloAccess.UNSPECIFIED,
   soloPasswordSet: false,
   signupEnabled: false,
@@ -68,6 +67,9 @@ function parseCaptchaProvider(raw: GenCaptchaProvider): GenCaptchaProvider {
 }
 
 const [snapshot, setSnapshot] = createSignal<SystemInfoSnapshot | null>(null)
+// Why the most recent load that settled failed, or null after a success and
+// before any load settles. See systemInfoLoadFailure.
+const [loadFailure, setLoadFailure] = createSignal<string | null>(null)
 
 function current(): SystemInfoSnapshot {
   return snapshot() ?? DEFAULTS
@@ -76,12 +78,16 @@ function current(): SystemInfoSnapshot {
 // loadSystemInfo fetches the hub's system info and caches it (unless `force`).
 //
 // A failure REJECTS; this function never discards it. The defaults above
-// (notably `soloMode = false`) are fabrications until a call succeeds, and a
+// (notably a non-solo `soloAccess`) are fabrications until a call succeeds, and a
 // caller that cannot tell "the hub said non-solo" from "nobody asked yet"
 // makes unrecoverable decisions on them: on a solo hub the app would render a
 // "Log out" button whose one click sends the user to a login form no
 // credentials can satisfy. The snapshot still lands only on success, so the
 // next unforced call retries a failed load.
+//
+// It also RECORDS the failure, for systemInfoLoadFailure, before it rejects.
+// A caller can lose its own record of the failure, and the bootstrap does: it
+// records one only while it is the current auth operation.
 //
 // `force` re-fetches and rewrites the snapshot, so a caller that suspects its
 // view is stale (a login denied as "captcha verification failed" after
@@ -90,9 +96,11 @@ function current(): SystemInfoSnapshot {
 export async function loadSystemInfo(force = false): Promise<void> {
   if (snapshot() !== null && !force)
     return
-  const resp = await authClient.getSystemInfo({})
-  setSnapshot({
-    soloMode: resp.soloMode,
+  const resp = await systemClient.getSystemInfo({}).catch((err: unknown) => {
+    setLoadFailure(formatErrorMessage(err))
+    throw err
+  })
+  const loaded: SystemInfoSnapshot = {
     soloAccess: resp.soloAccess,
     soloPasswordSet: resp.soloPasswordSet,
     signupEnabled: resp.signupEnabled,
@@ -105,17 +113,28 @@ export async function loadSystemInfo(force = false): Promise<void> {
     captchaSiteKey: resp.captchaSiteKey,
     altchaAlgorithm: resp.altchaAlgorithm,
     backendBuildInfo: {
-      version: resp.version,
-      commitHash: resp.commitHash,
-      commitTime: resp.commitTime,
-      buildTime: resp.buildTime,
-      branch: resp.branch,
+      version: resp.build?.version ?? '',
+      commitHash: resp.build?.commitHash ?? '',
+      commitTime: resp.build?.commitTime ?? '',
+      buildTime: resp.build?.buildTime ?? '',
+      branch: resp.build?.branch ?? '',
     },
+  }
+  // ONE update, so a reader never sees the failure cleared while the
+  // snapshot is still absent: that pair reads as a load still in flight.
+  batch(() => {
+    setLoadFailure(null)
+    setSnapshot(loaded)
   })
 }
 
+/**
+ * Whether the hub is a solo hub. The hub reports one fact for it,
+ * `soloAccess`, whose UNSPECIFIED value means "not a solo hub", so a non-solo
+ * hub cannot report a solo access state, and a solo hub cannot report none.
+ */
 export function isSoloMode(): boolean {
-  return current().soloMode
+  return current().soloAccess !== GenSoloAccess.UNSPECIFIED
 }
 
 /**
@@ -272,6 +291,21 @@ export function passkeysUsableHere(): boolean {
 // pre-fetch default.
 export function isSystemInfoLoaded(): boolean {
   return snapshot() !== null
+}
+
+/**
+ * Why the most recent system-info load that settled failed: the formatted
+ * error, or null when that load succeeded or no load has settled yet.
+ *
+ * `AuthGuard` reads it while `isSystemInfoLoaded()` is false, to tell a failed
+ * load (a panel with Retry) from one still in flight (the boot splash). It
+ * reports only the LAST load, so a forced refresh that fails after a success
+ * records a failure while the snapshot stays loaded; a reader asks
+ * `isSystemInfoLoaded()` first. An empty string is still a failure, so compare
+ * the value with null, not for truthiness.
+ */
+export function systemInfoLoadFailure(): string | null {
+  return loadFailure()
 }
 
 // isCaptchaEnabled returns whether the hub requires a captcha token on

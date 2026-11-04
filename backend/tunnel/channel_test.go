@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,12 +27,15 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/tunnelflow"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
 type rollbackChannelService struct {
 	leapmuxv1connect.UnimplementedChannelServiceHandler
 
-	publicKey []byte
+	// keys is the worker key set the handshake parameters announce. Its X25519
+	// key is real, so the initiator's message 1 builds.
+	keys *leapmuxv1.WorkerPublicKeys
 
 	mu            sync.Mutex
 	closedChannel string
@@ -51,7 +55,7 @@ func (s *rollbackChannelService) GetWorkerHandshakeParams(
 	s.paramsAuth = requestAuth(ctx)
 	s.mu.Unlock()
 	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
-		PublicKey:      s.publicKey,
+		Keys:           s.keys,
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 	}, nil
 }
@@ -90,6 +94,14 @@ func (s *rollbackChannelService) CloseChannel(
 func requestAuth(ctx context.Context) string {
 	info, _ := connect.CallInfoForServerContext(ctx)
 	return info.RequestHeader().Get("Authorization")
+}
+
+// workerKeysOf returns the complete wire key set of key, as a hub announces it.
+func workerKeysOf(t *testing.T, key *noiseutil.CompositeKeypair) *leapmuxv1.WorkerPublicKeys {
+	t.Helper()
+	keys, err := workerkeys.Of(key)
+	require.NoError(t, err)
+	return keys
 }
 
 // channelServiceServer serves service over Connect on an httptest server.
@@ -141,9 +153,9 @@ func TestNewInitiatorHandshakerPairsBothHalvesToOneMode(t *testing.T) {
 			respond: pqResponder,
 		},
 		// An unknown mode must take the STRONGER handshake, never downgrade to
-		// X25519-only. UNSPECIFIED is the one that reaches here in practice --
-		// ChannelService.GetWorkerHandshakeParams normalises it to POST_QUANTUM, and
-		// this end must agree with that reading rather than pick the classic pair.
+		// X25519-only. The hub refuses a WorkerHello with UNSPECIFIED, so no
+		// client receives it from a live worker; this end still reads it as the
+		// stronger handshake rather than pick the classic pair.
 		"unspecified is post-quantum, not a downgrade": {
 			mode:    leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED,
 			respond: pqResponder,
@@ -151,10 +163,12 @@ func TestNewInitiatorHandshakerPairsBothHalvesToOneMode(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			handshaker := newInitiatorHandshaker(&leapmuxv1.GetWorkerHandshakeParamsResponse{
-				PublicKey:       key.X25519Public,
-				MlkemPublicKey:  key.MlkemPublicKeyBytes(),
-				SlhdsaPublicKey: slhdsaPub,
-				EncryptionMode:  tc.mode,
+				Keys: &leapmuxv1.WorkerPublicKeys{
+					X25519: key.X25519Public,
+					Mlkem:  key.MlkemPublicKeyBytes(),
+					Slhdsa: slhdsaPub,
+				},
+				EncryptionMode: tc.mode,
 			})
 
 			hs, msg1, err := handshaker.start()
@@ -176,10 +190,174 @@ func TestNewInitiatorHandshakerPairsBothHalvesToOneMode(t *testing.T) {
 	}
 }
 
+// The channel keeps the ML-KEM key for an in-band rekey only when the handshake
+// was post-quantum, and it takes that key from the worker's key set.
+func TestMlkemPubForRekeyFollowsTheHandshakeMode(t *testing.T) {
+	keys := &leapmuxv1.WorkerPublicKeys{X25519: []byte("x"), Mlkem: []byte("mlkem"), Slhdsa: []byte("slhdsa")}
+	for name, tc := range map[string]struct {
+		params *leapmuxv1.GetWorkerHandshakeParamsResponse
+		want   []byte
+	}{
+		"classic keeps no key": {
+			params: &leapmuxv1.GetWorkerHandshakeParamsResponse{Keys: keys, EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC},
+		},
+		"post-quantum keeps the ML-KEM key": {
+			params: &leapmuxv1.GetWorkerHandshakeParamsResponse{Keys: keys, EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM},
+			want:   []byte("mlkem"),
+		},
+		"unspecified reads as post-quantum, as the handshake does": {
+			params: &leapmuxv1.GetWorkerHandshakeParamsResponse{Keys: keys},
+			want:   []byte("mlkem"),
+		},
+		"absent keys keep no key": {
+			params: &leapmuxv1.GetWorkerHandshakeParamsResponse{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, mlkemPubForRekey(tc.params))
+		})
+	}
+}
+
+// pinnedKeysChannelService answers the handshake parameters with a full key set
+// and refuses OpenChannel, which it records. The pin tests need nothing past the
+// pin check.
+type pinnedKeysChannelService struct {
+	leapmuxv1connect.UnimplementedChannelServiceHandler
+	keys       *leapmuxv1.WorkerPublicKeys
+	openCalled chan struct{}
+}
+
+func (s *pinnedKeysChannelService) GetWorkerHandshakeParams(context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
+		Keys:           s.keys,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
+	}, nil
+}
+
+func (s *pinnedKeysChannelService) OpenChannel(context.Context, *leapmuxv1.OpenChannelRequest) (*leapmuxv1.OpenChannelResponse, error) {
+	select {
+	case s.openCalled <- struct{}{}:
+	default:
+	}
+	return nil, connect.NewError(connect.CodeUnavailable, "the test stops after the pin check")
+}
+
+// recordingKeyPin records the keys that OpenChannel asks it to verify, and
+// answers with err.
+type recordingKeyPin struct {
+	err                   error
+	workerID              string
+	x25519, mlkem, slhdsa []byte
+}
+
+func (p *recordingKeyPin) Verify(workerID string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) error {
+	p.workerID, p.x25519, p.mlkem, p.slhdsa = workerID, publicKey, mlkemPublicKey, slhdsaPublicKey
+	return p.err
+}
+
+// The TOFU pin checks each key of the worker's key set in its own position. A
+// mismatch aborts the open before the hub registers a channel.
+func TestOpenChannelVerifiesEachWorkerKeyAgainstThePin(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	keys := workerKeysOf(t, key)
+
+	t.Run("a matching pin lets the open continue", func(t *testing.T) {
+		service := &pinnedKeysChannelService{keys: keys, openCalled: make(chan struct{}, 1)}
+		server := channelServiceServer(t, service)
+		pin := &recordingKeyPin{}
+
+		_, err := OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+			LifetimeContext: context.Background(),
+			KeyPin:          pin,
+		})
+		require.Error(t, err, "the fake refuses OpenChannel")
+		assert.Equal(t, "worker-1", pin.workerID)
+		assert.Equal(t, keys.GetX25519(), pin.x25519)
+		assert.Equal(t, keys.GetMlkem(), pin.mlkem)
+		assert.Equal(t, keys.GetSlhdsa(), pin.slhdsa)
+		select {
+		case <-service.openCalled:
+		default:
+			t.Fatal("a pin that matches must let the open reach the hub")
+		}
+	})
+
+	t.Run("a mismatch aborts before the hub opens a channel", func(t *testing.T) {
+		service := &pinnedKeysChannelService{keys: keys, openCalled: make(chan struct{}, 1)}
+		server := channelServiceServer(t, service)
+
+		_, err := OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
+			LifetimeContext: context.Background(),
+			KeyPin:          &recordingKeyPin{err: errors.New("key mismatch")},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "worker key pin: key mismatch")
+		select {
+		case <-service.openCalled:
+			t.Fatal("a mismatched pin must stop the open before the hub registers a channel")
+		default:
+		}
+	})
+}
+
+// The hub's key set is checked before any pin decision. A set that is absent,
+// partial or wrongly sized refuses the open: the pin store never compares it or
+// records it as a first-contact pin, and the hub registers no channel. A pin
+// store is optional, so the check must not depend on one.
+func TestOpenChannelRefusesAnIncompleteKeySetBeforeThePin(t *testing.T) {
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	valid := workerKeysOf(t, key)
+	cases := map[string]struct {
+		keys    *leapmuxv1.WorkerPublicKeys
+		wantErr string
+	}{
+		"absent keys":  {keys: nil, wantErr: "the worker public keys are missing"},
+		"an empty set": {keys: &leapmuxv1.WorkerPublicKeys{}, wantErr: "worker x25519 public key is 0 bytes"},
+		"a short x25519 key": {
+			keys:    &leapmuxv1.WorkerPublicKeys{X25519: valid.GetX25519()[1:], Mlkem: valid.GetMlkem(), Slhdsa: valid.GetSlhdsa()},
+			wantErr: "worker x25519 public key is 31 bytes",
+		},
+		"no mlkem key": {
+			keys:    &leapmuxv1.WorkerPublicKeys{X25519: valid.GetX25519(), Slhdsa: valid.GetSlhdsa()},
+			wantErr: "worker mlkem public key is 0 bytes",
+		},
+		"a long slhdsa key": {
+			keys:    &leapmuxv1.WorkerPublicKeys{X25519: valid.GetX25519(), Mlkem: valid.GetMlkem(), Slhdsa: append(append([]byte(nil), valid.GetSlhdsa()...), 0)},
+			wantErr: "worker slhdsa public key is 65 bytes",
+		},
+	}
+	for name, tc := range cases {
+		for _, withPin := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, pin store %t", name, withPin), func(t *testing.T) {
+				service := &pinnedKeysChannelService{keys: tc.keys, openCalled: make(chan struct{}, 1)}
+				server := channelServiceServer(t, service)
+				opts := &OpenChannelOptions{LifetimeContext: context.Background()}
+				pin := &recordingKeyPin{}
+				if withPin {
+					opts.KeyPin = pin
+				}
+
+				_, err := OpenChannel(context.Background(), server.URL, "worker-1", opts)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Empty(t, pin.workerID, "the pin store must never see an incomplete key set")
+				select {
+				case <-service.openCalled:
+					t.Fatal("an incomplete key set must stop the open before the hub registers a channel")
+				default:
+				}
+			})
+		}
+	}
+}
+
 func TestOpenChannelRollsBackRegisteredChannelAfterHandshakeFailure(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key)}
 	// Connect v2 registers on a server instead of returning a mount
 	// path; the generated procedure constants are what Mount serves.
 	require.NotEmpty(t, leapmuxv1connect.ChannelServiceGetWorkerHandshakeParamsProcedure)
@@ -208,7 +386,7 @@ func TestOpenChannelRollsBackRegisteredChannelAfterHandshakeFailure(t *testing.T
 func TestOpenChannelSendsBearerOnEveryHubCall(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key)}
 	server := channelServiceServer(t, service)
 
 	// Fails at handshake2 (the fake returns a bogus payload), which is AFTER all
@@ -241,7 +419,7 @@ func TestOpenChannelSendsBearerOnEveryHubCall(t *testing.T) {
 func TestOpenChannelRejectsIdentityMismatch(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key)}
 	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
@@ -266,7 +444,7 @@ func TestOpenChannelRejectsIdentityMismatch(t *testing.T) {
 func TestOpenChannelAcceptsMatchingExpectedUserID(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key)}
 	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
@@ -280,7 +458,7 @@ func TestOpenChannelAcceptsMatchingExpectedUserID(t *testing.T) {
 func TestOpenChannelRejectsMissingMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public, omitMaxMessageSize: true}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key), omitMaxMessageSize: true}
 	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
@@ -298,7 +476,7 @@ func TestOpenChannelRejectsOutOfBoundsMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	stub := &maxMessageSizeStub{
-		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		rollbackChannelService: rollbackChannelService{keys: workerKeysOf(t, key)},
 		size:                   1,
 	}
 	server := channelServiceServer(t, stub)
@@ -314,7 +492,7 @@ func TestOpenChannelRejectsAboveCeilingMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	stub := &maxMessageSizeStub{
-		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		rollbackChannelService: rollbackChannelService{keys: workerKeysOf(t, key)},
 		size:                   uint64(contracts.MaxConfigurableMessageSize + 1),
 	}
 	server := channelServiceServer(t, stub)
@@ -330,7 +508,7 @@ func TestOpenChannelAcceptsNonDefaultNegotiatedMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	stub := &maxMessageSizeStub{
-		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
+		rollbackChannelService: rollbackChannelService{keys: workerKeysOf(t, key)},
 		size:                   2 << 20,
 	}
 	server := channelServiceServer(t, stub)
@@ -366,7 +544,7 @@ func (s *maxMessageSizeStub) OpenChannel(
 func TestOpenChannelOmitsAuthHeaderWithoutBearer(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	service := &rollbackChannelService{publicKey: key.X25519Public}
+	service := &rollbackChannelService{keys: workerKeysOf(t, key)}
 	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
@@ -400,7 +578,6 @@ type canceledOpenChannel struct {
 }
 
 func (c *canceledOpenChannel) Context() context.Context { return c.ctx }
-func (*canceledOpenChannel) UnregisterPending(uint64)   {}
 func (*canceledOpenChannel) UnregisterStream(uint64)    {}
 func (c *canceledOpenChannel) SendRPCNoWait(
 	_ context.Context,
@@ -408,7 +585,7 @@ func (c *canceledOpenChannel) SendRPCNoWait(
 	payload []byte,
 	handlers RPCHandlers,
 ) (uint64, error) {
-	if method != "OpenTunnelConn" {
+	if method != leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure {
 		var request leapmuxv1.CloseTunnelConnRequest
 		if err := proto.Unmarshal(payload, &request); err != nil {
 			return 0, err
@@ -420,11 +597,13 @@ func (c *canceledOpenChannel) SendRPCNoWait(
 	if err := proto.Unmarshal(payload, &request); err != nil {
 		return 0, err
 	}
-	responsePayload, err := proto.Marshal(&leapmuxv1.OpenTunnelConnResponse{ConnId: request.GetConnId()})
+	openedPayload, err := proto.Marshal(&leapmuxv1.TunnelConnEvent{
+		Event: &leapmuxv1.TunnelConnEvent_Opened{Opened: &leapmuxv1.TunnelConnOpened{}},
+	})
 	if err != nil {
 		return 0, err
 	}
-	handlers.Response <- &leapmuxv1.InnerRpcResponse{Payload: responsePayload}
+	handlers.Stream(&leapmuxv1.InnerStreamMessage{Payload: openedPayload})
 	c.cancel()
 	return 1, nil
 }
@@ -462,10 +641,9 @@ type recordingChannel struct {
 }
 
 func (c *recordingChannel) Context() context.Context { return c.ctx }
-func (*recordingChannel) UnregisterPending(uint64)   {}
 func (*recordingChannel) UnregisterStream(uint64)    {}
 func (c *recordingChannel) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
-	if method == "SendTunnelData" {
+	if method == leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure {
 		var r leapmuxv1.SendTunnelDataRequest
 		if err := proto.Unmarshal(payload, &r); err != nil {
 			return 0, err
@@ -485,7 +663,7 @@ func TestConnCloseWriteSendsHalfCloseFlag(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &recordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	require.NoError(t, tc.CloseWrite())
 	require.NoError(t, tc.CloseWrite(), "CloseWrite must be idempotent")
@@ -509,7 +687,7 @@ func TestConnWriteSplitsLargeBufferIntoWindowedChunks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &recordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	// Larger than one chunk and not a multiple of it, so the ragged tail is covered.
 	payload := make([]byte, tunnelflow.MaxChunkBytes*2+7)
@@ -548,10 +726,9 @@ type failThenRecordChannel struct {
 }
 
 func (c *failThenRecordChannel) Context() context.Context { return c.ctx }
-func (*failThenRecordChannel) UnregisterPending(uint64)   {}
 func (*failThenRecordChannel) UnregisterStream(uint64)    {}
 func (c *failThenRecordChannel) SendRPCNoWait(_ context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
-	if method != "SendTunnelData" {
+	if method != leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure {
 		return 1, nil
 	}
 	c.mu.Lock()
@@ -585,7 +762,7 @@ func TestConnCloseWriteRetriesAfterFailedSend(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &failThenRecordChannel{ctx: ctx, failsLeft: 1, sendErrMsg: "transient send failure"}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	require.Error(t, tc.CloseWrite(), "a failed send must surface to the caller")
 	require.Empty(t, ch.frames(), "the failed CloseWrite put no frame on the wire")
@@ -606,7 +783,7 @@ func TestConnCloseWriteAfterCloseReturnsErrClosed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &recordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 	close(tc.closed) // simulate Close() without driving a real remote-close RPC
 
 	require.ErrorIs(t, tc.CloseWrite(), net.ErrClosed)
@@ -633,10 +810,9 @@ func (c *seqRecordingChannel) Context() context.Context {
 	}
 	return context.Background()
 }
-func (*seqRecordingChannel) UnregisterPending(uint64) {}
-func (*seqRecordingChannel) UnregisterStream(uint64)  {}
+func (*seqRecordingChannel) UnregisterStream(uint64) {}
 func (c *seqRecordingChannel) SendRPCNoWait(_ context.Context, method string, payload []byte, handlers RPCHandlers) (uint64, error) {
-	if method != "SendTunnelData" {
+	if method != leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure {
 		return 1, nil
 	}
 	c.mu.Lock()
@@ -669,10 +845,9 @@ type windowTestChannel struct {
 }
 
 func (c *windowTestChannel) Context() context.Context { return c.ctx }
-func (*windowTestChannel) UnregisterPending(uint64)   {}
 func (*windowTestChannel) UnregisterStream(uint64)    {}
 func (c *windowTestChannel) SendRPCNoWait(_ context.Context, method string, _ []byte, handlers RPCHandlers) (uint64, error) {
-	if method == "SendTunnelData" && handlers.Response != nil {
+	if method == leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure && handlers.Response != nil {
 		c.mu.Lock()
 		c.acks = append(c.acks, handlers.Response)
 		c.mu.Unlock()
@@ -711,7 +886,7 @@ func (c *windowTestChannel) nakOne(code int32, message string) bool {
 	}
 	ack := c.acks[0]
 	c.acks = c.acks[1:]
-	ack <- &leapmuxv1.InnerRpcResponse{IsError: true, ErrorCode: code, ErrorMessage: message}
+	ack <- channelwire.NewErrorResponse(code, message)
 	return true
 }
 
@@ -723,7 +898,7 @@ func TestConnWriteBlocksWhenSendWindowFull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &windowTestChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	for range tunnelflow.WriteWindowFrames {
 		n, err := tc.Write([]byte("x"))
@@ -761,7 +936,7 @@ func TestConnWriteSurfacesTargetWriteError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &windowTestChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	n, err := tc.Write([]byte("x"))
 	require.NoError(t, err, "the frame reaches the wire; the worker NAK arrives asynchronously")
@@ -791,7 +966,7 @@ func TestConnCloseWriteSurfacesTargetCloseError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &windowTestChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	require.NoError(t, tc.CloseWrite(), "the half-close frame reaches the wire; the NAK arrives asynchronously")
 	require.Equal(t, 1, ch.pendingAcks(),
@@ -817,7 +992,7 @@ func TestConnWriteWindowUnblocksOnClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &windowTestChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 	for range tunnelflow.WriteWindowFrames {
 		_, err := tc.Write([]byte("x"))
 		require.NoError(t, err)
@@ -851,7 +1026,7 @@ func TestConnWriteWindowUnblocksOnClose(t *testing.T) {
 // the worker sees contiguous.
 func TestConnWriteDoesNotConsumeSeqOnSendFailure(t *testing.T) {
 	ch := &seqRecordingChannel{failSends: 1}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	_, err := tc.Write([]byte("dropped"))
 	require.Error(t, err, "the simulated send failure must surface to the caller")
@@ -873,7 +1048,7 @@ func TestConnWriteDoesNotConsumeSeqOnSendFailure(t *testing.T) {
 // would strand the worker's graceful-close flush too.
 func TestConnCloseWriteReusesSeqAfterFailedWrite(t *testing.T) {
 	ch := &seqRecordingChannel{failSends: 1}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	_, err := tc.Write([]byte("dropped"))
 	require.Error(t, err)
@@ -914,7 +1089,6 @@ type creditRecordingChannel struct {
 }
 
 func (c *creditRecordingChannel) Context() context.Context { return c.ctx }
-func (*creditRecordingChannel) UnregisterPending(uint64)   {}
 func (*creditRecordingChannel) UnregisterStream(uint64)    {}
 func (c *creditRecordingChannel) SendRPCNoWait(ctx context.Context, method string, payload []byte, _ RPCHandlers) (uint64, error) {
 	if c.blockSend != nil {
@@ -924,7 +1098,7 @@ func (c *creditRecordingChannel) SendRPCNoWait(ctx context.Context, method strin
 			return 0, ctx.Err()
 		}
 	}
-	if method == "GrantTunnelReadCredit" {
+	if method == leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure {
 		var r leapmuxv1.GrantTunnelReadCreditRequest
 		if err := proto.Unmarshal(payload, &r); err == nil {
 			c.mu.Lock()
@@ -960,10 +1134,10 @@ func TestConnRejectsOversizeInboundFrame(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &creditRecordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-		Data: make([]byte, tunnelflow.MaxChunkBytes+1),
+		Event: &leapmuxv1.TunnelConnEvent_Data{Data: make([]byte, tunnelflow.MaxChunkBytes+1)},
 	})})
 
 	buf := make([]byte, 8)
@@ -978,10 +1152,10 @@ func TestConnAcceptsInboundFrameAtChunkBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &creditRecordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-		Data: make([]byte, tunnelflow.MaxChunkBytes),
+		Event: &leapmuxv1.TunnelConnEvent_Data{Data: make([]byte, tunnelflow.MaxChunkBytes)},
 	})})
 
 	buf := make([]byte, tunnelflow.MaxChunkBytes)
@@ -997,11 +1171,11 @@ func TestConnReadGrantsReadCreditAsItConsumes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &creditRecordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	for range tunnelflow.ReadCreditBatch {
 		tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-			Data: []byte("x"),
+			Event: &leapmuxv1.TunnelConnEvent_Data{Data: []byte("x")},
 		})})
 	}
 	assert.Zero(t, ch.totalGranted(), "no credit is granted before frames are consumed")
@@ -1038,11 +1212,11 @@ func TestConnReadDoesNotBlockOnWedgedCreditSend(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	ch := &creditRecordingChannel{ctx: ctx, blockSend: release}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	for range tunnelflow.ReadCreditBatch {
 		tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-			Data: []byte("x"),
+			Event: &leapmuxv1.TunnelConnEvent_Data{Data: []byte("x")},
 		})})
 	}
 
@@ -1071,7 +1245,7 @@ func TestConnFailedDialReleasesCreditLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &recordingChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 
 	// The dial failure paths abandon the conn via unregister, without Close.
 	tc.unregister()
@@ -1088,7 +1262,6 @@ func TestConnFailedDialReleasesCreditLoop(t *testing.T) {
 type alwaysFailSendChannel struct{ ctx context.Context }
 
 func (c *alwaysFailSendChannel) Context() context.Context { return c.ctx }
-func (*alwaysFailSendChannel) UnregisterPending(uint64)   {}
 func (*alwaysFailSendChannel) UnregisterStream(uint64)    {}
 func (*alwaysFailSendChannel) SendRPCNoWait(context.Context, string, []byte, RPCHandlers) (uint64, error) {
 	return 0, errors.New("send failed")
@@ -1195,7 +1368,7 @@ func TestChannelUnregisterKeepsPartialWhileStreamHandlerLives(t *testing.T) {
 	ch := newReassemblyTestChannel(t)
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
 	ch.pending[7] = respCh
-	ch.streamCbs[7] = newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {}, ch.ctx.Done())
+	ch.streamCbs[7] = newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {}, failOnRejection(t), ch.ctx.Done())
 	t.Cleanup(func() { ch.streamCbs[7].stop() })
 	ch.reassembly[7] = &channelwire.ChunkBuffer{Parts: [][]byte{[]byte("partial")}, Total: 7}
 
@@ -1216,7 +1389,7 @@ func TestChannelUnregisterKeepsPartialWhileStreamHandlerLives(t *testing.T) {
 func TestAllocateReqIDSkipsReservedAndLiveIDs(t *testing.T) {
 	ch := newReassemblyTestChannel(t)
 	ch.pending[1] = make(chan *leapmuxv1.InnerRpcResponse, 1)
-	ch.streamCbs[2] = newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {}, ch.ctx.Done())
+	ch.streamCbs[2] = newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {}, failOnRejection(t), ch.ctx.Done())
 	t.Cleanup(func() { ch.streamCbs[2].stop() })
 
 	// Poised at the counter's ceiling: the next bare increment would yield 0, then
@@ -1253,6 +1426,92 @@ func TestSendRPCNoWaitRejectsUnbufferedResponseChannel(t *testing.T) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	assert.Empty(t, ch.pending, "a rejected call registers no handler")
+}
+
+// A rejection must reach a handler, or the stream's consumer waits until its own
+// context ends. SendRPCNoWait refuses handlers that lose a rejection before it
+// registers anything or sends a byte, and accepts a stream beside a Response
+// handler, which takes the rejection.
+func TestSendRPCNoWaitChecksThatARejectionHasAHandler(t *testing.T) {
+	onMessage := func(*leapmuxv1.InnerStreamMessage) {}
+	refused := map[string]struct {
+		handlers RPCHandlers
+		wantErr  string
+	}{
+		"a stream with no handler for a rejection": {
+			handlers: RPCHandlers{Stream: onMessage},
+			wantErr:  "must set StreamRejected",
+		},
+		"StreamRejected with no stream": {
+			handlers: RPCHandlers{StreamRejected: func(error) {}},
+			wantErr:  "requires a Stream handler",
+		},
+	}
+	for name, tc := range refused {
+		t.Run(name, func(t *testing.T) {
+			ch := newReassemblyTestChannel(t)
+
+			_, err := ch.SendRPCNoWait(context.Background(), "Method", nil, tc.handlers)
+			require.ErrorContains(t, err, tc.wantErr)
+
+			ch.mu.Lock()
+			defer ch.mu.Unlock()
+			assert.Empty(t, ch.streamCbs, "a refused call registers no stream handler")
+			assert.Empty(t, ch.pending, "a refused call registers no response handler")
+		})
+	}
+
+	t.Run("a stream beside a response handler", func(t *testing.T) {
+		ch := newReassemblyTestChannel(t)
+
+		_, err := ch.SendRPCNoWait(context.Background(), "Method", nil, RPCHandlers{
+			Response: make(chan *leapmuxv1.InnerRpcResponse, 1),
+			Stream:   onMessage,
+		})
+		require.NoError(t, err)
+
+		ch.mu.Lock()
+		defer ch.mu.Unlock()
+		assert.Len(t, ch.streamCbs, 1)
+		assert.Len(t, ch.pending, 1)
+	})
+}
+
+// A request with a Response handler takes a rejection there, as an error
+// response, and its stream handler sees nothing. That response ends the request,
+// so a later rejection of the same id has no reader: the channel drops it
+// instead of calling a StreamRejected handler that the request never set.
+func TestDeliverRPCErrorPrefersTheResponseHandlerOfAStream(t *testing.T) {
+	ch := newReassemblyTestChannel(t)
+	const reqID = 7
+	responses := make(chan *leapmuxv1.InnerRpcResponse, 1)
+	frames := make(chan *leapmuxv1.InnerStreamMessage, 1)
+	ch.pending[reqID] = responses
+	stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) { frames <- msg }, nil, ch.ctx.Done())
+	ch.streamCbs[reqID] = stream
+	t.Cleanup(stream.stop)
+
+	ch.deliverRPCError(reqID, errCodeResourceExhausted, "message too large")
+	select {
+	case resp := <-responses:
+		assert.Equal(t, errCodeResourceExhausted, resp.GetError().GetCode())
+		assert.Equal(t, "message too large", resp.GetError().GetMessage())
+	default:
+		t.Fatal("the rejection must reach the Response handler")
+	}
+
+	ch.deliverRPCError(reqID, errCodeResourceExhausted, "message too large again")
+
+	// The stream queue is first in, first out, so anything that the two
+	// rejections queued would run before this barrier.
+	barrier := &leapmuxv1.InnerStreamMessage{Payload: []byte("barrier")}
+	require.True(t, ch.deliverStream(reqID, barrier))
+	select {
+	case msg := <-frames:
+		assert.Same(t, barrier, msg, "no rejection reaches the stream handler as a frame")
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the barrier frame never arrived")
+	}
 }
 
 // A latchedErr's ZERO VALUE must be a usable, unlatched latch.
@@ -1305,7 +1564,7 @@ func newReadTestConn(t *testing.T) *Conn {
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	t.Cleanup(cancel)
-	return newConn(ch, "conn-1", "example.test", 1234)
+	return newOpenedConn(ch, "conn-1", "example.test", 1234)
 }
 
 func readResultWithin(t *testing.T, tc *Conn, timeout time.Duration) (int, error) {
@@ -1413,7 +1672,7 @@ func TestConnWriteDeadlineSetAfterParkWakesWindowParkedWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch := &windowTestChannel{ctx: ctx}
-	tc := newConn(ch, "conn-1", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-1", "example.test", 443)
 	fillSendWindow(t, tc, ch)
 
 	done := make(chan error, 1)
@@ -1440,10 +1699,10 @@ func TestConnWriteDeadlineSetAfterParkWakesWindowParkedWrite(t *testing.T) {
 func TestConnTerminalErrorIsOrderedAndPersistent(t *testing.T) {
 	tc := newReadTestConn(t)
 	tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-		Data: []byte("before EOF"),
+		Event: &leapmuxv1.TunnelConnEvent_Data{Data: []byte("before EOF")},
 	})})
 	tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: mustMarshalTunnelEvent(t, &leapmuxv1.TunnelConnEvent{
-		Eof: true,
+		Event: &leapmuxv1.TunnelConnEvent_Eof{Eof: &leapmuxv1.TunnelConnEof{}},
 	})})
 
 	buf := make([]byte, 32)
@@ -1476,6 +1735,25 @@ func TestConnCloseWakesBlockedReadPersistently(t *testing.T) {
 	assert.ErrorIs(t, err, net.ErrClosed)
 }
 
+// newOpenedConn returns a conn in the state dialTunnelContext hands to a
+// caller: built by newConn, with the worker's `opened` event already consumed.
+// A test that feeds data frames needs it, because data before `opened` is a
+// protocol error.
+func newOpenedConn(ch tunnelRPCChannel, connID, targetAddr string, targetPort uint32) *Conn {
+	tc := newConn(ch, connID, targetAddr, targetPort)
+	payload, err := proto.Marshal(&leapmuxv1.TunnelConnEvent{
+		Event: &leapmuxv1.TunnelConnEvent_Opened{Opened: &leapmuxv1.TunnelConnOpened{}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	tc.onStreamMessage(&leapmuxv1.InnerStreamMessage{Payload: payload})
+	if err := <-tc.openResult; err != nil {
+		panic(err)
+	}
+	return tc
+}
+
 func mustMarshalTunnelEvent(t *testing.T, event *leapmuxv1.TunnelConnEvent) []byte {
 	t.Helper()
 	payload, err := proto.Marshal(event)
@@ -1494,7 +1772,7 @@ func TestStreamCallbackPreservesOrderWithoutBlockingDelivery(t *testing.T) {
 			<-releaseFirst
 		}
 		delivered <- value
-	}, make(chan struct{}))
+	}, failOnRejection(t), make(chan struct{}))
 	t.Cleanup(stream.stop)
 	stream.deliver(&leapmuxv1.InnerStreamMessage{Payload: []byte("first")})
 	<-firstStarted
@@ -1529,7 +1807,7 @@ func TestStreamCallbackAppliesBackpressureWhenQueueFull(t *testing.T) {
 	stream := newStreamCallback(func(message *leapmuxv1.InnerStreamMessage) {
 		once.Do(func() { close(firstStarted) })
 		<-releaseConsumer
-	}, make(chan struct{}))
+	}, failOnRejection(t), make(chan struct{}))
 	t.Cleanup(stream.stop)
 
 	// First message is picked up by the dispatcher and stalls the callback.
@@ -1572,7 +1850,7 @@ func TestStreamCallbackDeliverUnblocksOnChannelDone(t *testing.T) {
 	releaseConsumer := make(chan struct{})
 	stream := newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {
 		<-releaseConsumer
-	}, chDone)
+	}, failOnRejection(t), chDone)
 	t.Cleanup(stream.stop)
 
 	// Stall the dispatcher on the first message, then fill the queue.
@@ -1630,9 +1908,9 @@ func TestDeliverRPCError(t *testing.T) {
 
 		select {
 		case resp := <-respCh:
-			require.True(t, resp.GetIsError())
-			assert.Equal(t, errCodeResourceExhausted, resp.GetErrorCode())
-			assert.Contains(t, resp.GetErrorMessage(), "too many incomplete")
+			require.NotNil(t, resp.GetError())
+			assert.Equal(t, errCodeResourceExhausted, resp.GetError().GetCode())
+			assert.Contains(t, resp.GetError().GetMessage(), "too many incomplete")
 		case <-time.After(time.Second):
 			t.Fatal("registered handler did not receive the error")
 		}
@@ -1672,7 +1950,7 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
 	ch.pending[reqID] = respCh
 
-	require.True(t, ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("first")}),
+	require.True(t, ch.deliverResponse(reqID, channelwire.NewPayloadResponse([]byte("first"))),
 		"a registered pending handler must be reported as delivered")
 
 	ch.mu.Lock()
@@ -1685,7 +1963,7 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	// read -- there is no registration left to send into.
 	done := make(chan struct{})
 	go func() {
-		assert.False(t, ch.deliverResponse(reqID, &leapmuxv1.InnerRpcResponse{Payload: []byte("duplicate")}),
+		assert.False(t, ch.deliverResponse(reqID, channelwire.NewPayloadResponse([]byte("duplicate"))),
 			"a second response finds no registration")
 		close(done)
 	}()
@@ -1705,10 +1983,11 @@ func TestDeliverResponseNeverDropsTheFirstResponse(t *testing.T) {
 	}
 }
 
-// deliverRPCError must reach a request that has dropped its pending response
-// handler and kept only a stream handler -- a tunnel Conn after OpenTunnelConn
-// succeeds -- so its Conn.Read gets a terminal error instead of blocking until
-// the whole channel dies.
+// deliverRPCError must reach a request that has only a stream handler -- a
+// tunnel Conn, whose OpenTunnelConn is server-streaming -- so its Conn.Read gets
+// a final error instead of blocking until the whole channel dies. The error
+// reaches StreamRejected as a *channelwire.RPCError, never Stream as a frame:
+// the worker refused nothing, and a frame would read as the worker's refusal.
 func TestDeliverRPCErrorFallsBackToStreamHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -1721,29 +2000,128 @@ func TestDeliverRPCErrorFallsBackToStreamHandler(t *testing.T) {
 		reassembly:     make(map[uint64]*channelwire.ChunkBuffer),
 	}
 	const reqID = 7
-	got := make(chan *leapmuxv1.InnerStreamMessage, 1)
-	stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) { got <- msg }, ch.ctx.Done())
+	frames := make(chan *leapmuxv1.InnerStreamMessage, 1)
+	rejections := make(chan error, 1)
+	stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) { frames <- msg },
+		func(err error) { rejections <- err }, ch.ctx.Done())
 	ch.streamCbs[reqID] = stream
 	t.Cleanup(stream.stop)
 
 	ch.deliverRPCError(reqID, errCodeResourceExhausted, "message too large")
 
 	select {
-	case msg := <-got:
-		require.True(t, msg.GetIsError(), "stream handler must receive a terminal error frame")
-		assert.Equal(t, errCodeResourceExhausted, msg.GetErrorCode())
-		assert.Contains(t, msg.GetErrorMessage(), "too large")
+	case err := <-rejections:
+		var rpcErr *channelwire.RPCError
+		require.ErrorAs(t, err, &rpcErr)
+		assert.Equal(t, errCodeResourceExhausted, rpcErr.Code)
+		assert.Equal(t, "message too large", rpcErr.Message)
 	case <-time.After(time.Second):
-		t.Fatal("stream-only request never received the terminal error")
+		t.Fatal("stream-only request never received the final error")
 	}
+	// The stream queue is first in, first out, so a frame that the rejection
+	// produced would arrive before this barrier.
+	barrier := &leapmuxv1.InnerStreamMessage{Payload: []byte("barrier")}
+	require.True(t, ch.deliverStream(reqID, barrier))
+	select {
+	case msg := <-frames:
+		assert.Same(t, barrier, msg, "the rejection must not reach Stream as a frame")
+	case <-time.After(time.Second):
+		t.Fatal("the barrier frame never arrived")
+	}
+}
+
+// routeResponse gives a worker's InnerRpcResponse to the handler that can read
+// it. A request with a pending response handler gets the response itself. A
+// request with only a stream handler gets an error response as a stream error
+// frame, and a non-error response is dropped, because a stream handler cannot
+// read a unary payload.
+func TestRouteResponse(t *testing.T) {
+	const reqID = 7
+	streamHandler := func(t *testing.T, ch *Channel) <-chan *leapmuxv1.InnerStreamMessage {
+		got := make(chan *leapmuxv1.InnerStreamMessage, 1)
+		stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) { got <- msg }, failOnRejection(t), ch.ctx.Done())
+		ch.streamCbs[reqID] = stream
+		t.Cleanup(stream.stop)
+		return got
+	}
+
+	t.Run("an error on a stream-only request reaches the stream handler", func(t *testing.T) {
+		ch := newReassemblyTestChannel(t)
+		got := streamHandler(t, ch)
+
+		ch.routeResponse(reqID, channelwire.NewErrorResponse(12, "unknown method"))
+
+		select {
+		case msg := <-got:
+			require.NotNil(t, msg.GetError())
+			assert.Equal(t, int32(12), msg.GetError().GetCode())
+			assert.Equal(t, "unknown method", msg.GetError().GetMessage())
+			assert.True(t, msg.GetEnd(), "the error frame ends the stream")
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("the stream handler never received the error")
+		}
+	})
+
+	t.Run("a non-error response on a stream-only request is dropped", func(t *testing.T) {
+		ch := newReassemblyTestChannel(t)
+		got := streamHandler(t, ch)
+
+		ch.routeResponse(reqID, channelwire.NewPayloadResponse([]byte("unreadable")))
+		// The stream handler's queue is first in, first out, so a frame that the
+		// response produced would arrive before this barrier.
+		barrier := &leapmuxv1.InnerStreamMessage{Payload: []byte("barrier")}
+		require.True(t, ch.deliverStream(reqID, barrier))
+
+		select {
+		case msg := <-got:
+			assert.Same(t, barrier, msg, "the non-error response must not reach the stream handler")
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("the stream handler never received the barrier frame")
+		}
+	})
+
+	t.Run("a request with a pending handler gets the response, not its stream", func(t *testing.T) {
+		ch := newReassemblyTestChannel(t)
+		streamed := streamHandler(t, ch)
+		respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
+		ch.pending[reqID] = respCh
+
+		ch.routeResponse(reqID, channelwire.NewErrorResponse(5, "not found"))
+
+		select {
+		case resp := <-respCh:
+			assert.Equal(t, int32(5), resp.GetError().GetCode())
+		default:
+			t.Fatal("the pending handler did not receive the response")
+		}
+		// The stream handler's queue is first in, first out, so a frame that the
+		// response produced would arrive before this barrier.
+		barrier := &leapmuxv1.InnerStreamMessage{Payload: []byte("barrier")}
+		require.True(t, ch.deliverStream(reqID, barrier))
+		select {
+		case msg := <-streamed:
+			assert.Same(t, barrier, msg, "a response that a pending handler took must not also reach the stream")
+		case <-testutil.DeadlineContext(t).Done():
+			t.Fatal("the stream handler never received the barrier frame")
+		}
+	})
+
+	t.Run("a response for an unknown request is dropped", func(t *testing.T) {
+		ch := newReassemblyTestChannel(t)
+		assert.NotPanics(t, func() {
+			ch.routeResponse(reqID, channelwire.NewErrorResponse(12, "unknown method"))
+		})
+		assert.False(t, ch.deliverStream(reqID, &leapmuxv1.InnerStreamMessage{}), "no stream handler exists")
+	})
 }
 
 // An oversize chunked message must be errored ONCE and its remaining chunks
 // dropped, not re-buffered from scratch.
 //
 // This is the stream-handler case: deliverTooLarge routes to the stream handler when
-// no pending handler is left (a tunnel Conn after OpenTunnelConn succeeds), and
-// Conn.onStreamMessage only latches its terminal error -- it never unregisters. So
+// the request has no pending handler (a tunnel Conn, which registers only a stream
+// handler), and Conn.onStreamMessage only latches the error in its terminal field
+// -- it never unregisters. So
 // the id keeps a live handler, and simply DELETING the buffer on the violation let
 // the very next MORE chunk allocate a fresh one and re-accumulate to the
 // ceiling, over and over, for as long as the peer kept sending: allocate-and-discard
@@ -1763,12 +2141,9 @@ func TestReassembleDropsChunksAfterOversizeInsteadOfReBuffering(t *testing.T) {
 	}
 	const reqID = 7
 	// A stream-only handler: the shape that never unregisters on error.
-	errors := make(chan *leapmuxv1.InnerStreamMessage, 8)
-	stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) {
-		if msg.GetIsError() {
-			errors <- msg
-		}
-	}, ch.ctx.Done())
+	errors := make(chan error, 8)
+	stream := newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {},
+		func(err error) { errors <- err }, ch.ctx.Done())
 	ch.streamCbs[reqID] = stream
 	t.Cleanup(stream.stop)
 
@@ -1782,8 +2157,8 @@ func TestReassembleDropsChunksAfterOversizeInsteadOfReBuffering(t *testing.T) {
 	}
 
 	select {
-	case msg := <-errors:
-		assert.Contains(t, msg.GetErrorMessage(), "too large")
+	case err := <-errors:
+		assert.Contains(t, err.Error(), "too large")
 	case <-time.After(2 * time.Second):
 		t.Fatal("an oversize chunked message must error its request")
 	}
@@ -1944,7 +2319,7 @@ func TestRecvLoopDropsRetiredFragmentsBeforeDecoding(t *testing.T) {
 	}
 	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, []byte{0xff})
 	send(retired, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, []byte{0xff})
-	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Response{Response: &leapmuxv1.InnerRpcResponse{Payload: []byte("live response")}}})
+	plaintext, err := proto.Marshal(&leapmuxv1.InnerMessage{Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewPayloadResponse([]byte("live response"))}})
 	require.NoError(t, err)
 	send(live, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, plaintext)
 	select {
@@ -2081,20 +2456,17 @@ func TestReassemblePreservesEmptyChunkTransitions(t *testing.T) {
 	}
 }
 
-// streamErrorChannel builds a reassembly-only Channel plus a stream-only handler
-// for correlationID -- the shape that latches its error WITHOUT unregistering,
-// so every further chunk for the id keeps reaching reassemble. It returns the
-// channel and the queue the handler's error deliveries land in.
-func newStreamErrorChannel(t *testing.T, correlationID uint64) (*Channel, chan *leapmuxv1.InnerStreamMessage) {
+// newStreamErrorChannel builds a reassembly-only Channel plus a stream-only
+// handler for correlationID -- the shape that latches its error WITHOUT
+// unregistering, so every further chunk for the id keeps reaching reassemble.
+// It returns the channel and the queue that the handler's rejections land in.
+func newStreamErrorChannel(t *testing.T, correlationID uint64) (*Channel, chan error) {
 	t.Helper()
 	ch := newReassemblyTestChannel(t)
 	ch.channelID = "ch-1"
-	errs := make(chan *leapmuxv1.InnerStreamMessage, 512)
-	stream := newStreamCallback(func(msg *leapmuxv1.InnerStreamMessage) {
-		if msg.GetIsError() {
-			errs <- msg
-		}
-	}, ch.ctx.Done())
+	errs := make(chan error, 512)
+	stream := newStreamCallback(func(*leapmuxv1.InnerStreamMessage) {},
+		func(err error) { errs <- err }, ch.ctx.Done())
 	ch.streamCbs[correlationID] = stream
 	t.Cleanup(stream.stop)
 	return ch, errs
@@ -2131,8 +2503,8 @@ func TestReassembleErrorsOverCapIDOnceAndDropsItsRemainingChunks(t *testing.T) {
 	require.False(t, complete)
 	require.Nil(t, payload)
 	select {
-	case msg := <-errs:
-		assert.Contains(t, msg.GetErrorMessage(), "too many incomplete chunked messages")
+	case err := <-errs:
+		assert.Contains(t, err.Error(), "too many incomplete chunked messages")
 	case <-time.After(2 * time.Second):
 		t.Fatal("an over-cap chunked message must error its request")
 	}
@@ -2185,7 +2557,8 @@ func TestReassembleTombstoneDoesNotConsumeCapSlot(t *testing.T) {
 	_, complete := ch.reassemble(overCapID, more, []byte("first"))
 	require.False(t, complete)
 	select {
-	case <-errs:
+	case err := <-errs:
+		assert.Contains(t, err.Error(), "too many incomplete chunked messages")
 	case <-time.After(2 * time.Second):
 		t.Fatal("the over-cap id must be errored")
 	}
@@ -2257,8 +2630,9 @@ func TestPoisonReassemblyIsIdempotent(t *testing.T) {
 
 func TestSendStreamRequestReusesStreamReqID(t *testing.T) {
 	ch := newReassemblyTestChannel(t)
-	_, err := ch.SendRPCNoWait(context.Background(), "WatchEvents", []byte("open"), RPCHandlers{
-		Stream: func(*leapmuxv1.InnerStreamMessage) {},
+	_, err := ch.SendRPCNoWait(context.Background(), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("open"), RPCHandlers{
+		Stream:         func(*leapmuxv1.InnerStreamMessage) {},
+		StreamRejected: failOnRejection(t),
 	})
 	require.NoError(t, err)
 
@@ -2270,7 +2644,7 @@ func TestSendStreamRequestReusesStreamReqID(t *testing.T) {
 	}
 	ch.mu.Unlock()
 
-	_ = ch.SendStreamRequest(context.Background(), reqID, []byte("update"), false)
+	_ = ch.SendStreamRequest(context.Background(), reqID, []byte("update"))
 
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
@@ -2280,8 +2654,9 @@ func TestSendStreamRequestReusesStreamReqID(t *testing.T) {
 
 func TestCancelStreamUnregistersHandler(t *testing.T) {
 	ch := newReassemblyTestChannel(t)
-	_, err := ch.SendRPCNoWait(context.Background(), "WatchEvents", []byte("open"), RPCHandlers{
-		Stream: func(*leapmuxv1.InnerStreamMessage) {},
+	_, err := ch.SendRPCNoWait(context.Background(), leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("open"), RPCHandlers{
+		Stream:         func(*leapmuxv1.InnerStreamMessage) {},
+		StreamRejected: failOnRejection(t),
 	})
 	require.NoError(t, err)
 
@@ -2297,4 +2672,41 @@ func TestCancelStreamUnregistersHandler(t *testing.T) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	assert.Empty(t, ch.streamCbs, "CancelStream must drop the stream handler")
+}
+
+// CallRPC returns an error that the worker answers in-band as a
+// *channelwire.RPCError, so a caller keeps the worker's code.
+func TestCallRPCReturnsTheWorkersErrorWithItsCode(t *testing.T) {
+	ch, peer, peerWS := pairedRekeyChannel(t)
+	ctx := testutil.DeadlineContext(t)
+	called := make(chan error, 1)
+	go func() {
+		_, err := ch.CallRPC(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, nil)
+		called <- err
+	}()
+
+	correlationID, request := readPeerRequest(t, peer, peerWS)
+	require.Equal(t, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request.GetMethod())
+	writePeerMessage(t, peer, peerWS, correlationID, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_Response{Response: channelwire.NewErrorResponse(5, "agent not found")},
+	})
+
+	select {
+	case err := <-called:
+		var rpcErr *channelwire.RPCError
+		require.ErrorAs(t, err, &rpcErr)
+		assert.Equal(t, int32(5), rpcErr.Code)
+		assert.Equal(t, "agent not found", rpcErr.Message)
+		assert.EqualError(t, err, "rpc error (code 5): agent not found")
+	case <-ctx.Done():
+		t.Fatal("CallRPC never returned the worker's error")
+	}
+}
+
+// failOnRejection is the StreamRejected handler of a test stream that no frame
+// is rejected for. A rejection fails the test.
+func failOnRejection(t *testing.T) func(error) {
+	return func(err error) {
+		t.Errorf("unexpected stream rejection: %v", err)
+	}
 }

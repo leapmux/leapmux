@@ -417,7 +417,7 @@ describe('buildProtoRows', () => {
     expect(conditionHolds(condition, 'other', values)).toBe(true)
   })
 
-  it('hiddenInSolo descriptors hide exactly in solo mode', () => {
+  it('hides hiddenInSolo descriptors exactly in solo mode', () => {
     const rows = buildProtoRows([
       descriptor({ hiddenInSolo: true }),
     ], source())

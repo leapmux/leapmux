@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createExponentialBackoff } from '~/lib/retry'
+import { createExponentialBackoff, STREAM_HEALTHY_AFTER_MS, streamProvedHealthy } from '~/lib/retry'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -120,7 +120,7 @@ describe('createExponentialBackoff', () => {
     expect(backoff.size()).toBe(0)
   })
 
-  it('cancelAll() cancels every pending timer and forgets every delay', () => {
+  it('cancels every pending timer and forgets every delay when cancelAll() runs', () => {
     const backoff = createExponentialBackoff<string>({ initialMs: 500, maxMs: 10_000 })
     const fireA = vi.fn()
     const fireB = vi.fn()
@@ -156,7 +156,7 @@ describe('createExponentialBackoff', () => {
     expect(backoff.size()).toBe(0)
   })
 
-  it('peekNextDelay returns null while a timer is pending', () => {
+  it('returns null from peekNextDelay while a timer is pending', () => {
     const backoff = createExponentialBackoff<string>({ initialMs: 500, maxMs: 10_000 })
     expect(backoff.peekNextDelay('k')).toBe(500)
     backoff.schedule('k', () => {})
@@ -231,7 +231,7 @@ describe('createExponentialBackoff', () => {
       expect(backoff.peekNextDelay('k')).toBe(8000)
     })
 
-    it('jitterFactor: 0 makes scheduled delay exactly match peekNextDelay', () => {
+    it('makes scheduled delay exactly match peekNextDelay when jitterFactor is 0', () => {
       // Force a non-mid random so a non-zero jitterFactor would shift
       // the delay. With jitterFactor: 0 the result must still equal
       // the base.
@@ -387,5 +387,39 @@ describe('createExponentialBackoff', () => {
       expect(() => createExponentialBackoff<string>({ initialMs: 100, maxMs: 200, maxAttempts: 0 }))
         .toThrow(/maxAttempts/)
     })
+  })
+})
+
+describe('streamProvedHealthy', () => {
+  it('refuses a stream that never opened', () => {
+    expect(streamProvedHealthy(undefined)).toBe(false)
+  })
+
+  it('refuses a stream that ends in the instant that it opened', () => {
+    expect(streamProvedHealthy(Date.now())).toBe(false)
+  })
+
+  it('refuses a stream one millisecond short of the window', () => {
+    const openedAt = Date.now()
+    vi.advanceTimersByTime(STREAM_HEALTHY_AFTER_MS - 1)
+
+    expect(streamProvedHealthy(openedAt)).toBe(false)
+  })
+
+  it('accepts a stream at the end of the window and after it', () => {
+    const openedAt = Date.now()
+    vi.advanceTimersByTime(STREAM_HEALTHY_AFTER_MS)
+    expect(streamProvedHealthy(openedAt)).toBe(true)
+
+    vi.advanceTimersByTime(1)
+    expect(streamProvedHealthy(openedAt)).toBe(true)
+  })
+
+  it('refuses a stream whose open time lies ahead of a clock that moved back', () => {
+    expect(streamProvedHealthy(Date.now() + 60_000)).toBe(false)
+  })
+
+  it('accepts a zero open time, which is a real clock reading', () => {
+    expect(streamProvedHealthy(0)).toBe(true)
   })
 })

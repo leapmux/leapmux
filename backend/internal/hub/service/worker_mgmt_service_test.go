@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -19,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // TestListWorkers_RejectsMalformedCursor pins the API-boundary contract: a
@@ -31,7 +33,7 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	t.Parallel()
 
 	st := testutil.OpenTestStore(t)
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.
@@ -51,7 +53,83 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetWorkers())
-	assert.False(t, resp.GetPage().GetHasMore())
+	assert.Empty(t, resp.GetPage().GetNextCursor())
+}
+
+// TestGetWorker_ReportsTimestampsAsInstants pins the worker's two instants as
+// Timestamps. created_at is the stored row's creation time. last_seen_at is
+// unset until the worker first connects, and set once the hub records a
+// heartbeat, so a client never reads an empty string as a time.
+func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
+	t.Parallel()
+
+	st := testutil.OpenTestStore(t)
+	owner := storetest.SeedUser(t, st, "worker-owner")
+	ownerID := userid.MustNew(owner.ID)
+	workerID := seedWorkersForOwner(t, st, ownerID, 1)[0]
+	row, err := st.Workers().GetOwned(context.Background(), store.GetOwnedWorkerParams{UserID: ownerID, WorkerID: workerID})
+	require.NoError(t, err)
+
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
+	get := func() *leapmuxv1.Worker {
+		t.Helper()
+		resp, err := svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: workerID})
+		require.NoError(t, err)
+		return resp.GetWorker()
+	}
+
+	fresh := get()
+	require.NotNil(t, fresh.GetCreatedAt())
+	assert.True(t, fresh.GetCreatedAt().AsTime().Equal(row.CreatedAt), "created_at is the stored creation time")
+	assert.Nil(t, fresh.GetLastSeenAt(), "a worker that never connected has no last-seen time")
+
+	require.NoError(t, st.Workers().UpdateLastSeen(context.Background(), workerID))
+	seen := get()
+	require.NotNil(t, seen.GetLastSeenAt(), "a heartbeat sets the last-seen time")
+	assert.False(t, seen.GetLastSeenAt().AsTime().Before(row.CreatedAt), "the worker is seen after it was created")
+
+	// The listing projects the same instants as the single read.
+	listed, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
+	require.NoError(t, err)
+	require.Len(t, listed.GetWorkers(), 1)
+	assert.True(t, listed.GetWorkers()[0].GetLastSeenAt().AsTime().Equal(seen.GetLastSeenAt().AsTime()))
+}
+
+// TestGetWorker_HidesADeregisteringWorker pins that GetWorker follows
+// ListWorkers. ListWorkers hides a worker once its owner deregisters it, and
+// the Worker message carries no deregistering state, so a GetWorker that
+// returned the row would present a worker on its way out as a normal one. The
+// CLI's worker preflight reads GetWorker, so it would also pass a worker that
+// the listing hides.
+func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
+	t.Parallel()
+
+	st := testutil.OpenTestStore(t)
+	owner := storetest.SeedUser(t, st, "worker-owner")
+	ownerID := userid.MustNew(owner.ID)
+	workerIDs := seedWorkersForOwner(t, st, ownerID, 2)
+	active, deregistered := workerIDs[0], workerIDs[1]
+
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
+
+	_, err := svc.DeregisterWorker(ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: deregistered})
+	require.NoError(t, err)
+
+	_, err = svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: deregistered})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a deregistering worker reads as absent, as ListWorkers shows it")
+	assert.Contains(t, err.Error(), "worker not found")
+
+	got, err := svc.GetWorker(ctx, &leapmuxv1.GetWorkerRequest{WorkerId: active})
+	require.NoError(t, err, "an active worker still returns")
+	assert.Equal(t, active, got.GetWorker().GetId())
+
+	listed, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
+	require.NoError(t, err)
+	require.Len(t, listed.GetWorkers(), 1, "control: the listing hides the deregistering worker")
+	assert.Equal(t, active, listed.GetWorkers()[0].GetId())
 }
 
 // seedWorkersForOwner inserts n worker rows for one owner and returns their
@@ -64,12 +142,10 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 	for range n {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-			ID:              workerID,
-			AuthToken:       id.Generate(),
-			RegisteredBy:    owner,
-			PublicKey:       []byte{},
-			MlkemPublicKey:  []byte{},
-			SlhdsaPublicKey: []byte{},
+			ID:           workerID,
+			AuthToken:    id.Generate(),
+			RegisteredBy: owner,
+			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 		ids = append(ids, workerID)
 	}
@@ -82,7 +158,7 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 // This handler used a hand-written page default with NO ceiling, so
 // `page.limit = 100000` returned the caller's whole worker row set in one
 // response -- an uncapped read the caller chose the size of. Routing the
-// page through NormalizePageParams caps it and returns a cursor instead, so
+// page through normalizePageParams caps it and returns a cursor instead, so
 // the rest of the set costs another request.
 //
 // The test seeds the owner with one worker MORE than the ceiling, so a missing
@@ -94,20 +170,19 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	st := testutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "worker-owner")
 	ownerID := userid.MustNew(owner.ID)
-	seeded := seedWorkersForOwner(t, st, ownerID, service.MaxPageLimit+1)
+	seeded := seedWorkersForOwner(t, st, ownerID, contracts.MaxPageLimit+1)
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
 		Page: &leapmuxv1.PageRequest{Limit: 100000},
 	})
 	require.NoError(t, err)
-	assert.Len(t, resp.GetWorkers(), service.MaxPageLimit,
+	assert.Len(t, resp.GetWorkers(), contracts.MaxPageLimit,
 		"an oversized limit is capped at the ceiling, not honoured")
-	assert.True(t, resp.GetPage().GetHasMore(), "the rows past the cap are still reachable")
 	require.NotEmpty(t, resp.GetPage().GetNextCursor(),
-		"a capped page must say where the next one starts")
+		"a capped page must say where the next one starts, so the rows past the cap stay reachable")
 
 	// The cap must not LOSE rows: the cursor reaches the remainder, and the
 	// two pages together are exactly what the test seeded.
@@ -116,8 +191,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, next.GetWorkers(), 1)
-	assert.False(t, next.GetPage().GetHasMore(), "the final page reports no more")
-	assert.Empty(t, next.GetPage().GetNextCursor())
+	assert.Empty(t, next.GetPage().GetNextCursor(), "the final page reports no more")
 
 	seen := make(map[string]bool, len(seeded))
 	for _, w := range resp.GetWorkers() {
@@ -142,13 +216,13 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	ownerID := userid.MustNew(owner.ID)
 	seedWorkersForOwner(t, st, ownerID, 3)
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
+	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
 	assert.Len(t, resp.GetWorkers(), 3, "an omitted limit takes the default, never zero")
-	assert.False(t, resp.GetPage().GetHasMore())
+	assert.Empty(t, resp.GetPage().GetNextCursor())
 }
 
 // TestNewWorkerManagementServiceRefusesAMissingCollaborator pins WHERE the
@@ -178,16 +252,16 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 		want  string
 	}{
 		"no store": {func() {
-			service.NewWorkerManagementService(nil, mgr, nil, nil, sender, mail.Renderer{}, set, nil)
+			service.NewWorkerManagementService(nil, mgr, nil, sender, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a store"},
 		"no worker registry": {func() {
-			service.NewWorkerManagementService(st, nil, nil, nil, sender, mail.Renderer{}, set, nil)
+			service.NewWorkerManagementService(st, nil, nil, sender, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a worker registry"},
 		"no settings manager": {func() {
-			service.NewWorkerManagementService(st, mgr, nil, nil, sender, mail.Renderer{}, nil, nil)
+			service.NewWorkerManagementService(st, mgr, nil, sender, mail.Renderer{}, nil)
 		}, "service: NewWorkerManagementService requires a settings manager"},
 		"no mail sender": {func() {
-			service.NewWorkerManagementService(st, mgr, nil, nil, nil, mail.Renderer{}, set, nil)
+			service.NewWorkerManagementService(st, mgr, nil, nil, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -196,11 +270,10 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 		})
 	}
 
-	// The effect collaborators stay optional: a test that exercises only the
-	// store half passes nil for both, the same rule WorkerDeregisterEffects
-	// and auth.CredentialLifecycleEffects hold. So does the scope cache,
-	// which the constructor replaces with a private one.
+	// The deregister effects stay optional: a test that exercises only the
+	// store half passes nil, the same rule auth.CredentialLifecycleEffects
+	// holds.
 	assert.NotPanics(t, func() {
-		service.NewWorkerManagementService(st, mgr, nil, nil, sender, mail.Renderer{}, set, nil)
-	}, "the constructor supports a nil broadcaster, notifier and scope cache")
+		service.NewWorkerManagementService(st, mgr, nil, sender, mail.Renderer{}, set)
+	}, "the constructor supports nil deregister effects")
 }

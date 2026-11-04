@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -41,7 +42,7 @@ func probeStartupRegistration(t *testing.T, svc *Service, d *channel.Dispatcher,
 	facts.registry, _, _, facts.tracked = svc.AgentStartup.status(agentID)
 
 	w := newTestWriter()
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListAgentsResponse
@@ -73,7 +74,7 @@ func TestOpenAgent_RegistersTheStartupBeforeTheRowIsVisible(t *testing.T) {
 		return nil
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -105,7 +106,7 @@ func TestOpenAgent_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) {
 		return errors.New("forced create failure")
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
@@ -134,7 +135,7 @@ func TestOpenAgent_ReleasesTheStartupWhenTheNativeSessionIsAlreadyOpen(t *testin
 	seedTranscriptSource(t, svc, "open-agent", workingDir, "session-a1", provider, false)
 
 	w := newTestWriter()
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir: workingDir, AgentProvider: provider, AgentSessionId: "session-a1",
 	}, w)
 
@@ -168,7 +169,7 @@ func TestOpenAgent_ReleasesTheStartupWhenTheCreatedRowCannotBeRead(t *testing.T)
 		return fetch(ctx, agentID)
 	}
 
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)

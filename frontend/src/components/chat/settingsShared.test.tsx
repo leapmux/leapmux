@@ -422,7 +422,7 @@ describe('OptionGroupMenuItems', () => {
     expect(screen.queryByRole('menuitemradio')).toBeNull()
   })
 
-  it('filterableListbox onSelect fires onChange', async () => {
+  it('fires onChange from the onSelect of the filterableListbox', async () => {
     const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}` }))
     const onChange = vi.fn()
     render(() => (

@@ -23,6 +23,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 )
 
 // sessionVerifyTimeout bounds the open-time Ping round trip (see OpenChannel). It
@@ -148,16 +149,39 @@ const streamCallbackQueueSize = 64
 // or run on the receive goroutine; note the backpressure is channel-wide: a
 // consumer stalled past its 64-message queue eventually stalls dispatch of
 // unrelated responses too, until the channel closes or the consumer drains.
+//
+// Stream receives every frame that the worker sends. A frame that this channel
+// rejects for a request before any handler saw it, such as a message over the
+// negotiated size, reaches Response when the request has one. Otherwise it
+// reaches StreamRejected, never Stream: the worker sent no error, so a consumer
+// must not read the rejection as the worker's answer. A tunnel dial, for one,
+// reads a stream error frame before `opened` as a refusal that left no conn on
+// the worker, and a rejection as a failure after which the worker may still
+// hold one. So a request with Stream and no Response must set StreamRejected,
+// and StreamRejected needs Stream. SendRPCNoWait refuses anything else. Stream
+// and StreamRejected run in arrival order on the request's one dispatcher
+// goroutine.
 type RPCHandlers struct {
-	Response chan<- *leapmuxv1.InnerRpcResponse
-	Stream   func(*leapmuxv1.InnerStreamMessage)
+	Response       chan<- *leapmuxv1.InnerRpcResponse
+	Stream         func(*leapmuxv1.InnerStreamMessage)
+	StreamRejected func(error)
+}
+
+// streamDelivery is one entry of a stream handler's queue: a frame that the
+// worker sent, or the error of a frame that the channel rejected. Only
+// streamCallback.deliver and streamCallback.reject build one, and each sets
+// exactly one field.
+type streamDelivery struct {
+	message  *leapmuxv1.InnerStreamMessage
+	rejected error
 }
 
 type streamCallback struct {
-	callback func(*leapmuxv1.InnerStreamMessage)
-	messages chan *leapmuxv1.InnerStreamMessage
-	done     chan struct{}
-	// chDone is the owning channel's lifetime Done channel. deliver selects on
+	onMessage  func(*leapmuxv1.InnerStreamMessage)
+	onRejected func(error)
+	deliveries chan streamDelivery
+	done       chan struct{}
+	// chDone is the owning channel's lifetime Done channel. enqueue selects on
 	// it so that a channel-wide cancel (a peer write failure calling ch.cancel,
 	// or Close) unblocks recvLoop even when a saturated stream consumer has
 	// stalled the dispatcher -- otherwise recvLoop would wedge forever with the
@@ -166,12 +190,13 @@ type streamCallback struct {
 	stopOnce sync.Once
 }
 
-func newStreamCallback(callback func(*leapmuxv1.InnerStreamMessage), chDone <-chan struct{}) *streamCallback {
+func newStreamCallback(onMessage func(*leapmuxv1.InnerStreamMessage), onRejected func(error), chDone <-chan struct{}) *streamCallback {
 	stream := &streamCallback{
-		callback: callback,
-		messages: make(chan *leapmuxv1.InnerStreamMessage, streamCallbackQueueSize),
-		done:     make(chan struct{}),
-		chDone:   chDone,
+		onMessage:  onMessage,
+		onRejected: onRejected,
+		deliveries: make(chan streamDelivery, streamCallbackQueueSize),
+		done:       make(chan struct{}),
+		chDone:     chDone,
 	}
 	go stream.run()
 	return stream
@@ -180,8 +205,12 @@ func newStreamCallback(callback func(*leapmuxv1.InnerStreamMessage), chDone <-ch
 func (s *streamCallback) run() {
 	for {
 		select {
-		case message := <-s.messages:
-			s.callback(message)
+		case delivery := <-s.deliveries:
+			if delivery.rejected != nil {
+				s.onRejected(delivery.rejected)
+			} else {
+				s.onMessage(delivery.message)
+			}
 		case <-s.done:
 			return
 		}
@@ -189,15 +218,30 @@ func (s *streamCallback) run() {
 }
 
 // deliver queues a stream message for the callback's dispatcher goroutine.
-// It blocks until the message is queued, the callback is stopped, or the
+func (s *streamCallback) deliver(message *leapmuxv1.InnerStreamMessage) {
+	s.enqueue(streamDelivery{message: message})
+}
+
+// reject queues err, the error of a frame that the channel rejected for this
+// stream, behind every frame already queued. A stream with no StreamRejected
+// handler has a Response handler, which took the request's first rejection and
+// so ended the request. A later rejection has no reader, and reject drops it.
+func (s *streamCallback) reject(err error) {
+	if s.onRejected == nil {
+		return
+	}
+	s.enqueue(streamDelivery{rejected: err})
+}
+
+// enqueue blocks until delivery is queued, the callback is stopped, or the
 // owning channel's lifetime ends, applying backpressure to recvLoop (and
 // through it the WebSocket/TCP read loop) so a slow stream consumer never
 // tears down the shared channel. Selecting on chDone ensures a channel-wide
 // cancel still unblocks recvLoop when a saturated consumer has stalled the
 // dispatcher, so a wedged stream cannot pin a "healthy" channel forever.
-func (s *streamCallback) deliver(message *leapmuxv1.InnerStreamMessage) {
+func (s *streamCallback) enqueue(delivery streamDelivery) {
 	select {
-	case s.messages <- message:
+	case s.deliveries <- delivery:
 	case <-s.done:
 	case <-s.chDone:
 	}
@@ -348,32 +392,32 @@ func mlkemPubForRekey(params *leapmuxv1.GetWorkerHandshakeParamsResponse) []byte
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return nil
 	}
-	return params.GetMlkemPublicKey()
+	return params.GetKeys().GetMlkem()
 }
 
 // newInitiatorHandshaker selects the handshake pair for the worker's encryption mode,
 // reading params.EncryptionMode exactly once.
 //
 // Every mode but CLASSIC gets the hybrid pair. That is deliberate rather than a
-// fallthrough: UNSPECIFIED already means POST_QUANTUM by the time it reaches a client
-// (ChannelService.GetWorkerHandshakeParams normalises it), and defaulting an unknown
-// future mode to the stronger handshake fails it closed on a handshake error rather
-// than silently downgrading the channel to X25519-only.
+// fallthrough: the hub refuses a WorkerHello whose mode is UNSPECIFIED, so a client
+// never receives one, and defaulting an unknown future mode to the stronger
+// handshake fails it closed on a handshake error rather than silently downgrading
+// the channel to X25519-only.
 func newInitiatorHandshaker(params *leapmuxv1.GetWorkerHandshakeParamsResponse) initiatorHandshaker {
 	if params.GetEncryptionMode() == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC {
 		return initiatorHandshaker{
 			start: func() (*noiseutil.HandshakeState, []byte, error) {
-				return noiseutil.ClassicalInitiatorHandshake1(params.GetPublicKey())
+				return noiseutil.ClassicalInitiatorHandshake1(params.GetKeys().GetX25519())
 			},
 			finish: noiseutil.ClassicalInitiatorHandshake2,
 		}
 	}
 	return initiatorHandshaker{
 		start: func() (*noiseutil.HandshakeState, []byte, error) {
-			return noiseutil.InitiatorHandshake1(params.GetPublicKey(), params.GetMlkemPublicKey())
+			return noiseutil.InitiatorHandshake1(params.GetKeys().GetX25519(), params.GetKeys().GetMlkem())
 		},
 		finish: func(hs *noiseutil.HandshakeState, message2 []byte) (*noiseutil.Session, error) {
-			return noiseutil.InitiatorHandshake2(hs, message2, params.GetSlhdsaPublicKey())
+			return noiseutil.InitiatorHandshake2(hs, message2, params.GetKeys().GetSlhdsa())
 		},
 	}
 }
@@ -399,11 +443,20 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	if err != nil {
 		return nil, fmt.Errorf("get worker handshake params: %w", err)
 	}
+	// Refuse an absent, partial or wrongly sized key set before any pin
+	// decision. On first contact the pin store records whatever it is handed,
+	// so an incomplete set would become the pin that every later open is
+	// compared against. Without a pin store, the handshake would fail later
+	// with a cryptographic error that does not say what the hub sent.
+	if err := workerkeys.Validate(paramsResp.GetKeys()); err != nil {
+		return nil, fmt.Errorf("get worker handshake params: the hub announced an unusable key set: %w", err)
+	}
 
 	// TOFU key pinning — abort if the hub returns keys that don't match
 	// the recorded pin. First contact records the pin.
 	if pinStore != nil {
-		if err := pinStore.Verify(workerID, paramsResp.GetPublicKey(), paramsResp.GetMlkemPublicKey(), paramsResp.GetSlhdsaPublicKey()); err != nil {
+		keys := paramsResp.GetKeys()
+		if err := pinStore.Verify(workerID, keys.GetX25519(), keys.GetMlkem(), keys.GetSlhdsa()); err != nil {
 			return nil, fmt.Errorf("worker key pin: %w", err)
 		}
 	}
@@ -541,7 +594,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// bounded itself at 10s for the same reason.
 	pingCtx, cancelPing := context.WithTimeout(ctx, sessionVerifyTimeout)
 	defer cancelPing()
-	if _, err := ch.CallRPC(pingCtx, contracts.PingMethod, nil); err != nil {
+	if _, err := ch.CallRPC(pingCtx, leapmuxv1connect.WorkerSystemServicePingProcedure, nil); err != nil {
 		ch.Close()
 		return nil, fmt.Errorf("verify channel session: %w", err)
 	}
@@ -626,7 +679,9 @@ func (ch *Channel) Close() {
 	}
 }
 
-// CallRPC sends a unary inner RPC and waits for the response.
+// CallRPC sends a unary inner RPC and waits for the response. An error that
+// the worker answers in-band comes back as a *channelwire.RPCError, so a caller
+// reads the worker's code with errors.As instead of parsing the message.
 //
 // Worst-case latency is the in-band rekey RTT (up to sessionVerifyTimeout)
 // plus the 30s response wait below, because SendRPCNoWait may block on
@@ -655,8 +710,8 @@ func (ch *Channel) CallRPC(ctx context.Context, method string, payload []byte) (
 		// (see Close). A close-time wake-up arrives on ch.ctx.Done() below instead --
 		// an arm here claiming otherwise would tell the next reader that a bare
 		// receive is safe, which is the one thing that would hang forever.
-		if resp.GetIsError() {
-			return nil, fmt.Errorf("rpc error (code %d): %s", resp.GetErrorCode(), resp.GetErrorMessage())
+		if err := channelwire.ErrorOf(resp.GetError()); err != nil {
+			return nil, err
 		}
 		return resp, nil
 	case <-waitCtx.Done():
@@ -689,9 +744,18 @@ func (ch *Channel) SendRPCNoWait(ctx context.Context, method string, payload []b
 	if handlers.Response != nil && cap(handlers.Response) < 1 {
 		return 0, errors.New("rpc response channel must be buffered (cap >= 1)")
 	}
+	// A rejection that reaches no handler would vanish, and the stream's consumer
+	// would wait until its own context ends. Refuse such handlers here, where the
+	// caller learns of it at once.
+	if handlers.Stream != nil && handlers.Response == nil && handlers.StreamRejected == nil {
+		return 0, errors.New("rpc stream handler with no response handler must set StreamRejected")
+	}
+	if handlers.Stream == nil && handlers.StreamRejected != nil {
+		return 0, errors.New("rpc StreamRejected handler requires a Stream handler")
+	}
 	var stream *streamCallback
 	if handlers.Stream != nil {
-		stream = newStreamCallback(handlers.Stream, ch.ctx.Done())
+		stream = newStreamCallback(handlers.Stream, handlers.StreamRejected, ch.ctx.Done())
 	}
 	ch.mu.Lock()
 	if ch.closed.Load() {
@@ -735,10 +799,30 @@ func (ch *Channel) UnregisterStream(reqID uint64) {
 	ch.unregisterRequest(reqID, false, true)
 }
 
-// SendStreamRequest puts an InnerStreamRequest on an already-open stream's
-// correlation id. Unlike SendRPCNoWait it allocates no id: the frame is
-// addressed to the stream reqID names.
-func (ch *Channel) SendStreamRequest(ctx context.Context, reqID uint64, payload []byte, cancel bool) error {
+// SendStreamRequest puts a revision, an InnerStreamRequest that carries
+// payload, on an already-open stream's correlation id. Unlike SendRPCNoWait it
+// allocates no id: the frame is addressed to the stream that reqID identifies.
+// An empty payload is a revision too.
+func (ch *Channel) SendStreamRequest(ctx context.Context, reqID uint64, payload []byte) error {
+	return ch.sendStreamAction(ctx, reqID, &leapmuxv1.InnerStreamRequest{
+		Action: &leapmuxv1.InnerStreamRequest_Payload{Payload: payload},
+	})
+}
+
+// CancelStream tells the worker to release the stream, then drops the local
+// registrations. Replaces the bare UnregisterStream teardown, which left the
+// worker's subscriber alive.
+func (ch *Channel) CancelStream(ctx context.Context, reqID uint64) error {
+	err := ch.sendStreamAction(ctx, reqID, &leapmuxv1.InnerStreamRequest{
+		Action: &leapmuxv1.InnerStreamRequest_Cancel{Cancel: &leapmuxv1.StreamCancel{}},
+	})
+	ch.UnregisterStream(reqID)
+	return err
+}
+
+// sendStreamAction sends request, a frame that selects one action, on the
+// stream that reqID identifies.
+func (ch *Channel) sendStreamAction(ctx context.Context, reqID uint64, request *leapmuxv1.InnerStreamRequest) error {
 	if ctx == nil {
 		return errors.New("rpc operation context is required")
 	}
@@ -749,23 +833,9 @@ func (ch *Channel) SendStreamRequest(ctx context.Context, reqID uint64, payload 
 		return fmt.Errorf("channel closed: %w", err)
 	}
 	inner := &leapmuxv1.InnerMessage{
-		Kind: &leapmuxv1.InnerMessage_StreamRequest{
-			StreamRequest: &leapmuxv1.InnerStreamRequest{
-				Payload: payload,
-				Cancel:  cancel,
-			},
-		},
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{StreamRequest: request},
 	}
 	return ch.sendInnerContext(ctx, reqID, inner)
-}
-
-// CancelStream tells the worker to release the stream, then drops the local
-// registrations. Replaces the bare UnregisterStream teardown, which left the
-// worker's subscriber alive.
-func (ch *Channel) CancelStream(ctx context.Context, reqID uint64) error {
-	err := ch.SendStreamRequest(ctx, reqID, nil, true)
-	ch.UnregisterStream(reqID)
-	return err
 }
 
 // allocateReqIDLocked returns the next outbound correlation id, skipping any id
@@ -1215,15 +1285,10 @@ func (ch *Channel) recvLoop() {
 
 		switch kind := inner.GetKind().(type) {
 		case *leapmuxv1.InnerMessage_Response:
-			ch.deliverResponse(correlationID, kind.Response)
+			ch.routeResponse(correlationID, kind.Response)
 
 		case *leapmuxv1.InnerMessage_Stream:
-			ch.mu.Lock()
-			stream, ok := ch.streamCbs[correlationID]
-			ch.mu.Unlock()
-			if ok {
-				stream.deliver(kind.Stream)
-			}
+			ch.deliverStream(correlationID, kind.Stream)
 
 		case *leapmuxv1.InnerMessage_RekeyAck:
 			ch.handleRekeyAck(correlationID, kind.RekeyAck.GetDhPub())
@@ -1290,6 +1355,53 @@ func (ch *Channel) deliverResponse(correlationID uint64, resp *leapmuxv1.InnerRp
 	return true
 }
 
+// deliverStream queues msg for correlationID's stream handler and reports
+// whether one was registered. A message for an id with no stream handler is
+// dropped.
+func (ch *Channel) deliverStream(correlationID uint64, msg *leapmuxv1.InnerStreamMessage) bool {
+	stream, ok := ch.streamCallbackFor(correlationID)
+	if ok {
+		stream.deliver(msg)
+	}
+	return ok
+}
+
+// rejectStream queues err, the error of a frame that this channel rejected,
+// for correlationID's stream handler and reports whether one was registered.
+func (ch *Channel) rejectStream(correlationID uint64, err error) bool {
+	stream, ok := ch.streamCallbackFor(correlationID)
+	if ok {
+		stream.reject(err)
+	}
+	return ok
+}
+
+func (ch *Channel) streamCallbackFor(correlationID uint64) (*streamCallback, bool) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	stream, ok := ch.streamCbs[correlationID]
+	return stream, ok
+}
+
+// routeResponse delivers an InnerRpcResponse that arrived on correlationID.
+//
+// The pending response handler receives it when the request has one. A request
+// that has only a stream handler receives an ERROR response as a stream error
+// frame instead, as the browser's channelRpc.ts routes it. A server-streaming
+// call registers only a stream handler (OpenTunnelConn does), and a worker can
+// still refuse it with a unary error, such as for a method that it cannot
+// dispatch. Dropping that error would leave the caller waiting until its own
+// context ends. A NON-error response on such an id carries nothing that a
+// stream handler can read, so it is dropped.
+func (ch *Channel) routeResponse(correlationID uint64, resp *leapmuxv1.InnerRpcResponse) {
+	if ch.deliverResponse(correlationID, resp) {
+		return
+	}
+	if rpcErr := resp.GetError(); rpcErr != nil {
+		ch.deliverStream(correlationID, channelwire.NewStreamError(rpcErr.GetCode(), rpcErr.GetMessage()))
+	}
+}
+
 // deliverTooLarge logs a rejected oversized/over-cap frame and fails only its
 // own request via deliverRPCError, mirroring the worker's per-request sendError,
 // so one bad frame never tears down the shared channel.
@@ -1299,23 +1411,21 @@ func (ch *Channel) deliverTooLarge(correlationID uint64, message string) {
 	ch.deliverRPCError(correlationID, errCodeResourceExhausted, message)
 }
 
-// deliverRPCError fails a single request with an error, so a malformed or
-// oversized message aborts only its own RPC instead of the shared E2EE channel
-// (which would abort every unrelated in-flight RPC, stream, and tunnel on it).
-// It prefers the pending response handler; a request that has already dropped
-// its pending handler and left only a stream handler -- a tunnel Conn after
-// OpenTunnelConn succeeds -- is failed through the stream handler instead, so
-// its Conn.Read gets a terminal error rather than blocking until the whole
-// channel dies. Mirrors the worker-side per-request sendError.
+// deliverRPCError fails a single request with an error that this channel
+// produced, so a malformed or oversized message aborts only its own RPC
+// instead of the shared E2EE channel (which would abort every unrelated
+// in-flight RPC, stream, and tunnel on it). The pending response handler gets
+// the error as an error response when the request has one, so CallRPC returns
+// it as a *channelwire.RPCError. A stream handler gets it through
+// StreamRejected instead, as a *channelwire.RPCError and NOT as a stream error
+// frame: the worker refused nothing, and a frame would make the rejection
+// indistinguishable from a refusal that the worker sent. A tunnel Conn
+// registers only a stream handler, so its dial or its Conn.Read gets the error
+// rather than blocking until the whole channel dies. Mirrors the worker-side
+// per-request sendError.
 func (ch *Channel) deliverRPCError(correlationID uint64, code int32, message string) {
-	errResp := channelwire.NewErrorResponse(code, message)
-	if ch.deliverResponse(correlationID, errResp) {
+	if ch.deliverResponse(correlationID, channelwire.NewErrorResponse(code, message)) {
 		return
 	}
-	ch.mu.Lock()
-	stream, ok := ch.streamCbs[correlationID]
-	ch.mu.Unlock()
-	if ok {
-		stream.deliver(&leapmuxv1.InnerStreamMessage{IsError: true, ErrorCode: code, ErrorMessage: message})
-	}
+	ch.rejectStream(correlationID, &channelwire.RPCError{Code: code, Message: message})
 }

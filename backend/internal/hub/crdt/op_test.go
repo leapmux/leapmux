@@ -36,13 +36,6 @@ func TestOpTarget_ClassifiesEveryOpKind(t *testing.T) {
 		want crdt.EntityRef
 	}{
 		{
-			name: "SetWorkspaceRegister -> WorkspaceRoot",
-			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-				SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"},
-			}},
-			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
-		},
-		{
 			name: "TombstoneWorkspace -> WorkspaceRoot",
 			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 				TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"},
@@ -50,9 +43,9 @@ func TestOpTarget_ClassifiesEveryOpKind(t *testing.T) {
 			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
 		},
 		{
-			name: "SetWorkspaceRootNode -> WorkspaceRoot",
-			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
-				SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "r"},
+			name: "CreateWorkspace -> WorkspaceRoot",
+			op: &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+				CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "r"},
 			}},
 			want: crdt.EntityRef{Kind: crdt.EntityKindWorkspaceRoot, WorkspaceID: "w1"},
 		},
@@ -90,15 +83,13 @@ func TestIsTombstoneOp(t *testing.T) {
 		{"TombstoneNode", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneNode{
 			TombstoneNode: &leapmuxv1.TombstoneNodeOp{NodeId: "n1"}}}, true},
 		{"TombstoneTab", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneTab{
-			TombstoneTab: &leapmuxv1.TombstoneTabOp{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}}}, true},
+			TombstoneTab: &leapmuxv1.TombstoneTabOp{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"}}}}, true},
 		{"TombstoneFloatingWindow", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneFloatingWindow{
 			TombstoneFloatingWindow: &leapmuxv1.TombstoneFloatingWindowOp{WindowId: "fw1"}}}, true},
 		{"TombstoneWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_TombstoneWorkspace{
 			TombstoneWorkspace: &leapmuxv1.TombstoneWorkspaceOp{WorkspaceId: "w1"}}}, true},
-		{"SetWorkspaceRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRegister{
-			SetWorkspaceRegister: &leapmuxv1.SetWorkspaceRegisterOp{WorkspaceId: "w1"}}}, false},
-		{"SetWorkspaceRootNode", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetWorkspaceRootNode{
-			SetWorkspaceRootNode: &leapmuxv1.SetWorkspaceRootNodeOp{WorkspaceId: "w1", RootNodeId: "r"}}}, false},
+		{"CreateWorkspace", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_CreateWorkspace{
+			CreateWorkspace: &leapmuxv1.CreateWorkspaceOp{WorkspaceId: "w1", RootNodeId: "r"}}}, false},
 		{"SetNodeRegister", &leapmuxv1.CrdtOp{Body: &leapmuxv1.CrdtOp_SetNodeRegister{
 			SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{NodeId: "n1"}}}, false},
 		{"nil body", &leapmuxv1.CrdtOp{}, false},

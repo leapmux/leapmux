@@ -98,7 +98,7 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
    * Single-flight an open factory for `workerId` without consulting the
    * verified-channel cache. Used by ChannelManager.openChannel so parallel
    * direct opens cannot register two Hub IDs for one worker, while still
-   * allowing a forced reopen (e.g. after a key rotation) when a verified
+   * allowing a forced reopen (e.g. after the user accepts a changed key) when a verified
    * channel already exists.
    */
   dedupeOpen(workerId: string, factory: () => Promise<string>): Promise<string> {

@@ -36,7 +36,6 @@ function makeOpen(opts?: {
       },
       wsOpenTimeoutMs: 1_000,
       onFrame: () => {},
-      onHubControl: () => {},
       onCloseDrain: () => {},
     }),
     pool: new ChannelPool(),
@@ -55,7 +54,7 @@ function makeOpen(opts?: {
 }
 
 describe('channelOpen', () => {
-  it('resolveMessageLimits adopts a negotiated in-bounds budget', () => {
+  it('adopts a negotiated budget within the allowed range in resolveMessageLimits', () => {
     const open = makeOpen()
     const negotiated = MAX_CHUNK_SIZE + 100
     expect(open.resolveMessageLimits({ maxMessageSize: negotiated })).toEqual({
@@ -64,7 +63,7 @@ describe('channelOpen', () => {
     })
   })
 
-  it('resolveMessageLimits rejects out-of-bounds negotiated sizes', () => {
+  it('rejects negotiated sizes outside the allowed range in resolveMessageLimits', () => {
     const open = makeOpen()
     expect(() => open.resolveMessageLimits({ maxMessageSize: MAX_CHUNK_SIZE - 1 }))
       .toThrow(ChannelError)
@@ -72,13 +71,13 @@ describe('channelOpen', () => {
       .toThrow(/out of bounds/)
   })
 
-  it('resolveMessageLimits fails closed when the hub omits max_message_size', () => {
+  it('fails closed in resolveMessageLimits when the hub omits max_message_size', () => {
     const open = makeOpen()
     expect(() => open.resolveMessageLimits({})).toThrow(/no max_message_size/)
     expect(() => open.resolveMessageLimits({ maxMessageSize: 0 })).toThrow(/no max_message_size/)
   })
 
-  it('resolveMessageLimits uses test-only budgets when negotiation is omitted', () => {
+  it('uses test-only budgets in resolveMessageLimits when negotiation is omitted', () => {
     const open = makeOpen({ testPayloadBudget: 2048 })
     expect(open.resolveMessageLimits({})).toEqual({
       payload: 2048,
@@ -92,7 +91,7 @@ describe('channelOpen', () => {
     expect(ceilingOnly.resolveMessageLimits({})).toEqual({ payload: 512, reassembled: 512 })
   })
 
-  it('resolveMessageLimits prefers negotiation over test budgets', () => {
+  it('prefers negotiation over test budgets in resolveMessageLimits', () => {
     const open = makeOpen({ testPayloadBudget: 99 })
     const negotiated = MAX_CHUNK_SIZE
     expect(open.resolveMessageLimits({ maxMessageSize: negotiated }).payload).toBe(negotiated)

@@ -2,9 +2,11 @@ import type { Section, SectionItem, Sidebar } from '~/generated/proto/leapmux/v1
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { createSectionStore } from '~/stores/section.store'
 import type { createWorkspaceStore } from '~/stores/workspace.store'
+import { equals } from '@bufbuild/protobuf'
 import { onMount } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
+import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { formatErrorMessage } from '~/lib/errors'
 import { createIdentityCache } from '~/lib/identityCache'
 
@@ -21,6 +23,9 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
   // refreshed (e.g. after a moveSection rollback). See `lib/identityCache.ts`.
   const workspaceIdentity = createIdentityCache<Workspace>({
     keyOf: w => w.id,
+    // By value: `createdAt` is a nested Timestamp message that every reply
+    // decodes afresh, so the default shallow comparison never matched.
+    equals: (cached, fresh) => equals(WorkspaceSchema, cached, fresh),
   })
   const sectionIdentity = createIdentityCache<Section>({
     keyOf: s => s.id,

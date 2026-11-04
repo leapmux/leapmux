@@ -32,6 +32,17 @@ const (
 	// service.WorkerReachAuthorizer. Valid ONLY for a row loaded that way --
 	// never for a bare id off the request.
 	reachStoreScoped
+	// reachAdminOnly: the procedure is an ADMIN one. The access interceptor
+	// admits it only for an account with IsAdmin (enforceAdmin denies every
+	// admin.proto procedure by prefix), and only for a credential that holds its
+	// admin scope (SCOPE_ADMIN_WORKERS for AdminWorkerService.DeregisterWorker).
+	// Cross-tenant worker liveness is what that surface exists to report -- its
+	// listing already spans every owner -- so the bit is not an oracle for an
+	// ordinary user. Valid ONLY on an admin-only procedure: an owner-facing path
+	// reading another owner's worker by a bare id is an oracle however it is
+	// spelled. TestRepoInvariants checks that each such site is the hub's
+	// handler for a method that admin.proto declares (servesAdminProtoMethod).
+	reachAdminOnly
 )
 
 // workerReachSites classifies every function IN THE REPOSITORY that reads the
@@ -65,16 +76,42 @@ var workerReachSites = map[string]workerReachKind{
 	"internal/hub/notifier.(*Notifier).DeliverOnConnect": reachServerInitiated,
 	// The deregistering FLAG is reached by worker id and no authorizer runs, so
 	// its writers are classified exactly like its readers. This one is entered
-	// from DeregisterWorker, which has already matched the row on
-	// (id, registered_by = caller) before the notifier is told anything.
+	// only through WorkerDeregisterEffects.Apply, after a server-side store change,
+	// from four entries: the owner's deregistration (the row matched on
+	// (id, registered_by = caller)), the admin deregistration, the user-deletion
+	// cascade, and Server.RetireLocalWorker. Each passes the id of the row whose
+	// store change it just committed: the owner's deregistration matched the
+	// requested id on registered_by = caller, the admin deregistration requires an
+	// administrator, the user-deletion cascade reads the ids from the deleted
+	// user's rows, and Server.RetireLocalWorker acts on the solo launcher's own
+	// state.
 	"internal/hub/notifier.(*Notifier).SendDeregister": reachServerInitiated,
-	// The reconcile nudge is raised by the CRDT commit path, and its worker id
-	// comes from the projection of the committing batch's OWN owner -- never from
-	// a user request. It carries no principal at all (crdt.ReconcileNudger takes
-	// only a worker id), so the "no user in the path" claim is structural rather
-	// than asserted, and a send failure is swallowed so the call discloses nothing
-	// about liveness either.
+	// The reconcile nudge has two sources, and neither takes a worker id from
+	// the request. The CRDT commit path takes each id from the projection of the
+	// committing batch's OWN owner. WorkspaceService.MoveWorkspace runs on a user
+	// request, but it takes each id from a tab row that the store read for the
+	// caller (ListOwnedTabsByWorkspace matches user_id to the caller). The nudge
+	// carries no principal at all (crdt.ReconcileNudger takes only a worker id),
+	// and a send failure is swallowed, so the call discloses nothing about
+	// liveness either.
 	"internal/hub/service.(*ReconcileNudger).NudgeReconcile": reachServerInitiated,
+	// The identity re-delivery is a user-info observer: its owner id comes from
+	// the Hub's own user_info event -- a change the store committed for that
+	// user, in this process or another -- never from a user request. It sends
+	// the owner's own identity to the owner's own workers and returns nothing,
+	// so it discloses no worker's liveness to anyone.
+	"internal/hub/service.(*WorkerConnectorService).RedeliverWorkerIdentity": reachServerInitiated,
+	// The bundled-Worker guard: an administrator's DeregisterWorker asks whether
+	// the row is connected before it refuses. The caller reached an admin-only
+	// procedure, so the liveness bit is one that surface exists to report; the
+	// refusal itself depends on that bit, which is the point.
+	"internal/hub/service.(*AdminWorkerService).DeregisterWorker": reachAdminOnly,
+	// The same guard on the owner's path: DeregisterWorker asks whether a row
+	// that Workers().GetOwned scoped to the caller is connected. An id that the
+	// caller does not own answers NotFound before the read, so the refusal
+	// discloses only the liveness of the caller's own worker, which ListWorkers
+	// already reports.
+	"internal/hub/service.(*WorkerManagementService).DeregisterWorker": reachStoreScoped,
 }
 
 // registryMethodKind names WHY one exported *workermgr.Manager method that
@@ -111,13 +148,16 @@ const (
 // registryConnScoped that takes no *Conn, a registryBroadcast that takes a
 // worker id. So the kind is a claim about the code, not a comment with a type.
 var registryMethodKinds = map[string]registryMethodKind{
-	"ConnForTrustedPath":     registryUnguardedByID,
-	"OnlineForTrustedPath":   registryUnguardedByID,
-	"IsDeregistering":        registryUnguardedByID,
-	"MarkDeregistering":      registryUnguardedByID,
-	"ConnForUser":            registryGuarded,
-	"Register":               registryConnScoped,
-	"Unregister":             registryConnScoped,
-	"NotifyShutdownAndFence": registryBroadcast,
-	"FenceAll":               registryBroadcast,
+	"ConnForTrustedPath":   registryUnguardedByID,
+	"OnlineForTrustedPath": registryUnguardedByID,
+	// Keyed by OWNER id rather than worker id, but the same exposure: an
+	// arbitrary owner id would enumerate that owner's live workers.
+	"OwnerConnsForTrustedPath": registryUnguardedByID,
+	"IsDeregistering":          registryUnguardedByID,
+	"MarkDeregistering":        registryUnguardedByID,
+	"ConnForUser":              registryGuarded,
+	"Register":                 registryConnScoped,
+	"Unregister":               registryConnScoped,
+	"NotifyShutdownAndFence":   registryBroadcast,
+	"FenceAll":                 registryBroadcast,
 }

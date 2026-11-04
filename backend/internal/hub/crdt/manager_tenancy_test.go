@@ -60,8 +60,7 @@ func TestSubmitRefusesABlankTenantManager(t *testing.T) {
 				OpId: id.Generate(),
 				Body: &leapmuxv1.CrdtOp_TombstoneTab{
 					TombstoneTab: &leapmuxv1.TombstoneTabOp{
-						TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-						TabId:   "tab-1",
+						Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 					},
 				},
 			}},

@@ -23,9 +23,13 @@ import (
 // AppService is the app REGISTRATION surface: where an app comes from, as
 // opposed to what one account authorized.
 //
-// Every verb answers a SESSION and nothing else -- procedure_scopes.go records
-// the whole service as ScopeNever -- so this file never asks what an app was
-// granted. What it does ask, on every write, is who owns the registration.
+// Each AppService method in app.proto declares admin:apps, and the auth
+// interceptor enforces it on a SCOPED credential, so this file never asks what
+// an app was granted. An unscoped first-party credential, such as a browser
+// session, passes the scope check whatever the account is. So a user who is
+// not an administrator reaches every verb here, and the ownership filters
+// below are what keep one user's registrations apart from another's. That is
+// what this file asks on every write: who owns the registration.
 //
 // Ownership travels INTO the statement rather than being checked here and
 // applied there. store.UpdateOAuthClientParams carries CallerUserID and
@@ -160,11 +164,11 @@ func (s *AppService) ListApps(
 	}
 	params := store.ListOAuthClientsParams{
 		UserID: user.ID,
-		// Through NormalizePageParams, like every other paginated handler: a
+		// Through pageParams, like every other paginated handler: a
 		// limit of 0 reaches the queries as "return no rows", so an omitted
 		// field -- the proto3 default -- would give an empty page nobody could
 		// tell from an empty table.
-		PageParams:     NormalizePageParams(req.GetCursor(), int64(req.GetLimit())),
+		PageParams:     pageParams(req.GetPage()),
 		IncludeRevoked: req.GetIncludeRevoked(),
 	}
 	// An administrator edits the hub-wide catalogue AND their own private
@@ -190,7 +194,7 @@ func (s *AppService) ListApps(
 	}
 	page, err := s.store.OAuthClients().List(ctx, params)
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list apps: %w", err))
+		return nil, storeConnectError(err, "list apps")
 	}
 
 	// ONE round trip for the whole page's live counts, and one lookup per
@@ -218,7 +222,7 @@ func (s *AppService) ListApps(
 	}
 	return &leapmuxv1.ListAppsResponse{
 		Apps:                    out,
-		NextCursor:              page.NextCursor,
+		Page:                    pageResponse(page.NextCursor),
 		OpenRegistrationEnabled: settings.KeyOpenAppRegistration.Of(s.snapshot(ctx)),
 	}, nil
 }

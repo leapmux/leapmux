@@ -131,28 +131,28 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 			Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
 		}, hlcAt(1, 0, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 		}, hlcAt(2, 0, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 		}, hlcAt(2, 1, "a")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
 		}, hlcAt(2, 2, "a")),
 		// Concurrent client b: opens a different tab.
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB"},
 			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
 		}, hlcAt(3, 0, "b")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB"},
 			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
 		}, hlcAt(3, 1, "b")),
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "tB"},
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
 		}, hlcAt(3, 2, "b")),
 		// Two concurrent ratio updates (different clients).
@@ -170,11 +170,11 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 		}, hlcAt(5, 0, "b")),
 		// Tombstone tA at higher HLC (remove-wins).
 		stamped(&leapmuxv1.TombstoneTabOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 		}, hlcAt(10, 0, "a")),
 		// Late SetTab on tA (after tombstone) — must be dropped.
 		stamped(&leapmuxv1.SetTabRegisterOp{
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA"},
 			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "late"},
 		}, hlcAt(11, 0, "a")),
 		// Floating-window double register with -0.0 → +0.0 normalization.
@@ -204,8 +204,8 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 // assertRenderedTabsAddressable is the invariant that makes RenderedTabs safe
 // to derive a write target from.
 //
-// The rendered rows of `workspace_tab_owned` back LocateTab / GetTab /
-// ListTabs, and the CLI turns a `--tab-id` into a `--tile-id` through them
+// The rendered rows of `workspace_tab_owned` back LocateTab and ListTabs,
+// and the CLI turns a `--tab-id` into a `--tile-id` through them
 // before emitting SetTabRegister(tile_id). `validateTabPlacement` accepts only
 // a live LEAF, so every rendered tile must BE one — and must be the tab's own
 // tile_id, not a relabelled stand-in. Relabelling is not hypothetical: an

@@ -1,4 +1,4 @@
-import type { listMessageMarks } from '~/api/workerRpc'
+import type { workerAgent } from '~/api/workerRpc'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 import { ListMessageMarksResponseSchema, MarkType, MessageMarkSchema } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -32,7 +32,7 @@ function deferred<T>() {
 
 /** A fresh seeder over a real marks store with the RPC replaced by a controllable fake. */
 function harness() {
-  const rpc = vi.fn<typeof listMessageMarks>()
+  const rpc = vi.fn<typeof workerAgent.listMessageMarks>()
   const marks = createMessageMarksStore()
   const seeder = createMessageMarkSeeder({ listMessageMarks: rpc, marks })
   return { rpc, marks, seeder }
@@ -81,7 +81,7 @@ describe('chatMessageMarkSeeder', () => {
 
   it('re-fetches when a live mark change races the in-flight seed instead of seeding the stale snapshot', async () => {
     const { rpc, marks, seeder } = harness()
-    const inflight = deferred<Awaited<ReturnType<typeof listMessageMarks>>>()
+    const inflight = deferred<Awaited<ReturnType<typeof workerAgent.listMessageMarks>>>()
     rpc
       .mockReturnValueOnce(inflight.promise)
       .mockResolvedValueOnce(marksResponse([2n], 2n, 2n))

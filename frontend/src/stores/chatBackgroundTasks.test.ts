@@ -2,7 +2,7 @@ import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it } from 'vitest'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,

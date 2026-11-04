@@ -5,7 +5,7 @@ import type { MockModelRequestRecord, MockModelStep, MockModelToolCall, MockMode
 import type { ModelScript } from './modelScriptFixture'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
-import { AgentStatus, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from './api'
 import { googleLastUserText, googlePartsText } from './googleModelContent'
@@ -177,9 +177,7 @@ export async function nativeAgentsByIds(
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const response = await channel.callWorker(
     server.workerId,
-    'ListAgents',
-    ListAgentsRequestSchema,
-    ListAgentsResponseSchema,
+    WorkerAgentService.method.listAgents,
     {
       tabIds: [...agentIds],
     },

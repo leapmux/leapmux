@@ -252,10 +252,9 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
 
       {/* KEPT while archived, and it is the only way to unarchive into a
           SPECIFIC custom section, because `Unarchive` below always targets In
-          progress. The hub REFUSES a `MoveWorkspace` that crosses the archive
-          boundary (archival stops processes, so it cannot ride on a generic
-          reorder), so `onMoveTo` routes a crossing through
-          `SetWorkspaceArchiveState`, which carries the destination -- see
+          progress. The destination section decides the archive state, so
+          `onMoveTo` sends one `MoveWorkspace` that carries the destination, and
+          a crossing still runs the unarchive flow on this side -- see
           `useWorkspaceOperations.moveWorkspace`. `isMoveTargetSection` excludes
           Archived as a target, so for an archived workspace every other
           workspace section is legal -- the list is non-empty exactly when it is

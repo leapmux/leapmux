@@ -113,7 +113,7 @@ describe('createScrollVelocity', () => {
     expect(v.isFling()).toBe(false)
   })
 
-  it('syncToProgrammatic is a no-op before the first sample (no baseline to move)', () => {
+  it('makes syncToProgrammatic a no-op before the first sample (no baseline to move)', () => {
     const clock = fakeClock()
     const v = make(clock)
     v.syncToProgrammatic(1000) // nothing seeded yet
@@ -128,7 +128,7 @@ describe('createScrollVelocity', () => {
   // isActivelyFlinging differs from isFling: it is FALSE for the unknown seed and
   // while idle, so an async re-pin only abandons keep-position for a genuine live
   // fling whose momentum a write would cancel.
-  it('isActivelyFlinging is false for the unknown (Infinity) seed, unlike isFling', () => {
+  it('reports isActivelyFlinging as false for the unknown (Infinity) seed, unlike isFling', () => {
     const clock = fakeClock()
     const v = make(clock)
     expect(v.isFling()).toBe(true)
@@ -138,7 +138,7 @@ describe('createScrollVelocity', () => {
     expect(v.isActivelyFlinging()).toBe(false) // one sample still can't bound a speed
   })
 
-  it('isActivelyFlinging is true only for a measured, in-flight fast fling', () => {
+  it('reports isActivelyFlinging as true only for a measured, in-flight fast fling', () => {
     const clock = fakeClock()
     const v = make(clock)
     v.sample(0)
@@ -151,7 +151,7 @@ describe('createScrollVelocity', () => {
     expect(v.isFling()).toBe(true) // isFling defaults back to defer; isActivelyFlinging does not
   })
 
-  it('isActivelyFlinging is false for a slow deliberate scroll', () => {
+  it('reports isActivelyFlinging as false for a slow deliberate scroll', () => {
     const clock = fakeClock()
     const v = make(clock)
     v.sample(0)
@@ -313,7 +313,7 @@ describe('createScrollInput', () => {
     return { input, calls }
   }
 
-  it('pageScroll mid-list records the un-clamped target, scrolls, and does NOT directly load', () => {
+  it('records the un-clamped target, scrolls, and does NOT directly load when pageScroll runs mid-list', () => {
     const el = fakeEl({ clientHeight: 500, scrollTop: 1000 })
     const { input, calls } = setup(el)
     input.pageScroll(1)
@@ -324,7 +324,7 @@ describe('createScrollInput', () => {
     expect(calls.tryOlder).toBe(0)
   })
 
-  it('pageScroll at an edge (no movement) clears the target and pages via the explicit-intent loader', () => {
+  it('clears the target and pages via the explicit-intent loader when pageScroll runs at an edge (no movement)', () => {
     const el = fakeEl({ clientHeight: 500, scrollTop: 0, clamp: true })
     const { input, calls } = setup(el)
     input.pageScroll(-1)
@@ -335,7 +335,7 @@ describe('createScrollInput', () => {
     expect(calls.tryNewer).toBe(0)
   })
 
-  it('pageScroll at the bottom edge pages newer via the explicit-intent loader', () => {
+  it('pages newer via the explicit-intent loader when pageScroll runs at the bottom edge', () => {
     const el = fakeEl({ clientHeight: 500, scrollTop: 9999, clamp: true })
     const { input, calls } = setup(el)
     input.pageScroll(1)
@@ -344,7 +344,7 @@ describe('createScrollInput', () => {
     expect(calls.tryOlder).toBe(0)
   })
 
-  it('pageScroll is a no-op on a 0-height (hidden) container', () => {
+  it('makes pageScroll a no-op on a 0-height (hidden) container', () => {
     const { input, calls } = setup(fakeEl({ clientHeight: 0 }))
     input.pageScroll(1)
     expect(calls.discretePageTarget).toEqual([])
@@ -352,7 +352,7 @@ describe('createScrollInput', () => {
     expect(calls.tryOlder).toBe(0)
   })
 
-  it('handleKeyDown PageDown pages newer and prevents default', () => {
+  it('pages newer and prevents default when handleKeyDown receives PageDown', () => {
     const { input, calls } = setup(fakeEl())
     const preventDefault = vi.fn()
     input.handleKeyDown({ key: 'PageDown', preventDefault } as unknown as KeyboardEvent)
@@ -361,7 +361,7 @@ describe('createScrollInput', () => {
     expect(calls.discretePageTarget.length).toBeGreaterThan(0) // pageScroll ran
   })
 
-  it('handleKeyDown End forces scroll to the live tail', () => {
+  it('forces scroll to the live tail when handleKeyDown receives End', () => {
     const { input, calls } = setup(fakeEl())
     input.handleKeyDown({
       key: 'End',
@@ -371,7 +371,7 @@ describe('createScrollInput', () => {
     expect(calls.lastScrollDir).toEqual(['newer'])
   })
 
-  it('handleKeyDown Home pins to the viewport-top anchor', () => {
+  it('pins to the viewport-top anchor when handleKeyDown receives Home', () => {
     const { input, calls } = setup(fakeEl())
     input.handleKeyDown({
       key: 'Home',
@@ -382,7 +382,7 @@ describe('createScrollInput', () => {
     expect(calls.lastScrollDir).toEqual(['older'])
   })
 
-  it('handleKeyDown ignores modifier-chorded keys', () => {
+  it('ignores modifier-chorded keys in handleKeyDown', () => {
     const { input, calls } = setup(fakeEl())
     input.handleKeyDown({
       key: 'PageDown',
@@ -393,7 +393,7 @@ describe('createScrollInput', () => {
     expect(calls.discretePageTarget).toEqual([])
   })
 
-  it('handleWheel records the direction and triggers the edge-intent load by deltaY sign', () => {
+  it('records the direction and triggers the edge-intent load by deltaY sign in handleWheel', () => {
     const { input, calls } = setup(fakeEl())
     input.handleWheel({ deltaY: -10, deltaX: 0 } as WheelEvent)
     expect(calls.lastScrollDir).toEqual(['older'])
@@ -403,14 +403,14 @@ describe('createScrollInput', () => {
     expect(calls.tryNewer).toBe(1)
   })
 
-  it('handleWheel cancels the pending settle on a no-movement (0,0) event', () => {
+  it('cancels the pending settle on a no-movement (0,0) event in handleWheel', () => {
     const { input, calls } = setup(fakeEl())
     input.handleWheel({ deltaY: 0, deltaX: 0 } as WheelEvent)
     expect(calls.cancelPending).toBe(1)
     expect(calls.lastScrollDir).toEqual([])
   })
 
-  it('handleWheel ignores a horizontal-dominant swipe whose small deltaY leaks (no spurious intent)', () => {
+  it('ignores a horizontal-dominant swipe whose small deltaY leaks in handleWheel (no spurious intent)', () => {
     const { input, calls } = setup(fakeEl())
     // A sideways trackpad swipe: large horizontal delta, tiny vertical leak. It must
     // NOT fire an edge-intent load or set lastScrollDir (which would mis-steer the

@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { WorkerScopedArgs } from '~/hooks/createWorkerScopedList'
 import { createSignal } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerFile } from '~/api/workerRpc'
 import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
 
 interface UseFilesystemRootsResult {
@@ -40,11 +40,11 @@ export function useFilesystemRoots(
 ): UseFilesystemRootsResult {
   const [roots, setRoots] = createSignal<string[]>([])
 
-  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerRpc.listFilesystemRoots>>>({
+  const list = createWorkerScopedList<WorkerScopedArgs, Awaited<ReturnType<typeof workerFile.listFilesystemRoots>>>({
     workerId,
     enabled,
     args: () => ({}),
-    fetch: args => workerRpc.listFilesystemRoots(args.workerId),
+    fetch: args => workerFile.listFilesystemRoots(args.workerId),
     applySuccess: resp => setRoots(resp.roots),
     // Cleared with the worker, so one worker's drives are never offered for
     // another. A caller that shows a drive menu hides it again in that window,

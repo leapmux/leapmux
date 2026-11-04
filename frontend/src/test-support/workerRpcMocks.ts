@@ -1,5 +1,5 @@
 /**
- * Shared shape for mocked `workerRpc.readFile` responses.
+ * Shared shape for mocked `workerFile.readFile` responses.
  *
  * Both `content` and `totalSize` mirror the protobuf wire shape:
  *
@@ -19,7 +19,7 @@ export function readResp(content: Uint8Array, totalSize?: number) {
 }
 
 /**
- * Shared shape for mocked `workerRpc.statFile` responses — just the
+ * Shared shape for mocked `workerFile.statFile` responses — just the
  * `info.size` field as a BigInt, matching the protobuf wire shape.
  */
 export function statResp(size: number) {

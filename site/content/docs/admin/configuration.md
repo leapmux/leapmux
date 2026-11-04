@@ -278,7 +278,7 @@ Changes fall into two classes, shown by `settings list`:
 | `public_url` | string | *(empty)* | hot (scheme+host only, no path) |
 | `trusted_proxy_ranges` | JSON list of IP selectors or provider tokens | `[]` | hot |
 | `smtp` | `{host, port, username, from_address, tls_mode}` + secret `{password}` | disabled | hot |
-| `timeouts` | `{api_seconds, agent_startup_seconds, worktree_create_seconds}` | 10 / 300 / 60 | hot |
+| `timeouts` | `{api_seconds, agent_startup_seconds}` | 10 / 300 | hot |
 | `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
 | `mail_limits` | `{failure_cooldown_seconds, recipient_max, recipient_window_seconds}` | 10 / 10 / 3600 | hot (`recipient_max` `0` = unlimited) |
 | `max_message_size_bytes` | integer | `16777216` (16 MiB) | restart (64 KiB–64 MiB) |

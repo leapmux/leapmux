@@ -1341,7 +1341,7 @@ func TestUnaryReplayStream_ClearsAPartialResponseBeforeResending(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			refusal := connect.NewError(connect.CodeUnauthenticated, "credential refused")
 			previous := &replayProbeStream{receive: func(msg any) error {
-				msg.(*leapmuxv1.GetCurrentUserResponse).User = &leapmuxv1.User{Username: "partial"}
+				msg.(*leapmuxv1.GetCurrentUserResponse).SessionReport = &leapmuxv1.SessionReport{User: &leapmuxv1.User{Username: "partial"}}
 				return refusal
 			}}
 			sendFailure := errors.New("retry could not send")
@@ -1364,7 +1364,7 @@ func TestUnaryReplayStream_ClearsAPartialResponseBeforeResending(t *testing.T) {
 			require.NoError(t, stream.CloseSend())
 			response := &leapmuxv1.GetCurrentUserResponse{}
 			assert.ErrorIs(t, stream.Receive(response), sendFailure)
-			assert.Nil(t, response.User, "a failed retry must not expose the earlier attempt's partial response")
+			assert.Nil(t, response.SessionReport, "a failed retry must not expose the earlier attempt's partial response")
 			assert.False(t, received, "receiving must stop when resending fails")
 			assert.Equal(t, 1, previous.closed)
 			assert.Equal(t, 1, retry.sent)

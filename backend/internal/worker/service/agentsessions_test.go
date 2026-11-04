@@ -9,6 +9,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -258,7 +259,7 @@ func seedResumableAgent(t *testing.T, svc *Service, id, handle, title, workingDi
 // listAgentSessions drives the RPC and returns the decoded response.
 func listAgentSessions(t *testing.T, d *channel.Dispatcher, w *testResponseWriter, provider leapmuxv1.AgentProvider, workingDir string) *leapmuxv1.ListAgentSessionsResponse {
 	t.Helper()
-	dispatch(d, "ListAgentSessions", &leapmuxv1.ListAgentSessionsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, &leapmuxv1.ListAgentSessionsRequest{
 		AgentProvider: provider,
 		WorkingDir:    workingDir,
 	}, w)
@@ -333,7 +334,7 @@ func TestListAgentSessions_RefusesAnUnacceptableWorkingDir(t *testing.T) {
 	t.Parallel()
 	_, d, w := setupTestService(t)
 
-	dispatch(d, "ListAgentSessions", &leapmuxv1.ListAgentSessionsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, &leapmuxv1.ListAgentSessionsRequest{
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		WorkingDir:    "relative/path",
 	}, w)

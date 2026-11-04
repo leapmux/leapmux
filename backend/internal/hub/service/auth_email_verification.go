@@ -42,29 +42,30 @@ func emailVerificationToProto(out verificationOutcome) *leapmuxv1.EmailVerificat
 // difference matters: this one serves GetCurrentUser, which every page load
 // calls, so issuing mail from it would send a message per reload.
 //
-// The two share both of their common halves -- the exemption question and the
-// cooldown -- through the helpers below, so the report and the send cannot
-// answer one screen two ways.
+// The two read both of their common halves from one rule each -- the
+// exemption question from auth.EmailVerificationFacts.Satisfied and the
+// cooldown from resendAvailableAt -- so the report and the send cannot answer
+// one screen two ways.
 func (s *AuthService) verificationStatusFor(ctx context.Context, user *store.User) verificationOutcome {
-	if s.emailVerificationSatisfied(ctx, user) {
+	return reportedVerificationStatus(user, s.emailVerificationRequired(ctx), s.now())
+}
+
+// reportedVerificationStatus is the report verificationStatusFor gives,
+// for a caller that holds the requirement and the clock itself:
+// UserService.VerifyEmail reports the state its write produced through it,
+// so the two surfaces cannot report one account two ways.
+func reportedVerificationStatus(user *store.User, required bool, now time.Time) verificationOutcome {
+	if auth.EmailVerificationFactsFromUser(user).Satisfied(required) {
 		return verificationOutcome{}
 	}
 	return verificationOutcome{
 		Required:              true,
-		NextResendAvailableAt: s.pendingResendCooldown(user),
+		NextResendAvailableAt: resendAvailableAt(user, now),
 	}
 }
 
-// emailVerificationSatisfied answers the opening question BOTH outcomes ask:
-// may this account use the hub although the hub requires a verified address.
-// One helper, because the two functions below must never disagree about who
-// is exempt -- the report and the send are two halves of one screen.
-func (s *AuthService) emailVerificationSatisfied(ctx context.Context, user *store.User) bool {
-	return auth.EmailVerificationFactsFromUser(user).Satisfied(s.emailVerificationRequired(ctx))
-}
-
-// pendingResendCooldown reports when the account may ask for another
-// verification message, or nil when it may ask now.
+// resendAvailableAt reports when the account may ask for another
+// verification message at now, or nil when it may ask now.
 //
 // It reads the issued-at column the mint wrote -- not a value derived from
 // the expiry, which the attempt consumer force-moves on a burned code. So
@@ -72,57 +73,80 @@ func (s *AuthService) emailVerificationSatisfied(ctx context.Context, user *stor
 // out instead of starting at zero and offering a button that the hub
 // refuses.
 //
-// One helper, because the two callers read the SAME countdown for two
-// purposes: verificationStatusFor reports it, and loginVerificationOutcome
-// tests it to decide whether to send. A second copy of the rule would let
-// the reported deadline and the enforced one drift apart, and the user
-// would watch a timer reach zero on a button that still refuses.
-func (s *AuthService) pendingResendCooldown(user *store.User) *time.Time {
+// One rule, because two callers read the SAME countdown for two purposes:
+// reportedVerificationStatus reports it, and loginVerificationOutcome tests
+// it to decide whether to send. A second copy of the rule would let the
+// reported deadline and the enforced one drift apart, and the user would
+// watch a timer reach zero on a button that still refuses.
+func resendAvailableAt(user *store.User, now time.Time) *time.Time {
 	if user.PendingEmail == "" || user.PendingEmailUnblockedAt == nil {
 		return nil
 	}
 	next := *user.PendingEmailUnblockedAt
-	if !s.now().UTC().Before(next) {
+	if !now.UTC().Before(next) {
 		return nil
 	}
 	return &next
 }
 
-func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.User) verificationOutcome {
-	if s.emailVerificationSatisfied(ctx, user) {
-		return verificationOutcome{}
+// loginVerificationOutcome reports the verification state of an account that
+// just signed in, and SENDS the code when the hub requires a verified address
+// and no cooldown holds the send back. An account with no pending row gets
+// one, minted for its primary address.
+//
+// It also reports whether it wrote the account row. A sign-in projects the
+// account AFTER this call, from the row it left: a minted pending row changes
+// the pending address that the projection reports.
+func (s *AuthService) loginVerificationOutcome(ctx context.Context, user *store.User) (out verificationOutcome, wrote bool) {
+	if auth.EmailVerificationFactsFromUser(user).Satisfied(s.emailVerificationRequired(ctx)) {
+		return verificationOutcome{}, false
 	}
-	out := verificationOutcome{Required: true}
+	out = verificationOutcome{Required: true}
 	targetEmail := user.PendingEmail
 	if targetEmail == "" {
 		targetEmail = user.Email
 	}
 	if targetEmail == "" {
-		return out
+		return out, false
 	}
 	if user.PendingEmail == "" {
 		sent, next, err := s.ensurePendingVerification(ctx, user.ID, targetEmail)
 		if err != nil {
 			slogWarnVerification(ctx, "ensure pending verification on login", user.ID, err)
-			return out
+			return out, false
 		}
 		out.EmailSent = sent
 		out.NextResendAvailableAt = next
-		return out
+		return out, true
 	}
-	if next := s.pendingResendCooldown(user); next != nil {
+	if next := resendAvailableAt(user, s.now()); next != nil {
 		out.NextResendAvailableAt = next
-		return out
+		return out, false
 	}
 	sent, next, err := issuePendingEmailVerification(ctx, s.store, s.mail, s.renderer, user.ID, user.PendingEmail, s.now,
 		mailFailureCooldown(ctx, s.set))
 	if err != nil {
 		slogWarnVerification(ctx, "resend verification on login", user.ID, err)
-		return out
+		return out, false
 	}
 	out.EmailSent = sent
 	out.NextResendAvailableAt = next
-	return out
+	return out, true
+}
+
+// loginSessionReport builds the SessionReport of a password or passkey
+// sign-in. It evaluates the verification outcome BEFORE it projects the
+// account, because the outcome can write the account row, and the projection
+// must report the row that the outcome left, as GetCurrentUser does.
+func (s *AuthService) loginSessionReport(ctx context.Context, user *store.User) *leapmuxv1.SessionReport {
+	outcome, wrote := s.loginVerificationOutcome(ctx, user)
+	report := &leapmuxv1.SessionReport{EmailVerification: emailVerificationToProto(outcome)}
+	if wrote {
+		report.User = storedUserProto(ctx, s.store, user.ID, "sign-in")
+	} else {
+		report.User = committedUserProto(ctx, s.store, user, "sign-in")
+	}
+	return report
 }
 
 func (s *AuthService) ensurePendingVerification(ctx context.Context, userID, email string) (sent bool, nextResend *time.Time, err error) {

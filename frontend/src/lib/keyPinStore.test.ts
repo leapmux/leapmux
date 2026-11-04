@@ -118,7 +118,7 @@ describe('keyPinStore', () => {
     expect(first).not.toHaveBeenCalled()
   })
 
-  it('clearKeyPin does not clear the session reject set', async () => {
+  it('does not clear the session reject set when clearKeyPin runs', async () => {
     const confirmKeyPin = vi.fn().mockResolvedValue('reject' as const)
     const store = new KeyPinStore({ confirmKeyPin })
     ;(await store.resolve('w1', bundle(1)))()
@@ -145,7 +145,7 @@ describe('keyPinStore', () => {
     expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
   })
 
-  it('clearKeyPin and clearAllKeyPins remove stored pins', async () => {
+  it('removes stored pins through clearKeyPin and clearAllKeyPins', async () => {
     const store = new KeyPinStore({
       confirmKeyPin: async () => 'accept',
     })
@@ -160,7 +160,7 @@ describe('keyPinStore', () => {
     expect(localStorageGet(KEY_KEY_PINS) ?? {}).toEqual({})
   })
 
-  it('setConfirmKeyPin clears the session reject set', async () => {
+  it('clears the session reject set in setConfirmKeyPin', async () => {
     const store = new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
@@ -174,7 +174,7 @@ describe('keyPinStore', () => {
     commit()
   })
 
-  it('setConfirmKeyPin drops in-flight rejects from the prior prompt epoch', async () => {
+  it('drops in-flight rejects from the prior prompt epoch in setConfirmKeyPin', async () => {
     let releaseFirst!: (d: 'accept' | 'reject') => void
     let firstStarted = false
     const firstPrompt = new Promise<'accept' | 'reject'>((resolve) => {

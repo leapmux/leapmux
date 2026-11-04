@@ -3,7 +3,7 @@ import type { BusyTab } from '~/components/shell/tabBusyProbe'
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
 import { createMemo, createResource, createSignal, createUniqueId, For, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
@@ -16,8 +16,7 @@ import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSe
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
-import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
@@ -304,8 +303,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       // did before the preflight existed.
       let blockedReason = ''
       try {
-        const preflight = await workerRpc.inspectWorktreeRemoval(props.workerId, {
-          workerId: props.workerId,
+        const preflight = await workerGit.inspectWorktreeRemoval(props.workerId, {
           path: props.gitToplevel,
         })
         blockedReason = preflight.blockedReason
@@ -343,8 +341,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   const handleBranchDelete = (i: InspectBranchDeletionResponse) => {
     void run(async () => {
       const target = switchTo()
-      await workerRpc.deleteBranch(props.workerId, {
-        workerId: props.workerId,
+      await workerGit.deleteBranch(props.workerId, {
         path: props.gitToplevel,
         branchToDelete: i.branchName,
         switchToBranch: target,

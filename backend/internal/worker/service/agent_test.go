@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -63,7 +63,7 @@ func TestRetryAgentTurnRefusesASubagent(t *testing.T) {
 	}))
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{
 		AgentId: "child-1", TurnId: "turn-1", Model: "gpt-6-luna",
 	}, writer)
 	rejections := writer.rejections()
@@ -86,7 +86,7 @@ func TestRetryAgentTurnMapsAnUnavailableOffer(t *testing.T) {
 	svc.Agents.PutAgentForTest("root-1", struct{ agenttest.IdleAgent }{})
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{
 		AgentId: "root-1", TurnId: "turn-1", Model: "gpt-6-luna",
 	}, writer)
 	rejections := writer.rejections()
@@ -114,7 +114,7 @@ func TestRetryAgentTurnValidatesTheOfferedTurnAndModel(t *testing.T) {
 		{AgentId: "root-1", TurnId: "turn-1", Model: "  "},
 	} {
 		writer := newTestWriter()
-		dispatch(dispatcher, "RetryAgentTurn", req, writer)
+		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, req, writer)
 		rejections := writer.rejections()
 		require.Len(t, rejections, 1)
 		assert.Equal(t, int32(codes.InvalidArgument), rejections[0].code)
@@ -133,7 +133,7 @@ func TestRetryAgentTurnMapsAStoreFaultToInternal(t *testing.T) {
 		return db.Agent{}, errors.New("store unavailable")
 	}
 	writer := newTestWriter()
-	dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{
 		AgentId: "root-1", TurnId: "turn-1", Model: "gpt-6-luna",
 	}, writer)
 	rejections := writer.rejections()
@@ -161,7 +161,7 @@ func TestRetryAgentTurnMapsAMissingAgent(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writer := newTestWriter()
-			dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+			dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{
 				AgentId: test.agentID, TurnId: "turn-1", Model: "gpt-6-luna",
 			}, writer)
 			rejections := writer.rejections()
@@ -189,7 +189,7 @@ func TestRetryAgentTurnRunsTheOfferedRetry(t *testing.T) {
 	svc.Agents.PutAgentForTest("root-1", stub)
 
 	writer := newTestWriter()
-	dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceRetryAgentTurnProcedure, &leapmuxv1.RetryAgentTurnRequest{
 		AgentId: "root-1", TurnId: " turn-1 ", Model: " gpt-6-luna ",
 	}, writer)
 	assert.Empty(t, writer.rejections())
@@ -245,25 +245,4 @@ func TestRestartMessagesStateTheirOwnCallersAction(t *testing.T) {
 		})
 	}
 	assert.NotEqual(t, settingsRestartMessages, forcedStopMessages)
-}
-
-// TestAgentInfoReportsTheWorkerHomeDir pins where AgentInfo.home_dir comes
-// from. No agent row stores a home directory: every writer stored the worker's
-// own, so the listing reports the worker's.
-func TestAgentInfoReportsTheWorkerHomeDir(t *testing.T) {
-	t.Parallel()
-
-	svc, d, w := setupTestService(t)
-	require.NotEmpty(t, svc.HomeDir, "the harness must give the worker a home directory")
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID: "agent-home", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-home"}}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListAgentsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	require.Len(t, resp.GetAgents(), 1)
-	assert.Equal(t, svc.HomeDir, resp.GetAgents()[0].GetHomeDir())
 }

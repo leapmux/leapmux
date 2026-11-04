@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -57,55 +58,53 @@ func (r *recordingSender) snapshot() []chunkRec {
 	return out
 }
 
+// The small send must be parked on the frame permit before the big send
+// releases it, and SendWaiters cannot show that: acquire counts a waiter
+// before the goroutine parks on the channel, so a release inside that window
+// hands the permit back to the big send. synctest.Wait returns only once every
+// goroutine of the bubble is durably blocked, which includes the small send's
+// channel send.
 func TestSendGateSingleChunkOvertakesMultiChunk(t *testing.T) {
-	var gate SendGate
-	rec := &recordingSender{
-		holdFirst: make(chan struct{}),
-		started:   make(chan struct{}),
-	}
-	big := make([]byte, contracts.MaxPlaintextPerChunk+100)
-	small := []byte("hi")
+	synctest.Test(t, func(t *testing.T) {
+		var gate SendGate
+		rec := &recordingSender{
+			holdFirst: make(chan struct{}),
+			started:   make(chan struct{}),
+		}
+		big := make([]byte, contracts.MaxPlaintextPerChunk+100)
+		small := []byte("hi")
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		require.NoError(t, gate.Send(context.Background(), nil, 1, big, rec.send(1)))
-	}()
+		bigDone := make(chan error, 1)
+		go func() {
+			bigDone <- gate.Send(context.Background(), nil, 1, big, rec.send(1))
+		}()
+		// A send that never starts deadlocks the bubble, which fails the test.
+		<-rec.started
 
-	select {
-	case <-rec.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("multi-chunk send never started")
-	}
+		// Park the small send on the frame permit WHILE the big send still
+		// holds it inside its first sendChunk. Releasing holdFirst then lets
+		// the small win the between-chunk acquire — calling Send synchronously
+		// here would deadlock.
+		smallDone := make(chan error, 1)
+		go func() {
+			smallDone <- gate.Send(context.Background(), nil, 2, small, rec.send(2))
+		}()
+		synctest.Wait()
+		require.Equal(t, 1, gate.SendWaiters(), "the small send must wait before the frame returns")
+		close(rec.holdFirst)
 
-	// Park the small send on the frame permit WHILE the big send still holds it
-	// inside its first sendChunk. Releasing holdFirst then lets the small win the
-	// between-chunk acquire — calling Send synchronously here would deadlock.
-	smallDone := make(chan error, 1)
-	go func() {
-		smallDone <- gate.Send(context.Background(), nil, 2, small, rec.send(2))
-	}()
-	require.Eventually(t, func() bool { return gate.SendWaiters() == 1 },
-		30*time.Second, time.Millisecond, "the small send must wait before the frame returns")
-	close(rec.holdFirst)
+		require.NoError(t, <-smallDone)
+		require.NoError(t, <-bigDone)
 
-	select {
-	case err := <-smallDone:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("small send did not complete after the first chunk released the frame")
-	}
-	wg.Wait()
-
-	got := rec.snapshot()
-	require.GreaterOrEqual(t, len(got), 3)
-	// First chunk of the big message, then the small message, then the rest.
-	assert.Equal(t, 1, got[0].id)
-	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, got[0].flags)
-	assert.Equal(t, 2, got[1].id)
-	assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, got[1].flags)
-	assert.Equal(t, 1, got[2].id)
+		got := rec.snapshot()
+		require.GreaterOrEqual(t, len(got), 3)
+		// First chunk of the big message, then the small message, then the rest.
+		assert.Equal(t, 1, got[0].id)
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE, got[0].flags)
+		assert.Equal(t, 2, got[1].id)
+		assert.Equal(t, leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED, got[1].flags)
+		assert.Equal(t, 1, got[2].id)
+	})
 }
 
 func TestSendGateSameCorrelationKeepsMessagesSeparate(t *testing.T) {

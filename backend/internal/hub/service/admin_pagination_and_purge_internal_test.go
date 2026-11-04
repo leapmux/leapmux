@@ -1,7 +1,7 @@
 package service
 
 // The two ceilings the administrator surface puts on ONE operation's row
-// set: the per-page limit NormalizePageParams applies to every paginated
+// set: the per-page limit normalizePageParams applies to every paginated
 // handler, and the pass ceiling the registration-key purge drain applies to
 // a backlog. They share a file because they answer one question -- how much
 // work a single request may ask the hub for.
@@ -22,8 +22,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
 // TestNormalizePageParams pins the normalization every paginated admin handler
@@ -44,34 +46,34 @@ func TestNormalizePageParams(t *testing.T) {
 		limit int64
 		want  int64
 	}{
-		"omitted limit takes the default":  {limit: 0, want: DefaultPageLimit},
-		"negative limit takes the default": {limit: -1, want: DefaultPageLimit},
-		"the most negative limit does too": {limit: math.MinInt64, want: DefaultPageLimit},
+		"omitted limit takes the default":  {limit: 0, want: contracts.DefaultPageLimit},
+		"negative limit takes the default": {limit: -1, want: contracts.DefaultPageLimit},
+		"the most negative limit does too": {limit: math.MinInt64, want: contracts.DefaultPageLimit},
 		"one row is a legal page":          {limit: 1, want: 1},
-		"a limit below the default stays":  {limit: DefaultPageLimit - 1, want: DefaultPageLimit - 1},
-		"the default itself stays":         {limit: DefaultPageLimit, want: DefaultPageLimit},
-		"the ceiling itself is allowed":    {limit: MaxPageLimit, want: MaxPageLimit},
-		"one past the ceiling is capped":   {limit: MaxPageLimit + 1, want: MaxPageLimit},
-		"the reported bug's limit":         {limit: 100000, want: MaxPageLimit},
-		"the largest limit is capped":      {limit: math.MaxInt64, want: MaxPageLimit},
+		"a limit below the default stays":  {limit: contracts.DefaultPageLimit - 1, want: contracts.DefaultPageLimit - 1},
+		"the default itself stays":         {limit: contracts.DefaultPageLimit, want: contracts.DefaultPageLimit},
+		"the ceiling itself is allowed":    {limit: contracts.MaxPageLimit, want: contracts.MaxPageLimit},
+		"one past the ceiling is capped":   {limit: contracts.MaxPageLimit + 1, want: contracts.MaxPageLimit},
+		"the reported bug's limit":         {limit: 100000, want: contracts.MaxPageLimit},
+		"the largest limit is capped":      {limit: math.MaxInt64, want: contracts.MaxPageLimit},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, NormalizePageParams("", tc.limit).Limit)
+			assert.Equal(t, tc.want, normalizePageParams("", tc.limit).Limit)
 		})
 	}
 
 	// The ceiling is the point of the function, so state the relation the
 	// table rests on rather than leaving it to the two literals.
-	assert.Less(t, int64(DefaultPageLimit), int64(MaxPageLimit),
+	assert.Less(t, int64(contracts.DefaultPageLimit), int64(contracts.MaxPageLimit),
 		"the default page must fit inside the ceiling")
 
-	// NormalizePageParams carries the cursor through untouched at every limit:
+	// normalizePageParams carries the cursor through untouched at every limit:
 	// normalizing it is the store's job, and a handler that rewrote it would
 	// silently restart a listing from the first page.
-	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", 0).Cursor)
-	assert.Equal(t, "opaque-cursor", NormalizePageParams("opaque-cursor", math.MaxInt64).Cursor)
-	assert.Empty(t, NormalizePageParams("", 10).Cursor)
+	assert.Equal(t, "opaque-cursor", normalizePageParams("opaque-cursor", 0).Cursor)
+	assert.Equal(t, "opaque-cursor", normalizePageParams("opaque-cursor", math.MaxInt64).Cursor)
+	assert.Empty(t, normalizePageParams("", 10).Cursor)
 }
 
 // fakePurgeStore serves one fake CleanupStore and nothing else. The purge
@@ -125,7 +127,7 @@ func (c *fakePurgeCleanup) HardDeleteExpiredRegistrationKeysBefore(_ context.Con
 
 func purgeRegistrationKeys(t *testing.T, cleanup *fakePurgeCleanup) (*leapmuxv1.PurgeExpiredRegistrationKeysResponse, error) {
 	t.Helper()
-	svc := NewAdminWorkerService(fakePurgeStore{cleanup: cleanup}, nil)
+	svc := NewAdminWorkerService(fakePurgeStore{cleanup: cleanup}, workermgr.New(workermgr.DenyAllReach()), nil)
 	return svc.PurgeExpiredRegistrationKeys(context.Background(),
 		&leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
 }

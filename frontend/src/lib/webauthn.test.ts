@@ -1,12 +1,17 @@
+import type { WebAuthnChallenge } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { PasskeyBlocker } from '~/lib/systemInfo'
 
+import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WebAuthnChallengeSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import {
+  authenticateForChallenge,
   encodeWebAuthnUserId,
   isPasskeyCeremonyCancelled,
   passkeyBlockerMessage,
   PasskeyCeremonyCancelledError,
   passkeyErrorMessage,
+  registerForChallenge,
   signalAcceptedPasskeys,
   signalPasskeyRemoved,
   startAuthentication,
@@ -67,6 +72,88 @@ describe('startAuthentication', () => {
   })
 })
 
+/** What a person reads when a Begin response carries no challenge. */
+const MISSING_CHALLENGE_TEXT = 'The hub could not start the passkey prompt. Try again.'
+
+/** A Begin response's challenge, as the hub sends it. */
+function challengeOf(sessionId: string, options: Record<string, unknown>): WebAuthnChallenge {
+  return create(WebAuthnChallengeSchema, {
+    sessionId,
+    optionsJson: JSON.stringify(options),
+  })
+}
+
+// One helper per ceremony pairs a challenge's session with the credential the
+// browser returned for that same challenge, so no caller can mix two.
+describe('registerForChallenge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockStartRegistration.mockResolvedValue({ id: 'cred-1', response: {} })
+  })
+
+  it('pairs the challenge\'s session with the credential the browser returned', async () => {
+    const options = {
+      challenge: 'abc',
+      rp: { name: 'LeapMux' },
+    }
+
+    const credential = await registerForChallenge(challengeOf('sess-reg', options))
+
+    expect(mockStartRegistration).toHaveBeenCalledWith({ optionsJSON: options })
+    expect(credential.sessionId).toBe('sess-reg')
+    expect(JSON.parse(credential.credentialJson ?? '')).toEqual({ id: 'cred-1', response: {} })
+  })
+
+  // A person reads the refusal through passkeyErrorMessage on every passkey
+  // surface, so it states the fault in plain words and offers a next step.
+  it('refuses an absent challenge without opening the browser prompt', async () => {
+    const err = await registerForChallenge(undefined).catch((e: unknown) => e)
+
+    expect(passkeyErrorMessage(err, 'Sign up failed')).toBe(MISSING_CHALLENGE_TEXT)
+    expect(mockStartRegistration).not.toHaveBeenCalled()
+  })
+
+  it('passes a dismissed prompt through as a cancellation', async () => {
+    mockStartRegistration.mockRejectedValue(Object.assign(new Error('aborted'), { code: 'ERROR_CEREMONY_ABORTED' }))
+
+    const err = await registerForChallenge(challengeOf('sess-reg', { challenge: 'abc' })).catch((e: unknown) => e)
+
+    expect(isPasskeyCeremonyCancelled(err)).toBe(true)
+  })
+})
+
+describe('authenticateForChallenge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockStartAuthentication.mockResolvedValue({ id: 'cred-2', response: {} })
+  })
+
+  it('pairs the challenge\'s session with the credential the browser returned', async () => {
+    const options = { challenge: 'xyz', rpId: 'localhost' }
+
+    const credential = await authenticateForChallenge(challengeOf('sess-auth', options))
+
+    expect(mockStartAuthentication).toHaveBeenCalledWith({ optionsJSON: options })
+    expect(mockStartRegistration).not.toHaveBeenCalled()
+    expect(credential.sessionId).toBe('sess-auth')
+    expect(JSON.parse(credential.credentialJson ?? '')).toEqual({ id: 'cred-2', response: {} })
+  })
+
+  it('refuses an absent challenge without opening the browser prompt', async () => {
+    const err = await authenticateForChallenge(undefined).catch((e: unknown) => e)
+
+    expect(passkeyErrorMessage(err, 'Passkey login failed')).toBe(MISSING_CHALLENGE_TEXT)
+    expect(mockStartAuthentication).not.toHaveBeenCalled()
+  })
+
+  it('rethrows a real browser failure unchanged', async () => {
+    const failure = new Error('no authenticator')
+    mockStartAuthentication.mockRejectedValue(failure)
+
+    await expect(authenticateForChallenge(challengeOf('sess-auth', { challenge: 'xyz' }))).rejects.toBe(failure)
+  })
+})
+
 describe('signal helpers', () => {
   const original = globalThis.PublicKeyCredential
 
@@ -77,12 +164,12 @@ describe('signal helpers', () => {
     })
   })
 
-  it('encodeWebAuthnUserId base64url-encodes UTF-8 bytes of the UUID string', () => {
+  it('base64url-encodes the UTF-8 bytes of the UUID string in encodeWebAuthnUserId', () => {
     // btoa("user-1") with URL-safe alphabet and no padding
     expect(encodeWebAuthnUserId('user-1')).toBe('dXNlci0x')
   })
 
-  it('signalPasskeyRemoved calls the browser API when present', () => {
+  it('calls the browser API from signalPasskeyRemoved when the API is present', () => {
     const signalUnknownCredential = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,
@@ -92,7 +179,7 @@ describe('signal helpers', () => {
     expect(signalUnknownCredential).toHaveBeenCalledWith({ rpId: 'example.com', credentialId: 'cred-id' })
   })
 
-  it('signalAcceptedPasskeys calls signalAllAcceptedCredentials when present', () => {
+  it('calls signalAllAcceptedCredentials from signalAcceptedPasskeys when the browser API is present', () => {
     const signalAllAcceptedCredentials = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,
@@ -106,7 +193,7 @@ describe('signal helpers', () => {
     })
   })
 
-  it('signalAcceptedPasskeys skips empty credential lists', () => {
+  it('skips empty credential lists in signalAcceptedPasskeys', () => {
     const signalAllAcceptedCredentials = vi.fn()
     Object.defineProperty(globalThis, 'PublicKeyCredential', {
       configurable: true,

@@ -11,15 +11,12 @@ import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetad
 /**
  * Everything about a tab the CRDT does not carry.
  *
- * Ported from the deleted `tab.store.test.ts`, whose `updateMatchingTabs` and
- * setter-no-op-guard cases describe behaviour that moved here wholesale: the
- * fan-out write and the "don't churn subscribers on an identical write" rule.
+ * Ported from the deleted `tab.store.test.ts`, whose setter-no-op-guard cases
+ * describe behaviour that moved here wholesale: the "don't churn subscribers on
+ * an identical write" rule.
  *
  * One flat map keyed by tab id, spanning every workspace — tab ids are globally
- * unique across the account, so there is no workspace dimension to key by. That
- * is what lets a branch rename or a worker-offline sweep reach every workspace
- * in ONE call, where the old split needed the active store plus a hand-rolled
- * fan-out across each registry snapshot.
+ * unique across the account, so there is no workspace dimension to key by.
  */
 const flush = () => new Promise<void>(queueMicrotask)
 
@@ -215,80 +212,6 @@ describe('tabMetadata', () => {
   })
 
   /**
-   * The fan-out write, ported from `updateMatchingTabs`.
-   *
-   * A branch rename or a worker-offline sweep is one call that reaches every
-   * matching tab in every workspace. The predicate sees the metadata row and
-   * the tab id, so callers that need placement resolve it through the view
-   * first — this store deliberately knows nothing about tiles.
-   */
-  describe('patchMatching', () => {
-    it('writes the fields onto every matching row and leaves the rest alone', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { gitToplevel: '/repo', title: 'old' })
-      m.patch('t1', { gitToplevel: '/repo', title: 'old' })
-      m.patch('a2', { gitToplevel: '/other', title: 'old' })
-
-      m.patchMatching(meta => meta.gitToplevel === '/repo', { title: 'new' })
-
-      expect(m.get('a1')?.title).toBe('new')
-      expect(m.get('t1')?.title).toBe('new')
-      expect(m.get('a2')?.title, 'a different repo is untouched').toBe('old')
-    })
-
-    it('passes the tab id to the predicate', () => {
-      const m = createTabMetadataStore()
-      m.patch('keep', { title: 'a' })
-      m.patch('drop', { title: 'b' })
-
-      m.patchMatching((_meta, tabId) => tabId === 'keep', { hasNotification: true })
-
-      expect(m.get('keep')?.hasNotification).toBe(true)
-      expect(m.get('drop')?.hasNotification).toBeUndefined()
-    })
-
-    it('skips undefined values, like patch', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { title: 'Keep', gitToplevel: '/old' })
-      m.patchMatching(() => true, { title: undefined, gitToplevel: '/new' })
-      expect(m.get('a1')?.title).toBe('Keep')
-      expect(m.get('a1')?.gitToplevel).toBe('/new')
-    })
-
-    it('is a no-op when nothing matches', () => {
-      const m = createTabMetadataStore()
-      m.patch('a1', { gitToplevel: '/repo' })
-      m.patchMatching(() => false, { gitToplevel: '/new' })
-      expect(m.get('a1')?.gitToplevel).toBe('/repo')
-    })
-
-    // The counterpart to the old `equalsFields` short-circuit: rows that
-    // already carry the target value must not have their subscribers re-fired.
-    it('does not notify rows whose value already matches', async () => {
-      await createRoot(async (dispose) => {
-        const m = createTabMetadataStore()
-        m.patch('stale', { gitToplevel: '/repo', title: 'old' })
-        m.patch('fresh', { gitToplevel: '/repo', title: 'new' })
-
-        let freshRuns = 0
-        createEffect(() => {
-          void m.state.byTabId.fresh?.title
-          freshRuns++
-        })
-        await flush()
-        const baseline = freshRuns
-
-        m.patchMatching(meta => meta.gitToplevel === '/repo', { title: 'new' })
-        await flush()
-
-        expect(m.get('stale')?.title, 'the stale row is written').toBe('new')
-        expect(freshRuns, 'the already-correct row is not re-fired').toBe(baseline)
-        dispose()
-      })
-    })
-  })
-
-  /**
    * The count of live status events that a tab applied. A reader that fetches a
    * snapshot compares it across the request to learn whether the live stream
    * wrote a status while the reply was pending.
@@ -323,12 +246,11 @@ describe('tabMetadata', () => {
       expect(m.liveStatusEpoch('a1')).toBe(2)
     })
 
-    it('does not advance on patch, patchExisting, or patchMatching', () => {
+    it('does not advance on patch or patchExisting', () => {
       const m = createTabMetadataStore()
       m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
       m.patch('a1', { agentStatus: AgentStatus.INACTIVE })
       m.patchExisting('a1', { agentStatus: AgentStatus.STARTING })
-      m.patchMatching(() => true, { agentStatus: AgentStatus.ACTIVE })
       expect(m.liveStatusEpoch('a1')).toBe(1)
     })
 
@@ -445,7 +367,7 @@ describe('tabMetadata', () => {
       expect(m.liveCatalogEpoch('a1')).toBe(2)
     })
 
-    it('does not advance on patch, patchExisting, or patchMatching', () => {
+    it('does not advance on patch or patchExisting', () => {
       const m = createTabMetadataStore()
       m.patchLive('a1', {
         optionGroups: groups(),
@@ -454,9 +376,6 @@ describe('tabMetadata', () => {
         optionGroups: groups(),
       })
       m.patchExisting('a1', {
-        optionGroups: groups(),
-      })
-      m.patchMatching(() => true, {
         optionGroups: groups(),
       })
       expect(m.liveCatalogEpoch('a1')).toBe(1)

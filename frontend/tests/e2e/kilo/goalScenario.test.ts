@@ -1,8 +1,13 @@
 import type { Page } from '@playwright/test'
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
+import type { WatchEventsResponse } from '../../../src/generated/proto/leapmux/v1/watch_pb'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
-import { InnerStreamMessageSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import {
+  WatchEventsRequestSchema,
+  WatchEventsResponseSchema,
+  WatchMode,
+  WorkerWatchService,
+} from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { AGENT_WATCH_UPDATE_ID } from '../helpers/agentEventWatch'
 import { waitForKiloPromptEnd } from './goalScenario'
 
@@ -33,30 +38,26 @@ describe('waitForKiloPromptEnd', () => {
     const agentId = 'kilo-native-agent'
     selectedAgentTabId.mockResolvedValue(agentId)
     stream.mockReturnValue({
-      onMessage: (listener: (message: { payload: Uint8Array }) => void) => queueMicrotask(() => {
-        listener(create(InnerStreamMessageSchema, {
-          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
-            event: {
-              case: 'updateAck',
-              value: {
-                updateId: AGENT_WATCH_UPDATE_ID,
-                agentStates: [
-                  { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID },
-                ],
-              },
+      onMessage: (listener: (response: WatchEventsResponse) => void) => queueMicrotask(() => {
+        listener(create(WatchEventsResponseSchema, {
+          event: {
+            case: 'updateAck',
+            value: {
+              updateId: AGENT_WATCH_UPDATE_ID,
+              agentStates: [
+                { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID },
+              ],
             },
-          })),
+          },
         }))
-        listener(create(InnerStreamMessageSchema, {
-          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
-            event: {
-              case: 'agentEvent',
-              value: {
-                agentId,
-                event: { case: 'inputQueueChanged', value: {} },
-              },
+        listener(create(WatchEventsResponseSchema, {
+          event: {
+            case: 'agentEvent',
+            value: {
+              agentId,
+              event: { case: 'inputQueueChanged', value: {} },
             },
-          })),
+          },
         }))
       }),
       onError: () => {},
@@ -84,8 +85,8 @@ describe('waitForKiloPromptEnd', () => {
     if (!request)
       throw new Error('The Kilo completion wait did not create its native stream.')
     expect(request[0]).toBe('kilo-native-channel')
-    expect(request[1]).toBe('WatchEvents')
-    expect(fromBinary(WatchEventsRequestSchema, request[2])).toMatchObject({
+    expect(request[1]).toBe(WorkerWatchService.method.watchEvents)
+    expect(create(WatchEventsRequestSchema, request[2])).toMatchObject({
       agents: [
         { agentId },
       ],

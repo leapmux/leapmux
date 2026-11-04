@@ -23,13 +23,10 @@ import (
 var adminProcedureRationale = map[string]string{
 	// Instance-wide configuration: every user of the hub lives under
 	// whatever these write.
-	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        "reads every instance setting including secret presence",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       "rewrites instance-wide configuration (sign-up, SMTP, limits)",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: "writes the encrypted halves (SMTP password, captcha secrets)",
-	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      "rewrites several instance settings at once, both halves, in one transaction",
-	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        "returns instance configuration to defaults, cross-key validated",
-	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       "returns several instance settings to defaults in one transaction",
-	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure:      "describes the host's network interfaces and which addresses the hub answers on",
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:   "reads every instance setting including secret presence",
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure: "rewrites instance-wide configuration (sign-up, SMTP, limits), both halves including the encrypted secrets, in one transaction",
+	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:  "returns instance configuration to defaults in one transaction, cross-key validated",
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: "describes the host's network interfaces and which addresses the hub answers on",
 
 	// Credential and identity administration: these mint or destroy other
 	// users' credentials, which is the definition of administration.
@@ -68,62 +65,61 @@ var adminProcedureRationale = map[string]string{
 	leapmuxv1connect.AdminIdPServiceSetOAuthProviderEnabledProcedure: "toggles a login method for every user",
 }
 
-// TestAdminProceduresAreRationaleClassified is the bidirectional tripwire
-// in the house shape: every restricted procedure needs a non-empty
-// rationale, and every rationale entry must still be restricted.
-func TestAdminProceduresAreRationaleClassified(t *testing.T) {
-	for procedure := range adminProcedures {
-		note, ok := adminProcedureRationale[procedure]
-		assert.Truef(t, ok,
-			"admin procedure %q is not rationale-classified; record why it is admin-only in adminProcedureRationale", procedure)
-		assert.NotEmptyf(t, note, "admin procedure %q has an empty rationale", procedure)
+// adminOnlyProcedures returns every declared procedure that enforceAdmin
+// denies to a non-admin: the procedureScopes keys that carry
+// adminProcedurePrefix. It derives the set from the same prefix the gate
+// reads, so the set and the gate cannot disagree.
+func adminOnlyProcedures(t *testing.T) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for procedure := range procedureScopes {
+		if strings.HasPrefix(procedure, adminProcedurePrefix) {
+			out[procedure] = true
+		}
 	}
-	for procedure := range adminProcedureRationale {
-		assert.Truef(t, adminProcedures[procedure],
-			"procedure %q is rationale-classified but no longer restricted; remove the stale entry", procedure)
-	}
+	require.NotEmpty(t, out, "no declared procedure carries %q; the checks below have nothing to check", adminProcedurePrefix)
+	return out
 }
 
 // adminProtoProcedurePaths walks admin.proto's service descriptors and
 // builds the fully-qualified Connect procedure path for every method.
-func adminProtoProcedurePaths(t *testing.T) []string {
+func adminProtoProcedurePaths(t *testing.T) map[string]bool {
 	t.Helper()
 	services := leapmuxv1.File_leapmux_v1_admin_proto.Services()
-	var out []string
+	out := map[string]bool{}
 	for i := range services.Len() {
 		svc := services.Get(i)
 		for j := range svc.Methods().Len() {
 			m := svc.Methods().Get(j)
-			out = append(out, "/"+string(svc.FullName())+"/"+string(m.Name()))
+			out["/"+string(svc.FullName())+"/"+string(m.Name())] = true
 		}
 	}
 	require.NotEmpty(t, out, "admin.proto exposes no methods; the descriptor walk has nothing to check")
 	return out
 }
 
-// TestAdminGateCoversEveryAdminProtoMethod walks the admin.proto service
-// descriptors and asserts the RECORD covers exactly that method set.
+// TestAdminProceduresAreRationaleClassified is the bidirectional tripwire
+// in the house shape. The procedures that the prefix denies must be exactly
+// the methods that admin.proto declares, every one of them needs a non-empty
+// rationale, and every rationale entry must still be denied.
 //
-// A missing entry no longer means "mounts unrestricted" — enforceAdmin
-// denies on the Admin* prefix, so a new admin RPC is gated the moment it
-// is declared. What a missing entry means now is an UNDOCUMENTED gate: a
-// procedure nobody stated a reason for. A stale entry still means a dead
-// record.
-func TestAdminGateCoversEveryAdminProtoMethod(t *testing.T) {
-	for _, path := range adminProtoProcedurePaths(t) {
-		assert.Truef(t, adminProcedures[path],
-			"admin.proto method %q has no adminProcedures entry; the prefix gate already restricts it, but its reason is unrecorded — add the entry and a rationale", path)
+// A missing rationale does not mean "mounts unrestricted": enforceAdmin
+// denies on the Admin* prefix, so a new admin RPC is restricted the moment
+// it is declared. It means an UNDOCUMENTED restriction: a procedure nobody
+// stated a reason for. A stale rationale entry means a dead record.
+func TestAdminProceduresAreRationaleClassified(t *testing.T) {
+	restricted := adminOnlyProcedures(t)
+	assert.Equal(t, adminProtoProcedurePaths(t), restricted,
+		"the procedures that %q denies must be exactly the methods of admin.proto", adminProcedurePrefix)
+	for procedure := range restricted {
+		note, ok := adminProcedureRationale[procedure]
+		assert.Truef(t, ok,
+			"admin procedure %q is not rationale-classified; record why it is admin-only in adminProcedureRationale", procedure)
+		assert.NotEmptyf(t, note, "admin procedure %q has an empty rationale", procedure)
 	}
-	for procedure := range adminProcedures {
-		found := false
-		for _, path := range adminProtoProcedurePaths(t) {
-			if path == procedure {
-				found = true
-				break
-			}
-		}
-		assert.Truef(t, found,
-			"adminProcedures entry %q matches no admin.proto method; remove it (or the constant is stale)", procedure)
+	for procedure := range adminProcedureRationale {
+		assert.Truef(t, restricted[procedure],
+			"procedure %q is rationale-classified but no longer restricted; remove the stale entry", procedure)
 	}
 }
 
@@ -145,7 +141,7 @@ func TestAdminProceduresDisjointFromOtherGates(t *testing.T) {
 		// read-time narrowing loadBearer applies.
 		Scopes: authscope.UnscopedGrant().NarrowTo(CeilingFor(BearerKindDelegation)),
 	}
-	for procedure := range adminProcedures {
+	for procedure := range adminOnlyProcedures(t) {
 		assert.Falsef(t, publicProcedures[procedure],
 			"admin procedure %q is also public; that is an auth bypass", procedure)
 		assert.Errorf(t, enforceScope(procedure, delegated),
@@ -172,31 +168,34 @@ func TestAdminProtoServicesAreExactlyFive(t *testing.T) {
 		got[services.Get(i).FullName()] = true
 	}
 	assert.Equal(t, want, got,
-		"the admin proto service set changed; extend adminProcedures, adminProcedureRationale, and the hub-server mount test")
+		"the admin proto service set changed; extend adminProcedureRationale and the hub-server mount test")
 }
 
 // TestAdminProceduresAbsentFromHubRPCRegistry pins the worker-IPC bridge
-// boundary: hubrpc.Registry is a TYPING device ("not for security" — its
-// own comment says so), and anything listed in it is callable by any
-// worker-spawned agent holding a delegation bearer. No admin procedure may
-// ever be registered there.
+// boundary: hubrpc.Registry is a TYPING device, not an access control, and
+// anything listed in it is callable by any worker-spawned agent holding a
+// delegation bearer. No admin procedure may ever be registered there.
+//
+// Registry keys each entry by its procedure path, which is what the prefix
+// matches.
 func TestAdminProceduresAbsentFromHubRPCRegistry(t *testing.T) {
-	for procedure := range adminProcedures {
-		_, listed := hubrpc.Registry[procedure]
-		assert.Falsef(t, listed,
-			"admin procedure %q is in hubrpc.Registry; the worker IPC bridge would proxy it for any spawned agent — admin commands build a hub client directly instead", procedure)
+	require.NotEmpty(t, hubrpc.Registry, "hubrpc.Registry is empty; the check proves nothing")
+	for procedure := range hubrpc.Registry {
+		assert.Falsef(t, strings.HasPrefix(procedure, adminProcedurePrefix),
+			"hubrpc.Registry holds the admin procedure %q; the worker IPC bridge would proxy it for any spawned agent — admin commands build a hub client directly instead", procedure)
 	}
 }
 
-// TestNoAdminServiceOutsideAdminProto closes the gap the two walks above
-// leave open.
+// TestNoAdminServiceOutsideAdminProto closes the gap that the admin.proto
+// walks leave open.
 //
-// Both of them read File_leapmux_v1_admin_proto ONLY, so a service named
-// Admin* declared in any other proto file satisfies every check while
-// mounting unrestricted. This walks the whole registry instead: the
-// Admin* naming rule is already treated as authoritative (see
-// TestAdminProtoServicesAreExactlyFour), so a service that claims the
-// name must live where the gate looks for it.
+// TestAdminProtoServicesAreExactlyFive and the hub-server mount test read
+// File_leapmux_v1_admin_proto ONLY, so they cannot see a service named
+// Admin* that another proto file declares. The prefix would restrict such a
+// service, but neither the service count nor the mount test would cover it.
+// This walks the whole registry instead: the Admin* naming rule is
+// authoritative, so a service that claims the name must live in admin.proto,
+// where those tests look for it.
 func TestNoAdminServiceOutsideAdminProto(t *testing.T) {
 	const adminProtoPath = "leapmux/v1/admin.proto"
 	seen := false
@@ -219,24 +218,24 @@ func TestNoAdminServiceOutsideAdminProto(t *testing.T) {
 	require.True(t, seen, "admin.proto is not in the registry; the walk proved nothing")
 }
 
-// TestEnforceAdminDeniesByPrefixNotByMap pins that the ENFORCEMENT is the
-// prefix and the map is only the rationale record.
+// TestEnforceAdminDeniesByPrefix pins that the ENFORCEMENT is the prefix,
+// not a list of declared procedures.
 //
-// The map used to be the gate, which fails OPEN: an Admin*Service method
+// A list used to be the gate, which fails OPEN: an Admin*Service method
 // nobody adds to it mounts unrestricted, and the walks above catch that
 // only when somebody runs the suite. The fixture below is exactly that
-// case — a well-formed admin procedure path with no map entry — and the
-// gate must refuse it for a non-admin.
-func TestEnforceAdminDeniesByPrefixNotByMap(t *testing.T) {
+// case — a well-formed admin procedure path that admin.proto does not
+// declare — and the gate must refuse it for a non-admin.
+func TestEnforceAdminDeniesByPrefix(t *testing.T) {
 	const unlisted = "/leapmux.v1.AdminUserService/ProcedureNobodyListedYet"
-	require.False(t, adminProcedures[unlisted],
-		"the fixture must be absent from the map, or it proves nothing")
+	require.False(t, adminOnlyProcedures(t)[unlisted],
+		"the fixture must not be a declared procedure, or it proves nothing")
 
 	plain := &UserInfo{IsAdmin: false}
 	admin := &UserInfo{IsAdmin: true}
 
 	err := enforceAdmin(unlisted, plain)
-	require.Error(t, err, "an unlisted Admin*Service procedure must still be denied")
+	require.Error(t, err, "an undeclared Admin*Service procedure must still be denied")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.NoError(t, enforceAdmin(unlisted, admin), "an admin passes every admin procedure")
 
@@ -245,14 +244,4 @@ func TestEnforceAdminDeniesByPrefixNotByMap(t *testing.T) {
 	// And a service whose name merely CONTAINS "Admin" later in the path
 	// is not caught by the prefix.
 	assert.NoError(t, enforceAdmin("/leapmux.v1.WorkspaceService/AdminishThing", plain))
-}
-
-// TestAdminProceduresAllCarryTheGatePrefix keeps the record and the
-// enforcement from describing different sets: every procedure the map
-// documents must be one the prefix actually denies.
-func TestAdminProceduresAllCarryTheGatePrefix(t *testing.T) {
-	for procedure := range adminProcedures {
-		assert.Truef(t, strings.HasPrefix(procedure, adminProcedurePrefix),
-			"adminProcedures lists %q, which enforceAdmin's prefix %q does not cover", procedure, adminProcedurePrefix)
-	}
 }

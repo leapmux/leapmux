@@ -356,14 +356,19 @@ type WatcherManager struct {
 	ownerMu       sync.Mutex
 	channelOwners map[string]uint64 // channelID -> sessionID
 	nextSession   uint64
-	// publicationMu protects immutable queued events, not agent activity.
-	publicationMu sync.Mutex
-	publications  map[string]*agentEventQueue
+	// agentEvents queues immutable events. Its lock protects no agent activity.
+	agentEvents publicationQueues[*leapmuxv1.AgentEvent]
+	// terminalStatuses orders every status change and closed event of a terminal,
+	// live or replayed. Screen data and the other terminal events stay outside
+	// it: they go through BroadcastTerminalEvent.
+	terminalStatuses publicationQueues[terminalStatusItem]
 }
 
-type agentEventQueue struct {
-	events   []*leapmuxv1.AgentEvent
-	draining bool
+// terminalStatusItem is one entry of a terminal's status queue. A live status has
+// no sink and reaches every watcher. A replayed status reaches only its sink.
+type terminalStatusItem struct {
+	event *leapmuxv1.TerminalEvent
+	sink  *replaySink
 }
 
 // NewWatcherManager creates a new WatcherManager.
@@ -470,57 +475,89 @@ func (m *WatcherManager) EnqueueAgentEvent(agentID string, event *leapmuxv1.Agen
 		return
 	}
 	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
-	m.publicationMu.Lock()
-	defer m.publicationMu.Unlock()
-	if m.publications == nil {
-		m.publications = make(map[string]*agentEventQueue)
-	}
-	queue := m.publications[agentID]
-	if queue == nil {
-		queue = &agentEventQueue{}
-		m.publications[agentID] = queue
-	}
-	queue.events = append(queue.events, snapshot)
+	m.agentEvents.enqueue(agentID, func() *leapmuxv1.AgentEvent { return snapshot })
 }
 
 // DrainAgentEvents sends queued events outside every publication lock.
 // A concurrent or reentrant caller returns while the current drainer continues.
 func (m *WatcherManager) DrainAgentEvents(agentID string) {
-	m.publicationMu.Lock()
-	queue := m.publications[agentID]
-	if queue == nil || queue.draining {
-		m.publicationMu.Unlock()
-		return
-	}
-	queue.draining = true
-	defer func() {
-		m.publicationMu.Lock()
-		if m.publications[agentID] == queue {
-			queue.draining = false
-			if len(queue.events) == 0 {
-				delete(m.publications, agentID)
-			}
-		}
-		m.publicationMu.Unlock()
-	}()
-	for {
-		if len(queue.events) == 0 {
-			delete(m.publications, agentID)
-			m.publicationMu.Unlock()
-			return
-		}
-		event := queue.events[0]
-		queue.events[0] = nil
-		queue.events = queue.events[1:]
-		m.publicationMu.Unlock()
+	m.agentEvents.drain(agentID, func(event *leapmuxv1.AgentEvent) {
 		m.agents.broadcast(agentID, &leapmuxv1.WatchEventsResponse{
 			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
 		}, agentEventClass(event))
-		m.publicationMu.Lock()
-	}
+	})
 }
 
-// BroadcastTerminalEvent sends a TerminalEvent to all watchers of the given terminal.
+// PublishTerminalStatus sends a terminal's status change or its closed event to
+// every watcher, after each status that entered the queue before it.
+//
+// A caller that finds another goroutine draining this terminal returns at once.
+// A caller that finds no drainer drains the queue itself. It then waits for a
+// stalled client, and it also delivers each status that enters the queue
+// meanwhile. The startup goroutine and the shell's exit handler parked the same
+// way when they broadcast directly.
+func (m *WatcherManager) PublishTerminalStatus(terminalID string, event *leapmuxv1.TerminalEvent) {
+	m.PublishDerivedTerminalStatus(terminalID, func() *leapmuxv1.TerminalEvent { return event })
+}
+
+// PublishDerivedTerminalStatus sends the status that derive states to every
+// watcher, and waits as PublishTerminalStatus does.
+//
+// derive runs inside the queue's lock, so the status and its place in the queue
+// are one step. An emitter that changes what derive reads BEFORE it publishes
+// therefore lands behind this status, or derive sees the change.
+func (m *WatcherManager) PublishDerivedTerminalStatus(terminalID string, derive func() *leapmuxv1.TerminalEvent) {
+	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
+		return terminalStatusItem{event: derive()}
+	})
+	m.drainTerminalStatuses(terminalID)
+}
+
+// ReplayTerminalStatus queues the status that derive states for one subscriber,
+// and returns before the send.
+//
+// derive runs inside the queue's lock, so the status and its place in the queue
+// are one step. A live status that derive did not see enters the queue behind
+// this one, and every subscriber receives the two in that order.
+//
+// The drain runs on a goroutine of its own, because a live status can enter the
+// queue during this replay. A drain on the caller's goroutine would deliver that
+// status too, and a stalled writer of ANOTHER watcher would then hold the rest of
+// this session's replay.
+//
+// The status therefore can follow the rest of this replay on the wire. No client
+// depends on that order, because a replay's frames for different entities are
+// independent, and this terminal's screen data precedes the call.
+//
+// The goroutine needs nothing that ends with the replay. The sink holds the
+// stream's writer, which outlives the replay, and a send through it reads no
+// field that the session changes. onRetire is safe on any goroutine, because it
+// removes only the subscriptions of the session that it belongs to. The goroutine
+// ends when the queue runs empty. A send that parks returns when its connection
+// ends, and every later send of that connection fails at once.
+func (m *WatcherManager) ReplayTerminalStatus(terminalID string, sink *replaySink, derive func() *leapmuxv1.TerminalEvent) {
+	m.terminalStatuses.enqueue(terminalID, func() terminalStatusItem {
+		return terminalStatusItem{event: derive(), sink: sink}
+	})
+	go m.drainTerminalStatuses(terminalID)
+}
+
+func (m *WatcherManager) drainTerminalStatuses(terminalID string) {
+	m.terminalStatuses.drain(terminalID, func(item terminalStatusItem) {
+		resp := &leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{TerminalEvent: item.event},
+		}
+		if item.sink != nil {
+			item.sink.send(resp)
+			return
+		}
+		m.terminals.broadcast(terminalID, resp, terminalEventClass(item.event))
+	})
+}
+
+// BroadcastTerminalEvent sends a TerminalEvent to all watchers of the given
+// terminal. A status change or a closed event goes through PublishTerminalStatus
+// instead, so that it keeps its order against the replay of a new subscriber.
 func (m *WatcherManager) BroadcastTerminalEvent(terminalID string, event *leapmuxv1.TerminalEvent) {
 	m.terminals.broadcast(terminalID, &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_TerminalEvent{

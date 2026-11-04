@@ -27,7 +27,7 @@ function dot(seq: bigint, topPx: number, count = 1): DotCluster {
 }
 
 describe('createDotPreview', () => {
-  it('activeDot is the hovered dot when not dragging', () =>
+  it('reports the hovered dot as activeDot when not dragging', () =>
     createRoot((dispose) => {
       const [dots] = createSignal<DotCluster[]>([
         dot(5n, 100),
@@ -149,7 +149,7 @@ describe('createDotPreview', () => {
       dispose()
     }))
 
-  it('cardTopPx clamps a top/bottom dot inside the rail so the card is not clipped', () =>
+  it('clamps cardTopPx for a top/bottom dot inside the rail so the card is not clipped', () =>
     createRoot((dispose) => {
       const [dots] = createSignal<DotCluster[]>([
         dot(1n, 0),
@@ -173,7 +173,7 @@ describe('createDotPreview', () => {
       dispose()
     }))
 
-  it('cardTopPx clamps on the card\'s MEASURED height, not on the max-height cap', () =>
+  it('clamps cardTopPx on the card\'s MEASURED height, not on the max-height cap', () =>
     createRoot((dispose) => {
       const [dots] = createSignal<DotCluster[]>([
         dot(1n, 8),
@@ -196,7 +196,7 @@ describe('createDotPreview', () => {
       dispose()
     }))
 
-  it('cardTopPx still points at its dot on a rail shorter than the card cap', () =>
+  it('still points cardTopPx at its dot on a rail shorter than the card cap', () =>
     createRoot((dispose) => {
       const [dots] = createSignal<DotCluster[]>([
         dot(1n, 40),
@@ -437,7 +437,7 @@ describe('createDotPreview open/close policy', () => {
     })
   })
 
-  it('closeNow closes with no delay, and drops a pending close', () => {
+  it('closes with no delay, and drops a pending close, when closeNow runs', () => {
     vi.useFakeTimers()
     createRoot((dispose) => {
       const p = oneDot()

@@ -745,7 +745,7 @@ describe('useChatScroll anchor re-pin', () => {
       })
     }))
 
-  it('scrollToBottom routes to the jump-to-latest force path while windowed away from the tail', () =>
+  it('routes scrollToBottom to the jump-to-latest force path while windowed away from the tail', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -790,7 +790,7 @@ describe('useChatScroll anchor re-pin', () => {
       })
     }))
 
-  it('scrollToBottom stays in-window (no jump-to-latest) when the tail is loaded', () =>
+  it('keeps scrollToBottom in-window (no jump-to-latest) when the tail is loaded', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {

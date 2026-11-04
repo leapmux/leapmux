@@ -23,8 +23,8 @@ import (
 )
 
 // TestDelegationStore_MintRetriesOnTabPropagation simulates the
-// AddTab → mint race: the hub returns 403 "tab not owned by calling
-// worker" until the workspace_tabs row becomes visible, then 200.
+// tab-creation → mint race: the hub returns 403 "tab not owned by
+// calling worker" until the workspace_tab_owned row becomes visible, then 200.
 // The store must transparently retry until success.
 func TestDelegationStore_MintRetriesOnTabPropagation(t *testing.T) {
 	var calls atomic.Int32

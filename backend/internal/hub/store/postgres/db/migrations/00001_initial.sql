@@ -127,6 +127,13 @@ CREATE TABLE workers (
     id            TEXT COLLATE "C" PRIMARY KEY,
     auth_token    TEXT COLLATE "C" NOT NULL UNIQUE,
     registered_by TEXT COLLATE "C" NOT NULL REFERENCES users(id),
+    -- The public keys the worker registered with. Connect refuses a hello
+    -- whose keys differ, so a stolen auth token cannot attach other keys to
+    -- this worker. No query updates them: new keys need a new registration,
+    -- which creates a new row.
+    x25519_public_key BYTEA NOT NULL,
+    mlkem_public_key  BYTEA NOT NULL,
+    slhdsa_public_key BYTEA NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at  TIMESTAMPTZ,
     -- Set when the worker is deregistered; the persisted deregistration intent.
@@ -140,15 +147,13 @@ CREATE TABLE workers (
     -- still deregistering after the grace period
     -- (CompleteStaleDeregistrations).
     deregistering_at TIMESTAMPTZ,
-    public_key    BYTEA NOT NULL DEFAULT '',
-    mlkem_public_key  BYTEA NOT NULL DEFAULT '',
-    slhdsa_public_key BYTEA NOT NULL DEFAULT '',
     -- True for rows created by Server.RegisterWorker, the in-process
     -- bypass the solo launcher uses to bring up the co-located local
-    -- worker. The deregister handler refuses these so the user can't
-    -- accidentally tear down the bundled desktop worker -- it would just
-    -- re-register on next launch and the running process would noisily
-    -- exit with "invalid auth token" in between.
+    -- worker. The owner's deregistration path refuses these, and the admin
+    -- path refuses one while it is connected, so the user can't accidentally
+    -- tear down the running bundled desktop worker: the next launch would
+    -- just register a fresh worker, and the running worker would stop until
+    -- that launch.
     auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
     deleted_at    TIMESTAMPTZ
 );
@@ -291,7 +296,7 @@ CREATE TABLE user_state (
 );
 
 -- The derived tab index. See the sqlite migration for the full rationale.
--- `rendered` marks the rows ListTabs, GetTab and LocateTab read; the
+-- `rendered` marks the rows ListTabs and LocateTab read; the
 -- composite foreign key ties a row to a workspace its own user owns.
 CREATE TABLE workspace_tab_owned (
     user_id      TEXT COLLATE "C" NOT NULL,
@@ -529,7 +534,7 @@ CREATE TABLE device_authorizations (
     granted_scopes        TEXT NOT NULL DEFAULT '',
     user_id               TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
     -- Where the authorization stands: a DeviceAuthorizationState ordinal
-    -- (proto/leapmux/v1/hub_storage.proto), 1 pending, 2 approved, 3 denied.
+    -- (proto/leapmux/v1/storage.proto), 1 pending, 2 approved, 3 denied.
     -- No DEFAULT: the create binds PENDING, so an unstated state fails the
     -- INSERT. TestEnumColumnChecksMatchTheirProtoRanges checks the range.
     state                 INTEGER NOT NULL CHECK (state BETWEEN 1 AND 3),

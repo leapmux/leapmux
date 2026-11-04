@@ -3,7 +3,7 @@ import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/prot
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { TabView } from '~/stores/tabView'
 import { Code, ConnectError } from '@connectrpc/connect'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgentInput } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ChannelError } from '~/lib/channelError'
@@ -65,9 +65,15 @@ export function createAgentInputQueueOperations(deps: {
   // One input ID represents one delivery attempt, including across editor
   // remounts. Share its in-flight request so outcomes cannot disagree.
   const inFlightByInputId = new Map<string, Promise<boolean>>()
-  const queueWorkerID = (item: QueuedAgentInput) => deps.view.getAgentTab(item.agentId)?.workerId ?? ''
   /**
-   * Run one queue RPC and apply the snapshot that it answers with.
+   * Run one queue RPC for `agentId` and apply the snapshot that it answers
+   * with.
+   *
+   * Every queue command takes the agent beside the item: a queued item states
+   * no agent, because the snapshot that holds it belongs to one. This function
+   * resolves the Worker of that agent and puts the same agent into the
+   * request, so the two cannot identify different agents. The Worker is read
+   * at call time, before the RPC can yield to a tab switch.
    *
    * Every response of this family carries the whole queue, so the apply
    * belongs HERE rather than at each call site: a handler that forgets it
@@ -76,37 +82,41 @@ export function createAgentInputQueueOperations(deps: {
    */
   // The generated response types declare `snapshot?: ... | undefined` (proto
   // field presence), so the constraint must admit an explicit undefined too.
-  const runQueueRpc = async <T extends { snapshot?: AgentInputQueueSnapshot | undefined }>(label: string, call: () => Promise<T>): Promise<T> => {
+  const runQueueRpc = async <R extends { agentId?: string }, T extends { snapshot?: AgentInputQueueSnapshot | undefined }>(
+    agentId: string,
+    label: string,
+    rpc: (workerId: string, req: R) => Promise<T>,
+    req: Omit<R, 'agentId'>,
+  ): Promise<T> => {
+    const workerId = deps.view.getAgentTab(agentId)?.workerId ?? ''
     let response: T
     try {
-      response = await call()
+      response = await rpc(workerId, { ...req, agentId } as R)
     }
     catch (error) {
       showWarnToast(label, error)
       throw error
     }
-    deps.store.apply(response.snapshot)
+    deps.store.apply(agentId, response.snapshot)
     return response
   }
   // The one handler whose caller needs the response: the composer loads the
   // full text and the attachments of the input that it starts to edit. The
   // response object is handed through UNCHANGED -- the composer's edit session
   // keys off it, so no member is rebuilt or dropped here.
-  const beginQueueEdit = (item: QueuedAgentInput, takeover: boolean) =>
-    runQueueRpc('Failed to edit queued input', () => workerRpc.beginQueuedAgentInputEdit(queueWorkerID(item), {
-      agentId: item.agentId,
+  const beginQueueEdit = (agentId: string, item: QueuedAgentInput, takeover: boolean) =>
+    runQueueRpc(agentId, 'Failed to edit queued input', workerAgentInput.beginQueuedAgentInputEdit, {
       inputId: item.id,
       clientId: deps.clientId(),
       takeover,
-    }))
+    })
   /**
    * Save an open edit. `scheduledAt` is undefined to keep the stored schedule,
    * empty to clear it, or the new wire schedule. The parameter is required, so
    * a caller states which one it means.
    */
-  const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt: string | undefined) => {
-    await runQueueRpc('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {
-      agentId: item.agentId,
+  const updateQueueItem = async (agentId: string, item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[], scheduledAt: string | undefined) => {
+    await runQueueRpc(agentId, 'Failed to save queued input', workerAgentInput.updateQueuedAgentInput, {
       inputId: item.id,
       clientId: deps.clientId(),
       expectedVersion: item.version,
@@ -117,44 +127,37 @@ export function createAgentInputQueueOperations(deps: {
       ...(scheduledAt !== undefined
         ? { scheduledAt }
         : {}),
-    }))
+    })
   }
-  const cancelQueueEdit = async (item: QueuedAgentInput) => {
-    await runQueueRpc('Failed to cancel queued input edit', () => workerRpc.cancelQueuedAgentInputEdit(queueWorkerID(item), {
-      agentId: item.agentId,
+  const cancelQueueEdit = async (agentId: string, item: QueuedAgentInput) => {
+    await runQueueRpc(agentId, 'Failed to cancel queued input edit', workerAgentInput.cancelQueuedAgentInputEdit, {
       inputId: item.id,
       clientId: deps.clientId(),
-    }))
+    })
   }
-  const deleteQueueItem = async (item: QueuedAgentInput) => {
-    await runQueueRpc('Failed to delete queued input', () => workerRpc.deleteQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
+  const deleteQueueItem = async (agentId: string, item: QueuedAgentInput) => {
+    await runQueueRpc(agentId, 'Failed to delete queued input', workerAgentInput.deleteQueuedAgentInput, { inputId: item.id })
   }
-  const moveQueueItem = async (item: QueuedAgentInput, beforeInputId: string) => {
-    await runQueueRpc('Failed to move queued input', () => workerRpc.moveQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id, beforeInputId }))
+  const moveQueueItem = async (agentId: string, item: QueuedAgentInput, beforeInputId: string) => {
+    await runQueueRpc(agentId, 'Failed to move queued input', workerAgentInput.moveQueuedAgentInput, { inputId: item.id, beforeInputId })
   }
-  const retryQueueItem = async (item: QueuedAgentInput, confirmUncertain: boolean) => {
-    await runQueueRpc('Failed to retry queued input', () => workerRpc.retryQueuedAgentInput(queueWorkerID(item), {
-      agentId: item.agentId,
-      inputId: item.id,
-      confirmDeliveryUncertain: confirmUncertain,
-    }))
+  const retryQueueItem = async (agentId: string, item: QueuedAgentInput, confirmUncertain: boolean) => {
+    await runQueueRpc(agentId, 'Failed to retry queued input', workerAgentInput.retryQueuedAgentInput, { inputId: item.id, confirmDeliveryUncertain: confirmUncertain })
   }
-  const steerQueueItem = async (item: QueuedAgentInput) => {
-    await runQueueRpc('Failed to steer queued input', () => workerRpc.steerQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
+  const steerQueueItem = async (agentId: string, item: QueuedAgentInput) => {
+    await runQueueRpc(agentId, 'Failed to steer queued input', workerAgentInput.steerQueuedAgentInput, { inputId: item.id })
   }
   // Preempt cancels the running turn; the item itself is dispatched by the
   // ordinary turn-end drain, so the response still shows it queued.
-  const preemptQueueItem = async (item: QueuedAgentInput) => {
-    await runQueueRpc('Failed to preempt queued input', () => workerRpc.preemptQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
+  const preemptQueueItem = async (agentId: string, item: QueuedAgentInput) => {
+    await runQueueRpc(agentId, 'Failed to preempt queued input', workerAgentInput.preemptQueuedAgentInput, { inputId: item.id })
   }
   const setQueuePaused = async (paused: boolean) => {
     // The shell mounts the composer for a FOCUSED agent alone, so an agent is
-    // focused whenever this runs. Read that agent once, at call time: the
-    // Worker lookup and the request must identify the same agent even when a
+    // focused whenever this runs. Read that agent once, at call time:
+    // `runQueueRpc` then resolves the Worker of that same agent, even when a
     // tab switch moves the focus while the RPC is in flight.
-    const initialAgentID = deps.focusedAgentId()!
-    const initialAgentTab = deps.view.getAgentTab(initialAgentID)
-    await runQueueRpc('Failed to change queue pause state', () => workerRpc.setAgentInputQueuePaused(initialAgentTab?.workerId ?? '', { agentId: initialAgentID, paused }))
+    await runQueueRpc(deps.focusedAgentId()!, 'Failed to change queue pause state', workerAgentInput.setAgentInputQueuePaused, { paused })
   }
   const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments: FileAttachment[] = [], scheduledAt = '', requirePendingAttempt = false): Promise<boolean> => {
     // Capture the destination before the request can yield to a tab switch.
@@ -178,17 +181,15 @@ export function createAgentInputQueueOperations(deps: {
       return existing
     // Scroll before the RPC so a reader above the tail sees the sent message.
     deps.forceScrollToBottom()
-    const sendAgent = deps.view.getAgentTab(initialAgentID)
     const request = (async () => {
       try {
-        await runQueueRpc('Failed to queue message', () => workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
-          agentId: initialAgentID,
+        await runQueueRpc(initialAgentID, 'Failed to queue message', workerAgentInput.enqueueAgentInput, {
           inputId,
           kind,
           text: content,
           attachments: queueAttachmentsOf(fileAttachments),
           scheduledAt,
-        }))
+        })
         enqueueRetry.markAccepted(inputId)
         return true
       }

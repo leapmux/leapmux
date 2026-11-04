@@ -1,0 +1,40 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/descriptor.proto";
+import "leapmux/v1/scope.proto";
+
+// ServiceHost states where a service's methods are served. Every leapmux.v1
+// service declares one; a test fails a service without it.
+enum ServiceHost {
+  SERVICE_HOST_UNSPECIFIED = 0;
+  SERVICE_HOST_HUB = 1;        // The hub's Connect mux.
+  SERVICE_HOST_WORKER = 2;     // The worker's dispatcher, inside an E2EE channel.
+  SERVICE_HOST_WORKER_IPC = 3; // The worker's local control socket.
+}
+
+// MethodAccess states what one method demands of a SCOPED credential. An
+// unscoped first-party credential passes the scope check regardless. A HUB or
+// WORKER method without it is refused to every scoped credential, and a test
+// fails it.
+message MethodAccess {
+  oneof requirement {
+    // One scope. SCOPE_NEVER records a deliberate refusal (hub methods only);
+    // SCOPE_UNSPECIFIED and SCOPE_ALL are invalid here.
+    Scope scope = 1;
+    // The hub interceptor waives authentication; the handler authenticates the
+    // caller with a credential of its own (hub methods only).
+    PublicAccess public = 2;
+  }
+}
+
+// PublicAccess selects MethodAccess.public. It carries no value.
+message PublicAccess {}
+
+extend google.protobuf.ServiceOptions {
+  ServiceHost host = 51000;
+}
+
+extend google.protobuf.MethodOptions {
+  MethodAccess access = 51000;
+}

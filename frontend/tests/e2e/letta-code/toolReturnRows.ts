@@ -1,5 +1,5 @@
 import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { decompressContentToString } from '../../../src/lib/decompress'
 
 /** The Letta message type of the message that carries the result of a tool call. */

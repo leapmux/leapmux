@@ -138,7 +138,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('setError is exposed so callers can sink errors from non-submit paths', async () => {
+  it('exposes setError so callers can sink errors from non-submit paths', async () => {
     // DeleteBranchDialog's refreshInspect runs outside `run()` (it's
     // not the submit body) but writes into the same error signal so
     // the dialog renders one consistent error region.
@@ -174,7 +174,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('onError receives the raw err and suppresses the default setError write', async () => {
+  it('passes the raw err to onError and suppresses the default setError write', async () => {
     // For callers that surface errors via toast (PushBranchButton),
     // the formatted-string sink is the wrong shape — they need the
     // raw err to pass into showWarnToast. onError replaces the default
@@ -197,7 +197,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('onError still fires when fn throws a non-Error literal', async () => {
+  it('still fires onError when fn throws a non-Error literal', async () => {
     // Guard against future regressions where the onError path was
     // accidentally restricted to Error instances. The raw err passes
     // through regardless of shape.
@@ -214,7 +214,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('onError + loading still settles to false after debounce', async () => {
+  it('still settles loading to false after debounce when onError is set', async () => {
     // Regression guard: the onError branch must not skip the
     // submitting.stop() in finally — otherwise a failed push would
     // leave the button disabled forever.
@@ -232,7 +232,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('onError does not fire on a successful submit', async () => {
+  it('does not fire onError on a successful submit', async () => {
     const onError = vi.fn()
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -245,7 +245,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: prevents default, runs body, clears error', async () => {
+  it('prevents default, runs body, and clears error in formHandler', async () => {
     const body = vi.fn(() => Promise.resolve())
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -271,7 +271,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: re-evaluates disabled() per invocation', async () => {
+  it('re-evaluates disabled() per invocation in formHandler', async () => {
     // The disabled accessor is called each time the handler fires, not
     // snapshotted at construction. Without this, toggling the underlying
     // submit-disabled state in a form lifecycle (e.g. typed input
@@ -293,7 +293,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: submitting flips true while the body is in flight', async () => {
+  it('flips submitting true while the formHandler body is in flight', async () => {
     const d = deferred<void>()
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -316,7 +316,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: synchronously-thrown body errors land in the error sink', async () => {
+  it('sends the synchronously-thrown body errors of formHandler to the error sink', async () => {
     // run() wraps the body in a try/catch — a body that throws BEFORE
     // returning a promise (e.g. a `throw new Error(...)` at the top of
     // an `async` arrow) must route through the same sink as a rejected
@@ -335,7 +335,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: bails when disabled() returns true', async () => {
+  it('bails in formHandler when disabled() returns true', async () => {
     const body = vi.fn(() => Promise.resolve())
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -354,7 +354,7 @@ describe('useDialogSubmit', () => {
     })
   })
 
-  it('formHandler: routes body rejection through the standard error sink', async () => {
+  it('routes body rejection through the standard error sink in formHandler', async () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const { error, formHandler } = useDialogSubmit()

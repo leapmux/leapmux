@@ -1,15 +1,17 @@
 import type { UseResumableSessionsArgs } from '~/hooks/useResumableSessions'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useResumableSessions } from '~/hooks/useResumableSessions'
 
 vi.mock('~/api/workerRpc', () => ({
-  listAgentSessions: vi.fn(),
+  workerAgent: {
+    listAgentSessions: vi.fn(),
+  },
 }))
 
-const listAgentSessions = vi.mocked(workerRpc.listAgentSessions)
+const listAgentSessions = vi.mocked(workerAgent.listAgentSessions)
 
 function session(sessionId: string) {
   return {
@@ -74,10 +76,9 @@ describe('useResumableSessions', () => {
       expect(sessions().map(s => s.sessionId)).toEqual(['ses_a', 'ses_b'])
       expect(loading()).toBe(false)
 
-      // The worker id rides both the envelope and the request body, and the
-      // signal is what lets a superseded call be abandoned.
+      // The worker id routes the call and stays out of the request body, and
+      // the signal is what lets a superseded call be abandoned.
       expect(listAgentSessions).toHaveBeenCalledWith('w-1', {
-        workerId: 'w-1',
         workingDir: '/repo',
         agentProvider: AgentProvider.CLAUDE_CODE,
       }, expect.objectContaining({
@@ -151,12 +152,13 @@ describe('useResumableSessions', () => {
       })
       await flush()
       expect(listAgentSessions).toHaveBeenCalledTimes(2)
+      const next = {
+        ...ARGS,
+        ...change,
+      }
       expect(listAgentSessions).toHaveBeenLastCalledWith(
-        {
-          ...ARGS,
-          ...change,
-        }.workerId,
-        expect.objectContaining(change),
+        next.workerId,
+        { workingDir: next.workingDir, agentProvider: next.agentProvider },
         expect.anything(),
       )
       dispose()
@@ -201,7 +203,7 @@ describe('useResumableSessions', () => {
   // still passed its own guard -- repopulating the list the hook had just
   // emptied, with sessions of a selection the user had left.
   it('discards a fetch still in flight when the source becomes null', async () => {
-    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    const pending = deferred<Awaited<ReturnType<typeof workerAgent.listAgentSessions>>>()
     listAgentSessions.mockReturnValueOnce(pending.promise)
 
     await createRoot(async (dispose) => {
@@ -227,7 +229,7 @@ describe('useResumableSessions', () => {
   // box on the first frame of every dialog and swaps it for the menu a frame
   // later, under a user who may already be typing.
   it('reports settled only once an answer for the current source arrives', async () => {
-    const pending = deferred<Awaited<ReturnType<typeof workerRpc.listAgentSessions>>>()
+    const pending = deferred<Awaited<ReturnType<typeof workerAgent.listAgentSessions>>>()
     listAgentSessions.mockReturnValueOnce(pending.promise)
 
     await createRoot(async (dispose) => {

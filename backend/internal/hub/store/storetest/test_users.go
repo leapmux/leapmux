@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,11 +55,13 @@ func (s *Suite) testUsers(t *testing.T) {
 			ID: "ws-blank-owner", OwnerUserID: userid.UserID{}, Title: "blank-owner",
 		}), "a workspace has no blank-id owner to reference")
 
-		require.Error(t, st.Workers().Create(ctx, store.CreateWorkerParams{
+		keysErr := st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID: "worker-blank-registrant", AuthToken: "token-blank-registrant",
 			RegisteredBy: userid.UserID{},
-			PublicKey:    []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
-		}), "a worker has no blank-id registrant to reference")
+			PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
+		})
+		require.Error(t, keysErr, "a worker has no blank-id registrant for its foreign key to point at")
+		assert.NotErrorIs(t, keysErr, store.ErrInvalidArgument, "the keys are valid, so the refusal is the foreign key")
 	})
 
 	t.Run("create and get by id", func(t *testing.T) {

@@ -25,7 +25,7 @@ describe('createSectionStore', () => {
     })
   })
 
-  it('markLoaded flips loaded and never clears it', () => {
+  it('flips loaded and never clears it when markLoaded runs', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
       store.markLoaded()

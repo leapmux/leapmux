@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -136,18 +137,22 @@ func SeedRegistrationKey(t *testing.T, st store.Store, createdBy string, expires
 	return regID
 }
 
+// WorkerKeys returns the pinned public-key set a seeded Worker row carries.
+// A test that needs a second, distinct set passes another fill.
+func WorkerKeys(fill byte) store.WorkerPublicKeys {
+	return store.WorkerPublicKeysFromProto(workerkeystest.Keys(fill))
+}
+
 // SeedWorker creates a worker registered by the given user and returns the fetched worker.
 func SeedWorker(t *testing.T, st store.Store, registeredBy string) *store.Worker {
 	t.Helper()
 	workerID := id.Generate()
 	token := id.Generate()
 	err := st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       token,
-		RegisteredBy:    userid.MustNew(registeredBy),
-		PublicKey:       []byte{},
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
+		ID:           workerID,
+		AuthToken:    token,
+		RegisteredBy: userid.MustNew(registeredBy),
+		PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
 	})
 	require.NoError(t, err)
 

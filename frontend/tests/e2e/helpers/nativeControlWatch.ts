@@ -1,5 +1,5 @@
 import type { AgentControlRequest } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import type { AgentWatchServer } from './agentEventWatch'
 import { isObject } from '../../../src/lib/jsonPick'
 import { watchAgentEvents } from './agentEventWatch'

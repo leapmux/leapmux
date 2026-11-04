@@ -27,7 +27,7 @@ describe('mountPresenceHeartbeat', () => {
     hb.stop()
   })
 
-  it('pingNow fires an immediate heartbeat', () => {
+  it('fires an immediate heartbeat on pingNow', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
       workspaceId: () => 'w1',
@@ -39,7 +39,7 @@ describe('mountPresenceHeartbeat', () => {
     hb.stop()
   })
 
-  it('pingNow does not fire when workspace is empty', () => {
+  it('does not fire when workspace is empty on pingNow', () => {
     const sender = vi.fn()
     const hb = mountPresenceHeartbeat({
       workspaceId: () => null,

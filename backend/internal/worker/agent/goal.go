@@ -152,7 +152,7 @@ type GoalUpdate struct {
 // Clean restricts provider text and removes unreadable bytes at the sink boundary.
 // StripUnreadable preserves whitespace and line breaks because the objective is prose.
 // CleanName would change the paragraph that the user supplies.
-// One invalid byte makes proto.Marshal reject the complete AgentGoalChanged message.
+// One invalid byte makes proto.Marshal reject the complete AgentGoalSnapshot message.
 // Without this repair, a provider byte could keep the goal panel empty without an explanatory log.
 //
 // An objective with GoalStatusNone becomes Blocked because None means no goal.

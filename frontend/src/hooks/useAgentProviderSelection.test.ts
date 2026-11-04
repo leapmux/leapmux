@@ -106,7 +106,7 @@ describe('useAgentProviderSelection', () => {
     })
   })
 
-  it('recordProviderUse delegates to the MRU store', () => {
+  it('delegates recordProviderUse to the MRU store', () => {
     mockStored = []
     touchSpy.mockClear()
     createRoot((dispose) => {
@@ -154,7 +154,7 @@ describe('useAgentProviderSelection', () => {
     })
   })
 
-  it('noProviders is true exactly when availableProviders is an empty array', () => {
+  it('reports noProviders as true exactly when availableProviders is an empty array', () => {
     mockStored = []
     createRoot((dispose) => {
       const [available, setAvailable] = createSignal<AgentProvider[] | undefined>([])
@@ -172,7 +172,7 @@ describe('useAgentProviderSelection', () => {
     })
   })
 
-  it('agentProvider() is undefined when available is empty (type matches runtime)', () => {
+  it('leaves agentProvider() undefined when available is empty (type matches runtime)', () => {
     // Regression: the signal used to be typed `AgentProvider` but seeded
     // from `mruProviders()[0]` which is undefined for an empty
     // availability list — the runtime value violated the declared type

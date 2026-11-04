@@ -267,8 +267,12 @@ export async function createWorkspaceWithWorktreeViaAPI(
 ): Promise<{ workspaceId: string, worktreeDir: string }> {
   const workspaceId = await createWorkspaceViaAPI(hubUrl, token, title)
   await openAgentViaAPI({ hubUrl, adminToken: token, workerId }, workspaceId, workingDir, {
-    createWorktree: true,
-    worktreeBranch,
+    gitSetup: {
+      mode: {
+        case: 'createWorktree',
+        value: { branch: worktreeBranch },
+      },
+    },
   })
 
   // OpenAgent returns synchronously with status=STARTING and the worktree is

@@ -27,7 +27,7 @@ function fakeSource<T>(): {
 describe('bufferStreamHandle', () => {
   it('flushes pre-registration messages once onEvent is called', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n * 2)
+    const handle = bufferStreamHandle(fake.source)
 
     fake.fireMessage(1)
     fake.fireMessage(2)
@@ -36,23 +36,23 @@ describe('bufferStreamHandle', () => {
     const received: number[] = []
     handle.onEvent(n => received.push(n))
 
-    expect(received).toEqual([2, 4, 6])
+    expect(received).toEqual([1, 2, 3])
   })
 
   it('delivers messages directly once onEvent is wired', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n * 2)
+    const handle = bufferStreamHandle(fake.source)
 
     const received: number[] = []
     handle.onEvent(n => received.push(n))
 
     fake.fireMessage(10)
-    expect(received).toEqual([20])
+    expect(received).toEqual([10])
   })
 
   it('flushes a pre-registration end signal exactly once', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n)
+    const handle = bufferStreamHandle(fake.source)
 
     fake.fireEnd()
 
@@ -71,7 +71,7 @@ describe('bufferStreamHandle', () => {
 
   it('flushes a pre-registration error', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n)
+    const handle = bufferStreamHandle(fake.source)
 
     const err = new Error('transport gone')
     fake.fireError(err)
@@ -83,25 +83,9 @@ describe('bufferStreamHandle', () => {
     expect(received).toBe(err)
   })
 
-  it('routes a decode error to onError (buffered)', () => {
-    const fake = fakeSource<string>()
-    const decodeErr = new Error('bad payload')
-    const handle = bufferStreamHandle<string, string>(fake.source, () => {
-      throw decodeErr
-    })
-
-    fake.fireMessage('garbage')
-
-    let received: Error | null = null
-    handle.onError((e) => {
-      received = e
-    })
-    expect(received).toBe(decodeErr)
-  })
-
   it('only flushes events once', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n)
+    const handle = bufferStreamHandle(fake.source)
 
     fake.fireMessage(1)
     fake.fireMessage(2)
@@ -123,7 +107,7 @@ describe('bufferStreamHandle', () => {
 
   it('preserves message ordering in the buffer', () => {
     const fake = fakeSource<number>()
-    const handle = bufferStreamHandle<number, number>(fake.source, n => n)
+    const handle = bufferStreamHandle(fake.source)
 
     fake.fireMessage(1)
     fake.fireMessage(2)

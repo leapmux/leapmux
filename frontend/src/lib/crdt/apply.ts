@@ -1,3 +1,4 @@
+import type { TabIdent } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FloatingWindowRecord, HLC, LWWDirection, LWWDouble, LWWDoubles, LWWInt32, LWWNodeKind, LWWString, LWWUint32, NodeRecord, TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { CrdtOp } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
@@ -17,11 +18,12 @@ import {
   WorkspaceContentsRecordSchema,
 } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { hlcClone, hlcCmp, hlcIsZero } from './hlc'
+import { opHasIdentity, selectsNoRegister } from './ops'
 
 /**
  * NewState returns an empty UserCrdtState seeded with the given user id.
  * Workspaces map is initialized empty; the lifecycle create/delete paths add
- * and remove entries via SetWorkspaceRegisterOp / TombstoneWorkspaceOp in the
+ * and remove entries via CreateWorkspaceOp / TombstoneWorkspaceOp in the
  * op log (the same serialized pipeline every other op flows through).
  */
 export function newState(userId: string): UserCrdtState {
@@ -53,6 +55,12 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
   if (hlcCmp(canon, state.maxHlc) > 0) {
     state.maxHlc = hlcClone(canon)
   }
+  // The hub validator's own predicate (ValidateBatch step 0). A replayed op or
+  // a stored checkpoint skips that validator, so applyOp checks again: an op
+  // with an empty id would create a record under the empty key, which every
+  // reader treats as a real entity. Mirrors the hub's Apply.
+  if (!opHasIdentity(op) || selectsNoRegister(op))
+    return
   const body = op.body
   switch (body.case) {
     case 'setNodeRegister':
@@ -61,14 +69,16 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneNode':
       applyTombstoneNode(state, body.value.nodeId, canon)
       break
+    // opHasIdentity above admits a tab op only when it carries its TabIdent,
+    // so the three tab cases below cannot see an absent tab.
     case 'setTabRegister':
-      applySetTabRegister(state, body.value, canon)
+      applySetTabRegister(state, body.value.tab!, body.value.field, canon)
       break
     case 'tombstoneTab':
-      applyTombstoneTab(state, body.value.tabType, body.value.tabId, canon)
+      applyTombstoneTab(state, body.value.tab!, canon)
       break
     case 'reviveTab':
-      applyReviveTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
+      applyReviveTab(state, body.value.tab!, canon)
       break
     case 'setFloatingWindowRegister':
       applySetFloatingWindowRegister(state, body.value, canon)
@@ -76,11 +86,8 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneFloatingWindow':
       applyTombstoneFloatingWindow(state, body.value.windowId, canon)
       break
-    case 'setWorkspaceRootNode':
-      applySetWorkspaceRootNode(state, body.value.workspaceId, body.value.rootNodeId)
-      break
-    case 'setWorkspaceRegister':
-      applySetWorkspaceRegister(state, body.value.workspaceId)
+    case 'createWorkspace':
+      applyCreateWorkspace(state, body.value.workspaceId, body.value.rootNodeId)
       break
     case 'tombstoneWorkspace':
       applyTombstoneWorkspace(state, body.value.workspaceId)
@@ -278,17 +285,21 @@ const tabRegisterHandlers: Record<string, TabFieldHandler> = {
   },
 }
 
-function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId: string, field: { case?: string | undefined, value?: unknown } }, hlc: HLC): void {
-  const rec = ensureTab(state, op.tabId, op.tabType)
-  if (rec.tabType !== op.tabType)
+// applyOp admits a tab op only when its TabIdent carries both a type and an id
+// (opHasIdentity), so the tab apply functions below take the TabIdent as given.
+
+function applySetTabRegister(state: UserCrdtState, tab: TabIdent, field: { case?: string | undefined, value?: unknown }, hlc: HLC): void {
+  const rec = ensureTab(state, tab.tabId, tab.tabType)
+  if (rec.tabType !== tab.tabType)
     return
   if (!hlcIsZero(rec.tombstoneAt))
     return
-  const f = op.field as { case: string, value: unknown }
+  const f = field as { case: string, value: unknown }
   tabRegisterHandlers[f.case]?.(rec, hlc, f.value)
 }
 
-function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
+function applyTombstoneTab(state: UserCrdtState, tab: TabIdent, hlc: HLC): void {
+  const { tabType, tabId } = tab
   const existing = state.tabs[tabId]
   // The tombstone is a true LWW register over both tombstone and revive
   // writes: a tombstone applies only when its HLC is newer than the current
@@ -316,9 +327,8 @@ function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string,
  * later tombstone newer than the stale revive but older than the real one
  * cannot re-close a tab the user reopened.
  */
-function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
-  if (!tabId)
-    return
+function applyReviveTab(state: UserCrdtState, tab: TabIdent, hlc: HLC): void {
+  const { tabType, tabId } = tab
   const existing = state.tabs[tabId]
   if (!existing) {
     state.tabs[tabId] = create(TabRecordSchema, {
@@ -416,19 +426,20 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
     map[id] = init(existing)
 }
 
-function applySetWorkspaceRootNode(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
-  // Lazy-create the `WorkspaceContentsRecord` if this client hasn't
-  // seen it yet. The hub's lifecycle create batch seeds the record via a
-  // `SetWorkspaceRegisterOp` in the SAME batch as this op, so a subscriber
-  // that admits the workspace receives both and the record is normally
-  // already present when this runs. This lazy-create is the bootstrap-replay
-  // safety net for op logs written before `SetWorkspaceRegisterOp` existed
-  // (a `SetWorkspaceRootNode` op with no companion register), or for a
-  // subscriber whose initial `UserMaterialized` predated the workspace and
-  // whose filter misses the seed batch. Either leaves the op with no record
-  // to land on — and `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap`
-  // would wait forever on `state.workspaces[wsID].rootNodeId`, leaving the
-  // newly-created workspace tile-less in the UI.
+/**
+ * applyCreateWorkspace creates a workspace's WorkspaceContentsRecord with its
+ * set-once root. The record is created when absent; an existing record keeps
+ * any root it already holds and takes this one only when its root is empty, so
+ * a re-drained create seed batch never clobbers a workspace the user has since
+ * rooted or populated. applyOp never reaches it with an empty workspace id (see
+ * its identity check). Mirrors backend `applyCreateWorkspace`.
+ *
+ * Creating the record here, rather than waiting for one, matters to a
+ * subscriber whose initial `UserMaterialized` predated the workspace:
+ * `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap` wait on
+ * `state.workspaces[wsID].rootNodeId`, and would wait forever otherwise.
+ */
+function applyCreateWorkspace(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
   let rec = state.workspaces[workspaceId]
   if (!rec) {
     rec = create(WorkspaceContentsRecordSchema, { workspaceId })
@@ -439,28 +450,11 @@ function applySetWorkspaceRootNode(state: UserCrdtState, workspaceId: string, ro
 }
 
 /**
- * applySetWorkspaceRegister seeds the WorkspaceContentsRecord map entry for a
- * workspace (root_node_id empty). Idempotent: a workspace that already exists
- * is left untouched, so a re-drained create seed batch (after a transient
- * consume fault) never clobbers a workspace the user has since rooted or
- * populated. Mirrors backend `applySetWorkspaceRegister`.
- */
-function applySetWorkspaceRegister(state: UserCrdtState, workspaceId: string): void {
-  if (!workspaceId)
-    return
-  if (!state.workspaces[workspaceId]) {
-    state.workspaces[workspaceId] = create(WorkspaceContentsRecordSchema, { workspaceId })
-  }
-}
-
-/**
  * applyTombstoneWorkspace removes the WorkspaceContentsRecord map entry.
  * Idempotent: deleting an already-absent workspace is a no-op, so a re-drained
  * delete batch (after a transient consume fault) is safe. Mirrors backend
  * `applyTombstoneWorkspace`.
  */
 function applyTombstoneWorkspace(state: UserCrdtState, workspaceId: string): void {
-  if (!workspaceId)
-    return
   delete state.workspaces[workspaceId]
 }

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { PI_EVENT } from '../../../src/generated/contracts/pi-protocol'
-import { AgentProvider, InterruptAgentRequestSchema, InterruptAgentResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { getTestChannel, openAgentViaAPI } from '../helpers/api'
 import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
 import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
@@ -124,7 +124,7 @@ export default function (pi) {
       try {
         await sendMessage(page, modelScript.prompt(`Hold original turn ${marker}.`))
         await modelScript.waitForGate(gate)
-        await channel.callWorker(server.workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, { agentId })
+        await channel.callWorker(server.workerId, WorkerAgentService.method.interruptAgent, { agentId })
         const records = relayEvidence(evidencePath)
         const held = records.find(record => record.kind === 'held-abort-reply')
         const released = records.find(record => record.kind === 'released-abort-reply')
@@ -188,7 +188,7 @@ piTest('settles a cancelled native retry and completes a later prompt in the sam
       const agentId = await openAgentViaAPI(server, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
       const channel = await getTestChannel(server.hubUrl, server.adminToken)
       await channel.getOrOpenChannel(server.workerId)
-      interrupt = () => channel.callWorker(server.workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, { agentId })
+      interrupt = () => channel.callWorker(server.workerId, WorkerAgentService.method.interruptAgent, { agentId })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await expectSettingsChip(page, 'Protocol test')
       const completion = `After cancelled retry ${marker}.`

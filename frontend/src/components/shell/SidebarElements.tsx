@@ -79,6 +79,8 @@ export interface SidebarElementsOpts {
    */
   localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
+  /** See `WorkspaceTabTreeProps.isWorkerStreamOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
   onDeregisterWorker: (worker: Worker) => void

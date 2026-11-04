@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
 import type { AgentInputQueueSnapshot, Attachment, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createEffect, createSignal, untrack } from 'solid-js'
+import { batch, createEffect, createSignal, untrack } from 'solid-js'
 import { clearDraft, loadDraft } from '~/lib/editor/draftPersistence'
 import { randomUUID } from '~/lib/idGenerator'
 import { queueEditDraftKey } from './composer/draftIdentity'
@@ -23,10 +23,10 @@ export interface BeginQueueEditResult {
 }
 
 /**
- * Claims the edit lock on one queued input. `takeover` takes the lock away from
- * another client that holds it.
+ * Claims the edit lock on one queued input of `agentId`. `takeover` takes the
+ * lock away from another client that holds it.
  */
-export type BeginQueueEdit = (item: QueuedAgentInput, takeover: boolean) => Promise<BeginQueueEditResult>
+export type BeginQueueEdit = (agentId: string, item: QueuedAgentInput, takeover: boolean) => Promise<BeginQueueEditResult>
 
 /**
  * The attachment handles that the session drives. Every one of them is an
@@ -44,6 +44,31 @@ export interface QueueEditAttachmentPorts {
   activeDraftKey: Accessor<string>
   replaceAttachments: (attachments: FileAttachment[]) => void
   clearAllAttachments: () => void
+}
+
+/**
+ * One update of an open queue edit, as {@link QueueEditSession.markUpdateStarted}
+ * answers it: the queued input, and the agent whose queue holds it. A queued
+ * input states no agent, so the pair is what identifies the edit.
+ *
+ * The panel sends the update RPC with this pair and hands the same pair to
+ * {@link QueueEditSession.markUpdateCompleted} or
+ * {@link QueueEditSession.markUpdateFailed}. So the end of an update
+ * identifies exactly the edit that the update started from, even after the
+ * panel moved to another agent and started another update there.
+ */
+export interface QueueEditUpdate {
+  agentId: string
+  input: QueuedAgentInput
+}
+
+/**
+ * The key of one agent's queued input. A queued input states no agent, and
+ * the same input id can occur in two agents' queues, so only the pair
+ * identifies one input.
+ */
+function queueInputKey(agentId: string, inputId: string): string {
+  return `${agentId}\0${inputId}`
 }
 
 export interface QueueEditSessionOptions {
@@ -100,13 +125,31 @@ export interface QueueEditSession {
   loadQueueEdit: (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => void
   /** Drops everything the session holds for a queued input that left the queue. */
   clearQueueEditArtifacts: (item: QueuedAgentInput) => void
-  /** The update RPC for the open edit starts. */
-  markUpdateStarted: () => void
-  /** The update RPC for the open edit failed. */
-  markUpdateFailed: () => void
-  /** The update RPC for `item` succeeded. {@link handleAfterSend} closes the edit. */
-  markUpdateCompleted: (item: QueuedAgentInput) => void
-  /** The editor finished the send that carried the update, and cleared its draft. */
+  /**
+   * The update RPC for the open edit starts. Answers that edit and its agent,
+   * which the panel sends and later hands to {@link markUpdateCompleted} or
+   * {@link markUpdateFailed}, and marks an update of THAT edit in flight.
+   *
+   * Answers undefined, and marks nothing, when the agent that the panel shows
+   * now has no open edit. The panel then sends no update.
+   */
+  markUpdateStarted: () => QueueEditUpdate | undefined
+  /**
+   * The update that {@link markUpdateStarted} answered failed. Ends that
+   * update alone; an update of another edit stays in flight.
+   */
+  markUpdateFailed: (update: QueueEditUpdate) => void
+  /**
+   * The update that {@link markUpdateStarted} answered succeeded. It stays in
+   * flight until {@link handleAfterSend} settles it, which closes that edit and
+   * no other: the panel can show another agent's edit by then.
+   */
+  markUpdateCompleted: (update: QueueEditUpdate) => void
+  /**
+   * The editor finished a send and cleared its draft. Settles every update
+   * that completed since the last call: closes its edit when the panel shows
+   * it, and ends its in-flight state.
+   */
   handleAfterSend: () => void
   /**
    * Answers the text that {@link loadQueueEdit} fetched, and forgets it. The
@@ -125,15 +168,24 @@ export interface QueueEditSession {
 /**
  * Owns one agent composer's queue-edit state: which queued input the composer
  * edits, the text and the attachments that the begin-edit RPC fetched, the
- * normal attachments that the edit displaced, and the update-in-flight flag.
+ * normal attachments that the edit displaced, and the updates in flight.
  *
  * The panel completes the session with {@link QueueEditSession.bindAttachments},
  * which states why the wiring takes two calls.
  */
 export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEditSession {
-  const [editingInput, setEditingInput] = createSignal<QueuedAgentInput>()
-  const [queueUpdateInFlight, setQueueUpdateInFlight] = createSignal(false)
-  let completedQueueEdit: { agentId: string, inputId: string } | undefined
+  // The open edit, with the agent whose queue holds the input. A queued input
+  // states no agent, so the session records the one it loaded the edit for.
+  const [editingInput, setEditingInput] = createSignal<{ agentId: string, input: QueuedAgentInput }>()
+  // How many updates of each edit are in flight, by `queueInputKey`. Keyed,
+  // because action state is per agent: a panel that moves to another agent can
+  // run two agents' updates at once, and one update's end says nothing about
+  // the other. A count rather than a set, because two starts of the same edit
+  // can overlap too, and the first one to end must not end the other.
+  const [updatesInFlight, setUpdatesInFlight] = createSignal<ReadonlyMap<string, number>>(new Map())
+  // The updates that succeeded and wait for `handleAfterSend`. Each one stays
+  // in flight until then.
+  let completedUpdates: QueueEditUpdate[] = []
   let pendingQueueEditText: string | undefined
   let pendingQueueEditAttachments: FileAttachment[] | undefined
   let normalAttachmentRestore: { key: string, attachments: FileAttachment[] } | undefined
@@ -158,7 +210,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
   const activeEditingInput = () => {
     const editing = editingInput()
     return editing?.agentId === opts.agentId()
-      ? editing
+      ? editing.input
       : undefined
   }
   const attachmentDraftKey = () => {
@@ -168,13 +220,40 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       : opts.agentId()
   }
 
+  /**
+   * Adds one in-flight update for each of `updates`, or ends one. A count never
+   * goes below zero: an end of an update that already ended changes nothing,
+   * so it cannot cancel a later start of the same edit.
+   *
+   * ONE write for the whole list, so a settle of two updates of the same edit
+   * does not depend on what a second write inside a `batch` reads.
+   */
+  const changeUpdatesInFlight = (updates: readonly QueueEditUpdate[], delta: 1 | -1) => {
+    setUpdatesInFlight((previous) => {
+      const next = new Map(previous)
+      for (const update of updates) {
+        const key = queueInputKey(update.agentId, update.input.id)
+        const count = (next.get(key) ?? 0) + delta
+        if (count > 0)
+          next.set(key, count)
+        else
+          next.delete(key)
+      }
+      return next
+    })
+  }
+
+  /** Whether an update of `agentId`'s input `inputId` is in flight. */
+  const updateInFlight = (agentId: string, inputId: string): boolean =>
+    updatesInFlight().has(queueInputKey(agentId, inputId))
+
   const loadQueueEdit = (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => {
     // Resolve the handles here, not in the response handler below. Every caller
     // discards this function's rejections, so a throw inside the chain vanishes.
     const ports = requirePorts()
     const editAgentId = untrack(opts.agentId)
     const inputId = item.id
-    const requestKey = `${editAgentId}\0${inputId}`
+    const requestKey = queueInputKey(editAgentId, inputId)
     if (queueEditRequests.has(requestKey))
       return
     const beginEdit = opts.onBeginQueueEdit()
@@ -191,7 +270,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     // actually belongs to: "is this still the load the panel is waiting for?"
     const loadToken = ++queueEditLoadToken
     queueEditRequests.add(requestKey)
-    const request = beginEdit(item, takeover)
+    const request = beginEdit(editAgentId, item, takeover)
     void request.then(async (response) => {
       if (loadToken !== queueEditLoadToken || untrack(opts.agentId) !== editAgentId)
         return
@@ -226,7 +305,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       }
       if (!restoreDraft)
         clearScheduleDraft(queueDraftKey)
-      setEditingInput(edited)
+      setEditingInput({ agentId: editAgentId, input: edited })
     }).catch(() => {}).finally(() => {
       queueEditRequests.delete(requestKey)
     })
@@ -288,9 +367,11 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     })
 
     // Drop the edit when the input leaves the queue, or when another client
-    // takes the lock. An update in flight suspends this rule: that update is
-    // the reason the worker rewrites the item, and the send path closes the
-    // edit itself.
+    // takes the lock. An update OF THIS EDIT in flight suspends this rule: that
+    // update is the reason the worker rewrites the item, and the send path
+    // closes the edit itself. An update of another edit does not suspend it,
+    // because the worker's rewrite of that other item says nothing about this
+    // one.
     createEffect(() => {
       const initialEditing = activeEditingInput()
       const snapshot = opts.inputQueue()
@@ -303,7 +384,7 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
           break
         }
       }
-      if ((!current || current.editOwnerClientId !== opts.clientId()) && !queueUpdateInFlight()) {
+      if ((!current || current.editOwnerClientId !== opts.clientId()) && !updateInFlight(opts.agentId(), initialEditing.id)) {
         pendingQueueEditText = undefined
         pendingQueueEditAttachments = undefined
         ports.clearAllAttachments()
@@ -318,14 +399,31 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
   }
 
   const handleAfterSend = () => {
-    if (completedQueueEdit) {
-      const completed = completedQueueEdit
-      completedQueueEdit = undefined
-      const current = activeEditingInput()
-      if (current?.agentId === completed.agentId && current.id === completed.inputId)
+    if (completedUpdates.length === 0)
+      return
+    const settled = completedUpdates
+    completedUpdates = []
+    const current = activeEditingInput()
+    const agentId = untrack(opts.agentId)
+    // ONE update, so the ownership rule never sees an edit whose update ended
+    // while the close of that edit is still pending.
+    batch(() => {
+      if (current && settled.some(update => update.agentId === agentId && update.input.id === current.id))
         setEditingInput()
-      setQueueUpdateInFlight(false)
-    }
+      changeUpdatesInFlight(settled, -1)
+    })
+  }
+
+  const markUpdateStarted = (): QueueEditUpdate | undefined => {
+    // Untracked, so a caller inside a reactive scope does not subscribe to
+    // the edit that this update is about to close.
+    const agentId = untrack(opts.agentId)
+    const input = untrack(activeEditingInput)
+    if (!input)
+      return undefined
+    const update = { agentId, input }
+    changeUpdatesInFlight([update], 1)
+    return update
   }
 
   const takePendingText = (): string | undefined => {
@@ -349,10 +447,10 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     bindAttachments,
     loadQueueEdit,
     clearQueueEditArtifacts,
-    markUpdateStarted: () => setQueueUpdateInFlight(true),
-    markUpdateFailed: () => setQueueUpdateInFlight(false),
-    markUpdateCompleted: (item) => {
-      completedQueueEdit = { agentId: item.agentId, inputId: item.id }
+    markUpdateStarted,
+    markUpdateFailed: update => changeUpdatesInFlight([update], -1),
+    markUpdateCompleted: (update) => {
+      completedUpdates.push(update)
     },
     handleAfterSend,
     takePendingText,

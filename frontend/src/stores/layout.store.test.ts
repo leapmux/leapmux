@@ -216,7 +216,7 @@ describe('buildTilePredicateMap', () => {
     expect(map.get('L')!.closeMode.kind).not.toBe('grid')
   })
 
-  it('canSplit/canMakeGrid flip at MAX_DEPTH for kind=\'main\'', () => {
+  it('flips canSplit/canMakeGrid at MAX_DEPTH for kind=\'main\'', () => {
     let node: LayoutNodeLocal = leaf('deep')
     for (let i = 0; i < MAX_DEPTH; i++)
       node = split(`s${i}`, 'horizontal', [0.5, 0.5], leaf(`sib${i}`), node)

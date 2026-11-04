@@ -14,14 +14,12 @@ import { blake2b } from '@noble/hashes/blake2.js'
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 
 import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
+import { AEAD_TAG_SIZE, SLHDSA_SIG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 import { SymmetricState } from './noise'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
-const DH_LEN = 32
-const AEAD_TAG_SIZE = 16
-const NOISE_MSG_LEN = DH_LEN + AEAD_TAG_SIZE // 48 bytes
-const SLHDSA_SIG_SIZE = 49856
+const NOISE_MSG_LEN = X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE // 48 bytes
 
 export interface HybridHandshakeState {
   ss: SymmetricState
@@ -132,11 +130,12 @@ export function deriveRekeySecrets(
   peerEphemeralPub: Uint8Array,
   pqSharedSecret: Uint8Array | null,
 ): { dhSecret: Uint8Array, pqSecret: Uint8Array | null } {
-  if (localEphemeralPriv.length !== DH_LEN) {
-    throw new Error(`noise: rekey ephemeral private key wrong size (${localEphemeralPriv.length} !== ${DH_LEN})`)
+  // An X25519 private key has the size of a public key.
+  if (localEphemeralPriv.length !== X25519_PUBLIC_KEY_SIZE) {
+    throw new Error(`noise: rekey ephemeral private key wrong size (${localEphemeralPriv.length} !== ${X25519_PUBLIC_KEY_SIZE})`)
   }
-  if (peerEphemeralPub.length !== DH_LEN) {
-    throw new Error(`noise: rekey peer ephemeral public key wrong size (${peerEphemeralPub.length} !== ${DH_LEN})`)
+  if (peerEphemeralPub.length !== X25519_PUBLIC_KEY_SIZE) {
+    throw new Error(`noise: rekey peer ephemeral public key wrong size (${peerEphemeralPub.length} !== ${X25519_PUBLIC_KEY_SIZE})`)
   }
   const dhSecret = x25519.getSharedSecret(localEphemeralPriv, peerEphemeralPub)
   return { dhSecret, pqSecret: pqSharedSecret }
@@ -167,7 +166,7 @@ export function initiatorHandshake2(
   const slhdsaSig = message2.slice(NOISE_MSG_LEN)
 
   // <- e, ee
-  const re = noiseMsg2.slice(0, DH_LEN)
+  const re = noiseMsg2.slice(0, X25519_PUBLIC_KEY_SIZE)
   ss.mixHash(re)
 
   // ee: DH(e, re)
@@ -176,7 +175,7 @@ export function initiatorHandshake2(
   dhEE.fill(0)
 
   // Decrypt payload (should be empty).
-  const encPayload = noiseMsg2.slice(DH_LEN)
+  const encPayload = noiseMsg2.slice(X25519_PUBLIC_KEY_SIZE)
   ss.decryptAndHash(encPayload)
 
   // Compute transcript: BLAKE2b(handshake_hash || mlkem_ct || mlkem_ss)

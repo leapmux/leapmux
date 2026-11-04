@@ -2,7 +2,7 @@
 import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerAgent, workerGit, workerTerminal } from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { menuOptions, menuTriggerText, pickMenuValue } from '~/test-support/menu'
@@ -31,15 +31,21 @@ vi.mock('~/stores/workerInfo.store', () => {
 })
 
 vi.mock('~/api/workerRpc', () => ({
-  inspectBranchChange: vi.fn(),
-  listGitBranches: vi.fn(),
-  listGitWorktrees: vi.fn(),
-  getGitInfo: vi.fn(),
-  listAvailableShells: vi.fn(),
-  checkoutBranch: vi.fn(),
-  createBranch: vi.fn(),
-  openAgent: vi.fn(),
-  openTerminal: vi.fn(),
+  workerGit: {
+    inspectBranchChange: vi.fn(),
+    listGitBranches: vi.fn(),
+    listGitWorktrees: vi.fn(),
+    getGitInfo: vi.fn(),
+    checkoutBranch: vi.fn(),
+    createBranch: vi.fn(),
+  },
+  workerTerminal: {
+    listAvailableShells: vi.fn(),
+    openTerminal: vi.fn(),
+  },
+  workerAgent: {
+    openAgent: vi.fn(),
+  },
 }))
 
 const branches: GitBranchEntry[] = [
@@ -52,7 +58,7 @@ function setupRpcMocks() {
   // The dialog now issues a single InspectBranchChange RPC at mount;
   // the listGitBranches / getGitInfo mocks remain (unused) so the
   // shared workerRpc mock surface keeps a consistent shape.
-  vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+  vi.mocked(workerGit.inspectBranchChange).mockResolvedValue({
     $typeName: 'leapmux.v1.InspectBranchChangeResponse',
     repoRoot: '/repo',
     toplevel: '/repo',
@@ -61,14 +67,14 @@ function setupRpcMocks() {
     isDirty: false,
     branches,
   })
-  vi.mocked(workerRpc.listAvailableShells).mockResolvedValue({
+  vi.mocked(workerTerminal.listAvailableShells).mockResolvedValue({
     $typeName: 'leapmux.v1.ListAvailableShellsResponse',
     shells: ['/bin/zsh', '/bin/bash'],
     defaultShell: '/bin/zsh',
   })
-  vi.mocked(workerRpc.checkoutBranch).mockResolvedValue({ $typeName: 'leapmux.v1.CheckoutBranchResponse' })
-  vi.mocked(workerRpc.createBranch).mockResolvedValue({ $typeName: 'leapmux.v1.CreateBranchResponse' })
-  vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue({
+  vi.mocked(workerGit.checkoutBranch).mockResolvedValue({ $typeName: 'leapmux.v1.CheckoutBranchResponse' })
+  vi.mocked(workerGit.createBranch).mockResolvedValue({ $typeName: 'leapmux.v1.CreateBranchResponse' })
+  vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
     $typeName: 'leapmux.v1.ListGitWorktreesResponse',
     worktrees: [],
   })
@@ -166,9 +172,9 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
     await Promise.resolve()
     await Promise.resolve()
-    expect(workerRpc.inspectBranchChange).toHaveBeenCalledTimes(1)
-    expect(workerRpc.listGitBranches).not.toHaveBeenCalled()
-    expect(workerRpc.getGitInfo).not.toHaveBeenCalled()
+    expect(workerGit.inspectBranchChange).toHaveBeenCalledTimes(1)
+    expect(workerGit.listGitBranches).not.toHaveBeenCalled()
+    expect(workerGit.getGitInfo).not.toHaveBeenCalled()
   })
 
   it('passes the row-supplied path to inspectBranchChange', async () => {
@@ -177,9 +183,9 @@ describe('ChangeBranchDialog', () => {
     // The third arg is the opts bag with the createGuardedFetch
     // signal — match it loosely so signal-threading refactors don't
     // re-break this assertion.
-    expect(workerRpc.inspectBranchChange).toHaveBeenCalledWith(
+    expect(workerGit.inspectBranchChange).toHaveBeenCalledWith(
       'w1',
-      expect.objectContaining({ path: '/repo', workerId: 'w1' }),
+      { path: '/repo' },
       expect.objectContaining({
         signal: expect.any(AbortSignal),
       }),
@@ -191,7 +197,7 @@ describe('ChangeBranchDialog', () => {
     // so the form is interactive on the very first paint — no spinner
     // round trip just to render the radios. Verifies the seed reaches
     // the GitPathInfo accessor (the form-gate predicate consumes it).
-    vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise<never>(() => {})) // probe held pending
+    vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {})) // probe held pending
     renderDialog({ branchName: 'main' })
     // No await needed: the seed controls showGitOptions synchronously.
     expect(screen.getByText('Switch to branch')).toBeInTheDocument()
@@ -213,8 +219,8 @@ describe('ChangeBranchDialog', () => {
     // "already exists" once the branches list lands. With the inspect
     // pending, the picker is loading but the seed-driven dirty/no-op
     // logic uses currentBranch='main'.
-    let resolveInspect!: (resp: Awaited<ReturnType<typeof workerRpc.inspectBranchChange>>) => void
-    vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(
+    let resolveInspect!: (resp: Awaited<ReturnType<typeof workerGit.inspectBranchChange>>) => void
+    vi.mocked(workerGit.inspectBranchChange).mockReturnValue(
       new Promise((resolve) => { resolveInspect = resolve }),
     )
     renderDialog({ branchName: 'main' })
@@ -229,7 +235,7 @@ describe('ChangeBranchDialog', () => {
       currentBranch: 'main',
       isDirty: false,
       branches,
-    } as Awaited<ReturnType<typeof workerRpc.inspectBranchChange>>)
+    } as Awaited<ReturnType<typeof workerGit.inspectBranchChange>>)
     fireEvent.click(screen.getByText('Create new branch'))
     await waitFor(() => {
       expect(menuOptions('branch-select-menu')).toContain('main (current)')
@@ -262,12 +268,11 @@ describe('ChangeBranchDialog', () => {
     const apply = screen.getByRole('button', { name: 'Apply' })
     fireEvent.click(apply)
 
-    await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0]?.[0]).toBe('w1')
-    expect(vi.mocked(workerRpc.checkoutBranch).mock.calls[0]?.[1]).toMatchObject({
+    await waitFor(() => expect(workerGit.checkoutBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.checkoutBranch).mock.calls[0]?.[0]).toBe('w1')
+    expect(vi.mocked(workerGit.checkoutBranch).mock.calls[0]?.[1]).toMatchObject({
       path: '/repo',
       branch: 'main',
-      workerId: 'w1',
     })
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalled())
     await waitFor(() => expect(props.onClose).toHaveBeenCalled())
@@ -303,7 +308,7 @@ describe('ChangeBranchDialog', () => {
     // non-existent branch until the next status refresh repaired it.
     // The fix consults the BranchSelect entry's isRemote flag and only
     // strips the prefix for genuinely remote refs.
-    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+    vi.mocked(workerGit.inspectBranchChange).mockResolvedValue({
       $typeName: 'leapmux.v1.InspectBranchChangeResponse',
       repoRoot: '/repo',
       toplevel: '/repo',
@@ -349,8 +354,8 @@ describe('ChangeBranchDialog', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
-    await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.createBranch).mock.calls[0]?.[1]).toMatchObject({
+    await waitFor(() => expect(workerGit.createBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.createBranch).mock.calls[0]?.[1]).toMatchObject({
       newBranch: 'shiny-new',
       baseBranch: 'feature',
       path: '/repo',
@@ -371,9 +376,9 @@ describe('ChangeBranchDialog', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
-    await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.createBranch).mock.calls[0]?.[1]).toMatchObject({ newBranch: 'shiny-new', path: '/repo' })
-    expect(workerRpc.checkoutBranch).not.toHaveBeenCalled()
+    await waitFor(() => expect(workerGit.createBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.createBranch).mock.calls[0]?.[1]).toMatchObject({ newBranch: 'shiny-new', path: '/repo' })
+    expect(workerGit.checkoutBranch).not.toHaveBeenCalled()
   })
 
   it('create-branch: Apply disabled when name collides with an existing branch', async () => {
@@ -389,8 +394,8 @@ describe('ChangeBranchDialog', () => {
     expect(screen.getByText('A branch with this name already exists')).toBeInTheDocument()
   })
 
-  it('worktree mode (agent): calls openAgent with createWorktree=true', async () => {
-    vi.mocked(workerRpc.openAgent).mockResolvedValue({
+  it('worktree mode (agent): calls openAgent with a create_worktree setup', async () => {
+    vi.mocked(workerAgent.openAgent).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenAgentResponse',
       agent: {
         $typeName: 'leapmux.v1.AgentInfo',
@@ -402,13 +407,23 @@ describe('ChangeBranchDialog', () => {
     const props = renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
+    fireEvent.input(screen.getByPlaceholderText('feature-branch'), {
+      target: { value: 'wt-feature' },
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
-    await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1]).toMatchObject({
-      createWorktree: true,
-      workerId: 'w1',
+    await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[0]).toBe('w1')
+    expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1]).toMatchObject({
       workingDir: '/repo',
+    })
+    // The whole setup, so the typed name and the base branch reach the wire,
+    // not only the mode.
+    expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
+      mode: {
+        case: 'createWorktree',
+        value: { branch: 'wt-feature', baseBranch: 'feature' },
+      },
     })
     await waitFor(() => expect(props.onAgentCreated).toHaveBeenCalled())
   })
@@ -430,8 +445,8 @@ describe('ChangeBranchDialog', () => {
 
     fireEvent.click(apply)
     await Promise.resolve()
-    expect(workerRpc.openAgent, 'the guard holds before the worker RPC').not.toHaveBeenCalled()
-    expect(workerRpc.openTerminal).not.toHaveBeenCalled()
+    expect(workerAgent.openAgent, 'the guard holds before the worker RPC').not.toHaveBeenCalled()
+    expect(workerTerminal.openTerminal).not.toHaveBeenCalled()
     expect(props.onClose, 'and the dialog did not close as a success').not.toHaveBeenCalled()
   })
 
@@ -449,12 +464,12 @@ describe('ChangeBranchDialog', () => {
     expect(apply.disabled, 'switch-branch arms despite the reason').toBe(false)
 
     fireEvent.click(apply)
-    await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.checkoutBranch).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(props.onClose).toHaveBeenCalled())
   })
 
   it('worktree mode (terminal): calls openTerminal with the chosen shell', async () => {
-    vi.mocked(workerRpc.openTerminal).mockResolvedValue({
+    vi.mocked(workerTerminal.openTerminal).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenTerminalResponse',
       terminalId: 't1',
       title: 'bash',
@@ -466,16 +481,19 @@ describe('ChangeBranchDialog', () => {
 
     // Switch the "Open as" dropdown to terminal.
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalled())
     // Wait for the createResource-backed shells list to resolve so the
     // default shell propagates into canSubmit() and unblocks Apply.
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(false))
 
     fireEvent.click(apply)
-    await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[1]).toMatchObject({
-      createWorktree: true,
+    await waitFor(() => expect(workerTerminal.openTerminal).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerTerminal.openTerminal).mock.calls[0]?.[0]).toBe('w1')
+    expect(vi.mocked(workerTerminal.openTerminal).mock.calls[0]?.[1]).toMatchObject({
+      gitSetup: {
+        mode: { case: 'createWorktree' },
+      },
       shell: '/bin/zsh',
     })
     await waitFor(() => expect(props.onTerminalCreated).toHaveBeenCalledWith('t1', 'w1', '/repo', 'bash'))
@@ -485,10 +503,10 @@ describe('ChangeBranchDialog', () => {
     const props = renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(workerRpc.checkoutBranch).not.toHaveBeenCalled()
-    expect(workerRpc.createBranch).not.toHaveBeenCalled()
-    expect(workerRpc.openAgent).not.toHaveBeenCalled()
-    expect(workerRpc.openTerminal).not.toHaveBeenCalled()
+    expect(workerGit.checkoutBranch).not.toHaveBeenCalled()
+    expect(workerGit.createBranch).not.toHaveBeenCalled()
+    expect(workerAgent.openAgent).not.toHaveBeenCalled()
+    expect(workerTerminal.openTerminal).not.toHaveBeenCalled()
     // Cancel triggers the dialog close animation, then props.onClose() —
     // assertion would be flaky in jsdom without timers, so just verify
     // the dialog disabled-during-busy gate is open.
@@ -514,7 +532,7 @@ describe('ChangeBranchDialog', () => {
     // both to local `feature` (no-op). Same outcome as picking
     // `feature` directly — must also gate submit and show the
     // already-on-local notice.
-    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+    vi.mocked(workerGit.inspectBranchChange).mockResolvedValue({
       $typeName: 'leapmux.v1.InspectBranchChangeResponse',
       repoRoot: '/repo',
       toplevel: '/repo',
@@ -549,10 +567,10 @@ describe('ChangeBranchDialog', () => {
     renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
-    expect(workerRpc.listAvailableShells).not.toHaveBeenCalled()
+    expect(workerTerminal.listAvailableShells).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledTimes(1))
   })
 
   it('worktree mode: shell listing fires exactly once even after toggling Open as back to Agent and again to Terminal', async () => {
@@ -565,7 +583,7 @@ describe('ChangeBranchDialog', () => {
     fireEvent.click(screen.getByText('Create new worktree'))
 
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalledTimes(1))
 
     // Toggle away (Agent → switch-branch path) and back to terminal.
     fireEvent.click(screen.getByRole('radio', { name: 'Agent' }))
@@ -576,7 +594,7 @@ describe('ChangeBranchDialog', () => {
     // Give any spurious refetch a chance to land before asserting.
     await Promise.resolve()
     await Promise.resolve()
-    expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(1)
+    expect(workerTerminal.listAvailableShells).toHaveBeenCalledTimes(1)
   })
 
   it('worktree mode: Branch name randomizer changes the input', async () => {
@@ -594,7 +612,7 @@ describe('ChangeBranchDialog', () => {
   })
 
   it('worktree mode (terminal): Apply disabled when shells list is empty', async () => {
-    vi.mocked(workerRpc.listAvailableShells).mockResolvedValueOnce({
+    vi.mocked(workerTerminal.listAvailableShells).mockResolvedValueOnce({
       $typeName: 'leapmux.v1.ListAvailableShellsResponse',
       shells: [],
       defaultShell: '',
@@ -603,13 +621,13 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalled())
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     expect(apply.disabled).toBe(true)
   })
 
   it('surfaces RPC failure messages in the dialog', async () => {
-    vi.mocked(workerRpc.checkoutBranch).mockRejectedValue(new Error('git boom'))
+    vi.mocked(workerGit.checkoutBranch).mockRejectedValue(new Error('git boom'))
     renderDialog()
     await awaitFormReady()
     pickMenuValue('branch-select-menu', 'main')
@@ -637,7 +655,7 @@ describe('ChangeBranchDialog header', () => {
   })
 
   it('calls a worktree a worktree once the inspect RPC lands', async () => {
-    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+    vi.mocked(workerGit.inspectBranchChange).mockResolvedValue({
       $typeName: 'leapmux.v1.InspectBranchChangeResponse',
       repoRoot: '/repo',
       toplevel: '/repo-worktrees/feature',
@@ -655,7 +673,7 @@ describe('ChangeBranchDialog header', () => {
 
   // The row is seeded from the sidebar, so it is right before the RPC answers.
   it('seeds the kind from the row that opened it', () => {
-    vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise(() => {}))
+    vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise(() => {}))
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
 
     expect(screen.getByText('Worktree branch')).toBeInTheDocument()
@@ -678,7 +696,7 @@ describe('ChangeBranchDialog header', () => {
   // "Branch" with a blank name, beside the error banner -- on the one surface
   // that exists to state which checkout the dialog acts on.
   it('keeps naming a worktree a worktree when the inspect RPC fails', async () => {
-    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    vi.mocked(workerGit.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
 
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
@@ -688,7 +706,7 @@ describe('ChangeBranchDialog header', () => {
 
   // The mirror case, so the reset is not simply pinned to `true`.
   it('keeps naming a branch a branch when the inspect RPC fails', async () => {
-    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    vi.mocked(workerGit.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
     renderDialog({ gitToplevel: '/repo', isWorktree: false, branchName: 'main' })
 
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
@@ -752,7 +770,7 @@ describe('ChangeBranchDialog title', () => {
   })
 
   it('sends the cleaned title on the agent path', async () => {
-    vi.mocked(workerRpc.openAgent).mockResolvedValue({
+    vi.mocked(workerAgent.openAgent).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenAgentResponse',
       agent: { $typeName: 'leapmux.v1.AgentInfo', id: 'a1', workerId: 'w1' } as never,
     } as never)
@@ -765,12 +783,12 @@ describe('ChangeBranchDialog title', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
-    await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openAgent).mock.calls[0]?.[1]).toMatchObject({ title: 'Auth fix' })
+    await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1]).toMatchObject({ title: 'Auth fix' })
   })
 
   it('sends the cleaned title on the terminal path', async () => {
-    vi.mocked(workerRpc.openTerminal).mockResolvedValue({
+    vi.mocked(workerTerminal.openTerminal).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenTerminalResponse',
       terminalId: 't1',
       title: 'Build logs',
@@ -780,7 +798,7 @@ describe('ChangeBranchDialog title', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
-    await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
+    await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalled())
 
     fireEvent.input(titleInput(), {
       target: { value: 'Build  logs' },
@@ -789,8 +807,8 @@ describe('ChangeBranchDialog title', () => {
     await waitFor(() => expect(apply.disabled).toBe(false))
 
     fireEvent.click(apply)
-    await waitFor(() => expect(workerRpc.openTerminal).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.openTerminal).mock.calls[0]?.[1]).toMatchObject({ title: 'Build logs' })
+    await waitFor(() => expect(workerTerminal.openTerminal).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerTerminal.openTerminal).mock.calls[0]?.[1]).toMatchObject({ title: 'Build logs' })
   })
 
   it('disables Apply and fires no RPC when the title is emptied', async () => {
@@ -807,8 +825,8 @@ describe('ChangeBranchDialog title', () => {
 
     fireEvent.click(apply)
     await Promise.resolve()
-    expect(workerRpc.openAgent).not.toHaveBeenCalled()
-    expect(workerRpc.openTerminal).not.toHaveBeenCalled()
+    expect(workerAgent.openAgent).not.toHaveBeenCalled()
+    expect(workerTerminal.openTerminal).not.toHaveBeenCalled()
   })
 
   // The gate is mode-scoped: a branch switch sends no title, so a title the
@@ -827,6 +845,6 @@ describe('ChangeBranchDialog title', () => {
     await waitFor(() => expect(apply.disabled).toBe(false))
 
     fireEvent.click(apply)
-    await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.checkoutBranch).toHaveBeenCalledTimes(1))
   })
 })

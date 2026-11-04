@@ -358,7 +358,7 @@ SELECT ancestors.id FROM ancestors WHERE ancestors.parent_agent_id IS NULL LIMIT
 -- evaluated breadth-first, so a parent comes before its own children).
 --
 -- Used by the CHILD-tab close path, which runs no teardown and so has nothing
--- later to read: CloseAgent reports the list to the client as
+-- later to read: CloseTab reports the list to the client as
 -- descendant_agent_ids, and the client retires those tabs. A ROOT close does
 -- not use this query -- it derives the same set from ListAgentTreeIDs below,
 -- AFTER its teardown, so that a subagent spawned during the provider's drain is

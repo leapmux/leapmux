@@ -413,3 +413,54 @@ describe('elevationDeadlineInterceptor', () => {
     await expect(transportModule.elevationDeadlineInterceptor(next)(req)).resolves.toBeDefined()
   })
 })
+
+// GetTimeouts lives on SystemService. loadTimeouts swallows every failure and
+// keeps the defaults, so a call to the wrong service would fail silently.
+describe('loadTimeouts', () => {
+  /** A Connect unary JSON reply. */
+  function json(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('reads the API timeout from SystemService, and keeps the current one for zero or a failure', async () => {
+    const requested: string[] = []
+    let answer: () => Response = () => json({})
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      requested.push(input instanceof Request
+        ? input.url
+        : String(input))
+      return answer()
+    }))
+    const before = transportModule.apiLoadingTimeoutMs()
+    try {
+      // Proto JSON omits a zero, so `{}` is a reply of zero seconds.
+      answer = () => json({})
+      await transportModule.loadTimeouts()
+      expect(transportModule.apiLoadingTimeoutMs()).toBe(before)
+
+      answer = () => new Response('unavailable', { status: 503 })
+      await transportModule.loadTimeouts()
+      expect(transportModule.apiLoadingTimeoutMs()).toBe(before)
+
+      answer = () => json({ apiTimeoutSeconds: 20 })
+      await transportModule.loadTimeouts()
+      expect(transportModule.apiLoadingTimeoutMs()).toBe(30_000)
+
+      expect(requested).toHaveLength(3)
+      for (const url of requested)
+        expect(url).toMatch(/\/leapmux\.v1\.SystemService\/GetTimeouts$/)
+    }
+    finally {
+      // Put the module's timeout back for any test that runs after this one.
+      answer = () => json({ apiTimeoutSeconds: 10 })
+      await transportModule.loadTimeouts()
+    }
+  })
+})

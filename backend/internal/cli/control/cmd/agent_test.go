@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 )
 
 // TestResolveProvider_KnownAliasShortCircuits pins the happy path:
@@ -64,7 +65,7 @@ func TestResolveProvider_UnknownAliasReturnsInvalidRequest(t *testing.T) {
 // the frontend picker auto-selecting when only one option exists.
 func TestResolveProvider_EmptyAutoPicksWhenWorkerHasOne(t *testing.T) {
 	list := func(_ context.Context, method string, _ proto.Message, out proto.Message) error {
-		assert.Equal(t, "ListAvailableProviders", method)
+		assert.Equal(t, leapmuxv1connect.WorkerAgentServiceListAvailableProvidersProcedure, method)
 		resp, ok := out.(*leapmuxv1.ListAvailableProvidersResponse)
 		require.True(t, ok)
 		resp.Providers = []leapmuxv1.AgentProvider{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}

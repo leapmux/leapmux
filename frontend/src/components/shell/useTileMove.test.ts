@@ -2,7 +2,7 @@ import type { AgentTab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { useTileMove } from '~/components/shell/useTileMove'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
@@ -75,7 +75,7 @@ describe('useTileMove.moveTabToTile', () => {
     })
   })
 
-  it('takeFocus=false leaves focus on the original tile', () => {
+  it('leaves focus on the original tile when takeFocus=false', () => {
     createRoot((dispose) => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
@@ -109,7 +109,7 @@ describe('useTileMove.moveTabToTile', () => {
    * background drag that claimed it would badge the tab the user is reading and
    * seed the next agent from the dragged one.
    */
-  it('takeFocus=false does not reassign the workspace active tab', () => {
+  it('does not reassign the workspace active tab when takeFocus=false', () => {
     createRoot((dispose) => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
@@ -136,7 +136,7 @@ describe('useTileMove.moveTabToTile', () => {
     })
   })
 
-  it('takeFocus=true does reassign the workspace active tab', () => {
+  it('does reassign the workspace active tab when takeFocus=true', () => {
     createRoot((dispose) => {
       const { view, selection, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!
@@ -158,7 +158,7 @@ describe('useTileMove.moveTabToTile', () => {
     })
   })
 
-  it('cleanupSource=false keeps the source floating window alive even when emptied', () => {
+  it('keeps the source floating window alive, even when emptied, when cleanupSource=false', () => {
     createRoot((dispose) => {
       const { view, layoutStore, floatingWindowStore, ops } = setup()
       const win = floatingWindowStore.addWindow()!
@@ -179,7 +179,7 @@ describe('useTileMove.moveTabToTile', () => {
     })
   })
 
-  it('cleanupSource=true is a safe no-op when the source tile lives in the main tree', () => {
+  it('is a safe no-op for cleanupSource=true when the source tile lives in the main tree', () => {
     createRoot((dispose) => {
       const { view, layoutStore, ops } = setup()
       const toTile = layoutStore.splitTile('root-leaf', 'horizontal')!

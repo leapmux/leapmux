@@ -21,10 +21,10 @@ import (
 // ConnectRPC, authenticated with a per-user delegation-token
 // bearer.
 //
-// Method dispatch is by bare method name (the "hub." namespace prefix
-// is stripped by the Router before CallHub is invoked) and follows the
-// shared `internal/hubrpc.Registry` — the CLI's `hubCallDirect` walks
-// the same table, so adding a hub method requires editing one entry.
+// Method dispatch is by full procedure path (the Router strips the "hub."
+// namespace prefix before it calls CallHub) and follows the shared
+// `internal/hubrpc.Registry` — the CLI's `hubCallDirect` walks the same
+// table, so adding a hub method requires editing one entry.
 //
 // **Why a method table instead of a single transparent proxy?**
 // Not for security -- the delegation scope is uniform now (`{UserID}`), and
@@ -62,24 +62,24 @@ func NewHubUnaryBridge(endpoint *hubtransport.Endpoint, dp crossworker.Delegatio
 	}
 }
 
-// CallHub satisfies HubBridge. method is the bare hub method name (e.g.
-// "GetTab", "AddTab", "ListWorkspaces"); the delegation bearer is minted for
-// userID alone.
-func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+// CallHub satisfies HubBridge. procedure is the full procedure path of the hub
+// method (e.g. leapmuxv1connect.WorkspaceServiceLocateTabProcedure); the
+// delegation bearer is minted for userID alone.
+func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
 	if b.Delegation == nil {
 		return nil, errors.New("controlipc: delegation provider not configured")
 	}
 	if userID.IsZero() {
 		return nil, errors.New("controlipc: user_id required for hub call")
 	}
-	desc, err := hubrpc.Lookup(method)
+	desc, err := hubrpc.Lookup(procedure)
 	if err != nil {
 		return nil, fmt.Errorf("controlipc: %w", err)
 	}
 	in := desc.NewRequest()
 	out := desc.NewResponse()
 	if err := proto.Unmarshal(payload, in); err != nil {
-		return nil, fmt.Errorf("controlipc: decode %s request: %w", method, err)
+		return nil, fmt.Errorf("controlipc: decode %s request: %w", procedure, err)
 	}
 	bearer, err := b.Delegation.GetBearer(ctx, userID)
 	if err != nil {

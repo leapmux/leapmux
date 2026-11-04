@@ -12,12 +12,10 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
-	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -42,9 +40,9 @@ type WorkerManagementService struct {
 	set       *settings.Manager
 	// deregisterEffects is the shared post-deregister effect set: the
 	// delegation-scope eviction, the worker's stop notification, and the
-	// owner's workers-changed broadcast. It OWNS all three collaborators, so
-	// this surface and the admin surface run exactly the same effects, and
-	// this struct keeps no second handle on any of them.
+	// owner's workers-changed broadcast. It OWNS all three collaborators, and
+	// the admin surface holds the same instance, so both surfaces run exactly
+	// the same effects, and this struct keeps no second handle on any of them.
 	deregisterEffects *WorkerDeregisterEffects
 }
 
@@ -59,19 +57,18 @@ type WorkerManagementService struct {
 // absent form: a nil mgr would report every worker offline and a nil set
 // would refuse every instruction email, so tolerating them would return a
 // WRONG answer for a wiring bug instead of failing the startup that made it.
-// That is why they differ from the effect collaborators below, and the
-// refusal is loud at construction so a new caller cannot forget one.
+// That is why they differ from deregisterEffects, and the refusal is loud at
+// construction so a new caller cannot forget one.
 //
-// b and n only carry post-deregister EFFECTS, so each is nil-tolerant
-// through WorkerDeregisterEffects (a test that exercises the store half
-// alone passes nil) -- the same rule auth.CredentialLifecycleEffects holds.
-// renderer is a value type; it carries the hub URL used in the registration
-// email's footer. scopeCache may be nil (tests); the constructor builds a
-// private cache then, so the effects always hold one -- production passes the
-// instance shared with CRDTService so the eviction reaches the cache
-// SubmitOps resolves through, and the containment takes effect immediately
-// rather than after the cache TTL.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+// deregisterEffects only carries post-deregister EFFECTS, so it is
+// nil-tolerant: a test that exercises the store half alone passes nil, the
+// same rule auth.CredentialLifecycleEffects holds. Production passes the
+// instance it also gives AdminWorkerService, whose scope cache is the one
+// CRDTService shares, so the eviction reaches the cache SubmitOps resolves
+// through and the containment takes effect immediately rather than after the
+// cache TTL. renderer is a value type; it carries the hub URL used in the
+// registration email's footer.
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, deregisterEffects *WorkerDeregisterEffects, sender mail.Sender, renderer mail.Renderer, set *settings.Manager) *WorkerManagementService {
 	if st == nil {
 		panic("service: NewWorkerManagementService requires a store")
 	}
@@ -84,12 +81,9 @@ func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEv
 	if sender == nil {
 		panic("service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)")
 	}
-	if scopeCache == nil {
-		scopeCache = auth.NewDelegationScopeCache(st)
-	}
 	return &WorkerManagementService{
 		store: st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
-		deregisterEffects: NewWorkerDeregisterEffects(scopeCache, n, b),
+		deregisterEffects: deregisterEffects,
 	}
 }
 
@@ -174,10 +168,10 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 	}, nil
 }
 
-func (s *WorkerManagementService) DeleteRegistrationKey(
+func (s *WorkerManagementService) RevokeRegistrationKey(
 	ctx context.Context,
-	req *leapmuxv1.DeleteRegistrationKeyRequest,
-) (*leapmuxv1.DeleteRegistrationKeyResponse, error) {
+	req *leapmuxv1.RevokeRegistrationKeyRequest,
+) (*leapmuxv1.RevokeRegistrationKeyResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -188,11 +182,12 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
-	// One conditional UPDATE: ownership lives in the WHERE clause, so a
-	// missing key and someone-else's key both surface as 0 rows-affected
-	// and map to NotFound (same oracle convention as GetOwned).
-	// Idempotent on already-consumed rows — the dialog's onCleanup may run
-	// after a successful registration.
+	// One conditional UPDATE: ownership and liveness live in the WHERE
+	// clause, so a missing key, someone else's key and a dead key (expired,
+	// consumed or already revoked) all surface as 0 rows-affected and map to
+	// NotFound (same oracle convention as GetOwned). The register dialog's
+	// onCleanup revokes its key even after a successful registration
+	// consumed it, and ignores this NotFound.
 	rows, err := s.store.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
 		ID:        keyID,
 		CreatedBy: user.ID,
@@ -204,7 +199,7 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 		return nil, connect.NewError(connect.CodeNotFound, "registration key not found")
 	}
 
-	return &leapmuxv1.DeleteRegistrationKeyResponse{}, nil
+	return &leapmuxv1.RevokeRegistrationKeyResponse{}, nil
 }
 
 func (s *WorkerManagementService) EmailRegistrationInstructions(
@@ -285,24 +280,16 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	// NormalizePageParams, not a hand-written default: it applies the same page
+	// pageParams, not a hand-written default: it applies the same page
 	// default AND the same ceiling every other paginated handler uses. The
 	// hand-written form had no ceiling at all, so `page.limit = 100000`
 	// returned the caller's whole worker row set in one response.
-	reqPage := req.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		PageParams:   NormalizePageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
+		PageParams:   pageParams(req.GetPage()),
 	})
 	if err != nil {
-		// A malformed or stale opaque cursor is bad client input, not a server
-		// fault: the store's cursor decode wraps store.ErrInvalidCursor before
-		// any query runs, and it must surface as 400 InvalidArgument rather
-		// than the 500 Internal that genuine store failures map to.
-		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
-		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, storeConnectError(err, "list workers")
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
@@ -312,13 +299,17 @@ func (s *WorkerManagementService) ListWorkers(
 
 	return &leapmuxv1.ListWorkersResponse{
 		Workers: protoWorkers,
-		Page: &leapmuxv1.PageResponse{
-			NextCursor: page.NextCursor,
-			HasMore:    page.HasMore(),
-		},
+		Page:    pageResponse(page.NextCursor),
 	}, nil
 }
 
+// GetWorker returns one of the caller's workers. It follows ListWorkers: a
+// worker whose owner deregistered it is absent from the listing, so it reads as
+// NotFound here too. The Worker message carries no deregistering state, so
+// returning the row would present a worker on its way out as a normal one.
+//
+// The check lives here rather than in Workers().GetOwned, because
+// DeregisterWorker reads GetOwned and must keep seeing the row.
 func (s *WorkerManagementService) GetWorker(
 	ctx context.Context,
 	req *leapmuxv1.GetWorkerRequest,
@@ -338,6 +329,9 @@ func (s *WorkerManagementService) GetWorker(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
+	if worker.DeregisteringAt != nil {
+		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
+	}
 
 	return &leapmuxv1.GetWorkerResponse{
 		Worker: s.workerToProto(worker),
@@ -353,11 +347,6 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, err
 	}
 
-	// Refuse the auto-registered local worker. The solo launcher would
-	// just re-register it on next start, so honoring the deregister
-	// would only produce a transient outage and a confusing reappearing
-	// row. The frontend already hides the menu item; this is the
-	// defense-in-depth check against a hand-crafted RPC call.
 	worker, err := s.store.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 		UserID:   user.ID,
 		WorkerID: req.GetWorkerId(),
@@ -368,8 +357,8 @@ func (s *WorkerManagementService) DeregisterWorker(
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-	if worker.AutoRegistered {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition, "the bundled local worker cannot be deregistered")
+	if err := refuseConnectedBundledWorker(worker, s.workerMgr.OnlineForTrustedPath(worker.ID)); err != nil {
+		return nil, err
 	}
 
 	rows, err := s.store.Workers().Deregister(ctx, store.DeregisterWorkerParams{
@@ -396,16 +385,11 @@ func (s *WorkerManagementService) DeregisterWorker(
 // the caller's user_id, so the query implies the owner and
 // needs no per-worker round-trip.
 func (s *WorkerManagementService) workerToProto(b *store.Worker) *leapmuxv1.Worker {
-	lastSeen := ""
-	if b.LastSeenAt != nil {
-		lastSeen = timefmt.Format(*b.LastSeenAt)
-	}
-
 	return &leapmuxv1.Worker{
 		Id:             b.ID,
 		Online:         s.workerMgr.OnlineForTrustedPath(b.ID),
-		CreatedAt:      timefmt.Format(b.CreatedAt),
-		LastSeenAt:     lastSeen,
+		CreatedAt:      timestamppb.New(b.CreatedAt),
+		LastSeenAt:     optTimestamp(b.LastSeenAt),
 		RegisteredBy:   b.RegisteredBy,
 		AutoRegistered: b.AutoRegistered,
 	}

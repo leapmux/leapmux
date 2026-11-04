@@ -50,14 +50,18 @@ export const PasswordSetupGate: Component = () => {
       const response = await authClient.setInitialSoloPassword({
         password: password(),
       })
-      if (!response.user)
-        throw new Error('The hub returned no solo user')
-      // The elevation travels WITH the reply. The transaction that stored the
-      // password created this session and elevated it, so the deadline is
-      // known here and needs no second round trip. `setAuth` clears the
-      // elevation on its own, which is right for every other caller and wrong
-      // for this one.
-      await auth.setAuth(response.user, response.elevationExpiresAt)
+      // The report is the COMPLETE account projection, built from the account
+      // row that the transaction stored with the new password, so the adopted
+      // `passwordSet` is already true. Preferences -> Account renders its
+      // button and its solo warning from that copy, and it needs no second
+      // round trip. The elevation travels in the same report: the transaction
+      // that stored the password created this session and elevated it, and
+      // `setAuth` adopts that window after it clears the previous identity's.
+      //
+      // Whatever the outcome, the account is not this gate's to re-read. A
+      // report with no account recovers, and SignInRecoveryGate owns the
+      // account read; a superseded adoption belongs to the newer operation.
+      await auth.setAuth(response.sessionReport)
     }
     catch (e) {
       setMessage({
@@ -67,19 +71,12 @@ export const PasswordSetupGate: Component = () => {
       setBusy(false)
       return
     }
-    // The ACCOUNT is the other copy of this fact, and it does not follow the
-    // snapshot. `auth.user().passwordSet` is what Preferences -> Account renders
-    // its button and its solo warning from, and nothing re-reads it for the life
-    // of the page: `readCurrentUser` runs once, at bootstrap. Without this the
-    // operator who just set the first password finds a screen that offers to set
-    // one. It runs BEFORE the snapshot below, because that read is what takes
-    // this screen down. `refreshUser` swallows its own failure, so it can never
-    // report a stored password as a failed write. The two other surfaces that
-    // offer this same password already refresh both copies.
-    await auth.refreshUser()
     // OUTSIDE the catch above, because the password is stored by now. Forced,
     // because this snapshot is exactly what the gate reads: without it the
-    // screen stays up over a hub that no longer needs it. But `loadSystemInfo`
+    // screen stays up over a hub that no longer needs it. That holds for every
+    // outcome: recovery ends on a route this gate guards, and a superseded
+    // adoption can leave this screen up, so a stale snapshot would offer again
+    // a password the hub refuses to set twice. But `loadSystemInfo`
     // rejects by design, and a refresh over a connection whose authentication
     // rule just changed is exactly where a transient failure lands -- reported
     // as "Failed to set the password" it told the operator to retry a write

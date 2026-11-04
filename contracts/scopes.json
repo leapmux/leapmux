@@ -23,8 +23,8 @@
     },
     "SCOPE_WORKSPACE_WRITE": {
       "token": "workspace:write",
-      "description": "Create, rename, move and close workspaces and tabs, and submit layout operations.",
-      "consentSentence": "Create, rename, move and close your workspaces and tabs."
+      "description": "Create, rename, move and close workspaces and tabs, and submit layout operations. Closing a tab stops its agent or terminal.",
+      "consentSentence": "Create, rename, move and close your workspaces and tabs. Closing a tab stops its agent or terminal."
     },
     "SCOPE_WORKER_READ": {
       "token": "worker:read",

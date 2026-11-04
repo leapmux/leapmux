@@ -48,8 +48,9 @@ export const SetupPage: Component = () => {
     // whatever the snapshot still says — a session proves an account
     // exists.
     void loadSystemInfo(true).catch(() => {})
-    await auth.setAuth(resp.user)
-    navigate('/', { replace: true })
+    // Only an adopted account is this page's to route; see SignInOutcome.
+    if (await auth.setAuth(resp.report) === 'adopted')
+      navigate('/', { replace: true })
   }
 
   return (

@@ -455,7 +455,7 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('updateViewport only re-emits range when the slice actually changes', () => {
+  it('makes updateViewport re-emit range only when the slice actually changes', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(5))
       virt.updateViewport(200, 200)

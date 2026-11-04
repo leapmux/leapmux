@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -35,7 +36,7 @@ func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.Mar
 func listMarks(t *testing.T, d *channel.Dispatcher, agentID string) *leapmuxv1.ListMessageMarksResponse {
 	t.Helper()
 	w := newTestWriter()
-	dispatch(d, "ListMessageMarks", &leapmuxv1.ListMessageMarksRequest{AgentId: agentID}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListMessageMarksProcedure, &leapmuxv1.ListMessageMarksRequest{AgentId: agentID}, w)
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.ListMessageMarksResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
@@ -159,7 +160,7 @@ func TestListMessageMarks_UnknownAgent_Errors(t *testing.T) {
 
 	_, d, _ := setupTestService(t)
 	w := newTestWriter()
-	dispatch(d, "ListMessageMarks", &leapmuxv1.ListMessageMarksRequest{AgentId: "nope"}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceListMessageMarksProcedure, &leapmuxv1.ListMessageMarksRequest{AgentId: "nope"}, w)
 	assert.Empty(t, w.responses, "an unknown agent must not produce a success response")
 	require.NotEmpty(t, w.errors, "an unknown agent must produce an error")
 }

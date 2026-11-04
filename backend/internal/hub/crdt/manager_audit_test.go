@@ -105,7 +105,7 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 		BatchId: "ts-batch",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "ts-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan"},
 			}}},
 		},
 	}
@@ -159,7 +159,7 @@ func TestManager_AuditSkipsNormalTombstone(t *testing.T) {
 		BatchId: "ts2",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "ts2-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-live",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-live"},
 			}}},
 		},
 	}
@@ -207,7 +207,7 @@ func TestManager_AuditSkipsInternalTombstone(t *testing.T) {
 			BatchId: "internal-ts",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "internal-ts-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan"},
 				}}},
 			},
 		}},
@@ -250,7 +250,7 @@ func TestManager_AuditInconclusiveOnWorkerLookupError(t *testing.T) {
 		BatchId: "ts-flaky",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "ts-flaky-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-orphan"},
 			}}},
 		},
 	}
@@ -335,7 +335,7 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 		BatchId: "ts-h",
 		Ops: []*leapmuxv1.CrdtOp{
 			{OpId: "ts-h-op", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-h",
+				Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-h"},
 			}}},
 		},
 	}
@@ -415,7 +415,7 @@ func TestManager_AuditPanicDoesNotCrashTheHub(t *testing.T) {
 			BatchId: "ts-batch",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 				}}},
 			},
 		}}),
@@ -445,7 +445,7 @@ func TestManager_AuditPanicDoesNotCrashTheHub(t *testing.T) {
 			BatchId: "ts-after-panic",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b"},
 				}}},
 			},
 		}}),
@@ -497,7 +497,7 @@ func TestManager_NudgePanicDoesNotCrashTheHub(t *testing.T) {
 			BatchId: "internal-ts",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 				}}},
 			},
 		}},
@@ -521,7 +521,7 @@ func TestManager_NudgePanicDoesNotCrashTheHub(t *testing.T) {
 			BatchId: "ts-after-panic",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b"},
 				}}},
 			},
 		}}),
@@ -593,10 +593,10 @@ func TestManager_TombstoneNudgesTheHostingWorker(t *testing.T) {
 			BatchId: "ts-batch",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 				}}},
 				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b"},
 				}}},
 			},
 		}}),
@@ -655,7 +655,7 @@ func TestManager_MoveAcrossWorkspacesNudgesTheHostingWorker(t *testing.T) {
 			BatchId: "move-a",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "move-a-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 					Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root-2"},
 				}}},
 			},
@@ -674,7 +674,7 @@ func TestManager_MoveAcrossWorkspacesNudgesTheHostingWorker(t *testing.T) {
 			BatchId: "reorder-a",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "reorder-a-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab:   &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 					Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p9"},
 				}}},
 			},
@@ -724,7 +724,7 @@ func TestManager_InternalTombstoneNudgesTheHostingWorker(t *testing.T) {
 			BatchId: "internal-ts",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
 				}}},
 			},
 		}},

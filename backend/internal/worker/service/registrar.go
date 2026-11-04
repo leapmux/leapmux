@@ -5,9 +5,9 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/rpcaccess"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -32,125 +32,106 @@ const (
 	gateNone                         // liveness probe that does no work, ungated by design
 )
 
-// The SCOPE a method requires is the second axis of every registration, and it
-// is an ARGUMENT rather than a wrap inside the owner gate.
+// The SCOPE a method requires and the SHAPE it answers in are declared in the
+// proto, on the method's (leapmux.v1.access) option and in its signature (see
+// proto/leapmux/v1/access.proto). The registrar reads both from the descriptor
+// index (internal/rpcaccess) and takes neither as an argument, so a
+// registration cannot state a scope or a reply shape that disagrees with the
+// declaration.
 //
-// The distinction is load-bearing. `gateNone` exists (Ping), so a check that
-// lived inside the owner gate would be skippable by choosing registerUnguarded --
-// which is precisely how a method ends up unenforced by accident. Passing the
-// scope to register() means every registration states one, including an
-// unguarded one, and a value nobody stated is the proto zero, which panics at boot.
+// The scope check is NOT a wrap inside the owner gate, and the distinction is
+// load-bearing. `gateNone` exists (Ping), so a check that lived inside the
+// owner gate would be skippable by choosing registerUnguarded -- which is
+// precisely how a method ends up unenforced by accident. register() applies the
+// scope to every registration, including an unguarded one.
 //
-// SCOPE_UNSPECIFIED PANICS, matching the duplicate-registration panic beside
-// it: a worker that cannot say what a method requires must not start serving
-// it, because the alternative is a method that quietly reaches every app.
+// A method the proto does not declare, declares on a non-WORKER service, or
+// declares without a grantable scope PANICS at registration, matching the
+// duplicate-registration panic beside it: a worker that cannot say what a
+// method requires must not start serving it, because the alternative is a
+// method that quietly reaches every app.
 
 // registrar wraps a dispatcher and records each method's gate kind.
 //
-// It is passed by value; the maps are shared. register() panics on a
-// duplicate method — Dispatcher.Register silently overwrites, and without
-// the panic the disjointness check that TestEveryRegisteredMethodIsClassified
-// previously enforced by hand would be lost.
+// It is passed by value; the gate map is shared. register() panics on a
+// duplicate method, and so does the dispatcher.
 type registrar struct {
-	d      *channel.Dispatcher
-	svc    *Service
+	d   *channel.Dispatcher
+	svc *Service
+	// lookup resolves a procedure path to its declaration. Production uses
+	// rpcaccess.Lookup; a test substitutes one that also declares test-only
+	// procedures.
+	lookup func(procedure string) (rpcaccess.Method, bool)
 	gates  map[string]methodGate
-	scopes map[string]leapmuxv1.Scope
-	shapes map[string]methodShape
 }
 
-// methodShape states how a method ANSWERS, as methodGate states how it is
-// guarded.
-//
-// Reply shape needs recording for the same reason access does. A method
-// that answers with stream frames but is registered through a unary
-// helper still compiles, still passes its tests, and fails only at
-// runtime in the one way nothing reports: the browser holds the
-// correlation id as a stream, so a unary error frame is dropped on
-// arrival and the caller waits on a subscription that will never carry
-// anything and never errors.
-//
-// WatchWorkerPrivateEvents shipped exactly that way. The gate table
-// already turned "did the author remember to guard this?" into a test
-// failure; this turns "did the author remember RegisterStream?" into one.
-type methodShape int
-
-const (
-	shapeUnary  methodShape = iota // answers with an InnerRpcResponse
-	shapeStream                    // answers with InnerStreamMessage frames
-)
-
 func newRegistrar(d *channel.Dispatcher, svc *Service) registrar {
+	return newRegistrarWithLookup(d, svc, rpcaccess.Lookup)
+}
+
+func newRegistrarWithLookup(d *channel.Dispatcher, svc *Service, lookup func(string) (rpcaccess.Method, bool)) registrar {
 	return registrar{
 		d:      d,
 		svc:    svc,
+		lookup: lookup,
 		gates:  make(map[string]methodGate),
-		scopes: make(map[string]leapmuxv1.Scope),
-		shapes: make(map[string]methodShape),
 	}
 }
 
-// dispatchMode selects which Dispatcher entry point a registration uses.
-//
-// It is the second axis of every registration, crossing the gate kind
-// above. Passing it lets the two vary independently instead of being
-// enumerated as one named helper per combination, so a new pairing --
-// streaming + tracked, say -- costs an argument rather than another
-// exported function.
-//
-// Each guarded helper therefore TAKES this rather than existing twice. It
-// used to be enumerated after all: three hand-written `*Tracked` twins sat
-// beside their siblings differing by one method call, which is exactly what
-// the paragraph above says the design avoids.
-//
-// dispatchStreaming is not reachable through that argument. The streaming
-// helpers call RegisterStream directly, because a streaming registration must
-// apply the stream-frame denial (gateStream) rather than the unary one -- and
-// because TestNoUnaryHandlerSendsStreamFrames identifies streaming registrations
-// by the helper NAME, so a mode-parameterised streaming call would be scanned as
-// unary and its SendStream flagged.
+// dispatchMode selects whether Shutdown waits for in-flight invocations of a
+// method. It is the one registration property the proto cannot state.
 type dispatchMode int
 
 const (
-	dispatchPlain     dispatchMode = iota // Dispatcher.Register
-	dispatchTracked                       // Dispatcher.RegisterTracked
-	dispatchStreaming                     // Dispatcher.RegisterStream
+	dispatchPlain   dispatchMode = iota // fire-and-forget on Shutdown
+	dispatchTracked                     // Shutdown waits for in-flight calls
 )
 
-// register records a method's gate and reply shape, then wires it through
-// the dispatcher entry point mode names.
+// declaration is what the proto states about one worker method.
 //
-// Deriving the shape from the mode is the point: they were previously two
-// independent lines at each call site, so a handler could be registered
-// through RegisterStream while recording shapeUnary (or the reverse) and
-// nothing would notice -- which is precisely the class of mistake the
-// shape table exists to catch.
-func (r registrar) register(method string, gate methodGate, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) {
-	// Dispatcher.Register silently overwrites, so a duplicate would
-	// otherwise replace a handler with no sign that anything happened.
-	if _, exists := r.gates[method]; exists {
-		panic("duplicate method registration: " + method)
-	}
-	if !authscope.IsGrantable(scope) {
-		panic("method " + method + " states no grantable scope: " + scope.String())
-	}
-	shape := shapeUnary
-	if mode == dispatchStreaming {
-		shape = shapeStream
-	}
-	r.gates[method] = gate
-	r.scopes[method] = scope
-	r.shapes[method] = shape
+// streaming decides the reply shape of the method's dispatcher registration, and
+// the dispatcher then answers every SendError of the method in that shape (see
+// channel.Registration). A method that answers in the wrong shape still compiles
+// and passes every test that checks only the code of its refusals, so the shape
+// comes from the declaration and never from an argument of the registration.
+type declaration struct {
+	scope     leapmuxv1.Scope
+	streaming bool
+}
 
-	guarded := r.scopeGuard(method, scope, mode, handler)
-	switch mode {
-	case dispatchTracked:
-		r.d.RegisterTracked(method, guarded)
-	case dispatchStreaming:
-		r.d.RegisterStream(method, guarded)
-	case dispatchPlain:
-		r.d.Register(method, guarded)
+// declared returns a worker method's declaration, and panics when the method
+// cannot be served: not declared, declared on a service whose host is not
+// WORKER, or declared without a grantable scope.
+func (r registrar) declared(procedure string) declaration {
+	m, ok := r.lookup(procedure)
+	if !ok {
+		panic("worker method " + procedure + " is not declared by any leapmux.v1 service")
 	}
+	if m.Host != leapmuxv1.ServiceHost_SERVICE_HOST_WORKER {
+		panic("worker method " + procedure + " belongs to a " + m.Host.String() + " service, not a SERVICE_HOST_WORKER one")
+	}
+	req, ok := m.Access.GetRequirement().(*leapmuxv1.MethodAccess_Scope)
+	if !ok || !authscope.IsGrantable(req.Scope) {
+		panic("worker method " + procedure + " states no grantable scope in its (leapmux.v1.access) option")
+	}
+	return declaration{scope: req.Scope, streaming: m.ServerStreaming}
+}
+
+// register records a method's gate, applies its scope check, and wires it into
+// the dispatcher with the reply shape the proto declares.
+func (r registrar) register(procedure string, gate methodGate, mode dispatchMode, handler channel.HandlerFunc) {
+	// The dispatcher panics on a duplicate too; checking here first keeps the
+	// gate map from recording a second entry for the same method.
+	if _, exists := r.gates[procedure]; exists {
+		panic("duplicate method registration: " + procedure)
+	}
+	decl := r.declared(procedure)
+	r.gates[procedure] = gate
+
+	r.d.Handle(procedure, channel.Registration{
+		Tracked:   mode == dispatchTracked,
+		Streaming: decl.streaming,
+	}, scopeGuard(decl.scope, handler))
 }
 
 // scopeGuard wraps a handler with its scope check.
@@ -158,30 +139,31 @@ func (r registrar) register(method string, gate methodGate, scope leapmuxv1.Scop
 // It runs BEFORE the owner gate, and the order is the same rule the Hub's
 // interceptor follows: an app is refused for its own grant rather than told
 // whether the caller happens to be the worker's registrant.
-//
-// The denial ENCODING follows the reply shape, exactly as the owner gate's
-// does: a streaming method answers with a stream frame, because a unary
-// InnerRpcResponse on a correlation id the client holds as a stream is dropped
-// on arrival and leaves the caller waiting on something that never errors.
-func (r registrar) scopeGuard(method string, scope leapmuxv1.Scope, mode dispatchMode, handler channel.HandlerFunc) channel.HandlerFunc {
-	streaming := mode == dispatchStreaming
+func scopeGuard(scope leapmuxv1.Scope, handler channel.HandlerFunc) channel.HandlerFunc {
 	return func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		if !caller.Allows(scope) {
-			msg := authscope.NotGrantedDenial(scope)
-			if streaming {
-				sendStreamError(sender, codes.PermissionDenied, msg)
-			} else {
-				sendPermissionDenied(sender, msg)
-			}
+		if refuseUngranted(sender, caller, scope) {
 			return
 		}
 		handler(ctx, caller, req, sender)
 	}
 }
 
+// refuseUngranted answers PermissionDenied unless the caller's grant holds
+// scope, and reports whether it answered. The denial states the scope in the
+// words authscope.NotGrantedDenial gives, so the method-level check and a
+// handler's own check (requireCloseScopes) read the same.
+func refuseUngranted(sender channel.ResponseWriter, caller channel.Caller, scope leapmuxv1.Scope) bool {
+	if caller.Allows(scope) {
+		return false
+	}
+	sendPermissionDenied(sender, authscope.NotGrantedDenial(scope))
+	return true
+}
+
 // decodedRequest constrains a request message to a proto.Message pointer whose
 // zero value the helper can allocate itself, so a handler never restates the
-// unmarshal — same idiom as connRequest / registerConnHandler in tunnel.go.
+// unmarshal. agentScopedRequest, terminalScopedRequest and connRequest
+// (tunnel.go) narrow it with the id each guard reads.
 type decodedRequest[T any] interface {
 	*T
 	proto.Message
@@ -204,19 +186,25 @@ type terminalScopedRequest[T any] interface {
 // registerOwnerGuarded registers an owner-guarded handler for a decoded request.
 // Wrapper: owner gate → unmarshal → INVALID_ARGUMENT "invalid request" → fn
 // with the decoded request. The gate is a property of WHERE the handler is
-// registered.
+// registered, and the dispatcher answers every refusal in the shape the method
+// declares.
+//
+// It registers every owner-only method that decodes its request and loads no
+// row first.
 func registerOwnerGuarded[T any, PT decodedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, decodeInto[T, PT](fn))
+	o.RegisterMode(procedure, mode, decodeInto[T, PT](fn))
 }
 
 // decodeInto builds the unmarshal → fn wrapper shared by the owner-guarded
 // helpers. A decode failure answers InvalidArgument and never reaches fn.
+//
+// It is the one caller of unmarshalRequest in this package
+// (TestOnlyDecodeIntoUnmarshalsARequest), so the decode refusal exists once.
 func decodeInto[T any, PT decodedRequest[T]](
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
@@ -235,9 +223,15 @@ func decodeInto[T any, PT decodedRequest[T]](
 // workspace, and reports whether it answered. Read it as the one place the rule
 // "an archived workspace takes no mutation" lives on this side of the wire.
 //
-// The registrars call it rather than the handlers, so a new write handler is
-// refused by construction. The old per-handler guards missed write paths such
-// as RenameAgent, queue mutations, UpdateTerminalTitle, and both closes.
+// The row-guard registrars call it rather than the handlers, so a new write
+// handler that one of them registers is refused by construction. The old
+// per-handler guards missed write paths such as RenameAgent, queue mutations,
+// RenameTerminal, and the agent and terminal closes.
+//
+// handleCloseTab is the one handler that calls it by hand. CloseTab requires
+// only worker:read, because the scope a close needs depends on the tab type, so
+// no registrar can apply the guard for it. Each case of its tab-type switch
+// applies the guard itself, and a new case must do the same.
 //
 // It keys on the SCOPE, not on the method, because the scope already states
 // whether a handler mutates. A read handler stays reachable, which is what
@@ -261,9 +255,9 @@ func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, a
 }
 
 // agentGuardedHandler builds the unmarshal → requireAgent → fn wrapper used by
-// registerAgentGuarded. Explicit type args sidestep constraint-inference edge
-// cases in nested generic calls (mirroring Dispatcher / ownerOnlyRegistrar
-// style).
+// registerAgentGuarded. The helpers pass explicit type arguments to it and to
+// decodeInto, which sidesteps constraint-inference edge cases in nested generic
+// calls.
 func agentGuardedHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
@@ -284,19 +278,18 @@ func agentGuardedHandler[T any, PT agentScopedRequest[T]](
 // registerAgentGuarded registers a handler for a request that carries an agent id. fn
 // receives the loaded row so the body never double-fetches.
 func registerAgentGuarded[T any, PT agentScopedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, agentGuardedHandler[T, PT](r.svc, scope, fn))
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, agentGuardedHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // agentGuardedByIDHandler builds the unmarshal → requireAgentID → fn wrapper
-// shared by registerAgentGuardedByID and registerAgentGuardedByIDTracked. The
-// existence probe reads only the id column, so these are for handlers that
-// never read the row; ones that do use registerAgentGuarded instead and receive
-// the loaded row.
+// used by registerAgentGuardedByID. The existence probe reads only the id
+// column, so it is for handlers that never read the row; ones that do use
+// registerAgentGuarded instead and receive the loaded row.
 func agentGuardedByIDHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
 	scope leapmuxv1.Scope,
@@ -318,13 +311,13 @@ func agentGuardedByIDHandler[T any, PT agentScopedRequest[T]](
 // resolved through an id-only existence probe — no full-row load for a handler
 // that only needs "does this agent exist?".
 func registerAgentGuardedByID[T any, PT agentScopedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, agentGuardedByIDHandler[T, PT](r.svc, scope, fn))
+	scope := o.r.declared(procedure).scope
+	o.RegisterMode(procedure, mode, agentGuardedByIDHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // terminalGuardedHandler builds the unmarshal → requireTerminal → fn wrapper
@@ -349,17 +342,17 @@ func terminalGuardedHandler[T any, PT terminalScopedRequest[T]](
 // registerTerminalGuarded registers a handler for a request naming a terminal.
 // fn receives the loaded row so the body never double-fetches.
 func registerTerminalGuarded[T any, PT terminalScopedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, terminalGuardedHandler[T, PT](r.svc, scope, fn))
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, terminalGuardedHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // terminalGuardedByIDHandler builds the unmarshal → requireTerminalID → fn
-// wrapper shared by registerTerminalGuardedByID and its Tracked variant. Mirror
-// of agentGuardedByIDHandler: id-only existence probe (no screen BLOB) for
+// wrapper used by registerTerminalGuardedByID. Mirror of
+// agentGuardedByIDHandler: id-only existence probe (no screen BLOB) for
 // handlers that never read the row.
 func terminalGuardedByIDHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
@@ -378,31 +371,31 @@ func terminalGuardedByIDHandler[T any, PT terminalScopedRequest[T]](
 	})
 }
 
-// registerTerminalGuardedByID registers a handler for a request naming a
-// terminal, resolved through an id-only existence probe — no screen-BLOB load
+// registerTerminalGuardedByID registers a handler for a request that identifies
+// a terminal, resolved through an id-only existence probe — no screen-BLOB load
 // for a handler that only needs "does this terminal exist?" (SendInput and
 // ResizeTerminal fire per keystroke / per resize).
 func registerTerminalGuardedByID[T any, PT terminalScopedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, terminalGuardedByIDHandler[T, PT](r.svc, scope, fn))
+	scope := o.r.declared(procedure).scope
+	o.RegisterMode(procedure, mode, terminalGuardedByIDHandler[T, PT](o.r.svc, scope, fn))
 }
 
 // registerTerminalForRestartGuarded is the sole user of
 // db.GetTerminalForRestartRow: unmarshal → requireTerminalForRestart → fn with
 // the narrow row (metadata + length(screen), no screen BLOB).
 func registerTerminalForRestartGuarded(
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
+	o ownerOnlyRegistrar,
+	procedure string,
 	fn func(ctx context.Context, caller channel.Caller, req *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter),
 ) {
-	registerOwnerGuarded(r, method, scope, dispatchPlain, func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
-		row, ok := r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
+	scope := o.r.declared(procedure).scope
+	o.Register(procedure, decodeInto[leapmuxv1.RestartTerminalRequest, *leapmuxv1.RestartTerminalRequest](func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
+		row, ok := o.r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
 		if !ok {
 			return
 		}
@@ -410,56 +403,7 @@ func registerTerminalForRestartGuarded(
 			return
 		}
 		fn(ctx, caller, decoded, row, sender)
-	})
-}
-
-// registerOwnerGuardedStream is registerOwnerGuarded for a method that answers
-// with stream frames.
-//
-// It differs in both halves that decide reply shape, because both matter and
-// they are easy to fix by halves. Registering through RegisterStream makes the
-// DISPATCHER report a panic as a stream frame; routing this wrapper's own
-// rejections through sendStreamError makes the GATE do the same.
-//
-// A unary frame is not simply lost -- the browser routes a unary ERROR on a
-// stream correlation id to the listener's onError (see channelRpc's
-// deliverResponse), and the CLI's stream transport treats it as terminal. The
-// reason to answer in-band anyway is that only a stream frame carries `End`, so
-// a receiver can terminate on it generically instead of special-casing two reply
-// shapes per method; and a unary NON-error payload on a stream id genuinely is
-// dropped, so the two halves must agree or the shape depends on which failure
-// occurred.
-func registerOwnerGuardedStream[T any, PT decodedRequest[T]](
-	r registrar,
-	method string,
-	scope leapmuxv1.Scope,
-	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
-) {
-	r.ownerOnly().RegisterStream(method, scope, func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var msg T
-		decoded := PT(&msg)
-		if err := unmarshalRequest(req, decoded); err != nil {
-			sendStreamError(sender, codes.InvalidArgument, "invalid request")
-			return
-		}
-		fn(ctx, caller, decoded, sender)
-	})
-}
-
-// registerOwnerGuardedStreamRaw is registerOwnerGuardedStream for a handler that
-// owns its own unmarshal (WatchEvents decodes a request whose per-entity
-// rejections it reports in-band).
-func registerOwnerGuardedStreamRaw(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	r.ownerOnly().RegisterStream(method, scope, handler)
-}
-
-// registerOwnerOnly records guardOwnerOnly and restricts the handler to the
-// worker's registered owner, reusing ownerOnlyRegistrar's gate. It exists
-// for methods that own their own unmarshal (the capability probes
-// ListAvailableShells / ListAvailableProviders) rather than being registered
-// wholesale through ownerOnlyRegistrar as a family.
-func registerOwnerOnly(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	r.ownerOnly().Register(method, scope, handler)
+	}))
 }
 
 // ownerOnly is the single constructor for the owner gate, so the
@@ -471,7 +415,8 @@ func (r registrar) ownerOnly() ownerOnlyRegistrar {
 
 // registerUnguarded records gateNone and registers without wrapping. Reserved
 // for a probe that does no work and discloses nothing (Ping's liveness check);
-// anything that reads or enumerates machine state must use registerOwnerOnly.
-func registerUnguarded(r registrar, method string, scope leapmuxv1.Scope, handler channel.HandlerFunc) {
-	r.register(method, gateNone, scope, dispatchPlain, handler)
+// anything that reads or enumerates machine state must register through
+// ownerOnlyRegistrar (registerOwnerGuarded, or a row guard above).
+func registerUnguarded(r registrar, procedure string, handler channel.HandlerFunc) {
+	r.register(procedure, gateNone, dispatchPlain, handler)
 }

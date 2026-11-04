@@ -817,8 +817,7 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *leapmux
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	return &leapmuxv1.BeginPasskeyRegistrationResponse{
-		SessionId:   sessionID,
-		OptionsJson: optionsJSON,
+		Challenge: &leapmuxv1.WebAuthnChallenge{SessionId: sessionID, OptionsJson: optionsJSON},
 	}, nil
 }
 
@@ -827,11 +826,9 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 	if err != nil {
 		return nil, err
 	}
-	if req.GetSessionId() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "session_id is required")
-	}
-	if req.GetCredentialJson() == "" {
-		return nil, connect.Errorf(connect.CodeInvalidArgument, "credential_json is required")
+	ceremonyID, credentialJSON, err := requireWebAuthnCredential(req.GetCredential())
+	if err != nil {
+		return nil, err
 	}
 	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
@@ -857,7 +854,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 			if err != nil {
 				return err
 			}
-			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.GetSessionId(), req.GetCredentialJson())
+			verified, err = wa.VerifyRegistration(ctx, peek.ID, ceremonyID, credentialJSON)
 			return err
 		},
 		func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
@@ -873,6 +870,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 
 	return &leapmuxv1.FinishPasskeyRegistrationResponse{
 		Passkey: passkeyInfoToProto(ctx, passkey),
+		User:    storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey registration"),
 	}, nil
 }
 
@@ -1005,7 +1003,9 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *leapmuxv1.DeletePa
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return &leapmuxv1.DeletePasskeyResponse{}, nil
+	return &leapmuxv1.DeletePasskeyResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey removal"),
+	}, nil
 }
 
 func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.DeactivatePasskeyAuthRequest) (*leapmuxv1.DeactivatePasskeyAuthResponse, error) {
@@ -1044,7 +1044,9 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return &leapmuxv1.DeactivatePasskeyAuthResponse{}, nil
+	return &leapmuxv1.DeactivatePasskeyAuthResponse{
+		User: storedUserProto(ctx, s.store, userInfo.ID.String(), "passkey deactivation"),
+	}, nil
 }
 
 // hashReplacementPassword validates and hashes a replacement password for

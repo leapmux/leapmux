@@ -6,7 +6,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -20,7 +22,7 @@ type controlResponseDispatcher struct {
 }
 
 func (dispatcher *controlResponseDispatcher) DispatchWith(_ context.Context, _ channel.Caller, request *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
-	if request.Method != "SendControlResponse" {
+	if request.Method != leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure {
 		_ = writer.SendError(int32(codes.Unimplemented), "unexpected method")
 		return
 	}
@@ -37,7 +39,7 @@ func (dispatcher *controlResponseDispatcher) DispatchWith(_ context.Context, _ c
 		_ = writer.SendError(int32(codes.Internal), err.Error())
 		return
 	}
-	_ = writer.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
+	_ = writer.SendResponse(channelwire.NewPayloadResponse(payload))
 }
 
 func TestRunAgentSendControlResponsePreservesIdentityAndChecksCompletion(t *testing.T) {

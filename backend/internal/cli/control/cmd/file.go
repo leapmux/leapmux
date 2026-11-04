@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -51,9 +52,8 @@ func RunFileList(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ListDirectoryResponse
-	return workerUnaryEmitOn(c, workerID, "ListDirectory",
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceListDirectoryProcedure,
 		&leapmuxv1.ListDirectoryRequest{
-			WorkerId: workerID,
 			Path:     f.Path,
 			MaxDepth: int32(maxDepth),
 			DirsOnly: dirsOnly,
@@ -101,7 +101,7 @@ func RunFileRoots(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ListFilesystemRootsResponse
-	return workerUnaryEmitOn(c, workerID, "ListFilesystemRoots",
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure,
 		&leapmuxv1.ListFilesystemRootsRequest{}, &resp,
 		func() any { return map[string]any{"roots": resp.GetRoots()} })
 }
@@ -123,8 +123,8 @@ func RunFileRead(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ReadFileResponse
-	return workerUnaryEmitOn(c, workerID, "ReadFile",
-		&leapmuxv1.ReadFileRequest{WorkerId: workerID, Path: f.Path, Offset: offset, Limit: limit}, &resp,
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceReadFileProcedure,
+		&leapmuxv1.ReadFileRequest{Path: f.Path, Offset: offset, Limit: limit}, &resp,
 		func() any {
 			return map[string]any{
 				"path":       resp.GetPath(),
@@ -148,7 +148,7 @@ func RunFileStat(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.StatFileResponse
-	return workerUnaryEmitOn(c, workerID, "StatFile",
-		&leapmuxv1.StatFileRequest{WorkerId: workerID, Path: f.Path}, &resp,
+	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerFileServiceStatFileProcedure,
+		&leapmuxv1.StatFileRequest{Path: f.Path}, &resp,
 		func() any { return resp.GetInfo() })
 }

@@ -10,19 +10,23 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/periodic"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
@@ -107,7 +111,7 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 	assert.Len(t, sync.GetTabs(), 2)
 
 	// Collect tabs into a map for order-independent assertion.
-	tabMap := make(map[string]*leapmuxv1.TabRef)
+	tabMap := make(map[string]*leapmuxv1.TabIdent)
 	for _, tab := range sync.GetTabs() {
 		tabMap[tab.GetTabId()] = tab
 	}
@@ -273,6 +277,16 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 // Wire runs, for the tests that care about one specific field.
 func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params)) (*Wiring, *hub.Client) {
 	t.Helper()
+	w, client, _ := wireForTestWithKeypair(t, mode, adjust)
+	return w, client
+}
+
+// wireForTestWithKeypair is wireForTestWith plus the keypair Wire was given, for
+// the tests that compare what the client advertises against its source.
+func wireForTestWithKeypair(
+	t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params),
+) (*Wiring, *hub.Client, *noiseutil.CompositeKeypair) {
+	t.Helper()
 
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -302,42 +316,60 @@ func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*P
 	adjust(&params)
 	w := Wire(params)
 	t.Cleanup(w.Shutdown)
-	return w, client
+	return w, client, key
 }
 
 // TestWire_AdvertisesPostQuantumKeysInEveryMode is the regression for a
 // silent identity change.
 //
 // The keys describe the worker, not the session's cipher: the handshake
-// picks its mode from EncryptionMode alone. Withholding them in classic
-// mode still overwrites the hub's stored columns with empty blobs, and
-// every client that had pinned the worker then fails TOFU verification
-// with a key mismatch it cannot clear without manual intervention.
+// picks its mode from EncryptionMode alone. The Hub refuses a hello with an
+// incomplete key set, because it pins the complete set the worker registered
+// with, so withholding the post-quantum keys in classic mode would stop the
+// worker from connecting at all.
 func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
 	for _, mode := range []leapmuxv1.EncryptionMode{
 		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
 		leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
-			_, client := wireForTest(t, mode)
+			_, client, key := wireForTestWithKeypair(t, mode, func(*Params) {})
+			slhdsa, err := key.SlhdsaPublicKeyBytes()
+			require.NoError(t, err)
 
-			assert.NotEmpty(t, client.PublicKey, "X25519 key must be advertised")
-			assert.NotEmpty(t, client.MlkemPublicKey,
-				"ML-KEM key must be advertised so a heartbeat cannot blank the stored pin")
-			assert.NotEmpty(t, client.SlhdsaPublicKey,
-				"SLH-DSA key must be advertised so a heartbeat cannot blank the stored pin")
+			require.NotNil(t, client.PublicKeys)
+			assert.Equal(t, key.X25519Public, client.PublicKeys.GetX25519())
+			assert.Equal(t, key.MlkemPublicKeyBytes(), client.PublicKeys.GetMlkem())
+			assert.Equal(t, slhdsa, client.PublicKeys.GetSlhdsa())
+			assert.Len(t, client.PublicKeys.GetX25519(), contracts.X25519PublicKeySize)
+			assert.Len(t, client.PublicKeys.GetMlkem(), contracts.MlkemPublicKeySize)
+			assert.Len(t, client.PublicKeys.GetSlhdsa(), contracts.SlhdsaPublicKeySize)
+			assert.NotEmpty(t, client.PublicKeys.GetMlkem(),
+				"ML-KEM key must be advertised: the Hub refuses a hello with an incomplete key set")
+			assert.NotEmpty(t, client.PublicKeys.GetSlhdsa(),
+				"SLH-DSA key must be advertised: the Hub refuses a hello with an incomplete key set")
 			assert.Equal(t, mode, client.EncryptionMode,
 				"the mode, not key presence, is what selects the handshake")
 		})
 	}
 }
 
-// TestWire_PerformsEveryStepBothEntryPointsRelyOn pins the wiring steps
-// whose omission in one entry point is why this package exists. Each was
+// A keypair Wire cannot describe as a complete key set is a wiring mistake, and
+// it fails before PrepareAgentDirs or the control IPC factory start anything.
+func TestWire_PanicsOnAKeypairWithoutKeys(t *testing.T) {
+	assert.Panics(t, func() {
+		wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) {
+			p.CompositeKey = &noiseutil.CompositeKeypair{}
+		})
+	})
+}
+
+// TestWire_PerformsEveryStepAWorkerReliesOn pins the wiring steps whose
+// omission in one of two old entry points is why this package exists. Each was
 // a shipped defect: a missing ControlIPC left `leapmux control` with no
 // socket, and an unbound cleanup WaitGroup let Shutdown return while a
 // close handler was still writing.
-func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
+func TestWire_PerformsEveryStepAWorkerReliesOn(t *testing.T) {
 	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
 	require.NotNil(t, w.Service)
@@ -483,7 +515,7 @@ func TestWire_AppliesTheConfiguredStartupConcurrency(t *testing.T) {
 }
 
 // TestWire_UnsetStartupConcurrencyResolvesTheDefault pins the "0 means auto"
-// convention at the boundary the entry points actually cross: they pass the
+// convention at the boundary that worker.Run actually crosses: it passes the
 // loaded value through unchanged, and an unset worker.yaml key arrives as 0.
 func TestWire_UnsetStartupConcurrencyResolvesTheDefault(t *testing.T) {
 	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
@@ -523,6 +555,39 @@ func TestWiring_ShutdownStopsTheResumeSweep(t *testing.T) {
 		"the composed stopper must reach the resume sweep, not only the reconciler")
 }
 
+// A canceled loop finishes the pass in progress, and the caller closes the database
+// that the pass uses. So the stop must wait for that pass, not only cancel it.
+func TestStopPeriodicLoops_WaitsForThePassInProgress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		release := make(chan struct{})
+		stopped := periodic.Start(ctx, periodic.Schedule{Interval: time.Hour}, func(context.Context) { <-release })
+		idle := periodic.Start(ctx, periodic.Schedule{Interval: time.Hour, SkipFirstRun: true}, func(context.Context) {})
+		synctest.Wait()
+
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			stopPeriodicLoops(cancel, []<-chan struct{}{idle, stopped})
+		}()
+		synctest.Wait()
+		select {
+		case <-returned:
+			require.FailNow(t, "the stop returned while a pass still ran")
+		default:
+		}
+
+		close(release)
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			require.FailNow(t, "the stop must return after the pass returns")
+		}
+	})
+}
+
 // TestWire_WorkerIdentityTriggersAReconcilerPass pins the nudge that keeps the
 // resume sweep's retry from taking an hour.
 //
@@ -535,12 +600,125 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 
 	require.NotNil(t, client.OnWorkerIdentity,
 		"the identity handler must survive the background-loop wiring that wraps it")
-	client.OnWorkerIdentity("user-1")
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
 
 	// The wrapper must still do the delivery it wrapped.
 	assert.Eventually(t, func() bool { return w.Service.RegisteredBy().Matches("user-1") },
 		5*time.Second, 10*time.Millisecond,
 		"the identity nudge dropped the delivery it wraps")
+	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")),
+		"the delivery carries the owner's username to the service")
+}
+
+// The Hub re-delivers the identity on every account change of the owner, such
+// as a rename or an elevation, and a re-delivery for the same owner cannot
+// unblock the resume sweep. So only a delivery that changes the owner starts a
+// reconcile pass; each pass costs a ListOwnedTabsForWorker round trip.
+func TestNudgeOnNewOwner_NudgesOnlyWhenTheOwnerChanges(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+	var nudges int
+	deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"}))
+	assert.Equal(t, 1, nudges, "the first owner unblocks the resume sweep")
+
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"}),
+		"a rename is applied")
+	assert.Equal(t, "alice2", w.Service.OwnerUsername(userid.MustNew("user-1")), "a rename still reaches the service")
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"}),
+		"an unchanged identity is applied")
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "nobody"}),
+		"a refused empty owner leaves the worker with its owner")
+	assert.Equal(t, 1, nudges, "a rename, an unchanged identity and a refused empty owner keep the owner")
+
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-2", RegisteredByUsername: "bob"}))
+	assert.Equal(t, 2, nudges, "a different owner starts a pass")
+}
+
+// An identity with no owner is refused, so it changes nothing and starts no
+// pass, even on a worker that holds no owner yet. A zero owner matches no
+// owner, the zero owner included, so comparing the owner before and after the
+// delivery would read the refusal as a change.
+func TestNudgeOnNewOwner_SkipsARefusedEmptyOwnerOnAWorkerWithNoOwner(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+	var nudges int
+	deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+	assert.False(t, deliver(&leapmuxv1.WorkerIdentity{}), "an empty owner is not applied")
+	assert.False(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredByUsername: "nobody"}), "an empty owner is not applied")
+
+	assert.Zero(t, nudges, "a refused identity unblocks nothing")
+	assert.True(t, w.Service.RegisteredBy().IsZero(), "a refused identity stores no owner")
+}
+
+// A refused identity keeps the owner that the worker holds, and that owner keeps the
+// owner gate open. So the handler reports an owner. Otherwise the identity watchdog
+// would end the connection after every greeting, and each reconnect would drop every
+// browser channel of this worker.
+func TestNudgeOnNewOwner_ReportsTheOwnerThatARefusedIdentityLeftInPlace(t *testing.T) {
+	refused := &leapmuxv1.WorkerIdentity{RegisteredByUsername: "nobody"}
+
+	t.Run("a seeded owner", func(t *testing.T) {
+		w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) {
+			p.SeedRegisteredBy = "user-1"
+		})
+		var nudges int
+		deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+		assert.True(t, deliver(refused))
+		assert.Zero(t, nudges, "a refused identity unblocks nothing")
+		assert.True(t, w.Service.RegisteredBy().Matches("user-1"), "the worker keeps its seeded owner")
+	})
+
+	t.Run("an owner from an earlier delivery", func(t *testing.T) {
+		w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+		var nudges int
+		deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+		require.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"}))
+
+		assert.True(t, deliver(refused))
+		assert.Equal(t, 1, nudges, "a refused identity starts no pass of its own")
+		assert.True(t, w.Service.RegisteredBy().Matches("user-1"), "the worker keeps the delivered owner")
+		assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")),
+			"the refused frame's username belongs to no owner")
+	})
+}
+
+// A worker seeded with its owner already passes the sweep's owner check, so the
+// first greeting, which carries the same owner, starts no pass of its own. The
+// connect-time WorkerTabInventory reply still starts one on every connect.
+func TestNudgeOnNewOwner_SkipsAGreetingForTheSeededOwner(t *testing.T) {
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, func(p *Params) {
+		p.SeedRegisteredBy = "user-1"
+	})
+	var nudges int
+	deliver := nudgeOnNewOwner(w.Service, func() { nudges++ })
+
+	assert.True(t, deliver(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"}),
+		"the greeting is applied, so the identity watchdog stops")
+
+	assert.Zero(t, nudges)
+	assert.Equal(t, "alice", w.Service.OwnerUsername(userid.MustNew("user-1")))
+}
+
+// The control IPC factory answers Whoami's username from the live service, so
+// each spawned process reports the owner the Hub delivered last, and only to
+// the owner.
+func TestWire_ControlIPCReadsTheOwnerUsernameFromTheService(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	factory, ok := w.Service.ControlIPC.(*controlipc.Factory)
+	require.True(t, ok, "Wire installs the control IPC factory, got %T", w.Service.ControlIPC)
+	require.NotNil(t, factory.OwnerUsername, "without the lookup, Whoami reports no username")
+	owner := userid.MustNew("user-1")
+	assert.Empty(t, factory.OwnerUsername(owner), "no username before the Hub delivers the identity")
+
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice"})
+	assert.Equal(t, "alice", factory.OwnerUsername(owner))
+	assert.Empty(t, factory.OwnerUsername(userid.MustNew("user-2")), "another user is never told the owner's name")
+
+	client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1", RegisteredByUsername: "alice2"})
+	assert.Equal(t, "alice2", factory.OwnerUsername(owner), "a re-delivered identity reaches the factory")
 }
 
 // C-M5: the worker sweeps the agent directories that ended workers left when it

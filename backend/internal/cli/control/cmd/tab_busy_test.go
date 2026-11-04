@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -18,7 +19,7 @@ func busyTerminal(id string, procs ...*leapmuxv1.TerminalProcess) *leapmuxv1.Ter
 
 func busyCloseHub() *recordingHub {
 	return &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			leafNode("root-1", "", "m").
@@ -64,9 +65,9 @@ func TestRunTabClose_BusyTabRefusedBeforeTheTombstone(t *testing.T) {
 		"the refusal must name what it is refusing to interrupt")
 	assert.Contains(t, env.Error["message"], "pass --allow-busy to close anyway")
 
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
-	assert.NotContains(t, disp.called(), "CloseTerminal",
+	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTabServiceCloseTabProcedure,
 		"and before the worker teardown")
 }
 
@@ -81,7 +82,7 @@ func TestRunTabClose_AllowBusyProceedsToTheTombstone(t *testing.T) {
 
 	_ = runBusyTabClose(t, disp, hub, "--allow-busy")
 
-	assert.Contains(t, hub.called(), "SubmitOps",
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"--allow-busy is an override; the close must reach the tombstone")
 }
 
@@ -92,8 +93,8 @@ func TestRunTabClose_IdleTabIsNotRefused(t *testing.T) {
 
 	_ = runBusyTabClose(t, disp, hub)
 
-	assert.Contains(t, hub.called(), "SubmitOps")
-	assert.Contains(t, disp.called(), "InspectTerminalProcesses",
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+	assert.Contains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"the guard still asks; it just finds nothing running")
 }
 
@@ -119,7 +120,7 @@ func TestRunTabClose_LastTabPromptWinsOverTheBusyGate(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &env))
 	assert.Equal(t, "invalid_request", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "pass --worktree=keep|push|discard")
-	assert.NotContains(t, disp.called(), "InspectTerminalProcesses",
+	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"the busy probe must not even run when the worktree gate fires")
 }
 
@@ -155,7 +156,7 @@ func TestAgentBusyDetail(t *testing.T) {
 			ActiveBackgroundTasks: 2,
 		}))
 
-	// A SUBAGENT tab closes in the UI only: CloseAgent on a child keeps the row
+	// A SUBAGENT tab closes in the UI only: CloseTab on a child keeps the row
 	// and the transcript and stops no process. Nothing is interrupted, whatever
 	// the child's own registry row says, so refusing the close would fail a
 	// script over work the close never touches. The browser's probe carves out
@@ -219,7 +220,7 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 		},
 	}
 	hub := &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			leafNode("root-1", "", "m").
@@ -244,7 +245,7 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "agent is working, 2 background tasks active")
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land BEFORE the CRDT tombstone")
 }
 
@@ -266,7 +267,7 @@ func TestInspectTabsBusy_FailsOpenWhenTheWorkerCannotAnswer(t *testing.T) {
 	})
 
 	assert.Empty(t, busy, "an unanswerable probe reports nothing busy")
-	assert.ElementsMatch(t, []string{"ListAgents", "InspectTerminalProcesses"}, asked)
+	assert.ElementsMatch(t, []string{leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure}, asked)
 }
 
 // A viewer tab stops nothing when it closes, so the guard spends no round trip
@@ -309,7 +310,7 @@ func (b *stateBuilder) tabOnWorker(tabID, tileID, workerID string, tabType leapm
 
 func busyTileHub() *recordingHub {
 	return &recordingHub{
-		listWorkers: []string{"worker-A"},
+		workers: workerRows("worker-A"),
 		materialized: newStateBuilder().
 			workspace("ws-1", "root-1").
 			splitNode("root-1", "", "m").
@@ -348,7 +349,7 @@ func TestRunTileClose_BusyTabRefusedBeforeAnyOp(t *testing.T) {
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "term-2")
 	assert.Contains(t, env.Error["message"], "node pid 51234")
-	assert.NotContains(t, hub.called(), "SubmitOps",
+	assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"the refusal must land before the tile and its tabs are tombstoned")
 }
 
@@ -360,7 +361,7 @@ func TestRunTileClose_AllowBusyProceeds(t *testing.T) {
 
 	_ = runBusyTileClose(t, disp, hub, "--allow-busy")
 
-	assert.Contains(t, hub.called(), "SubmitOps",
+	assert.Contains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure,
 		"--allow-busy is an override; the close must reach the tombstone")
 }
 
@@ -379,6 +380,6 @@ func TestRunTileClose_MoveSkipsTheBusyGate(t *testing.T) {
 		})
 	})
 
-	assert.NotContains(t, disp.called(), "InspectTerminalProcesses",
+	assert.NotContains(t, disp.called(), leapmuxv1connect.WorkerTerminalServiceInspectTerminalProcessesProcedure,
 		"a move interrupts nothing, so the guard must not even ask")
 }

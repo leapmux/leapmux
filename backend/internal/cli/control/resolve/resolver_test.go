@@ -23,7 +23,7 @@ import (
 // production wiring (each cmd handler passes only the deps it
 // actually needs).
 type stubDeps struct {
-	locateTab    func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error)
+	locateTab    func(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error)
 	getWorkspace func(ctx context.Context, workspaceID string) error
 	locateTile   func(ctx context.Context, tileID string) (string, error)
 }
@@ -36,6 +36,18 @@ func (s stubDeps) toDeps() resolve.Deps {
 	}
 }
 
+// placedTab builds the row LocateTab answers for a tab of tabType placed in
+// workspaceID, on tileID, hosted by workerID. The resolver reads no tab id from
+// the row, so the row carries none.
+func placedTab(tabType leapmuxv1.TabType, workspaceID, tileID, workerID string) *leapmuxv1.WorkspaceTab {
+	return &leapmuxv1.WorkspaceTab{
+		Tab:         &leapmuxv1.TabIdent{TabType: tabType},
+		WorkspaceId: workspaceID,
+		TileId:      tileID,
+		WorkerId:    workerID,
+	}
+}
+
 // TestResolve_TabID_DerivesWorkspaceTileWorker pins the canonical
 // worker-spawned path: the CLI inherits its tab-id from the env var
 // (LEAPMUX_CONTROL_TAB_ID), the resolver issues one LocateTab call,
@@ -45,10 +57,10 @@ func (s stubDeps) toDeps() resolve.Deps {
 // context relies on it.
 func TestResolve_TabID_DerivesWorkspaceTileWorker(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, tabType leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, tabType leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
 			assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, tabType)
 			assert.Equal(t, "tab-1", tabID)
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
 		},
 	}.toDeps()
 
@@ -61,6 +73,60 @@ func TestResolve_TabID_DerivesWorkspaceTileWorker(t *testing.T) {
 	assert.Equal(t, "tile-1", got.TileID)
 	assert.Equal(t, "worker-A", got.WorkerID)
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+}
+
+// The row LocateTab answers rides out as Resolved.Tab, so a command that prints
+// the row reads the same snapshot the resolver derived its fields from, with no
+// second lookup that could answer differently.
+func TestResolve_KeepsTheRowThatLocateTabAnswered(t *testing.T) {
+	row := &leapmuxv1.WorkspaceTab{
+		Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
+		WorkspaceId: "ws-1",
+		TileId:      "tile-1",
+		WorkerId:    "worker-A",
+		Position:    "m",
+	}
+	calls := 0
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			calls++
+			return row, nil
+		},
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}},
+		resolve.Inputs{TabID: "tab-1", ExplicitTabID: true},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls)
+	assert.Same(t, row, got.Tab, "the row is the one LocateTab answered, not a copy rebuilt from the fields")
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, got.TabType)
+	assert.Equal(t, "ws-1", got.WorkspaceID)
+}
+
+// The resolved fields are the AGREED values, so they can differ from the row:
+// an explicit --workspace-id shadows the workspace that an ambient tab id
+// derives, without a conflict. Resolved.Tab still holds the hub's row, which
+// is what lets a command that prints the row notice the difference.
+func TestResolve_AnExplicitWorkspaceShadowsTheRowWithoutReplacingIt(t *testing.T) {
+	deps := stubDeps{
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-of-the-tab", "tile-1", "worker-A"), nil
+		},
+		getWorkspace: func(context.Context, string) error { return nil },
+	}.toDeps()
+
+	got, err := resolve.Resolve(context.Background(), deps,
+		resolve.Need{TabID: true, WorkspaceID: true, Want: resolve.Wants{TabType: true}},
+		resolve.Inputs{TabID: "tab-env", WorkspaceID: "ws-typed", ExplicitWorkspaceID: true},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "ws-typed", got.WorkspaceID, "the typed workspace wins over the ambient tab's")
+	require.NotNil(t, got.Tab)
+	assert.Equal(t, "ws-of-the-tab", got.Tab.GetWorkspaceId(), "the row keeps the workspace the hub answered")
 }
 
 // TestResolve_WorkspaceID_ChecksExistence pins the workspace leg:
@@ -106,23 +172,24 @@ func TestResolve_WorkspaceID_NotFound(t *testing.T) {
 }
 
 // TestResolve_WorkerID_CostsNoRPC is the deliberate anti-twin of
-// TestResolve_WorkspaceID_ChecksExistence: --worker-id passes straight
-// through, unconfirmed and free.
+// TestResolve_WorkerID_CostsNoRPC: --worker-id passes straight through,
+// unconfirmed and free.
 //
 // The workspace axis keeps its existence check because nothing
 // downstream catches a bogus workspace id (GetMaterialized answers with
-// an empty projection, not an error). The worker axis has no such gap
-// -- and a confirmation RPC there is actively harmful, because every
-// worker-spawned agent inherits $LEAPMUX_CONTROL_WORKER_ID and the only
-// RPCs that could serve the check (GetWorker / ListWorkers) are
-// intentionally off the hub's delegation-bearer allowlist. The leg
-// that used to be here failed every agent-issued command with
+// an empty projection, not an error). The worker axis has no such gap,
+// and a confirmation RPC there would be harmful. Every worker-spawned
+// agent inherits $LEAPMUX_CONTROL_WORKER_ID, and the only RPCs that could
+// serve the check (GetWorker / ListWorkers) need worker:read. The
+// delegation ceiling admits that scope, but a narrower grant refuses it,
+// and a refusal here would fail the agent's command with
 // `resolve_failed: get worker ...: permission_denied`.
+// maybePreflightWorker runs the same lookup and tolerates the denial.
 func TestResolve_WorkerID_CostsNoRPC(t *testing.T) {
 	// Every dep panics: reaching any of them on a bare --worker-id
 	// input is the regression.
 	deps := stubDeps{
-		locateTab: func(context.Context, leapmuxv1.TabType, string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(context.Context, leapmuxv1.TabType, string) (*leapmuxv1.WorkspaceTab, error) {
 			panic("--worker-id must not trigger LocateTab")
 		},
 		getWorkspace: func(context.Context, string) error {
@@ -168,8 +235,8 @@ func TestResolve_TileID_DerivesWorkspace(t *testing.T) {
 // command at the wrong workspace.
 func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-A", "tile-1", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-A", "tile-1", "worker-A"), nil
 		},
 		getWorkspace: func(_ context.Context, _ string) error {
 			return nil
@@ -208,8 +275,8 @@ func TestResolve_ConflictBetweenTabAndWorkspace(t *testing.T) {
 // "single-source" tests above.
 func TestResolve_AgreementAcrossSourcesIsOK(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
 		},
 		getWorkspace: func(_ context.Context, _ string) error {
 			return nil
@@ -256,10 +323,10 @@ func TestResolve_MissingRequiredSurfacesAllFields(t *testing.T) {
 // which proto to send.
 func TestResolve_TabIDWithoutTypeIsAllowed(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, tabType leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, tabType leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
 			assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, tabType,
 				"resolver must forward UNSPECIFIED when the caller didn't pin a type")
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
 		},
 	}.toDeps()
 	got, err := resolve.Resolve(context.Background(), deps,
@@ -339,8 +406,8 @@ func TestResolve_ContradictionNamesEveryTabKind(t *testing.T) {
 // reject-the-agreement would produce.
 func TestResolve_FixedTabTypeAgreeingFlagIsOK(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
 		},
 	}.toDeps()
 	got, err := resolve.Resolve(context.Background(), deps,
@@ -373,8 +440,8 @@ func TestResolve_UnknownTabTypeIsInvalidArgument(t *testing.T) {
 // existing error envelope wrapper can attach a code.
 func TestResolve_RpcErrorPropagates(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", errors.New("not found")
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, errors.New("not found")
 		},
 	}.toDeps()
 	_, err := resolve.Resolve(context.Background(), deps,
@@ -405,8 +472,8 @@ func TestResolve_NoDerivations_ReturnsSeededInputs(t *testing.T) {
 // look like a contradicting value vs. the trimmed flag form.
 func TestResolve_TrimsWhitespaceOnInputs(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "ws-1", "tile-1", "worker-A"), nil
 		},
 	}.toDeps()
 	got, err := resolve.Resolve(context.Background(), deps,
@@ -427,8 +494,8 @@ func TestResolve_TrimsWhitespaceOnInputs(t *testing.T) {
 // silently.
 func TestResolve_ExplicitFlagBeatsEnvDerivation(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-A"), nil
 		},
 		locateTile: func(_ context.Context, tileID string) (string, error) {
 			assert.Equal(t, "tile-X", tileID, "LocateTile must be called with the explicit --tile-id")
@@ -455,8 +522,8 @@ func TestResolve_ExplicitFlagBeatsEnvDerivation(t *testing.T) {
 // only suppresses env-vs-explicit conflicts.
 func TestResolve_TwoExplicitInputsStillConflict(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-A", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-A"), nil
 		},
 	}.toDeps()
 	_, err := resolve.Resolve(context.Background(), deps,
@@ -485,8 +552,8 @@ func TestResolve_TwoExplicitInputsStillConflict(t *testing.T) {
 // of its derivations clashed.
 func TestResolve_ExplicitInputShadowsEnvOnlyForConflictingField(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-from-env-tab", nil
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-Y", "worker-from-env-tab"), nil
 		},
 		locateTile: func(_ context.Context, _ string) (string, error) {
 			return "ws-1", nil
@@ -621,9 +688,8 @@ func TestTabTypeVocabularyCoversEveryEnumValue(t *testing.T) {
 // `terminal quake` commands that exist to be typed there.
 func TestResolve_UnlocatableTabIsToleratedWhenNothingNeedsIt(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
-				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
 		},
 	}.toDeps()
 
@@ -635,6 +701,7 @@ func TestResolve_UnlocatableTabIsToleratedWhenNothingNeedsIt(t *testing.T) {
 	require.NoError(t, err, "a tab the hub cannot place must not fail a command that only needs the worker")
 	assert.Equal(t, "quake-1", got.TabID)
 	assert.Equal(t, "w1", got.WorkerID, "the worker still comes from its own input")
+	assert.Nil(t, got.Tab, "a tolerated miss has no row to keep")
 }
 
 // The other half of the rule: the miss becomes fatal the moment it is what
@@ -642,9 +709,8 @@ func TestResolve_UnlocatableTabIsToleratedWhenNothingNeedsIt(t *testing.T) {
 // "missing required ID(s)".
 func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
-				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
 		},
 	}.toDeps()
 
@@ -666,8 +732,8 @@ func TestResolve_UnlocatableTabIsFatalWhenAFieldNeededIt(t *testing.T) {
 // worker-side failure much later.
 func TestResolve_LocateTabTransportFailureStaysFatal(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "", errors.New("connection refused")
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, errors.New("connection refused")
 		},
 	}.toDeps()
 
@@ -782,9 +848,8 @@ func TestBindEntityFlags_AgentTabIDDefaultIgnoresTheTerminalID(t *testing.T) {
 // without it a foreign --tab-id was swallowed on all of them.
 func TestResolve_ExplicitUnlocatableTabIsFatalEvenWhenNothingNeedsIt(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
-				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
 		},
 	}.toDeps()
 
@@ -807,9 +872,8 @@ func TestResolve_ExplicitUnlocatableTabIsFatalEvenWhenNothingNeedsIt(t *testing.
 // pair reads as one rule: identical everywhere except who supplied the tab id.
 func TestResolve_AmbientUnlocatableTabStaysTolerated(t *testing.T) {
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (leapmuxv1.TabType, string, string, string, error) {
-			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, "", "", "",
-				fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, tabID string) (*leapmuxv1.WorkspaceTab, error) {
+			return nil, fmt.Errorf("%w: no such tab", resolve.ErrTabNotLocatable)
 		},
 	}.toDeps()
 
@@ -836,9 +900,9 @@ func TestResolve_AmbientUnlocatableTabStaysTolerated(t *testing.T) {
 func TestResolve_SkipsLocateTabWhenNothingItFillsIsRead(t *testing.T) {
 	calls := 0
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
 			calls++
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-A", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-A"), nil
 		},
 	}.toDeps()
 
@@ -850,6 +914,7 @@ func TestResolve_SkipsLocateTabWhenNothingItFillsIsRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, calls, "the worker id was supplied, so nothing needed the tab's placement")
 	assert.Equal(t, "w1", got.WorkerID)
+	assert.Nil(t, got.Tab, "a skipped lookup has no row to keep")
 }
 
 // The other side of the same rule: a field the caller READS but does not
@@ -859,9 +924,9 @@ func TestResolve_SkipsLocateTabWhenNothingItFillsIsRead(t *testing.T) {
 func TestResolve_WantedFieldStillFiresTheDerivation(t *testing.T) {
 	calls := 0
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
 			calls++
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1"), nil
 		},
 	}.toDeps()
 
@@ -882,9 +947,9 @@ func TestResolve_WantedFieldStillFiresTheDerivation(t *testing.T) {
 func TestResolve_WantedTabTypeStillFiresTheDerivation(t *testing.T) {
 	calls := 0
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
 			calls++
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "w1"), nil
 		},
 	}.toDeps()
 
@@ -908,9 +973,9 @@ func TestResolve_WantedTabTypeStillFiresTheDerivation(t *testing.T) {
 func TestResolve_AmbientIDsThatDisagreeAreNotCrossChecked(t *testing.T) {
 	calls := 0
 	deps := stubDeps{
-		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (leapmuxv1.TabType, string, string, string, error) {
+		locateTab: func(_ context.Context, _ leapmuxv1.TabType, _ string) (*leapmuxv1.WorkspaceTab, error) {
 			calls++
-			return leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-from-tab", nil
+			return placedTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "ws-1", "tile-1", "worker-from-tab"), nil
 		},
 	}.toDeps()
 

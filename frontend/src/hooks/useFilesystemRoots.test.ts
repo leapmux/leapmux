@@ -4,7 +4,9 @@ import { useFilesystemRoots } from './useFilesystemRoots'
 
 const listFilesystemRoots = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  listFilesystemRoots: (...args: unknown[]) => listFilesystemRoots(...args),
+  workerFile: {
+    listFilesystemRoots: (...args: unknown[]) => listFilesystemRoots(...args),
+  },
 }))
 
 beforeEach(() => {

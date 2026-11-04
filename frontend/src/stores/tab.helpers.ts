@@ -1,18 +1,18 @@
 import type { RepoGitStore, UpsertRepoGitFromProtoOpts } from './repoGit'
-import type { AgentTab, Tab, TerminalTab } from './tab.types'
+import type { AgentTab, Tab, TerminalDisplayStatus, TerminalTab } from './tab.types'
 import type { TabMetadata, TerminalMeta } from './tabMetadata.store'
-import type { listTerminals } from '~/api/workerRpc'
+import type { workerTerminal } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { assignDefined } from '~/lib/jsonPick'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { repoKey, repoKeyFromTab, upsertRepoGitFromProtoStatus } from './repoGit'
-import { isPayloadBackedTabType, isTerminalTab } from './tab.types'
+import { isPayloadBackedTabType, isTerminalTab, TERMINAL_DISCONNECTED } from './tab.types'
 
 /**
  * Module note: helpers over `Tab` records — no signals. Lives in its own
@@ -26,7 +26,7 @@ import { isPayloadBackedTabType, isTerminalTab } from './tab.types'
  * Add no other one without naming it here.
  */
 
-type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
+type ProtoTerminal = Awaited<ReturnType<typeof workerTerminal.listTerminals>>['terminals'][number]
 
 /**
  * The identity of one repository checkout on one worker.
@@ -83,13 +83,10 @@ export function isSameRepo(
  * come from the projection rather than the worker.
  */
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> {
-  const status: TerminalStatus
-    = term.status === TerminalStatus.READY && term.exited
-      ? TerminalStatus.EXITED
-      : term.status
   const fields: Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> = {
     workerId,
-    status,
+    // The worker reports EXITED itself; the reply states every status.
+    status: term.status,
     startupError: term.startupError,
     startupMessage: term.startupMessage,
   }
@@ -110,7 +107,7 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
   // Any persisted screen means the shell already painted content; an
   // exited DB-only terminal has no future data source, so it must not
   // remain covered by the startup overlay either.
-  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.exited
+  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.status === TerminalStatus.EXITED
     ? true
     : undefined)
   if (term.gitStatus?.toplevel)
@@ -222,8 +219,7 @@ export function protoToAgentTabFields(
     agentStatus: agent.status,
     acceptsMessages: agent.acceptsMessages,
     acceptsInterrupt: agent.acceptsInterrupt,
-    supportsSteering: agent.supportsSteering,
-    supportsPreemption: agent.supportsPreemption,
+    queueHeadDispatch: agent.queueHeadDispatch,
     ...deriveOptionGroupTabFields(agent.optionGroups),
   }
   // Same absence-not-undefined rule as protoToTerminalTabFields.
@@ -248,8 +244,7 @@ export function protoToAgentTabFields(
 export const LIVE_STATUS_FIELDS = [
   'agentStatus',
   'agentSessionId',
-  'supportsSteering',
-  'supportsPreemption',
+  'queueHeadDispatch',
   'startupError',
   'startupMessage',
 ] as const satisfies readonly (keyof AgentTab)[]
@@ -265,7 +260,7 @@ export const LIVE_CATALOG_FIELDS = [
   'optionValues',
 ] as const satisfies readonly (keyof AgentTab)[]
 
-function withoutFields(fields: Partial<AgentTab>, owned: readonly (keyof AgentTab)[]): Partial<AgentTab> {
+function withoutFields<T>(fields: Partial<T>, owned: readonly (keyof T)[]): Partial<T> {
   const kept = { ...fields }
   for (const key of owned)
     delete kept[key]
@@ -281,7 +276,7 @@ function withoutFields(fields: Partial<AgentTab>, owned: readonly (keyof AgentTa
  * only the rest of it still applies: the identity and the settings of the tab.
  */
 export function withoutLiveStatusFields(fields: Partial<AgentTab>): Partial<AgentTab> {
-  return withoutFields(fields, LIVE_STATUS_FIELDS)
+  return withoutFields<AgentTab>(fields, LIVE_STATUS_FIELDS)
 }
 
 /**
@@ -293,7 +288,7 @@ export function withoutLiveStatusFields(fields: Partial<AgentTab>): Partial<Agen
  * reply keeps only the rest: the identity and the lifecycle of the tab.
  */
 export function withoutLiveCatalogFields(fields: Partial<AgentTab>): Partial<AgentTab> {
-  return withoutFields(fields, LIVE_CATALOG_FIELDS)
+  return withoutFields<AgentTab>(fields, LIVE_CATALOG_FIELDS)
 }
 
 /**
@@ -571,7 +566,6 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
   return {
     id: tab.id,
     workerId: tab.workerId ?? '',
-    workerName: '',
     workingDir: tab.workingDir ?? '',
     title: tab.title ?? '',
     agentProvider: tab.agentProvider!,
@@ -581,14 +575,12 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     gitStatus: undefined,
     createdAt: tab.createdAt ?? '',
     closedAt: '',
-    homeDir: '',
     startupError: tab.startupError ?? '',
     startupMessage: tab.startupMessage ?? '',
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
     acceptsInterrupt: tab.acceptsInterrupt ?? false,
-    supportsSteering: tab.supportsSteering ?? false,
-    supportsPreemption: tab.supportsPreemption ?? false,
+    queueHeadDispatch: tab.queueHeadDispatch ?? QueueHeadDispatch.NONE,
     rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
 }
@@ -791,6 +783,30 @@ export function isTabReadyForGitStatus(
   return true
 }
 
+/**
+ * The status that a surface shows for a terminal tab, or `undefined` for the
+ * other kinds. `isOnline` gives the client's view of a worker, as
+ * `WorkerOnlineStore.isOnline` does.
+ *
+ * A READY terminal of an offline worker shows DISCONNECTED, because this client
+ * cannot reach its shell. Every other status stays: a STARTING or a
+ * STARTUP_FAILED tab keeps its appearance through an outage. Each read derives
+ * the answer, so the terminal accepts input as soon as its worker comes back.
+ *
+ * The tab stores the status that the worker reported. Until the re-ask after a
+ * reconnect replies, a shell that exited during the outage therefore shows READY.
+ */
+export function terminalDisplayStatus(
+  tab: Tab,
+  isOnline: (workerId: string) => boolean,
+): TerminalDisplayStatus | undefined {
+  if (!isTerminalTab(tab))
+    return undefined
+  return tab.status === TerminalStatus.READY && !isOnline(tab.workerId ?? '')
+    ? TERMINAL_DISCONNECTED
+    : tab.status
+}
+
 export function tabKey(tab: { type: TabType, id: string }): string {
   return `${tab.type}:${tab.id}`
 }
@@ -942,6 +958,52 @@ export function terminalMetadata(workerId: string, term: ProtoTerminal) {
 }
 
 /**
+ * The part of a `ListTerminals` reply that fills what this client does not hold.
+ *
+ * A reply seeds two things, and this client then keeps each one current by
+ * itself. A reply replaces neither, whether it is the first one or the re-ask
+ * after a reconnect:
+ * - `lastOffset` states which bytes this client applied, and the catch-up of the
+ *   worker starts from it. Only `applyTerminalData` moves it. A reply that moved
+ *   it forward would make the next delta look already applied, and a mounted
+ *   xterm paints only its first screen, so those bytes would never reach the
+ *   view. A reply that moved it backward would replay bytes that the xterm drew.
+ *   `screen` goes with it, because the two describe the same bytes.
+ * - `cols` and `rows` mirror the xterm (see `handleTerminalResize`), and a
+ *   restart sends them. The reply states the size of the PTY, which a resize
+ *   during an outage did not reach.
+ *
+ * A screen that must be rebuilt arrives as a snapshot on the watch stream (see
+ * `TerminalMeta.needsResync`), which moves the cursor together with the bytes.
+ *
+ * The adoption of a quake terminal needs no such step: a released quake terminal
+ * loses its metadata row, so adoption always fills an empty row.
+ */
+export function withoutClientHeldTerminalFields(
+  fields: ReturnType<typeof terminalMetadata>,
+  held: Pick<TerminalMeta, 'lastOffset' | 'cols' | 'rows'> | undefined,
+) {
+  return withoutFields<ReturnType<typeof terminalMetadata>>(fields, [
+    ...(held?.lastOffset === undefined
+      ? []
+      : [
+          'lastOffset',
+          'screen',
+        ] as const),
+    ...(held?.cols === undefined
+      ? []
+      : [
+          'cols',
+        ] as const),
+    ...(held?.rows === undefined
+      ? []
+      : [
+          'rows',
+        ] as const),
+  ])
+}
+
+/**
  * The metadata fields that a live terminal status event writes beside the
  * status itself. Each one states the lifecycle of the terminal at the moment of
  * the event. `applyTerminalStatusChange` and `markTerminalExited` write them
@@ -967,24 +1029,16 @@ type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
  *
  * The reply states the lifecycle as the worker read it, and the event is
  * newer than that reading. So the reply gives up the lifecycle fields and
- * keeps the rest: the title, the directories, the size, and the screen.
+ * keeps the rest, such as the title and the directories.
  *
- * One answer outlasts the event: a shell that exited. The catch-up marker that
- * a watch sends on subscribe reads READY for a shell that exited before the
- * subscription, because the marker has no field for the exit. Only the reply
- * carries it. A dead shell stays dead until a restart, and a restart needs a
- * user who presses Enter on an EXITED tab that is hydrated. A reply that says
- * EXITED therefore applies in full.
- *
- * Another client can restart the shell while the reply is pending. The
- * restart then lands between the moment when the worker reads the state and the
- * moment when the reply arrives. This guard does not cover that case.
+ * A reply that says EXITED is no exception. A READY older than the exit needs no
+ * help from the reply, because the status queue of the worker sends `closed`
+ * behind it. A READY newer than the exit is a restart, and the reply would show a
+ * dead shell over one that runs.
  */
 export function keepLiveTerminalStatus<T extends Partial<Record<TerminalLifecycleField, unknown>>>(
   fields: T,
 ): Omit<T, TerminalLifecycleField> {
-  if (fields.terminalStatus === TerminalStatus.EXITED)
-    return fields
   const kept = { ...fields }
   for (const key of TERMINAL_LIVE_STATUS_FIELDS)
     delete kept[key]
@@ -1005,10 +1059,8 @@ export function keepLiveTerminalStatus<T extends Partial<Record<TerminalLifecycl
  *
  * `hydrated`: the OpenTerminal response IS the worker's answer for this tab, so
  * `useTabHydrators` must not immediately re-ask. Its reply would apply
- * `listTerminals`' DB-sourced snapshot with none of the live handler's guards —
- * dragging the terminal back to STARTING after the worker has already broadcast
- * READY, and rewinding `lastOffset` so the next resubscribe replays bytes xterm
- * has already drawn.
+ * `listTerminals`' snapshot with none of the live handler's guards, dragging the
+ * terminal back to STARTING after the worker has already broadcast READY.
  *
  * One helper for both open paths (the tab-bar button and the dialogs) so the
  * two cannot disagree about the same moment in a terminal's life — they did,

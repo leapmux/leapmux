@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -44,7 +45,7 @@ func TestScopeGateRefusesTheNamedNeighbourAtDispatch(t *testing.T) {
 
 	t.Run("terminal:read does not reach SendInput", func(t *testing.T) {
 		_, d, w := setupTestService(t)
-		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_TERMINAL_READ), "SendInput",
+		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_TERMINAL_READ), leapmuxv1connect.WorkerTerminalServiceSendInputProcedure,
 			&leapmuxv1.SendInputRequest{TerminalId: "term-1", Data: []byte("ls")}, w)
 		require.Len(t, w.errors, 1)
 		assert.EqualValues(t, codes.PermissionDenied, w.errors[0].code)
@@ -54,7 +55,7 @@ func TestScopeGateRefusesTheNamedNeighbourAtDispatch(t *testing.T) {
 
 	t.Run("terminal:write reaches the SendInput handler", func(t *testing.T) {
 		_, d, w := setupTestService(t)
-		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_TERMINAL_WRITE), "SendInput",
+		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_TERMINAL_WRITE), leapmuxv1connect.WorkerTerminalServiceSendInputProcedure,
 			&leapmuxv1.SendInputRequest{TerminalId: "no-such-terminal", Data: []byte("ls")}, w)
 		require.Len(t, w.errors, 1)
 		assert.NotEqualValues(t, codes.PermissionDenied, w.errors[0].code,
@@ -63,7 +64,7 @@ func TestScopeGateRefusesTheNamedNeighbourAtDispatch(t *testing.T) {
 
 	t.Run("git:read does not reach PushBranch", func(t *testing.T) {
 		_, d, w := setupTestService(t)
-		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_GIT_READ), "PushBranch",
+		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_GIT_READ), leapmuxv1connect.WorkerGitServicePushBranchProcedure,
 			&leapmuxv1.PushBranchRequest{WorkingDir: "/tmp/repo"}, w)
 		require.Len(t, w.errors, 1)
 		assert.EqualValues(t, codes.PermissionDenied, w.errors[0].code)
@@ -72,7 +73,7 @@ func TestScopeGateRefusesTheNamedNeighbourAtDispatch(t *testing.T) {
 
 	t.Run("git:write reaches the PushBranch handler", func(t *testing.T) {
 		_, d, w := setupTestService(t)
-		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_GIT_WRITE), "PushBranch",
+		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_GIT_WRITE), leapmuxv1connect.WorkerGitServicePushBranchProcedure,
 			&leapmuxv1.PushBranchRequest{WorkingDir: "/no/such/dir"}, w)
 		require.Len(t, w.errors, 1)
 		assert.NotEqualValues(t, codes.PermissionDenied, w.errors[0].code,
@@ -86,7 +87,7 @@ func TestScopeGateRefusesTheNamedNeighbourAtDispatch(t *testing.T) {
 	// "some permission" test.
 	t.Run("an unrelated permission reaches nothing", func(t *testing.T) {
 		_, d, w := setupTestService(t)
-		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_FILE_READ), "SendInput",
+		dispatchScoped(d, one(leapmuxv1.Scope_SCOPE_FILE_READ), leapmuxv1connect.WorkerTerminalServiceSendInputProcedure,
 			&leapmuxv1.SendInputRequest{TerminalId: "term-1", Data: []byte("ls")}, w)
 		require.Len(t, w.errors, 1)
 		assert.EqualValues(t, codes.PermissionDenied, w.errors[0].code)

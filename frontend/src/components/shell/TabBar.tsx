@@ -2,10 +2,9 @@ import type { Component, JSX } from 'solid-js'
 import type { TileActions } from './TileActionsMenu'
 import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import type { DragAxis, GuardedDragRow } from '~/lib/dragRow'
-import type { Tab } from '~/stores/tab.types'
+import type { Tab, TerminalDisplayStatus } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
@@ -33,8 +32,7 @@ import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import { isTerminalTab } from '~/stores/tab.types'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalDisplayStatus, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
@@ -52,8 +50,8 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
 )
 
 // `status` carries an explicit undefined for the non-terminal kinds — that is
-// `terminalStatusOf`'s documented answer, not a missing value.
-const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalStatus | undefined }> = (props) => {
+// `terminalDisplayStatus`'s documented answer, not a missing value.
+const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalDisplayStatus | undefined }> = (props) => {
   return (
     <Tooltip text={props.tooltip} showWhen={props.showWhen}>
       <span
@@ -64,19 +62,6 @@ const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 
       </span>
     </Tooltip>
   )
-}
-
-/**
- * A terminal tab's status, or `undefined` for the other kinds.
- *
- * Takes the tab by VALUE so `isTerminalTab` can narrow it: the rows read their
- * tab through an accessor now, and two calls to that accessor are two separate
- * expressions, so a guard on the first cannot narrow the second.
- */
-function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
-  return isTerminalTab(tab)
-    ? tab.status
-    : undefined
 }
 
 /**
@@ -125,6 +110,8 @@ interface TabBarMobileProps {
 interface TabBarProps {
   tileId: string
   tabs: Tab[]
+  /** Whether this client's watch stream reaches a worker. See `WorkerOnlineStore.isOnline`. */
+  isWorkerStreamOnline: (workerId: string) => boolean
   activeTabKey: string | null
   /**
    * The workspace these tabs belong to is archived, so the strip offers no
@@ -465,7 +452,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         data-testid={surface.rowTestId}
         data-tab-type={tabTypeLabel(tab().type)}
         data-tab-id={tab().id}
-        data-terminal-status={terminalStatusOf(tab())}
+        data-terminal-status={terminalDisplayStatus(tab(), props.isWorkerStreamOnline)}
         onClick={() => {
           if (wasDragging) {
             wasDragging = false
@@ -563,7 +550,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
         label={tabDisplayLabel(tab())}
         tooltip={tabTooltipText(tab())}
         showWhen={tabTooltipShowWhen(tab())}
-        status={terminalStatusOf(tab())}
+        status={terminalDisplayStatus(tab(), props.isWorkerStreamOnline)}
       />
     ),
     activate: () => handleTabChange(tabKey(tab())),

@@ -1,3 +1,5 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { GitSetupSchema } from '~/generated/proto/leapmux/v1/git_pb'
 import { createMemo, createSignal } from 'solid-js'
 import { shallowEqual } from '~/lib/shallowEqual'
 
@@ -34,7 +36,8 @@ export enum GitMode {
  * It lives HERE rather than in `GitOptions.tsx` because `BranchContextMenu`
  * renders once per branch row of every workspace, and `GitOptions.tsx` pulls in
  * `random-word-slugs`, `workerRpc`, `BranchSelect`, `WorktreeSelect` and
- * `validate`. This module imports `solid-js` and `~/lib/shallowEqual`, and both
+ * `validate`. At run time this module imports only `solid-js` and
+ * `~/lib/shallowEqual` (its proto imports are type-only and erased), and both
  * surfaces already import it -- so the table costs no new import edge.
  */
 export const GIT_MODE_LABELS: Record<GitMode, string> = {
@@ -192,75 +195,61 @@ export function changeBranchInitialIntent(mode: ChangeBranchMode): GitModeIntent
   return initialIntentForMode(mode)
 }
 
-export interface GitFields {
-  createWorktree: boolean
-  worktreeBranch: string
-  worktreeBaseBranch: string
-  checkoutBranch: string
-  createBranch: string
-  createBranchBase: string
-  useWorktreePath: string
-}
-
-// All RPC git fields blank — extended by the per-mode projections below
-// with that mode's contributions. Kept internal so consumers can't
-// accidentally build a partial payload without going through a typed
-// projection.
-const EMPTY_GIT_FIELDS: GitFields = {
-  createWorktree: false,
-  worktreeBranch: '',
-  worktreeBaseBranch: '',
-  checkoutBranch: '',
-  createBranch: '',
-  createBranchBase: '',
-  useWorktreePath: '',
-}
+/**
+ * The `git_setup` of an openAgent / openTerminal request. Absent means "use
+ * the directory as it is"; a present setup selects exactly one mode, so a
+ * stale value from a previously-selected mode cannot reach the wire.
+ */
+export type GitSetupInit = MessageInitShape<typeof GitSetupSchema>
 
 /**
  * Per-mode projections from a narrowed {@link GitModeIntent} to the
- * openAgent / openTerminal RPC field set. Each helper takes the matching
- * variant directly (the caller already switched on `mode`) and fills in
- * just that mode's fields; every other field is blanked so a stale
- * value from a previously-selected mode can't leak onto the wire.
+ * `git_setup` of an openAgent / openTerminal request. Each helper takes the
+ * matching variant directly (the caller already switched on `mode`).
  *
  * Use these from a `switch (intent.mode)` block where TypeScript has
- * already narrowed the intent; use {@link GitModeState.toGitFields} from
+ * already narrowed the intent; use {@link GitModeState.toGitSetup} from
  * call sites that submit across any active mode without switching.
  */
-export function fieldsForCheckoutBranch(
+export function setupForCheckoutBranch(
   intent: Extract<GitModeIntent, { mode: GitMode.SwitchBranch }>,
-): GitFields {
-  return { ...EMPTY_GIT_FIELDS, checkoutBranch: intent.checkoutBranch }
+): GitSetupInit {
+  return {
+    mode: { case: 'checkoutBranch', value: intent.checkoutBranch },
+  }
 }
-export function fieldsForCreateBranch(
+export function setupForCreateBranch(
   intent: Extract<GitModeIntent, { mode: GitMode.CreateBranch }>,
-): GitFields {
+): GitSetupInit {
   return {
-    ...EMPTY_GIT_FIELDS,
-    createBranch: intent.createBranch,
-    createBranchBase: intent.createBranchBase,
+    mode: {
+      case: 'createBranch',
+      value: { name: intent.createBranch, baseBranch: intent.createBranchBase },
+    },
   }
 }
-export function fieldsForCreateWorktree(
+export function setupForCreateWorktree(
   intent: Extract<GitModeIntent, { mode: GitMode.CreateWorktree }>,
-): GitFields {
+): GitSetupInit {
   return {
-    ...EMPTY_GIT_FIELDS,
-    createWorktree: true,
-    worktreeBranch: intent.worktreeBranch,
-    worktreeBaseBranch: intent.worktreeBaseBranch,
+    mode: {
+      case: 'createWorktree',
+      value: { branch: intent.worktreeBranch, baseBranch: intent.worktreeBaseBranch },
+    },
   }
 }
-export function fieldsForUseWorktree(
+export function setupForUseWorktree(
   intent: Extract<GitModeIntent, { mode: GitMode.UseWorktree }>,
-): GitFields {
-  return { ...EMPTY_GIT_FIELDS, useWorktreePath: intent.useWorktreePath }
+): GitSetupInit {
+  return {
+    mode: { case: 'useWorktreePath', value: intent.useWorktreePath },
+  }
 }
 
 /**
  * Reactive store for the active GitModeIntent. GitOptions emits intents
  * via `handleGitModeChange` (a thin setter wrapper), consumers read
- * `currentIntent()` to validate or `toGitFields()` to build an RPC
+ * `currentIntent()` to validate or `toGitSetup()` to build an RPC
  * payload. The intent is the single source of truth — there are no
  * parallel per-mode signals to keep in lockstep.
  *
@@ -287,35 +276,32 @@ export function useGitModeState(initial: GitModeIntent = { mode: GitMode.Current
   const gitMode = createMemo(() => currentIntent().mode)
   const handleGitModeChange = (next: GitModeIntent) => setIntent(next)
 
-  // Project the active GitModeIntent down to the seven RPC fields shared
-  // by openAgent / openTerminal / NewWorkspaceDialog's openAgent. The
-  // per-mode helpers above handle the actual field selection; this
-  // delegator is for callers that don't switch on mode and just want
-  // "whatever's currently selected" as one payload.
-  const toGitFields = (): GitFields => {
+  // Project the active GitModeIntent onto the `git_setup` that openAgent /
+  // openTerminal / NewWorkspaceDialog's openAgent send. The per-mode helpers
+  // above build each case; this delegator is for callers that don't switch on
+  // mode and just want "whatever's currently selected". Current returns
+  // undefined, which leaves `git_setup` absent: the worker then uses the
+  // directory as it is.
+  const toGitSetup = (): GitSetupInit | undefined => {
     const i = currentIntent()
     switch (i.mode) {
       case GitMode.Current:
-        // Spread so callers can safely mutate the returned object —
-        // every other case goes through a fieldsForXxx helper that
-        // already spreads EMPTY_GIT_FIELDS, so returning the shared
-        // singleton here would make mutation inconsistent.
-        return { ...EMPTY_GIT_FIELDS }
+        return undefined
       case GitMode.SwitchBranch:
-        return fieldsForCheckoutBranch(i)
+        return setupForCheckoutBranch(i)
       case GitMode.CreateBranch:
-        return fieldsForCreateBranch(i)
+        return setupForCreateBranch(i)
       case GitMode.CreateWorktree:
-        return fieldsForCreateWorktree(i)
+        return setupForCreateWorktree(i)
       case GitMode.UseWorktree:
-        return fieldsForUseWorktree(i)
+        return setupForUseWorktree(i)
     }
   }
 
   return {
     gitMode,
     handleGitModeChange,
-    toGitFields,
+    toGitSetup,
     currentIntent,
   }
 }

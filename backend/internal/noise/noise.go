@@ -7,12 +7,15 @@
 package noise
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"hash"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,36 +27,17 @@ import (
 )
 
 const (
-	// SoftNonceLimit triggers re-handshake when exceeded.
-	SoftNonceLimit = contracts.SoftNonceLimit
-	// HardNonceLimit refuses to encrypt/decrypt when exceeded. It is the
-	// uint32 wrap bound: past it the counter would silently reuse nonce 0,
-	// so the session refuses instead. The TS twin reads the same
-	// contracts/wire.json value.
-	HardNonceLimit = contracts.HardNonceLimit
-	// MaxPlaintextSize is the Noise spec transport message limit minus auth
-	// tag -- the same derivation contracts/wire.json single-sources as
-	// MaxPlaintextPerChunk, so retuning the ciphertext cap or the AEAD tag
-	// size moves this limit with it.
-	MaxPlaintextSize = contracts.MaxPlaintextPerChunk
-
 	protocolName = "Noise_NK_25519_ChaChaPoly_BLAKE2b"
-	hashLen      = 64 // BLAKE2b output length
-	dhLen        = 32 // X25519 key length
-	keyLen       = 32 // ChaCha20-Poly1305 key length
+	hashLen      = 64                            // BLAKE2b output length
+	dhLen        = contracts.X25519PublicKeySize // X25519 key length
+	keyLen       = 32                            // ChaCha20-Poly1305 key length
 
 	// EphemeralPublicKeySize is the size of an X25519 ephemeral public key, as
 	// carried by the in-band rekey's dh_pub field. Equals dhLen.
 	EphemeralPublicKeySize = dhLen
 
-	// MlkemPublicKeySize is the size of an ML-KEM-1024 encapsulation key.
-	MlkemPublicKeySize = 1568
 	// MlkemCiphertextSize is the size of an ML-KEM-1024 ciphertext.
 	MlkemCiphertextSize = 1568
-	// SlhdsaPublicKeySize is the size of an SLH-DSA-SHAKE-256f public key.
-	SlhdsaPublicKeySize = 64
-	// SlhdsaSignatureSize is the size of an SLH-DSA-SHAKE-256f signature.
-	SlhdsaSignatureSize = 49856
 
 	// RekeyGraceWindow is how long a previous receive CipherState stays live
 	// for decryption after a successful in-band rekey. This unblocks traffic
@@ -131,21 +115,55 @@ func GenerateCompositeKeypair() (*CompositeKeypair, error) {
 	}, nil
 }
 
-// RestoreCompositeKeypair reconstructs a CompositeKeypair from serialized key bytes.
-func RestoreCompositeKeypair(x25519Pub, x25519Priv, mlkemPrivBytes, slhdsaPubBytes, slhdsaPrivBytes []byte) (*CompositeKeypair, error) {
-	mlkemDK, err := mlkem.NewDecapsulationKey1024(mlkemPrivBytes)
+// RestoreCompositeKeypair reconstructs a CompositeKeypair from the PRIVATE
+// halves of its key material: the X25519 scalar, the ML-KEM-1024 decapsulation
+// seed, and the SLH-DSA private key.
+//
+// Only the private halves are taken because each public half is derivable from
+// them: the X25519 public point from the scalar, the ML-KEM encapsulation key
+// from the seed, and the SLH-DSA public key from the private key, which embeds
+// it. A stored public half would be a second copy that can drift from the
+// private half it belongs to — and once the Hub pins that copy, the drift is
+// permanent.
+//
+// The SLH-DSA public key is RECOMPUTED, not trusted: circl's
+// PrivateKey.PublicKey() returns the copy embedded in the private key without
+// checking it, so a corrupt secret seed with an intact embedded public key
+// would pin a key the Worker cannot sign for. FIPS 205's slh_keygen (Section
+// 10.1, Algorithm 21) reads SK.seed, SK.prf and PK.seed in that order, so
+// replaying the private key's first three n-byte fields through GenerateKey
+// reproduces the keypair the private key was made from; the recomputed public
+// key must match the embedded one. This costs one top-tree computation, about a
+// twentieth of a signature. It cannot detect a corrupt SK.prf, which is harmless
+// because every signature carries its own randomizer R.
+func RestoreCompositeKeypair(x25519Priv, mlkemSeed, slhdsaPrivBytes []byte) (*CompositeKeypair, error) {
+	x25519Pub, err := X25519PublicFromSeed(x25519Priv)
 	if err != nil {
-		return nil, fmt.Errorf("parse ML-KEM decapsulation key: %w", err)
+		return nil, fmt.Errorf("restore X25519 public key: %w", err)
 	}
 
-	slhdsaPub := slhdsa.PublicKey{ID: slhdsa.SHAKE_256f}
-	if err := slhdsaPub.UnmarshalBinary(slhdsaPubBytes); err != nil {
-		return nil, fmt.Errorf("parse SLH-DSA public key: %w", err)
+	mlkemDK, err := mlkem.NewDecapsulationKey1024(mlkemSeed)
+	if err != nil {
+		return nil, fmt.Errorf("parse ML-KEM decapsulation key: %w", err)
 	}
 
 	slhdsaPriv := slhdsa.PrivateKey{ID: slhdsa.SHAKE_256f}
 	if err := slhdsaPriv.UnmarshalBinary(slhdsaPrivBytes); err != nil {
 		return nil, fmt.Errorf("parse SLH-DSA private key: %w", err)
+	}
+	slhdsaPub := slhdsaPriv.PublicKey()
+
+	// n is the byte length of each of the four n-byte fields the private key
+	// holds (SK.seed, SK.prf, PK.seed, PK.root), so it is half a public key's
+	// PK.seed||PK.root. circl exposes no accessor, and UnmarshalBinary has
+	// already refused any length but 4n.
+	n := contracts.SlhdsaPublicKeySize / 2
+	recomputed, _, err := slhdsa.GenerateKey(bytes.NewReader(slhdsaPrivBytes[:3*n]), slhdsa.SHAKE_256f)
+	if err != nil {
+		return nil, fmt.Errorf("recompute SLH-DSA public key: %w", err)
+	}
+	if !recomputed.Equal(slhdsaPub) {
+		return nil, errors.New("the SLH-DSA private key does not match its public key")
 	}
 
 	return &CompositeKeypair{
@@ -155,6 +173,65 @@ func RestoreCompositeKeypair(x25519Pub, x25519Priv, mlkemPrivBytes, slhdsaPubByt
 		SlhdsaPublicKey:       slhdsaPub,
 		SlhdsaPrivateKey:      slhdsaPriv,
 	}, nil
+}
+
+// ValidateStaticPublicKeys reports whether three static public keys can serve a
+// handshake. It checks the size of each key, and the two keys that a size check
+// cannot clear:
+//
+//   - The X25519 key must not be a low-order point, which every DH refuses.
+//   - The ML-KEM key must parse, because a key whose coefficients are out of
+//     range is one every post-quantum handshake refuses.
+//
+// The size is the whole check of the SLH-DSA key. Its parser only splits the
+// bytes into a seed and a root, so every value of the right size parses.
+func ValidateStaticPublicKeys(x25519Pub, mlkemPub, slhdsaPub []byte) error {
+	if len(x25519Pub) != contracts.X25519PublicKeySize {
+		return fmt.Errorf("worker x25519 public key is %d bytes, want %d", len(x25519Pub), contracts.X25519PublicKeySize)
+	}
+	if err := refuseLowOrderX25519(x25519Pub); err != nil {
+		return err
+	}
+	if len(mlkemPub) != contracts.MlkemPublicKeySize {
+		return fmt.Errorf("worker mlkem public key is %d bytes, want %d", len(mlkemPub), contracts.MlkemPublicKeySize)
+	}
+	if _, err := mlkem.NewEncapsulationKey1024(mlkemPub); err != nil {
+		return fmt.Errorf("worker mlkem public key is not a valid ML-KEM-1024 encapsulation key: %w", err)
+	}
+	if len(slhdsaPub) != contracts.SlhdsaPublicKeySize {
+		return fmt.Errorf("worker slhdsa public key is %d bytes, want %d", len(slhdsaPub), contracts.SlhdsaPublicKeySize)
+	}
+	return nil
+}
+
+// lowOrderProbe returns the private key that refuseLowOrderX25519 multiplies a
+// public key with. It is generated once and guards nothing: its DH output is
+// discarded.
+var lowOrderProbe = sync.OnceValues(func() (*ecdh.PrivateKey, error) {
+	return ecdh.X25519().GenerateKey(rand.Reader)
+})
+
+// refuseLowOrderX25519 refuses an X25519 public key that is a low-order point.
+// A DH with such a key outputs all zeros whatever the private key is, because
+// X25519 clamps every private key to a multiple of the cofactor 8. Every Noise
+// handshake with the key then fails at its DH, so a pinned low-order key leaves
+// the Worker unreachable until it registers again. crypto/ecdh refuses the
+// all-zero output, so one trial DH with any private key detects the point.
+func refuseLowOrderX25519(pub []byte) error {
+	probe, err := lowOrderProbe()
+	if err != nil {
+		return fmt.Errorf("generate the key that checks the worker x25519 public key: %w", err)
+	}
+	key, err := ecdh.X25519().NewPublicKey(pub)
+	if err != nil {
+		return fmt.Errorf("worker x25519 public key is not an X25519 key: %w", err)
+	}
+	secret, err := probe.ECDH(key)
+	clear(secret)
+	if err != nil {
+		return fmt.Errorf("worker x25519 public key is a low-order point that no handshake can use: %w", err)
+	}
+	return nil
 }
 
 // ---- Symmetric State (Noise protocol core) ----
@@ -286,11 +363,11 @@ type CipherState struct {
 
 // Encrypt encrypts plaintext using the cipher key.
 func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
-	if len(plaintext) > MaxPlaintextSize {
-		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), MaxPlaintextSize)
+	if len(plaintext) > contracts.MaxPlaintextPerChunk {
+		return nil, fmt.Errorf("noise: plaintext too large (%d > %d)", len(plaintext), contracts.MaxPlaintextPerChunk)
 	}
 	n := cs.n.Load()
-	if n > HardNonceLimit {
+	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: send nonce exceeded hard limit")
 	}
 	ct, err := aeadEncrypt(cs.k[:], uint32(n), nil, plaintext)
@@ -309,7 +386,7 @@ func (cs *CipherState) Encrypt(plaintext []byte) ([]byte, error) {
 // nonce counter, so a replayed old-key frame is still rejected.
 func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
 	n := cs.n.Load()
-	if n > HardNonceLimit {
+	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
 	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
@@ -346,7 +423,7 @@ func (cs *CipherState) Decrypt(ciphertext []byte) ([]byte, error) {
 // by tests that want to assert the current key alone cannot decrypt a frame.
 func (cs *CipherState) tryDecrypt(ciphertext []byte) ([]byte, error) {
 	n := cs.n.Load()
-	if n > HardNonceLimit {
+	if n > contracts.HardNonceLimit {
 		return nil, fmt.Errorf("noise: receive nonce exceeded hard limit")
 	}
 	pt, err := aeadDecrypt(cs.k[:], uint32(n), nil, ciphertext)
@@ -362,15 +439,15 @@ func (cs *CipherState) Nonce() uint64 {
 	return cs.n.Load()
 }
 
-// SetNonceForTest sets the cipher nonce. For tests that need SoftNonceLimit /
-// HardNonceLimit without encrypting billions of times. Do not use in production.
+// SetNonceForTest sets the cipher nonce. For tests that need contracts.SoftNonceLimit /
+// contracts.HardNonceLimit without encrypting billions of times. Do not use in production.
 func (cs *CipherState) SetNonceForTest(n uint64) {
 	cs.n.Store(n)
 }
 
 // NeedsRekey returns true if the nonce has exceeded the soft limit.
 func (cs *CipherState) NeedsRekey() bool {
-	return cs.n.Load() > SoftNonceLimit
+	return cs.n.Load() > contracts.SoftNonceLimit
 }
 
 // rekeyWithSecret derives a new cipher key that mixes fresh key-agreement
@@ -814,7 +891,7 @@ func InitiatorHandshake1(remoteX25519Pub, remoteMlkemPub []byte) (*HandshakeStat
 // It verifies the SLH-DSA signature and combines keys via HKDF.
 func InitiatorHandshake2(hs *HandshakeState, message2 []byte, remoteSlhdsaPub []byte) (*Session, error) {
 	noiseMsg2Len := dhLen + chacha20poly1305.Overhead // 32 + 16 = 48
-	expectedLen := noiseMsg2Len + SlhdsaSignatureSize
+	expectedLen := noiseMsg2Len + contracts.SlhdsaSignatureSize
 	if len(message2) != expectedLen {
 		return nil, fmt.Errorf("noise: message2 wrong size: got %d, want %d", len(message2), expectedLen)
 	}

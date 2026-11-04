@@ -12,7 +12,9 @@ useTestStorage()
 
 const mockGetWorkerSystemInfo = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  getWorkerSystemInfo: (...args: unknown[]) => mockGetWorkerSystemInfo(...args),
+  workerSystem: {
+    getWorkerSystemInfo: (...args: unknown[]) => mockGetWorkerSystemInfo(...args),
+  },
 }))
 
 // Imported after the mock so the store closure binds to the mocked RPC.
@@ -20,16 +22,16 @@ const { createWorkerInfoStore, workerInfoStore, resetOnlinePrefetch } = await im
 const workerInfoCache = await import('~/lib/workerInfoCache')
 const { getWorkerInfo, setWorkerInfo, clearWorkerInfo } = workerInfoCache
 
+/** A GetWorkerSystemInfo reply: the identity fields, and the build in its own message. */
 function makeRespFor(id: string, overrides: Partial<WorkerInfo> = {}) {
+  const { version = '1.0.0', commitHash = 'deadbeef', buildTime = '2026-01-01', ...identity } = overrides
   return {
     name: `worker-${id}`,
     os: 'linux',
     arch: 'x64',
     homeDir: `/home/${id}`,
-    version: '1.0.0',
-    commitHash: 'deadbeef',
-    buildTime: '2026-01-01',
-    ...overrides,
+    ...identity,
+    build: { version, commitHash, buildTime },
   }
 }
 
@@ -65,6 +67,45 @@ describe('workerInfoStore', () => {
       expect(store.workerInfo(id)?.homeDir).toBe(`/home/${id}`)
       // The stored row is written for cross-store sharing.
       expect((await getWorkerInfo(id))?.homeDir).toBe(`/home/${id}`)
+      dispose()
+    })
+  })
+
+  // GetWorkerSystemInfo reports the worker's build in one BuildInfo message,
+  // the same message the hub's system info carries.
+  it('reads the worker\'s build from the build message', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id, {
+        version: '2.0.0',
+        commitHash: 'f00dcafe',
+        buildTime: '2026-10-31',
+      }))
+
+      const info = await createWorkerInfoStore().fetchWorkerInfo(id)
+
+      expect(info).toMatchObject({ version: '2.0.0', commitHash: 'f00dcafe', buildTime: '2026-10-31' })
+      dispose()
+    })
+  })
+
+  it('stores an empty build when the reply has no build message', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      mockGetWorkerSystemInfo.mockResolvedValueOnce({
+        ...makeRespFor(id),
+        build: undefined,
+      })
+
+      const info = await createWorkerInfoStore().fetchWorkerInfo(id)
+
+      expect(info).toMatchObject({
+        name: `worker-${id}`,
+        version: '',
+        commitHash: '',
+        buildTime: '',
+      })
+      expect((await getWorkerInfo(id))?.version).toBe('')
       dispose()
     })
   })
@@ -175,7 +216,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() hydrates a fresh store from the stored row on first access', async () => {
+  it('hydrates a fresh store from the stored row on the first workerInfo() access', async () => {
     // Across a page reload (or a new dialog opening with a fresh store),
     // the reactive infoMap starts empty but storage already holds
     // the prior snapshot — workerInfo() must surface it transparently
@@ -201,6 +242,17 @@ describe('workerInfoStore', () => {
       expect(store.workerInfo(id)).toBeNull()
       await vi.waitFor(() => expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted'))
       expect(store.getHomeDir(id)).toBe('/home/persisted')
+      expect(store.getName(id)).toBe('persisted')
+      dispose()
+    })
+  })
+
+  it('answers an empty name and home directory for a worker it holds no info for', () => {
+    createRoot((dispose) => {
+      const store = createWorkerInfoStore()
+      const id = uniqueWorkerId()
+      expect(store.getName(id)).toBe('')
+      expect(store.getHomeDir(id)).toBe('')
       dispose()
     })
   })
@@ -246,7 +298,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo() still notifies subscribers after a workerInfo() read hydrated from storage', async () => {
+  it('makes fetchWorkerInfo() still notify subscribers after a workerInfo() read hydrated from storage', async () => {
     // Regression guard for the non-reactive hydration cache. workerInfo()
     // now routes stored hits through a non-reactive Map, so a
     // careless refactor could end up shadowing future writes (subscriber
@@ -297,7 +349,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo populates the hydrated cache so a later workerInfo() read survives a storage wipe', async () => {
+  it('makes fetchWorkerInfo populate the hydrated cache so a later workerInfo() read survives a storage wipe', async () => {
     // The `hydrated` cache is shared between workerInfo() and
     // fetchWorkerInfo. A successful fetch must seed the cache so a
     // subsequent workerInfo() — say, after a sweep wiped the row
@@ -321,7 +373,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo short-circuits on the in-memory map without re-reading storage', async () => {
+  it('makes fetchWorkerInfo short-circuit on the in-memory map without re-reading storage', async () => {
     // The warm path: an entry that's already in the reactive `infoMap`
     // (a sibling dialog just fetched it) must not trigger a stored read
     // — the in-memory check happens first. The `clearWorkerInfo`
@@ -348,7 +400,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo does not subscribe a reactive caller to infoMap (untrack guard)', async () => {
+  it('does not subscribe a reactive caller of fetchWorkerInfo to infoMap (untrack guard)', async () => {
     // A `createEffect` that awaits `fetchWorkerInfo` would otherwise
     // pick up an implicit subscription via the in-memory check — every
     // subsequent infoMap mutation (including writes for unrelated ids)
@@ -387,7 +439,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() does NOT cache null reads — a sibling store writing to storage is visible on the next call', async () => {
+  it('does NOT cache null reads in workerInfo() — a sibling store writing to storage is visible on the next call', async () => {
     // Regression: an earlier revision cached null returns from the
     // stored probe in a per-store `hydrated` Map forever. Once a
     // store had observed "no cached info" for a worker id, a sibling
@@ -488,7 +540,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() reads never write to infoMap, so subscribers to unrelated entries stay quiet', async () => {
+  it('never writes to infoMap on workerInfo() reads, so subscribers to unrelated entries stay quiet', async () => {
     // Storage-hydrated reads route through a non-reactive cache.
     // A subscriber tracking `getHomeDir(unrelated)` (an entry the read
     // never touches) must not re-fire when an unrelated worker is hydrated
@@ -563,7 +615,13 @@ describe('workerInfo feeds a projection that can tell a change happened', () => 
       // up before any RPC. Stamped past the freshness window, so the fetch below
       // actually spends its round trip instead of answering from the row.
       setWorkerInfo(id, {
-        ...makeRespFor(id, { homeDir: '/home/before' }),
+        name: `worker-${id}`,
+        os: 'linux',
+        arch: 'x64',
+        homeDir: '/home/before',
+        version: '1.0.0',
+        commitHash: 'deadbeef',
+        buildTime: '2026-01-01',
         updatedAt: Date.now() - 10 * 60_000,
       })
       expect(store.workerInfo(id)).toBeNull()

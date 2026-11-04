@@ -24,9 +24,11 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // adminGateFixture mounts the REAL AdminSettingsService (plus AuthService
@@ -220,12 +222,10 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	// The delegation row's worker reference is foreign-keyed; seed a real one.
 	workerID := id.Generate()
 	require.NoError(t, f.st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       id.Generate(),
-		RegisteredBy:    owner,
-		PublicKey:       []byte("test-x25519-key-32-bytes-padding"),
-		MlkemPublicKey:  []byte("test-mlkem"),
-		SlhdsaPublicKey: []byte("test-slhdsa"),
+		ID:           workerID,
+		AuthToken:    id.Generate(),
+		RegisteredBy: owner,
+		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tokenID := id.Generate()

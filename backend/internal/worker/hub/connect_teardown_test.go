@@ -14,6 +14,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"google.golang.org/protobuf/proto"
 )
 
 // receiveBudget bounds every await in this file. Generous against what the
@@ -48,7 +50,10 @@ func requireReceive[T any](t *testing.T, ch <-chan T, failMsg string) T {
 // frame or by an explicit close. The silence that follows is what leaves the
 // worker's receive loop parked there.
 type greetThenSilentConnector struct {
+	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
 	streamEnd chan error
+	// first receives the first message of the stream.
+	first chan *leapmuxv1.ConnectRequest
 }
 
 func (*greetThenSilentConnector) Register(
@@ -62,12 +67,14 @@ func (s *greetThenSilentConnector) Connect(
 ) error {
 	greeted := false
 	for {
-		if _, err := stream.Receive(); err != nil {
+		msg, err := stream.Receive()
+		if err != nil {
 			s.streamEnd <- err
 			return nil
 		}
 		if !greeted {
 			greeted = true
+			s.first <- msg
 			if err := stream.Send(&leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
 					WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "test-owner"},
@@ -85,7 +92,7 @@ func (s *greetThenSilentConnector) Connect(
 func startGreetThenSilentConnector(t *testing.T) (*greetThenSilentConnector, *httptest.Server) {
 	t.Helper()
 
-	svc := &greetThenSilentConnector{streamEnd: make(chan error, 1)}
+	svc := &greetThenSilentConnector{streamEnd: make(chan error, 1), first: make(chan *leapmuxv1.ConnectRequest, 1)}
 	mux := http.NewServeMux()
 	srv := connect.NewServer()
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(srv, svc)
@@ -124,6 +131,31 @@ func connectAndPark(t *testing.T, server *httptest.Server) (client *Client, canc
 	time.Sleep(100 * time.Millisecond)
 
 	return client, cancel, done
+}
+
+// The first message on every Connect stream is the WorkerHello carrying the
+// worker's configured keys and mode: the Hub lists the worker online only
+// after it, and answers every channel's handshake from it.
+func TestConnect_SendsTheHelloFirst(t *testing.T) {
+	svc, server := startGreetThenSilentConnector(t)
+	client := newTestClient(t, server.URL)
+	client.PublicKeys = workerkeystest.Keys(workerkeystest.SeededWorkerFill)
+	client.EncryptionMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- client.Connect(ctx, "test-token") }()
+
+	first := requireReceive(t, svc.first, "the hub never received the worker's first message")
+	hello := first.GetHello()
+	require.NotNil(t, hello, "the first message must be a hello, got %v", first)
+	assert.True(t, proto.Equal(client.PublicKeys, hello.GetKeys()), "the hello carries the worker's configured key set")
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, hello.GetEncryptionMode())
+
+	cancel()
+	// Connect may return an error or nil once its context is cancelled; only
+	// its return matters here.
+	_ = requireReceive(t, done, "Connect did not return after its context was cancelled")
 }
 
 // TestConnect_CancellingTheContextEndsTheStreamForTheHub pins the teardown

@@ -72,7 +72,6 @@ func TestTerminalStatusName_AllValues(t *testing.T) {
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING:       "starting",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY:          "ready",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED: "startup_failed",
-		leapmuxv1.TerminalStatus_TERMINAL_STATUS_DISCONNECTED:   "disconnected",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED:         "exited",
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED:    "",
 	}
@@ -86,8 +85,7 @@ func TestTerminalStatusName_AllValues(t *testing.T) {
 // short string label, and the other fields must round-trip unchanged.
 func TestWorkspaceTabToMap_RendersEnumAsString(t *testing.T) {
 	in := &leapmuxv1.WorkspaceTab{
-		TabId:       "tab-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Tab:         &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-1"},
 		Position:    "n",
 		TileId:      "tile-1",
 		WorkerId:    "worker-A",

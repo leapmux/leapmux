@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -65,7 +66,7 @@ func TestLateTerminalWritesPreserveConcurrentClose(t *testing.T) {
 			if writer == "exit" {
 				require.True(t, svc.persistTerminalOnExit("late-writer", 7))
 			} else {
-				dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: "late-writer", Title: "Updated title"}, w)
+				dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: "late-writer", Title: "Updated title"}, w)
 				require.Empty(t, w.errors)
 			}
 			row, err := queries.GetTerminal(ctx, "late-writer")
@@ -90,7 +91,7 @@ func TestLateTerminalWritesPreserveConcurrentClose(t *testing.T) {
 // terminal id is the only field that varies; tests that need to override
 // other fields should call dispatch directly.
 func dispatchRestart(d *channel.Dispatcher, terminalID string, w *testResponseWriter) {
-	dispatch(d, "RestartTerminal", &leapmuxv1.RestartTerminalRequest{
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
 		TerminalId: terminalID,
 		// Match openTerminalViaRPC's wide-cols workaround: cmd.exe's
 		// long-path prompt + `exit 42` wraps at 80 cols and ConPTY's
@@ -428,7 +429,7 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 }
 
 // TestRestartTerminal_PreservesTitle: after the user renames the tab
-// via UpdateTerminalTitle, the title must survive a restart. The
+// via RenameTerminal, the title must survive a restart. The
 // Manager replaces a defined subset of meta fields on restart; title
 // must stay in the preserved set.
 func TestRestartTerminal_PreservesTitle(t *testing.T) {
@@ -441,7 +442,7 @@ func TestRestartTerminal_PreservesTitle(t *testing.T) {
 
 	const newTitle = "user-renamed: ~/dir"
 	w2 := newTestWriter()
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: newTitle}, w2)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRenameTerminalProcedure, &leapmuxv1.RenameTerminalRequest{TerminalId: terminalID, Title: newTitle}, w2)
 	require.Empty(t, w2.errors)
 
 	exitTerminalAndWait(t, svc, d, terminalID, "")
@@ -520,7 +521,7 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 // (The Manager-level RestartTerminal doesn't go through the
 // startTerminalFn indirection that OpenTerminal uses, so we can't
 // inject a callback there. Pre-seeding closed_at is the simplest way
-// to drive the same code path the real CloseTerminal-during-restart
+// to drive the same code path the real CloseTab-during-restart
 // race produces.)
 func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	t.Parallel()
@@ -535,7 +536,7 @@ func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 		Shell: testutil.TestShell(),
 		Cols:  80, Rows: 25, Screen: []byte{},
 	}))
-	// Mimic a CloseTerminal that won the race: closed_at is already set
+	// Mimic a CloseTab that won the race: closed_at is already set
 	// when the RestartTerminal request lands.
 	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
 

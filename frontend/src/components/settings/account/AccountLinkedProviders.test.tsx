@@ -7,7 +7,14 @@ import { AccountLinkedProviders } from './AccountLinkedProviders'
 
 const mockUnlink = vi.fn()
 const mockUser = vi.fn()
-const mockRefreshUser = vi.fn()
+// The adoption the surface opens before the write leaves. The order records when
+// it opened relative to the RPC.
+const callOrder: string[] = []
+const mockAdopt = vi.fn<(user: unknown) => Promise<void>>(async () => {})
+const mockOpenUserAdoption = vi.fn(() => {
+  callOrder.push('open')
+  return mockAdopt
+})
 
 vi.mock('~/api/clients', () => ({
   userClient: {
@@ -18,7 +25,7 @@ vi.mock('~/api/clients', () => ({
 vi.mock('~/context/AuthContext', () => ({
   useAuth: () => ({
     user: () => mockUser(),
-    refreshUser: mockRefreshUser,
+    openUserAdoption: mockOpenUserAdoption,
   }),
 }))
 
@@ -37,7 +44,8 @@ describe('AccountLinkedProviders', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUser.mockReturnValue(base)
-    mockRefreshUser.mockResolvedValue(undefined)
+    mockAdopt.mockImplementation(async () => {})
+    callOrder.length = 0
     mockUnlink.mockResolvedValue({})
   })
 
@@ -64,6 +72,28 @@ describe('AccountLinkedProviders', () => {
     await vi.waitFor(() => {
       expect(mockUnlink).toHaveBeenCalledWith({ providerId: 'github-1' })
     })
+  })
+
+  // Opened before the request leaves, so a reply that lands after an identity
+  // change re-reads the new identity instead of adopting this one.
+  it('adopts the stored account through an adoption opened first', async () => {
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: true },
+      ],
+    })
+    const stored = { ...base, oauthProviders: [] }
+    mockUnlink.mockImplementation(async () => {
+      callOrder.push('unlink')
+      return { user: stored }
+    })
+    render(() => <AccountLinkedProviders />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlink' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
+
+    await vi.waitFor(() => expect(mockAdopt).toHaveBeenCalledExactlyOnceWith(stored))
+    expect(callOrder).toEqual(['open', 'unlink'])
   })
 
   // This panel still lists a link whose provider an administrator DISABLED,
@@ -144,7 +174,7 @@ describe('AccountLinkedProviders', () => {
       ],
     })
     const { promise, resolve } = deferred<void>()
-    mockRefreshUser.mockReturnValue(promise)
+    mockAdopt.mockReturnValue(promise)
 
     render(() => <AccountLinkedProviders />)
     const button = await screen.findByRole('button', { name: 'Unlink' })
@@ -152,7 +182,7 @@ describe('AccountLinkedProviders', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unlink?' }))
 
     await vi.waitFor(() => {
-      expect(mockRefreshUser).toHaveBeenCalledTimes(1)
+      expect(mockAdopt).toHaveBeenCalledTimes(1)
     })
     expect(screen.getByRole('button', { name: 'Unlinking...' })).toBeDisabled()
 

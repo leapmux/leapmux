@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -57,7 +56,11 @@ type Conn struct {
 	cancelOnce sync.Once
 	q          *sendq.Writer[*leapmuxv1.ConnectResponse]
 
-	encryptionMode atomic.Int32
+	// hello is the WorkerHello the worker opened this stream with, copied at
+	// construction and never written afterwards. Handshake answers from it
+	// alone, so the keys and the mode a client receives always belong to this
+	// one connection.
+	hello *leapmuxv1.WorkerHello
 }
 
 // SendPump is the Connect handler's exclusive write capability. The registry
@@ -144,6 +147,10 @@ func (p *SendPump) drain(lim sendq.DrainLimits) (err error) {
 // A wall-clock stall cutoff on a server-to-server link invites a reconnect
 // storm under sustained load, so MaxStall is deliberately unset -- the byte
 // budget alone disconnects a worker that cannot keep up.
+//
+// hello is the WorkerHello the worker opened the stream with, which the caller
+// has already validated. The Conn keeps its own copy, so a later change to the
+// caller's message cannot change what Handshake reports.
 func NewConn(
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -152,9 +159,13 @@ func NewConn(
 	pool *sendq.Pool,
 	write func(*leapmuxv1.ConnectResponse) error,
 	greeting *leapmuxv1.ConnectResponse,
+	hello *leapmuxv1.WorkerHello,
 ) (*Conn, *SendPump) {
 	if pool == nil {
 		panic("workermgr.NewConn: pool is required")
+	}
+	if hello == nil {
+		panic("workermgr.NewConn: hello is required")
 	}
 	c := &Conn{
 		WorkerID: workerID,
@@ -162,6 +173,7 @@ func NewConn(
 		owner:    owner,
 		ctx:      ctx,
 		cancel:   cancel,
+		hello:    proto.CloneOf(hello),
 	}
 	c.q = sendq.NewUnstarted(ctx, sendq.Config[*leapmuxv1.ConnectResponse]{
 		Write: func(_ context.Context, m *leapmuxv1.ConnectResponse) error {
@@ -302,14 +314,13 @@ func (c *Conn) WritePanicked() bool {
 	return c.q.WritePanicked()
 }
 
-// EncryptionMode returns the encryption mode cached from the worker's
-// heartbeat. Safe for concurrent use with SetEncryptionMode.
-func (c *Conn) EncryptionMode() leapmuxv1.EncryptionMode {
-	return leapmuxv1.EncryptionMode(c.encryptionMode.Load())
-}
-
-// SetEncryptionMode records the encryption mode from a heartbeat. Safe for
-// concurrent use with EncryptionMode.
-func (c *Conn) SetEncryptionMode(mode leapmuxv1.EncryptionMode) {
-	c.encryptionMode.Store(int32(mode))
+// Handshake returns the parameters a client needs to open a Noise_NK channel
+// to this connection: the keys and the encryption mode of its WorkerHello. It
+// returns a fresh message on every call, so a caller may keep or change it.
+// Safe for concurrent use: the hello is never written after construction.
+func (c *Conn) Handshake() *leapmuxv1.GetWorkerHandshakeParamsResponse {
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
+		Keys:           proto.CloneOf(c.hello.GetKeys()),
+		EncryptionMode: c.hello.GetEncryptionMode(),
+	}
 }

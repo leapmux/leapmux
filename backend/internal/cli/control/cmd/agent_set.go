@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
 
@@ -34,7 +35,7 @@ func RunAgentSet(rawCtx any, args []string) error {
 		},
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
 			resp := &leapmuxv1.UpdateAgentSettingsResponse{}
-			if err := callInnerRPC(ctx, c, workerID, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+			if err := callInnerRPC(ctx, c, workerID, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  agentID,
 				Settings: settings,
 			}, resp); err != nil {

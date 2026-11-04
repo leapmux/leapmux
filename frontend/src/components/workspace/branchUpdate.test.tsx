@@ -4,7 +4,7 @@ import type { Tab } from '~/stores/tab.types'
 import { createMemo, createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { stampBranchOnRepo } from '~/components/shell/stampBranchOnTabs'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { buildTree } from './workspaceTabTree.model'
@@ -101,7 +101,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
     expect(store.get(repoKey('w1', '/repo'))?.branch).toBe('A')
   })
 
-  it('buildTree re-runs reactively when the repo branch changes', () => {
+  it('re-runs buildTree reactively when the repo branch changes', () => {
     createRoot((dispose) => {
       const store = createRepoGitStore()
       const tabs = [

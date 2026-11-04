@@ -1069,7 +1069,7 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
     })
   })
 
-  it('snapshotHeights exports the cache in LRU order (oldest measurement first)', () => {
+  it('exports the cache in LRU order (oldest measurement first) through snapshotHeights', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 100)

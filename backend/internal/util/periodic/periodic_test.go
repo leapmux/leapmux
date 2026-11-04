@@ -3,6 +3,7 @@ package periodic
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
@@ -178,6 +179,35 @@ func TestStart_CancellationBetweenTicksStopsLoop(t *testing.T) {
 	l.cancel()
 	l.awaitStopped()
 	l.requireNoCalls("the loop must not run the task again after the cancel")
+}
+
+// A caller joins the loop through the channel that Start returns, so the channel
+// must stay open for as long as a run that the cancel reached still runs.
+func TestStart_ReturnsAChannelThatClosesAfterTheRunningTaskReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		release := make(chan struct{})
+
+		stopped := Start(ctx, Schedule{Interval: time.Hour}, func(context.Context) { <-release })
+		synctest.Wait()
+
+		cancel()
+		synctest.Wait()
+		select {
+		case <-stopped:
+			require.FailNow(t, "the channel closed while the task still ran")
+		default:
+		}
+
+		close(release)
+		synctest.Wait()
+		select {
+		case <-stopped:
+		default:
+			require.FailNow(t, "the channel must close after the loop stops")
+		}
+	})
 }
 
 func TestStart_TaskPanicIsRecoveredAndLoopContinues(t *testing.T) {

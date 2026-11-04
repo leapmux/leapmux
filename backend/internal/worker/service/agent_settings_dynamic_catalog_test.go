@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -101,7 +102,7 @@ func storedEffortAfterEdit(t *testing.T, provider leapmuxv1.AgentProvider, persi
 		svc.Agents.PreloadCache(agentID, dynamicCatalogGroups(from, effort))
 	}
 
-	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  agentID,
 		Settings: &leapmuxv1.AgentSettings{Options: sent},
 	}, w)
@@ -334,7 +335,7 @@ func TestUpdateAgentSettings_ModelSwitchOnARunningDynamicCatalogAgentSendsTheKep
 				t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 				registerAgentWatch(svc, w.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-				dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+				dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 					AgentId:  agentID,
 					Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: test.target}},
 				}, w)

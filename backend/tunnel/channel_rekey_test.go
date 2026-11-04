@@ -218,7 +218,7 @@ func sendRekeyOutcomeWithRetry(t *testing.T, peer *noiseutil.Session, peerWS *we
 
 func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
-	tc := newConn(ch, "conn-rekey", "example.test", 443)
+	tc := newOpenedConn(ch, "conn-rekey", "example.test", 443)
 	t.Cleanup(func() { _ = tc.Close() })
 
 	ch.rekey.lastRekeyAt = time.Now().Add(-contracts.SessionKeyMaxAge - time.Second)
@@ -925,8 +925,8 @@ func TestChannelRekeySoftNonceBypassesRejectBackoff(t *testing.T) {
 	ch, peer, peerWS := pairedRekeyChannel(t)
 	ch.rekey.lastRekeyAt = time.Now()
 	ch.rekey.rekeyNotBefore = time.Now().Add(contracts.MinRekeyInterval)
-	ch.session.Send.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
-	peer.Receive.SetNonceForTest(noiseutil.SoftNonceLimit + 1)
+	ch.session.Send.SetNonceForTest(contracts.SoftNonceLimit + 1)
+	peer.Receive.SetNonceForTest(contracts.SoftNonceLimit + 1)
 
 	done := make(chan error, 1)
 	go func() {

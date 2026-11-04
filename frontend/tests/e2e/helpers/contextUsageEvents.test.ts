@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { SESSION_INFO_KEY } from '../../../src/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '../../../src/generated/contracts/worker-vocab'
 import { AgentChatMessageSchema, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema } from '../../../src/generated/proto/leapmux/v1/watch_pb'
 import { contextUsageReading } from './contextUsageEvents'
 
 function messageEvent(content: Uint8Array, options: { replay?: boolean, seq?: bigint, compression?: ContentCompression } = {}) {
@@ -14,7 +14,11 @@ function messageEvent(content: Uint8Array, options: { replay?: boolean, seq?: bi
   })
   return create(AgentEventSchema, {
     agentId: 'agent-1',
-    replay: options.replay ?? false,
+    ...(options.replay
+      ? {
+          replay: { replayId: 1n, agentId: 'agent-1' },
+        }
+      : {}),
     event: { case: 'agentMessage', value: message },
   })
 }

@@ -3,6 +3,7 @@ package controlipc_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,8 +13,13 @@ import (
 	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hubrpc"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
@@ -46,7 +52,7 @@ func (f *fakeLocalDispatcher) DispatchWith(_ context.Context, caller channel.Cal
 		_ = w.SendStream(&leapmuxv1.InnerStreamMessage{Payload: frame})
 	}
 	if final != nil {
-		_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: final})
+		_ = w.SendResponse(channelwire.NewPayloadResponse(final))
 	}
 }
 
@@ -128,15 +134,15 @@ func TestRouter_CallInner_LocalDispatch(t *testing.T) {
 	}
 	resp, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
-		"worker.OpenAgent", []byte("payload"),
+		"worker."+leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("payload"),
 		"worker-A")
 	require.NoError(t, err)
-	require.False(t, resp.GetIsError(), "unexpected error: %s", resp.GetErrorMessage())
+	require.Nil(t, resp.GetError(), "unexpected error: %s", resp.GetError().GetMessage())
 	assert.Equal(t, []byte("hello"), resp.GetPayload())
 
-	// The dispatcher saw the bare method (namespace stripped) and the
+	// The dispatcher saw the procedure (namespace stripped) and the
 	// request user id propagated from the router.
-	assert.Equal(t, "OpenAgent", dispatcher.gotMethod)
+	assert.Equal(t, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, dispatcher.gotMethod)
 	assert.Equal(t, []byte("payload"), dispatcher.gotPayload)
 	assert.Equal(t, "user-1", dispatcher.gotUserID.String())
 
@@ -188,7 +194,7 @@ func TestRouter_LocalStreamID_IncludesTokenIdentity(t *testing.T) {
 				Streams:         streams,
 			}
 			_, err := r.CallInner(context.Background(), tc.info,
-				"worker.OpenAgent", []byte("p"), "worker-A")
+				"worker."+leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("p"), "worker-A")
 			require.NoError(t, err)
 			require.Len(t, streams.released, 1)
 			got := streams.released[0]
@@ -218,7 +224,7 @@ func TestRouter_LocalStreamID_PerCallRequestSegmentChanges(t *testing.T) {
 	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), TabID: "agent-X", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
 	for i := 0; i < 3; i++ {
 		_, err := r.CallInner(context.Background(), info,
-			"worker.OpenAgent", []byte("p"), "worker-A")
+			"worker."+leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, []byte("p"), "worker-A")
 		require.NoError(t, err)
 	}
 	require.Len(t, streams.released, 3)
@@ -244,12 +250,12 @@ func TestRouter_CallInner_CrossWorker(t *testing.T) {
 	}
 	resp, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
-		"worker.EnqueueAgentInput", []byte("hi"),
+		"worker."+leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, []byte("hi"),
 		"worker-B")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("from-B"), resp.GetPayload())
 	assert.Equal(t, "worker-B", cross.callTarget)
-	assert.Equal(t, "EnqueueAgentInput", cross.callMethod)
+	assert.Equal(t, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, cross.callMethod)
 	// The request's workspace_id must flow through the channel pool
 	// key so different workspaces don't share a delegation-scoped
 	// Noise session against the same (target, user) pair.
@@ -270,21 +276,22 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 		UserID:      userid.MustNew("user-1"),
 		CrossWorker: cross,
 	}
-	for _, method := range []string{
-		"worker.ListDirectory",
-		"worker.ListFilesystemRoots",
-		"worker.ReadFile",
-		"worker.StatFile",
-		"worker.GitStatus",
+	for _, procedure := range []string{
+		leapmuxv1connect.WorkerFileServiceListDirectoryProcedure,
+		leapmuxv1connect.WorkerFileServiceListFilesystemRootsProcedure,
+		leapmuxv1connect.WorkerFileServiceReadFileProcedure,
+		leapmuxv1connect.WorkerFileServiceStatFileProcedure,
+		leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure,
 	} {
 		cross.callTarget = ""
 		cross.callMethod = ""
 		resp, err := r.CallInner(context.Background(),
 			controlipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
-			method, []byte(`{}`), "worker-B")
-		require.NoError(t, err, method)
-		assert.Equal(t, []byte("file-bytes"), resp.GetPayload(), method)
-		assert.Equal(t, "worker-B", cross.callTarget, method)
+			"worker."+procedure, []byte(`{}`), "worker-B")
+		require.NoError(t, err, procedure)
+		assert.Equal(t, []byte("file-bytes"), resp.GetPayload(), procedure)
+		assert.Equal(t, "worker-B", cross.callTarget, procedure)
+		assert.Equal(t, procedure, cross.callMethod, "the sibling receives the procedure without the namespace")
 	}
 }
 
@@ -296,11 +303,12 @@ func TestRouter_CallInner_HubNamespace(t *testing.T) {
 	}
 	resp, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub.ListWorkspaces", []byte("{}"),
+		"hub."+leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, []byte("{}"),
 		"")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("hub-ok"), resp.GetPayload())
-	assert.Equal(t, "ListWorkspaces", hub.lastMethod)
+	assert.Equal(t, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, hub.lastProcedure,
+		"the hub receives the procedure without the namespace")
 	assert.Equal(t, "user-1", hub.lastUserID.String())
 	// Empty request workspace falls back to the spawning agent's
 	// workspace so methods without a workspace_id field (e.g.
@@ -315,7 +323,7 @@ func TestRouter_CallInner_HubNamespace_ForwardsRequestWorkspace(t *testing.T) {
 	}
 	_, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub.GetTab", []byte("{}"), "")
+		"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
 	require.NoError(t, err)
 }
 
@@ -327,7 +335,7 @@ func TestRouter_CallInner_HubNamespace_PropagatesError(t *testing.T) {
 	}
 	_, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub.GetTab", []byte("{}"), "")
+		"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
 	require.Error(t, err)
 	// An uncoded hub failure still surfaces as CodeInternal, so callers can
 	// distinguish transport failure from "no hub configured" (Unimplemented)
@@ -360,7 +368,7 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 			}
 			_, err := r.CallInner(context.Background(),
 				controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-				"hub.GetTab", []byte("{}"), "")
+				"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
 			require.Error(t, err)
 			assert.Equal(t, tc.code, connect.CodeOf(err),
 				"the originating code must survive the relay, not collapse to Internal")
@@ -375,7 +383,7 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 			}
 			_, err := r.CallInner(context.Background(),
 				controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-				"worker.GetTab", []byte("{}"), "wkr-other")
+				"worker."+leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, []byte("{}"), "wkr-other")
 			require.Error(t, err)
 			assert.Equal(t, tc.code, connect.CodeOf(err),
 				"the originating code must survive the relay, not collapse to Internal")
@@ -383,10 +391,40 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 	}
 }
 
+// A sibling worker's handler answers its failures in-band, as the local
+// dispatcher does, and tunnel.Channel.CallRPC returns that answer as a
+// channelwire.RPCError. The router keeps it in-band with its code, so the CLI reads a
+// sibling's NotFound exactly as it reads a local one. A Connect error would not
+// do: the CLI reads a Connect NotFound or Unavailable as a worker it could not
+// reach (channel_open_failed), and any other plain error became Internal.
+func TestRouter_CallInner_CrossWorkerKeepsTheSiblingsInBandError(t *testing.T) {
+	for name, siblingErr := range map[string]error{
+		"as returned":  &channelwire.RPCError{Code: int32(codes.NotFound), Message: "agent not found"},
+		"when wrapped": fmt.Errorf("cross-worker call: %w", &channelwire.RPCError{Code: int32(codes.NotFound), Message: "agent not found"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cw := &fakeCrossWorker{respErr: siblingErr}
+			r := &controlipc.Router{
+				UserID:      userid.MustNew("user-1"),
+				WorkerID:    "wkr-self",
+				CrossWorker: cw,
+			}
+			resp, err := r.CallInner(context.Background(),
+				controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
+				"worker."+leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, []byte("{}"), "wkr-other")
+			require.NoError(t, err, "a failure the sibling's handler answered is not a transport failure")
+			require.NotNil(t, resp.GetError(), "the sibling's error must stay in-band")
+			assert.Equal(t, int32(codes.NotFound), resp.GetError().GetCode())
+			assert.Equal(t, "agent not found", resp.GetError().GetMessage())
+			assert.Empty(t, resp.GetPayload())
+		})
+	}
+}
+
 func TestRouter_CallInner_HubNamespace_NotConfigured(t *testing.T) {
 	r := &controlipc.Router{UserID: userid.MustNew("u-1")}
 	_, err := r.CallInner(context.Background(), controlipc.TokenInfo{UserID: userid.MustNew("u-1")},
-		"hub.GetTab", []byte("{}"), "")
+		"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
 }
@@ -402,8 +440,8 @@ func TestRouter_CallInner_LocalDispatcher_NilReturnsUnimplemented(t *testing.T) 
 	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
 	resp, err := r.CallInner(context.Background(), controlipc.TokenInfo{}, "worker.X", nil, "A")
 	require.NoError(t, err)
-	assert.True(t, resp.GetIsError())
-	assert.Contains(t, resp.GetErrorMessage(), "local dispatcher not configured")
+	assert.NotNil(t, resp.GetError())
+	assert.Contains(t, resp.GetError().GetMessage(), "local dispatcher not configured")
 }
 
 func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
@@ -427,8 +465,8 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	got := make(chan []byte, 4)
 	streamErr := make(chan error, 1)
 	go func() {
-		streamErr <- r.StreamInner(ctx, controlipc.TokenInfo{}, "worker.WatchEvents", []byte("{}"), "A", "req-1",
-			func(env *leapmuxv1.StreamInnerEnvelope) error {
+		streamErr <- r.StreamInner(ctx, controlipc.TokenInfo{}, "worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-1",
+			func(env *leapmuxv1.InnerStreamMessage) error {
 				got <- env.GetPayload()
 				return nil
 			})
@@ -453,8 +491,11 @@ func TestRouter_StreamInner_LocalDispatch(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("StreamInner didn't return after ctx cancel")
 	}
+	// The stream minted a synthetic localipc:* id and released it when it ended,
+	// exactly as a unary call does.
 	require.Len(t, streams.released, 1)
-	assert.Equal(t, streams.released[0], streams.released[0])
+	assert.True(t, strings.HasPrefix(streams.released[0], "localipc:"),
+		"the released id is the stream's synthetic local id, got %q", streams.released[0])
 }
 
 // TestRouter_StreamInner_TerminalResponsePayloadForwarded pins that a
@@ -478,11 +519,11 @@ func TestRouter_StreamInner_TerminalResponsePayloadForwarded(t *testing.T) {
 		Streams:         &fakeStreams{},
 	}
 
-	got := make(chan *leapmuxv1.StreamInnerEnvelope, 4)
+	got := make(chan *leapmuxv1.InnerStreamMessage, 4)
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(context.Background(), controlipc.TokenInfo{}, "worker.OneShotStream", []byte("{}"), "A", "req-1",
-			func(env *leapmuxv1.StreamInnerEnvelope) error {
+			func(env *leapmuxv1.InnerStreamMessage) error {
 				got <- env
 				return nil
 			})
@@ -492,7 +533,7 @@ func TestRouter_StreamInner_TerminalResponsePayloadForwarded(t *testing.T) {
 	case env := <-got:
 		assert.Equal(t, []byte("final-bytes"), env.GetPayload())
 		assert.True(t, env.GetEnd())
-		assert.False(t, env.GetIsError())
+		assert.Nil(t, env.GetError())
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected terminal payload envelope")
 	}
@@ -519,11 +560,11 @@ func TestRouter_StreamInner_TerminalEmptyResponseNoExtraEnvelope(t *testing.T) {
 		Streams:         &fakeStreams{},
 	}
 
-	received := make(chan *leapmuxv1.StreamInnerEnvelope, 32)
+	received := make(chan *leapmuxv1.InnerStreamMessage, 32)
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(context.Background(), controlipc.TokenInfo{}, "worker.Slow", []byte("{}"), "A", "req-1",
-			func(env *leapmuxv1.StreamInnerEnvelope) error {
+			func(env *leapmuxv1.InnerStreamMessage) error {
 				received <- env
 				return nil
 			})
@@ -571,8 +612,8 @@ func TestRouter_StreamInner_Cancellable(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(ctx, controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "A", "req-x",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte{}, "A", "req-x",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	// Wait until we've seen at least a few frames so we know the
 	// dispatcher loop is live, then cancel.
@@ -594,7 +635,7 @@ func TestRouter_StreamInner_Cancellable(t *testing.T) {
 	}
 }
 
-func TestRouter_CancelStream_ByClientRequestID(t *testing.T) {
+func TestRouter_UpdateStreamCancel_RetiresTheStream(t *testing.T) {
 	stop := make(chan struct{})
 	dispatcher := &slowStreamDispatcher{
 		stop:    stop,
@@ -614,18 +655,18 @@ func TestRouter_CancelStream_ByClientRequestID(t *testing.T) {
 	streamErr := make(chan error, 1)
 	go func() {
 		streamErr <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "A", "req-cancel",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte{}, "A", "req-cancel",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	for dispatcher.emitted.Load() < 2 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	r.CancelStream("req-cancel")
+	require.NoError(t, cancelStream(r, "req-cancel"))
 	select {
 	case err := <-streamErr:
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("CancelStream didn't unblock the streamer")
+		t.Fatal("UpdateStream with cancel did not unblock the streamer")
 	}
 }
 
@@ -639,11 +680,11 @@ func TestRouter_UpdateStream_DeliversToController(t *testing.T) {
 	}
 	go func() {
 		_ = r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte("{}"), "A", "req-update",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-update",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	<-ready
-	require.NoError(t, r.UpdateStream("req-update", []byte("revision")))
+	require.NoError(t, reviseStream(r, "req-update", []byte("revision")))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
@@ -662,15 +703,15 @@ func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) 
 	done := make(chan error, 1)
 	go func() {
 		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte("{}"), "B", "req-xw-update",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "B", "req-xw-update",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	// Give StreamInner time to bind the controller before UpdateStream.
 	require.Eventually(t, func() bool {
 		_, ok := r.StreamCancellers.Load("req-xw-update")
 		return ok
 	}, time.Second, 10*time.Millisecond)
-	require.NoError(t, r.UpdateStream("req-xw-update", []byte("sibling-revision")))
+	require.NoError(t, reviseStream(r, "req-xw-update", []byte("sibling-revision")))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
@@ -680,7 +721,7 @@ func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) 
 	require.NoError(t, <-done)
 }
 
-func TestRouter_CancelStream_CrossWorkerCallsOnCancel(t *testing.T) {
+func TestRouter_UpdateStreamCancel_CrossWorkerCallsOnCancel(t *testing.T) {
 	ctrl := &recordingStreamController{}
 	hold := make(chan struct{})
 	cross := &fakeCrossWorker{bindCtrl: ctrl, hold: hold}
@@ -691,32 +732,89 @@ func TestRouter_CancelStream_CrossWorkerCallsOnCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte("{}"), "B", "req-xw-cancel",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "B", "req-xw-cancel",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	require.Eventually(t, func() bool {
 		_, ok := r.StreamCancellers.Load("req-xw-cancel")
 		return ok
 	}, time.Second, 10*time.Millisecond)
 
-	r.CancelStream("req-xw-cancel")
+	require.NoError(t, cancelStream(r, "req-xw-cancel"))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
 		return ctrl.cancelled
 	}, time.Second, 10*time.Millisecond)
-	// CancelStream cancels the stream ctx, which unblocks hold via ctx.Done.
+	// A cancel through UpdateStream cancels the stream ctx, which unblocks hold via ctx.Done.
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
 func TestRouter_UpdateStream_UnknownOrEmptyIdIsNoop(t *testing.T) {
 	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
-	// Must not panic — empty and unbound ids are quiet no-ops.
-	require.NoError(t, r.UpdateStream("", []byte("x")))
-	require.NoError(t, r.UpdateStream("no-such-req", []byte("x")))
+	// Must not panic — empty and unbound ids are quiet no-ops, for a
+	// revision and for a cancel alike.
+	require.NoError(t, reviseStream(r, "", []byte("x")))
+	require.NoError(t, reviseStream(r, "no-such-req", []byte("x")))
+	require.NoError(t, cancelStream(r, ""))
+	require.NoError(t, cancelStream(r, "no-such-req"))
 }
 
-func TestRouter_CancelStream_CallsOnCancel(t *testing.T) {
+// An update that selects neither a revision nor a cancel states nothing that
+// the router could apply. It fails with InvalidArgument and leaves the stream
+// that its id identifies untouched.
+func TestRouter_UpdateStream_RefusesAnUpdateWithNoAction(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	ready := make(chan struct{})
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: &ctrlStreamDispatcher{ctrl: ctrl, ready: ready},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-no-action",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+	}()
+	<-ready
+
+	err := r.UpdateStream(&leapmuxv1.UpdateStreamRequest{ClientRequestId: "req-no-action"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, registered := r.StreamCancellers.Load("req-no-action")
+	assert.True(t, registered, "a refused update leaves the stream live")
+	ctrl.mu.Lock()
+	assert.False(t, ctrl.cancelled, "a refused update cancels nothing")
+	assert.Empty(t, ctrl.payloads, "a refused update revises nothing")
+	ctrl.mu.Unlock()
+
+	require.NoError(t, cancelStream(r, "req-no-action"))
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the cancelled stream did not return")
+	}
+}
+
+// reviseStream sends payload as a revision of the stream that clientReqID
+// identifies.
+func reviseStream(r *controlipc.Router, clientReqID string, payload []byte) error {
+	return r.UpdateStream(&leapmuxv1.UpdateStreamRequest{
+		ClientRequestId: clientReqID,
+		Action:          &leapmuxv1.UpdateStreamRequest_Payload{Payload: payload},
+	})
+}
+
+// cancelStream retires the stream that clientReqID identifies.
+func cancelStream(r *controlipc.Router, clientReqID string) error {
+	return r.UpdateStream(&leapmuxv1.UpdateStreamRequest{
+		ClientRequestId: clientReqID,
+		Action:          &leapmuxv1.UpdateStreamRequest_Cancel{Cancel: &leapmuxv1.StreamCancel{}},
+	})
+}
+
+func TestRouter_UpdateStreamCancel_CallsOnCancel(t *testing.T) {
 	ctrl := &recordingStreamController{}
 	ready := make(chan struct{})
 	order := make(chan string, 2)
@@ -727,11 +825,11 @@ func TestRouter_CancelStream_CallsOnCancel(t *testing.T) {
 	}
 	go func() {
 		_ = r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte("{}"), "A", "req-oncancel",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-oncancel",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 	<-ready
-	r.CancelStream("req-oncancel")
+	require.NoError(t, cancelStream(r, "req-oncancel"))
 	require.Eventually(t, func() bool {
 		ctrl.mu.Lock()
 		defer ctrl.mu.Unlock()
@@ -741,9 +839,10 @@ func TestRouter_CancelStream_CallsOnCancel(t *testing.T) {
 	assert.Equal(t, "cancel", first, "OnCancel must run before the stream ctx is cancelled")
 }
 
-// TestRouter_BindStream_RefusesAfterCancel pins the TOCTOU fix: when
-// CancelStream retires an entry between the initial StreamCancellers.Store
-// (in StreamInner) and the handler's BindStream call, BindStream must return
+// TestRouter_BindStream_RefusesAfterCancel pins the TOCTOU fix: when a
+// cancel through UpdateStream retires an entry between the initial
+// StreamCancellers.Store (in StreamInner) and the handler's BindStream call,
+// BindStream must return
 // ok=false so the handler runs its own retirement. Without it, the controller
 // was installed on a retired entry, never received OnCancel from the registry,
 // and leaked on its bgCtx for the process lifetime.
@@ -763,14 +862,14 @@ func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte("{}"), "A", "req-bind-race",
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-bind-race",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
 	}()
 
 	// Wait for the handler to register its entry but BEFORE it calls BindStream
 	// (the dispatcher parks on ready until we release it), then retire it.
 	<-dispatcher.registered
-	r.CancelStream("req-bind-race")
+	require.NoError(t, cancelStream(r, "req-bind-race"))
 	close(dispatcher.proceed)
 
 	// The bind must observe the retirement and return ok=false. The handler
@@ -782,7 +881,7 @@ func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
 		default:
 			return false
 		}
-	}, time.Second, 10*time.Millisecond, "BindStream must return ok=false when CancelStream retired the entry")
+	}, time.Second, 10*time.Millisecond, "BindStream must return ok=false when a cancel retired the entry")
 
 	// The late-bound controller must never receive OnCancel from the registry
 	// (it was never installed); the handler's ctx cancel is the sole retirement.
@@ -868,80 +967,6 @@ func (d *ctrlStreamDispatcher) DispatchWith(ctx context.Context, _ channel.Calle
 	}
 }
 
-// TestRouter_SweepStaleCancellers pins the defense-in-depth reaper:
-// entries registered before the cutoff are dropped AND their cancel
-// function fires (so any goroutine still waiting on the stream
-// context unblocks); fresh entries are left alone. Verifies the
-// invariant the Server janitor relies on.
-func TestRouter_SweepStaleCancellers(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	r := &controlipc.Router{Now: func() time.Time { return now }}
-
-	// Register two streams: one ages well past the cutoff, the other
-	// stays fresh by re-stamping its registeredAt after the clock
-	// advances. The dropping path must fire the canceller for the
-	// stale one so any goroutine still waiting on its context wakes
-	// up — without that, the entry leaks AND its goroutine never
-	// learns to exit.
-	staleCalled := make(chan struct{}, 1)
-	startStaleStream(t, r, "stale-req", staleCalled)
-
-	now = now.Add(2 * time.Hour)
-
-	freshCalled := make(chan struct{}, 1)
-	startStaleStream(t, r, "fresh-req", freshCalled)
-
-	// Cutoff between the two registrations (1 hour ago at "now").
-	cutoff := now.Add(-time.Hour)
-	dropped := r.SweepStaleCancellers(cutoff)
-	assert.Equal(t, 1, dropped, "exactly one entry should be reaped")
-
-	// Stale stream's context must have been cancelled.
-	select {
-	case <-staleCalled:
-	case <-time.After(time.Second):
-		t.Fatal("expected stale stream's cancel to fire")
-	}
-
-	// Fresh stream should still be running — no cancel signal yet.
-	select {
-	case <-freshCalled:
-		t.Fatal("fresh stream cancel fired despite being newer than cutoff")
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-// startStaleStream registers a stream on the router under clientReqID
-// and signals `cancelled` when the stream's context is cancelled.
-// Used by TestRouter_SweepStaleCancellers to observe per-entry cancel
-// behavior.
-func startStaleStream(t *testing.T, r *controlipc.Router, clientReqID string, cancelled chan<- struct{}) {
-	t.Helper()
-	stop := make(chan struct{})
-	dispatcher := &slowStreamDispatcher{stop: stop, emitted: &atomic.Int32{}}
-	r.LocalDispatcher = dispatcher
-	t.Cleanup(func() {
-		select {
-		case <-stop:
-		default:
-			close(stop)
-		}
-	})
-	streamCh := make(chan error, 1)
-	go func() {
-		err := r.StreamInner(context.Background(), controlipc.TokenInfo{},
-			"worker.WatchEvents", []byte{}, "", clientReqID,
-			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
-		streamCh <- err
-		cancelled <- struct{}{}
-	}()
-	// Wait until the dispatcher has emitted at least one frame so we
-	// know StreamInner registered the canceller in the map.
-	for dispatcher.emitted.Load() < 1 {
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 	envs := controlipc.EnvVars("unix:/tmp/sock", "raw-token", controlipc.TokenInfo{
 		UserID: userid.MustNew("u-1"),
@@ -1022,19 +1047,19 @@ func TestEnvVars_TerminalTabTypeIsTerminal(t *testing.T) {
 // --- Test fakes ---
 
 type fakeHubClient struct {
-	mu          sync.Mutex
-	lastUserID  userid.UserID
-	lastMethod  string
-	lastPayload []byte
-	resp        []byte
-	respErr     error
+	mu            sync.Mutex
+	lastUserID    userid.UserID
+	lastProcedure string
+	lastPayload   []byte
+	resp          []byte
+	respErr       error
 }
 
-func (f *fakeHubClient) CallInner(_ context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+func (f *fakeHubClient) CallInner(_ context.Context, userID userid.UserID, procedure string, payload []byte) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastUserID = userID
-	f.lastMethod = method
+	f.lastProcedure = procedure
 	f.lastPayload = append([]byte(nil), payload...)
 	return f.resp, f.respErr
 }
@@ -1071,13 +1096,9 @@ var (
 	_ controlipc.CrossWorkerClient = (*fakeCrossWorker)(nil)
 	_ controlipc.HubClient         = (*fakeHubClient)(nil)
 	_ controlipc.LocalStreams      = (*fakeStreams)(nil)
+	_ controlipc.CrossWorkerClient = (*framesCrossWorker)(nil)
+	_ controlipc.HubStreamer       = (*fakeHubStreamer)(nil)
 )
-
-// errSentinel keeps an unused-import trap from snapping shut if we ever
-// thin out the test list — `errors` is canonically useful in router
-// tests.
-var errSentinel = errors.New("sentinel")
-var _ = errSentinel
 
 // asyncErrorDispatcher returns from the handler WITHOUT terminating the stream,
 // then delivers the terminal error frame from another goroutine -- exactly the
@@ -1091,12 +1112,7 @@ type asyncErrorDispatcher struct {
 func (d *asyncErrorDispatcher) DispatchWith(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
 	go func() {
 		<-d.release
-		_ = w.SendStream(&leapmuxv1.InnerStreamMessage{
-			IsError:      true,
-			ErrorCode:    7,
-			ErrorMessage: "boom",
-			End:          true,
-		})
+		_ = w.SendStream(channelwire.NewStreamError(7, "boom"))
 	}()
 }
 
@@ -1125,8 +1141,8 @@ func TestRouter_StreamInner_AsyncTerminalErrorIsReported(t *testing.T) {
 
 		streamErr := make(chan error, 1)
 		go func() {
-			streamErr <- r.StreamInner(context.Background(), controlipc.TokenInfo{}, "worker.WatchEvents", []byte("{}"), "A", "req-1",
-				func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+			streamErr <- r.StreamInner(context.Background(), controlipc.TokenInfo{}, "worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-1",
+				func(*leapmuxv1.InnerStreamMessage) error { return nil })
 		}()
 		close(release)
 
@@ -1138,4 +1154,366 @@ func TestRouter_StreamInner_AsyncTerminalErrorIsReported(t *testing.T) {
 			t.Fatalf("iteration %d: StreamInner never returned", i)
 		}
 	}
+}
+
+// A stream that a worker's handler ends with an in-band error returns it from
+// StreamInner as a Connect error with the same code, whichever way the handler
+// answered and whichever worker ran it. The Connect handler sends that error to
+// the client, which then reads the code that CallInner keeps in-band for a
+// unary call. A plain error would reach the client as Unknown.
+func TestRouter_StreamInner_InBandErrorKeepsItsCodeAsAConnectError(t *testing.T) {
+	local := func(reply func(w channel.ResponseWriter)) *controlipc.Router {
+		return &controlipc.Router{
+			WorkerID: "A", UserID: userid.MustNew("u"), Streams: &fakeStreams{},
+			LocalDispatcher: funcDispatcher(func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+				reply(w)
+			}),
+		}
+	}
+	cases := map[string]struct {
+		router *controlipc.Router
+		target string
+	}{
+		"a local unary error": {
+			router: local(func(w channel.ResponseWriter) { _ = w.SendError(int32(codes.NotFound), "no such agent") }),
+			target: "A",
+		},
+		"a local error response": {
+			router: local(func(w channel.ResponseWriter) {
+				_ = w.SendResponse(channelwire.NewErrorResponse(int32(codes.NotFound), "no such agent"))
+			}),
+			target: "A",
+		},
+		"a local error frame": {
+			router: local(func(w channel.ResponseWriter) {
+				_ = w.SendStream(channelwire.NewStreamError(int32(codes.NotFound), "no such agent"))
+			}),
+			target: "A",
+		},
+		"a sibling's error": {
+			router: &controlipc.Router{
+				WorkerID: "A", UserID: userid.MustNew("u"),
+				CrossWorker: &fakeCrossWorker{respErr: fmt.Errorf("cross-worker stream: %w",
+					&channelwire.RPCError{Code: int32(codes.NotFound), Message: "no such agent"})},
+			},
+			target: "B",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := tc.router.StreamInner(context.Background(), controlipc.TokenInfo{},
+				"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), tc.target, "",
+				func(*leapmuxv1.InnerStreamMessage) error { return nil })
+
+			var connectErr *connect.Error
+			require.ErrorAs(t, err, &connectErr)
+			assert.Equal(t, connect.CodeNotFound, connectErr.Code())
+			assert.Equal(t, "no such agent", connectErr.Message())
+			var rpcErr *channelwire.RPCError
+			assert.ErrorAs(t, err, &rpcErr, "the in-band error stays the cause")
+		})
+	}
+}
+
+// funcDispatcher runs its own function as the local dispatcher.
+type funcDispatcher func(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter)
+
+func (f funcDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	f(ctx, caller, req, w)
+}
+
+// The router keys a live stream's entry by its client request id. StreamInner
+// removes the entry when it returns, so the map holds only live streams.
+func TestRouterRemovesTheStreamEntryWhenTheStreamEnds(t *testing.T) {
+	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
+	var registeredDuringDispatch bool
+	r.LocalDispatcher = funcDispatcher(func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+		_, registeredDuringDispatch = r.StreamCancellers.Load("req-ends")
+		_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{})
+	})
+
+	require.NoError(t, r.StreamInner(context.Background(), controlipc.TokenInfo{},
+		"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, "", "req-ends",
+		func(*leapmuxv1.InnerStreamMessage) error { return nil }))
+
+	assert.True(t, registeredDuringDispatch, "the stream holds its entry while it runs")
+	_, registered := r.StreamCancellers.Load("req-ends")
+	assert.False(t, registered, "the ended stream leaves no entry behind")
+}
+
+// The cleanup runs in a defer, so a handler that panics leaves no entry
+// behind either: no entry can outlive its stream, and none needs a sweep.
+func TestRouterRemovesTheStreamEntryWhenTheHandlerPanics(t *testing.T) {
+	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
+	var registeredDuringDispatch bool
+	r.LocalDispatcher = funcDispatcher(func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+		_, registeredDuringDispatch = r.StreamCancellers.Load("req-panic")
+		panic("handler bug")
+	})
+
+	recovered := func() (value any) {
+		defer func() { value = recover() }()
+		_ = r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, "", "req-panic",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		return nil
+	}()
+
+	require.Equal(t, "handler bug", recovered, "the handler's panic reaches the caller")
+	assert.True(t, registeredDuringDispatch, "the stream holds its entry while it runs")
+	_, registered := r.StreamCancellers.Load("req-panic")
+	assert.False(t, registered, "the deferred cleanup removes the entry of a panicking stream")
+}
+
+// A cancel retires the stream. It removes the entry at once, before the stream
+// returns, so a revision that arrives later finds no stream and reaches no
+// controller.
+func TestRouter_UpdateStreamCancel_RemovesTheEntryAtOnce(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	ready := make(chan struct{})
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: &ctrlStreamDispatcher{ctrl: ctrl, ready: ready},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-cancel-payload",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+	}()
+	<-ready
+
+	require.NoError(t, cancelStream(r, "req-cancel-payload"))
+	_, registered := r.StreamCancellers.Load("req-cancel-payload")
+	assert.False(t, registered, "the cancel removes the entry before the stream returns")
+	require.NoError(t, reviseStream(r, "req-cancel-payload", []byte("late revision")),
+		"a revision for a retired stream is a quiet no-op")
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the cancelled stream did not return")
+	}
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	assert.True(t, ctrl.cancelled, "the cancel reaches the controller")
+	assert.Empty(t, ctrl.payloads, "the late revision reaches no controller")
+}
+
+// A revision that overflows the inbox of a stream whose controller is not bound
+// yet returns an error, so the client learns that its revision was lost. The
+// same overflow retires the stream: the controller is never bound, and the
+// stream returns.
+func TestRouter_UpdateStream_OverflowReportsAnErrorAndRetiresTheStream(t *testing.T) {
+	dispatcher := &cancelRaceDispatcher{
+		ctrl:       &recordingStreamController{},
+		registered: make(chan struct{}),
+		proceed:    make(chan struct{}),
+		bindResult: make(chan bool, 1),
+	}
+	r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u"), LocalDispatcher: dispatcher}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, []byte("{}"), "A", "req-overflow",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+	}()
+	<-dispatcher.registered
+
+	// The inbox limit belongs to the channel package, so the loop finds it
+	// instead of restating it. The cap only keeps a broken limit from spinning.
+	var overflow error
+	for range 10_000 {
+		if overflow = reviseStream(r, "req-overflow", []byte("revision")); overflow != nil {
+			break
+		}
+	}
+	require.ErrorIs(t, overflow, channel.ErrStreamInboxFull)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(overflow), "the caller reads the overflow as ResourceExhausted")
+
+	close(dispatcher.proceed)
+	assert.False(t, <-dispatcher.bindResult, "an overflowed stream refuses its controller")
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the overflowed stream did not return")
+	}
+	_, registered := r.StreamCancellers.Load("req-overflow")
+	assert.False(t, registered, "the retired stream leaves no entry behind")
+}
+
+// A local unary handler reports its failure in-band: CallInner succeeds at the
+// transport level and returns a response whose error field carries the code
+// and the message. A handler that answers nothing gives an empty success.
+func TestRouter_CallInner_LocalFailureStaysInBand(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		reply       func(w channel.ResponseWriter)
+		wantError   *leapmuxv1.RpcError
+		wantPayload []byte
+	}{
+		{
+			name:      "an error the handler sends",
+			reply:     func(w channel.ResponseWriter) { _ = w.SendError(5, "not found") },
+			wantError: &leapmuxv1.RpcError{Code: 5, Message: "not found"},
+		},
+		{
+			name:      "a response that carries an error",
+			reply:     func(w channel.ResponseWriter) { _ = w.SendResponse(channelwire.NewErrorResponse(9, "refused")) },
+			wantError: &leapmuxv1.RpcError{Code: 9, Message: "refused"},
+		},
+		{
+			name: "an error after a response",
+			reply: func(w channel.ResponseWriter) {
+				_ = w.SendResponse(channelwire.NewPayloadResponse([]byte("partial")))
+				_ = w.SendError(13, "failed late")
+			},
+			wantError: &leapmuxv1.RpcError{Code: 13, Message: "failed late"},
+		},
+		{
+			name:  "no reply",
+			reply: func(channel.ResponseWriter) {},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &controlipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
+			r.LocalDispatcher = funcDispatcher(func(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+				tc.reply(w)
+			})
+
+			resp, err := r.CallInner(context.Background(), controlipc.TokenInfo{},
+				"worker."+leapmuxv1connect.WorkerAgentServiceListAgentsProcedure, nil, "")
+			require.NoError(t, err, "an in-band failure is not a transport error")
+			require.NotNil(t, resp)
+			if tc.wantError == nil {
+				assert.Nil(t, resp.GetError())
+			} else {
+				require.NotNil(t, resp.GetError())
+				assert.Equal(t, tc.wantError.GetCode(), resp.GetError().GetCode())
+				assert.Equal(t, tc.wantError.GetMessage(), resp.GetError().GetMessage())
+			}
+			assert.Equal(t, tc.wantPayload, resp.GetPayload())
+		})
+	}
+}
+
+// framesCrossWorker plays a sibling worker's stream: it hands each frame to the
+// router and then returns err, as crossworker.Client.StreamInner does.
+type framesCrossWorker struct {
+	frames []*leapmuxv1.InnerStreamMessage
+	err    error
+}
+
+func (*framesCrossWorker) CallInner(context.Context, string, userid.UserID, string, []byte) ([]byte, error) {
+	return nil, errors.New("framesCrossWorker serves streams only")
+}
+
+func (f *framesCrossWorker) StreamInner(_ context.Context, _ string, _ userid.UserID, _ string, _ []byte, onMsg func(*leapmuxv1.InnerStreamMessage), _ func(channel.StreamController)) error {
+	for _, frame := range f.frames {
+		onMsg(frame)
+	}
+	return f.err
+}
+
+// A sibling worker's frames reach the client unchanged, an error frame
+// included: its code and message, and its End, are what the client reads to
+// stop.
+func TestRouter_StreamInner_CrossWorkerForwardsEachFrameUnchanged(t *testing.T) {
+	data := &leapmuxv1.InnerStreamMessage{Payload: []byte("event")}
+	failure := channelwire.NewStreamError(7, "denied")
+	streamErr := errors.New("stream error (code 7): denied")
+	r := &controlipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		CrossWorker: &framesCrossWorker{frames: []*leapmuxv1.InnerStreamMessage{data, failure}, err: streamErr},
+	}
+
+	var got []*leapmuxv1.InnerStreamMessage
+	err := r.StreamInner(context.Background(), controlipc.TokenInfo{},
+		"worker."+leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, nil, "B", "",
+		func(msg *leapmuxv1.InnerStreamMessage) error {
+			got = append(got, msg)
+			return nil
+		})
+
+	require.ErrorIs(t, err, streamErr, "the sibling's own error is what the stream returns")
+	require.Len(t, got, 2)
+	assert.Same(t, data, got[0])
+	assert.Same(t, failure, got[1], "the error frame is forwarded as it is, not rebuilt")
+	require.NotNil(t, got[1].GetError())
+	assert.Equal(t, int32(7), got[1].GetError().GetCode())
+	assert.Equal(t, "denied", got[1].GetError().GetMessage())
+	assert.True(t, got[1].GetEnd())
+}
+
+// fakeHubStreamer plays the hub: it records the call and hands each payload to
+// the router.
+type fakeHubStreamer struct {
+	payloads     [][]byte
+	gotUserID    userid.UserID
+	gotProcedure string
+	gotPayload   []byte
+}
+
+func (f *fakeHubStreamer) StreamHub(_ context.Context, userID userid.UserID, procedure string, payload []byte, onPayload func([]byte) error) error {
+	f.gotUserID, f.gotProcedure, f.gotPayload = userID, procedure, payload
+	for _, p := range f.payloads {
+		if err := onPayload(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A hub stream carries only payloads. The router wraps each one in a stream
+// frame with no End and no error, and a frame that the client cannot take stops
+// the stream with the client's error.
+func TestRouter_StreamInner_HubNamespaceWrapsEachPayload(t *testing.T) {
+	t.Run("each payload becomes one frame", func(t *testing.T) {
+		hub := &fakeHubStreamer{payloads: [][]byte{[]byte("a"), []byte("b")}}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+
+		var got []*leapmuxv1.InnerStreamMessage
+		require.NoError(t, r.StreamInner(context.Background(), controlipc.TokenInfo{},
+			"hub."+hubrpc.WatchUserStream, []byte("request"), "", "",
+			func(msg *leapmuxv1.InnerStreamMessage) error {
+				got = append(got, msg)
+				return nil
+			}))
+
+		require.Len(t, got, 2)
+		for i, want := range []string{"a", "b"} {
+			assert.Equal(t, want, string(got[i].GetPayload()))
+			assert.False(t, got[i].GetEnd(), "a hub payload does not end the stream")
+			assert.Nil(t, got[i].GetError())
+		}
+		assert.Equal(t, hubrpc.WatchUserStream, hub.gotProcedure, "the hub receives the stream's address without its namespace")
+		assert.Equal(t, []byte("request"), hub.gotPayload)
+		assert.Equal(t, "user-1", hub.gotUserID.String(), "the hub call runs as the router's user")
+	})
+
+	t.Run("a delivery failure stops the stream", func(t *testing.T) {
+		hub := &fakeHubStreamer{payloads: [][]byte{[]byte("a"), []byte("b")}}
+		r := &controlipc.Router{UserID: userid.MustNew("user-1"), HubStreams: hub}
+		sendErr := errors.New("client went away")
+
+		calls := 0
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error {
+				calls++
+				return sendErr
+			})
+
+		require.ErrorIs(t, err, sendErr)
+		assert.Equal(t, 1, calls, "no payload follows a failed delivery")
+	})
+
+	t.Run("a router with no hub streamer refuses", func(t *testing.T) {
+		r := &controlipc.Router{UserID: userid.MustNew("user-1")}
+		err := r.StreamInner(context.Background(), controlipc.TokenInfo{}, "hub."+hubrpc.WatchUserStream, nil, "", "",
+			func(*leapmuxv1.InnerStreamMessage) error { return nil })
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
+	})
 }

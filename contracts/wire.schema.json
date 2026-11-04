@@ -13,9 +13,6 @@
     "innerEnvelopeHeadroomBytes",
     "maxConfigurableMessageSizeBytes",
     "maxIncompleteChunked",
-    "pingMethod",
-    "protocolVersion",
-    "hubControlChannelId",
     "sessionKey",
     "closeReasons",
     "ws",
@@ -55,21 +52,6 @@
     "maxIncompleteChunked": {
       "type": "integer",
       "minimum": 1
-    },
-    "pingMethod": {
-      "type": "string",
-      "minLength": 1,
-      "description": "The no-op inner RPC a client issues once, before OpenChannel returns, to prove the E2EE session works end to end. Noise_NK's handshake only proves the client can encrypt to the worker's static key; without a round trip at open time a session broken in either direction opens 'successfully' and fails later on the first real call -- and pooled channels cache that broken session. It carries no payload: the proof is that the round trip decrypts at both ends."
-    },
-    "protocolVersion": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "The ChannelMessage envelope version every sender stamps (NewChannelMessage, the bypassing Go senders, and the browser's channelSession)."
-    },
-    "hubControlChannelId": {
-      "type": "string",
-      "minLength": 1,
-      "description": "The reserved channel ID of the frames that the Hub itself sends to a frontend over the /ws/channel WebSocket. No worker channel uses it: the Hub routes it to the frontend's hub-control handler, and the relay sends no CLOSE answer for it."
     },
     "sessionKey": {
       "type": "object",
@@ -212,7 +194,11 @@
       "additionalProperties": false,
       "required": [
         "softNonceLimit",
-        "hardNonceLimit"
+        "hardNonceLimit",
+        "x25519PublicKeySizeBytes",
+        "mlkemPublicKeySizeBytes",
+        "slhdsaPublicKeySizeBytes",
+        "slhdsaSignatureSizeBytes"
       ],
       "properties": {
         "softNonceLimit": {
@@ -225,6 +211,26 @@
           "minimum": 1,
           "maximum": 4294967295,
           "description": "The uint32 wrap bound: the last nonce value the counter may hold before a rekey is mandatory. 2^32-1; the generator checks hardNonceLimit > softNonceLimit."
+        },
+        "x25519PublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an X25519 public key: the worker's static identity key that a registration pins, and a rekey ephemeral key. It is also DHLEN of the Noise spec, and an X25519 private key has the same size. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "mlkemPublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an ML-KEM-1024 encapsulation key. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "slhdsaPublicKeySizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an SLH-DSA-SHAKE-256f public key. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
+        },
+        "slhdsaSignatureSizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of an SLH-DSA-SHAKE-256f signature, which authenticates the handshake transcript. The algorithm fixes it, so this is not a tunable: backend/internal/noise tests it against the cryptography library."
         }
       }
     },

@@ -5,7 +5,7 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { actionSlot, actionSlotResting } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { TunnelProvider } from '~/context/TunnelContext'
@@ -97,6 +97,32 @@ function renderSection(opts?: {
 }
 
 describe('WorkerSectionContent', () => {
+  describe('the deregister item of a bundled worker', () => {
+    // The menu is a popover, and jsdom has no Popover API.
+    beforeAll(() => {
+      HTMLElement.prototype.showPopover = vi.fn()
+      HTMLElement.prototype.hidePopover = vi.fn()
+      HTMLElement.prototype.togglePopover = vi.fn()
+    })
+
+    function openMenuOf(worker: Worker) {
+      const { container } = renderSection({
+        workers: [worker],
+      })
+      container.querySelector<HTMLElement>(`.${actionSlot} button`)!.click()
+    }
+
+    it('shows for a worker that the list reports offline', () => {
+      openMenuOf(create(WorkerSchema, { id: 'w1', autoRegistered: true, online: false }))
+      expect(screen.getByText('Deregister...')).toBeInTheDocument()
+    })
+
+    it('stays hidden for a worker that the list reports online', () => {
+      openMenuOf(create(WorkerSchema, { id: 'w1', autoRegistered: true, online: true }))
+      expect(screen.queryByText('Deregister...')).not.toBeInTheDocument()
+    })
+  })
+
   it('no tunnels shown when list empty', () => {
     renderSection()
     expect(screen.queryByText(/\u2192/)).not.toBeInTheDocument()

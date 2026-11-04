@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -54,7 +55,7 @@ func TestIssueAPIToken_CannotMintACredentialWiderThanItself(t *testing.T) {
 	}
 	issue := func(bearer string, scopes []string) error {
 		req := &leapmuxv1.IssueAPITokenRequest{
-			Username: "admin", InstallationName: "ci-bot", Scopes: scopes,
+			User: service.SelectUserByUsername("admin"), InstallationName: "ci-bot", Scopes: scopes,
 		}
 		ctx, info := connect.NewClientContext(ctx)
 		info.RequestHeader().Set("Authorization", "Bearer "+bearer)

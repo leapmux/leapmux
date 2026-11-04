@@ -5,7 +5,7 @@
 // own messages and returns an Event from them
 // (agent.Provider.ExtractTodoEvent); the worker owns the canonical
 // state in agent_todos and broadcasts the post-mutation snapshot to
-// clients via AgentTodosChanged. The frontend does not reduce these
+// clients via the todos_changed event. The frontend does not reduce these
 // events locally.
 package todoevents
 
@@ -241,11 +241,12 @@ func (s Status) OrPending() Status {
 	return s
 }
 
-// ItemsToProto bulk-converts a slice for proto-shaped responses.
-func ItemsToProto(items []Item) []*leapmuxv1.TodoItem {
-	out := make([]*leapmuxv1.TodoItem, len(items))
+// SnapshotToProto builds the whole to-do list that a broadcast, a replay and a
+// latest message page each carry.
+func SnapshotToProto(items []Item) *leapmuxv1.AgentTodoSnapshot {
+	todos := make([]*leapmuxv1.TodoItem, len(items))
 	for i, it := range items {
-		out[i] = it.ToProto()
+		todos[i] = it.ToProto()
 	}
-	return out
+	return &leapmuxv1.AgentTodoSnapshot{Todos: todos}
 }

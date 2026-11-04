@@ -1,3 +1,5 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { WebAuthnChallenge, WebAuthnCredentialSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import type { PasskeyBlocker } from '~/lib/systemInfo'
 import {
   startAuthentication as browserStartAuthentication,
@@ -118,6 +120,42 @@ export async function startAuthentication(optionsJson: string): Promise<string> 
   const optionsJSON = parseWebAuthnOptionsJSON<AuthenticationOptionsJSON>(optionsJson)
   const credential = await browserStartAuthentication({ optionsJSON }).catch(classifyCeremonyError)
   return JSON.stringify(credential)
+}
+
+/** The credential a ceremony's Finish request carries. */
+export type WebAuthnCredentialInit = MessageInitShape<typeof WebAuthnCredentialSchema>
+
+/**
+ * The challenge a Begin response carries, refusing an absent one. The hub
+ * always answers a successful Begin with a challenge, so an absent one is a
+ * response the client cannot use, and the browser prompt must not open.
+ *
+ * The refusal's message reaches a person through `passkeyErrorMessage` on
+ * every passkey surface: sign-in, step-up, sign-up, account recovery and Add
+ * passkey. So it states the fault in plain words, and the next step it
+ * offers suits every one of those surfaces.
+ */
+function requireChallenge(challenge: WebAuthnChallenge | undefined): WebAuthnChallenge {
+  if (!challenge)
+    throw new Error('The hub could not start the passkey prompt. Try again.')
+  return challenge
+}
+
+/**
+ * Run the browser half of a REGISTRATION ceremony for a Begin response's
+ * challenge, and return the credential its Finish request carries. One
+ * helper, so no caller can pair one challenge's session with another's
+ * credential.
+ */
+export async function registerForChallenge(challenge: WebAuthnChallenge | undefined): Promise<WebAuthnCredentialInit> {
+  const { sessionId, optionsJson } = requireChallenge(challenge)
+  return { sessionId, credentialJson: await startRegistration(optionsJson) }
+}
+
+/** Run the browser half of an AUTHENTICATION ceremony; see `registerForChallenge`. */
+export async function authenticateForChallenge(challenge: WebAuthnChallenge | undefined): Promise<WebAuthnCredentialInit> {
+  const { sessionId, optionsJson } = requireChallenge(challenge)
+  return { sessionId, credentialJson: await startAuthentication(optionsJson) }
 }
 
 interface SignalUnknownCredential {

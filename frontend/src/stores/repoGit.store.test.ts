@@ -7,7 +7,9 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 
 const mockGetGitFileStatus = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
-  getGitFileStatus: (...args: unknown[]) => mockGetGitFileStatus(...args),
+  workerGit: {
+    getGitFileStatus: (...args: unknown[]) => mockGetGitFileStatus(...args),
+  },
 }))
 
 beforeEach(() => {
@@ -836,6 +838,8 @@ describe('createRepoGitStore', () => {
 
         const written = await store.refresh('worker1', '/repo/pkg', { repoKey: probeKey })
 
+        // The worker id routes the probe and stays out of the request body.
+        expect(mockGetGitFileStatus).toHaveBeenCalledWith('worker1', { path: '/repo/pkg' })
         expect(written).toBe(repoKey('worker1', '/repo'))
         expect(store.focusedKey()).toBe(repoKey('worker1', '/repo'))
         expect(store.get(probeKey)).toBeUndefined()

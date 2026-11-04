@@ -101,21 +101,16 @@ func DiffProjectionForBatch(prev, next *leapmuxv1.UserCrdtState, batch []*leapmu
 	return diff
 }
 
-// touchedTabIDs returns the set of tab ids any Set/TombstoneTab op in
-// `batch` names. Other op kinds contribute nothing — for non-structural
+// touchedTabIDs returns the set of tab ids that every tab op in `batch`
+// targets (OpTarget answers EntityKindTab for each). A revive is one of them:
+// it re-materializes the tab into the index, so its workspace_tab_owned row
+// is re-upserted. Other op kinds contribute nothing — for non-structural
 // batches those are the only tab projections that can change.
 func touchedTabIDs(batch []*leapmuxv1.CrdtOp) map[string]bool {
 	out := map[string]bool{}
 	for _, op := range batch {
-		switch body := op.GetBody().(type) {
-		case *leapmuxv1.CrdtOp_SetTabRegister:
-			out[body.SetTabRegister.GetTabId()] = true
-		case *leapmuxv1.CrdtOp_TombstoneTab:
-			out[body.TombstoneTab.GetTabId()] = true
-		case *leapmuxv1.CrdtOp_ReviveTab:
-			// A revive re-materializes the tab into the index; include it so
-			// its workspace_tab_owned row is re-upserted.
-			out[body.ReviveTab.GetTab().GetTabId()] = true
+		if ref := OpTarget(op); ref.Kind == EntityKindTab {
+			out[ref.TabID] = true
 		}
 	}
 	return out

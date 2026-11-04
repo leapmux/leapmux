@@ -4,6 +4,7 @@ import (
 	"context"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
@@ -65,7 +66,7 @@ func runTerminalQuake(rawCtx any, args []string, action leapmuxv1.QuakePanelActi
 			return err
 		}
 		req := &leapmuxv1.SetQuakePanelRequest{WorkingDir: workingDir, Action: action}
-		if err := callInnerRPC(ctx, c, got.WorkerID, "SetQuakePanel", req, nil); err != nil {
+		if err := callInnerRPC(ctx, c, got.WorkerID, leapmuxv1connect.WorkerPrivateServiceSetQuakePanelProcedure, req, nil); err != nil {
 			return err
 		}
 		return control.EmitData(map[string]any{

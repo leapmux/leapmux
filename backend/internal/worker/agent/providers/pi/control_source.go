@@ -65,7 +65,7 @@ func piQuestionIndex(dialog piQuestionDialog, args json.RawMessage) (int, bool) 
 			valid = valid && strings.HasPrefix(dialog.Options[len(options)], strconv.Itoa(len(options)+1)+". ")
 		case contracts.PiDialogMethodInput:
 			if question.MultiSelect {
-				valid = dialog.Placeholder == "1,3" && strings.HasPrefix(dialog.Title, title+"\n\n"+strings.Join(options, "\n")+"\n\n")
+				valid = dialog.Placeholder == contracts.PiQuestionDialogMultiSelectPlaceholder && strings.HasPrefix(dialog.Title, title+"\n\n"+strings.Join(options, "\n")+"\n\n")
 			} else {
 				valid = dialog.Placeholder == "" && strings.HasPrefix(dialog.Title, title+"\n\n") && !strings.HasPrefix(dialog.Title, title+"\n\n--- ")
 			}

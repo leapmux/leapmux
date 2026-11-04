@@ -1,12 +1,14 @@
 import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as workerRpc from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { PushBranchButton } from './PushBranchButton'
 
 vi.mock('~/api/workerRpc', () => ({
-  pushBranch: vi.fn(),
+  workerGit: {
+    pushBranch: vi.fn(),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -73,7 +75,7 @@ describe('PushBranchButton', () => {
   })
 
   it('sends only the working dir on click (gitState is not forwarded to the worker)', async () => {
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
     const onPushed = vi.fn()
     const snapshot = gitState({ hasUncommittedChanges: true, upstreamExists: false })
     render(() => (
@@ -85,11 +87,11 @@ describe('PushBranchButton', () => {
       />
     ))
     fireEvent.click(screen.getByRole('button', { name: /Commit and Push/ }))
-    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(workerGit.pushBranch).toHaveBeenCalledTimes(1))
     // The worker always re-probes pushStatus, so the snapshot must NOT
     // ride along — including it would let a stale snapshot make the
     // dialog disagree with what the server actually pushes.
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]).toEqual([
+    expect(vi.mocked(workerGit.pushBranch).mock.calls[0]).toEqual([
       'w7',
       { workingDir: '/repo' },
     ])
@@ -97,7 +99,7 @@ describe('PushBranchButton', () => {
   })
 
   it('still sends only the working dir when gitState is undefined', async () => {
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
     render(() => (
       <PushBranchButton
         workerId="w1"
@@ -107,12 +109,12 @@ describe('PushBranchButton', () => {
       />
     ))
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
-    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
+    await waitFor(() => expect(workerGit.pushBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerGit.pushBranch).mock.calls[0]?.[1]).toEqual({ workingDir: '/repo' })
   })
 
   it('shows the success toast when push resolves', async () => {
-    vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
+    vi.mocked(workerGit.pushBranch).mockResolvedValueOnce({} as never)
     render(() => (
       <PushBranchButton
         workerId="w1"
@@ -128,7 +130,7 @@ describe('PushBranchButton', () => {
 
   it('shows the warn toast and does not call onPushed when push rejects', async () => {
     const failure = new Error('remote unreachable')
-    vi.mocked(workerRpc.pushBranch).mockRejectedValueOnce(failure)
+    vi.mocked(workerGit.pushBranch).mockRejectedValueOnce(failure)
     const onPushed = vi.fn()
     render(() => (
       <PushBranchButton
@@ -167,7 +169,7 @@ describe('PushBranchButton', () => {
     const pushPromise = new Promise<unknown>((res) => {
       resolvePush = () => res({})
     })
-    vi.mocked(workerRpc.pushBranch).mockReturnValueOnce(pushPromise as never)
+    vi.mocked(workerGit.pushBranch).mockReturnValueOnce(pushPromise as never)
     render(() => (
       <PushBranchButton
         workerId="w1"
@@ -190,7 +192,7 @@ describe('PushBranchButton', () => {
     // adoption of `setError(formatError(err))` would have lost the err
     // and passed a string-only sink to the toast helper.
     const failure = new Error('remote unreachable')
-    vi.mocked(workerRpc.pushBranch).mockRejectedValueOnce(failure)
+    vi.mocked(workerGit.pushBranch).mockRejectedValueOnce(failure)
     render(() => (
       <PushBranchButton
         workerId="w1"
