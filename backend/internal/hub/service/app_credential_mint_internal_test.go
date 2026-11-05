@@ -209,16 +209,6 @@ func TestNotifyCredentialIssuedCountsTheSendUntilItEnds(t *testing.T) {
 	assert.True(t, inFlight.Wait(30*time.Second, ""), "an ended send must leave the count")
 }
 
-func TestNotifyCredentialIssuedSendsWithoutACounter(t *testing.T) {
-	t.Parallel()
-	sender := newParkedSender()
-	close(sender.release)
-
-	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, noticeRecipient(), credentialNotice{AppName: "app"}, nil)
-
-	sender.awaitEntered(t)
-}
-
 // A notice that never starts must leave nothing for the shutdown to wait for.
 func TestNotifyCredentialIssuedCountsNothingWhenItSendsNothing(t *testing.T) {
 	t.Parallel()

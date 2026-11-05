@@ -699,7 +699,7 @@ func TestAuthorizationServer_RevocationTreatsAVanishedRowAsAlreadyEnded(t *testi
 	// The VALIDATOR keeps the real store, so the secret verifies; only the
 	// handler's own read-back loses the row. That is the interleaving a
 	// concurrent hard-delete produces, compressed into one request.
-	service.NewOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{
 		Store: apiTokenOverrideStore{
 			Store: env.store,
 			api:   apiLookupFailTokens{APITokenStore: env.store.APITokens(), err: store.ErrNotFound},

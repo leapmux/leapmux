@@ -37,6 +37,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // apiAuthEnv wires the OAuthServerHandler against an in-memory store with
@@ -85,7 +86,7 @@ func TestNewOAuthServerHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {
-		service.NewOAuthServerHandler(service.OAuthServerDeps{HubURL: func() string { return "" }})
+		newOAuthServerHandler(service.OAuthServerDeps{HubURL: func() string { return "" }})
 	})
 }
 
@@ -170,7 +171,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
-	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{
 		Store:     st,
 		Validator: tv,
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer),
@@ -818,7 +819,7 @@ func TestAPIAuth_Refresh_FlightFollowsTheHubsLifetime(t *testing.T) {
 	servingCtx, endHub := context.WithCancel(context.Background())
 	endHub()
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{
 		Store:      env.store,
 		Validator:  env.validator,
 		Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
@@ -841,6 +842,23 @@ func TestAPIAuth_Refresh_FlightFollowsTheHubsLifetime(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "the stopped flight must leave the refresh token valid")
+}
+
+// Without these two, detached work reads a closed store and a notice is lost at
+// an exit, and nothing fails until a shutdown. So the constructor refuses at once.
+func TestNewOAuthServerHandlerRequiresItsShutdownDependencies(t *testing.T) {
+	t.Parallel()
+	lifecycle := auth.NewCredentialLifecycleEffects(nil, nil, nil)
+
+	assert.PanicsWithValue(t, "OAuth server requires the Hub's serving context", func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, Notices: &drain.Counter{}})
+	})
+	assert.PanicsWithValue(t, "OAuth server requires the credential notice counter", func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background()})
+	})
+	assert.NotPanics(t, func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background(), Notices: &drain.Counter{}})
+	})
 }
 
 func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
@@ -919,7 +937,7 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 	}))
 
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
 		"client_id":     {oauthapp.ControlCLIClientID},
@@ -1059,7 +1077,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	t.Cleanup(otherServer.Close)
 	otherValidator, err := auth.NewTokenValidator(env.store, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
 
 	retry, err := http.PostForm(otherServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1103,7 +1121,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1143,7 +1161,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1191,7 +1209,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1445,7 +1463,7 @@ func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
@@ -1480,7 +1498,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		users: getByIDFailUsers{UserStore: env.store.Users()},
 	}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50}})
 	require.NoError(t, err)
@@ -1524,7 +1542,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 
 	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1566,7 +1584,7 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1592,7 +1610,7 @@ func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1623,7 +1641,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1670,7 +1688,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1768,7 +1786,7 @@ func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {
 		auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()),
@@ -1806,7 +1824,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 		Store: env.store,
 		api:   apiRevokeFailTokens{APITokenStore: env.store.APITokens()},
 	}
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{
 		"token":     {bearer},
@@ -1854,7 +1872,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
@@ -2281,7 +2299,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	closer := &recordingBearerCloser{}
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
 		RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
@@ -2331,7 +2349,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{
 		Store:     wrapped,
 		Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2425,7 +2443,7 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 				},
 			}
 			mux := http.NewServeMux()
-			h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{
 				Store:     wrapped,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2680,7 +2698,7 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	limiter := ratelimit.NewManager(set)
 
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{
 		Store: env.store, Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
 		HubURL:    func() string { return env.server.URL },
@@ -2787,7 +2805,7 @@ func TestAPIAuth_CodeExchange_MarkMintedFollowsTheHubsLifetime(t *testing.T) {
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			service.NewOAuthServerHandler(service.OAuthServerDeps{
+			newOAuthServerHandler(service.OAuthServerDeps{
 				Store:      markMintedSpyStore{Store: env.store, contextErrs: contextErrs},
 				Validator:  env.validator,
 				Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),

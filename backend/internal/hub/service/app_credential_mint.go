@@ -308,8 +308,7 @@ type credentialNotice struct {
 //
 // inFlight counts the send for the caller, which joins it up to a limit at
 // shutdown: a Hub exit inside sendTimeout would otherwise lose the notice
-// email. A nil counter skips the counting, which is what tests that mint
-// without a server use.
+// email.
 func notifyCredentialIssued(
 	ctx context.Context,
 	sender mail.Sender,
@@ -325,14 +324,10 @@ func notifyCredentialIssued(
 		user.Email, notice.AppName, notice.InstallationName, notice.Scopes, notice.IssuedByAdmin)
 	userID := user.ID
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), CredentialNoticeTimeout)
-	if inFlight != nil {
-		inFlight.Add()
-	}
+	inFlight.Add()
 	go func() {
 		defer cancel()
-		if inFlight != nil {
-			defer inFlight.Done()
-		}
+		defer inFlight.Done()
 		if err := sender.Send(sendCtx, msg); err != nil {
 			if errors.Is(err, mail.ErrEmailDisabled) {
 				return

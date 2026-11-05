@@ -409,7 +409,7 @@ func TestUnrelatedBearerEvictionDoesNotReloadWarmCacheEntry(t *testing.T) {
 		ID: "token-b", UserID: "user", SecretHash: validator.HashSecret(secretB), CreatedAt: time.Now(),
 	}
 	state := &authState{}
-	a := &authInterceptor{store: base, tokenValidator: validator, state: state}
+	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
 	sc := &AuthContextRegistry{state: state}
 	bearerA := "Bearer " + FormatBearer(BearerKindAPI, "token-a", secretA)
 	bearerB := "Bearer " + FormatBearer(BearerKindAPI, "token-b", secretB)
@@ -472,7 +472,7 @@ func TestBearerRevocationDuringValidationRejectsResult(t *testing.T) {
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
 	state := &authState{}
-	a := &authInterceptor{store: base, tokenValidator: validator, state: state}
+	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
 	sc := &AuthContextRegistry{state: state}
 	bearer := FormatBearer(BearerKindAPI, tokenID, secret)
 
@@ -507,7 +507,7 @@ func TestBearerSingleflightFollowerDoesNotInheritLeaderCancellation(t *testing.T
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{store: base, tokenValidator: validator, state: &authState{}}
+	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
 	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
@@ -555,7 +555,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{store: base, tokenValidator: validator, state: &authState{}}
+	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
 	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
 	type result struct {
@@ -937,7 +937,7 @@ func TestAuthContextRegistry_EvictsBumpGen(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, sc := NewInterceptor(InterceptorOptions{})
+			_, sc := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
 			t.Cleanup(sc.Stop)
 			before := sc.state.revocationGen.Load()
 			tc.fn(sc)
@@ -988,7 +988,7 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 }
 
 func TestAuthContextRegistry_IsAuthContextCurrentIsScoped(t *testing.T) {
-	_, sc := NewInterceptor(InterceptorOptions{})
+	_, sc := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
 	t.Cleanup(sc.Stop)
 
 	gen := sc.state.revocationGen.Load()
@@ -1427,7 +1427,7 @@ func TestBearerCacheFresh_UsesTheValidatorClockForCredentialExpiry(t *testing.T)
 	start := time.Now().Add(time.Hour)
 	expiresAt := start.Add(10 * time.Second)
 	now := start
-	a := &authInterceptor{state: &authState{}, tokenValidator: &TokenValidator{Now: func() time.Time { return now }}}
+	a := &authInterceptor{servingCtx: context.Background(), state: &authState{}, tokenValidator: &TokenValidator{Now: func() time.Time { return now }}}
 	key := bearerCacheKey(BearerKindAPI, "clocked-token", []byte("secret"))
 	cached := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), CredentialExpiresAt: DeadlineAt(expiresAt)}, cachedAt: time.Now()}
 	for _, tc := range []struct {

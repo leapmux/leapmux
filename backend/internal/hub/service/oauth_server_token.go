@@ -377,7 +377,7 @@ func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.R
 		// replay-revocation link -- the credential is live, and a later
 		// replay of the code relies on MarkMinted to identify what to
 		// revoke.
-		grant.afterCommit(h.detachedContext(r), resp.TokenID)
+		grant.afterCommit(h.servingCtx, resp.TokenID)
 	}
 	// After the commit and before the response, so the notice cannot be the
 	// reason a minted token is never delivered. See notifyCredentialIssued.

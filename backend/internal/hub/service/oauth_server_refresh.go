@@ -141,7 +141,7 @@ func (h *OAuthServerHandler) handleTokenRefresh(w http.ResponseWriter, r *http.R
 	// token single-use, so once the flight starts, every caller -- including one
 	// whose client disconnected -- must run to completion and receive the same
 	// rotated pair, or it is left with a rotated-away refresh token and no
-	// replacement. flightCtx (detachedContext) already decouples the work from the
+	// replacement. flightCtx (servingCtx) already decouples the work from the
 	// leader's request cancellation. This is why it differs from the read-only
 	// bearer-validation singleflight, which is safe to abandon on disconnect.
 	//
@@ -151,7 +151,7 @@ func (h *OAuthServerHandler) handleTokenRefresh(w http.ResponseWriter, r *http.R
 	result, _, _ := h.refreshFlight.Do(refreshFlightKey(parsed, requestedScope, r), func() (any, error) {
 		// The flight must outlive a client disconnect, because the leader
 		// rotates a single-use token for every waiter.
-		flightCtx, cancel := context.WithTimeout(h.detachedContext(r), RefreshWorkTimeout)
+		flightCtx, cancel := context.WithTimeout(h.servingCtx, RefreshWorkTimeout)
 		defer cancel()
 		return h.refresh(flightCtx, r, parsed, requestedScope), nil
 	})

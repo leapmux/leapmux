@@ -30,6 +30,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // deletingAdminCtx carries the elevated administrator DeleteUser now
@@ -86,6 +87,13 @@ func newDeregisterTestStore(t *testing.T) store.Store {
 // The admin surface used to run NONE of the deregister effects: nothing
 // told the worker to stop, its memoized delegation scope kept outstanding
 // tokens reaching across workers, and no client learned the list changed.
+// newTestAdminUserService supplies the required notice counter. These tests
+// mint nothing, so nothing waits on it.
+func newTestAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
+	deps.Notices = &drain.Counter{}
+	return NewAdminUserService(deps)
+}
+
 func TestAdminDeregisterNotifiesTheWorkersOwner(t *testing.T) {
 	st := newDeregisterTestStore(t)
 	ctx := context.Background()
@@ -231,7 +239,7 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 	recorder := &workersChangedRecorder{}
 	scopeCache := auth.NewDelegationScopeCache(st)
 	reg := newFlagRecordingRegistry(st)
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(scopeCache, newTestNotifier(t, st, reg), recorder.notify),
 	})
@@ -279,7 +287,7 @@ func TestDeleteUserIncludesAWorkerRegisteredBeforeTheOwnerLock(t *testing.T) {
 	addedID := id.Generate()
 	wrapped := &workerBeforeOwnerLockStore{Store: st, owner: owner.ID, workerID: addedID}
 	reg := newFlagRecordingRegistry(st)
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         wrapped,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
@@ -304,7 +312,7 @@ func TestDeleteUserIncludesAnAlreadyDeregisteringWorker(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 	reg := newFlagRecordingRegistry(st)
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
@@ -336,7 +344,7 @@ func TestDeleteUserRetriesAStopInstructionThatFailedForAConnectedWorker(t *testi
 	firstNotifier := notifier.New(failing, registry, sender, func() time.Duration { return time.Second }, nil)
 	require.Error(t, firstNotifier.SendDeregister(ctx, deregistering.ID))
 	require.Empty(t, sender.workerIDs(), "the failed read must happen before an instruction reaches the sender")
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store: st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil,
 			notifier.New(st, registry, sender, func() time.Duration { return time.Second }, nil), nil),
@@ -395,7 +403,7 @@ func TestDeleteUserReplacesTheWorkerSnapshotAfterTransactionRollback(t *testing.
 			return nil
 		},
 	}
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         wrapped,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})
@@ -512,7 +520,7 @@ func TestDeleteUserContinuesWhenOneWorkerCannotBeTold(t *testing.T) {
 	// one, so the deletion itself commits normally.
 	failing := failingWorkerReadStore{Store: st, failWorkerID: order[0]}
 	reg := newFlagRecordingRegistry(st)
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing, reg), nil),
 	})
@@ -561,7 +569,7 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 	}
 
 	reg := newFlagRecordingRegistry(st)
-	svc := NewAdminUserService(AdminUserServiceDeps{
+	svc := newTestAdminUserService(AdminUserServiceDeps{
 		Store:         st,
 		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
 	})

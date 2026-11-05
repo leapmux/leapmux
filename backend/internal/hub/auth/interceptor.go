@@ -276,8 +276,7 @@ type InterceptorOptions struct {
 	// has joined every drain and is about to close the store. Work detached
 	// from its request's context -- the bearer-validation flight, whose result
 	// the followers share, so that a leader's disconnect must not fail them --
-	// ends when this ends, so it cannot read a closed store. With nil, only the
-	// flight's own timeout ends it.
+	// runs on it, so it cannot read a closed store. Required.
 	ServingCtx context.Context
 }
 
@@ -289,6 +288,9 @@ type InterceptorOptions struct {
 // in-memory touch throttle (e.g. on logout). Call AuthContextRegistry.Stop to terminate
 // the background sweep goroutine.
 func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthContextRegistry) {
+	if opts.ServingCtx == nil {
+		panic("auth interceptor requires the Hub's serving context")
+	}
 	st := opts.Store
 	state := &authState{}
 	soloGate := opts.SoloGate
@@ -1126,16 +1128,11 @@ func (a *authInterceptor) tryAuthenticateBearer(ctx context.Context, authHeader 
 	// ValidateBearer call. The follower goroutines wait on the leader
 	// and get the same (info, err); only one DB round-trip fires.
 	resultCh := a.bearerFlight.DoChan(cacheKey.flightKey(), func() (any, error) {
-		// The flight must outlive a client disconnect, because its followers
-		// share its result, but not the hub's own teardown, because a store
-		// that closes under a running flight is the failure servingCtx ends.
-		// servingCtx replaces the request's context when it is set, and
-		// WithoutCancel covers a hub without one.
-		base := context.WithoutCancel(ctx)
-		if a.servingCtx != nil {
-			base = a.servingCtx
-		}
-		workCtx, cancel := context.WithTimeout(base, sessionCacheTTL)
+		// servingCtx, not the request's context: the flight must outlive a
+		// client disconnect, because its followers share its result, but not
+		// the hub's own teardown, because a store that closes under a running
+		// flight is the failure servingCtx ends.
+		workCtx, cancel := context.WithTimeout(a.servingCtx, sessionCacheTTL)
 		defer cancel()
 		for {
 			// Re-check the cache inside the flight: a concurrent caller

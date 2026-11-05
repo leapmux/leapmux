@@ -222,8 +222,9 @@ func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 	configured := 36 * time.Hour
 	sessions := &touchRecordingSessionStore{row: validSessionRow("user", "user")}
 	interceptor, registry := NewInterceptor(InterceptorOptions{
-		Store:  sessionValidationOverrideStore{sessions: sessions},
-		Policy: func(context.Context) Policy { return Policy{SessionDuration: configured} },
+		ServingCtx: context.Background(),
+		Store:      sessionValidationOverrideStore{sessions: sessions},
+		Policy:     func(context.Context) Policy { return Policy{SessionDuration: configured} },
 	})
 	t.Cleanup(registry.Stop)
 

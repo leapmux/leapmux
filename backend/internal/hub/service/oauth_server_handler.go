@@ -135,26 +135,15 @@ type OAuthServerDeps struct {
 	Mail     mail.Sender
 	Renderer mail.Renderer
 	// Notices counts the detached credential-notice sends, so the Hub's
-	// shutdown can join them up to a limit before the store closes. May be nil,
-	// which leaves the sends uncounted (tests that mint without a server).
+	// shutdown can join them up to a limit before the store closes. Required.
 	Notices *drain.Counter
 	// ServingCtx is the hub's own lifetime, canceled only when the shutdown
-	// has joined every drain and is about to close the store. Detached work
-	// (the refresh flight, an afterCommit link) ends when it ends, so neither
-	// can read a closed store. See detachedContext for the nil case.
+	// has joined every drain and is about to close the store. Work that must
+	// outlive its request but not the Hub (the refresh flight, an afterCommit
+	// link) runs on it: a client disconnect cannot end that work, and the work
+	// cannot read a closed store. It holds none of the request's values.
+	// Required.
 	ServingCtx context.Context
-}
-
-// detachedContext returns the context for work that must outlive its request
-// but not the Hub: it ignores a client disconnect, and it ends with servingCtx,
-// so the work cannot read the store that the shutdown closes next. servingCtx
-// holds none of the request's values. With no servingCtx, the returned context
-// keeps those values and never ends.
-func (h *OAuthServerHandler) detachedContext(r *http.Request) context.Context {
-	if h.servingCtx != nil {
-		return h.servingCtx
-	}
-	return context.WithoutCancel(r.Context())
 }
 
 // OAuthServerHandler implements /oauth/* and the two metadata documents. It
@@ -189,6 +178,12 @@ type OAuthServerHandler struct {
 func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	if deps.Lifecycle == nil {
 		panic("OAuth server requires credential lifecycle effects")
+	}
+	if deps.ServingCtx == nil {
+		panic("OAuth server requires the Hub's serving context")
+	}
+	if deps.Notices == nil {
+		panic("OAuth server requires the credential notice counter")
 	}
 	return &OAuthServerHandler{
 		store:      deps.Store,

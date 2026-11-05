@@ -298,6 +298,12 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
 }
 
+func TestNewInterceptorRequiresTheServingContext(t *testing.T) {
+	assert.PanicsWithValue(t, "auth interceptor requires the Hub's serving context", func() {
+		auth.NewInterceptor(auth.InterceptorOptions{})
+	})
+}
+
 // The bearer flight is detached from its leader's request, because its followers
 // share the result. It must not be detached from the Hub: the store closes at
 // the end of the Hub's life, so the flight has to end with it.

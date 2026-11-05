@@ -77,12 +77,14 @@ type AdminUserServiceDeps struct {
 	Mail     mail.Sender
 	Renderer mail.Renderer
 	// Notices counts the detached credential-notice sends, so the Hub's
-	// shutdown can join them up to a limit before the store closes. May be nil,
-	// which leaves the sends uncounted (tests that mint without a server).
+	// shutdown can join them up to a limit before the store closes. Required.
 	Notices *drain.Counter
 }
 
 func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
+	if deps.Notices == nil {
+		panic("admin user service requires the credential notice counter")
+	}
 	return &AdminUserService{
 		set:           deps.Settings,
 		store:         deps.Store,

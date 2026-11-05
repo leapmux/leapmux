@@ -32,6 +32,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/drain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -197,7 +198,7 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, revocations, nil)
 	sender := &mailSenderDouble{}
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
-	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, service.NewAdminUserService(service.AdminUserServiceDeps{
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, newAdminUserService(service.AdminUserServiceDeps{
 		Store: st, Validator: tv, Lifecycle: lifecycle, Mail: sender,
 	}))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -251,6 +252,17 @@ func setupAdminUserTestWithSettings(t *testing.T) *adminUserEnv {
 func (e *adminUserEnv) elevateAdminSession(t *testing.T) {
 	t.Helper()
 	hubtestutil.ElevateSession(t, e.st, e.token, e.adminID)
+}
+
+func TestNewAdminUserServiceRequiresTheNoticeCounter(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "admin user service requires the credential notice counter", func() {
+		service.NewAdminUserService(service.AdminUserServiceDeps{})
+	})
+	assert.NotPanics(t, func() {
+		service.NewAdminUserService(service.AdminUserServiceDeps{Notices: &drain.Counter{}})
+	})
 }
 
 func TestAdminUserService_GetUser_Selector(t *testing.T) {
@@ -545,7 +557,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
-	adminSvc := service.NewAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
+	adminSvc := newAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))

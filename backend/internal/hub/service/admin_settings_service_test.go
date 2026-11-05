@@ -182,7 +182,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	adminSvc := service.NewAdminSettingsService(setMgr, cfg, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
-	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, service.NewAdminUserService(service.AdminUserServiceDeps{
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, newAdminUserService(service.AdminUserServiceDeps{
 		Store:     st,
 		Validator: tv,
 		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil),

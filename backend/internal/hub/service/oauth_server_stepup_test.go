@@ -276,7 +276,7 @@ func decodeJSONBody(t *testing.T, resp *http.Response) map[string]any {
 func stepUpHandlerOn(t *testing.T, env *apiAuthEnv, st store.Store) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{
 		Store:     st,
 		Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
