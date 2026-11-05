@@ -57,15 +57,15 @@ var workerSetupPollInterval = 2 * time.Second
 // relayDrainTimeout in the desktop sidecar.
 var workerDrainTimeout = 5 * time.Second
 
-// deps are the two collaborators Start would otherwise reach for directly. They
-// are PER-CALL rather than package vars so a test's substitute cannot outlive its
+// deps supplies startup and Worker lifecycle collaborators. They are PER-CALL
+// rather than package vars so a test's substitute cannot outlive its
 // own test: the previous package-var seams were written by t.Cleanup while a
 // leaked Start goroutine could still be reading them, which is a data race the
 // tests had to avoid by discipline alone -- and which silently forbade
 // t.Parallel() on every test that stubs one.
 //
-// All three have to be seams at all because no fixture reaches their failure
-// modes from outside:
+// These operations are seams because external fixtures cannot control every
+// failure mode or its ordering:
 //
 //   - serveHub: hub.NewServer binds BOTH listeners before Serve is ever called,
 //     so no fixture can induce a Serve-TIME failure by occupying an address or
@@ -74,6 +74,9 @@ var workerDrainTimeout = 5 * time.Second
 //     Hub died while serving" case and the gate that stops a startup failure being
 //     reported twice had no coverage, and two tests aimed at them were passing on
 //     a NewServer failure instead.
+//   - waitReady: a socket connection can succeed before the Serve goroutine
+//     publishes its exit. A controlled probe orders readiness after that exit
+//     when a test exercises the startup failure verdict.
 //   - bringUpWorker: every real way to fail bring-up -- no admin user yet, an
 //     unreadable state file, a store error -- fails AT ONCE, at the first
 //     statement that touches the database or the disk, so nothing can hold Start
@@ -89,6 +92,7 @@ var workerDrainTimeout = 5 * time.Second
 // the gate is exercised against the Worker goroutine production actually launches.
 type deps struct {
 	serveHub      func(ctx context.Context, s *hub.Server) error
+	waitReady     func(ctx context.Context, listenURL string) error
 	bringUpWorker func(ctx context.Context, p workerBringUp) error
 	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
 }
@@ -96,6 +100,7 @@ type deps struct {
 func defaultDeps() deps {
 	return deps{
 		serveHub:      func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) },
+		waitReady:     locallisten.WaitReady,
 		bringUpWorker: bringUpLocalWorker,
 		runWorker:     worker.Run,
 	}
@@ -627,7 +632,7 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	// fire it returned a nil Instance, making hubErr permanently unreachable and
 	// discarding any non-ctx cause joined into it.
 	readyCh := make(chan error, 1)
-	go func() { readyCh <- locallisten.WaitReady(hubCtx, listenURL) }()
+	go func() { readyCh <- d.waitReady(hubCtx, listenURL) }()
 	var readyErr error
 	select {
 	case readyErr = <-readyCh:

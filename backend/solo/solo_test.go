@@ -370,9 +370,9 @@ func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
 // reaches this budget has already failed.
 const soloTestTimeout = 60 * time.Second
 
-// serveFailsImmediately stubs serveHub with a Serve that returns serveErr at once
-// -- but still RUNS s.Serve, against an already-cancelled context, so it unwinds
-// and releases what NewServer acquired.
+// serveFailsImmediately stubs serveHub with a failure after releasing the Hub's
+// resources through Serve with an already-cancelled context. The readiness probe
+// waits until the watcher observes the Hub's exit and cancels its context.
 //
 // Returning without calling Serve at all is the obvious spelling and the wrong
 // one: hub.NewServer has already bound both listeners, opened the store and
@@ -382,31 +382,18 @@ const soloTestTimeout = 60 * time.Second
 // the sandbox temp-dir cleanup.
 func serveFailsImmediately(t *testing.T, d *testDeps, serveErr error) {
 	t.Helper()
-	var releasing atomic.Bool
-	released := make(chan struct{})
 	d.stubServeHub(func(ctx context.Context, s *hub.Server) error {
 		dead, cancel := context.WithCancel(ctx)
 		cancel()
-		// On the SIDE, so this stub still returns at once: the tests that use it
-		// need hubDone closed before Start reaches its readiness verdict, and
-		// Serve's unwind is not instant.
-		releasing.Store(true)
-		go func() {
-			defer close(released)
-			_ = s.Serve(dead)
-		}()
+		_ = s.Serve(dead)
 		return serveErr
 	})
-	t.Cleanup(func() {
-		if !releasing.Load() {
-			return // Serve was never reached; nothing was acquired past NewServer.
-		}
-		select {
-		case <-released:
-		case <-time.After(soloTestTimeout):
-			t.Error("the hub never finished releasing its listeners and store")
-		}
-	})
+	// A successful connect can race Hub exit. Release readiness after the exit
+	// is published so the startup verdict must detect it independently.
+	d.waitReady = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return nil
+	}
 }
 
 // testDeps accumulates the seam substitutions for one test. It is passed to
@@ -708,11 +695,8 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 // readiness select leans on that -- its hubDone case carries no error of its own
 // -- so a hole here silently turns a dead Hub back into a healthy Instance.
 //
-// This is also where the readiness race is pinned. The race itself cannot be
-// forced end-to-end: nothing observable sits between the Hub goroutine's start
-// and the select, so no test can guarantee hubDone is closed AT the select
-// without a sleep. The fix does not win that race, it makes the case choice
-// irrelevant -- which is a local property, testable exactly here.
+// The select can wake on readiness or Hub exit. This table checks the published
+// failure independently of that choice.
 func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 	t.Parallel()
 
@@ -813,10 +797,9 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 // already shutting down, every bit of it discarded. A Hub known to be gone must
 // stop the launch where it is discovered.
 //
-// The ordering is Start's own `serving` handshake, not a timing assumption: the
-// Hub goroutine runs close(serving), the stub's immediate return and
-// close(hubDone) consecutively, so hubDone is closed before the readiness verdict
-// -- which in turn waits out a connect syscall.
+// With the caller context live, the fixture's probe waits for Hub cancellation.
+// The watcher cancels that context after observing hubDone, so the readiness
+// verdict sees a published Hub exit.
 func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testing.T) {
 	cfg := startFailureEnv(t)
 	d := newTestDeps()
@@ -838,6 +821,41 @@ func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testin
 	assert.ErrorIs(t, err, wantErr)
 	assert.False(t, broughtUp.Load(),
 		"a Hub already known to be gone must not have a Worker brought up against it")
+}
+
+func TestSoloStart_ReadinessFailureStopsBeforeWorkerBringUp(t *testing.T) {
+	cfg := startFailureEnv(t)
+	d := newTestDeps()
+	wantErr := errors.New("local listener readiness failed")
+	d.waitReady = func(context.Context, string) error { return wantErr }
+
+	stopped := make(chan struct{})
+	serve := d.serveHub
+	d.stubServeHub(func(ctx context.Context, server *hub.Server) error {
+		defer close(stopped)
+		return serve(ctx, server)
+	})
+	var broughtUp atomic.Bool
+	d.stubWorkerBringUp(func(context.Context) error {
+		broughtUp.Store(true)
+		return nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	defer cancel()
+	inst, err := start(ctx, cfg, d.deps)
+	if inst != nil {
+		t.Cleanup(func() { _ = inst.Stop() })
+	}
+
+	require.ErrorIs(t, err, wantErr)
+	require.Nil(t, inst)
+	assert.False(t, broughtUp.Load(), "readiness failure must stop Worker bring-up")
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("startup returned before the Hub finished cleanup")
+	}
 }
 
 // The literal macOS CI failure from PR #364: a Hub that dies while the Worker is
