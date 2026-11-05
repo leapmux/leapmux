@@ -7,7 +7,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/altcha-org/altcha-lib-go/v2 v2.4.1
 	github.com/aymanbagabas/go-pty v0.2.3
-	github.com/cenkalti/backoff/v7 v7.0.2
+	github.com/cenkalti/backoff/v7 v7.0.3
 	github.com/cloudflare/circl v1.6.5
 	github.com/coder/quartz v0.3.1
 	github.com/coder/websocket v1.8.15

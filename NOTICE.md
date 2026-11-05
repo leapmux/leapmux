@@ -17,7 +17,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/Azure/go-ansiterm v0.0.0-20261013165250-51075c6ea6bc](#githubcomazurego-ansiterm-v000-20261013165250-51075c6ea6bc)
 - [github.com/beorn7/perks v1.0.1](#githubcombeorn7perks-v101)
 - [github.com/cenkalti/backoff/v4 v4.3.0](#githubcomcenkaltibackoffv4-v430)
-- [github.com/cenkalti/backoff/v7 v7.0.2](#githubcomcenkaltibackoffv7-v702)
+- [github.com/cenkalti/backoff/v7 v7.0.3](#githubcomcenkaltibackoffv7-v703)
 - [github.com/cespare/xxhash/v2 v2.3.0](#githubcomcesparexxhashv2-v230)
 - [github.com/cloudflare/circl v1.6.5](#githubcomcloudflarecircl-v165)
 - [github.com/coder/quartz v0.3.1](#githubcomcoderquartz-v031)
@@ -1161,7 +1161,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/cenkalti/backoff/v7 v7.0.2
+### github.com/cenkalti/backoff/v7 v7.0.3
 
 ```
 The MIT License (MIT)
