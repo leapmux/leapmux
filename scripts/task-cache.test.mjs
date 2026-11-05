@@ -3,8 +3,12 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { ALL_ICON_FILES, ICO_FILE, TRAY_ICON_FILES } from '../desktop/rust/scripts/icon-set.mjs'
+import { cacheKey, rootActivePath, rootPayloadPath } from './cache-policy.mjs'
+import { activateCacheSnapshot, prepareCacheSnapshot } from './cache-snapshot.mjs'
+import { gitRepository, writeFiles } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const scratch = join(root, '.tmp')
@@ -280,6 +284,120 @@ writeFileSync(output, 'compiled-' + task)
 afterEach(() => {
   for (const dir of fixtures.splice(0))
     rmSync(dir, { recursive: true, force: true })
+})
+
+describe('spinner source generation', () => {
+  function spinnerFixture() {
+    mkdirSync(scratch, { recursive: true })
+    const dir = mkdtempSync(join(scratch, 'spinner-generation-'))
+    fixtures.push(dir)
+    const env = {
+      ...process.env,
+      RUNNER_OS: process.platform === 'win32'
+        ? 'Windows'
+        : process.platform === 'darwin'
+          ? 'macOS'
+          : 'Linux',
+      HOME: join(dir, 'home with spaces'),
+      USERPROFILE: join(dir, 'home with spaces'),
+      TASK_TEMP_DIR: join(dir, '.task'),
+    }
+    const active = rootActivePath('spinners', 'spinners', env, dir)
+    const source = join(dir, 'upstream')
+    const content = '{"verbs":["Working"]}\n'
+    gitRepository(source, {
+      files: { 'spinners/default.json': content },
+    })
+    const config = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
+    const tasks = Object.fromEntries(['fetch-spinners', 'generate-spinners'].map(name => [name, config.tasks[name]]))
+    // Replace only the remote. Task still checks and executes the production recipes.
+    tasks['fetch-spinners'].cmds = tasks['fetch-spinners'].cmds.map(command => command.replace('https://github.com/AlexPl292/awesome-claude-spinners', pathToFileURL(source).href))
+    write(dir, 'Taskfile.yaml', Bun.YAML.stringify({
+      version: '3',
+      method: 'checksum',
+      vars: {
+        SPINNERS_CACHE_DIR: dirname(active),
+      },
+      tasks,
+    }))
+    for (const file of ['task-state.mjs', 'sync-generated.mjs']) {
+      mkdirSync(join(dir, 'scripts'), { recursive: true })
+      cpSync(join(root, 'scripts', file), join(dir, 'scripts', file))
+    }
+    write(dir, 'versions.env', '')
+    const key = cacheKey('spinners', { week: '2026-W45' }, env)
+    const generate = () => spawnSync('task', ['generate-spinners'], { cwd: dir, env, encoding: 'utf8' })
+    return {
+      dir,
+      env,
+      active,
+      source,
+      content,
+      key,
+      generate,
+    }
+  }
+
+  it.each(['missing', 'empty', 'non-json'])('recovers a writer miss with %s sources', async (state) => {
+    const { dir, env, active, content, key, generate } = spinnerFixture()
+    await activateCacheSnapshot({
+      kind: 'spinners',
+      key,
+      writer: true,
+      workspace: dir,
+      env,
+    })
+    if (state === 'missing')
+      rmSync(active, { recursive: true })
+    if (state === 'non-json')
+      writeFiles(dir, { [join(active, 'README.md')]: 'Incomplete source tree' })
+    const result = generate()
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(readFileSync(join(dir, 'frontend/src/spinners/default.json'), 'utf8')).toBe(content)
+    const prepared = await prepareCacheSnapshot({
+      kind: 'spinners',
+      key,
+      workspace: dir,
+      env,
+    })
+    expect(prepared.result).toBe('ready')
+    expect(readFileSync(join(rootPayloadPath('spinners', 'spinners', env, dir), 'default.json'), 'utf8')).toBe(content)
+  })
+
+  it('uses a restored source-only snapshot without a repository or a reachable remote', async () => {
+    const { dir, env, active, source, content, key, generate } = spinnerFixture()
+    writeFiles(dir, { [join(rootPayloadPath('spinners', 'spinners', env, dir), 'default.json')]: content })
+    await activateCacheSnapshot({
+      kind: 'spinners',
+      key,
+      exactHit: true,
+      matchedKey: true,
+      writer: true,
+      workspace: dir,
+      env,
+    })
+    rmSync(source, { recursive: true })
+    expect(existsSync(join(dirname(active), '.git'))).toBe(false)
+    const result = generate()
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(readFileSync(join(dir, 'frontend/src/spinners/default.json'), 'utf8')).toBe(content)
+  })
+
+  it('preserves generated files when downloading the missing sources fails', async () => {
+    const { dir, env, source, key, generate } = spinnerFixture()
+    await activateCacheSnapshot({
+      kind: 'spinners',
+      key,
+      writer: true,
+      workspace: dir,
+      env,
+    })
+    rmSync(source, { recursive: true })
+    write(dir, 'frontend/src/spinners/previous.json', 'previous output')
+    const result = generate()
+    expect(result.status).not.toBe(0)
+    expect(readFileSync(join(dir, 'frontend/src/spinners/previous.json'), 'utf8')).toBe('previous output')
+  })
 })
 
 describe('Task tool contexts', () => {

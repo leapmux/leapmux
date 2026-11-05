@@ -384,14 +384,16 @@ tasks:
     desc: Obtain the spinner sources
     internal: true
     status:
-      - test -d "{{.SPINNERS_CACHE_DIR}}/spinners"
+      - >-
+        bun -e 'process.exit(Array.from(new Bun.Glob("*.json").scanSync({ cwd: process.argv[1], onlyFiles: true })).length > 0 ? 0 : 1)'
+        {{printf "%s/spinners" .SPINNERS_CACHE_DIR | shellQuote}}
     cmds:
-      - |
-        if [ -d "{{.SPINNERS_CACHE_DIR}}/.git" ]; then
-          bun scripts/sync-generated.mjs --out repository/spinners "{{.SPINNERS_CACHE_DIR}}/spinners" -- git clone --local --no-hardlinks "{{.SPINNERS_CACHE_DIR}}" {STAGING}/repository
-        else
-          git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.SPINNERS_CACHE_DIR}}"
-        fi
+      # Snapshot activation can leave an empty subtree without Git metadata.
+      # Clone privately so an existing cache directory cannot prevent a fetch.
+      - >-
+        bun scripts/sync-generated.mjs
+        --out repository/spinners {{printf "%s/spinners" .SPINNERS_CACHE_DIR | shellQuote}}
+        -- git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners {STAGING}/repository
 
   generate-spinners:
     desc: Copy spinner verb JSON files from awesome-claude-spinners
