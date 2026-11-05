@@ -196,12 +196,23 @@ type serverOptions struct {
 	// revocationLease, when set, replaces the watcher's default lease, so a
 	// test can observe renewal inside a drain without a real 30-second lease.
 	revocationLease time.Duration
+	// mailSender, when set, replaces the Hub's sender, so a test can hold a
+	// send open and observe what the shutdown joins.
+	mailSender mail.Sender
 }
 
 // WithFrontendHandler overrides the default frontend handler.
 func WithFrontendHandler(h http.Handler) ServerOption {
 	return func(o *serverOptions) {
 		o.frontendHandler = h
+	}
+}
+
+// withMailSender replaces the Hub's mail sender for a test. It is unexported on
+// purpose: production reads SMTP from the settings.
+func withMailSender(sender mail.Sender) ServerOption {
+	return func(o *serverOptions) {
+		o.mailSender = sender
 	}
 }
 
@@ -608,7 +619,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// true only when SMTP is enabled (no separate toggle). The recipient
 	// cap wraps it so every mail type -- verification, recovery, worker
 	// instructions, credential notices -- shares one per-recipient budget.
-	mailSender := mail.NewRecipientLimitedSender(mail.NewSettingsSender(setMgr), setMgr, time.Now)
+	mailSender := so.mailSender
+	if mailSender == nil {
+		mailSender = mail.NewRecipientLimitedSender(mail.NewSettingsSender(setMgr), setMgr, time.Now)
+	}
 	// The renderer derives its base URL per render so a public_url change
 	// reaches the next email's links and footers without a restart.
 	// ONE closure for the browser-facing base URL. The mail renderer and the
