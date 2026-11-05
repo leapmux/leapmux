@@ -25,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -218,6 +219,38 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 		`{"action":"wait","settled":[{"agent_id":"`+testChildID+`","name":"counter","status":"completed"}],"running":0}`, map[string]any{"action": "wait"}, nil))
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(testChildID))
 	assert.Len(t, sink.LeapMuxNotifications(), 1, "a repeated settle reports nothing new")
+}
+
+// childEndServices records the order of the two writes that end a child.
+type childEndServices struct {
+	agent.ProviderServices
+	writes *[]string
+}
+
+func (s childEndServices) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+	*s.writes = append(*s.writes, "report")
+	return s.ProviderServices.PersistSubagentReport(write)
+}
+
+func (s childEndServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	*s.writes = append(*s.writes, "close")
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+// A closed row tells every reader that the child is finished, so its report
+// must already exist. A process that dies between the two writes then leaves an
+// open row for the next start to settle, not a closed row with a lost report.
+func TestFinishChildWritesTheReportBeforeItClosesTheRow(t *testing.T) {
+	t.Parallel()
+	var writes []string
+	a, _ := newTestAgentWith(t, nil, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
+		return childEndServices{ProviderServices: services, writes: &writes}
+	}})
+	child := &codewhaleChild{agentID: testChildID, childID: "child-of-call_spawn", title: "counter"}
+
+	a.finishChild(a.sink.ChildSink(child.childID), child, bgtask.StatusSucceeded, "There are 3 files.")
+
+	assert.Equal(t, []string{"report", "close"}, writes)
 }
 
 // The runtime can identify a started child in result text, metadata, or both.

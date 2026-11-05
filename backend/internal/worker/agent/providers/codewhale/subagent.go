@@ -388,17 +388,20 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	}
 }
 
-// finishChild closes the child's registry row and writes its summary in the parent transcript.
-// It then releases the child's transcript state.
+// finishChild writes the child's summary in the parent transcript, closes its
+// registry row, and releases its transcript state. The report comes first
+// because a closed row tells every reader that the child is finished: a reader
+// must find the report there, and a process that dies between the two writes
+// must leave an open row, not a closed row whose report is lost.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
 	closeChildTools(sink, child)
-	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(child.agentID, status))
 	if strings.TrimSpace(summary) != "" {
 		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
 			ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
 			Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
 		})
 	}
+	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(child.agentID, status))
 	a.sink.CleanupChildAgent(child.childID)
 }
 
