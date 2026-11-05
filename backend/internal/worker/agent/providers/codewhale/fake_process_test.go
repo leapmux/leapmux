@@ -46,7 +46,10 @@ const (
 	//   - "bind-always" fails every bind.
 	//   - "exit" fails every start.
 	//   - "busy-turn" serves threads whose snapshot states a turn that still runs.
+	//   - "orphan" binds no port, prints fakeOrphanReady, and waits for a signal.
 	fakeProcessScenarioEnv = "LEAPMUX_TEST_CODEWHALE_SCENARIO"
+	// fakeOrphanReady is the line that the "orphan" scenario prints once it runs.
+	fakeOrphanReady = "the orphan runtime runs"
 	// fakeRecoveredTurnID is the running turn that "busy-turn" states.
 	fakeRecoveredTurnID = "turn_recovered"
 	// fakeProcessRecordEnv is a file the process appends one launch record to.
@@ -144,7 +147,14 @@ func runFakeRuntimeProcess(args []string) int {
 			port = args[i+1]
 		}
 	}
+	// The runtime ends on a signal, and a stream it holds open ends with it.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	switch os.Getenv(fakeProcessScenarioEnv) {
+	case "orphan":
+		fmt.Println(fakeOrphanReady)
+		<-signals
+		return 0
 	case "exit":
 		fmt.Fprintln(os.Stderr, "Error: the fake runtime refused to start")
 		return 2
@@ -168,10 +178,6 @@ func runFakeRuntimeProcess(args []string) int {
 	httpServer := &http.Server{Handler: server, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = httpServer.Serve(listener) }()
 	fmt.Printf("Runtime API listening on http://%s\n", listener.Addr())
-
-	// The runtime ends on a signal, and a stream it holds open ends with it.
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	<-signals
 	return 0
 }

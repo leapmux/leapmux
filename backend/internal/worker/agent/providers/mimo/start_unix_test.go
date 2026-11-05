@@ -179,7 +179,7 @@ func installWrappedFakeMiMo(t *testing.T, scenario string) string {
 	binDir := t.TempDir()
 	script := fmt.Sprintf("#!/bin/sh\n%s=%q %s=%q %q -test.run=TestHelperProcessMiMoServe -- \"$@\" &\nwait $!\n",
 		helperScenarioEnv, scenario, helperRecordEnv, recordDir, os.Args[0])
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, mimoBinaryName), []byte(script), 0o755))
+	testutil.WriteExecutable(t, filepath.Join(binDir, mimoBinaryName), script)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(helperWantEnv, "1")
 	return recordDir

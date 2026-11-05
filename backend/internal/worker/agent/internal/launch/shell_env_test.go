@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func profileShell(t *testing.T, exports string) string {
 		t.Skip("shebang stub cannot exec on Windows")
 	}
 	shell := filepath.Join(t.TempDir(), "sh")
-	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\n"+exports+"\nexec /bin/sh \"$@\"\n"), 0o755))
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\n"+exports+"\nexec /bin/sh \"$@\"\n")
 	return shell
 }
 

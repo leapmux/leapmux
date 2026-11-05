@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -86,6 +87,6 @@ printf '%s\n' "$sid" > "$LEAPMUX_SID_FILE"
 printf '%s\n' '` + probeReachedPresent + `'
 exit 0
 `
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	testutil.WriteExecutable(t, bin, script)
 	return bin, sidFile
 }

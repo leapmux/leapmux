@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ func TestDockerStartupScriptSoloMode(t *testing.T) {
 	dataDir := filepath.Join(tmp, "data")
 	capturePath := filepath.Join(tmp, "args.txt")
 	fakeLeapMux := filepath.Join(tmp, "leapmux")
-	writeExecutable(t, fakeLeapMux, `#!/bin/sh
+	testutil.WriteExecutable(t, fakeLeapMux, `#!/bin/sh
 printf '%s\n' "$@" > "$LEAPMUX_CAPTURE"
 `)
 
@@ -61,9 +62,4 @@ func dockerStartupScriptPath(t *testing.T) string {
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	return filepath.Join(filepath.Dir(file), "..", "..", "..", "docker", "rootfs", "usr", "local", "bin", "leapmux-start")
-}
-
-func writeExecutable(t *testing.T, path, content string) {
-	t.Helper()
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
 }

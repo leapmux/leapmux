@@ -57,7 +57,7 @@ func installBlockingGit(t *testing.T) (started, release string) {
 	started = filepath.Join(dir, "git-started")
 	release = filepath.Join(dir, "git-release")
 	script := "#!/bin/sh\n: > '" + started + "'\nwhile [ ! -e '" + release + "' ]; do sleep 0.01; done\nexit 128\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755))
+	testutil.WriteExecutable(t, filepath.Join(dir, "git"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return started, release
 }

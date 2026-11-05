@@ -341,6 +341,16 @@ layer 1 is where raw shapes are known.
   `internal/util/testutil` (`NewQuartzMock`, `DeadlineContext`,
   `WaitForTimer`), or a gate the test releases. Keep an unasserted deadline
   generous (30s).
+- **A test writes a program through `testutil.WriteExecutable`**, never a plain
+  `os.WriteFile`: a fork in a parallel test inherits the open descriptor, and the
+  next start fails at random with `text file busy`. Through a shell, that reads
+  as a program that never ran, or as an empty result from a reader that treats a
+  failure as nothing found. `TestEveryExecutableGoesThroughWriteExecutable` fails
+  a plain write.
+- **A process's start time does not prove that its arguments are readable.**
+  `exec.Cmd.Start` can return before the kernel finishes loading the new program,
+  and `/proc/<pid>/cmdline` then reads as empty. Wait for a line from the program
+  itself, as `orphanRuntime` and `startStandInDaemon` do.
 - **A Go test that runs `git init` pins `core.fsmonitor false`, `gc.auto 0` and
   `maintenance.auto false` in the repo's config**, not via `-c`: a global
   `core.fsmonitor=true` spawns a daemon that outlives the command and writes

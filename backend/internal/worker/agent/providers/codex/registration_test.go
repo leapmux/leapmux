@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ func TestRegistrationLocatesEachContractExecutableInOrder(t *testing.T) {
 					// not state. Get-Command only resolves; it never runs it.
 					filename += ".exe"
 				}
-				require.NoError(t, os.WriteFile(filepath.Join(directory, filename), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+				testutil.WriteExecutable(t, filepath.Join(directory, filename), "#!/bin/sh\nexit 0\n")
 			}
 			t.Setenv("PATH", directory)
 

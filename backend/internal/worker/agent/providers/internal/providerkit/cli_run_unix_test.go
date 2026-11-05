@@ -17,6 +17,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -25,7 +26,7 @@ import (
 func fakeProgram(t *testing.T, body string) launch.Locator {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tool")
-	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	testutil.WriteExecutable(t, path, "#!/bin/sh\n"+body+"\n")
 	return launch.Binaries(path)
 }
 

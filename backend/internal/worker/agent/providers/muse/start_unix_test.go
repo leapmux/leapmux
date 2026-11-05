@@ -28,7 +28,7 @@ func installMuseTestHost(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "muse")
 	script := "#!/bin/sh\nexec '" + strings.ReplaceAll(executable, "'", "'\\''") + "' -test.run '^TestMuseNativeHostHelper$' -- \"$@\"\n"
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o700))
+	testutil.WriteExecutable(t, path, script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

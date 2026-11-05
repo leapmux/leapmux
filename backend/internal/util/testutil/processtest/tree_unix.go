@@ -117,7 +117,7 @@ func (tree *Tree) Shell(t *testing.T) string {
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
 	path := filepath.Join(t.TempDir(), "process-tree-shell")
 	script := "#!/bin/sh\nexec " + quote(os.Args[0]) + " -test.run='^TestHelperOwnedProcessTree$' --\n"
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	testutil.WriteExecutable(t, path, script)
 	return path
 }
 
