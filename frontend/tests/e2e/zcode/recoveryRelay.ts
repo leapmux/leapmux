@@ -15,6 +15,8 @@ const RECOVERY_WIRE = {
   started: ZCODE_EVENT.TurnStarted,
   completed: ZCODE_EVENT.TurnCompleted,
   failed: ZCODE_EVENT.TurnFailed,
+  streaming: ZCODE_EVENT.ModelStreaming,
+  updated: ZCODE_EVENT.SessionUpdated,
   snapshots: [
     'session/read',
     'session/create',
@@ -27,13 +29,16 @@ const RECOVERY_WIRE = {
 
 type RecoveryWire = typeof RECOVERY_WIRE
 export type RecoveryDirection = 'worker' | 'native'
+export type RecoveryMode = 'turn-end' | 'stream-gap' | 'empty-response'
 interface SelectedTurn { sessionId: string, inputId: string, turnId?: string, omittedSeq?: number }
 
-/** Present one omitted native turn end as a consistent event log. Other payloads retain their native values. */
-export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWire = RECOVERY_WIRE) {
+/** Inject one selected delivery fault while preserving unrelated native messages. */
+export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWire = RECOVERY_WIRE, mode: RecoveryMode = 'turn-end') {
   if (!marker.trim())
     throw new Error('The recovery relay requires a prompt marker.')
   let selected: SelectedTurn | undefined
+  let droppedStreamDelta = false
+  let emptiedResponse = false
   const pending = new Map<string, { method: string, sessionId: string }>()
   function object(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -84,7 +89,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
         throw new Error('The selected native input started more than one turn.')
       selected.turnId = turnId
     }
-    if (selected.turnId === undefined || event.turnId !== selected.turnId || (event.type !== wire.completed && event.type !== wire.failed))
+    if (mode !== 'turn-end' || selected.turnId === undefined || event.turnId !== selected.turnId || (event.type !== wire.completed && event.type !== wire.failed))
       return
     const endSequence = sequence(event.seq)
     if (endSequence === 0)
@@ -188,6 +193,29 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
         : frame.params
       const hint = string(frame.params.sessionId) || selected?.sessionId || ''
       observeEvent(event, hint)
+      if (mode === 'empty-response' && !emptiedResponse && selected?.turnId !== undefined
+        && eventSession(event, hint) === selected.sessionId && event.turnId === selected.turnId
+        && event.type === wire.updated && object(event.payload)
+        && event.payload.querySource === 'main_turn' && typeof event.payload.stopReason === 'string'
+        && typeof event.payload.content === 'string' && event.payload.content.length > 0) {
+        emptiedResponse = true
+        const replacement = {
+          ...event,
+          payload: { ...event.payload, content: '' },
+        }
+        return {
+          ...frame,
+          params: object(nested)
+            ? { ...frame.params, event: replacement }
+            : replacement,
+        }
+      }
+      if (mode === 'stream-gap' && !droppedStreamDelta && selected?.turnId !== undefined
+        && eventSession(event, hint) === selected.sessionId && event.turnId === selected.turnId
+        && event.type === wire.streaming && object(event.payload) && event.payload.kind === 'text_delta') {
+        droppedStreamDelta = true
+        return null
+      }
       const projected = projectEvent(event, hint)
       if (projected === null)
         return null
@@ -253,7 +281,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
 export interface ZcodeRecoveryRelay { directory: string, scriptPath: string, evidencePath: string }
 
 /** Run the installed native process through the controlled omission. Auxiliary invocations pass through. */
-export function writeZcodeRecoveryRelay(directory: string, options: { launch: NativeStartupLaunch, marker: string, evidencePath: string }): ZcodeRecoveryRelay {
+export function writeZcodeRecoveryRelay(directory: string, options: { launch: NativeStartupLaunch, marker: string, evidencePath: string, mode?: RecoveryMode }): ZcodeRecoveryRelay {
   if (![directory, options.launch.executable, options.evidencePath].every(isAbsolute))
     throw new Error('The recovery relay requires absolute paths.')
   createZcodeRecoveryTransformer(options.marker)
@@ -268,6 +296,7 @@ export function writeZcodeRecoveryRelay(directory: string, options: { launch: Na
     marker: options.marker,
     evidencePath: options.evidencePath,
     wire: RECOVERY_WIRE,
+    mode: options.mode ?? 'turn-end',
   }
   const source = `
 const { Buffer } = require('node:buffer');
@@ -275,7 +304,7 @@ const { spawn } = require('node:child_process');
 const { appendFileSync } = require('node:fs');
 const config = ${JSON.stringify(config)};
 const createTransformer = ${createZcodeRecoveryTransformer.toString()};
-const transform = createTransformer(config.marker, config.wire);
+const transform = createTransformer(config.marker, config.wire, config.mode);
 const argv = [...config.args, ...process.argv.slice(2)];
 const controlled = argv.includes('app-server') && argv.includes('--stdio') && !argv.includes('--prepare-storage');
 const child = spawn(config.executable, argv, { stdio: controlled ? ['pipe', 'pipe', 'pipe'] : 'inherit', env: process.env });

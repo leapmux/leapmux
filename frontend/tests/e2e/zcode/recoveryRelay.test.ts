@@ -1,4 +1,4 @@
-import type { RecoveryDirection } from './recoveryRelay'
+import type { RecoveryDirection, RecoveryMode } from './recoveryRelay'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stopProcess } from '../helpers/process'
 import { createZcodeRecoveryTransformer, writeZcodeRecoveryRelay } from './recoveryRelay'
 
-function fixture() {
-  const relay = createZcodeRecoveryTransformer('selected-prompt')
+function fixture(mode: RecoveryMode = 'turn-end') {
+  const relay = createZcodeRecoveryTransformer('selected-prompt', undefined, mode)
   const frame = (direction: RecoveryDirection, value: unknown) => relay.transform(direction, `${JSON.stringify(value)}\n`)
   const worker = (value: unknown) => frame('worker', value)
   const native = (value: unknown) => frame('native', value)
@@ -42,6 +42,84 @@ function end(seq = 5, sessionId = 's', turnId = 't') {
 }
 
 describe('createZcodeRecoveryTransformer', () => {
+  it('replaces only one selected completion with an empty response and preserves its native identity', () => {
+    const { native } = fixture('empty-response')
+    const response = {
+      sessionId: 's',
+      turnId: 't',
+      seq: 3,
+      eventId: 'response',
+      type: 'session.updated',
+      payload: {
+        content: 'Final answer.',
+        querySource: 'main_turn',
+        stopReason: 'stop',
+        usage: { inputTokens: 1 },
+      },
+    }
+    const foreign = { ...response, turnId: 'other' }
+    expect(JSON.parse(native({ method: 'session/event', params: foreign })!)).toEqual({ method: 'session/event', params: foreign })
+    expect(JSON.parse(native({ method: 'session/event', params: response })!)).toEqual({
+      method: 'session/event',
+      params: {
+        ...response,
+        payload: { ...response.payload, content: '' },
+      },
+    })
+    expect(JSON.parse(native({ method: 'session/event', params: response })!)).toEqual({ method: 'session/event', params: response })
+    expect(JSON.parse(native({
+      method: 'session/event',
+      params: end(),
+    })!)).toEqual({
+      method: 'session/event',
+      params: end(),
+    })
+  })
+
+  it('drops one selected live text delta without changing replay or sequence numbers', () => {
+    const { worker, native } = fixture('stream-gap')
+    const delta = {
+      sessionId: 's',
+      turnId: 't',
+      seq: 3,
+      type: 'model.streaming',
+      payload: { kind: 'text_delta', delta: 'first' },
+    }
+    const foreign = { ...delta, sessionId: 'other' }
+    expect(JSON.parse(native({ method: 'session/event', params: foreign })!)).toEqual({ method: 'session/event', params: foreign })
+    expect(native({ method: 'session/event', params: delta })).toBeNull()
+    const next = {
+      ...delta,
+      seq: 4,
+      payload: { kind: 'text_delta', delta: 'second' },
+    }
+    expect(JSON.parse(native({ method: 'session/event', params: next })!)).toEqual({ method: 'session/event', params: next })
+    const request = {
+      id: 2,
+      method: 'session/events',
+      params: { sessionId: 's', afterSeq: 2 },
+    }
+    expect(JSON.parse(worker(request)!)).toEqual(request)
+    const reply = {
+      id: 2,
+      result: {
+        events: [
+          delta,
+          next,
+          end(),
+        ],
+      },
+    }
+    expect(JSON.parse(native(reply)!)).toEqual(reply)
+    expect(JSON.parse(native({
+      method: 'session/event',
+      params: end(),
+    })!)).toEqual({
+      method: 'session/event',
+      params: end(),
+    })
+  })
+
   it('omits only the selected end and preserves repeated omission', () => {
     const { native, relay } = fixture()
     expect(native({

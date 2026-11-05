@@ -765,12 +765,29 @@ func (a *Agent) applyZCodeRecoveredMessagesLocked(owner *zcodeTurnState, message
 	if len(responses) > len(messages) {
 		return fmt.Errorf("reconciliation conflict: native messages lack %d accepted responses", len(responses)-len(messages))
 	}
-	for index, response := range responses {
-		message := messages[index]
-		if response.messageID != "" && response.messageID != message.Info.ID {
-			return fmt.Errorf("reconciliation conflict: accepted response %s differs from native message %s", response.messageID, message.Info.ID)
+	// Accepted rows form an ordered subset of native messages. Tool-only
+	// messages and responses missed during delivery occupy no accepted row.
+	nextMessageIndex := 0
+	for _, response := range responses {
+		found := false
+		var message zcodeNativeMessage
+		var aggregate string
+		for nextMessageIndex < len(messages) {
+			message = messages[nextMessageIndex]
+			nextMessageIndex++
+			aggregate, _, _ = zcodeNativeMessageText(message)
+			if response.messageID != "" {
+				found = response.messageID == message.Info.ID
+			} else {
+				found = response.text == aggregate
+			}
+			if found {
+				break
+			}
 		}
-		aggregate, _, _ := zcodeNativeMessageText(message)
+		if !found {
+			return fmt.Errorf("reconciliation conflict: native messages do not contain the accepted response %q", response.messageID)
+		}
 		if response.text != aggregate {
 			return fmt.Errorf("reconciliation conflict: native message %s differs from its accepted response", message.Info.ID)
 		}

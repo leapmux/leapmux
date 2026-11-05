@@ -1772,13 +1772,16 @@ func (a *Agent) persistZCodeGenerationScopes(owner *zcodeTurnState, scopes []str
 	}
 }
 
-// zcodeTurnBufferedScopes lists the scopes of owner that still hold buffered
-// content, of one kind when kind is set.
+// zcodeTurnBufferedScopes lists the owner's open scopes in buffer order.
+// When kind is set, it selects only scopes of that kind.
 func (a *Agent) zcodeTurnBufferedScopes(owner *zcodeTurnState, kind *agent.AssembledMessageKind) []string {
+	bufferedScopeIDs := a.generationBuffer.ScopeIDs()
 	a.Mu.Lock()
-	owned := make([]string, 0, len(owner.contentByScope))
-	for scopeID := range owner.contentByScope {
-		owned = append(owned, scopeID)
+	owned := make([]string, 0, len(bufferedScopeIDs))
+	for _, scopeID := range bufferedScopeIDs {
+		if _, ok := owner.contentByScope[scopeID]; ok {
+			owned = append(owned, scopeID)
+		}
 	}
 	a.Mu.Unlock()
 	scopes := make([]string, 0, len(owned))
@@ -1803,6 +1806,16 @@ func zcodeTextScope(assistantMessageID string) string {
 // persistZCodeAssistantMessage preserves the complete native response. A prefix
 // already accepted as assembled output remains represented by that earlier row.
 func (a *Agent) persistZCodeAssistantMessage(event zcodeEventEnvelope, owner *zcodeTurnState, text string) {
+	if strings.TrimSpace(text) == "" {
+		// A tool-only response or a hydrated turn marker acknowledges no text.
+		// Persist the owner's stream before a later response can overtake it.
+		a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
+		a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindText, agent.MessageCompletionComplete)
+		a.Mu.Lock()
+		owner.currentAssistantMessageID = ""
+		a.Mu.Unlock()
+		return
+	}
 	a.Mu.Lock()
 	messageID := owner.currentAssistantMessageID
 	prefix := ""
@@ -1815,24 +1828,22 @@ func (a *Agent) persistZCodeAssistantMessage(event zcodeEventEnvelope, owner *zc
 		return
 	}
 	a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
-	if strings.TrimSpace(text) != "" {
-		content := agent.MessageContent{Original: event.persistBytes()}
-		if len(content.Original) == 0 {
+	content := agent.MessageContent{Original: event.persistBytes()}
+	if len(content.Original) == 0 {
+		return
+	}
+	if prefix != "" {
+		supplement, err := json.Marshal(map[string]any{contracts.ZCodeSupplementResponseText: map[string]string{contracts.ZCodeResponseTextAcceptedPrefix: prefix}})
+		if err != nil {
+			slog.Error("zcode encode response coverage", "agent_id", a.AgentID(), "error", err)
 			return
 		}
-		if prefix != "" {
-			supplement, err := json.Marshal(map[string]any{contracts.ZCodeSupplementResponseText: map[string]string{contracts.ZCodeResponseTextAcceptedPrefix: prefix}})
-			if err != nil {
-				slog.Error("zcode encode response coverage", "agent_id", a.AgentID(), "error", err)
-				return
-			}
-			content.Supplemental = supplement
-		}
-		err := a.zcodeProgressSinkForTurn(owner).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
-		if !agent.OutputRetained(err) {
-			slog.Error("zcode persist assistant message", "agent_id", a.AgentID(), "error", err)
-			return
-		}
+		content.Supplemental = supplement
+	}
+	err := a.zcodeProgressSinkForTurn(owner).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	if !agent.OutputRetained(err) {
+		slog.Error("zcode persist assistant message", "agent_id", a.AgentID(), "error", err)
+		return
 	}
 	a.Mu.Lock()
 	if messageID != "" {
