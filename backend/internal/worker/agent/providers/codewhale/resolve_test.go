@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
@@ -225,7 +226,7 @@ func TestIsNativeExecutable(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, head []byte) string {
 		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, head, 0o755))
+		testutil.WriteExecutable(t, path, string(head))
 		return path
 	}
 	deps := codewhaleProductionDeps()
@@ -316,7 +317,7 @@ func newNpmInstall(t *testing.T, version string) npmInstall {
 	root := filepath.Join(t.TempDir(), "node_modules")
 	install := npmInstall{shim: filepath.Join(root, ".bin", "codewhale"), pkg: filepath.Join(root, "codewhale")}
 	require.NoError(t, os.MkdirAll(filepath.Dir(install.shim), 0o755))
-	require.NoError(t, os.WriteFile(install.shim, []byte("#!/bin/sh\nexec node ../codewhale/bin/codewhale.js \"$@\"\n"), 0o755))
+	testutil.WriteExecutable(t, install.shim, "#!/bin/sh\nexec node ../codewhale/bin/codewhale.js \"$@\"\n")
 	install.setVersion(t, version)
 	return install
 }
@@ -338,7 +339,7 @@ func (i npmInstall) native() string {
 func (i npmInstall) download(t *testing.T, version string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(i.native()), 0o755))
-	require.NoError(t, os.WriteFile(i.native(), []byte{0x7f, 'E', 'L', 'F', 2, 1, 1}, 0o755))
+	testutil.WriteExecutable(t, i.native(), "\x7fELF\x02\x01\x01")
 	require.NoError(t, os.WriteFile(i.native()+".version", []byte(version), 0o644))
 }
 

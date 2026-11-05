@@ -2,7 +2,6 @@ package launch
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -43,7 +42,7 @@ func TestProbeBinaryInconclusiveWhenTheShellExitsBeforeTheProbe(t *testing.T) {
 		t.Skip("shebang stub cannot exec on Windows")
 	}
 	stub := filepath.Join(t.TempDir(), "shell")
-	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+	testutil.WriteExecutable(t, stub, "#!/bin/sh\nexit 1\n")
 
 	assert.Equal(t, ProbeUnknown, probeBinary(context.Background(), stub, true, "claude"),
 		"a shell that exits before the inner command establishes nothing")
@@ -60,7 +59,7 @@ func TestProbeBinaryInconclusiveWhenTheShellExitsZeroWithoutAMarker(t *testing.T
 		t.Skip("shebang stub cannot exec on Windows")
 	}
 	stub := filepath.Join(t.TempDir(), "shell")
-	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	testutil.WriteExecutable(t, stub, "#!/bin/sh\nexit 0\n")
 
 	assert.Equal(t, ProbeUnknown, probeBinary(context.Background(), stub, true, "claude"),
 		"exit 0 without the reached marker establishes nothing")

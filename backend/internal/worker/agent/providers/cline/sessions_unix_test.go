@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -40,7 +41,7 @@ func newFakeHistoryCLI(t *testing.T, body string) fakeHistoryCLI {
 		`printf '%s\n' "$@" "HOME=$HOME" "` + envSessionBackendMode + `=$` + envSessionBackendMode + `" "` +
 		envNoAutoUpdate + `=$` + envNoAutoUpdate + `" "CLINE_DIR=$CLINE_DIR" > '` + cli.argsFile + "'\n" +
 		strings.ReplaceAll(body, "{{output}}", "'"+cli.output+"'") + "\n"
-	require.NoError(t, os.WriteFile(cli.program, []byte(script), 0o755))
+	testutil.WriteExecutable(t, cli.program, script)
 	return cli
 }
 

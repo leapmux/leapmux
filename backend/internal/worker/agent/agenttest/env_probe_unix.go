@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -82,7 +83,7 @@ func NewEnvProbe(t *testing.T, binary string, answers map[string]string) EnvProb
 		fmt.Fprintf(&script, "if [ \"$1\" = %s ]; then printf '%%s\\n' %s; exit 0; fi\n", posixQuote(key), posixQuote(answers[key]))
 	}
 	script.WriteString("exit 3\n")
-	require.NoError(t, os.WriteFile(probe.Program, []byte(script.String()), 0o755))
+	testutil.WriteExecutable(t, probe.Program, script.String())
 	return probe
 }
 

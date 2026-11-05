@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -40,7 +41,7 @@ func newFakeThreadsCLI(t *testing.T, body string) fakeThreadsCLI {
 	script := "#!/bin/sh\n" +
 		`printf '%s\n' "$@" "` + envSkipUpdateCheck + `=$` + envSkipUpdateCheck + `" > '` + cli.argsFile + "'\n" +
 		strings.ReplaceAll(body, "{{output}}", "'"+cli.output+"'") + "\n"
-	require.NoError(t, os.WriteFile(cli.program, []byte(script), 0o755))
+	testutil.WriteExecutable(t, cli.program, script)
 	return cli
 }
 
@@ -153,7 +154,7 @@ func TestAmpThreadListUsesTheQuerysHomeAndEnvironment(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		`printf '%s\n' "HOME=$HOME" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" "XDG_DATA_HOME=$XDG_DATA_HOME" "AMP_API_KEY=$AMP_API_KEY" "AMP_URL=$AMP_URL" > '` + envFile + "'\n" +
 		"printf '[]\\n'\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "amp"), []byte(script), 0o755))
+	testutil.WriteExecutable(t, filepath.Join(bin, "amp"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("XDG_CONFIG_HOME", "/real/config")
 	t.Setenv("XDG_DATA_HOME", "/real/data")

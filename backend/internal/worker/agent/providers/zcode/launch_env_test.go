@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
@@ -60,7 +61,7 @@ func TestZCodeAccountEnvironment_UsesProfileAndWorkingDirectory(t *testing.T) {
 	zcodeWriteStoreWithSecret(t, home, "profile-secret")
 	require.NoError(t, os.WriteFile(filepath.Join(working, "secret-source"), []byte("profile-secret"), 0o600))
 	shell := filepath.Join(t.TempDir(), "sh")
-	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nexport HOME=\"$LEAPMUX_TEST_ACCOUNT_HOME\"\nexport ZCODE_CREDENTIAL_SECRET=\"$(cat secret-source)\"\nexec /bin/sh \"$@\"\n"), 0o700))
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nexport HOME=\"$LEAPMUX_TEST_ACCOUNT_HOME\"\nexport ZCODE_CREDENTIAL_SECRET=\"$(cat secret-source)\"\nexec /bin/sh \"$@\"\n")
 	opts := agent.Options{HomeDir: oldHome, WorkingDir: working, Shell: shell, ExtraEnv: []string{zcodeCredentialSecretEnv + "=extra"}}
 	environment := envutil.PinEnv(os.Environ(), "HOME="+oldHome, "LEAPMUX_TEST_ACCOUNT_HOME="+home)
 	got, err := resolveZCodeAccountEnvironment(context.Background(), opts, providerkit.FinalizeAgentEnv(environment, opts))
@@ -91,7 +92,7 @@ func TestZCodeAccountEnvironment_UsesTheProfileSelectedProviderRelease(t *testin
 				selected = "provider.json"
 			}
 			shell := filepath.Join(t.TempDir(), "sh")
-			require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nexport ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=\"$LEAPMUX_TEST_SELECTED_RELEASE\"\ncd \"$LEAPMUX_TEST_PROFILE_DIRECTORY\" || exit 2\nexec /bin/sh \"$@\"\n"), 0o700))
+			testutil.WriteExecutable(t, shell, "#!/bin/sh\nexport ZCODE_BUILTIN_PROVIDER_CONFIG_FILE=\"$LEAPMUX_TEST_SELECTED_RELEASE\"\ncd \"$LEAPMUX_TEST_PROFILE_DIRECTORY\" || exit 2\nexec /bin/sh \"$@\"\n")
 			opts := agent.Options{HomeDir: home, WorkingDir: working, Shell: shell}
 			environment := envutil.PinEnv(os.Environ(), "HOME="+home, "USERPROFILE="+home,
 				zcodeBuiltinProviderConfigEnv+"="+oldPath, "LEAPMUX_TEST_SELECTED_RELEASE="+selected,

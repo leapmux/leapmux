@@ -8,6 +8,17 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
+// init keeps every start time that this process reads on one boot time.
+//
+// By default the process library reads the boot time again for each start time.
+// Inside a Docker container it calculates that value as the current time minus
+// the uptime, cut to whole seconds, and a delay between the two reads moves the
+// result. Two reads for one process can then differ by a second, and Runs
+// reports a live process as ended.
+func init() {
+	process.EnableBootTimeCache(true)
+}
+
 // ProcessIdentity identifies one process: its pid and the time when it
 // started. The system gives a pid to a new process after the first one ends,
 // so a pid alone can point at a process that the worker never saw. The start
@@ -16,8 +27,13 @@ import (
 // The zero value identifies no process: Runs reports false for it, and Kill
 // kills nothing.
 //
-// On Linux the system states the start time relative to the boot time, which
-// moves when an administrator sets the wall clock. After such a change Runs
+// On Linux the system states the start time relative to the boot time. This
+// process reads the boot time once (see init), so a StartTime that it reads
+// stays the same for the life of this process.
+//
+// Another process can read another boot time: an administrator can set the wall
+// clock, and inside a Docker container each process calculates the boot time
+// again. An identity that such a process recorded then does not match. Runs
 // reports false for the process that still runs, and Kill kills nothing. That
 // is the safe direction: the worker then stops to wait for the process, and it
 // never kills a process that it did not identify.

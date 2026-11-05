@@ -11,7 +11,12 @@ import (
 	"time"
 )
 
-const processCaptureTimeout = 2 * time.Second
+// processCaptureTimeout limits one walk of the process table, so that a stuck
+// read of the table cannot hold a stop for ever. The limit must be generous: a
+// walk that takes milliseconds on an idle machine took more than a second under
+// CPU contention. A missed walk can leave a detached child alive and fails the
+// stop, which costs more than a slow stop.
+const processCaptureTimeout = 30 * time.Second
 
 // ProcessOwner keeps one command and its verified process tree together.
 // It retains children only after their live ancestry and creation identities agree.

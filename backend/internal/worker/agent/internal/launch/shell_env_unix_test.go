@@ -99,7 +99,7 @@ func TestShellEnvReturnsWhileADescendantRetainsOutput(t *testing.T) {
 			executable, err := os.Executable()
 			require.NoError(t, err)
 			shell := filepath.Join(t.TempDir(), "sh")
-			require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nLEAPMUX_SHELL_ENV_HOLDER=1 \"$LEAPMUX_SHELL_ENV_EXECUTABLE\" -test.run='^TestShellEnvOutputHolder$' &\nexec /bin/sh \"$@\"\n"), 0o700))
+			testutil.WriteExecutable(t, shell, "#!/bin/sh\nLEAPMUX_SHELL_ENV_HOLDER=1 \"$LEAPMUX_SHELL_ENV_EXECUTABLE\" -test.run='^TestShellEnvOutputHolder$' &\nexec /bin/sh \"$@\"\n")
 			type result struct {
 				values map[string]string
 				probe  ProbeResult

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
@@ -88,7 +89,7 @@ func newProcessHarnessWithShell(t *testing.T, shell string) *processHarness {
 	h := &processHarness{t: t, sink: &agenttest.ControlSink{}, argsFile: filepath.Join(dir, "args"), envFile: filepath.Join(dir, "env")}
 	program := filepath.Join(dir, "amp")
 	script := strings.NewReplacer("{{args}}", h.argsFile, "{{env}}", h.envFile).Replace(fakeAmpScript)
-	require.NoError(t, os.WriteFile(program, []byte(script), 0o755))
+	testutil.WriteExecutable(t, program, script)
 
 	options := agentapi.Options{AgentID: "agent-proc", WorkingDir: t.TempDir(), Shell: shell, APITimeout: 30 * time.Second}
 	agentDir := agentdirtest.NewDir(t, agentDirSpec())
@@ -243,7 +244,7 @@ func TestProcessReadsTheUserSettingsThatTheShellStates(t *testing.T) {
 	userSettings := filepath.Join(t.TempDir(), "my-amp.json")
 	writeFile(t, userSettings, `{"amp.permissions": [{"tool": "Bash", "action": "reject", "matches": {"cmd": "git push*"}}]}`)
 	shell := filepath.Join(t.TempDir(), "sh")
-	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nexport AMP_SETTINGS_FILE='"+userSettings+"'\nexec /bin/sh \"$@\"\n"), 0o755))
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nexport AMP_SETTINGS_FILE='"+userSettings+"'\nexec /bin/sh \"$@\"\n")
 	h := newProcessHarnessWithShell(t, shell)
 
 	require.NoError(t, h.agent.SendInput("ping", nil))

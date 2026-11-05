@@ -35,7 +35,7 @@ func installFakeKiloACP(t *testing.T, scenario string, envFile ...string) {
 		dump = fmt.Sprintf("env > %q\n", envFile[0])
 	}
 	script := fmt.Sprintf("#!/bin/sh\n%sLEAPMUX_KILO_TEST_SCENARIO=%q exec %q -test.run=TestHelperProcessKiloACP --\n", dump, scenario, os.Args[0])
-	require.NoError(t, os.WriteFile(launcher, []byte(script), 0o755))
+	testutil.WriteExecutable(t, launcher, script)
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GO_WANT_HELPER_PROCESS_KILO", "1")

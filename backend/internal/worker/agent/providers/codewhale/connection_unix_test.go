@@ -3,6 +3,7 @@
 package codewhale
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -19,24 +21,39 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
+// orphanRuntimePort is the port in the arguments of an orphan runtime. A reclaim
+// reads only the arguments of a runtime, so the fake binds no port, and a
+// listener of another test cannot take this port away from it.
+const orphanRuntimePort = 40123
+
 // orphanRuntime starts the fake runtime process as a runtime an earlier worker
-// left behind: in a group of its own, on a port, with nobody waiting for it.
-// leader controls whether the process leads its own group, which is what lets a
-// group kill reach it.
-func orphanRuntime(t *testing.T, leader bool) (*exec.Cmd, int) {
+// left behind: in a group of its own, with nobody waiting for it. leader
+// controls whether the process leads its own group, which is what lets a group
+// kill reach it.
+//
+// It returns after the process itself reports that it runs. exec.Cmd.Start can
+// return before the kernel finishes loading the new program. The start time of
+// the process reads back at that moment, but its arguments read as empty, and
+// processMatches then reports no runtime. The line comes from the new program,
+// so the arguments are readable once it arrives.
+func orphanRuntime(t *testing.T, leader bool) *exec.Cmd {
 	t.Helper()
-	port, err := providerkit.ReserveLoopbackPort()
-	require.NoError(t, err)
-	cmd := exec.Command(os.Args[0], "-test.run=TestHelperCodewhaleRuntime", "--", "app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-	cmd.Env = append(os.Environ(), fakeProcessWantEnv+"=1", envRuntimeDir+"="+t.TempDir(), envRuntimeToken+"=orphan")
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperCodewhaleRuntime", "--", "app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(orphanRuntimePort))
+	cmd.Env = append(os.Environ(), fakeProcessWantEnv+"=1", fakeProcessScenarioEnv+"=orphan", envRuntimeDir+"="+t.TempDir(), envRuntimeToken+"=orphan")
 	if leader {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	}
+	// A pipe of this test's own, because exec.Cmd.StdoutPipe forbids the Wait
+	// below until the read ends, and that read must run with the cleanup in place.
+	stdout, stdoutWriter, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stdout.Close() })
+	cmd.Stdout, cmd.Stderr = stdoutWriter, os.Stderr
 	require.NoError(t, cmd.Start())
+	require.NoError(t, stdoutWriter.Close())
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
@@ -46,12 +63,10 @@ func orphanRuntime(t *testing.T, leader bool) (*exec.Cmd, int) {
 		_ = cmd.Process.Kill()
 		<-exited
 	})
-	// The runtime is up once its identity reads back.
-	require.Eventually(t, func() bool {
-		_, ok := processIdentity(context.Background(), int32(cmd.Process.Pid))
-		return ok
-	}, 30*time.Second, 10*time.Millisecond)
-	return cmd, port
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err, "the fake runtime ended before it reported that it runs")
+	require.Equal(t, fakeOrphanReady, strings.TrimSpace(line))
+	return cmd
 }
 
 // deadProcess returns the identity of a process that already exited.
@@ -103,11 +118,25 @@ func processRuns(cmd *exec.Cmd, owner storeOwner) bool {
 	return processMatches(context.Background(), int32(cmd.Process.Pid), owner.RuntimeCreateTime, owner.Port)
 }
 
+// The reclaim reads the arguments of a runtime, so a runtime that this fixture
+// returns must already show them. A reclaim that finds other arguments ends at
+// once, and a test that waits for its timer then fails only after a deadline.
+func TestOrphanRuntimeShowsItsArgumentsOnceStarted(t *testing.T) {
+	t.Parallel()
+	for attempt := range 20 {
+		t.Run(strconv.Itoa(attempt), func(t *testing.T) {
+			t.Parallel()
+			cmd := orphanRuntime(t, false)
+			assert.True(t, processRuns(cmd, runtimeOwner(t, cmd, orphanRuntimePort)))
+		})
+	}
+}
+
 func TestReclaimStoreEndsTheRuntimeADeadWorkerLeft(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
-	cmd, port := orphanRuntime(t, true)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, true)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID, owner.WorkerCreateTime = deadProcess(t)
 	writeOwner(t, store, owner)
 	require.True(t, processRuns(cmd, owner))
@@ -119,8 +148,8 @@ func TestReclaimStoreEndsTheRuntimeADeadWorkerLeft(t *testing.T) {
 func TestReclaimStoreRefusesAStoreALiveWorkerOwns(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
-	cmd, port := orphanRuntime(t, true)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, true)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID, owner.WorkerCreateTime = liveProcess(t)
 	writeOwner(t, store, owner)
 
@@ -131,8 +160,8 @@ func TestReclaimStoreRefusesAStoreALiveWorkerOwns(t *testing.T) {
 func TestReclaimStoreLeavesThisWorkersOwnRuntime(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
-	cmd, port := orphanRuntime(t, true)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, true)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID = int32(os.Getpid())
 	writeOwner(t, store, owner)
 
@@ -154,21 +183,21 @@ func TestReclaimStoreIgnoresARecordThatNamesNoRuntime(t *testing.T) {
 	require.NoError(t, reclaimStore(ctx, store, quartz.NewReal()), "a runtime that already exited")
 
 	// A process that is not a runtime on that port is never ended.
-	cmd, port := orphanRuntime(t, true)
-	owner := runtimeOwner(t, cmd, port)
-	owner.Port = port + 1
+	cmd := orphanRuntime(t, true)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
+	owner.Port = orphanRuntimePort + 1
 	owner.WorkerPID, owner.WorkerCreateTime = deadProcess(t)
 	writeOwner(t, store, owner)
 	require.NoError(t, reclaimStore(ctx, store, quartz.NewReal()))
-	assert.True(t, processMatches(ctx, int32(cmd.Process.Pid), owner.RuntimeCreateTime, port))
+	assert.True(t, processMatches(ctx, int32(cmd.Process.Pid), owner.RuntimeCreateTime, orphanRuntimePort))
 }
 
 func TestReclaimStoreGivesUpOnARuntimeThatDoesNotExit(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
 	// A native process cannot ignore SIGKILL. Keep it live through an explicit stop refusal.
-	cmd, port := orphanRuntime(t, false)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, false)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID, owner.WorkerCreateTime = deadProcess(t)
 	writeOwner(t, store, owner)
 	clock := testutil.NewQuartzMock(t)
@@ -202,8 +231,8 @@ func TestReclaimStoreStopsWaitingWhenTheContextEnds(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
 	// The stop operation leaves the runtime live so cancellation ends the wait.
-	cmd, port := orphanRuntime(t, false)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, false)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID, owner.WorkerCreateTime = deadProcess(t)
 	writeOwner(t, store, owner)
 	clock := testutil.NewQuartzMock(t)
@@ -227,8 +256,8 @@ func TestReclaimStoreStopsWaitingWhenTheContextEnds(t *testing.T) {
 func TestReclaimStorePreservesVerifiedStopErrors(t *testing.T) {
 	t.Parallel()
 	store := codewhaleStore{dir: t.TempDir()}
-	cmd, port := orphanRuntime(t, true)
-	owner := runtimeOwner(t, cmd, port)
+	cmd := orphanRuntime(t, true)
+	owner := runtimeOwner(t, cmd, orphanRuntimePort)
 	owner.WorkerPID, owner.WorkerCreateTime = deadProcess(t)
 	writeOwner(t, store, owner)
 	stopErr := errors.New("the verified native signal failed")

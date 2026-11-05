@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // FakeCLI configures a fake ACP CLI installed on PATH by
@@ -65,7 +65,7 @@ func InstallFakeCLI(t *testing.T, spec FakeCLI) {
 		sb.WriteString(` "$@"`)
 	}
 	sb.WriteString("\n")
-	require.NoError(t, os.WriteFile(launcher, []byte(sb.String()), 0o755))
+	testutil.WriteExecutable(t, launcher, sb.String())
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(spec.WantEnv, "1")
