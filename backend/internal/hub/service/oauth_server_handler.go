@@ -35,6 +35,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -55,6 +56,10 @@ const (
 	// relay that accepts a connection and never answers cannot hold a
 	// goroutine for the life of the process.
 	CredentialNoticeTimeout = 30 * time.Second
+	// CredentialNoticeJoinTimeout limits how long a shutdown waits for the
+	// detached notice sends: the send budget plus a margin, so one full SMTP
+	// exchange fits.
+	CredentialNoticeJoinTimeout = CredentialNoticeTimeout + 2*time.Second
 	// elevatePath is the SPA route that runs a step-up ceremony and returns
 	// the browser to where it came from.
 	elevatePath = "/elevate"
@@ -129,20 +134,47 @@ type OAuthServerDeps struct {
 	// an empty base URL.
 	Mail     mail.Sender
 	Renderer mail.Renderer
+	// Notices counts the detached credential-notice sends, so the Hub's
+	// shutdown can join them up to a limit before the store closes. May be nil,
+	// which leaves the sends uncounted (tests that mint without a server).
+	Notices *drain.Counter
+	// ServingCtx is the hub's own lifetime, canceled only when the shutdown
+	// has joined every drain and is about to close the store. Detached work
+	// (the refresh flight, an afterCommit link) ends when it ends, so neither
+	// can read a closed store. See detachedContext for the nil case.
+	ServingCtx context.Context
+}
+
+// detachedContext returns the context for work that must outlive its request
+// but not the Hub: it ignores a client disconnect, and it ends with servingCtx,
+// so the work cannot read the store that the shutdown closes next. servingCtx
+// holds none of the request's values. With no servingCtx, the returned context
+// keeps those values and never ends.
+func (h *OAuthServerHandler) detachedContext(r *http.Request) context.Context {
+	if h.servingCtx != nil {
+		return h.servingCtx
+	}
+	return context.WithoutCancel(r.Context())
 }
 
 // OAuthServerHandler implements /oauth/* and the two metadata documents. It
 // routes credential changes through lifecycle so cache, lease, and channel
 // effects remain consistent.
 type OAuthServerHandler struct {
-	store         store.Store
-	validator     *auth.TokenValidator
-	soloUser      *auth.UserInfo
-	soloGate      *auth.SoloGate
-	lifecycle     *auth.CredentialLifecycleEffects
-	hubURL        func() string
-	mail          mail.Sender
-	renderer      mail.Renderer
+	store     store.Store
+	validator *auth.TokenValidator
+	soloUser  *auth.UserInfo
+	soloGate  *auth.SoloGate
+	lifecycle *auth.CredentialLifecycleEffects
+	hubURL    func() string
+	mail      mail.Sender
+	renderer  mail.Renderer
+	// notices counts the detached credential-notice sends; see
+	// OAuthServerDeps.Notices.
+	notices *drain.Counter
+	// servingCtx is the hub's lifetime, canceled just before the store
+	// closes; see OAuthServerDeps.ServingCtx.
+	servingCtx    context.Context
 	set           *settings.Manager
 	limiter       *ratelimit.Manager
 	refreshFlight singleflight.Group
@@ -159,16 +191,18 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		panic("OAuth server requires credential lifecycle effects")
 	}
 	return &OAuthServerHandler{
-		store:     deps.Store,
-		validator: deps.Validator,
-		soloUser:  deps.SoloUser,
-		soloGate:  deps.SoloGate,
-		lifecycle: deps.Lifecycle,
-		hubURL:    deps.HubURL,
-		mail:      deps.Mail,
-		renderer:  deps.Renderer,
-		set:       deps.Settings,
-		limiter:   deps.Limiter,
+		store:      deps.Store,
+		validator:  deps.Validator,
+		soloUser:   deps.SoloUser,
+		soloGate:   deps.SoloGate,
+		lifecycle:  deps.Lifecycle,
+		hubURL:     deps.HubURL,
+		mail:       deps.Mail,
+		renderer:   deps.Renderer,
+		notices:    deps.Notices,
+		set:        deps.Settings,
+		limiter:    deps.Limiter,
+		servingCtx: deps.ServingCtx,
 	}
 }
 

@@ -62,7 +62,26 @@ func (a *Agent) CompactContext() error {
 		target.state.compactionLive = true
 	}
 	a.dispatchMu.Unlock()
-	go a.awaitCompactionResult(pending)
+	// The watcher is counted under a.Mu, and only while the agent is not
+	// stopped: a WaitGroup Add that starts after Wait's zero-count Wait is a
+	// misuse, and Wait sets a.stopped. A stop that lands between the start
+	// publication above and this count leaves no watcher to run, so the
+	// compaction this call published is this call's to end -- outside a.Mu and
+	// dispatchMu, which endAbortedCompaction takes itself.
+	a.Mu.Lock()
+	stoppedNow := a.stopped
+	if !stoppedNow {
+		a.compactionWatchers.Add(1)
+	}
+	a.Mu.Unlock()
+	if stoppedNow {
+		a.endAbortedCompaction(pending)
+		return nil
+	}
+	go func() {
+		defer a.compactionWatchers.Done()
+		a.awaitCompactionResult(pending)
+	}()
 	return nil
 }
 

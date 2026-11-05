@@ -43,6 +43,12 @@ mod sidecar;
 mod login_item;
 mod shutdown;
 
+// macOS: intercept `terminate:` at `applicationShouldTerminate:` so the Dock,
+// Cmd+Q, an AppleScript quit and a logout take the cooperative shutdown like
+// the in-app Quit does. The module carries its own `cfg` attribute inside.
+#[cfg(target_os = "macos")]
+mod terminate_macos;
+
 // Streaming file-save subsystem (file_save_open/write/commit/abort chain).
 mod file_save;
 
@@ -159,7 +165,6 @@ pub(crate) use shell_log;
 /// tray icon.
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 pub(crate) const SIDECAR_PROTOCOL_VERSION: &str = "1";
-pub(crate) const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 // CONNECT_TIMEOUT is the outer loop budget for "endpoint reachable +
 // handshake succeeds"; HANDSHAKE_TIMEOUT bounds a single attempt. Keep
 // CONNECT meaningfully larger so the loop can retry after a wedged probe.
@@ -1640,17 +1645,37 @@ fn handle_main_window_close(shell: Arc<DesktopShell>, window: Window) {
     });
 }
 
-fn handle_app_exit(shell: Arc<DesktopShell>) {
-    if shell
-        .exit_in_progress
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
+/// Claim the exit for this route, and report whether the claim succeeded.
+///
+/// `exit_in_progress` runs the claim exactly once across every exit route: a
+/// route that arrives while another exit drains must not start a second
+/// sidecar shutdown or a second save-handle cleanup.
+fn claim_exit(flag: &AtomicBool) -> bool {
+    flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+/// Start the ordinary shutdown -- claim the exit, drop the save handles, and
+/// await the sidecar -- then end the exit through `finish`.
+///
+/// The split exists so a caller can choose how the exit ends: `handle_app_exit`
+/// finishes with `AppHandle::exit(0)`, and the macOS `terminate:` hook
+/// (terminate_macos) finishes with `replyToApplicationShouldTerminate:YES`,
+/// which AppKit requires before it commits the quit it is holding.
+///
+/// Returns false when another exit already runs; the caller then answers or
+/// exits nothing. It never touches the window, so it cannot be diverted into
+/// the hide-to-tray branch of `CloseRequested`.
+fn begin_app_exit(
+    shell: Arc<DesktopShell>,
+    finish: impl FnOnce(&AppHandle) + Send + 'static,
+) -> bool {
+    if !claim_exit(&shell.exit_in_progress) {
+        return false;
     }
 
     // Drop every open save handle and remove its partial file BEFORE the
-    // sidecar goes away. The CAS above runs this exactly once.
+    // sidecar goes away. The claim above runs this exactly once.
     //
     // It lives here rather than in the `ExitRequested` arm because that arm is
     // skipped once `exit_in_progress` is latched -- and `quit_app` latches it
@@ -1662,8 +1687,13 @@ fn handle_app_exit(shell: Arc<DesktopShell>) {
 
     tauri::async_runtime::spawn(async move {
         shell.request_shutdown_async().await;
-        shell.app_handle.exit(0);
+        finish(&shell.app_handle);
     });
+    true
+}
+
+fn handle_app_exit(shell: Arc<DesktopShell>) {
+    begin_app_exit(shell, |app| app.exit(0));
 }
 
 #[cfg(target_os = "macos")]
@@ -1978,6 +2008,16 @@ fn main() {
                 // user just asked for.
                 tray::apply_launch_visibility(app.handle(), launch_state.take(), Some(&cached));
             }
+            // macOS: the Quit routes that bypass `ExitRequested` -- the menu
+            // bar's PredefinedMenuItem, Cmd+Q, the Dock, AppleScript, logout
+            // -- all send `terminate:`. The hook routes them into the same
+            // cooperative shutdown. A refusal is logged and the shell keeps
+            // its previous behaviour, which is the bug this hook exists to
+            // close; silence would hide the regression.
+            #[cfg(target_os = "macos")]
+            if let Err(err) = terminate_macos::install(shell.clone()) {
+                shell_log!("a quit cannot run the cooperative shutdown: {err}");
+            }
             app.manage(shell);
 
             let save_registry = Arc::new(SaveStreamRegistry::new());
@@ -2122,6 +2162,20 @@ mod tests {
     use std::time::SystemTime;
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // The exit claim must admit exactly one route: a second route that
+    // arrives while the first drains must read the latched flag and bow out,
+    // or a quit and a Dock-hide race would run two sidecar shutdowns.
+    #[test]
+    fn claim_exit_succeeds_once() {
+        let flag = AtomicBool::new(false);
+
+        assert!(claim_exit(&flag), "the first claim must succeed");
+        assert!(
+            !claim_exit(&flag),
+            "the second claim must read the latched flag"
+        );
+    }
 
     // The sidecar sends its build in the shared leapmux.v1.BuildInfo message;
     // the webview still reads the snake_case `build_info` object.

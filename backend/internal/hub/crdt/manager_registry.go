@@ -5,15 +5,20 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // ErrBlankUserID is returned by Get for an empty user id. The registry key IS
 // the tenancy axis, so a blank key is not a cache miss to fill -- it is a
 // caller that lost track of whose CRDT it is asking for.
 var ErrBlankUserID = errors.New("crdt: blank user id")
+
+// ErrRegistryClosed is returned when a Get arrives after Shutdown began.
+var ErrRegistryClosed = errors.New("crdt registry is closed")
 
 // ManagerFactory builds a freshly-bootstrapped manager for a user.
 type ManagerFactory func(ctx context.Context, owner userid.UserID) (*Manager, error)
@@ -40,6 +45,10 @@ type Registry struct {
 	idleTTL  time.Duration
 	stopCh   chan struct{}
 	doneCh   chan struct{}
+	// closed refuses every later Get. Shutdown sets it under r.mu: a manager
+	// that a Get created after the sweep snapshotted would run past the store
+	// close with nothing stopping it.
+	closed bool
 }
 
 // RegistryOption tunes optional Registry behavior at construction.
@@ -115,6 +124,10 @@ func (r *Registry) Get(ctx context.Context, userID string) (*Manager, error) {
 		return nil, ErrBlankUserID
 	}
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, ErrRegistryClosed
+	}
 	if m, ok := r.managers[userID]; ok {
 		// Stamp activity WHILE holding r.mu, before handing the manager out. A
 		// Get is genuine activity (the caller is about to read or submit against
@@ -138,9 +151,15 @@ func (r *Registry) Get(ctx context.Context, userID string) (*Manager, error) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		// Shutdown won the race to the second lock: discard the manager this
+		// Get built, so nothing stores a manager the sweep will never stop.
+		go m.Discard()
+		return nil, ErrRegistryClosed
+	}
 	if existing, ok := r.managers[userID]; ok {
-		// Lost the race; stop the duplicate.
-		go m.Stop()
+		// Lost the race; discard the duplicate.
+		go m.Discard()
 		return existing, nil
 	}
 	r.managers[userID] = m
@@ -197,7 +216,14 @@ func (r *Registry) BroadcastWorkersChanged(userID string) {
 	}
 }
 
-// Shutdown stops every running manager and waits for them.
+// Shutdown stops the janitor and every manager under one deadline, and waits
+// for them.
+//
+// The manager stops start before either wait, one goroutine per manager. A
+// stop that queued behind another would leave later managers running past the
+// caller's store close, and a stop that queued behind the janitor would give a
+// wedged janitor the whole budget. A manager still running at the deadline is
+// counted in a Warn and abandoned to the process exit.
 func (r *Registry) Shutdown(timeout time.Duration) {
 	// Stop the janitor first so it doesn't race the manager teardown.
 	select {
@@ -206,9 +232,9 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 	default:
 		close(r.stopCh)
 	}
-	<-r.doneCh
 
 	r.mu.Lock()
+	r.closed = true
 	managers := make([]*Manager, 0, len(r.managers))
 	for _, m := range r.managers {
 		managers = append(managers, m)
@@ -216,16 +242,24 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 	r.managers = map[string]*Manager{}
 	r.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		for _, m := range managers {
+	deadline := time.Now().Add(timeout)
+	var stops drain.Counter
+	var running atomic.Int64
+	running.Store(int64(len(managers)))
+	for _, m := range managers {
+		stops.Add()
+		go func(m *Manager) {
+			defer stops.Done()
 			m.Stop()
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(timeout):
+			running.Add(-1)
+		}(m)
+	}
+
+	drain.WaitBounded(r.doneCh, timeout,
+		"crdt registry: janitor did not stop in the shutdown budget; abandoning the sweep")
+	if !stops.Wait(time.Until(deadline), "") {
+		r.logger.Warn("crdt registry: managers still running at the shutdown deadline",
+			"running", running.Load())
 	}
 }
 

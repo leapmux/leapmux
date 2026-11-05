@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -10,7 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // The gate is a property of the MINT, not of what each handler remembered to
@@ -155,4 +159,80 @@ func TestAuthorityKindClassifiesEveryActor(t *testing.T) {
 	require.Equal(t, sessionActorAuthority, mintedByActor(&sessionCred).kind())
 	bearer := auth.UserInfo{Credential: auth.APICredential("t2")}
 	require.Equal(t, bearerActorAuthority, mintedByActor(&bearer).kind())
+}
+
+// parkedSender holds a send open until the test releases it.
+type parkedSender struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newParkedSender() parkedSender {
+	return parkedSender{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s parkedSender) Send(context.Context, mail.Message) error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
+func (s parkedSender) awaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the notice never reached the sender")
+	}
+}
+
+func noticeRecipient() *store.User {
+	return &store.User{
+		ID:            "6PwpqVF2YPRs9izaHencG20nazPAhW0aXNAKLBdAnBui",
+		Email:         "owner@example.com",
+		EmailVerified: true,
+	}
+}
+
+// The Hub's shutdown joins a notice through this counter, so a send must stay
+// counted until it ends. Otherwise an exit during the send loses the email.
+func TestNotifyCredentialIssuedCountsTheSendUntilItEnds(t *testing.T) {
+	t.Parallel()
+	sender := newParkedSender()
+	inFlight := &drain.Counter{}
+
+	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, noticeRecipient(), credentialNotice{AppName: "app"}, inFlight)
+
+	sender.awaitEntered(t)
+	assert.False(t, inFlight.Wait(0, ""), "a running send must be counted")
+	close(sender.release)
+	assert.True(t, inFlight.Wait(30*time.Second, ""), "an ended send must leave the count")
+}
+
+func TestNotifyCredentialIssuedSendsWithoutACounter(t *testing.T) {
+	t.Parallel()
+	sender := newParkedSender()
+	close(sender.release)
+
+	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, noticeRecipient(), credentialNotice{AppName: "app"}, nil)
+
+	sender.awaitEntered(t)
+}
+
+// A notice that never starts must leave nothing for the shutdown to wait for.
+func TestNotifyCredentialIssuedCountsNothingWhenItSendsNothing(t *testing.T) {
+	t.Parallel()
+	unverified := noticeRecipient()
+	unverified.EmailVerified = false
+	sender := newParkedSender()
+	inFlight := &drain.Counter{}
+
+	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, unverified, credentialNotice{AppName: "app"}, inFlight)
+
+	assert.True(t, inFlight.Wait(0, ""), "no send ran, so nothing may stay counted")
+	select {
+	case <-sender.entered:
+		t.Fatal("an unverified address must receive no notice")
+	default:
+	}
 }

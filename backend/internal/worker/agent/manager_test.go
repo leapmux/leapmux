@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -1179,4 +1180,300 @@ func TestManagerOwnedStartFailureSkipsUninvokedStarts(t *testing.T) {
 			assert.False(t, agent.OutputQueueFor(output).HasPending())
 		})
 	}
+}
+
+// --- StopAll: closes admission, stops concurrently, and joins ---
+
+// retrierStub is a stubProvider that implements TurnRetrier, so a test can
+// drive RetryTurn against the manager without a real provider.
+//
+// When release is set, Stop closes it and Wait parks on it, the way a live
+// provider's Wait parks until its Stop: without it the exit goroutine marks
+// the registration exiting before a retry goroutine can accept, and the retry
+// abandons itself instead of running.
+type retrierStub struct {
+	stubProvider
+	begin   func(turnID, model string) (agent.TurnRetry, error)
+	release chan struct{}
+}
+
+func (r *retrierStub) BeginTurnRetry(turnID, model string) (agent.TurnRetry, error) {
+	return r.begin(turnID, model)
+}
+
+func (r *retrierStub) Stop() {
+	if r.release != nil {
+		close(r.release)
+	}
+}
+
+func (r *retrierStub) Wait() error {
+	if r.release != nil {
+		<-r.release
+	}
+	return nil
+}
+
+// fakeTurnRetry is a TurnRetry whose phases a test controls.
+type fakeTurnRetry struct {
+	// entered, when non-nil, closes when Replace is entered, so a test can
+	// prove the retry is inside the phase before it races anything.
+	entered chan struct{}
+	// replacePark, when non-nil, parks Replace until it is closed.
+	replacePark chan struct{}
+	// abandoned receives the error of every Abandon.
+	abandoned chan error
+}
+
+func (r *fakeTurnRetry) Replace() error {
+	if r.entered != nil {
+		close(r.entered)
+	}
+	if r.replacePark != nil {
+		<-r.replacePark
+	}
+	return nil
+}
+
+func (r *fakeTurnRetry) Start() error { return nil }
+
+func (r *fakeTurnRetry) Abandon(err error) {
+	if r.abandoned != nil {
+		r.abandoned <- err
+	}
+}
+
+// startStubVia starts provider under id through the manager's own start path,
+// so the registration carries a live exit goroutine and its done channel.
+func startStubVia(t *testing.T, m *agent.Manager, id string, provider agent.Agent) {
+	t.Helper()
+	_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: id, WorkingDir: t.TempDir()}, agenttest.Nop(),
+		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+			return provider, nil
+		})
+	require.NoError(t, err)
+}
+
+// A StopAll that only stops would return while the exit handler of a stopped
+// agent is still parked in its cleanup -- which is the state that wrote
+// "sql: database is closed" into the shutdown log. The join makes that state
+// impossible: StopAll comes back only after every handler returned.
+func TestManager_StopAllJoinsExitHandlers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		handlerRelease := make(chan struct{})
+		m := agent.NewManager(testRegistry, func(agent.ProcessExit) {
+			<-handlerRelease
+		})
+		startStubVia(t, m, "joined", &stubProvider{})
+
+		stopped := make(chan []string, 1)
+		go func() { stopped <- m.StopAll(time.Second) }()
+
+		// Every goroutine in the bubble is durably blocked: the exit handler
+		// parks on handlerRelease and StopAll parks on the exit goroutine's
+		// done channel.
+		synctest.Wait()
+		select {
+		case ids := <-stopped:
+			t.Fatalf("StopAll returned while the exit handler was parked: %v", ids)
+		default:
+		}
+
+		close(handlerRelease)
+		assert.Nil(t, <-stopped, "every exit handler returned, so no id straggles")
+	})
+}
+
+// Two providers whose Stop waits for the other to enter cannot finish under a
+// serial StopAll -- the bubble would deadlock -- so a pass proves the stops
+// run concurrently.
+func TestManager_StopAllStopsAgentsConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		aEntered := make(chan struct{})
+		bEntered := make(chan struct{})
+		m := agent.NewManager(testRegistry, nil)
+		startStubVia(t, m, "a", newGateStopStub(aEntered, bEntered))
+		startStubVia(t, m, "b", newGateStopStub(bEntered, aEntered))
+
+		stopped := make(chan []string, 1)
+		go func() { stopped <- m.StopAll(time.Second) }()
+
+		assert.Nil(t, <-stopped, "each Stop waits for the other, so both must run concurrently")
+	})
+}
+
+// gateStopStub is a stubProvider whose Stop closes enter and then parks until
+// other is closed.
+//
+// Wait parks until Stop finished, the way a live provider's Wait does. Without
+// it the exit goroutine can tear the registration down before StopAll
+// snapshots, and the sweep would never see this agent at all.
+type gateStopStub struct {
+	stubProvider
+	enter    chan struct{}
+	other    chan struct{}
+	released chan struct{}
+}
+
+func newGateStopStub(enter, other chan struct{}) *gateStopStub {
+	return &gateStopStub{stubProvider: stubProvider{}, enter: enter, other: other, released: make(chan struct{})}
+}
+
+func (g *gateStopStub) Stop() {
+	close(g.enter)
+	<-g.other
+	close(g.released)
+}
+
+func (g *gateStopStub) Wait() error {
+	<-g.released
+	return nil
+}
+
+// An agent whose Stop never returns must be reported at the deadline, not
+// silently dropped: the caller logs the stragglers its deadline abandoned.
+func TestManager_StopAllReportsAnAgentThatOutlivesTheDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := agent.NewManager(testRegistry, nil)
+		// Wait parks too, so the exit goroutine cannot delete the entry and
+		// the ID is still registered at the deadline.
+		release := make(chan struct{})
+		startStubVia(t, m, "stuck", &parkedStub{release: release})
+		t.Cleanup(func() { close(release) })
+
+		stopped := make(chan []string, 1)
+		go func() { stopped <- m.StopAll(time.Second) }()
+
+		assert.Equal(t, []string{"stuck"}, <-stopped)
+	})
+}
+
+// parkedStub is a stubProvider whose Stop and Wait park until release is
+// closed. The test closes release before its bubble returns, because a
+// synctest bubble refuses to end while a goroutine is still parked.
+type parkedStub struct {
+	stubProvider
+	release chan struct{}
+}
+
+func (p *parkedStub) Stop()       { <-p.release }
+func (p *parkedStub) Wait() error { <-p.release; return nil }
+
+func TestManager_StopAllWithNoAgents(t *testing.T) {
+	m := agent.NewManager(testRegistry, nil)
+
+	assert.Nil(t, m.StopAll(time.Second), "no agent runs, so StopAll returns at once")
+}
+
+func TestManager_StartAgentRefusedAfterStopAll(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := agent.NewManager(testRegistry, nil)
+		require.Nil(t, m.StopAll(time.Second))
+
+		started := false
+		_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: "late", WorkingDir: t.TempDir()}, agenttest.Nop(),
+			func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+				started = true
+				return &stubProvider{}, nil
+			})
+
+		require.ErrorIs(t, err, agent.ErrManagerClosed)
+		assert.False(t, started, "a closed manager must not invoke start")
+	})
+}
+
+// A start that was already inside its provider handshake when StopAll closed
+// admission must not register its process: nothing would ever stop it. The
+// manager stops it and waits for it instead, and refuses the start.
+func TestManager_StartRacingStopAllStopsTheLateProcess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := agent.NewManager(testRegistry, nil)
+		releaseStart := make(chan struct{})
+		startEntered := make(chan struct{})
+		stoppedFlag := &atomic.Bool{}
+		startDone := make(chan error, 1)
+		go func() {
+			_, err := m.StartAgentWith(t.Context(), agent.Options{AgentID: "racer", WorkingDir: t.TempDir()}, agenttest.Nop(),
+				func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+					close(startEntered)
+					<-releaseStart
+					return &stopFlagStub{stubProvider{}, stoppedFlag}, nil
+				})
+			startDone <- err
+		}()
+		// The start is past the admission check and parked in its handshake
+		// before StopAll closes anything, so the race this test states is the
+		// one that reaches the registration lock.
+		<-startEntered
+		stopped := make(chan []string, 1)
+		go func() { stopped <- m.StopAll(time.Second) }()
+		synctest.Wait()
+
+		close(releaseStart)
+		require.ErrorIs(t, <-startDone, agent.ErrManagerClosed)
+		<-stopped
+		assert.True(t, stoppedFlag.Load(), "the late provider must be stopped")
+		assert.False(t, m.HasAgent("racer"))
+	})
+}
+
+// stopFlagStub is a stubProvider that records its Stop.
+type stopFlagStub struct {
+	stubProvider
+	stopped *atomic.Bool
+}
+
+func (s *stopFlagStub) Stop() { s.stopped.Store(true) }
+
+func TestManager_RetryTurnRefusedAfterStopAll(t *testing.T) {
+	m := agent.NewManager(testRegistry, nil)
+	abandoned := make(chan error, 1)
+	// Through PutAgentForTest: a registration StopAll joined is deleted by its
+	// own exit goroutine before StopAll returns, and RetryTurn then fails with
+	// ErrAgentNotFound before it can reach the closed check.
+	m.PutAgentForTest("retrying", &retrierStub{begin: func(string, string) (agent.TurnRetry, error) {
+		return &fakeTurnRetry{abandoned: abandoned}, nil
+	}})
+	require.Nil(t, m.StopAll(time.Second))
+
+	err := m.RetryTurn("retrying", "turn-1", "model")
+
+	require.ErrorIs(t, err, agent.ErrManagerClosed)
+	select {
+	case got := <-abandoned:
+		require.ErrorIs(t, got, agent.ErrManagerClosed)
+	default:
+		t.Fatal("the refused retry was never abandoned")
+	}
+}
+
+// A retry parked in Replace is a goroutine whose writes must land before the
+// caller closes the database, so StopAll joins it like an exit handler.
+func TestManager_StopAllJoinsATurnRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := agent.NewManager(testRegistry, nil)
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		retrier := &retrierStub{release: make(chan struct{}), begin: func(string, string) (agent.TurnRetry, error) {
+			return &fakeTurnRetry{entered: entered, replacePark: release}, nil
+		}}
+		startStubVia(t, m, "retrying", retrier)
+		require.NoError(t, m.RetryTurn("retrying", "turn-1", "model"))
+		// The retry is inside Replace, past the registration re-check, before
+		// StopAll can stop the provider under it.
+		<-entered
+
+		stopped := make(chan []string, 1)
+		go func() { stopped <- m.StopAll(time.Second) }()
+
+		synctest.Wait()
+		select {
+		case ids := <-stopped:
+			t.Fatalf("StopAll returned while a turn retry was parked in Replace: %v", ids)
+		default:
+		}
+
+		close(release)
+		assert.Nil(t, <-stopped)
+	})
 }

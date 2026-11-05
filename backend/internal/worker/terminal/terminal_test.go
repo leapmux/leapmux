@@ -853,13 +853,15 @@ func TestManager_StopAll(t *testing.T) {
 		require.NoError(t, err, "StartTerminal(%s)", id)
 	}
 
-	m.StopAll()
+	m.HangUpAll(0)
 
-	for _, id := range []string{"a", "b"} {
-		id := id
-		testutil.AssertEventually(t, func() bool {
-			return !m.HasTerminal(id)
-		}, "HasTerminal(%s) = true after StopAll", id)
+	// HangUpAll joins every shell it hung up, and keeps the map (the exit
+	// handler decides what the row says), so the terminals read exited at the
+	// return.
+	entries := m.ListByIDs([]string{"a", "b"})
+	require.Len(t, entries, 2)
+	for _, entry := range entries {
+		assert.True(t, entry.Exited, "terminal %s must be exited after HangUpAll", entry.ID)
 	}
 }
 
@@ -894,7 +896,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 		Rows:       24,
 	}, func([]byte, int64, []Signal) {}, nil)
 	require.NoError(t, err)
-	defer m.StopAll()
+	defer m.HangUpAll(0)
 
 	// Resize to same dimensions should be a no-op (no spurious SIGWINCH).
 	assert.NoError(t, m.Resize("tm-resize-noop", 80, 24))
@@ -1323,7 +1325,7 @@ func TestSnapshotTerminal(t *testing.T) {
 	_, ok = m.SnapshotTerminal("nonexistent")
 	assert.False(t, ok, "SnapshotTerminal should return ok=false for unknown terminal")
 
-	m.StopAll()
+	m.HangUpAll(0)
 }
 
 func TestUpsertAndGetTerminal(t *testing.T) {
@@ -1401,7 +1403,7 @@ func TestUpdateTitle(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "safereversed", entries[0].Meta.Title, "an empty clean must not blank the tab")
 
-	m.StopAll()
+	m.HangUpAll(0)
 }
 
 func TestUpsertTerminalTitle(t *testing.T) {

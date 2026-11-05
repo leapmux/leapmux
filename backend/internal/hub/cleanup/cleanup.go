@@ -34,8 +34,11 @@ const (
 // soft-deleted records whose deletion is older than the retention period.
 // It adds a random jitter of up to cleanupJitter before each run to avoid
 // contention if multiple instances start simultaneously.
-func StartLoop(ctx context.Context, st store.Store) {
-	periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
+// StartLoop runs the periodic cleanup sweep and returns the channel that
+// closes when the loop has stopped, so a shutdown can join a pass in flight
+// before the store closes. See periodic.Start for the contract.
+func StartLoop(ctx context.Context, st store.Store) <-chan struct{} {
+	return periodic.Start(ctx, periodic.Schedule{Interval: cleanupInterval, Jitter: cleanupJitter}, func(ctx context.Context) {
 		run(ctx, st)
 	})
 }
@@ -45,32 +48,41 @@ func run(ctx context.Context, st store.Store) {
 	cutoff := now.Add(-cleanupRetention)
 	cs := st.Cleanup()
 
-	// Order respects FK dependencies: child rows before parent rows.
+	// step skips everything after a cancelled context, so a shutdown that ends
+	// the loop mid-pass does not walk the remaining steps into a closed store,
+	// logging "cleanup step failed" at Error for each one. The order below
+	// still respects FK dependencies: child rows before parent rows, and
 	// workspaces/workers reference users.
-	cleanupStep("expired sessions", func() (int64, error) { return cs.HardDeleteExpiredSessions(ctx, now) })
-	cleanupStep("workspaces", func() (int64, error) { return cs.HardDeleteWorkspacesBefore(ctx, cutoff) })
+	step := func(name string, fn func() (int64, error)) {
+		if ctx.Err() != nil {
+			return
+		}
+		cleanupStep(name, fn)
+	}
+	step("expired sessions", func() (int64, error) { return cs.HardDeleteExpiredSessions(ctx, now) })
+	step("workspaces", func() (int64, error) { return cs.HardDeleteWorkspacesBefore(ctx, cutoff) })
 	// Before the hard delete, so a worker deleted here waits out the normal
 	// retention like every other soft-deleted worker.
 	deregisterCutoff := now.Add(-deregisterGracePeriod)
-	cleanupStep("stale deregistrations", func() (int64, error) {
+	step("stale deregistrations", func() (int64, error) {
 		return DrainUntilEmpty(ctx, maxStaleDeregistrationBatches, func() (int64, error) {
 			return cs.CompleteStaleDeregistrations(ctx, deregisterCutoff)
 		})
 	})
-	cleanupStep("workers", func() (int64, error) { return cs.HardDeleteWorkersBefore(ctx, cutoff) })
-	cleanupStep("expired registration keys", func() (int64, error) { return cs.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff) })
-	cleanupStep("stale pending emails", func() (int64, error) { return cs.ClearStalePendingEmails(ctx, cutoff) })
-	cleanupStep("users", func() (int64, error) { return cs.HardDeleteUsersBefore(ctx, cutoff) })
-	cleanupStep("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx, now) })
-	cleanupStep("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx, now) })
-	cleanupStep("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
-	cleanupStep("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
-	cleanupStep("expired OAuth authorization codes", func() (int64, error) {
+	step("workers", func() (int64, error) { return cs.HardDeleteWorkersBefore(ctx, cutoff) })
+	step("expired registration keys", func() (int64, error) { return cs.HardDeleteExpiredRegistrationKeysBefore(ctx, cutoff) })
+	step("stale pending emails", func() (int64, error) { return cs.ClearStalePendingEmails(ctx, cutoff) })
+	step("users", func() (int64, error) { return cs.HardDeleteUsersBefore(ctx, cutoff) })
+	step("expired oauth states", func() (int64, error) { return cs.DeleteExpiredOAuthStates(ctx, now) })
+	step("expired pending signups", func() (int64, error) { return cs.DeleteExpiredPendingOAuthSignups(ctx, now) })
+	step("expired webauthn sessions", func() (int64, error) { return cs.DeleteExpiredWebAuthnSessions(ctx, now) })
+	step("expired device authorizations", func() (int64, error) { return cs.DeleteExpiredDeviceAuthorizations(ctx, now) })
+	step("expired OAuth authorization codes", func() (int64, error) {
 		return cs.DeleteExpiredOAuthAuthorizationCodes(ctx, now)
 	})
 	// Hard-delete API tokens whose revocation is older than the retention
 	// window. Same pattern as workspaces/users.
-	cleanupStep("revoked API tokens", func() (int64, error) { return cs.DeleteRevokedAPITokensBefore(ctx, cutoff) })
+	step("revoked API tokens", func() (int64, error) { return cs.DeleteRevokedAPITokensBefore(ctx, cutoff) })
 	// A live token whose access expiry passed AND whose refresh window closed
 	// can never authenticate or renew again, so the row only records history.
 	// BOTH deadlines, because bearer validation reads expires_at alone: an
@@ -79,18 +91,18 @@ func run(ctx context.Context, st store.Store) {
 	// it while it still worked. The sweep uses the SAME retention margin as
 	// the revoked rows, deliberately: a user whose CLI stopped working asks
 	// days later, and the row is what answers them.
-	cleanupStep("expired API tokens", func() (int64, error) { return cs.DeleteExpiredAPITokensBefore(ctx, cutoff) })
+	step("expired API tokens", func() (int64, error) { return cs.DeleteExpiredAPITokensBefore(ctx, cutoff) })
 	// Delegation tokens are short-lived and high-churn (one per agent
 	// spawn). Hard-delete revoked rows after the retention window so the
 	// table does not grow without limit.
-	cleanupStep("revoked delegation tokens", func() (int64, error) { return cs.DeleteRevokedDelegationTokensBefore(ctx, cutoff) })
+	step("revoked delegation tokens", func() (int64, error) { return cs.DeleteRevokedDelegationTokensBefore(ctx, cutoff) })
 	// Expired delegation tokens (TTL passed without an explicit revoke)
 	// are also worth pruning eagerly since they accumulate one-per-spawn.
-	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, now) })
+	step("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, now) })
 	// Consumed captcha salts past their challenge expiry can no longer
 	// verify anything, so the rows only add to table growth until this
 	// sweep drops them.
-	cleanupStep("expired altcha salts", func() (int64, error) { return cs.DeleteExpiredAltchaSalts(ctx) })
+	step("expired altcha salts", func() (int64, error) { return cs.DeleteExpiredAltchaSalts(ctx) })
 	// CRDT op-batch retention. Manager.maybeCompact deletes by HLC on the commit
 	// path, but its tick short-circuits once compaction_watermark reaches
 	// max_hlc -- so an account that nobody uses any more keeps its final
@@ -103,12 +115,12 @@ func run(ctx context.Context, st store.Store) {
 	// invariant across two time domains; see the query's doc for what that
 	// costs.
 	opBatchCutoff := crdt.OpRetentionCutoffPhysicalMs(now, crdt.OpRetentionTTL)
-	cleanupStep("crdt op batches", func() (int64, error) {
+	step("crdt op batches", func() (int64, error) {
 		return DrainUntilEmpty(ctx, maxOpBatchSweepBatches, func() (int64, error) {
 			return cs.DeleteUserOpBatchesBeforePhysical(ctx, opBatchCutoff)
 		})
 	})
-	cleanupStep("published revocation events", func() (int64, error) {
+	step("published revocation events", func() (int64, error) {
 		return DrainUntilEmpty(ctx, maxRevocationCompactionBatches, func() (int64, error) {
 			return cs.CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
 				Cutoff: cutoff,

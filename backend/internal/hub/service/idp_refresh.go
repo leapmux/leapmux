@@ -17,11 +17,19 @@ const tokenRefreshInterval = 1 * time.Minute
 // OAuth tokens that are about to expire. It stops when ctx is cancelled.
 // The first refresh waits for the first interval tick — there is nothing to
 // refresh at startup until tokens age.
-func (h *IdPHandler) StartTokenRefresh(ctx context.Context) {
-	periodic.Start(ctx, periodic.Schedule{Interval: tokenRefreshInterval, SkipFirstRun: true}, func(ctx context.Context) {
+// StartTokenRefresh runs the periodic provider-token refresh and returns the
+// channel that closes when the loop has stopped, so a shutdown can join a
+// pass in flight before the store closes. See periodic.Start.
+func (h *IdPHandler) StartTokenRefresh(ctx context.Context) <-chan struct{} {
+	return periodic.Start(ctx, periodic.Schedule{Interval: tokenRefreshInterval, SkipFirstRun: true}, func(ctx context.Context) {
 		h.refreshExpiringTokens(ctx)
 	})
 }
+
+// oauthTokenStoreTimeout limits the detached write of a refreshed token pair,
+// so a shutdown that cancelled the loop's context cannot fail the one write
+// that keeps the account linked.
+const oauthTokenStoreTimeout = 5 * time.Second
 
 // oauthTokenRefreshLead is how far before its stored expiry a provider
 // OAuth token becomes refresh-eligible. The SQL compared the expiry
@@ -90,6 +98,16 @@ func (h *IdPHandler) refreshExpiringTokens(ctx context.Context) {
 
 		newTokens, err := provider.Refresh(ctx, string(refreshTokenPlain))
 		if err != nil {
+			// A failure the shutdown itself caused must not take the delete
+			// branch: the provider may have rotated the refresh token before
+			// the cancel landed, so the stored refresh token is still the
+			// live one, and deleting it would unlink the user's account
+			// until they link it again. A genuine refusal keeps its delete.
+			// The sweep ends here, because every later token would fail on
+			// the same context and log at each shutdown.
+			if ctx.Err() != nil {
+				return
+			}
 			slog.Warn("oauth refresh: refresh failed, deleting tokens", "user_id", tok.UserID, "provider_id", tok.ProviderID, "error", err)
 			_ = h.store.OAuthTokens().DeleteByUserAndProvider(ctx, store.DeleteOAuthTokensByUserAndProviderParams{
 				UserID:     refreshUID,
@@ -98,7 +116,15 @@ func (h *IdPHandler) refreshExpiringTokens(ctx context.Context) {
 			continue
 		}
 
-		if err := h.storeTokens(ctx, tok.UserID, tok.ProviderID, newTokens); err != nil {
+		// The refresh succeeded, so the provider has burned the OLD refresh
+		// token on a rotating provider: the new pair must land, whatever the
+		// loop's own context is doing. The detached budget is what makes the
+		// write safe -- the shutdown joins this loop before the store closes,
+		// so the write cannot race it.
+		storeCtx, cancelStore := context.WithTimeout(context.WithoutCancel(ctx), oauthTokenStoreTimeout)
+		storeErr := h.storeTokens(storeCtx, tok.UserID, tok.ProviderID, newTokens)
+		cancelStore()
+		if err := storeErr; err != nil {
 			slog.Error("oauth refresh: store tokens", "user_id", tok.UserID, "error", err)
 		}
 	}

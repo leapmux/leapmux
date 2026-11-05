@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -1561,4 +1562,77 @@ func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
 	assert.Equal(t, uint64(18), ack.UpdateId)
 	assert.Empty(t, ack.RejectedAgents)
 	assert.False(t, streamEndedWithError(replacementWriter))
+}
+
+// parkingStreamWriter stands in for a watcher whose transport cannot take the
+// session's End frame, so the session goroutine parks inside SendStream on the
+// cancel path -- the state whose join WaitWatchSessions exists to cover.
+type parkingStreamWriter struct {
+	*testResponseWriter
+	release chan struct{}
+	parked  chan struct{}
+}
+
+func (w *parkingStreamWriter) SendStream(msg *leapmuxv1.InnerStreamMessage) error {
+	if msg.GetEnd() {
+		close(w.parked)
+		<-w.release
+		return nil
+	}
+	return w.testResponseWriter.SendStream(msg)
+}
+
+// A watch session outlives the handler that started it, and its apply reads
+// the database. WaitWatchSessions is what joins it, so it must not return
+// while the session goroutine is still writing.
+func TestWaitWatchSessionsJoinsARunningSession(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		svc, d, _ := setupTestService(t)
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			ID:            "agent-1", WorkingDir: "/tmp",
+		}))
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseFn)
+		w := &parkingStreamWriter{
+			testResponseWriter: newTestWriter(),
+			release:            release,
+			parked:             make(chan struct{}),
+		}
+
+		payload, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+			Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
+		})
+		require.NoError(t, err)
+		d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")),
+			&leapmuxv1.InnerRpcRequest{
+				Method:  leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
+				Payload: payload,
+			}, w)
+		waitAgentWatchCount(t, svc, "agent-1", 1)
+
+		// Ending the session context makes run send the End frame, which the
+		// writer parks.
+		w.deliverStreamRequest(nil, true)
+		select {
+		case <-w.parked:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the session never reached its End frame")
+		}
+
+		waited := make(chan bool, 1)
+		go func() { waited <- svc.WaitWatchSessions(time.Second) }()
+		synctest.Wait()
+		select {
+		case joined := <-waited:
+			t.Fatalf("WaitWatchSessions returned while the session was parked: %v", joined)
+		default:
+		}
+
+		releaseFn()
+		assert.True(t, <-waited, "the released session joins inside the budget")
+	})
 }

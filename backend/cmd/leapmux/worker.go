@@ -7,13 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
@@ -26,6 +26,11 @@ func runWorker(args []string) error {
 	if len(args) > 0 && args[0] == "cross-worker-pins" {
 		return runWorkerCrossWorkerPins(args[1:])
 	}
+	// A long-lived daemon: a lost stderr (a dead tee, a closed terminal) must
+	// return EPIPE from its log writes, not kill the process before the
+	// goodbye reaches the Hub. The provider helper dispatch stays before this
+	// in main, so the helper keeps its stdio behaviour.
+	procutil.KeepRunningOnBrokenPipe()
 	cfg, showVersion, err := config.Load(args)
 	if err != nil {
 		return err
@@ -122,9 +127,10 @@ func runWorker(args []string) error {
 
 	// A signal only cancels ctx: worker.Run keeps the bidi stream alive until its
 	// shutdown has run, so the disconnect notices still reach the watchers.
+	// The registration is never stopped, so a further signal during the drain
+	// is dropped instead of killing a process that is releasing its state.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
+	signal.Notify(sigCh, procutil.ShutdownSignals()...)
 	go func() {
 		select {
 		case <-sigCh:

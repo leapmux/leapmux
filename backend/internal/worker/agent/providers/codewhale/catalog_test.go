@@ -6,10 +6,12 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -186,4 +188,75 @@ func TestApplyModelCatalogEdges(t *testing.T) {
 	assert.Equal(t, "custom", a.models[0].Id)
 	assert.Nil(t, a.catalog)
 	assert.Equal(t, imageInputUnknown, a.currentImageInputLocked(), "a model the catalog does not list leaves images to the runtime")
+}
+
+// parkedRefreshServices parks PersistSettingsRefresh, the last write of a
+// catalog read, until the test releases it.
+type parkedRefreshServices struct {
+	agent.ProviderServices
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s parkedRefreshServices) PersistSettingsRefresh(refresh optionmap.Map) {
+	close(s.entered)
+	<-s.release
+	s.ProviderServices.PersistSettingsRefresh(refresh)
+}
+
+// A thread that changes its provider starts a catalog read that the dispatch
+// does not wait for, and the read writes the settings when it ends. Both ways
+// out of an agent must join it, because the Worker's database closes after them.
+func TestTheEndOfAnAgentJoinsACatalogRead(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		end  func(a *Agent)
+	}{
+		{name: "Wait", end: func(a *Agent) {
+			a.stopProcess()
+			_ = a.Wait()
+		}},
+		{name: "Stop", end: func(a *Agent) { a.Stop() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			rt.handle(http.MethodGet, routeProviders+"/custom"+providerRouteModels, func(w http.ResponseWriter, _ *http.Request) {
+				writeFakeJSON(w, http.StatusOK, map[string]any{"models": []map[string]any{{"id": "m1"}}})
+			})
+			parked := parkedRefreshServices{entered: make(chan struct{}), release: make(chan struct{})}
+			a, sink := newTestAgentWith(t, rt, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
+				parked.ProviderServices = services
+				return parked
+			}})
+			a.settings.provider = "deepseek"
+
+			a.HandleOutput(runtimeEvent(1, "thread.updated", "", "", map[string]any{"thread": map[string]any{"id": testThreadID, "model_provider": "custom"}}))
+			select {
+			case <-parked.entered:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the catalog read never reached its settings write")
+			}
+
+			ended := make(chan struct{})
+			go func() {
+				defer close(ended)
+				tc.end(a)
+			}()
+			select {
+			case <-ended:
+				t.Fatal("the agent ended while a catalog read still ran")
+			case <-time.After(200 * time.Millisecond):
+			}
+
+			close(parked.release)
+			select {
+			case <-ended:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the agent never ended after the catalog read finished")
+			}
+			assert.Equal(t, 1, sink.SettingsRefreshCount())
+		})
+	}
 }

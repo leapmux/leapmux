@@ -1234,3 +1234,129 @@ func TestWatcher_CloseRemovesDurableConsumer(t *testing.T) {
 	require.NoError(t, env.watcher.Close(context.Background()))
 	require.Equal(t, int64(1), compact(), "graceful close must release the Hub cursor")
 }
+
+// --- AcquireLease: the retrying entry point a launch races a predecessor with ---
+
+// acquireRivalRow takes the singleton lease for a rival holder, so a test can
+// hold it against the watcher under test.
+func acquireRivalRow(t *testing.T, st store.Store, duration time.Duration) {
+	t.Helper()
+	_, err := st.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
+		HolderID:      "rival-holder",
+		LeaseDuration: duration,
+	})
+	require.NoError(t, err)
+}
+
+// A predecessor that releases while the wait runs must hand the lease over:
+// AcquireLease acquires once the rival row is gone.
+func TestAcquireLeaseGetsTheLeaseWhenTheRivalReleases(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Minute)
+	release := func() { _, _ = env.st.RevocationEvents().ReleaseHubRuntimeLease(context.Background(), "rival-holder") }
+	timer := time.AfterFunc(200*time.Millisecond, release)
+	t.Cleanup(func() { timer.Stop(); release() })
+
+	err := env.watcher.AcquireLease(context.Background(), 5*time.Second)
+
+	require.NoError(t, err, "the released rival must hand the lease over")
+}
+
+// A predecessor's row that merely EXPIRES is not a holder any more: the
+// acquisition succeeds once its TTL passes.
+func TestAcquireLeaseGetsAnExpiredLease(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, 300*time.Millisecond)
+
+	err := env.watcher.AcquireLease(context.Background(), 5*time.Second)
+
+	require.NoError(t, err, "the expired rival must hand the lease over")
+}
+
+// Zero and negative waits make ONE attempt: `leapmux hub`'s contract is to
+// fail at once on a held lease, not to wait it out.
+func TestAcquireLeaseWithNoWaitRefusesAtOnce(t *testing.T) {
+	for _, wait := range []time.Duration{0, -time.Second} {
+		env := setupUnseeded(t)
+		acquireRivalRow(t, env.st, time.Minute)
+
+		started := time.Now()
+		err := env.watcher.AcquireLease(context.Background(), wait)
+
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+		assert.Less(t, time.Since(started), time.Second,
+			"a wait of %v must make one attempt, not retry", wait)
+	}
+}
+
+// The wait budget is the give-up point: a rival that never releases ends in
+// ErrHubAlreadyRunning.
+func TestAcquireLeaseGivesUpAtTheDeadline(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Hour)
+
+	err := env.watcher.AcquireLease(context.Background(), 300*time.Millisecond)
+
+	require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+}
+
+// A caller that cancels the acquisition ends with the context error, and the
+// rival row keeps its holder: nobody took it from underneath.
+func TestAcquireLeaseEndsOnCancel(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := env.watcher.AcquireLease(ctx, time.Hour)
+
+	require.ErrorIs(t, err, ctx.Err(),
+		"the cancelled acquisition must carry the context's own error")
+	assert.Equal(t, "held", readLeaseHeld(t, env.st), "the rival must keep its hold")
+}
+
+// A store failure that is not a held lease is returned after one attempt: a
+// retry cannot heal a broken store, and a retry storm would only bury the
+// cause.
+func TestAcquireLeaseDoesNotRetryAStoreFailure(t *testing.T) {
+	env := setupUnseeded(t)
+	env.st = failingAcquireStore{Store: env.st}
+	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(nil, &fakeCloser{}, nil),
+		revocationwatcher.WithInterval(50*time.Millisecond))
+
+	err := w.AcquireLease(context.Background(), time.Minute)
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, store.ErrHubAlreadyRunning,
+		"a store failure must surface as itself, not as a held lease")
+}
+
+// readLeaseHeld answers whether the singleton lease row is held: a second
+// watcher either takes it (no row, or an expired one) or is refused by the
+// live holder.
+func readLeaseHeld(t *testing.T, st store.Store) string {
+	t.Helper()
+	rival := revocationwatcher.New(st, auth.NewCredentialLifecycleEffects(nil, &fakeCloser{}, nil))
+	if err := rival.SeedCursor(context.Background()); err != nil {
+		return "held"
+	}
+	_, _ = st.RevocationEvents().ReleaseHubRuntimeLease(context.Background(), rival.HolderIDForTest())
+	return "free"
+}
+
+// failingAcquireStore fails every lease acquisition with a non-running error.
+type failingAcquireStore struct {
+	store.Store
+}
+
+func (s failingAcquireStore) RevocationEvents() store.RevocationEventStore {
+	return failingAcquireEvents{RevocationEventStore: s.Store.RevocationEvents()}
+}
+
+type failingAcquireEvents struct {
+	store.RevocationEventStore
+}
+
+func (s failingAcquireEvents) AcquireHubRuntimeLease(_ context.Context, _ store.AcquireHubRuntimeLeaseParams) (int64, error) {
+	return 0, errors.New("the store is broken")
+}

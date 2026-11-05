@@ -37,6 +37,10 @@ const DefaultInterval = 2 * time.Second
 // interval so transient store failures can recover without fencing the Hub.
 const DefaultLeaseDuration = 30 * time.Second
 
+// leaseAcquireRetryInterval is the pause between two AcquireLease attempts
+// while the wait budget lasts.
+const leaseAcquireRetryInterval = 250 * time.Millisecond
+
 var (
 	ErrLeaseLost = errors.New("revocation watcher lease lost")
 	ErrNotSeeded = errors.New("revocation watcher is not seeded")
@@ -196,6 +200,63 @@ func (w *Watcher) SeedCursor(ctx context.Context) error {
 	slog.Info("revocation watcher: acquired the Hub runtime lease",
 		"holder", w.lease.holderID, "cursor", maxSeq, "lease_duration", leaseDuration)
 	return nil
+}
+
+// AcquireLease calls SeedCursor and retries only on ErrHubAlreadyRunning,
+// every leaseAcquireRetryInterval, until wait passes. Any other error returns
+// at once.
+//
+// It is the entry point for a launch that may race a predecessor's teardown:
+// a crashed or force-quit Hub leaves its lease held for up to
+// DefaultLeaseDuration, and an immediate second launch would otherwise fail
+// with ErrHubAlreadyRunning for that whole window. wait of zero or less makes
+// one attempt, which is `leapmux hub`'s own contract: on a shared database a
+// second Hub is a real misconfiguration, so it fails at once.
+//
+// Each attempt publishes a batch inside one transaction, which rolls back on
+// refusal, so a refused attempt leaves nothing behind. The first refusal logs
+// one Info line that states the wait, so an operator waiting out a crashed
+// predecessor knows why.
+func (w *Watcher) AcquireLease(ctx context.Context, wait time.Duration) error {
+	const op = "acquire Hub runtime lease"
+	loggedWaiting := false
+	deadline := time.Now().Add(wait)
+	for {
+		err := w.SeedCursor(ctx)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, store.ErrHubAlreadyRunning) || w.closed.Load() {
+			return fmt.Errorf("%s: %w", op, err)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s: %w", op, ctx.Err())
+		}
+		if !loggedWaiting {
+			loggedWaiting = true
+			if wait > 0 {
+				slog.Info("another Hub holds the runtime lease; waiting for it to release",
+					"wait", wait.String())
+			}
+		}
+		if wait <= 0 || !time.Now().Add(leaseAcquireRetryInterval).Before(deadline) {
+			return fmt.Errorf("%s: %w", op, store.ErrHubAlreadyRunning)
+		}
+		retry := time.NewTimer(leaseAcquireRetryInterval)
+		select {
+		case <-ctx.Done():
+			retry.Stop()
+			return fmt.Errorf("%s: %w", op, ctx.Err())
+		case <-retry.C:
+		}
+	}
+}
+
+// HolderIDForTest returns the holder id this watcher would take or renew the
+// lease under, so a test can release the exact row a refused acquisition left
+// behind.
+func (w *Watcher) HolderIDForTest() string {
+	return w.lease.holderID
 }
 
 // StartLoop starts the owned watcher goroutine. It sends lease loss to Errors
@@ -637,7 +698,18 @@ func (w *Watcher) applyEventUnlocked(event store.PublishedRevocationEvent) {
 // failure path: every recognized kind dispatches to a void lifecycle effect,
 // and an unrecognized kind is logged and skipped rather than fenced, so the
 // watcher never treats event application as fatal.
+//
+// Latched off once Close began (the worker's output latch, on the watcher):
+// a pass that runs past its processing cap would otherwise keep applying
+// events -- each one dispatching to lifecycle effects that read hub state --
+// while the shutdown that timed it out closes that state. The latch stops the
+// sweep at its NEXT event boundary; an event already mid-application is not
+// interruptible, which is the documented 10-second cap the Hub's join budget
+// accounts for.
 func (w *Watcher) applyEvent(event store.PublishedRevocationEvent) {
+	if w.closed.Load() {
+		return
+	}
 	switch event.Event.Kind {
 	// A sign-out and an administrator's revoke END the session the same
 	// way, so both close its streams here. They differ only in the durable

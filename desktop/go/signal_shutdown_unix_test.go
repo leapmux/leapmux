@@ -3,6 +3,7 @@
 package main
 
 import (
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -30,4 +31,34 @@ func TestInstallSignalShutdownReleasesOnSIGTERM(t *testing.T) {
 		t.Fatal("App was not shut down after SIGTERM")
 	}
 	require.NoError(t, app.Shutdown(), "signal-driven cleanup must finish successfully")
+}
+
+// A real signal that arrives while a drain is parked must not terminate the
+// process: the registration is never stopped, so nothing restores the default
+// disposition. Without that, the second SIGTERM would kill the whole test
+// binary while solo.Stop parks below.
+func TestSignalDuringAParkedDrainDoesNotForceTerminate(t *testing.T) {
+	app := NewApp("")
+	blocking := blockingSoloInstance{entered: make(chan struct{}), release: make(chan struct{})}
+	installTestConnection(app, mustNewProxy(t, "https://hub.example"), blocking, "https://hub.example")
+	installSignalShutdown(app)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(blocking.release) }) }
+	t.Cleanup(release)
+
+	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+	<-blocking.entered
+
+	// The drain is now parked in solo.Stop. This second signal must be
+	// dropped: with the default disposition restored it would kill the
+	// process here.
+	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+
+	release()
+	select {
+	case <-app.ctx.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the drain did not finish after the release")
+	}
+	require.NoError(t, app.Shutdown())
 }

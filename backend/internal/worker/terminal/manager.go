@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -152,6 +154,13 @@ type Manager struct {
 	terminals map[string]*Terminal     // terminalID -> Terminal
 	meta      map[string]TerminalMeta  // terminalID -> metadata
 	exitDone  map[string]chan struct{} // terminalID -> closed once the exit-handler goroutine returned
+	// exitGoroutines maps every live exit goroutine's done channel to the
+	// terminal id that spawned it. exitDone cannot serve HangUpAll's join:
+	// RemoveTerminal deletes its entry and a restart overwrites it, so an
+	// exit goroutine whose handler parks would lose its channel before
+	// anybody waited on it. This map holds the channel until the goroutine
+	// itself removes it.
+	exitGoroutines map[chan struct{}]string
 	// clock is the one this Manager stamps on every Terminal it spawns, which
 	// makes "an installed terminal runs on the Manager's clock" hold by
 	// construction. The exit goroutine's two drain timers are armed from it, so
@@ -176,10 +185,11 @@ func WithClock(clock quartz.Clock) ManagerOption {
 // NewManager creates a new terminal Manager.
 func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
-		terminals: make(map[string]*Terminal),
-		meta:      make(map[string]TerminalMeta),
-		exitDone:  make(map[string]chan struct{}),
-		clock:     quartz.NewReal(),
+		terminals:      make(map[string]*Terminal),
+		meta:           make(map[string]TerminalMeta),
+		exitDone:       make(map[string]chan struct{}),
+		exitGoroutines: make(map[chan struct{}]string),
+		clock:          quartz.NewReal(),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -243,6 +253,7 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 	m.terminals[id] = t
 	m.meta[id] = meta
 	m.exitDone[id] = done
+	m.exitGoroutines[done] = id
 	m.mu.Unlock()
 
 	go func() {
@@ -275,6 +286,9 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 			exitFn(id, exitCode)
 		}
 		close(done)
+		m.mu.Lock()
+		delete(m.exitGoroutines, done)
+		m.mu.Unlock()
 	}()
 }
 
@@ -654,19 +668,111 @@ func (m *Manager) ListByIDs(ids []string) []TerminalEntry {
 	return result
 }
 
-// StopAll stops all terminals and clears the map.
-func (m *Manager) StopAll() {
-	m.mu.Lock()
+// hangUpJoinGrace is the extra budget the whole HangUpAll set gets on top of
+// the per-shell grace, so the joins of the exit goroutines can outlast it.
+const hangUpJoinGrace = 5 * time.Second
+
+// HangUpAll hangs up every terminal, escalates to Stop for one that is still
+// alive after grace, and joins every exit goroutine before it returns.
+//
+// It is the orderly-shutdown sweep for the terminals that outlive
+// Service.Shutdown. The join is what makes it a shutdown primitive rather
+// than a stop: an exit goroutine whose handler persists the screen would
+// otherwise run past the caller's database close. exitDone cannot serve that
+// join -- RemoveTerminal deletes its entry and a restart overwrites it -- so
+// exitGoroutines holds every live channel until the goroutine that owns it
+// removes itself.
+//
+// The sweep snapshots both maps under the read lock and keeps them: a
+// terminal row survives the sweep, and the exit-handler stamp decides what
+// the row says (see Service.Shutdown's hungUpTerminals set).
+//
+// A grace of zero or less escalates at once. The escalation follows t.exitCh,
+// the shell's own exit, and never exitDone: exitDone also waits for the
+// reader, which can spend defaultReadDrainGrace twice, so a wait on it could
+// reach Stop for a shell that already exited, and Stop kills the nohup jobs
+// the hang-up leaves alive.
+//
+// It returns the ids whose join gave up at the deadline, or nil.
+func (m *Manager) HangUpAll(grace time.Duration) []string {
+	m.mu.RLock()
 	terminals := make([]*Terminal, 0, len(m.terminals))
 	for _, t := range m.terminals {
 		terminals = append(terminals, t)
 	}
-	m.terminals = make(map[string]*Terminal)
-	m.meta = make(map[string]TerminalMeta)
-	m.exitDone = make(map[string]chan struct{})
-	m.mu.Unlock()
-
-	for _, t := range terminals {
-		t.Stop()
+	type exitGoroutine struct {
+		done chan struct{}
+		id   string
 	}
+	exits := make([]exitGoroutine, 0, len(m.exitGoroutines))
+	for done, id := range m.exitGoroutines {
+		exits = append(exits, exitGoroutine{done: done, id: id})
+	}
+	m.mu.RUnlock()
+
+	// pending counts, per id, the goroutines whose completion the join is
+	// waiting for: one for the shell sweep, one per exit goroutine. A count
+	// above zero at the deadline is an id the sweep abandoned.
+	var pendingMu sync.Mutex
+	pending := make(map[string]int, len(terminals)+len(exits))
+
+	var drain drain.Counter
+	for _, t := range terminals {
+		id := t.ID()
+		pendingMu.Lock()
+		pending[id]++
+		pendingMu.Unlock()
+		drain.Add()
+		go func(t *Terminal) {
+			defer drain.Done()
+			defer func() {
+				pendingMu.Lock()
+				pending[id]--
+				pendingMu.Unlock()
+			}()
+			t.HangUp()
+			if grace <= 0 {
+				t.Stop()
+				return
+			}
+			// A test with a mock clock must advance it past grace, or a shell
+			// that ignores the hang-up parks here for ever.
+			timer := m.clock.NewTimer(grace, terminalHangUpTimerTag)
+			select {
+			case <-t.exitCh:
+				timer.Stop(terminalHangUpTimerTag)
+			case <-timer.C:
+				t.Stop()
+			}
+		}(t)
+	}
+	for _, exit := range exits {
+		pendingMu.Lock()
+		pending[exit.id]++
+		pendingMu.Unlock()
+		drain.Add()
+		go func(done chan struct{}, id string) {
+			defer drain.Done()
+			defer func() {
+				pendingMu.Lock()
+				pending[id]--
+				pendingMu.Unlock()
+			}()
+			<-done
+		}(exit.done, exit.id)
+	}
+
+	if drain.Wait(grace+hangUpJoinGrace, "") {
+		return nil
+	}
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	ids := make([]string, 0, len(pending))
+	for id, count := range pending {
+		if count > 0 {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }

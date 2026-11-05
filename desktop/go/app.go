@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	tunnelpkg "github.com/leapmux/leapmux/tunnel"
 	"github.com/leapmux/leapmux/util/ctxutil"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/errwrap"
 )
 
@@ -34,7 +35,7 @@ type App struct {
 	shutdownOnce sync.Once
 	// ops admits and drains side-effecting operations, and is closed (with a.cancel
 	// run inside its critical section) by Shutdown.
-	ops operationGate
+	ops drain.Gate
 	// transitionMu is the transition gate; see beginTransition. A context-bounded
 	// ctxutil.Mutex rather than a sync.Mutex because Shutdown must be able to GIVE
 	// UP on acquiring it. Its zero value is a usable unlocked mutex, so a
@@ -98,7 +99,7 @@ func (a *App) Shutdown() error {
 	a.shutdownOnce.Do(func() {
 		// Shut the gate and cancel under one lock, so no operation can be admitted
 		// after cancellation; admitted network operations then unwind on a.ctx.
-		a.ops.close(a.cancel)
+		a.ops.Close(a.cancel)
 		// ONE deadline spans the drain AND the transition-gate acquisition below.
 		// They wait on the same straggler -- a transition's beginOperation done()
 		// runs after its endTransition (defers unwind LIFO), so the drain can only
@@ -132,7 +133,7 @@ func (a *App) Shutdown() error {
 // their own subsystem (the app registry, OS settings), never the connection state
 // disconnectAndStopSolo destroys, so proceeding is safe.
 func (a *App) drainOperations(timeout time.Duration) {
-	a.ops.drain(timeout,
+	a.ops.Drain(timeout,
 		"desktop sidecar: operation drain timed out during shutdown; abandoning in-flight operations")
 }
 
@@ -177,7 +178,7 @@ func (a *App) tryBeginTransition(timeout time.Duration) bool {
 }
 
 func (a *App) beginOperation() (func(), error) {
-	done, ok := a.ops.begin()
+	done, ok := a.ops.Begin(nil)
 	if !ok {
 		return nil, fmt.Errorf("desktop sidecar is shutting down")
 	}

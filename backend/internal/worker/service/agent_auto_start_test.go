@@ -778,3 +778,26 @@ func TestEnsureAgentRunning_AFailedColdStartStaysRetryable(t *testing.T) {
 	assert.Equal(t, []string{"agent-1", "agent-1"}, rec.ids())
 	assert.Equal(t, "session-agent-1", rec.resumeFor("agent-1"), "the retry must resume the stored session")
 }
+
+// A cold start whose claim the shutdown latch refused must start no process.
+func TestEnsureAgentRunningRefusedAfterCloseClaims(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	starts := 0
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		starts++
+		return map[string]string{}, nil
+	}
+	svc.AgentStartup.closeClaims()
+
+	err := svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart)
+
+	require.ErrorIs(t, err, errWorkerShuttingDown)
+	assert.Zero(t, starts, "the worker is shutting down and starts no process")
+	assert.False(t, svc.Agents.HasAgent("agent-1"))
+}

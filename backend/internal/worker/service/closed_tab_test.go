@@ -5,11 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"log/slog"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
@@ -34,6 +38,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // testChannelGrant is the grant a channel-open fixture announces.
@@ -833,9 +838,10 @@ func TestShutdown_StopsRunningAgents(t *testing.T) {
 
 	svc.Shutdown()
 
-	testutil.AssertEventually(t, func() bool {
-		return !svc.Agents.HasAgent("agent-1")
-	}, "Shutdown must StopAll agents; Setsid children do not die with the worker process group")
+	// StopAll joins every exit goroutine before it returns, so the slot is
+	// gone at the return and no poll is needed.
+	assert.False(t, svc.Agents.HasAgent("agent-1"),
+		"Shutdown must StopAll agents; Setsid children do not die with the worker process group")
 }
 
 // TestShutdown_BroadcastsDisconnectNoticeBeforeDraining pins the ORDER, which
@@ -1361,4 +1367,327 @@ func TestShutdown_RefusesNewTabs(t *testing.T) {
 
 	// Nothing was registered, so the drains have nothing new to wait on.
 	assert.False(t, svc.Terminals.HasTerminal("any"))
+}
+
+// StopAll must JOIN the exit handler of every agent before it returns, so the
+// handler's pending-control-request delete lands while the database is open.
+// This is the regression for the shutdown log lines of the shape
+// "clear pending control requests: delete rows ... sql: database is closed".
+func TestShutdown_ClearsPendingControlRequestsBeforeItReturns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-1",
+		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
+	})
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	require.NoError(t, err)
+
+	// The production wiring (bootstrap.Wire) installs HandleAgentProcessExit
+	// on the manager; the test service starts bare, so wire it the same way.
+	svc.Agents.SetOnExit(svc.HandleAgentProcessExit)
+	// The installed handler parks until Shutdown returned, with a short
+	// fallback that releases it: a fix whose StopAll does not join lets
+	// Shutdown return while the handler is parked, and the row survives the
+	// read below; the fallback then lets the parked handler finish without
+	// wedging the test.
+	inner := svc.Agents.ExitHandlerForTest()
+	require.NotNil(t, inner, "the service-aware exit handler must be installed")
+	shutdownReturned := make(chan struct{})
+	svc.Agents.SetOnExit(func(exit agent.ProcessExit) {
+		select {
+		case <-shutdownReturned:
+		case <-time.After(2 * time.Second):
+		}
+		inner(exit)
+	})
+	t.Cleanup(func() { close(shutdownReturned) })
+
+	svc.Shutdown()
+
+	_, err = svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
+	require.ErrorIs(t, err, sql.ErrNoRows,
+		"the handler must have cleared the pending row before Shutdown returned")
+}
+
+// A crash exit that lands after the input queue stopped must not log its
+// refused pause as a warning: the sibling call in abandonUnownedTurn filters
+// the same error, and a shutdown's own exit flood made the log read like a
+// failure.
+func TestHandleAgentProcessExit_StoppedQueueLogsNoWarning(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	handler := svc.HandleAgentProcessExit
+
+	var warned int
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
+		if record.Level == slog.LevelWarn && strings.Contains(record.Message, "pause agent input queue after process exit failed") {
+			warned++
+		}
+	}}))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	svc.InputQueue.Stop()
+	handler(agent.ProcessExit{AgentID: "agent-1", Stopped: false})
+	svc.Output.WaitActivityRefreshes()
+
+	assert.Zero(t, warned, "a pause the stopped queue refused is not a warning")
+}
+
+func TestLogShutdownStragglers(t *testing.T) {
+	previousLogger := slog.Default()
+	var errors []string
+	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
+		if record.Level == slog.LevelError {
+			errors = append(errors, record.Message)
+		}
+	}}))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	logShutdownStragglers("agent", []string{"agent-9", "agent-7"})
+	require.Len(t, errors, 1, "the ids must surface as one Error line")
+
+	logShutdownStragglers("terminal", nil)
+	logShutdownStragglers("agent", []string{})
+	assert.Len(t, errors, 1, "an empty list must log nothing")
+}
+
+// closeClaims must close the admission latch BEFORE the drain waits, so a
+// claim that a slow handler races cannot add to the WaitGroup the drain is
+// already inside.
+func TestShutdown_ClosesStartupClaimsBeforeItsDrain(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	// An agent startup that never finishes on its own: Shutdown's drain parks
+	// on it.
+	release := make(chan struct{})
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		<-release
+		return nil, nil
+	}
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		svc.Shutdown()
+		close(shutdownDone)
+	}()
+	// Unblock the startup no matter how this test exits, so Shutdown can
+	// return and the deferred cleanups are not left waiting on it. The Once
+	// lets the body and the failure paths share one close.
+	var releaseOnce sync.Once
+	releaseStartup := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStartup()
+
+	// The claim latch must close while the drain is still parked on the
+	// startup above. Every claim the poll wins before the latch is abandoned,
+	// so the drain keeps a limited count.
+	testutil.RequireEventually(t, func() bool {
+		claim := svc.AgentStartup.begin("late", nil)
+		if claim != nil {
+			svc.AgentStartup.abandon(claim)
+			return false
+		}
+		return true
+	}, "the agent claim latch must close during the drain")
+
+	releaseStartup()
+	<-shutdownDone
+
+	assert.Nil(t, svc.TerminalStartup.begin("late", nil),
+		"the terminal claim latch must be closed after Shutdown returned")
+}
+
+func TestSendStartupRefused(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+
+	// The latch unset: the caller's own message states the race that holds the
+	// id.
+	w := newTestWriter()
+	svc.sendStartupRefused(w, "a startup for this agent is already in progress")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+	assert.Equal(t, "a startup for this agent is already in progress", w.errors[0].message)
+
+	// The latch set: the shutdown is the answer, whatever raced the claim.
+	svc.shuttingDown.Store(true)
+	w = newTestWriter()
+	svc.sendStartupRefused(w, "a startup for this agent is already in progress")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+	assert.Contains(t, w.errors[0].message, "worker is shutting down")
+}
+
+// Shutdown must hang up the PTYs: a terminal that survived it left a live
+// shell running under a worker that is exiting, and its late exit persisted a
+// row into a closed database.
+func TestShutdown_HangsUpTerminals(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	require.False(t, svc.Terminals.IsExited(terminalID))
+
+	svc.Shutdown()
+
+	assert.True(t, svc.Terminals.IsExited(terminalID),
+		"the shell must be ended by the time Shutdown returns")
+}
+
+// A hung-up terminal whose shell answers the hang-up signal with its own exit
+// must keep the disconnect row the sweep stamped: the shell's trap exit code
+// is the shell's answer to the shutdown, not a terminal the user watched end,
+// so the row keeps the sentinel, the screen keeps exactly one notice, and no
+// TerminalClosed reaches a watcher that is watching a worker go away.
+func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	// The trap turns the hang-up into exit 7: without the stamped-set guard,
+	// the exit handler would persist that code over the sweep's sentinel and
+	// publish TerminalClosed.
+	sendShellLine(t, d, terminalID, []byte("trap 'exit 7' HUP"+testutil.TestShellEnter()))
+	// The shell needs a moment to read the trap before the hang-up lands.
+	time.Sleep(200 * time.Millisecond)
+
+	wWatch := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
+
+	svc.Shutdown()
+
+	assert.Eventually(t, func() bool {
+		row, err := svc.Queries.GetTerminal(ctx, terminalID)
+		return err == nil && row.ExitCode == exitCodeUnknown
+	}, 5*time.Second, 10*time.Millisecond,
+		"the sweep's sentinel must stay the row's exit code")
+	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
+	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
+		"the sweep's notice must stay the only one on the screen")
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		assert.Nil(t, resp.GetTerminalEvent().GetClosed(),
+			"no TerminalClosed may reach a watcher during a shutdown")
+	}
+}
+
+// The stamped set decides, not the fact of an exit: a terminal the sweep
+// skipped keeps its ordinary exit path, with the real code and the notice.
+func TestTerminalExitPersistsARowThatTheSweepSkipped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	// An empty set: this terminal is not in it, so the exit handler takes the
+	// ordinary path. A stand-down for every exit would leave this row
+	// unchanged.
+	svc.hungUpTerminals.Store(&map[string]struct{}{})
+
+	svc.makeTerminalExitFn()(terminalID, 7)
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), row.ExitCode,
+		"an exit the sweep skipped must persist its real exit code")
+	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
+	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
+		"an exit the sweep skipped must persist its own notice")
+}
+
+// Shutdown must retire the control IPC servers of every tab: after a
+// SwitchMode the old server still answers its socket, the next spawn of that
+// tab comes up with no LEAPMUX_CONTROL_*, and the delegation is never
+// released.
+func TestShutdown_RetiresControlIPCCleanups(t *testing.T) {
+	t.Parallel()
+
+	var agentRuns, terminalRuns atomic.Int32
+	svc, _, _ := setupTestService(t)
+	require.True(t, svc.agentCleanups.register("agent-1", func() { agentRuns.Add(1) }))
+	require.True(t, svc.terminalCleanups.register("term-1", func() { terminalRuns.Add(1) }))
+
+	svc.Shutdown()
+
+	assert.Equal(t, int32(1), agentRuns.Load(), "the agent cleanup must run exactly once")
+	assert.Equal(t, int32(1), terminalRuns.Load(), "the terminal cleanup must run exactly once")
+}
+
+func TestCleanupRegistry_RetireAllWithNoEntries(t *testing.T) {
+	t.Parallel()
+
+	var r cleanupRegistry
+	var wait drain.Counter
+
+	done := make(chan struct{})
+	go func() {
+		r.retireAll(&wait)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retireAll with no entries must return at once")
+	}
+}
+
+// A cleanup that parks must not hold the shutdown: the retire deadline
+// abandons it, and the socket frees when the process exits.
+func TestShutdown_DoesNotWaitPastTheRetireDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseFn)
+		svc, _, _ := setupTestService(t)
+		svc.agentCleanups.register("agent-1", func() { <-release })
+
+		shutdownDone := make(chan struct{})
+		go func() {
+			svc.Shutdown()
+			close(shutdownDone)
+		}()
+
+		// The drain budget is fake time here, so Shutdown reaches its deadline
+		// without spending it in real seconds.
+		select {
+		case <-shutdownDone:
+		case <-time.After(30 * time.Second):
+			t.Fatal("Shutdown did not return past the retire deadline")
+		}
+
+		releaseFn()
+		synctest.Wait()
+	})
 }

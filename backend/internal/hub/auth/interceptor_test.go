@@ -239,6 +239,13 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 // API tokens for the test.
 func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store, *auth.TokenValidator) {
 	t.Helper()
+	return setupBearerTestServer(t, auth.InterceptorOptions{})
+}
+
+// setupBearerTestServer is setupInterceptorTestServerWithBearerSupport with
+// options of the caller's own. It supplies the store and the validator.
+func setupBearerTestServer(t *testing.T, opts auth.InterceptorOptions) (leapmuxv1connect.AuthServiceClient, store.Store, *auth.TokenValidator) {
+	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
@@ -248,7 +255,8 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	opts.Store, opts.TokenValidator = st, tv
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, opts)
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
@@ -288,6 +296,48 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.NoError(t, err)
 	assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
+}
+
+// The bearer flight is detached from its leader's request, because its followers
+// share the result. It must not be detached from the Hub: the store closes at
+// the end of the Hub's life, so the flight has to end with it.
+func TestInterceptor_LeapMuxBearer_FlightFollowsTheHubsLifetime(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hubEnded bool
+	}{
+		{name: "a live hub validates the bearer"},
+		{name: "an ended hub ends the flight", hubEnded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			servingCtx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			client, st, tv := setupBearerTestServer(t, auth.InterceptorOptions{ServingCtx: servingCtx})
+			tokenID := newTestTokenID()
+			secret := auth.MintAccessSecret()
+			require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+				ID:               tokenID,
+				UserID:           userid.MustNew(adminUserID(t, st)),
+				ClientID:         oauthapp.ControlCLIClientID,
+				InstallationName: "test",
+				GrantedScopes:    authscope.NonAdminGrant().String(),
+				SecretHash:       tv.HashSecret(secret),
+			}))
+			if tc.hubEnded {
+				cancel()
+			}
+
+			resp, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+				"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
+
+			if tc.hubEnded {
+				require.Error(t, err, "a flight on an ended context must not read the store")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "admin", resp.GetSessionReport().GetUser().GetUsername())
+		})
+	}
 }
 
 func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T) {

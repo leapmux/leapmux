@@ -34,6 +34,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/validate"
 	"google.golang.org/grpc/codes"
@@ -196,6 +197,27 @@ type Service struct {
 	// inside, which is a documented sync.WaitGroup misuse rather than merely a
 	// missed message. The tab-opening handlers refuse once it is set.
 	shuttingDown atomic.Bool
+
+	// watchSessions counts the live watch-event sessions. The dispatcher's
+	// gate joins the handler, and a handler can return while the session it
+	// started keeps running -- WatchEvents hands the stream to watchSession
+	// and returns -- so this counter is what joins the streams, whose apply
+	// reads the database through Queries.ListAgentsByIDs.
+	watchSessions drain.Counter
+
+	// hungUpTerminals lists the terminals Shutdown hung up, whose disconnect
+	// rows the sweeps already stamped. makeTerminalExitFn reads it so a
+	// hung-up terminal's own exit -- often its response to the hang-up signal
+	// itself -- stands down and leaves the stamped row authoritative, instead
+	// of appending a second notice with the shell's sentinel exit code and
+	// publishing a TerminalClosed nobody should act on.
+	//
+	// The set is READ-ONLY once Shutdown stores it, because both notice sweeps
+	// have ended by then, so a reader needs no lock. A handler that loaded a
+	// nil pointer just before the store still persists -- that terminal was
+	// already exiting on its own, HangUpAll joins it through the manager's
+	// exitGoroutines, and the write lands before the database closes.
+	hungUpTerminals atomic.Pointer[map[string]struct{}]
 
 	// stopBackgroundLoops stops the service's background loops -- the orphan
 	// reconciler, the boot-time agent resume sweep and the periodic retention and
@@ -413,6 +435,31 @@ func (r *cleanupRegistry) closeTab(id string) {
 // reintroduced by the mark itself.
 func (r *cleanupRegistry) retire(id string) {
 	r.runAndMark(id, false)
+}
+
+// retireAll starts one retire per stored id, counted into wait.
+//
+// Shutdown runs it for both registries: after a SwitchMode the previous
+// server still answers its socket, removeStaleSocket then fails with "already
+// in use", and spawnControlIPC starts the replacement tab with no
+// LEAPMUX_CONTROL_* -- and the delegation is never released. The retires run
+// concurrently, because each cleanup can spend releaseRevokeTimeout on a
+// network revoke. retire marks nothing closed, so a tab stays restorable
+// after the process exits.
+func (r *cleanupRegistry) retireAll(wait *drain.Counter) {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.m))
+	for id := range r.m {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+	for _, id := range ids {
+		wait.Add()
+		go func(id string) {
+			defer wait.Done()
+			r.retire(id)
+		}(id)
+	}
 }
 
 func (r *cleanupRegistry) runAndMark(id string, markClosed bool) {
@@ -913,8 +960,11 @@ func (svc *Service) HandleAgentProcessExit(exit agent.ProcessExit) {
 			svc.abandonUnownedTurn(queueAgentID)
 			continue
 		}
-		// A crash pauses, and the pause ends the turn with it.
-		if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+		// A crash pauses, and the pause ends the turn with it. A pause that
+		// the input queue's own Stop refused is not a warning: an exit that
+		// runs during a shutdown finds the queue already stopped, and its
+		// sibling call in abandonUnownedTurn filters the same error.
+		if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
 		}
 	}
@@ -937,6 +987,31 @@ func (svc *Service) abandonUnownedTurn(agentID string) {
 	if _, err := svc.InputQueue.TurnAbandoned(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 		slog.Warn("clear agent input queue turn at a process boundary failed", "agent_id", agentID, "error", err)
 	}
+}
+
+// logShutdownStragglers lists the tabs whose teardown a shutdown deadline
+// abandoned, as one Error line.
+//
+// A returned ID means a registered tab whose process was still going when
+// Shutdown stopped waiting: its exit handler runs later, past the database
+// close, and its writes fail with "sql: database is closed". That outcome
+// must be loud here rather than surface later as mystery lines, so every
+// limited sweep in Shutdown passes what it came back with. An empty list
+// logs nothing.
+func logShutdownStragglers(kind string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	slog.Error("shutdown abandoned tabs that were still registered",
+		"kind", kind, "ids", strings.Join(ids, ", "))
+}
+
+// WaitWatchSessions joins every live watch-event session, limited by timeout,
+// and reports whether they all ended. A session ends when its channel's
+// context ends, so the caller runs this after the channels are closed.
+func (svc *Service) WaitWatchSessions(timeout time.Duration) bool {
+	return svc.watchSessions.Wait(timeout,
+		"worker: watch session drain timed out during shutdown; abandoning live streams")
 }
 
 // agentSubtreeIDs returns the agent and every descendant of it. A subagent
@@ -1024,7 +1099,14 @@ func (svc *Service) Shutdown() {
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
-	// closes the DB or removes data directories.
+	// closes the DB or removes data directories. closeClaims runs FIRST,
+	// in the same critical section that guards the WaitGroup Add: an
+	// OpenTerminal that passed refuseIfShuttingDown and sits in
+	// validateGitMode can still claim afterwards, and a claim that added
+	// to a WaitGroup already being waited on would be a misuse panic as
+	// well as an unjoined startup.
+	svc.AgentStartup.closeClaims()
+	svc.TerminalStartup.closeClaims()
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
 	// Also drain in-flight close handlers. The frontend fires close RPCs
@@ -1032,13 +1114,21 @@ func (svc *Service) Shutdown() {
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
 	svc.Cleanup.Wait()
 
+	// agentStopTimeout limits StopAll's wait for every agent's exit handler.
+	// One provider's Stop can take 2s of capture, 6s of grace (Kiro) and 30s
+	// of DefaultWriteTimeout with a stalled writer, and they run
+	// concurrently, so the budget covers the worst single agent plus a
+	// margin rather than their sum.
+	const agentStopTimeout = 45 * time.Second
 	// Setsid (DetachFromTerminal, go-pty) takes agent CLIs out of the
 	// worker's process group. Ctrl+C and SIGHUP therefore no longer
 	// reap them. Stop them here, after startups have finished, while
 	// Output.SetShuttingDown already latched so background-task rows
-	// stay ACTIVE for the next boot.
+	// stay ACTIVE for the next boot. StopAll now JOINS every exit handler
+	// before it returns, so the database is closed only after the last
+	// one's writes landed.
 	if svc.Agents != nil {
-		svc.Agents.StopAll()
+		logShutdownStragglers("agent", svc.Agents.StopAll(agentStopTimeout))
 	}
 
 	// Stop the tunnel idle reaper goroutine. The worker process is exiting, so
@@ -1061,6 +1151,32 @@ func (svc *Service) Shutdown() {
 	// above is only in the manager now, so the first pass could not have seen
 	// it. Terminals the first pass already stamped are skipped by id.
 	svc.broadcastTerminalsDisconnected(notified)
+
+	// Both sweeps have ended, so `notified` is read-only from here on -- the
+	// exit handlers read it through hungUpTerminals without a lock. Store it
+	// BEFORE the hang-up, so a hung-up terminal's exit handler stands down for
+	// exactly the rows the sweeps stamped and leaves them authoritative.
+	svc.hungUpTerminals.Store(&notified)
+	// PTYs outlive Service.Shutdown otherwise: in the sidecar's SwitchMode the
+	// shell runs until the sidecar exits, Enter starts a second shell, and a
+	// late exit runs persistTerminalOnExit on a closed database. The hang-up
+	// is what a process exit delivers, and only a shell that ignores it meets
+	// the escalation; see Manager.HangUpAll for the join that makes this a
+	// shutdown primitive rather than a stop.
+	logShutdownStragglers("terminal", svc.Terminals.HangUpAll(terminalHangUpGrace))
+
+	// Retire the control IPC servers of every tab, agents and shells alike.
+	// Agents and shells are gone before this runs, so nothing is using the
+	// sockets; srv.Close inside each cleanup frees the socket even when its
+	// network revoke is slow, which is why the deadline gives one revoke its
+	// full budget. retire marks nothing closed, so every tab stays
+	// restorable after the restart.
+	const controlIPCRetireTimeout = 6 * time.Second
+	var controlIPCRetire drain.Counter
+	svc.agentCleanups.retireAll(&controlIPCRetire)
+	svc.terminalCleanups.retireAll(&controlIPCRetire)
+	controlIPCRetire.Wait(controlIPCRetireTimeout,
+		"control IPC retires did not finish in the shutdown budget; the sockets free when the process exits")
 
 	// Drop every settle still waiting out its debounce window FIRST. The exits
 	// above cancel each window they reach, and this holds however they ran. A
@@ -1129,6 +1245,13 @@ func (svc *Service) broadcastTerminalsDisconnected(notified map[string]struct{})
 // we *know* the worker killed the child — the exit code is unobserved,
 // not unknown.
 const exitCodeUnknown = -1
+
+// terminalHangUpGrace is the escalation grace Shutdown gives each terminal's
+// shell: about the time a shell needs to notice the hang-up and exit, and
+// short enough that a wedge costs the shutdown little. A shell that ignores
+// the hang-up meets the escalation, which is why the sweep joins the shell's
+// own exit and not the reader drain, whose budget equals this grace.
+const terminalHangUpGrace = 2 * time.Second
 
 // terminalExitedNoticeSuffix is the constant trailing portion of every
 // formatted notice. Idempotency checks use HasSuffix against this so a
@@ -1665,6 +1788,19 @@ func (svc *Service) refuseIfShuttingDown(sender channel.ResponseWriter) bool {
 	}
 	sendFailedPrecondition(sender, "worker is shutting down")
 	return true
+}
+
+// sendStartupRefused answers a tab-opening request whose startup claim the
+// registry refused. During a shutdown the refusal is the shutdown: the worker
+// is going away, and that is the answer a client needs, whatever raced the
+// claim. Any other refusal states the race that holds the id. shuttingDown is
+// set before closeClaims, so a claim refused by the latch always reads the
+// latch here too.
+func (svc *Service) sendStartupRefused(sender channel.ResponseWriter, inProgressMessage string) {
+	if svc.refuseIfShuttingDown(sender) {
+		return
+	}
+	sendFailedPrecondition(sender, inProgressMessage)
 }
 
 // sendFailedPrecondition sends a FailedPrecondition error response.

@@ -84,6 +84,7 @@ func startFakeHub(t *testing.T, service leapmuxv1connect.WorkerConnectorServiceH
 const (
 	shutdownStartedLog  = "draining worker state for graceful shutdown"
 	shutdownFinishedLog = "worker state drained"
+	handlersJoinedLog   = "worker handlers joined"
 )
 
 // deregisterTrace records what the teardown had finished when each hook ran.
@@ -161,6 +162,32 @@ func TestRunStopsInOrderWhenTheHubDeletedTheWorker(t *testing.T) {
 	require.NoError(t, ctx.Err(), "Run returned on the refusal, not on its context")
 	assert.Equal(t, int32(1), hubService.connects.Load(), "a deletion is not retried")
 	trace.assertOrderedTeardown(t)
+}
+
+// Run closes its database last, so it must join the handlers first. The join
+// sits in a defer that Run registers before Wire assigns the Wiring, which makes
+// this a test of the wiring as well: a defer that captured the nil Wiring would
+// skip the join with no other trace.
+//
+// Not parallel: it captures the process-global default logger.
+func TestRunJoinsHandlersAfterItsShutdown(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	hubService := &refusingHub{
+		code:   connect.CodeUnauthenticated,
+		reason: leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
+	}
+	hubURL := startFakeHub(t, hubService)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	trace := &deregisterTrace{}
+
+	require.NoError(t, worker.Run(ctx, trace.runConfig(t, logs, hubURL)))
+
+	logged := logs.String()
+	joined := strings.Index(logged, handlersJoinedLog)
+	require.GreaterOrEqual(t, joined, 0, "Run must join the handlers before it closes the database")
+	assert.Greater(t, joined, strings.Index(logged, shutdownFinishedLog),
+		"the join must follow the shutdown, which is what closes admission")
 }
 
 // The Hub's deregistration notification reaches the Worker on a live stream. The

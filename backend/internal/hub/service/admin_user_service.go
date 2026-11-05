@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
-	"log/slog"
+	"github.com/leapmux/leapmux/util/drain"
 
 	"connectrpc.com/connect/v2"
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -47,6 +48,9 @@ type AdminUserService struct {
 	// IssueAPIToken mints. See notifyCredentialIssued.
 	mail     mail.Sender
 	renderer mail.Renderer
+	// notices counts the detached credential-notice sends; see
+	// AdminUserServiceDeps.Notices.
+	notices *drain.Counter
 
 	// The clock this service reads. It mints an API token pair exactly as
 	// OAuthServerHandler.issueAPIToken does, and it requires the same elevation
@@ -72,6 +76,10 @@ type AdminUserServiceDeps struct {
 	// sends nothing, and Renderer is a struct value whose zero value is valid.
 	Mail     mail.Sender
 	Renderer mail.Renderer
+	// Notices counts the detached credential-notice sends, so the Hub's
+	// shutdown can join them up to a limit before the store closes. May be nil,
+	// which leaves the sends uncounted (tests that mint without a server).
+	Notices *drain.Counter
 }
 
 func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
@@ -83,6 +91,7 @@ func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
 		workerEffects: deps.WorkerEffects,
 		mail:          deps.Mail,
 		renderer:      deps.Renderer,
+		notices:       deps.Notices,
 	}
 }
 
@@ -1134,7 +1143,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 		InstallationName: installationName,
 		Scopes:           granted.SortedTokens(),
 		IssuedByAdmin:    issuedByAnotherPerson(actor, user),
-	})
+	}, s.notices)
 	// The secrets cross the wire exactly once; they cannot be retrieved. The
 	// client id and the granted scopes state what the hub DECIDED, not what
 	// was asked: the envelope is the one record an operator captures, and an

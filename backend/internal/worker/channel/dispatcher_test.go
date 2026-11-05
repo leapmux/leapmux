@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -709,4 +710,189 @@ func TestDispatcher_AsyncPassesWriterThrough(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("handler was not invoked")
 	}
+}
+
+// --- shutdown admission and the handler join ---
+
+// recordingWriter captures every send by shape, so a refusal's reply shape is
+// observable: a unary method must not be answered with a stream frame.
+type recordingWriter struct {
+	responses atomic.Int32
+	errors    atomic.Int32
+	streams   atomic.Int32
+}
+
+func (w *recordingWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error {
+	w.responses.Add(1)
+	return nil
+}
+
+func (w *recordingWriter) SendError(int32, string) error {
+	w.errors.Add(1)
+	return nil
+}
+
+func (w *recordingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error {
+	w.streams.Add(1)
+	return nil
+}
+
+func (*recordingWriter) ChannelID() string     { return "" }
+func (*recordingWriter) MaxPayloadBudget() int { return 0 }
+func (*recordingWriter) BindStream(StreamController) (func(), bool) {
+	return func() {}, false
+}
+
+// A closed gate must refuse both dispatch paths, in each method's declared
+// reply shape, with the shutdown as the answer.
+func TestDispatcherRefusesAfterCloseAdmission(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+	ran := atomic.Bool{}
+	d.Handle("leapmux.v1.WorkerAgentService/Mutate", Registration{Tracked: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		ran.Store(true)
+	})
+	d.Handle("leapmux.v1.WorkerWatchService/Watch", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		ran.Store(true)
+	})
+	d.CloseAdmission()
+
+	wUnary := &recordingWriter{}
+	d.DispatchWith(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "leapmux.v1.WorkerAgentService/Mutate"}, wUnary)
+	assert.Equal(t, int32(1), wUnary.errors.Load(), "a unary refusal is one unary error")
+	assert.Zero(t, wUnary.streams.Load())
+	assert.False(t, ran.Load(), "a refused handler must not run")
+
+	wStream := &recordingWriter{}
+	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "leapmux.v1.WorkerWatchService/Watch"}, wStream)
+	assert.Eventually(t, func() bool { return wStream.streams.Load() == 1 },
+		time.Second, 5*time.Millisecond, "a streaming refusal is one stream error frame")
+	assert.Zero(t, wStream.errors.Load())
+	assert.False(t, ran.Load(), "a refused handler must not run")
+}
+
+// An untracked handler is exactly the dispatch the old Cleanup.Wait missed,
+// so WaitHandlers must join it like any other.
+func TestDispatcherWaitHandlersJoinsAnUntrackedHandler(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := NewDispatcher()
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		d.Handle("plain", Registration{}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+			close(entered)
+			<-release
+		})
+
+		d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "plain"}, &recordingWriter{})
+
+		waited := make(chan bool, 1)
+		go func() { waited <- d.WaitHandlers(time.Second) }()
+		<-entered
+		synctest.Wait()
+		select {
+		case joined := <-waited:
+			t.Fatalf("WaitHandlers returned while the handler was parked: %v", joined)
+		default:
+		}
+
+		close(release)
+		assert.True(t, <-waited, "the released handler joins inside the budget")
+	})
+}
+
+// A handler that never returns is abandoned at the deadline, with false.
+func TestDispatcherWaitHandlersReturnsFalseAtTheDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d := NewDispatcher()
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		entered := make(chan struct{})
+		d.Handle("stuck", Registration{}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+			close(entered)
+			<-release
+		})
+
+		d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "stuck"}, &recordingWriter{})
+		<-entered
+
+		waited := make(chan bool, 1)
+		go func() { waited <- d.WaitHandlers(time.Second) }()
+
+		// The budget is fake time in the bubble, so the deadline arrives
+		// without spending a real second.
+		assert.False(t, <-waited, "a handler past the deadline is abandoned")
+	})
+}
+
+func TestDispatcherWaitHandlersWithNoHandlers(t *testing.T) {
+	t.Parallel()
+
+	d := NewDispatcher()
+
+	assert.True(t, d.WaitHandlers(time.Second), "no handler runs, so WaitHandlers returns at once")
+}
+
+// A dispatch admitted before the close must be counted by the time
+// CloseAdmission plus a completed WaitHandlers return, and nothing may start
+// after them. This is the Add-after-Wait misuse the gate closes.
+func TestDispatcherCloseAdmissionRacesDispatch(t *testing.T) {
+	d := NewDispatcher()
+	var admitted atomic.Int32
+	started := make(chan struct{})
+	d.Handle("racy", Registration{Tracked: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+		// Counting at ENTRY is the admitted count: the dispatcher runs a
+		// handler only after its own gate admitted the dispatch.
+		admitted.Add(1)
+		<-started
+	})
+
+	cleanup := &sync.WaitGroup{}
+	d.BindCleanup(cleanup)
+	const n = 32
+	writers := make([]*recordingWriter, n)
+	var racers sync.WaitGroup
+	for i := range n {
+		racers.Add(1)
+		writers[i] = &recordingWriter{}
+		go func(w *recordingWriter) {
+			defer racers.Done()
+			d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+				&leapmuxv1.InnerRpcRequest{Method: "racy"}, w)
+		}(writers[i])
+	}
+	// racers.Wait makes the race one of CONCURRENT Begin+Add under -race, not
+	// of admission-vs-close: DispatchAsync runs its Begin synchronously, so
+	// all n dispatches are admitted by the time it returns. The racers' own
+	// WaitGroup is separate from the bound cleanup counter on purpose: the
+	// counter mixes the handlers' Adds and Dones, and a Wait on it here would
+	// wait for handlers that this test releases only below.
+	racers.Wait()
+	// racers.Wait guarantees every dispatch was ADMITTED (Begin ran
+	// synchronously inside DispatchAsync), but the handler goroutines only
+	// get scheduled after it: their entry count catches up here, before the
+	// close, so the close is what the assertions below observe.
+	require.Eventually(t, func() bool { return admitted.Load() == n },
+		5*time.Second, 5*time.Millisecond,
+		"every racing dispatch is admitted and counted")
+
+	d.CloseAdmission()
+
+	// None may start after CloseAdmission plus a completed WaitHandlers.
+	close(started)
+	assert.True(t, d.WaitHandlers(5*time.Second), "every admitted handler finishes")
+	assert.True(t, d.WaitHandlers(0), "the counter is at zero, so an idle drain returns at once")
+	assert.Equal(t, int32(n), admitted.Load(),
+		"no handler started after the close")
+
+	late := &recordingWriter{}
+	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "racy"}, late)
+	assert.Equal(t, int32(1), late.errors.Load(),
+		"a dispatch after the close is refused in the writer's shape")
+	assert.Equal(t, int32(n), admitted.Load(), "the late dispatch ran no handler")
 }

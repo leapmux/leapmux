@@ -371,12 +371,13 @@ func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.R
 		return
 	}
 	if grant.afterCommit != nil {
-		// WithoutCancel, for the same reason the refresh stage detaches its work:
-		// a client that disconnects in the window between the commit and this
-		// update must not lose the replay-revocation link -- the credential is
-		// live, and a later replay of the code relies on MarkMinted to identify
-		// what to revoke.
-		grant.afterCommit(context.WithoutCancel(r.Context()), resp.TokenID)
+		// Detached from the request's context, for the same reason the
+		// refresh stage detaches its work: a client that disconnects in the
+		// window between the commit and this update must not lose the
+		// replay-revocation link -- the credential is live, and a later
+		// replay of the code relies on MarkMinted to identify what to
+		// revoke.
+		grant.afterCommit(h.detachedContext(r), resp.TokenID)
 	}
 	// After the commit and before the response, so the notice cannot be the
 	// reason a minted token is never delivered. See notifyCredentialIssued.
@@ -790,5 +791,5 @@ func (h *OAuthServerHandler) notifyTokenIssued(ctx context.Context, user *store.
 		InstallationName: grant.installationName,
 		Scopes:           scopes,
 		IssuedByAdmin:    false,
-	})
+	}, h.notices)
 }

@@ -1096,8 +1096,16 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 		mutation.RUnlock()
 		logTodoPersistenceFailure(s.agentID, span.SpanType, result.todoError)
 		s.h.watcher.DrainAgentEvents(s.agentID)
-		if published {
-			go s.BroadcastGitStatus()
+		// Counted like every other deferred refresh: Shutdown's
+		// WaitActivityRefreshes joins it, so the broadcast's reads and
+		// publishes land before the caller closes the database. A shutdown
+		// that already began admits nothing, and the refused edge is lost
+		// with the process.
+		if published && s.h.beginActivityRefresh() {
+			go func() {
+				defer s.h.activityRefreshes.Done()
+				s.BroadcastGitStatus()
+			}()
 		}
 	}()
 	if content.IdempotencyKey != "" {

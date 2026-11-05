@@ -1084,3 +1084,57 @@ func TestPayloadTabWorkingDir_RefusesAnUnmintableOwner(t *testing.T) {
 	assert.Empty(t, svc.payloadTabWorkingDir("", "file-1"),
 		"a blank owner must match nothing, not every blank-owner row")
 }
+
+// The quake close runs on a counted goroutine: WaitActivityRefreshes must
+// return only after it finished, so the caller's next read sees the row
+// closed without polling.
+func TestQuakeCloseIsJoinedByWaitActivityRefreshes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	svc.closeQuakeTerminalOnShellExit(terminalID)
+	svc.Output.SetShuttingDown()
+	svc.Output.WaitActivityRefreshes()
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid,
+		"the joined close must have closed the row before WaitActivityRefreshes returned")
+}
+
+// A shutdown that already began admits no close: the row stays open, and the
+// boot sweep closes it.
+func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	// The latch goes down first, so the shell's own exit -- which is what
+	// would normally close the row -- is refused, and the row survives with a
+	// dead shell: the state a restart inherits.
+	svc.Output.SetShuttingDown()
+	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "shell exit")
+	svc.Output.WaitActivityRefreshes()
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "a refused close leaves the row open")
+
+	svc.CloseOrphanedQuakeTerminals(ctx)
+	row, err = svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "the boot sweep closes what the shutdown refused")
+}

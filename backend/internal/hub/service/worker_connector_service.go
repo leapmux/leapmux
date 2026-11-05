@@ -787,7 +787,16 @@ func (s *WorkerConnectorService) Connect(
 			// connCtx ends either because the stream's own request context
 			// ended (hub shutdown, transport close) or because this conn was
 			// fenced or replaced — the request context is the tell between
-			// them.
+			// them. A pending DEREGISTER delivery is joined first: deliver
+			// runs MarkDeleted under a detached context, and a hub that
+			// closed its store first would leave the worker having deleted
+			// its own state while its row stays deregistering until the
+			// 7-day sweep. deliver ends by itself -- SendAndWait honours the
+			// cancelled context and MarkDeleted has apiTimeout -- and
+			// httpDrainTimeout limits this handler beyond it.
+			if notifyDone != nil {
+				<-notifyDone
+			}
 			if reqCtx.Err() != nil {
 				exitReason = "request context ended (hub shutdown or transport closed)"
 			} else {

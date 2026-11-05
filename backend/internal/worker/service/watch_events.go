@@ -175,7 +175,14 @@ func handleWatchEvents(svc *Service) func(context.Context, channel.Caller, *leap
 			sendFailedPrecondition(sender, "stream binding unavailable")
 			return
 		}
-		go s.run(release)
+		// Counted on a handler goroutine the dispatcher's gate admitted, so
+		// the Add lands before any dispatcher wait that returns true can
+		// have completed: no Add follows the join that covers it.
+		s.svc.watchSessions.Add()
+		go func() {
+			defer s.svc.watchSessions.Done()
+			s.run(release)
+		}()
 	}
 }
 

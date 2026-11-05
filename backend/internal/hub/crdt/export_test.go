@@ -1,6 +1,7 @@
 package crdt
 
 import (
+	"log/slog"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -22,4 +23,13 @@ func (e *MarshaledEvent) AlreadyMarshaledForTest() bool { return e.marshaled.Loa
 // pass makes, so its boundaries can be tested without a manager.
 func EpochRotationForTest(s *leapmuxv1.UserCrdtState, now time.Time) (int64, *timestamppb.Timestamp, bool) {
 	return epochRotation(s, now)
+}
+
+// NewRegistryWithWedgedJanitorForTest returns a Registry whose janitor never
+// reports that it stopped, so Shutdown spends its budget on that wait. A
+// disabled janitor leaves no goroutine to race the swap.
+func NewRegistryWithWedgedJanitorForTest(factory ManagerFactory, logger *slog.Logger) *Registry {
+	r := NewRegistry(factory, logger, WithManagerIdleTTL(0))
+	r.doneCh = make(chan struct{})
+	return r
 }

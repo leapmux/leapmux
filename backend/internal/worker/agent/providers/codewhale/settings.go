@@ -272,7 +272,14 @@ func (a *Agent) handleThreadUpdated(env codewhaleEnvelope) {
 	a.Mu.Unlock()
 	if providerChanged {
 		// The catalog read is a request, and the dispatch must not wait for it.
-		go a.refreshModelCatalog()
+		// Counted, so Wait joins the read before its teardown: a refresh in
+		// flight when the process exits would otherwise write option groups
+		// past Wait's return.
+		a.catalogRefreshes.Add(1)
+		go func() {
+			defer a.catalogRefreshes.Done()
+			a.refreshModelCatalog()
+		}()
 		return
 	}
 	if !optionsEqual(before, after) {

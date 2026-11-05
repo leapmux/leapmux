@@ -195,6 +195,10 @@ type startupCore struct {
 	// substitutes a fake before it starts the first startup. A write after the
 	// first begin is a data race against those three reads.
 	clock quartz.Clock
+	// claimsClosed refuses every later claim. closeClaims sets it directly
+	// before the caller's WaitForInFlight: the WaitGroup contract needs that
+	// no Add follows a Wait, and nothing else in the registry enforced it.
+	claimsClosed bool
 }
 
 func newStartupCore(clock quartz.Clock) startupCore {
@@ -322,6 +326,9 @@ const (
 	// claimRefusedFailed: the last startup for the id failed, and the caller
 	// may not replace that failure.
 	claimRefusedFailed
+	// claimRefusedShuttingDown: closeClaims ran, and a claim would add to the
+	// WaitGroup that Shutdown's WaitForInFlight is about to join.
+	claimRefusedShuttingDown
 )
 
 // beginColdStart is begin for a start that the Worker makes on its own: a
@@ -343,11 +350,26 @@ func (r *startupCore) beginColdStart(id string, cancel context.CancelFunc) (*sta
 	return r.claim(id, cancel, claimMode{})
 }
 
+// closeClaims refuses every later claim, so no Add can follow the
+// WaitForInFlight that the caller runs directly after it. Shutdown calls it on
+// both registries. A claim refused here starts nothing and adds nothing, so
+// the WaitGroup the drain joins counts exactly the goroutines that were in
+// flight when the latch closed.
+func (r *startupCore) closeClaims() {
+	r.mu.Lock()
+	r.claimsClosed = true
+	r.mu.Unlock()
+}
+
 // claim is the one body of begin, beginColdStart and beginReplacement. The mode
 // states whether the caller may replace a failed entry, and what the new entry
 // means; see the three callers.
 func (r *startupCore) claim(id string, cancel context.CancelFunc, mode claimMode) (*startupEntry, claimOutcome) {
 	r.mu.Lock()
+	if r.claimsClosed {
+		r.mu.Unlock()
+		return nil, claimRefusedShuttingDown
+	}
 	if r.closeInProgress[id] > 0 {
 		r.mu.Unlock()
 		return nil, claimRefusedClosing

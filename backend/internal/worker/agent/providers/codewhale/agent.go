@@ -51,6 +51,10 @@ type Agent struct {
 	// goroutine returns.
 	streamCancel context.CancelFunc
 	streamDone   chan struct{}
+	// catalogRefreshes counts the detached model-catalog reads the settings
+	// dispatch spawns. Wait joins it after the stream ends, which is the
+	// happens-before edge that keeps every spawn before every join.
+	catalogRefreshes sync.WaitGroup
 
 	// dispatchMu serializes event dispatch. The stream goroutine is the normal
 	// caller; a test feeds events through HandleOutput. Take it only around one
@@ -429,6 +433,9 @@ func (a *Agent) Stop() {
 	}
 	a.Process.Stop()
 	a.waitForStream()
+	// After waitForStream, for the same happens-before as Wait's join: the
+	// stream goroutine is the only spawner of catalog refreshes.
+	a.catalogRefreshes.Wait()
 	a.finishAfterExit(agent.MessageCompletionInterrupted)
 	if a.endpoint != nil {
 		a.endpoint.Close()
@@ -446,6 +453,9 @@ func (a *Agent) Wait() error {
 		a.streamCancel()
 	}
 	a.waitForStream()
+	// After waitForStream: the stream goroutine is the only spawner of catalog
+	// refreshes, so its exit is what makes every spawn before this join.
+	a.catalogRefreshes.Wait()
 	a.finishAfterExit(a.ProcessExitCompletion())
 	return err
 }

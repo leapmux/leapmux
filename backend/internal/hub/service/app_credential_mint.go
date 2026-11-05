@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/leapmux/leapmux/util/drain"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -304,12 +305,18 @@ type credentialNotice struct {
 // Refresh sends nothing. A rotation is the same credential continuing, and a
 // notice per rotation would train the recipient to ignore the one that
 // matters.
+//
+// inFlight counts the send for the caller, which joins it up to a limit at
+// shutdown: a Hub exit inside sendTimeout would otherwise lose the notice
+// email. A nil counter skips the counting, which is what tests that mint
+// without a server use.
 func notifyCredentialIssued(
 	ctx context.Context,
 	sender mail.Sender,
 	renderer mail.Renderer,
 	user *store.User,
 	notice credentialNotice,
+	inFlight *drain.Counter,
 ) {
 	if sender == nil || user == nil || user.Email == "" || !user.EmailVerified {
 		return
@@ -318,8 +325,14 @@ func notifyCredentialIssued(
 		user.Email, notice.AppName, notice.InstallationName, notice.Scopes, notice.IssuedByAdmin)
 	userID := user.ID
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), CredentialNoticeTimeout)
+	if inFlight != nil {
+		inFlight.Add()
+	}
 	go func() {
 		defer cancel()
+		if inFlight != nil {
+			defer inFlight.Done()
+		}
 		if err := sender.Send(sendCtx, msg); err != nil {
 			if errors.Is(err, mail.ErrEmailDisabled) {
 				return

@@ -1156,3 +1156,33 @@ func TestStartupCore_ClaimsOfOneIDThatReturnOutOfOrderLeaveNothingBehind(t *test
 	assert.Nil(t, core.cancelForArchive("tab-1"))
 	requireStartupsReleased(t, &core)
 }
+
+// closeClaims must refuse every claim form, add nothing to the WaitGroup, and
+// leave the registry without an in-flight claim, so the WaitForInFlight that
+// Shutdown runs directly after it has nothing new to wait for.
+func TestClaimRefusedAfterCloseClaims(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	core.closeClaims()
+
+	assert.Nil(t, core.begin("a", nil), "begin must be refused")
+	assert.Nil(t, core.beginReplacement("b"), "beginReplacement must be refused")
+	entry, outcome := core.beginColdStart("c", nil)
+	assert.Nil(t, entry, "beginColdStart must be refused")
+	assert.Equal(t, claimRefusedShuttingDown, outcome)
+
+	core.mu.Lock()
+	assert.Empty(t, core.inflight, "a refused claim adds nothing in flight")
+	core.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		core.WaitForInFlight()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForInFlight must return at once after closeClaims")
+	}
+}

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/solo"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -20,7 +20,12 @@ func runSolo(args []string, soloMode bool) error {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// A long-lived daemon: a lost stderr (a dead tee, a closed terminal) must
+	// return EPIPE from its log writes, not kill the process before the lease
+	// is released.
+	procutil.KeepRunningOnBrokenPipe()
+
+	ctx, stop := signal.NotifyContext(context.Background(), procutil.ShutdownSignals()...)
 	defer stop()
 
 	// Everything but Args and DevMode is left unset, so solo.Start derives it from

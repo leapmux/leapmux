@@ -153,6 +153,15 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		}
 	}
 	client := hub.New(hubEndpoint)
+	// wiring is nil on every return before Wire succeeds, and WaitHandlers
+	// tolerates nil. The closure is required: `defer wiring.WaitHandlers()`
+	// captures its receiver here, while it is still nil, and so would skip the
+	// join on every path. Deferred ABOVE client.Stop, so the LIFO unwind closes
+	// the channels first, which ends the streaming handlers, then joins them,
+	// and closes the database last:
+	//   client.Stop -> WaitHandlers -> sqlDB.Close.
+	var wiring *bootstrap.Wiring
+	defer func() { wiring.WaitHandlers() }()
 	defer client.Stop()
 
 	homeDir, _ := os.UserHomeDir()
@@ -177,7 +186,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	wireCtx, cancelWire := context.WithCancel(ctx)
 	defer cancelWire()
 
-	wiring := bootstrap.Wire(bootstrap.Params{
+	wiring = bootstrap.Wire(bootstrap.Params{
 		Ctx:                  wireCtx,
 		Client:               client,
 		DB:                   sqlDB,

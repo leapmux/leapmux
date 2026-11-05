@@ -51,6 +51,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/clockjump"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/errwrap"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -192,12 +193,23 @@ type ServerOption func(*serverOptions)
 
 type serverOptions struct {
 	frontendHandler http.Handler
+	// revocationLease, when set, replaces the watcher's default lease, so a
+	// test can observe renewal inside a drain without a real 30-second lease.
+	revocationLease time.Duration
 }
 
 // WithFrontendHandler overrides the default frontend handler.
 func WithFrontendHandler(h http.Handler) ServerOption {
 	return func(o *serverOptions) {
 		o.frontendHandler = h
+	}
+}
+
+// withRevocationWatcherOptions shapes the revocation watcher for a test. It
+// is unexported on purpose: production takes the watcher's own defaults.
+func withRevocationWatcherOptions(lease time.Duration) ServerOption {
+	return func(o *serverOptions) {
+		o.revocationLease = lease
 	}
 }
 
@@ -219,9 +231,33 @@ type Server struct {
 	localListenURLs []string
 	// statePath is the state file NewServer wrote; every teardown that
 	// releases the listeners removes it again.
-	statePath         string
-	cancelHandlers    context.CancelFunc
-	shutdownCh        chan struct{}
+	statePath      string
+	cancelHandlers context.CancelFunc
+	// cancelServing ends servingCtx, the hub's own lifetime context; see the
+	// comment where it is created.
+	cancelServing context.CancelFunc
+	shutdownCh    chan struct{}
+	// leaseHeld closes once AcquireLease succeeded. It is the one readiness
+	// signal solo.Start waits on: a socket bound before the lease was held
+	// would accept a Worker whose dial then raced the shutdown of the
+	// predecessor this launch is waiting out.
+	leaseHeld chan struct{}
+	// webSockets counts the hijacked WebSocket handlers of both relay routes.
+	// The shutdown closes admission directly after shutdownCh, cancels the
+	// handlers, and drains them before the store closes: http.Server.Shutdown
+	// and Close cannot reach a hijacked handler, and nothing else joined one.
+	webSockets *drain.Gate
+	// credentialNotices counts the detached credential-notice emails both
+	// mint surfaces send, so the shutdown joins them up to a limit before the
+	// store closes.
+	credentialNotices *drain.Counter
+	// servingCtx is the hub's own lifetime; see the comment where it is
+	// created. Serve cancels it beside the store close.
+	servingCtx context.Context
+	// backgroundLoops holds the stopped-channels of every periodic loop Serve
+	// started, so the shutdown joins a pass in flight before the store
+	// closes. The early SeedCursor failure path starts none.
+	backgroundLoops   []<-chan struct{}
 	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
 	crdtRegistry      *crdt.Registry
@@ -400,6 +436,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 
 	shutdownCh := make(chan struct{})
+	leaseHeld := make(chan struct{})
+	// One counter for BOTH notice senders, so the shutdown joins every
+	// detached credential-notice email with a single limited wait.
+	credentialNotices := &drain.Counter{}
+	webSockets := &drain.Gate{}
 
 	// Bot-protection managers, shared between the interceptor chain and the
 	// auth service so issuance and enforcement cannot disagree.
@@ -416,6 +457,15 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	if err := captchaMgr.EnsureProvisioned(context.Background()); err != nil {
 		return nil, acquired.close(fmt.Errorf("provision captcha config: %w", err))
 	}
+
+	// servingCtx is the hub's OWN lifetime. It outlives handlerCtx -- which is
+	// canceled handlerGrace into shutdown -- and ends only when the teardown
+	// has joined every drain and is about to close the store. Work detached
+	// from its request's context (the refresh flight, a grant's afterCommit
+	// link, the bearer-validation flight) ends here, so none of it reads a
+	// closed store. Canceled beside the store close below.
+	servingCtx, cancelServing := context.WithCancel(context.Background())
+	acquired.cancelServing = cancelServing
 
 	// handlerCtx is the parent of every in-flight HTTP handler's request context
 	// (via http.Server.BaseContext below). It is cancelled handlerGrace into
@@ -502,6 +552,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Store:          st,
 		SoloUser:       soloUser,
 		TokenValidator: tokenValidator,
+		ServingCtx:     servingCtx,
 		// The auth policy (cookie name, verification gate, session
 		// duration) is DB-backed and hot: re-resolved per use so an admin
 		// change applies to the next request.
@@ -675,7 +726,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
 		WithChannelCloseEnqueuer(channelSvc)
-	mux.Handle(contracts.WSRouteChannel, channelRelay)
+	mux.Handle(contracts.WSRouteChannel, trackWebSocket(webSockets, channelRelay))
 
 	// INBOUND OAuth: the hub as a client of an identity provider, at
 	// /auth/idp/*.
@@ -694,9 +745,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		HubURL:    hubBaseURL,
 		// The three anonymous legs share the interceptor's budget table; see
 		// ratelimit.AllowHTTP.
-		Limiter:  rateLimitMgr,
-		Mail:     mailSender,
-		Renderer: mailRenderer,
+		Limiter:    rateLimitMgr,
+		Mail:       mailSender,
+		Renderer:   mailRenderer,
+		Notices:    credentialNotices,
+		ServingCtx: servingCtx,
 	})
 	oauthServer.RegisterRoutes(mux)
 
@@ -788,6 +841,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		WorkerEffects: workerEffects,
 		Mail:          mailSender,
 		Renderer:      mailRenderer,
+		Notices:       credentialNotices,
 	})
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminUserSvc)
 
@@ -824,7 +878,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// motivated retiring the streaming RPC.
 	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
-	mux.Handle(contracts.WSRouteUserEvents, userEventsHandler)
+	mux.Handle(contracts.WSRouteUserEvents, trackWebSocket(webSockets, userEventsHandler))
 
 	// Every registered Connect procedure, mounted once, with the shared
 	// request-size cap of maxConnectRequestBytes applied to all of them.
@@ -950,7 +1004,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// continue to invoke the close paths inline so they observe
 	// zero-latency revocation; the watcher is the cross-process
 	// safeguard.
-	revWatcher := revocationwatcher.New(st, lifecycle)
+	watcherOpts := make([]revocationwatcher.Option, 0, 1)
+	if so.revocationLease > 0 {
+		watcherOpts = append(watcherOpts, revocationwatcher.WithLeaseDuration(so.revocationLease))
+	}
+	revWatcher := revocationwatcher.New(st, lifecycle, watcherOpts...)
 
 	// The set serves through THIS server from here on; see setServer.
 	listeners.setServer(server)
@@ -1028,6 +1086,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		statePath:         statePath,
 		cancelHandlers:    cancelHandlers,
 		shutdownCh:        shutdownCh,
+		leaseHeld:         leaseHeld,
+		credentialNotices: credentialNotices,
+		servingCtx:        servingCtx,
+		cancelServing:     cancelServing,
+		webSockets:        webSockets,
 		authContexts:      authContexts,
 		workerMgr:         wMgr,
 		crdtRegistry:      crdtRegistry,
@@ -1235,6 +1298,15 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 	return user.ID, nil
 }
 
+// LeaseHeld reports the moment the Hub runtime lease was acquired: the channel
+// closes directly after a successful acquire, before Serve accepts on its
+// listeners. solo.Start waits on it, because a bound socket proves nothing:
+// NewServer binds before Serve runs, and the lease is the one signal that the
+// previous Hub is gone.
+func (s *Server) LeaseHeld() <-chan struct{} {
+	return s.leaseHeld
+}
+
 // Serve starts the Hub server on the listeners that NewServer pre-bound.
 // It blocks until ctx is cancelled, then performs graceful shutdown.
 func (s *Server) Serve(ctx context.Context) error {
@@ -1244,7 +1316,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Register the watcher before starting listeners or other background work.
 	// Without the singleton runtime lease, serving authenticated traffic would let
 	// cleanup compact revocations this process did not observe.
-	if err := s.revocationWatcher.SeedCursor(serveCtx); err != nil {
+	if err := s.revocationWatcher.AcquireLease(serveCtx, s.cfg.RuntimeLeaseWait); err != nil {
+		// A refused lease never reaches the teardown below, so this path ends
+		// the hub's lifetime itself, before its store close.
+		s.cancelServing()
 		s.authContexts.Stop()
 		s.crdtRegistry.Shutdown(crdtShutdownTimeout)
 		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1275,11 +1350,14 @@ func (s *Server) Serve(ctx context.Context) error {
 		}.finalize()
 	}
 
+	// The lease is held. Closing here is what LeaseHeld's waiter reads.
+	close(s.leaseHeld)
+
 	// Start background OAuth token refresh.
-	s.idpHandler.StartTokenRefresh(serveCtx)
+	s.backgroundLoops = append(s.backgroundLoops, s.idpHandler.StartTokenRefresh(serveCtx))
 
 	// Start periodic cleanup of soft-deleted records.
-	cleanup.StartLoop(serveCtx, s.store)
+	s.backgroundLoops = append(s.backgroundLoops, cleanup.StartLoop(serveCtx, s.store))
 
 	// Report the periods in which this process did not run, so a suspended laptop
 	// explains the expired leases, ended streams, and refused credentials that
@@ -1292,7 +1370,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	// revocation stream so admin-CLI mutations land in the hub's
 	// in-memory caches and channelmgr without IPC. Seed past events that
 	// predate this process so the first sweep only handles fresh work.
-	s.revocationWatcher.StartLoop(serveCtx)
+	// WithoutCancel: renewal must keep running through the whole drain. A
+	// lease that stops renewing when shutdown begins lapses while the CRDT
+	// drain still writes. Watcher.Close ends the loop on every teardown path.
+	s.revocationWatcher.StartLoop(context.WithoutCancel(serveCtx))
 
 	shutdownDone := make(chan serverTeardownErrors, 1)
 	go func() {
@@ -1301,6 +1382,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 		// 1. Reject all new RPCs and stop background tasks.
 		close(s.shutdownCh)
+		s.webSockets.Close(nil)
 		s.authContexts.Stop()
 
 		// 2. Notify connected workers to delay reconnection, then end their
@@ -1354,6 +1436,14 @@ func (s *Server) Serve(ctx context.Context) error {
 		for _, ln := range s.localLns {
 			locallisten.CloseAccepted(ln)
 		}
+		// CloseAccepted reached the sockets net/http lost with the hijack.
+		// Cancel what remains -- a handler admitted before the gate closed
+		// can still hold a lease, because bind derives from r.Context(),
+		// whose parent is BaseContext -- and then join every WebSocket
+		// handler, so none reads the store after it closes.
+		s.cancelHandlers()
+		s.webSockets.Drain(webSocketDrainTimeout,
+			"hub: websocket handler drain timed out during shutdown; abandoning hijacked handlers")
 
 		shutdownDone <- serverTeardownErrors{
 			httpShutdown: httpShutdownErr,
@@ -1422,6 +1512,26 @@ func (s *Server) Serve(ctx context.Context) error {
 	shutdownErrs := <-shutdownDone
 	teardownErrs.httpShutdown = shutdownErrs.httpShutdown
 	teardownErrs.httpClose = shutdownErrs.httpClose
+
+	// Join the periodic loops before anything closes the store: a pass in
+	// flight reads it through every one of its steps. The loops stop when
+	// serveCtx ended, and run skips its remaining steps once it did, so this
+	// wait is the pass that already started.
+	joinLoops(backgroundLoopDrainTimeout, s.backgroundLoops)
+
+	// Join the detached credential-notice emails: each is capped at
+	// service.CredentialNoticeTimeout on its own detached budget, and the
+	// notice a mint just queued is the one an exit in this window would
+	// lose. The budget below is that send budget plus a scheduling margin,
+	// so one full SMTP exchange fits.
+	s.credentialNotices.Wait(service.CredentialNoticeJoinTimeout,
+		"hub: credential notice sends did not finish in the shutdown budget; abandoning the emails")
+
+	// 5b. End the hub's own lifetime context: every piece of detached work it
+	// carries -- the refresh flight, a grant's afterCommit link, the
+	// bearer-validation flight -- ends here, so none of it reads the store
+	// the steps below close.
+	s.cancelServing()
 
 	// 6. Stop CRDT managers while their journal store is still available.
 	s.crdtRegistry.Shutdown(crdtShutdownTimeout)
@@ -1559,6 +1669,7 @@ type acquiredResources struct {
 	authContexts   *auth.AuthContextRegistry
 	crdtRegistry   *crdt.Registry
 	cancelHandlers context.CancelFunc
+	cancelServing  context.CancelFunc
 }
 
 // close releases the acquired resources, joining the primary construction
@@ -1576,6 +1687,9 @@ func (r acquiredResources) close(primary error) error {
 	}
 	if r.cancelHandlers != nil {
 		r.cancelHandlers()
+	}
+	if r.cancelServing != nil {
+		r.cancelServing()
 	}
 	return serverTeardownErrors{
 		primary:       primary,

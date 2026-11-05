@@ -220,8 +220,10 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if startupHandle == nil {
 				// Unreachable in practice -- terminalID was minted a few lines
 				// above -- but the claim is the authority, so honour it rather
-				// than run a startup that owns no registry entry.
-				sendFailedPrecondition(sender, "a startup for this terminal is already in progress")
+				// than run a startup that owns no registry entry. During a
+				// shutdown the claim is refused by the latch, and the answer
+				// states that.
+				svc.sendStartupRefused(sender, "a startup for this terminal is already in progress")
 				return
 			}
 
@@ -396,8 +398,9 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				// above and this claim straddle no lock, and the dispatcher gives
 				// every request its own goroutine, so the claim is what decides.
 				// The loser must not proceed: its spawn would race the winner's
-				// for one PTY and one control socket.
-				sendFailedPrecondition(sender, "a restart for this terminal is already in progress")
+				// for one PTY and one control socket. During a shutdown the
+				// claim is refused by the latch, and the answer states that.
+				svc.sendStartupRefused(sender, "a restart for this terminal is already in progress")
 				return
 			}
 			svc.announceTerminalStarting(terminalID, shell)
@@ -1512,6 +1515,22 @@ func terminalProgressState(state terminal.ProgressState) leapmuxv1.TerminalProgr
 // through those.
 func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
+		// A terminal the shutdown sweep hung up already carries its
+		// disconnect row: the sweeps stamped the sentinel exit code and the
+		// one notice, and this shell's exit -- often its response to the
+		// hang-up signal itself -- must not append a second notice with a
+		// real exit code over the sentinel, or publish a TerminalClosed for
+		// a worker that is going away. The bell bookkeeping still clears.
+		//
+		// A shell that exited on its own is not in the set -- neither sweep
+		// stamps an exited terminal -- so its real exit code survives, also
+		// when this handler runs after Shutdown stored the set.
+		if stamped := svc.hungUpTerminals.Load(); stamped != nil {
+			if _, hungUp := (*stamped)[tid]; hungUp {
+				svc.clearTerminalBellCoalesce(tid)
+				return
+			}
+		}
 		svc.persistTerminalOnExit(tid, exitCode)
 		svc.clearTerminalBellCoalesce(tid)
 		svc.Watchers.PublishTerminalStatus(tid, &leapmuxv1.TerminalEvent{
@@ -1561,7 +1580,17 @@ func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
 	if !row.IsQuake || row.ClosedAt.Valid {
 		return
 	}
-	go svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
+	// Counted like every other deferred refresh, so Shutdown's
+	// WaitActivityRefreshes joins the close before the database closes. A
+	// shutdown that already began admits nothing: the row stays open here,
+	// and the boot sweep (CloseOrphanedQuakeTerminals) closes it.
+	if !svc.Output.beginActivityRefresh() {
+		return
+	}
+	go func() {
+		defer svc.Output.activityRefreshes.Done()
+		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
+	}()
 }
 
 // quakeShellIsLive answers whether a QUAKE row still has a shell that this

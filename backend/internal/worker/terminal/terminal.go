@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
@@ -26,6 +27,7 @@ const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
 const (
 	terminalChildCloseTimerTag = "terminal-child-close"
 	terminalReadDrainTimerTag  = "terminal-read-drain"
+	terminalHangUpTimerTag     = "terminal-hang-up-grace"
 )
 
 // ScreenBuffer is a thread-safe ring buffer that stores recent PTY output.
@@ -350,6 +352,9 @@ type Terminal struct {
 	// Stop reach it, and on Windows it must run exactly once — see the Windows
 	// implementation for what a second call closes.
 	childSideOnce sync.Once
+	// workerSideOnce guards closePTYWorkerSide, because Stop and HangUp both
+	// reach it, and the worker side closes once, as the child side does.
+	workerSideOnce sync.Once
 	// ptyMu serializes a pty TEARDOWN against a pty CALL. Resize and SendInput
 	// take it for reading; closeChildSide and closeWorkerSide take it for
 	// writing.
@@ -603,6 +608,34 @@ func (t *Terminal) Wait() int {
 	return t.exitCode
 }
 
+// HangUp delivers the hang-up that a process exit delivers and closes both
+// pty sides, and nothing more.
+//
+// It is the orderly-shutdown stop for a terminal whose jobs may outlive the
+// worker. The SIGNAL is the point, not the close: on macOS creack/pty opens a
+// blocking master, so os.File.Close defers the real close while readOutput is
+// parked in read(2), and the kernel delivers no hang-up -- a close alone hangs
+// up nothing and every shell reaches the caller's escalation, which kills the
+// nohup jobs that a hang-up leaves alive. The signal reaches the shell's
+// process group, the close then ends the reader, and a shell that ignores the
+// hang-up still runs when this returns so the caller can escalate through
+// Stop after its grace.
+//
+// It runs neither Capture nor Terminate, and it claims no `stopped`, so a
+// later Stop still escalates. A signal the platform refuses -- Windows
+// delivers no graceful signals; its ConPTY close ends the console's processes
+// -- logs at Debug, because the close below is that platform's hang-up.
+func (t *Terminal) HangUp() {
+	if err := t.owner.SignalGroup(syscall.SIGHUP); err != nil {
+		slog.Debug("signal terminal process group",
+			"terminal_id", t.id,
+			"error", err,
+		)
+	}
+	t.closeChildSide()
+	t.closeWorkerSide()
+}
+
 // waitForReadDone blocks with no limit until readOutput returns, after which
 // the screen buffer's cumulative offset is stable.
 //
@@ -728,7 +761,7 @@ func (t *Terminal) closeWorkerSide() {
 	}
 	t.ptyMu.Lock()
 	defer t.ptyMu.Unlock()
-	closePTYWorkerSide(t.ptmx)
+	t.workerSideOnce.Do(func() { closePTYWorkerSide(t.ptmx) })
 }
 
 // IsExited returns true if the terminal process has exited.

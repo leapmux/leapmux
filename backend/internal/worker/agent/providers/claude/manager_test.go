@@ -276,14 +276,12 @@ func TestManager_StopAll(t *testing.T) {
 		require.NoError(t, err, "StartAgent(%s)", id)
 	}
 
-	m.StopAll()
+	m.StopAll(30 * time.Second)
 
-	// Wait for background cleanup goroutines.
+	// StopAll joins every exit goroutine before it returns, so the map is
+	// empty at the return and no poll is needed.
 	for _, id := range []string{"a", "b", "c"} {
-		id := id
-		testutil.AssertEventually(t, func() bool {
-			return !m.HasAgent(id)
-		}, "HasAgent(%s) = true after StopAll", id)
+		assert.False(t, m.HasAgent(id), "HasAgent(%s) = true after StopAll", id)
 	}
 }
 

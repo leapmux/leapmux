@@ -2,10 +2,15 @@ package crdt_test
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -292,4 +297,209 @@ func TestRegistry_BroadcastWorkersChanged_ReachesEveryWorkerReaderOfTheUser(t *t
 	assert.Equal(t, 1, workersChangedCount(oneWorkspace.snapshot()))
 	assert.Zero(t, workersChangedCount(nonReader.snapshot()), "a subscriber that cannot read workers hears nothing")
 	assert.Zero(t, workersChangedCount(otherUser.snapshot()), "another user's subscriber hears nothing")
+}
+
+// --- Shutdown: concurrent, limited by a deadline, and refused after the latch ---
+
+// registryUserID gives the fixture's user IDs.
+func registryUserID(n int) userid.UserID { return userid.MustNew(fmt.Sprintf("user-%d", n)) }
+
+// stopped reports whether a manager's goroutine has ended -- the answer of a
+// manager whose Stop ran, which is what "stopped before the deadline" means
+// here. A live manager answers a batch before its context expires; a stopped
+// one leaves the context to run out.
+func stopped(t *testing.T, m *crdt.Manager) bool {
+	t.Helper()
+	submitCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := m.Submit(submitCtx, crdt.SubmitInput{})
+	return err == context.DeadlineExceeded
+}
+
+// One stalled manager must not leave the others running past the deadline:
+// the stops run one goroutine per manager, so every healthy manager is
+// stopped when Shutdown returns even though the stalled one held the budget.
+//
+// "Stopped" is read through Submit: a live manager answers a batch before its
+// context expires; a stopped one leaves the context to run out.
+// stallManager parks m's goroutine inside a test seed until the test ends, so
+// Stop on m waits no matter when the sweep of Shutdown reaches it. It returns
+// only once the goroutine is parked: a Shutdown that overtook the seed would
+// stop a healthy manager, and the test would prove nothing.
+func stallManager(t *testing.T, m *crdt.Manager) {
+	t.Helper()
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) {
+		close(entered)
+		<-gate
+	})
+	t.Cleanup(func() { close(gate) })
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the manager goroutine never ran the seed")
+	}
+}
+
+func TestRegistryShutdownStopsManagersConcurrently(t *testing.T) {
+	journal := newFakeJournal()
+	var managers sync.Map
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
+		managers.Store(userID.String(), mgr)
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	const healthy = 16
+	handles := make([]*crdt.Manager, 0, healthy+1)
+	for i := range healthy {
+		m, err := registry.Get(context.Background(), registryUserID(i).String())
+		require.NoError(t, err)
+		handles = append(handles, m)
+	}
+
+	stalled, err := registry.Get(context.Background(), registryUserID(healthy).String())
+	require.NoError(t, err)
+	handles = append(handles, stalled)
+	stallManager(t, stalled)
+
+	registry.Shutdown(2 * time.Second)
+
+	for i, m := range handles[:healthy] {
+		require.True(t, stopped(t, m),
+			"healthy manager %d must be stopped when Shutdown returned", i)
+	}
+}
+
+// A manager the janitor is stopping -- parked inside its own goroutine, and
+// evicted by a sweep for being idle -- must not spend Shutdown's whole budget
+// in the janitor wait AND the stops: the janitor wait has a limit, and
+// Shutdown returns at the deadline.
+func TestRegistryShutdownHonoursItsDeadlineForTheJanitor(t *testing.T) {
+	registry := crdt.NewRegistryWithWedgedJanitorForTest(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+
+	done := make(chan struct{})
+	go func() {
+		registry.Shutdown(200 * time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return at its deadline")
+	}
+}
+
+// The janitor's wait shares the budget with the manager stops, so the stops
+// must not queue behind it: a wedged janitor would spend the whole budget, and
+// every manager would still be running when the caller closes the store.
+func TestRegistryShutdownStopsManagersWhileTheJanitorIsWedged(t *testing.T) {
+	registry := crdt.NewRegistryWithWedgedJanitorForTest(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	m, err := registry.Get(context.Background(), registryUserID(1).String())
+	require.NoError(t, err)
+
+	registry.Shutdown(500 * time.Millisecond)
+
+	require.True(t, stopped(t, m), "a healthy manager must stop while the janitor is wedged")
+}
+
+// A manager that outlives the deadline runs past the caller's store close, so
+// the shutdown must report how many did.
+func TestRegistryShutdownWarnsOfManagersStillRunning(t *testing.T) {
+	logs := &testutil.LogBuffer{}
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, slog.New(slog.NewTextHandler(logs, nil)))
+
+	stalled, err := registry.Get(context.Background(), registryUserID(1).String())
+	require.NoError(t, err)
+	stallManager(t, stalled)
+
+	registry.Shutdown(100 * time.Millisecond)
+
+	assert.Contains(t, logs.String(), "running=1", "the stalled manager must be counted")
+}
+
+func TestRegistryGetRefusedAfterShutdown(t *testing.T) {
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	registry.Shutdown(time.Second)
+
+	_, err := registry.Get(context.Background(), registryUserID(1).String())
+
+	assert.ErrorIs(t, err, crdt.ErrRegistryClosed,
+		"a Get after Shutdown must be refused, not lazily create a manager nothing stops")
+}
+
+// A Get whose factory raced Shutdown must discard the manager it built, not
+// store it: the sweep already snapshotted, so a stored manager would run past
+// the store close with nothing stopping it.
+func TestRegistryGetDuringShutdownDiscardsTheManager(t *testing.T) {
+	release := make(chan struct{})
+	var factories atomic.Int32
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		if factories.Add(1) == 1 {
+			// Park the FIRST factory across Shutdown's latch.
+			<-release
+		}
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		registry.Shutdown(time.Second)
+	})
+
+	var getErr error
+	getDone := make(chan struct{})
+	go func() {
+		defer close(getDone)
+		_, getErr = registry.Get(context.Background(), registryUserID(99).String())
+	}()
+	registry.Shutdown(time.Second)
+	releaseOnce.Do(func() { close(release) })
+	<-getDone
+
+	assert.ErrorIs(t, getErr, crdt.ErrRegistryClosed,
+		"a Get that lost the race to Shutdown's latch must be refused")
+}
+
+// Two concurrent Gets for one user race for the map slot. The loser's manager
+// is discarded with Discard, which closes the stop channel without waiting on
+// m.done: a duplicate whose Start never ran has a done that nothing closes,
+// so a Stop there would park the losing goroutine for ever. The goroutine
+// count is what observes the park: after the race settles, every racer has
+// returned, so only the winner's manager goroutine may remain.
+func TestRegistryGetRaceDiscardsTheDuplicate(t *testing.T) {
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	// Settle the runloop first, so the baseline holds no parked racers.
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	const n = 8
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = registry.Get(context.Background(), registryUserID(7).String())
+		}()
+	}
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	assert.LessOrEqual(t, after, baseline+2,
+		"the race must leave no goroutine parked behind a discarded manager: %d before, %d after", baseline, after)
 }

@@ -797,6 +797,52 @@ func TestAPIAuth_Activate_RejectsUnknownCode(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, r.StatusCode)
 }
 
+// The refresh flight outlives its request, because the leader rotates a
+// single-use token for every waiter. It must not outlive the Hub, and a flight
+// that the end of the Hub stopped must leave the token usable for the next Hub.
+func TestAPIAuth_Refresh_FlightFollowsTheHubsLifetime(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	tokenID := id.Generate()
+	currentRefresh := auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:               tokenID,
+		UserID:           userid.MustNew(env.userID),
+		ClientID:         oauthapp.ControlCLIClientID,
+		InstallationName: "test",
+		GrantedScopes:    authscope.NonAdminGrant().String(),
+		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
+		RefreshHash:      env.validator.HashSecret(currentRefresh),
+	}))
+	servingCtx, endHub := context.WithCancel(context.Background())
+	endHub()
+	mux := http.NewServeMux()
+	service.NewOAuthServerHandler(service.OAuthServerDeps{
+		Store:      env.store,
+		Validator:  env.validator,
+		Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
+		HubURL:     func() string { return env.server.URL },
+		ServingCtx: servingCtx,
+	}).RegisterRoutes(mux)
+	form := url.Values{
+		"grant_type":    {service.GrantTypeRefreshToken},
+		"client_id":     {oauthapp.ControlCLIClientID},
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	require.NotEqual(t, http.StatusOK, rec.Code, "a flight on an ended hub must not rotate the token")
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", form)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the stopped flight must leave the refresh token valid")
+}
+
 func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	t.Parallel()
 
@@ -2660,4 +2706,108 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(second.Body).Decode(&body))
 	assert.Equal(t, "slow_down", body["error"])
+}
+
+// markMintedSpyStore reports the context state of each MarkMinted, which is the
+// write that afterCommit makes.
+type markMintedSpyStore struct {
+	store.Store
+	contextErrs chan error
+}
+
+func (s markMintedSpyStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return markMintedSpyCodes{OAuthAuthorizationCodeStore: s.Store.OAuthAuthorizationCodes(), contextErrs: s.contextErrs}
+}
+
+type markMintedSpyCodes struct {
+	store.OAuthAuthorizationCodeStore
+	contextErrs chan error
+}
+
+func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+	c.contextErrs <- ctx.Err()
+	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+}
+
+// issueLocalRedirectCode runs the consent that yields a one-shot code for the
+// control CLI's local redirect.
+func issueLocalRedirectCode(t *testing.T, env *apiAuthEnv) (code, verifier string) {
+	t.Helper()
+	cookie := env.elevatedAdminCookie(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	authClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	form := url.Values{
+		"client_id":             {oauthapp.ControlCLIClientID},
+		"response_type":         {"code"},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
+		"state":                 {id.Generate()},
+		"code_challenge":        {challenge},
+		"decision":              {"allow"},
+	}
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := authClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	code = loc.Query().Get("code")
+	require.NotEmpty(t, code)
+	return code, verifier
+}
+
+// The replay-revocation link is detached from its request, so a client that
+// disconnects cannot lose it. It must not be detached from the Hub: the store
+// closes at the end of the Hub's life, so the link has to end with it.
+func TestAPIAuth_CodeExchange_MarkMintedFollowsTheHubsLifetime(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		hubEnded bool
+		want     error
+	}{
+		{name: "a live hub lets the link land"},
+		{name: "an ended hub ends the link", hubEnded: true, want: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := setupAPIAuth(t)
+			code, verifier := issueLocalRedirectCode(t, env)
+			servingCtx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			if tc.hubEnded {
+				cancel()
+			}
+			contextErrs := make(chan error, 1)
+			mux := http.NewServeMux()
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			service.NewOAuthServerHandler(service.OAuthServerDeps{
+				Store:      markMintedSpyStore{Store: env.store, contextErrs: contextErrs},
+				Validator:  env.validator,
+				Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
+				HubURL:     func() string { return env.server.URL },
+				ServingCtx: servingCtx,
+			}).RegisterRoutes(mux)
+
+			resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
+				"grant_type":    {"authorization_code"},
+				"client_id":     {oauthapp.ControlCLIClientID},
+				"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+				"code":          {code},
+				"code_verifier": {verifier},
+			})
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			require.Equal(t, http.StatusOK, resp.StatusCode, "the mint itself runs on the request's context")
+
+			// issueTokenResponse runs afterCommit before it writes the response.
+			assert.ErrorIs(t, <-contextErrs, tc.want)
+		})
+	}
 }

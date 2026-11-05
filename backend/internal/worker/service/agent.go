@@ -174,9 +174,10 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if startupHandle == nil {
 				// Unreachable in practice -- agentID was minted a few lines above
 				// -- but the claim is the authority, so honour it rather than run
-				// a startup that owns no registry entry.
+				// a startup that owns no registry entry. During a shutdown the
+				// claim is refused by the latch, and the answer states that.
 				cancel()
-				sendFailedPrecondition(sender, "a startup for this agent is already in progress")
+				svc.sendStartupRefused(sender, "a startup for this agent is already in progress")
 				return
 			}
 
@@ -1699,6 +1700,10 @@ func deriveAgentStatus(a *db.Agent, live agentLiveness) (status leapmuxv1.AgentS
 // /clear recovers the agent in a fresh session (see clearRecovery), and a new
 // agent starts over.
 var errAgentStartupFailed = errors.New("agent failed to start; send /clear to start a fresh session, or open a new agent")
+
+// errWorkerShuttingDown is the cold-start refusal for a claim that
+// closeClaims refused: the Worker is going away and starts no process.
+var errWorkerShuttingDown = errors.New("the worker is shutting down")
 
 // agentStartupFailed reports whether the last startup of an agent failed and
 // no process runs for it. Two paths record such a failure: the open path
@@ -3792,6 +3797,9 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	handle, outcome := svc.AgentStartup.beginColdStart(agentID, cancel)
 	switch outcome {
 	case claimAdmitted:
+	case claimRefusedShuttingDown:
+		cancel()
+		return fmt.Errorf("agent %s takes no new process: %w", agentID, errWorkerShuttingDown)
 	case claimRefusedClosing:
 		cancel()
 		return fmt.Errorf("agent %s is closing; it takes no new process", agentID)
