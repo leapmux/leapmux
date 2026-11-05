@@ -197,6 +197,14 @@
       "parseAliases": [
         "muse"
       ]
+    },
+    "AGENT_PROVIDER_ANTIGRAVITY_CLI": {
+      "displayName": "Antigravity CLI",
+      "cliAlias": "antigravity-cli",
+      "parseAliases": [
+        "agy",
+        "antigravity"
+      ]
     }
   }
 }

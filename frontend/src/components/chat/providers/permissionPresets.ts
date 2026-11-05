@@ -1,6 +1,7 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ampPermissionPresets } from './amp/permissionPresets'
+import { antigravityPermissionPresets } from './antigravity/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
 import { clinePermissionPresets } from './cline/permissionPresets'
 import { codebuddyPermissionPresets } from './codebuddy/permissionPresets'
@@ -61,6 +62,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
   [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
   [AgentProvider.MUSE_CODE]: musePermissionPresets,
+  [AgentProvider.ANTIGRAVITY_CLI]: antigravityPermissionPresets,
   [AgentProvider.FAST_AGENT]: fastAgentPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 

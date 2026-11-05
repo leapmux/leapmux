@@ -1,6 +1,6 @@
 # LeapMux
 
-Multi-agent coding assistant platform for thirty agent providers.
+Multi-agent coding assistant platform for thirty-one agent providers.
 
 - Backend: Go
 - Frontend: SolidJS with vanilla-extract CSS (`.css.ts` files)
@@ -164,8 +164,8 @@ Each provider is a Go package under `backend/internal/worker/agent/providers/`,
 as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
 These providers read their own native protocol: `claude`, `codex`, `copilot`,
 `pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`, `codebuddy`,
-`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`, `muse`. These speak the
-Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
+`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`, `muse`, `antigravity`.
+These speak the Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
 `opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`, `dirac`,
 `fastagent`, `gemini`, `junie`.
 Copilot is NOT ACP — `providers/copilot/connection_test.go` and
@@ -181,6 +181,9 @@ so it shares no code with `claude`. Cline (`cline`) also offers an ACP mode, but
 questions, plan approval, steering, the session list, images and reasoning
 effort. Muse (`muse`) speaks its native Muse Session Protocol (MSP) through
 `muse serve`, which exposes more required controls than Muse's ACP adapter.
+Antigravity CLI (`antigravity`) hosts its language server through `agy acp` and
+speaks the LS protocol, because ACP delivers nothing between prompts and
+`agy --hub` ignores the approval config.
 
 Anything depending on **one provider's wire format or message shapes** MUST live
 in that provider's package, never in shared code (package `agent`,

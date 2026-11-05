@@ -44,7 +44,7 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 31),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT

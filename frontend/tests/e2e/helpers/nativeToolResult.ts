@@ -9,10 +9,14 @@ function objectItems(value: unknown): Record<string, unknown>[] {
     : []
 }
 
+export interface NativeToolResultOptions {
+  roles?: readonly ('user' | 'model')[]
+}
+
 /** Where one protocol keeps the result entries of a request, and which field of an entry holds the content. */
 interface ResultLocation {
   /** Every result entry of the request with this call ID. */
-  entries: (request: MockModelRequestRecord, callId: string) => Record<string, unknown>[]
+  entries: (request: MockModelRequestRecord, callId: string, roles: readonly ('user' | 'model')[]) => Record<string, unknown>[]
   /** The field of an entry that holds its native content. */
   content: string
 }
@@ -29,8 +33,8 @@ const RESULT_LOCATIONS: Readonly<Record<MockModelRequestRecord['protocol'], Resu
     content: 'output',
   },
   'google-generative-language': {
-    entries: (request, callId) => objectItems(requestRows(request.protocol, request.body))
-      .filter(message => message.role === 'user')
+    entries: (request, callId, roles) => objectItems(requestRows(request.protocol, request.body))
+      .filter(message => roles.includes(message.role as 'user' | 'model'))
       .flatMap(message => objectItems(message.parts))
       .map(part => part.functionResponse)
       .filter(isObject)
@@ -62,8 +66,8 @@ function recordedRequest(request: MockModelRequestRecord | undefined, callId: st
   return request
 }
 
-function onlyEntry(request: MockModelRequestRecord, callId: string): Record<string, unknown> {
-  const entries = RESULT_LOCATIONS[request.protocol].entries(request, callId)
+function onlyEntry(request: MockModelRequestRecord, callId: string, options?: NativeToolResultOptions): Record<string, unknown> {
+  const entries = RESULT_LOCATIONS[request.protocol].entries(request, callId, options?.roles ?? ['user'])
   if (entries.length !== 1)
     throw new Error(`The native request contains ${entries.length} results for ${callId}. Exactly one result is required.`)
   return entries[0]!
@@ -73,30 +77,30 @@ function onlyEntry(request: MockModelRequestRecord, callId: string): Record<stri
  * Read the one native result entry for a tool call: the whole entry, so a provider reader can also read a field
  * beside the content, such as Kiro's `status`.
  */
-export function nativeToolResultEntry(request: MockModelRequestRecord | undefined, callId: string): Record<string, unknown> {
-  return onlyEntry(recordedRequest(request, callId), callId)
+export function nativeToolResultEntry(request: MockModelRequestRecord | undefined, callId: string, options?: NativeToolResultOptions): Record<string, unknown> {
+  return onlyEntry(recordedRequest(request, callId), callId, options)
 }
 
 /** Read only the native content for one tool call. Preserve its original type for provider validation. */
-export function nativeToolResultContent(request: MockModelRequestRecord | undefined, callId: string): unknown {
+export function nativeToolResultContent(request: MockModelRequestRecord | undefined, callId: string, options?: NativeToolResultOptions): unknown {
   const recorded = recordedRequest(request, callId)
-  const content = onlyEntry(recorded, callId)[RESULT_LOCATIONS[recorded.protocol].content]
+  const content = onlyEntry(recorded, callId, options)[RESULT_LOCATIONS[recorded.protocol].content]
   if (content === undefined || content === null)
     throw new Error(`The native result for ${callId} has no content.`)
   return content
 }
 
 /** Serialize one exact native result. The call arguments can repeat every offered answer. */
-export function nativeToolResult(request: MockModelRequestRecord | undefined, callId: string): string {
-  const content = nativeToolResultContent(request, callId)
+export function nativeToolResult(request: MockModelRequestRecord | undefined, callId: string, options?: NativeToolResultOptions): string {
+  const content = nativeToolResultContent(request, callId, options)
   return typeof content === 'string'
     ? content
     : JSON.stringify(content)
 }
 
 /** Whether the request carries a result for the call, in its protocol's result location. */
-export function hasNativeToolResult(request: MockModelRequestRecord, callId: string): boolean {
-  return RESULT_LOCATIONS[request.protocol].entries(request, callId).length > 0
+export function hasNativeToolResult(request: MockModelRequestRecord, callId: string, options?: NativeToolResultOptions): boolean {
+  return RESULT_LOCATIONS[request.protocol].entries(request, callId, options?.roles ?? ['user']).length > 0
 }
 
 /** One tool call that a model request carries in its history: the native ID, the tool name, and the arguments. */

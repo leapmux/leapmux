@@ -1,5 +1,6 @@
 import { base64ToUint8Array, uint8ArrayToBase64 } from '~/lib/base64'
 import { sniffImageDimensionsFromBase64 } from '~/lib/imageDimensions'
+import antigravityCli from '../../../../icons/agents/antigravity-cli.svg?raw'
 import commandCode from '../../../../icons/agents/command-code.svg?raw'
 import deepseekHarness from '../../../../icons/agents/deepseek-harness.svg?raw'
 import geminiCli from '../../../../icons/agents/gemini-cli.svg?raw'
@@ -264,6 +265,7 @@ export function readNativeProviderMark(source: string): NativeProviderMark {
 }
 
 export const NATIVE_PROVIDER_MARKS = {
+  antigravityCli: readNativeProviderMark(antigravityCli),
   commandCode: readNativeProviderMark(commandCode),
   deepseekHarness: readNativeProviderMark(deepseekHarness),
   geminiCli: readNativeProviderMark(geminiCli),

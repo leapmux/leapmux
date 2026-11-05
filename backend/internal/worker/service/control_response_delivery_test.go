@@ -326,3 +326,28 @@ func processControlResponseForTest(svc *Service, agentID string, row db.Agent, c
 	err := svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: agentID, Content: content, ClaimToken: claimToken})
 	return received, delivered, err
 }
+
+func TestExecuteControlResponseRoutesVirtualChildToRootProcess(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "root")
+	root, err := svc.Queries.GetAgentByID(t.Context(), "root")
+	require.NoError(t, err)
+	require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
+		ID: "child", ParentAgentID: sqlString(root.ID), ProviderChildKey: "native-child",
+		WorkingDir: root.WorkingDir, Title: "Child", Options: root.Options,
+		AgentProvider: root.AgentProvider, AgentSessionID: "child-session",
+	}))
+	child, err := svc.Queries.GetAgentByID(t.Context(), "child")
+	require.NoError(t, err)
+	var owner string
+	svc.sendControlResponseFn = func(agentID string, _ []byte) error {
+		owner = agentID
+		return nil
+	}
+	err = svc.executeControlResponse(child.ID, child, controlResponsePlan{
+		requestMeta: controlResponseRequestMetadata{RequestID: "request", AgentSessionID: "child-session"},
+		resolution:  agent.ControlResponseResolution{Content: []byte("answer")},
+	})
+	require.NoError(t, err)
+	require.Equal(t, root.ID, owner)
+}

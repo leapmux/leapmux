@@ -31,3 +31,4 @@ import './deepseekharness/plugin'
 import './gemini/plugin'
 
 import './muse/plugin'
+import './antigravity/plugin'

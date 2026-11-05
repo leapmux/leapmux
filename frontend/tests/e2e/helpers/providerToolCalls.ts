@@ -7,6 +7,7 @@ import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNa
 import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
 import { MUSE_TOOL, MUSE_TOOL_NAMESPACE } from '../../../src/components/chat/providers/muse/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
+import { ANTIGRAVITY_TOOL } from '../../../src/generated/contracts/antigravity-protocol'
 import { CLINE_TOOL } from '../../../src/generated/contracts/cline-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
 import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
@@ -2905,6 +2906,69 @@ const TOOL_VOCABULARY = {
     codeExecution: null,
     workflowTools: null,
   },
+  [AgentProvider.ANTIGRAVITY_CLI]: {
+    bash: (id, command) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.RunCommand,
+      arguments: { CommandLine: command, WaitMsBeforeAsync: 1000, toolSummary: command },
+    }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.RunCommand,
+      arguments: { CommandLine: command, WaitMsBeforeAsync: 0, toolSummary: command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.EditFile,
+      arguments: { Path: path, Target: before, Replacement: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.WriteFile,
+      arguments: { Path: path, Content: content, Overwrite: true },
+    }),
+    read: (id, path) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.ReadFile,
+      arguments: { Path: path },
+    }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.AskQuestion,
+      arguments: {
+        questions: questions.map(question => ({
+          question: question.question,
+          options: question.options.map(option => option.label),
+          is_multi_select: question.multiSelect,
+        })),
+      },
+    })),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.InvokeSubagent,
+      arguments: {
+        TypeName: 'research',
+        Role: description,
+        Prompt: prompt,
+        Model: 'inherit',
+      },
+    }),
+    spawnSubagentBatch: null,
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: ANTIGRAVITY_TOOL.CallMcpTool,
+      arguments: { ServerName: server, ToolName: tool, Arguments: input },
+    }),
+    codeExecution: null,
+    workflowTools: null,
+  },
   [AgentProvider.MUSE_CODE]: {
     bash: (id, command) => ({
       id,
@@ -3606,6 +3670,15 @@ export function copilotApplyPatchToolCall(id: string, patch: string): MockModelT
 /** A file read, in the provider's own read tool. */
 export function readToolCall(provider: AgentProvider, id: string, path: string): MockModelToolCall {
   return requireBuilder(vocabulary(provider).read, provider, 'read')(id, path)
+}
+
+/** Read a file through the tool that Antigravity gives its subagents. */
+export function viewFileToolCall(id: string, path: string): MockModelToolCall {
+  return {
+    id,
+    name: ANTIGRAVITY_TOOL.ViewFile,
+    arguments: { AbsolutePath: path },
+  }
 }
 
 export function zcodeReadRangeToolCall(id: string, path: string, range: { offset: number, limit: number }): MockModelToolCall {

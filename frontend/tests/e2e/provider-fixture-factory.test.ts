@@ -170,7 +170,9 @@ async function providerTestObjects(): Promise<ProviderTestObject[]> {
  */
 const UNIT_FIXTURES = {
   page: Object.freeze({}),
-  modelScript: Object.freeze({}),
+  modelScript: Object.freeze({
+    rule: vi.fn(),
+  }),
   leapmuxServer: Object.freeze({}),
   workspaceId: 'unit-workspace',
 } as unknown as NativeContextFixtures

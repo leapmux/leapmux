@@ -106,6 +106,7 @@ import {
   spawnSubagentBatchToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
+  viewFileToolCall,
   WORKFLOW_TOOL_NAMES,
   workflowToolNames,
   writeToolCall,
@@ -992,6 +993,16 @@ describe('readToolCall', () => {
   })
 })
 
+describe('viewFileToolCall', () => {
+  it('uses the file tool that Antigravity gives its subagents', () => {
+    expect(viewFileToolCall('child-read', '/work/child.txt')).toEqual({
+      id: 'child-read',
+      name: 'view_file',
+      arguments: { AbsolutePath: '/work/child.txt' },
+    })
+  })
+})
+
 describe('codexExecToolCall', () => {
   it('preserves the native freeform JavaScript source without adding function arguments', () => {
     const source = 'const values = await Promise.all([tools.first(), tools.second()]);\ntext(values)'
@@ -1445,7 +1456,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(30)
+    expect(PROVIDERS).toHaveLength(31)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })

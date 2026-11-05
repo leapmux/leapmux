@@ -115,6 +115,8 @@ export const MOCK_MODELS = {
   fastagent: 'fastagent-e2e',
   /** Muse Code uses the native Responses provider. */
   muse: 'muse-spark-1.2',
+  /** Antigravity CLI, over the Google generative-language protocol. */
+  antigravity: 'gemini-3.8-flash',
   /** Muse Code's second bundled Spark route, which a settings spec switches to. */
   museAlt: 'muse-spark-1.3',
 } as const
@@ -583,6 +585,7 @@ export async function createMockAgentEnvironment(
         modelID: GEMINI_MODEL_ID,
         mcpServers,
       }),
+      LEAPMUX_ANTIGRAVITY_DEFAULT_MODEL: MOCK_MODELS.antigravity,
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },
   }

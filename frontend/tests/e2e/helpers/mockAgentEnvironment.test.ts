@@ -1462,3 +1462,14 @@ describe('createMockAgentEnvironment updater switches', () => {
     expect(readdirSync(join(installed, 'shim'))).toEqual(['junie.sh'])
   })
 })
+
+describe('the Antigravity CLI mock environment', () => {
+  it('supplies API-key auth and the pinned catalog model', async () => {
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    expect(env.GEMINI_API_KEY).toBe('leapmux-e2e-model-key')
+    expect(env.GOOGLE_GEMINI_BASE_URL).toBe('http://127.0.0.1:43210')
+    expect(env.GOOGLE_API_KEY).toBe('')
+    expect(env.GOOGLE_GENAI_USE_VERTEXAI).toBe('false')
+    expect(env.LEAPMUX_ANTIGRAVITY_DEFAULT_MODEL).toBe(MOCK_MODELS.antigravity)
+  })
+})

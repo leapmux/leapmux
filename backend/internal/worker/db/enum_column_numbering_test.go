@@ -399,8 +399,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			// agents is the one table that stores a provider: a message and a
 			// control answer report the provider of their agent.
 			column:       "agents.agent_provider",
-			check:        "CHECK (agent_provider BETWEEN 1 AND 30)",
-			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE),
+			check:        "CHECK (agent_provider BETWEEN 1 AND 31)",
+			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 	} {
@@ -446,7 +446,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE); ordinal++ {
+	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI); ordinal++ {
 		_, declared := leapmuxv1.AgentProvider_name[ordinal]
 		assert.Truef(t, declared,
 			"AgentProvider %d is a hole; the agents.agent_provider CHECK states a plain range, so either close it by renumbering or narrow it", ordinal)
@@ -597,7 +597,7 @@ func TestAgentProviderColumnRefusesUnspecified(t *testing.T) {
 	// One past the last declared provider. The CHECK states a plain range now,
 	// so its ceiling is the only thing standing between an unset enum and a row
 	// nobody can read back.
-	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE) + 1)
+	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI) + 1)
 	assert.ErrorContains(t, createAgent("beyond-last-ordinal", beyondLast),
 		"CHECK constraint failed", "an ordinal past the last declared provider is refused")
 }

@@ -1362,6 +1362,78 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'notification',
   },
 
+  // --- Antigravity CLI ---------------------------------------------------
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'assistant text',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: { modifiedResponse: 'Native answer.' },
+    },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'reasoning',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: { thinking: 'Consider the source.' },
+    },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'command tool call',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      status: 'CORTEX_STEP_STATUS_RUNNING',
+      metadata: {
+        toolCall: { id: 'call', name: 'run_command', argumentsJson: '{"CommandLine":"printf native"}' },
+      },
+      runCommand: { commandLine: 'printf native', cwd: '/project' },
+    },
+    category: 'tool_use',
+    spanType: 'antigravity_step',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'command tool result',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_RUN_COMMAND',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      metadata: {
+        toolCall: { id: 'call', name: 'run_command', argumentsJson: '{"CommandLine":"printf native"}' },
+      },
+      runCommand: {
+        commandLine: 'printf native',
+        exitCode: 0,
+        combinedOutput: { full: 'native\n' },
+      },
+    },
+    category: 'tool_result',
+    spanType: 'antigravity_step',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'turn end',
+    payload: { name: 'antigravity_turn_end', num_tool_uses: 1 },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.ANTIGRAVITY_CLI,
+    name: 'model error',
+    payload: {
+      type: 'CORTEX_STEP_TYPE_ERROR_MESSAGE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      errorMessage: {
+        error: { userErrorMessage: 'Agent execution terminated due to error.', shortError: 'Native failure' },
+      },
+    },
+    category: 'notification',
+  },
+
   // --- The rows LeapMux writes itself ------------------------------------
   //
   // Each carries LeapMux's own envelope rather than a provider frame, so every

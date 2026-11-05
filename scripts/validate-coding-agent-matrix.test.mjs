@@ -1316,7 +1316,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1187, 'agent-limit': 433, 'leapmux-limit': 0 })
+      expect(counts).toEqual({ 'supported': 1228, 'agent-limit': 446, 'leapmux-limit': 0 })
       expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
         support: 'supported',
         audit: 'source-verified',

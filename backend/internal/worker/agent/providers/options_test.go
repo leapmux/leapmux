@@ -43,6 +43,7 @@ func TestProviderManagesEffort(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:            true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:            true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI:  true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {

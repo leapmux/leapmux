@@ -66,7 +66,16 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	}
 	// processControlResponse refuses a withheld resolution before it calls this
 	// function, so every plan that arrives here forwards its content.
-	return svc.sendControlResponseFn(agentID, plan.resolution.Content)
+	// A virtual child has no process of its own. Its root provider owns every
+	// native child session, so the answer must use the root's process route.
+	ownerID := agentID
+	if latest.ParentAgentID.Valid {
+		ownerID, err = svc.Queries.GetRootAgentID(bgCtx(), agentID)
+		if err != nil {
+			return fmt.Errorf("resolve the root provider process for a control response: %w", err)
+		}
+	}
+	return svc.sendControlResponseFn(ownerID, plan.resolution.Content)
 }
 
 func (svc *Service) executePlanPromptResponse(agentID string, currentAgent db.Agent, plan controlResponsePlan) error {

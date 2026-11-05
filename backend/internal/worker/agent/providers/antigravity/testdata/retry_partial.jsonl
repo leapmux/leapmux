@@ -1,0 +1,5 @@
+{"status":"CASCADE_RUN_STATUS_RUNNING","mainTrajectoryUpdate":{"stepsUpdate":{"indices":[0],"steps":[{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"modifiedResponse":"HELLO WRONG"}}],"totalLength":1}}}
+{"status":"CASCADE_RUN_STATUS_RUNNING","mainTrajectoryUpdate":{"stepsUpdate":{"indices":[1],"steps":[{"type":"CORTEX_STEP_TYPE_ERROR_MESSAGE","status":"CORTEX_STEP_STATUS_DONE","errorMessage":{"error":{"userErrorMessage":"Agent execution terminated due to error.","shortError":"stream interrupted"}}}],"totalLength":2}}}
+{"status":"CASCADE_RUN_STATUS_RUNNING","executionStatus":{"modelRequest":{"attempt":1,"maxAttempts":9,"retryAt":"2026-01-01T00:00:01Z"}}}
+{"status":"CASCADE_RUN_STATUS_RUNNING","mainTrajectoryUpdate":{"stepsUpdate":{"indices":[2],"steps":[{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE","plannerResponse":{"modifiedResponse":"HI THERE"}}],"totalLength":3}}}
+{"status":"CASCADE_RUN_STATUS_IDLE","fullyIdle":true}

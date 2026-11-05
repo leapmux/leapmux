@@ -50,6 +50,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: "deepseekharness",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        "muse",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       "gemini",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI:  "antigravity",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -83,6 +84,13 @@ var requiredSuites = map[string][]string{
 	},
 	"amp": {
 		"AssertUnknownFramePersists",
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"antigravity": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
