@@ -74,18 +74,19 @@ runs:
       # spells a cache layout.
       shell: bash
       env:
-        GO_WORKSPACE_KEY: go-modules-2-${{ runner.os }}-${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
-        GO_SITE_KEY: site-go-modules-2-${{ runner.os }}-${{ hashFiles('site/go.mod', 'site/go.sum') }}
-        BUN_KEY: bun-packages-2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
-        CARGO_KEY: cargo-downloads-2-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+        GO_SCOPE: ${{ inputs.go-scope }}
+        GO_WORKSPACE_HASH: ${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
+        GO_SITE_HASH: ${{ hashFiles('site/go.mod', 'site/go.sum') }}
+        BUN_HASH: ${{ hashFiles('frontend/bun.lock') }}
+        CARGO_HASH: ${{ hashFiles('desktop/rust/Cargo.lock') }}
       run: |
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          gomodcache="$USERPROFILE\\go\\pkg\\mod"
-          bun_cache="$USERPROFILE\\.bun\\install\\cache"
-        else
-          gomodcache="$HOME/go/pkg/mod"
-          bun_cache="$HOME/.bun/install/cache"
-        fi
+        case "$GO_SCOPE" in
+          site) go_kind=site-go-modules; go_hash="$GO_SITE_HASH"; go_directory=site; go_work=off ;;
+          workspace) go_kind=go-modules; go_hash="$GO_WORKSPACE_HASH"; go_directory=.; go_work='' ;;
+          *) echo "Invalid go-scope: $GO_SCOPE" >&2; exit 1 ;;
+        esac
+        gomodcache="$(node scripts/cache-snapshot.mjs active-path --kind "$go_kind" --root gomod)"
+        bun_cache="$(node scripts/cache-snapshot.mjs active-path --kind bun-packages --root bun-cache)"
         {
           echo "GOMODCACHE=$gomodcache"
           echo "BUN_INSTALL_CACHE_DIR=$bun_cache"
@@ -93,17 +94,14 @@ runs:
         {
           echo "go-modcache=$gomodcache"
           echo "bun-cache=$bun_cache"
-          if [ "${{ inputs.go-scope }}" = "site" ]; then
-            echo "go-kind=site-go-modules"
-            echo "go-key=$GO_SITE_KEY"
-          else
-            echo "go-kind=go-modules"
-            echo "go-key=$GO_WORKSPACE_KEY"
-          fi
-          echo "go-payload=$(node scripts/cache-snapshot.mjs payload-path --kind go-modules --root gomod)"
-          echo "bun-key=$BUN_KEY"
+          echo "go-kind=$go_kind"
+          echo "go-directory=$go_directory"
+          echo "go-work=$go_work"
+          echo "go-key=$(node scripts/cache-snapshot.mjs key --kind "$go_kind" --hash "$go_hash")"
+          echo "go-payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$go_kind" --root gomod)"
+          echo "bun-key=$(node scripts/cache-snapshot.mjs key --kind bun-packages --hash "$BUN_HASH")"
           echo "bun-payload=$(node scripts/cache-snapshot.mjs payload-path --kind bun-packages --root bun-cache)"
-          echo "cargo-key=$CARGO_KEY"
+          echo "cargo-key=$(node scripts/cache-snapshot.mjs key --kind cargo-downloads --hash "$CARGO_HASH")"
           echo "cargo-payload=$(node scripts/cache-snapshot.mjs payload-path --kind cargo-downloads --root cargo-home)"
         } >> "$GITHUB_OUTPUT"
 
@@ -124,9 +122,10 @@ runs:
       # with GOWORK=off from site/.
       if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
       shell: bash
-      working-directory: ${{ inputs.go-scope == 'site' && 'site' || '.' }}
+      working-directory: ${{ steps.paths.outputs.go-directory }}
       env:
         GOMODCACHE: ${{ steps.paths.outputs.go-payload }}
+        GOWORK: ${{ steps.paths.outputs.go-work }}
       run: go mod download
 
     - name: Publish the Go module downloads to the active cache
@@ -138,7 +137,7 @@ runs:
       run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
 
     - name: Save the Go module archive
-      if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
+      if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.save-required == 'true'
       uses: ./.github/actions/save-cache-snapshot
       with:
         kind: ${{ steps.paths.outputs.go-kind }}
@@ -147,7 +146,7 @@ runs:
     - name: Clean the Go module staging
       # A restore-only caller or an exact hit never saves, so the restored
       # staging payload has no future after activation copied it.
-      if: inputs.go == 'true' && (inputs.populate != 'true' || steps.go.outputs.cache-hit == 'true')
+      if: always() && inputs.go == 'true' && steps.paths.outcome == 'success'
       shell: bash
       run: node scripts/cache-snapshot.mjs cleanup --kind "${{ steps.paths.outputs.go-kind }}"
 
@@ -179,14 +178,14 @@ runs:
       run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
 
     - name: Save the Bun package archive
-      if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.cache-hit != 'true'
+      if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.save-required == 'true'
       uses: ./.github/actions/save-cache-snapshot
       with:
         kind: bun-packages
         key: ${{ steps.paths.outputs.bun-key }}
 
     - name: Clean the Bun package staging
-      if: inputs.bun == 'true' && (inputs.populate != 'true' || steps.bun.outputs.cache-hit == 'true')
+      if: always() && inputs.bun == 'true' && steps.paths.outcome == 'success'
       shell: bash
       run: node scripts/cache-snapshot.mjs cleanup --kind bun-packages
 
@@ -221,13 +220,13 @@ runs:
       run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
 
     - name: Save the Cargo registry archive
-      if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.cache-hit != 'true'
+      if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.save-required == 'true'
       uses: ./.github/actions/save-cache-snapshot
       with:
         kind: cargo-downloads
         key: ${{ steps.paths.outputs.cargo-key }}
 
     - name: Clean the Cargo registry staging
-      if: inputs.cargo == 'true' && (inputs.populate != 'true' || steps.cargo.outputs.cache-hit == 'true')
+      if: always() && inputs.cargo == 'true' && steps.paths.outcome == 'success'
       shell: bash
       run: node scripts/cache-snapshot.mjs cleanup --kind cargo-downloads

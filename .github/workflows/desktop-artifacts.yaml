@@ -75,14 +75,14 @@ jobs:
         # The artifact job completed a full packaging build, so it publishes
         # the trimmed Tauri tool cache. It remains a reader of the compiled
         # caches and saves none of them.
-        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: tauri-tools
           key: ${{ steps.setup.outputs.tauri-cache-key }}
 
       - name: Save the spinner source snapshot
-        if: steps.setup.outputs.spinner-cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners
@@ -150,7 +150,7 @@ jobs:
         run: task check-build-cache
 
       - name: Save the spinner source snapshot
-        if: steps.setup.outputs.spinner-cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners
@@ -388,14 +388,14 @@ jobs:
         run: task check-build-cache
 
       - name: Save the Tauri tool snapshot
-        if: steps.setup.outputs.tauri-cache-hit != 'true'
+        if: steps.setup.outputs.tauri-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: tauri-tools
           key: ${{ steps.setup.outputs.tauri-cache-key }}
 
       - name: Save the spinner source snapshot
-        if: steps.setup.outputs.spinner-cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners

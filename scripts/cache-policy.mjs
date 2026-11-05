@@ -148,18 +148,14 @@ const prefixBuilders = {
 // - 'activate-then-produce': restoration activates a snapshot or starts from
 //   empty owned roots, the workload produces into the active roots, and
 //   preparation copies the trimmed selection into the payload.
-// - 'workflow-managed': the producing workflow step trims and stages the
-//   payload itself; preparation validates and measures it.
 const POPULATION_ISOLATED_DOWNLOAD = 'isolated-download'
 const POPULATION_ACTIVATE_THEN_PRODUCE = 'activate-then-produce'
-const POPULATION_WORKFLOW_MANAGED = 'workflow-managed'
 
 // Trim rules that preparation executes in place before it selects the
-// payload. 'workflow-trim' kinds are trimmed by their producing step through
-// the trim verb of the snapshot CLI.
+// payload. Every kind selects its files before preparation checks capacity.
 const TRIM_NONE = 'none'
 const TRIM_RUST = 'rust'
-const TRIM_APT = 'workflow-trim-apt'
+const TRIM_APT = 'apt'
 
 // writerScope 'main' refuses preparation when the job does not run on a
 // main-branch push or manual dispatch, which keeps compiled-cache
@@ -294,8 +290,8 @@ const CACHE_POLICIES = {
     trim: TRIM_RUST,
     writerScope: WRITER_SCOPE_MAIN,
     writers: 'Only the CI platform jobs on a main-branch push or dispatch, after all required validation.',
-    keyedByWeek: true,
-    // The Rust key carries no weekly epoch: the trimming rule bounds its
+    keyedByWeek: false,
+    // The Rust key carries no weekly epoch: the trimming rule restricts its
     // growth, and a weekly rotation would cold-build every dependency tree
     // each Monday as the combined upstream cache did not.
     hashSegment: 'required',
@@ -375,7 +371,7 @@ const CACHE_POLICIES = {
     kind: 'apt-packages',
     category: 'tool',
     description: 'Downloaded prerequisite packages whose package, version, and architecture match the successful installation.',
-    population: POPULATION_WORKFLOW_MANAGED,
+    population: POPULATION_ACTIVATE_THEN_PRODUCE,
     trim: TRIM_APT,
     writerScope: WRITER_SCOPE_ANY,
     writers: 'Any Linux desktop job after a successful prerequisite installation and trim.',
@@ -389,7 +385,6 @@ const CACHE_POLICIES = {
         name: 'apt-archives',
         type: 'tree',
         required: true,
-        requiredNonEmpty: true,
         mode: 'merge',
         clearOnWriterMiss: false,
         active: activeRoots.aptArchives,
@@ -540,12 +535,11 @@ export function validatePolicy(policy) {
 for (const policy of Object.values(CACHE_POLICIES))
   validatePolicy(policy)
 
-/** Return the frozen policy of one cache kind, or throw for an unknown kind. */
+/** Return the policy of one cache kind, or throw for an unknown kind. */
 export function cachePolicy(kind) {
-  const policy = CACHE_POLICIES[kind]
-  if (!policy)
-    throw new Error(`Unknown cache kind: ${kind}. Known kinds: ${POLICY_KINDS.join(', ')}.`)
-  return policy
+  if (typeof kind !== 'string' || !Object.hasOwn(CACHE_POLICIES, kind))
+    throw new Error(`Unknown cache kind: ${String(kind)}. Known kinds: ${POLICY_KINDS.join(', ')}.`)
+  return CACHE_POLICIES[kind]
 }
 
 /** Return every known cache kind. */

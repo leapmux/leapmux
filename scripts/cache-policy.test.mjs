@@ -35,6 +35,9 @@ const hash = 'a'.repeat(64)
 
 describe('cache snapshot core', () => {
   describe('cachePolicy', () => {
+    it('rejects inherited object members as unknown cache kinds', () => {
+      for (const kind of ['constructor', '__proto__', 'toString']) expect(() => cachePolicy(kind)).toThrow('Unknown cache kind')
+    })
     it('defines one policy for every supported kind', () => {
       const kinds = cacheKinds()
       expect(kinds).toHaveLength(12)
@@ -188,7 +191,7 @@ describe('cache snapshot core', () => {
         ],
         [
           'native-rust',
-          { hash, week: '2027-W01' },
+          { hash },
         ],
         [
           'docker-go',

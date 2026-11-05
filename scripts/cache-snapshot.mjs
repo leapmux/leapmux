@@ -27,13 +27,15 @@ import {
   unlinkSync,
   utimesSync,
 } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import path, { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import {
   activeRootsFor,
+  cacheKey,
   cachePolicy,
   partitionPrefix,
+  restoreKeys,
   rootActivePath,
   rootPayloadPath,
   snapshotPaths,
@@ -53,9 +55,10 @@ const UNAVAILABLE = 'unavailable'
 export function measureCacheTree(directory) {
   const stat = lstatSync(directory)
   if (!stat.isDirectory())
-    return { bytes: stat.size, files: 1 }
+    return { bytes: stat.size, files: 1, directories: 0 }
   let bytes = 0
   let files = 0
+  let directories = 1
   const stack = [directory]
   while (stack.length > 0) {
     const current = stack.pop()
@@ -68,6 +71,7 @@ export function measureCacheTree(directory) {
         continue
       }
       if (entry.isDirectory()) {
+        directories++
         stack.push(path)
         continue
       }
@@ -75,19 +79,21 @@ export function measureCacheTree(directory) {
       files++
     }
   }
-  return { bytes, files }
+  return { bytes, files, directories }
 }
 
 /**
  * Free disk bytes and available inodes of the volume that holds `directory`,
  * or null fields when the filesystem does not expose them.
  */
-export function filesystemCapacity(directory) {
+export function filesystemCapacity(directory, statfs = statfsSync) {
   try {
-    const stat = statfsSync(directory)
+    const stat = statfs(directory)
     return {
       freeBytes: Number(stat.bavail) * Number(stat.bsize),
-      availableInodes: Number(stat.ffree),
+      availableInodes: Number(stat.files) > 0
+        ? Number(stat.ffree)
+        : null,
     }
   }
   catch {
@@ -110,10 +116,13 @@ function formatCount(value) {
 function copyEntryPreserving(source, destination) {
   const stat = lstatSync(source)
   if (stat.isSymbolicLink()) {
+    removePath(destination)
     symlinkSync(readlinkSync(source), destination)
     return
   }
   if (stat.isFile()) {
+    if (pathExists(destination) && !lstatSync(destination).isFile())
+      removePath(destination)
     try {
       copyFileSync(source, destination)
     }
@@ -130,7 +139,10 @@ function copyEntryPreserving(source, destination) {
     return
   }
   if (stat.isDirectory()) {
+    if (pathExists(destination) && !lstatSync(destination).isDirectory())
+      removePath(destination)
     mkdirSync(destination, { recursive: true })
+    chmodSync(destination, stat.mode | 0o200)
     for (const entry of readdirSync(source, { withFileTypes: true }))
       copyEntryPreserving(join(source, entry.name), join(destination, entry.name))
     // The directory mode applies only after its children exist: a tool
@@ -149,8 +161,10 @@ function pathExists(path) {
     lstatSync(path)
     return true
   }
-  catch {
-    return false
+  catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+      return false
+    throw error
   }
 }
 
@@ -194,10 +208,17 @@ function removePath(path) {
   }
 }
 
-function assertInsideStaging(path, kind, workspace) {
-  const normalized = resolve(path)
+export function isWithinDirectory(parent, candidate, paths = path) {
+  const normalized = paths.resolve(candidate)
+  const expected = paths.resolve(parent)
+  const relative = paths.relative(expected, normalized)
+  return relative === '' || (!paths.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${paths.sep}`))
+}
+
+function assertInsideStaging(candidate, kind, workspace) {
+  const normalized = resolve(candidate)
   const expected = resolve(snapshotPaths(kind, workspace).stagingRoot)
-  if (!normalized.startsWith(`${expected}/`) && normalized !== expected)
+  if (!isWithinDirectory(expected, normalized))
     throw new Error(`Refusing to operate on ${normalized}: it is not inside the ${kind} staging root.`)
 }
 
@@ -212,9 +233,7 @@ function moveTree(source, destination, kind, log, rename = renameSync, capacityI
       throw error
   }
   const size = measureCacheTree(source)
-  const capacity = capacityImpl(dirname(destination))
-  if (capacity.freeBytes !== null && capacity.freeBytes < size.bytes * CAPACITY_BYTES_MULTIPLIER + CAPACITY_BYTES_HEADROOM)
-    throw new Error(`Cannot copy the ${kind} cache root to its active volume: ${capacity.freeBytes} free bytes are below the ${size.bytes} bytes to copy plus headroom.`)
+  requireCopyCapacity(source, destination, kind, capacityImpl)
   log(`Copying ${size.bytes} bytes across volumes from ${source} to ${destination}.`)
   copyEntryPreserving(source, destination)
   removePath(source)
@@ -248,6 +267,7 @@ function activateRoot(root, kind, log, fsImpl = {}) {
   const keepPayload = cachePolicy(kind).population === 'isolated-download'
   if (root.type === 'file') {
     mkdirSync(dirname(root.active), { recursive: true })
+    requireCopyCapacity(root.payload, dirname(root.active), kind, capacityImpl)
     copy(root.payload, root.active)
     if (!keepPayload)
       unlinkSync(root.payload)
@@ -257,6 +277,7 @@ function activateRoot(root, kind, log, fsImpl = {}) {
     // Merge into the active downloads without removing anything, so the next
     // consumer reads the dependency without downloading it again. The
     // payload stays in place for the archive transport.
+    requireCopyCapacity(root.payload, root.active, kind, capacityImpl)
     copy(root.payload, root.active)
     return
   }
@@ -307,7 +328,7 @@ export async function activateCacheSnapshot({
   log = () => {},
   fsImpl = {},
 }) {
-  cachePolicy(kind)
+  const policy = cachePolicy(kind)
   validateCacheKey(kind, key, env)
   if (writer && matchedKey && !exactHit)
     throw new Error(`A ${kind} writer must not restore a fallback snapshot. Writers start from empty owned roots.`)
@@ -318,7 +339,7 @@ export async function activateCacheSnapshot({
     validation = validatePayloadRoots(kind, roots)
   const usableExact = exactHit && validation.valid
   if (exactHit && !validation.valid)
-    log(`An exact hit restored an unusable payload: ${validation.reason} Continuing as a miss.`)
+    log(`An exact hit restored an unusable payload: ${validation.reason} Rebuilding active data without replacing the occupied archive key.`)
   if (usableExact || (!exactHit && matchedKey && validation.valid)) {
     log(`${usableExact ? 'Activating an exact' : 'Activating a fallback'} ${kind} snapshot.`)
     for (const root of roots) {
@@ -332,6 +353,8 @@ export async function activateCacheSnapshot({
     }
     return {
       outcome: usableExact ? 'activated-exact' : 'activated-fallback',
+      cacheHit: usableExact,
+      saveRequired: false,
       activePath: roots[0].active,
     }
   }
@@ -340,17 +363,29 @@ export async function activateCacheSnapshot({
     // A writer owns an empty payload root from this point on: the population
     // of an isolated-download kind writes into it directly.
     mkdirSync(payloadRoot, { recursive: true })
+    if (policy.population === 'isolated-download') {
+      for (const root of roots) mkdirSync(root.payload, { recursive: true })
+    }
     clearOwnedRoots(roots, log)
-    return { outcome: 'writer-empty', activePath: roots[0].active }
+    return {
+      outcome: 'writer-empty',
+      cacheHit: false,
+      saveRequired: !exactHit,
+      activePath: roots[0].active,
+    }
   }
   // A reader miss still leaves a usable empty active root, so a consumer
   // such as the Docker mount injection finds a directory it can read.
-  const policy = cachePolicy(kind)
-  if (policy.population === 'isolated-download') {
-    for (const root of roots)
+  for (const root of roots) {
+    if (root.type === 'tree')
       mkdirSync(root.active, { recursive: true })
   }
-  return { outcome: 'miss', activePath: roots[0].active }
+  return {
+    outcome: 'miss',
+    cacheHit: false,
+    saveRequired: false,
+    activePath: roots[0].active,
+  }
 }
 
 /**
@@ -364,19 +399,42 @@ export function publishDependencySnapshot({
   workspace = process.cwd(),
   env = process.env,
   log = () => {},
+  capacityImpl = filesystemCapacity,
 }) {
   const policy = cachePolicy(kind)
   if (policy.population !== 'isolated-download')
     throw new Error(`publishDependencySnapshot applies to isolated-download kinds, not ${kind}.`)
   validateCacheKey(kind, key, env)
-  for (const root of activeRootsFor(kind, env, workspace)) {
+  const roots = activeRootsFor(kind, env, workspace)
+  for (const root of roots) {
     if (!pathExists(root.payload)) {
       if (root.required)
         throw new Error(`The ${kind} payload root ${root.name} is absent; the download did not complete.`)
       continue
     }
+    requireCopyCapacity(root.payload, root.active, kind, capacityImpl)
+  }
+  for (const root of roots) {
+    if (!pathExists(root.payload))
+      continue
     log(`Publishing the ${kind} payload root ${root.name} to ${root.active}.`)
     copyEntryPreserving(root.payload, root.active)
+  }
+}
+
+function requireCopyCapacity(source, destination, kind, capacityImpl) {
+  let existing = destination
+  while (!pathExists(existing)) {
+    const parent = dirname(existing)
+    if (parent === existing)
+      break
+    existing = parent
+  }
+  const selected = measureCacheTree(source)
+  const capacity = capacityImpl(existing)
+  if ((capacity.freeBytes !== null && capacity.freeBytes < selected.bytes + CAPACITY_BYTES_HEADROOM)
+    || (capacity.availableInodes !== null && capacity.availableInodes < selected.files + selected.directories)) {
+    throw new Error(`Cannot copy the ${kind} cache: insufficient destination capacity (required bytes: ${selected.bytes + CAPACITY_BYTES_HEADROOM}, required filesystem entries: ${selected.files + selected.directories}).`)
   }
 }
 
@@ -491,16 +549,10 @@ function trimTargetDir(targetDir, dependencies, log) {
   }
 }
 
-function selectTree(source, destination, log) {
-  mkdirSync(dirname(destination), { recursive: true })
-  log(`Selecting ${source} for the snapshot.`)
-  copyEntryPreserving(source, destination)
-}
-
 /**
  * The native-rust trimming rule: remove application bundles, final
  * application binaries, incremental data, and packaging leftovers from the
- * active target directory, then select the extracted -sys sources and the
+ * active target directory, then identify the extracted -sys sources and the
  * Git checkouts that reusing the compiled artifacts requires. Modes and
  * source timestamps survive, because regenerated timestamps would trigger
  * dependency rebuilds.
@@ -517,11 +569,12 @@ export function trimRustSnapshot({
   if (!targetRoot || !pathExists(targetRoot.active))
     throw new Error(`The ${kind} trim requires the active target directory of desktop/rust.`)
   const before = measureCacheTree(targetRoot.active)
+  const selections = []
   const rustWorkspace = join(workspace, 'desktop', 'rust')
   const metadata = cargoMetadata(rustWorkspace, env)
   const rustWorkspaceAbs = resolve(rustWorkspace)
   const dependencies = metadata.packages
-    .filter(pkg => !resolve(dirname(pkg.manifest_path)).startsWith(rustWorkspaceAbs))
+    .filter(pkg => !isWithinDirectory(rustWorkspaceAbs, dirname(pkg.manifest_path)))
     .map(pkg => ({
       name: pkg.name,
       version: pkg.version,
@@ -549,7 +602,10 @@ export function trimRustSnapshot({
         for (const entry of readdirSync(join(srcDir, registry.name), { withFileTypes: true })) {
           if (!sysEntries.has(entry.name))
             continue
-          selectTree(join(srcDir, registry.name, entry.name), join(payloadRoot, 'registry-src', registry.name, entry.name), log)
+          selections.push({
+            source: join(srcDir, registry.name, entry.name),
+            destination: join(payloadRoot, 'registry-src', registry.name, entry.name),
+          })
         }
       }
     }
@@ -559,9 +615,11 @@ export function trimRustSnapshot({
     const checkoutDir = join(cargoHome, 'git', 'checkouts')
     const checkoutRefs = new Map()
     for (const dependency of dependencies) {
-      if (!dependency.path.startsWith(checkoutDir))
+      if (!isWithinDirectory(checkoutDir, dependency.path))
         continue
       const [repo, ref] = dependency.path.slice(checkoutDir.length + 1).split(/[/\\]/)
+      if (!repo || !ref)
+        continue
       if (!checkoutRefs.has(repo))
         checkoutRefs.set(repo, new Set())
       checkoutRefs.get(repo).add(ref)
@@ -572,13 +630,17 @@ export function trimRustSnapshot({
           const source = join(checkoutDir, repo, ref)
           if (!pathExists(source))
             continue
-          selectTree(source, join(payloadRoot, 'git-checkouts', repo, ref), log)
+          selections.push({
+            source,
+            destination: join(payloadRoot, 'git-checkouts', repo, ref),
+          })
         }
       }
     }
   }
   const after = measureCacheTree(targetRoot.active)
   return {
+    selections,
     bytesBeforeTrim: before.bytes,
     filesBeforeTrim: before.files,
     bytesAfterTrim: after.bytes,
@@ -586,33 +648,28 @@ export function trimRustSnapshot({
   }
 }
 
-/**
- * The APT trimming rule: retain downloaded packages whose package, version,
- * and architecture match the successful installation, selected from the
- * download URIs of the same installation command. The selection lands in the
- * staging payload; the active archive directory keeps its files.
- */
+function dpkgFormat(fields) {
+  return `${fields.map(field => `\${${field}}`).join('\t')}\n`
+}
+
+/** Select APT archives matching installed package versions and architectures. */
 export function trimAptArchives({
   kind = 'apt-packages',
   workspace = process.cwd(),
   env = process.env,
-  packages,
   log = () => {},
+  run = spawnSync,
 }) {
-  if (!Array.isArray(packages) || packages.length === 0 || packages.some(pkg => typeof pkg !== 'string' || !/^[a-z0-9][a-z0-9.+-]*$/i.test(pkg)))
-    throw new Error('The APT trim requires the installed package list.')
   const root = activeRootsFor(kind, env, workspace).find(entry => entry.name === 'apt-archives')
   const { payloadRoot } = snapshotPaths(kind, workspace)
   const payloadDir = join(payloadRoot, root.name)
-  removePath(payloadDir)
-  mkdirSync(payloadDir, { recursive: true })
-  const result = spawnSync('apt-get', [
-    'install',
-    '--print-uris',
-    '--no-install-recommends',
-    '-y',
-    ...packages,
-  ], {
+  const selections = []
+  const installed = run('dpkg-query', ['--show', `--showformat=${dpkgFormat([
+    'Package',
+    'Version',
+    'Architecture',
+    'Status',
+  ])}`], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     env: {
@@ -620,33 +677,48 @@ export function trimAptArchives({
       ...env,
     },
   })
-  if (result.error || result.status !== 0)
-    throw new Error(`apt-get --print-uris failed: ${result.stderr?.trim().slice(0, 500) ?? result.error?.message}`)
-  const selected = new Set()
-  for (const match of result.stdout.matchAll(/([\w+\-.~][\d+\-.A-Za-z~]*_[\w+\-.~](?:[\d+\-.A-Za-z~]*_[+~])*[\d+\-.A-Za-z~]*_[\w\-.]+(?:[+~](?:[\d+\-.A-Za-z~]*_[+~])*[\d+\-.A-Za-z~]*_[\w\-.]+)*\.deb)/g))
-    selected.add(match[1])
-  if (selected.size === 0)
-    throw new Error('The APT trim selected no downloaded package; the package list and the installation disagree.')
+  if (installed.error || installed.status !== 0)
+    throw new Error(`Cannot read installed APT packages: ${installed.error?.message ?? installed.stderr?.trim()}`)
+  const current = new Set(installed.stdout.split('\n').filter(Boolean).flatMap((line) => {
+    const [name, version, arch, status] = line.split('\t')
+    return status === 'install ok installed'
+      ? [`${name}\t${version}\t${arch}`]
+      : []
+  }))
   let bytes = 0
   let files = 0
+  let bytesBeforeTrim = 0
+  let filesBeforeTrim = 0
   for (const entry of readdirSync(root.active, { withFileTypes: true })) {
-    if (!selected.has(entry.name))
+    if (!entry.isFile() || !entry.name.endsWith('.deb'))
       continue
     const source = join(root.active, entry.name)
-    const stat = lstatSync(source)
-    if (!stat.isFile())
+    bytesBeforeTrim += lstatSync(source).size
+    filesBeforeTrim++
+    const metadata = run('dpkg-deb', ['--show', `--showformat=${dpkgFormat(['Package', 'Version', 'Architecture'])}`, source], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...env,
+      },
+    })
+    if (metadata.error || metadata.status !== 0)
+      throw new Error(`Cannot read APT archive ${entry.name}: ${metadata.error?.message ?? metadata.stderr?.trim()}`)
+    if (!current.has(metadata.stdout.trim()))
       continue
-    copyEntryPreserving(source, join(payloadDir, entry.name))
-    bytes += stat.size
+    selections.push({
+      source,
+      destination: join(payloadDir, entry.name),
+    })
+    bytes += lstatSync(source).size
     files++
   }
-  if (files === 0)
-    throw new Error('The APT trim found none of the selected packages in the archive directory; the installation did not keep its downloads.')
-  log(`Trimmed the APT archives to ${files} downloaded packages of the successful installation.`)
+  log(`Selected ${files} APT archives matching installed package versions and architectures.`)
   return {
     selected: files,
-    bytes,
-    filesBeforeTrim: files,
+    selections,
+    bytesBeforeTrim,
+    filesBeforeTrim,
     bytesAfterTrim: bytes,
     filesAfterTrim: files,
   }
@@ -671,6 +743,7 @@ export async function prepareCacheSnapshot({
   env = process.env,
   log = () => {},
   capacityImpl = filesystemCapacity,
+  run = spawnSync,
 }) {
   const policy = cachePolicy(kind)
   validateCacheKey(kind, key, env)
@@ -680,81 +753,89 @@ export async function prepareCacheSnapshot({
   assertInsideStaging(payloadRoot, kind, workspace)
   const roots = activeRootsFor(kind, env, workspace)
   let before = null
-  if (policy.trim === 'rust') {
-    // Preparation removes any previous staging payload before it trims.
+  let selections = []
+  if (policy.population === 'activate-then-produce') {
     removePath(payloadRoot)
     mkdirSync(payloadRoot, { recursive: true })
-    const trim = trimRustSnapshot({
-      kind,
-      workspace,
-      env,
-      payloadRoot,
-      log,
-    })
-    before = { bytes: trim.bytesBeforeTrim, files: trim.filesBeforeTrim }
-    // The trim selected the source roots into the payload; stage the
-    // trimmed target tree beside them.
-    const targetRoot = roots.find(root => root.name === 'target')
-    removePath(targetRoot.payload)
-    mkdirSync(targetRoot.payload, { recursive: true })
-    copyEntryPreserving(targetRoot.active, targetRoot.payload)
-  }
-  else if (policy.population === 'activate-then-produce') {
-    // Activate-then-produce kinds rebuild the staging payload from the
-    // active roots on every save, so no previous payload is retained.
-    removePath(payloadRoot)
-    mkdirSync(payloadRoot, { recursive: true })
+    if (policy.trim === 'rust') {
+      const trimmed = trimRustSnapshot({
+        kind,
+        workspace,
+        env,
+        payloadRoot,
+        log,
+      })
+      before = { bytes: trimmed.bytesBeforeTrim, files: trimmed.filesBeforeTrim }
+      selections = trimmed.selections
+    }
+    if (policy.trim === 'apt') {
+      const trimmed = trimAptArchives({ kind, workspace, env, log, run })
+      selections = trimmed.selections
+      before = { bytes: trimmed.bytesBeforeTrim, files: trimmed.filesBeforeTrim }
+    }
     let bytes = 0
     let files = 0
     for (const root of roots) {
+      if (policy.trim === 'apt' || (policy.trim === 'rust' && root.name !== 'target'))
+        continue
       if (!pathExists(root.active)) {
         if (root.required)
           throw new Error(`The ${kind} required output ${root.active} is absent.`)
-        removePath(root.payload)
         continue
       }
-      removePath(root.payload)
-      mkdirSync(root.payload, { recursive: true })
+      const stat = lstatSync(root.active)
+      if ((root.type === 'tree' && !stat.isDirectory()) || (root.type === 'file' && !stat.isFile()))
+        throw new Error(`The ${kind} active root ${root.name} has the wrong type.`)
       const measured = measureCacheTree(root.active)
       bytes += measured.bytes
       files += measured.files
-      copyEntryPreserving(root.active, root.payload)
+      selections.push({ source: root.active, destination: root.payload })
     }
-    before = { bytes, files }
+    before ??= { bytes, files }
   }
-  // workflow-managed kinds were staged by their trim verb; isolated-download
-  // kinds carry the producer output that the population wrote into the empty
-  // owned payload. Nothing to build here.
-  const validation = validatePayloadRoots(kind, roots)
-  if (!validation.valid)
-    throw new Error(validation.reason)
-  const after = measureCacheTree(payloadRoot)
+  else {
+    const validation = validatePayloadRoots(kind, roots)
+    if (!validation.valid)
+      throw new Error(validation.reason)
+  }
+  const selected = selections.length === 0
+    ? measureCacheTree(payloadRoot)
+    : selections.reduce((total, entry) => {
+        const measured = measureCacheTree(entry.source)
+        return { bytes: total.bytes + measured.bytes, files: total.files + measured.files, directories: total.directories + measured.directories }
+      }, { bytes: 0, files: 0, directories: 0 })
   const capacity = capacityImpl(stagingRoot)
-  const requiredBytes = after.bytes * CAPACITY_BYTES_MULTIPLIER + CAPACITY_BYTES_HEADROOM
-  const requiredInodes = after.files * CAPACITY_INODE_MULTIPLIER
+  const requiredBytes = selected.bytes * CAPACITY_BYTES_MULTIPLIER + CAPACITY_BYTES_HEADROOM
+  const requiredInodes = (selected.files + selected.directories) * CAPACITY_INODE_MULTIPLIER + roots.length + selections.length * 3
   const report = {
-    'bytes-before-trim': before === null
-      ? after.bytes
-      : before.bytes,
-    'files-before-trim': before === null
-      ? after.files
-      : before.files,
-    'bytes-after-trim': after.bytes,
-    'files-after-trim': after.files,
-    'selected-bytes': after.bytes,
-    'selected-files': after.files,
+    'bytes-before-trim': before?.bytes ?? selected.bytes,
+    'files-before-trim': before?.files ?? selected.files,
+    'bytes-after-trim': selected.bytes,
+    'files-after-trim': selected.files,
+    'selected-bytes': selected.bytes,
+    'selected-files': selected.files,
     'free-bytes': capacity.freeBytes,
     'available-inodes': capacity.availableInodes,
     'compressed-size': UNAVAILABLE,
   }
-  const capacityShort = capacity.freeBytes !== null && capacity.freeBytes < requiredBytes
-  const inodesShort = capacity.availableInodes !== null && capacity.availableInodes < requiredInodes
-  if (capacityShort || inodesShort) {
-    log(`Skipping the optional ${kind} cache publication: ${formatCount(capacity.freeBytes)} free bytes and ${formatCount(capacity.availableInodes)} available inodes are below the ${requiredBytes} bytes and ${requiredInodes} inodes that the ${after.bytes}-byte payload needs.`)
+  if ((capacity.freeBytes !== null && capacity.freeBytes < requiredBytes)
+    || (capacity.availableInodes !== null && capacity.availableInodes < requiredInodes)) {
+    log(`Skipping the optional ${kind} cache publication: ${formatCount(capacity.freeBytes)} free bytes and ${formatCount(capacity.availableInodes)} available inodes cannot hold the ${selected.bytes}-byte snapshot with archive headroom.`)
     removePath(payloadRoot)
     return { result: 'skipped-capacity', archivePath: '', report }
   }
-  log(`Prepared the ${kind} snapshot: ${after.files} files and ${after.bytes} bytes selected, ${formatCount(capacity.freeBytes)} free bytes remain.`)
+  for (const root of roots) {
+    if (root.type === 'tree' && root.required)
+      mkdirSync(root.payload, { recursive: true })
+  }
+  for (const entry of selections) {
+    mkdirSync(dirname(entry.destination), { recursive: true })
+    copyEntryPreserving(entry.source, entry.destination)
+  }
+  const validation = validatePayloadRoots(kind, roots)
+  if (!validation.valid)
+    throw new Error(validation.reason)
+  log(`Prepared the ${kind} snapshot: ${selected.files} files and ${selected.bytes} bytes selected, ${formatCount(capacity.freeBytes)} free bytes remain.`)
   return { result: 'ready', archivePath: payloadRoot, report }
 }
 
@@ -818,7 +899,12 @@ async function main(argv) {
         matchedKey: args.matched === 'true',
         log,
       })
-      writeOutputs({ 'outcome': activated.outcome, 'active-path': activated.activePath })
+      writeOutputs({
+        'outcome': activated.outcome,
+        'cache-hit': activated.cacheHit,
+        'save-required': activated.saveRequired,
+        'active-path': activated.activePath,
+      })
       return
     }
     case 'prepare': {
@@ -844,13 +930,6 @@ async function main(argv) {
       publishDependencySnapshot({ kind, key: args.key, log })
       return
     }
-    case 'trim': {
-      if (kind !== 'apt-packages')
-        throw new Error(`The trim verb supports only apt-packages, not ${kind}.`)
-      const packages = String(args.packages ?? '').split(/\s+/).filter(Boolean)
-      trimAptArchives({ kind, packages, log })
-      return
-    }
     case 'payload-path': {
       process.stdout.write(`${args.root
         ? rootPayloadPath(kind, args.root)
@@ -865,12 +944,20 @@ async function main(argv) {
       process.stdout.write(`${partitionPrefix(kind)}\n`)
       return
     }
+    case 'key': {
+      process.stdout.write(`${cacheKey(kind, { hash: args.hash, week: args.week })}\n`)
+      return
+    }
+    case 'restore-keys': {
+      process.stdout.write(`${restoreKeys(kind, { hash: args.hash }) ?? ''}\n`)
+      return
+    }
     case 'validate-key': {
       validateCacheKey(kind, args.key)
       return
     }
     default:
-      throw new Error(`Unknown cache command: ${command}. Use activate, prepare, cleanup, publish-dependency, trim, payload-path, active-path, prefix, or validate-key.`)
+      throw new Error(`Unknown cache command: ${command}. Use activate, prepare, cleanup, publish-dependency, payload-path, active-path, prefix, key, restore-keys, or validate-key.`)
   }
 }
 

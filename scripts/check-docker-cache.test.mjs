@@ -1,182 +1,205 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'bun:test'
-import { exportCommand, runDockerCacheCheck, warmBuildCommand } from './check-docker-cache.mjs'
+import { dependencyCompilations, exportCommand, importCommand, runDockerCacheCheck, warmBuildCommand } from './check-docker-cache.mjs'
 import { scratchDirectories } from './test-support.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
-
+function target(args) {
+  const index = args.indexOf('--target')
+  return index === -1
+    ? null
+    : args[index + 1]
+}
 function fakeDocker(options = {}) {
   const commands = []
-  const failOn = options.failOn ?? null
-  const emptyExport = options.emptyExport ?? false
-  const identicalExports = options.identicalExports ?? false
+  const imports = []
+  const importedBuilders = new Set()
   let exportsSeen = 0
   const runner = (args) => {
     commands.push(args)
-    if (failOn !== null && args[0] === failOn)
-      return { status: 1, stderr: `fixture ${failOn} failure`, stdout: '' }
-    if (args[0] === 'buildx' && args[1] === 'build' && args.some(arg => arg.startsWith('type=local,dest='))) {
+    if (args.includes('--no-cache-filter') && target(args) === 'builder')
+      importedBuilders.delete(args[args.indexOf('--builder') + 1])
+    if ((options.failOn && args[0] === options.failOn) || (options.failOnTarget && target(args) === options.failOnTarget))
+      return { status: 1, stderr: 'fixture failure', stdout: '' }
+    let stdout = ''
+    if (target(args) === 'go-cache-files') {
       exportsSeen++
       const dest = args.find(arg => arg.startsWith('type=local,dest=')).slice('type=local,dest='.length)
-      // A real local exporter creates the destination and writes many files
-      // under hash directories. An identical second export replays the
-      // first content, which the check must reject.
-      const contentGeneration = identicalExports ? 1 : exportsSeen
       mkdirSync(dest, { recursive: true })
-      if (!emptyExport) {
-        for (const name of [`hash-${contentGeneration}-a`, `hash-${contentGeneration}-b`])
-          writeFileSync(join(dest, name), 'payload\n')
+      if (!options.emptyExport) {
+        const generation = options.identicalExports ? 1 : exportsSeen
+        for (const name of [`hash-${generation}-a`, `hash-${generation}-b`]) writeFileSync(join(dest, name), 'compiled dependency\n')
       }
+      stdout = '/usr/local/go/pkg/tool/linux_arm64/compile -o object -p example.com/dependency source.go\n'
     }
-    return { status: 0, stderr: '', stdout: '' }
+    if (target(args) === 'go-cache-import') {
+      const source = args[args.indexOf('--build-context') + 1].slice('go-cache-input='.length)
+      const files = readdirSync(source).sort()
+      imports.push({
+        builder: args[args.indexOf('--builder') + 1],
+        files,
+        contents: files.map(file => readFileSync(join(source, file), 'utf8')),
+      })
+      importedBuilders.add(args[args.indexOf('--builder') + 1])
+    }
+    if (target(args) === 'builder' && (options.rebuildDependency || !importedBuilders.has(args[args.indexOf('--builder') + 1])))
+      stdout = '/usr/local/go/pkg/tool/linux_arm64/compile -o object -p example.com/dependency source.go\n'
+    return { status: 0, stderr: '', stdout }
   }
   runner.commands = commands
+  runner.imports = imports
   return runner
 }
 
 describe('runDockerCacheCheck', () => {
-  it('creates a dedicated builder, exports twice with the no-cache filter, and removes everything', async () => {
-    const workspace = scratch.create('docker-cache-check')
+  it('preserves staging data owned by another check when a build fails', async () => {
+    const workspace = scratch.create('docker-cache-concurrent')
+    const sibling = join(workspace, '.tmp', 'docker-cache-check', 'another-check')
+    mkdirSync(sibling, { recursive: true })
+    writeFileSync(join(sibling, 'owned'), 'another check')
+    await expect(runDockerCacheCheck({
+      workspace,
+      docker: fakeDocker({ failOn: 'buildx' }),
+      buildArgs: [],
+    })).rejects.toThrow('failed')
+    expect(existsSync(join(sibling, 'owned'))).toBe(true)
+  })
+
+  it('imports actual restored snapshot files into fresh readers before checking reuse', async () => {
+    const workspace = scratch.create('docker-cache-round-trip')
     const docker = fakeDocker()
     const baseArgs = ['--build-arg', 'BASE_IMAGE=alpine:fixture']
-    const result = await runDockerCacheCheck({
-      mode: 'writer',
-      docker,
-      workspace,
-      log: () => {},
-      buildArgs: baseArgs,
-    })
+    const result = await runDockerCacheCheck({ workspace, docker, buildArgs: baseArgs })
     expect(result.exports).toHaveLength(2)
-    // Every build carries the base-image arguments that the Dockerfile needs.
-    for (const build of buildsPlaceholder(docker)) expect(build).toEqual(expect.arrayContaining(baseArgs))
-    function buildsPlaceholder() {
-      return docker.commands.filter(args => args[0] === 'buildx' && args[1] === 'build')
+    expect(result.exports[0].digest).not.toBe(result.exports[1].digest)
+    expect(result.coldDependencyCompilations).toBe(1)
+    expect(result.archiveBytes).toBeGreaterThan(result.selectedBytes)
+    expect(docker.imports).toHaveLength(2)
+    expect(new Set(docker.imports.map(entry => entry.builder)).size).toBe(2)
+    for (const entry of docker.imports) {
+      expect(entry.files).toEqual(['hash-2-a', 'hash-2-b'])
+      expect(entry.contents).toEqual(['compiled dependency\n', 'compiled dependency\n'])
     }
-    const builds = docker.commands.filter(args => args[0] === 'buildx' && args[1] === 'build')
-    expect(builds).toHaveLength(2)
-    for (const build of builds) {
-      // The buildx CLI flag is singular; the build-push-action input that
-      // the workflow uses is plural.
-      expect(build).toContain('--no-cache-filter')
-      expect(build[build.indexOf('--no-cache-filter') + 1]).toBe('go-cache-export')
-      expect(build[build.indexOf('--target') + 1]).toBe('go-cache-files')
-      expect(build.some(arg => arg.startsWith('type=local,dest='))).toBe(true)
-    }
-    // The second export carries the changed VERSION value.
-    const versions = builds.map(build => build.filter(arg => arg.startsWith('VERSION=')).join(''))
-    expect(versions[0]).not.toBe(versions[1])
-    expect(versions[0]).toContain('-a')
-    expect(versions[1]).toContain('-b')
-    // The builder exists only between create and rm.
-    const create = docker.commands.findIndex(args => args[0] === 'buildx' && args[1] === 'create')
-    const remove = docker.commands.findIndex(args => args[0] === 'buildx' && args[1] === 'rm')
-    expect(create).toBeGreaterThan(-1)
-    expect(remove).toBeGreaterThan(create)
-    expect(remove).toBe(docker.commands.length - 1)
-    // The staging directory is removed.
-    const leftovers = readdirSync(join(workspace, '.tmp')).filter(name => name.startsWith('docker-cache-check'))
-    expect(leftovers).toEqual([])
+    expect(result.readers.map(entry => entry.mode)).toEqual(['reader', 'exact-hit'])
+    for (const reader of result.readers) expect(reader.dependencyCompilations).toBe(0)
+    const builds = docker.commands.filter(args => args[1] === 'build')
+    expect(builds).toHaveLength(6)
+    for (const build of builds) expect(build).toEqual(expect.arrayContaining(baseArgs))
+    expect(builds.filter(args => target(args) === 'go-cache-files')).toHaveLength(2)
+    expect(builds.filter(args => target(args) === 'builder')).toHaveLength(2)
+    const created = docker.commands.filter(args => args[1] === 'create').map(args => args[args.indexOf('--name') + 1])
+    const removed = docker.commands.filter(args => args[1] === 'rm').map(args => args.at(-1))
+    expect(removed.sort()).toEqual(created.sort())
+    expect(existsSync(join(workspace, '.tmp', 'docker-cache-check'))).toBe(false)
+    expect(existsSync(result.logsPath)).toBe(true)
   })
 
-  it('stops snapshot publication when an export fails, and still removes the builder', async () => {
-    const workspace = scratch.create('docker-cache-check')
-    const docker = fakeDocker({ failOn: 'buildx' })
+  it('stops publication after a failed export and removes its own builder', async () => {
+    const workspace = scratch.create('docker-cache-export-failure')
+    const docker = fakeDocker({ failOnTarget: 'go-cache-files' })
+    await expect(runDockerCacheCheck({ workspace, docker, buildArgs: [] })).rejects.toThrow('Export writer a failed')
+    expect(docker.imports).toEqual([])
+    expect(docker.commands.at(-1)[1]).toBe('rm')
+  })
+
+  it.each([
+    [
+      { emptyExport: true },
+      'empty',
+    ],
+    [
+      { identicalExports: true },
+      'replayed',
+    ],
+    [
+      { rebuildDependency: true },
+      'rebuilt 1 dependencies',
+    ],
+  ])('rejects invalid cache evidence and removes the builders', async (options, error) => {
+    const docker = fakeDocker(options)
     await expect(runDockerCacheCheck({
-      mode: 'writer',
+      workspace: scratch.create('docker-cache-invalid'),
       docker,
-      workspace,
-      log: () => {},
-      buildArgs: ['--build-arg', 'BASE_IMAGE=alpine:fixture'],
-    })).rejects.toThrow('failed')
-    expect(docker.commands.filter(args => args[0] === 'buildx' && args[1] === 'build')).toHaveLength(0)
-    expect(docker.commands[docker.commands.length - 1][1]).toBe('rm')
+      buildArgs: [],
+    })).rejects.toThrow(error)
+    const created = docker.commands.filter(args => args[1] === 'create').map(args => args[args.indexOf('--name') + 1])
+    const removed = docker.commands.filter(args => args[1] === 'rm').map(args => args.at(-1))
+    expect(removed.sort()).toEqual(created.sort())
   })
 
-  it('rejects an empty export', async () => {
-    const workspace = scratch.create('docker-cache-check')
-    const docker = fakeDocker({ emptyExport: true })
-    await expect(runDockerCacheCheck({
-      mode: 'writer',
-      docker,
-      workspace,
-      log: () => {},
-      buildArgs: ['--build-arg', 'BASE_IMAGE=alpine:fixture'],
-    })).rejects.toThrow('empty')
-    expect(docker.commands[docker.commands.length - 1][1]).toBe('rm')
-  })
-
-  it('rejects a second export that replayed the first instead of reading the mount', async () => {
-    const workspace = scratch.create('docker-cache-check')
-    const docker = fakeDocker({ identicalExports: true })
-    await expect(runDockerCacheCheck({
-      mode: 'writer',
-      docker,
-      workspace,
-      log: () => {},
-      buildArgs: ['--build-arg', 'BASE_IMAGE=alpine:fixture'],
-    })).rejects.toThrow('replayed a cached layer')
-  })
-
-  it('issues no export command for a reader or an exact-hit writer', async () => {
-    for (const mode of ['reader', 'exact-hit']) {
-      const workspace = scratch.create('docker-cache-check')
-      const docker = fakeDocker()
-      await runDockerCacheCheck({
-        mode,
-        docker,
-        workspace,
-        log: () => {},
-        buildArgs: ['--build-arg', 'BASE_IMAGE=alpine:fixture'],
-      })
-      const builds = docker.commands.filter(args => args[0] === 'buildx' && args[1] === 'build')
-      expect(builds, mode).toHaveLength(1)
-      // The warm rebuild carries neither the export target nor the output.
-      expect(builds[0]).not.toContain('--no-cache-filter')
-      expect(builds[0]).not.toContain('--target')
-      expect(builds[0].some(arg => arg.startsWith('type=local'))).toBe(false)
-    }
-  })
-
-  it('refuses an unknown mode before any docker command', async () => {
+  it('preserves the original error when archive creation fails', async () => {
     const docker = fakeDocker()
     await expect(runDockerCacheCheck({
-      mode: 'sometimes',
+      workspace: scratch.create('docker-cache-archive-failure'),
       docker,
-      log: () => {},
-    })).rejects.toThrow('Unknown check mode')
+      buildArgs: [],
+      archive: () => ({ status: 1, stderr: 'archive fixture failure' }),
+    })).rejects.toThrow('archive fixture failure')
+    expect(docker.imports).toEqual([])
+    expect(docker.commands.at(-1)[1]).toBe('rm')
+  })
+
+  it('refuses an unsupported variant before creating any builder', async () => {
+    const docker = fakeDocker()
+    await expect(runDockerCacheCheck({ variant: 'unknown', docker, buildArgs: [] })).rejects.toThrow('Unknown image variant')
     expect(docker.commands).toEqual([])
   })
 })
 
-describe('exportCommand', () => {
-  it('reads the production Dockerfile and forces the export stage to rebuild', () => {
-    const args = exportCommand({
-      builder: 'probe',
-      dest: '/tmp/out',
+describe('Docker cache commands', () => {
+  it('reruns stage commands without requesting a cache-mount reset', () => {
+    const options = {
+      builder: 'fixture',
+      version: 'v',
+      dest: '/output',
+      source: '/restored',
+      executionToken: 'unique-run',
+    }
+    for (const command of [
+      exportCommand(options),
+      importCommand(options),
+      warmBuildCommand(options),
+    ]) {
+      expect(command).not.toContain('--no-cache-filter')
+      expect(command.some(arg => /^GO_CACHE_\w+_TOKEN=unique-run$/.test(arg))).toBe(true)
+    }
+  })
+  it('uses the production import and export stages with their current cache mounts', () => {
+    const options = {
+      builder: 'fixture',
       platform: 'linux/arm64',
       version: 'v',
-    })
-    expect(args).toContain('docker/Dockerfile')
-    expect(args[args.indexOf('--target') + 1]).toBe('go-cache-files')
-    expect(args[args.indexOf('--no-cache-filter') + 1]).toBe('go-cache-export')
-    expect(args[args.indexOf('--output') + 1]).toBe('type=local,dest=/tmp/out')
-    expect(args[args.indexOf('--platform') + 1]).toBe('linux/arm64')
-    expect(args.at(-1)).toBe('.')
-  })
-
-  it('uses the production stage names from the Dockerfile', () => {
-    // A rename in the Dockerfile must update this check.
+      dest: '/output',
+      source: '/restored',
+      executionToken: 'fixture-token',
+    }
+    const exported = exportCommand(options)
+    const imported = importCommand(options)
+    expect(target(exported)).toBe('go-cache-files')
+    expect(exported).toContain('GO_CACHE_EXPORT_TOKEN=fixture-token')
+    expect(target(imported)).toBe('go-cache-import')
+    expect(imported).toContain('go-cache-input=/restored')
+    expect(imported).toContain('GO_CACHE_IMPORT_TOKEN=fixture-token')
+    const reader = warmBuildCommand(options)
+    expect(target(reader)).toBe('builder')
+    expect(reader).toContain('GO_CACHE_BUILD_TOKEN=fixture-token')
+    expect(reader.some(arg => arg.startsWith('type=local'))).toBe(false)
+    for (const args of [imported, exported, reader]) expect(args).toContain('GOFLAGS=-x')
     const dockerfile = readFileSync(join(import.meta.dirname, '..', 'docker', 'Dockerfile'), 'utf8')
-    expect(dockerfile).toContain('AS go-cache-export')
-    expect(dockerfile).toContain('AS go-cache-files')
+    for (const stage of ['go-cache-import', 'go-cache-export', 'go-cache-files']) expect(dockerfile).toContain(`AS ${stage}`)
   })
+})
 
-  it('builds a warm rebuild without any export argument', () => {
-    const args = warmBuildCommand({ builder: 'probe', platform: null, version: 'v' })
-    expect(args).not.toContain('--no-cache-filters')
-    expect(args).not.toContain('--target')
-    expect(args).not.toContain('--output')
+describe('dependencyCompilations', () => {
+  it('counts compiler commands while excluding workspace packages and linking', () => {
+    const text = [
+      '/go/pkg/tool/linux_arm64/compile -o object -p example.com/dependency file.go',
+      '/go/pkg/tool/linux_arm64/compile -o object -p example.com/app/sub file.go',
+      '/go/pkg/tool/linux_arm64/compile -o object -p main file.go',
+      '/go/pkg/tool/linux_arm64/link -o app object',
+    ].join('\n')
+    expect(dependencyCompilations(text, ['example.com/app'])).toEqual(['example.com/dependency'])
   })
 })

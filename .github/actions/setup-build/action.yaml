@@ -72,7 +72,7 @@ inputs:
   monitor-resources:
     description: >
       Start the optional CI resource monitor inside this setup, before the
-      APT installation and every cache restoration, so it observes their
+      APT installation and every project snapshot restoration, so it observes their
       disk use. Requires Bun, which the steps above install first.
     required: false
     default: 'false'
@@ -84,6 +84,9 @@ outputs:
   lint-cache:
     description: The directory of Go lint results.
     value: ${{ steps.go-build.outputs.lint-cache }}
+  go-save-required:
+    description: Whether this writer may publish a new snapshot.
+    value: ${{ steps.go-restore.outputs.save-required }}
   go-cache-hit:
     description: Whether the restored Go output archive matched the exact key.
     value: ${{ steps.go-restore.outputs.cache-hit }}
@@ -93,18 +96,27 @@ outputs:
   cache-prefix:
     description: The Go output partition used for restore and replacement.
     value: ${{ steps.go-build.outputs.restore-prefix }}
+  rust-save-required:
+    description: Whether this writer may publish a new snapshot.
+    value: ${{ steps.rust-restore.outputs.save-required }}
   rust-cache-hit:
     description: Whether the restored Rust output archive matched the exact key.
     value: ${{ steps.rust-restore.outputs.cache-hit }}
   rust-cache-key:
     description: The exact Rust output key.
     value: ${{ steps.rust-build.outputs.key }}
+  tauri-save-required:
+    description: Whether this writer may publish a new snapshot.
+    value: ${{ steps.tauri-restore.outputs.save-required }}
   tauri-cache-hit:
     description: Whether the restored Tauri tool archive matched the exact key.
     value: ${{ steps.tauri-restore.outputs.cache-hit }}
   tauri-cache-key:
     description: The exact weekly Tauri tool key.
     value: ${{ steps.tauri-restore.outputs['cache-key'] }}
+  spinner-save-required:
+    description: Whether this writer may publish a new snapshot.
+    value: ${{ steps.spinners-restore.outputs.save-required }}
   spinner-cache-hit:
     description: Whether the restored spinner archive matched the exact key.
     value: ${{ steps.spinners-restore.outputs.cache-hit }}
@@ -149,12 +161,28 @@ runs:
       # GitHub keeps no log for a runner that it loses. The monitor publishes
       # the runner's memory, processes, disk and network to a check run,
       # which stays readable after such a loss. It starts before the APT
-      # installation and every cache restoration, so it observes their disk
+      # installation and every project snapshot restoration, so it observes their disk
       # use; the caller keeps the final always() stop step.
       if: inputs.monitor-resources == 'true'
       uses: ./.github/actions/ci-resource-monitor
       with:
         mode: start
+
+    - name: Setup Node.js
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Compute tool snapshot keys
+      id: tool-keys
+      shell: bash
+      env:
+        APT_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
+        TAURI_CACHE_HASH: ${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
+      run: |
+        echo "apt=$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+        echo "tauri=$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$TAURI_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+        echo "spinners=$(node scripts/cache-snapshot.mjs key --kind spinners --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
 
     - name: Prepare the APT package cache
       # Keep the downloaded .deb files after each install, and let the
@@ -180,7 +208,7 @@ runs:
       uses: ./.github/actions/build-output-cache
       with:
         kind: apt-packages
-        key: apt-2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/setup-build/action.yaml') }}-${{ env.CACHE_WEEK }}
+        key: ${{ steps.tool-keys.outputs.apt }}
         writer: 'true'
 
     - name: Install Tauri system dependencies
@@ -218,28 +246,12 @@ runs:
           gstreamer1.0-gtk3 \
           gstreamer1.0-pulseaudio
 
-    - name: Trim and save the APT package snapshot
-      # Retain exactly the downloaded packages whose package, version, and
-      # architecture match the successful installation above, then publish
-      # the trimmed selection. Runs immediately after the installation so a
-      # later failure cannot save a half-trimmed archive.
-      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
-      shell: bash
-      run: |
-        node scripts/cache-snapshot.mjs trim --kind apt-packages --packages "libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsoup-3.0-dev protobuf-compiler xdg-utils libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio"
-        sudo apt-get autoclean
-
     - name: Save the APT package snapshot
-      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
+      if: runner.os == 'Linux' && inputs.setup-desktop == 'true' && steps.apt-restore.outputs.save-required == 'true'
       uses: ./.github/actions/save-cache-snapshot
       with:
         kind: apt-packages
-        key: apt-2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/setup-build/action.yaml') }}-${{ env.CACHE_WEEK }}
-
-    - name: Setup Node.js
-      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-      with:
-        node-version: ${{ env.NODE_VERSION }}
+        key: ${{ steps.apt-restore.outputs.cache-key }}
 
     - name: Setup Go
       # The built-in cache is off because it combines GOMODCACHE and GOCACHE. Its post step
@@ -302,12 +314,13 @@ runs:
           macOS) lint_cache="$HOME/Library/Caches/golangci-lint" ;;
           *) lint_cache="${XDG_CACHE_HOME:-$HOME/.cache}/golangci-lint" ;;
         esac
+        echo "GOCACHE=$gocache" >> "$GITHUB_ENV"
         echo "GOLANGCI_LINT_CACHE=$lint_cache" >> "$GITHUB_ENV"
         prefix="$(node scripts/cache-snapshot.mjs prefix --kind native-go)"
         {
           echo "gocache=$gocache"
           echo "lint-cache=$lint_cache"
-          echo "key=${prefix}${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}-${CACHE_WEEK}"
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-go --hash '${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}' --week "$CACHE_WEEK")"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 
@@ -343,7 +356,7 @@ runs:
       run: |
         prefix="$(node scripts/cache-snapshot.mjs prefix --kind native-rust)"
         {
-          echo "key=${prefix}${{ hashFiles('desktop/rust/Cargo.lock') }}"
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-rust --hash '${{ hashFiles('desktop/rust/Cargo.lock', 'desktop/rust/Cargo.toml', 'desktop/rust/.cargo/config.toml') }}')"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 
@@ -394,7 +407,7 @@ runs:
       uses: ./.github/actions/build-output-cache
       with:
         kind: tauri-tools
-        key: tauri-2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}-${{ env.CACHE_WEEK }}
+        key: ${{ steps.tool-keys.outputs.tauri }}
         writer: 'true'
 
     - name: Restore the spinner sources
@@ -409,7 +422,7 @@ runs:
       uses: ./.github/actions/build-output-cache
       with:
         kind: spinners
-        key: spinners-2-${{ runner.os }}-${{ env.CACHE_WEEK }}
+        key: ${{ steps.tool-keys.outputs.spinners }}
         writer: 'true'
 
     - name: Setup protoc

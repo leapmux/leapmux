@@ -227,7 +227,7 @@ jobs:
           go-modcache: ${{ steps.setup.outputs.go-modcache }}
           cache-path: ${{ steps.setup.outputs.cache-path }}
           writes-shared: ${{ steps.setup.outputs.writes-shared }}
-          go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
+          write-snapshot: ${{ steps.go-cache.outputs.save-required }}
           build-args: ${{ steps.setup.outputs.build-args }}
           outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
           # The release pipeline runs only from main.
@@ -235,7 +235,7 @@ jobs:
 
       - name: Save the Docker Go build outputs snapshot
         id: go-cache-save
-        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: docker-go

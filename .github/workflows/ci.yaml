@@ -82,6 +82,15 @@ jobs:
       # also holds the Task checksum and the task-state record of build-renovate-re2 (the record
       # file name is the SHA-256 of the task name). So the task accepts the engine only when its
       # sources, toolchain, and recipe match, and rebuilds it otherwise.
+      - name: Compute the Renovate RE2 snapshot key
+        id: re2-key
+        if: matrix.arch == 'amd64'
+        env:
+          CACHE_HASH: ${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}
+        run: |
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind renovate-re2 --hash "$CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+          echo "restore-keys=$(node scripts/cache-snapshot.mjs restore-keys --kind renovate-re2 --hash "$CACHE_HASH")" >> "$GITHUB_OUTPUT"
+
       - name: Restore the compiled Renovate RE2 engine
         # The archive holds the outputs of the task, its Task checksum, and
         # its task-state record, so the task accepts the engine only when
@@ -93,8 +102,8 @@ jobs:
         uses: ./.github/actions/build-output-cache
         with:
           kind: renovate-re2
-          key: renovate-re2-2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('renovate-re2-2-{0}-{1}-{2}-node24-bun{3}-task{4}-{5}-', runner.os, runner.arch, env.CACHE_IMAGE, env.BUN_VERSION, env.TASK_VERSION, hashFiles('.github/renovate/bun.lock')) || '' }}
+          key: ${{ steps.re2-key.outputs.key }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && steps.re2-key.outputs.restore-keys || '' }}
           writer: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Validate Renovate dependency extraction
@@ -102,11 +111,11 @@ jobs:
         run: task renovate-extract
 
       - name: Save the compiled Renovate RE2 engine
-        if: github.ref == 'refs/heads/main' && matrix.arch == 'amd64' && steps.re2-restore.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && matrix.arch == 'amd64' && steps.re2-restore.outputs.save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: renovate-re2
-          key: renovate-re2-2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node24-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
+          key: ${{ steps.re2-key.outputs.key }}
 
       - name: Restore project Node.js
         if: matrix.arch == 'amd64'
@@ -127,7 +136,7 @@ jobs:
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
-        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: tauri-tools
@@ -136,7 +145,7 @@ jobs:
       - name: Save the spinner source snapshot
         # The packaging build ran `task generate-spinners`, so the consumed
         # spinners/ subtree is complete.
-        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners
@@ -177,14 +186,14 @@ jobs:
         # the stored replacement before it deletes older archives. A
         # capacity skip publishes nothing and keeps the job successful.
         id: go-cache-save
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-go
           key: ${{ steps.setup.outputs.cache-key }}
 
       - name: Save the Rust build outputs snapshot
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-rust
@@ -250,7 +259,7 @@ jobs:
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
-        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: tauri-tools
@@ -259,7 +268,7 @@ jobs:
       - name: Save the spinner source snapshot
         # The packaging build ran `task generate-spinners`, so the consumed
         # spinners/ subtree is complete.
-        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners
@@ -271,14 +280,14 @@ jobs:
         # the stored replacement before it deletes older archives. A
         # capacity skip publishes nothing and keeps the job successful.
         id: go-cache-save
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-go
           key: ${{ steps.setup.outputs.cache-key }}
 
       - name: Save the Rust build outputs snapshot
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-rust
@@ -354,7 +363,7 @@ jobs:
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
-        if: runner.os != 'macOS' && steps.setup.outputs.tauri-cache-hit != 'true'
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: tauri-tools
@@ -363,7 +372,7 @@ jobs:
       - name: Save the spinner source snapshot
         # The packaging build ran `task generate-spinners`, so the consumed
         # spinners/ subtree is complete.
-        if: steps.spinners-restore.outputs.cache-hit != 'true'
+        if: steps.setup.outputs.spinner-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: spinners
@@ -375,14 +384,14 @@ jobs:
         # the stored replacement before it deletes older archives. A
         # capacity skip publishes nothing and keeps the job successful.
         id: go-cache-save
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.go-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-go
           key: ${{ steps.setup.outputs.cache-key }}
 
       - name: Save the Rust build outputs snapshot
-        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.setup.outputs.rust-save-required == 'true'
         uses: ./.github/actions/save-cache-snapshot
         with:
           kind: native-rust
@@ -444,7 +453,7 @@ jobs:
           go-modcache: ${{ steps.setup.outputs.go-modcache }}
           cache-path: ${{ steps.setup.outputs.cache-path }}
           writes-shared: ${{ steps.setup.outputs.writes-shared }}
-          go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
+          write-snapshot: ${{ steps.go-cache.outputs.save-required }}
           build-args: ${{ steps.setup.outputs.build-args }}
 
   dependency-age:

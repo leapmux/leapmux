@@ -313,6 +313,8 @@ retention rule produced never restores again. The rules that the plan fixes:
   inherits a fallback snapshot.
 - A reader may restore a fallback snapshot from the current generation, but
   it cannot save the resulting directory.
+- An unusable exact hit rebuilds active data. It does not publish over the
+  occupied archive key or request deletion of older archives.
 - Dependency archives populate an isolated empty directory from the current
   declarations, so an inherited obsolete dependency cannot enter an archive.
 - Compiled archives trim before publication: the Rust rule keeps the
@@ -328,11 +330,20 @@ Run the snapshot tests against the real toolchains of this machine:
 task test-cache-native
 ```
 
-Prove on this machine that the Docker Go cache export reads the current
-cache mount (needs Docker; builds a dedicated builder and removes it):
+Test APT selection against real installed-package metadata in Linux:
+```bash
+task test-cache-linux
+```
+
+Prove that the Docker cache export reads the current mount, then restore
+its archive into fresh builders and verify that dependencies do not compile
+again. The check needs Docker and removes its builders after the run:
 ```bash
 task test-docker-cache
 ```
+
+The check retains complete command logs under `.tmp/docker-cache-check-reports/`.
+It reports cold-writer and warm-reader durations as observed measurements.
 
 Linux amd64 covers all frontend tests, repository script tests, and schema validation.
 Both Linux architectures run Go lint and vet checks for all three operating systems.

@@ -26,8 +26,14 @@ inputs:
     default: 'false'
 outputs:
   cache-hit:
-    description: Whether the restored archive matches the exact key.
-    value: ${{ steps.restore.outputs.cache-hit }}
+    description: Whether a usable snapshot matched the exact key.
+    value: ${{ steps.activate.outputs.cache-hit }}
+  save-required:
+    description: Whether this writer missed an unoccupied key and may publish a snapshot.
+    value: ${{ steps.activate.outputs.save-required }}
+  cache-key:
+    description: The validated requested archive key.
+    value: ${{ inputs.key }}
   cache-outcome:
     description: The activation outcome (activated-exact, activated-fallback, writer-empty, or miss).
     value: ${{ steps.activate.outputs.outcome }}
@@ -37,11 +43,21 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Resolve the snapshot transport path
+      id: paths
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+        LEAPMUX_CACHE_KEY: ${{ inputs.key }}
+      run: |
+        node scripts/cache-snapshot.mjs validate-key --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
+        echo "payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$LEAPMUX_CACHE_KIND")" >> "$GITHUB_OUTPUT"
+
     - name: Restore the snapshot payload
       id: restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: .tmp/ci-cache/snapshots/${{ inputs.kind }}/payload
+        path: ${{ steps.paths.outputs.payload }}
         key: ${{ inputs.key }}
         restore-keys: ${{ inputs.restore-keys }}
 
@@ -61,3 +77,10 @@ runs:
           --writer "${LEAPMUX_CACHE_WRITER:-false}" \
           --exact-hit "${LEAPMUX_CACHE_EXACT_HIT:-false}" \
           --matched "$([ -n "$LEAPMUX_CACHE_MATCHED_KEY" ] && printf true || printf false)"
+
+    - name: Clean the restored staging payload
+      if: always() && steps.activate.outputs.outcome != 'writer-empty'
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+      run: node scripts/cache-snapshot.mjs cleanup --kind "$LEAPMUX_CACHE_KIND"

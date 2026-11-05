@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -139,4 +140,88 @@ export function isCrateIndexRead(url) {
 /** Answer a crates.io sparse index read with one line for each `{ vers, pubtime, yanked }` entry. */
 export function crateIndexResponse(entries) {
   return new Response(entries.map(entry => JSON.stringify(entry)).join('\n'))
+}
+
+// --- A minimal ZIP writer for the Go module proxy fixture ------------------
+
+const CRC32_TABLE = (() => {
+  const table = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) {
+      c = (c & 1) !== 0
+        ? 0xEDB88320 ^ (c >>> 1)
+        : c >>> 1
+    }
+    table[n] = c
+  }
+  return table
+})()
+
+function crc32(buffer) {
+  let crc = -1
+  for (const byte of buffer)
+    crc = CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8)
+  return (crc ^ -1) >>> 0
+}
+
+/** Write a stored (uncompressed) ZIP archive of `{name: content}` entries. */
+export function createStoredZip(files) {
+  const entries = Object.entries(files)
+  const chunks = []
+  const central = []
+  let offset = 0
+  for (const [name, content] of entries) {
+    const data = Buffer.isBuffer(content)
+      ? content
+      : Buffer.from(content)
+    const nameBytes = Buffer.from(name)
+    const crc = crc32(data)
+    const local = Buffer.alloc(30 + nameBytes.length)
+    local.writeUInt32LE(0x04034B50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0, 6)
+    local.writeUInt16LE(0, 8)
+    local.writeUInt16LE(0, 10)
+    local.writeUInt16LE(0, 12)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(data.length, 22)
+    local.writeUInt16LE(nameBytes.length, 26)
+    local.writeUInt16LE(0, 28)
+    nameBytes.copy(local, 30)
+    chunks.push(local, data)
+    const entry = Buffer.alloc(46 + nameBytes.length)
+    entry.writeUInt32LE(0x02014B50, 0)
+    entry.writeUInt16LE(20, 4)
+    entry.writeUInt16LE(20, 6)
+    entry.writeUInt16LE(0, 8)
+    entry.writeUInt16LE(0, 10)
+    entry.writeUInt16LE(0, 12)
+    entry.writeUInt16LE(0, 14)
+    entry.writeUInt32LE(crc, 16)
+    entry.writeUInt32LE(data.length, 20)
+    entry.writeUInt32LE(data.length, 24)
+    entry.writeUInt16LE(nameBytes.length, 28)
+    entry.writeUInt16LE(0, 30)
+    entry.writeUInt16LE(0, 32)
+    entry.writeUInt16LE(0, 34)
+    entry.writeUInt16LE(0, 36)
+    entry.writeUInt32LE(0, 38)
+    entry.writeUInt32LE(offset, 42)
+    nameBytes.copy(entry, 46)
+    central.push(entry)
+    offset += local.length + data.length
+  }
+  const directory = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054B50, 0)
+  end.writeUInt16LE(0, 4)
+  end.writeUInt16LE(0, 6)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(directory.length, 12)
+  end.writeUInt32LE(offset, 16)
+  end.writeUInt16LE(0, 20)
+  return Buffer.concat([...chunks, directory, end])
 }

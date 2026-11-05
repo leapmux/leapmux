@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -11,7 +12,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { activeRootsFor, cacheKey, snapshotPaths } from './cache-policy.mjs'
@@ -19,6 +20,7 @@ import {
   activateCacheSnapshot,
   cleanupSnapshotStaging,
   filesystemCapacity,
+  isWithinDirectory,
   measureCacheTree,
   prepareCacheSnapshot,
   publishDependencySnapshot,
@@ -101,6 +103,17 @@ async function runLifecycle(kind, key, prepareOptions) {
 }
 
 describe('cache snapshot core', () => {
+  describe('isWithinDirectory', () => {
+    it.each([
+      [posix, '/workspace/cache', '/workspace/cache/payload'],
+      [win32, 'D:\\workspace\\cache', 'D:\\workspace\\cache\\payload'],
+    ])('accepts a child using the filesystem path rules', (paths, parent, child) => {
+      expect(isWithinDirectory(parent, child, paths)).toBe(true)
+      expect(isWithinDirectory(parent, parent, paths)).toBe(true)
+      expect(isWithinDirectory(parent, `${parent}-other`, paths)).toBe(false)
+      expect(isWithinDirectory(parent, paths.dirname(parent), paths)).toBe(false)
+    })
+  })
   describe('measureCacheTree', () => {
     it('counts file bytes and entries without following symbolic links', () => {
       const dir = fixture()
@@ -124,13 +137,27 @@ describe('cache snapshot core', () => {
       const dir = fixture()
       const file = join(dir, 'sparse.bin')
       writeFileSync(file, '')
-      expect(measureCacheTree(file)).toEqual({ bytes: 0, files: 1 })
+      expect(measureCacheTree(file)).toEqual({ bytes: 0, files: 1, directories: 0 })
       truncateSync(file, 1024 ** 4)
       expect(measureCacheTree(file).bytes).toBe(1024 ** 4)
     })
   })
 
   describe('filesystemCapacity', () => {
+    it('keeps zero free bytes distinct from an unsupported inode count', () => {
+      expect(filesystemCapacity('unused', () => ({
+        bavail: 0,
+        bsize: 4096,
+        files: 0,
+        ffree: 0,
+      }))).toEqual({ freeBytes: 0, availableInodes: null })
+      expect(filesystemCapacity('unused', () => ({
+        bavail: 100,
+        bsize: 4096,
+        files: 100,
+        ffree: 0,
+      }))).toEqual({ freeBytes: 409600, availableInodes: 0 })
+    })
     it('reports the free space and inodes of a fixture volume', () => {
       const capacity = filesystemCapacity(fixture())
       if (capacity.freeBytes !== null)
@@ -141,6 +168,46 @@ describe('cache snapshot core', () => {
   })
 
   describe('activateCacheSnapshot', () => {
+    it.each([
+      'go-modules',
+      'site-go-modules',
+      'bun-packages',
+      'cargo-downloads',
+    ])('prepares an empty dependency graph after a writer miss', async (kind) => {
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        GOMODCACHE: join(dir, 'modules'),
+        BUN_INSTALL_CACHE_DIR: join(dir, 'bun'),
+        CARGO_HOME: join(dir, 'cargo'),
+      })
+      const key = cacheKey(kind, { hash }, env)
+      await activateCacheSnapshot({
+        kind,
+        key,
+        writer: true,
+        workspace: dir,
+        env,
+      })
+      for (const root of activeRootsFor(kind, env, dir)) expect(readdirSync(root.payload)).toEqual([])
+      expect((await prepareCacheSnapshot({ kind, key, workspace: dir, env })).result).toBe('ready')
+    })
+    it('repairs a partial read-only module directory while merging a snapshot', async () => {
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        GOMODCACHE: join(dir, 'active'),
+      })
+      writeTree(join(env.GOMODCACHE, 'module'), { old: 'existing' })
+      chmodSync(join(env.GOMODCACHE, 'module'), 0o555)
+      writeTree(join(snapshotPaths('go-modules', dir).payloadRoot, 'gomod', 'module'), { current: 'restored' })
+      await activateCacheSnapshot({
+        kind: 'go-modules',
+        key: cacheKey('go-modules', { hash }, env),
+        exactHit: true,
+        workspace: dir,
+        env,
+      })
+      expect(readFileSync(join(env.GOMODCACHE, 'module', 'current'), 'utf8')).toBe('restored')
+    })
     it('activates an exact hit for a compiled kind by replacing the active root', async () => {
       const dir = fixture()
       const env = goEnv(dir)
@@ -384,7 +451,8 @@ describe('cache snapshot core', () => {
           rename: exdev,
           capacity: () => ({ freeBytes: 0, availableInodes: 0 }),
         },
-      })).rejects.toThrow('free bytes')
+      })).rejects.toThrow('capacity')
+      expect(readFileSync(join(payloadRoot, 'gocache', 'entry'), 'utf8')).toBe('x\n')
     })
 
     it('restores a snapshot whose paths contain spaces', async () => {
@@ -407,6 +475,38 @@ describe('cache snapshot core', () => {
   })
 
   describe('prepareCacheSnapshot', () => {
+    it('checks capacity before creating a copy of a compiled cache', async () => {
+      const dir = fixture()
+      const env = goEnv(dir)
+      writeTree(env.GOCACHE, { entry: 'current\n' })
+      const prepared = await prepareCacheSnapshot({
+        kind: 'native-go',
+        key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
+        workspace: dir,
+        env,
+        capacityImpl: () => {
+          expect(existsSync(join(snapshotPaths('native-go', dir).payloadRoot, 'gocache', 'entry'))).toBe(false)
+          return { freeBytes: 0, availableInodes: 0 }
+        },
+      })
+      expect(prepared.result).toBe('skipped-capacity')
+      expect(readFileSync(join(env.GOCACHE, 'entry'), 'utf8')).toBe('current\n')
+    })
+
+    it('stages regular file roots without turning them into directories', async () => {
+      const dir = fixture()
+      const env = runnerEnv(dir)
+      const roots = activeRootsFor('renovate-re2', env, dir)
+      for (const root of roots) writeTree(join(root.active, '..'), { [root.active.split(/[/\\]/).at(-1)]: root.name })
+      const prepared = await prepareCacheSnapshot({
+        kind: 'renovate-re2',
+        key: cacheKey('renovate-re2', { hash, week: '2027-W01' }, env),
+        workspace: dir,
+        env,
+      })
+      expect(prepared.result).toBe('ready')
+      for (const root of roots) expect(readFileSync(root.payload, 'utf8')).toBe(root.name)
+    })
     it('fails an absent required output without publishing anything', async () => {
       const dir = fixture()
       const env = goEnv(dir)
@@ -440,28 +540,28 @@ describe('cache snapshot core', () => {
       expect(existsSync(join(prepared.archivePath, 'gocache', 'build', 'aa', 'entry'))).toBe(true)
     })
 
-    it('validates a workflow-staged payload without rebuilding it', async () => {
+    it('validates a populated dependency payload without rebuilding it', async () => {
       const dir = fixture()
       const env = runnerEnv(dir, {
-        LEAPMUX_APT_ARCHIVE_DIR: join(dir, 'apt'),
+        GOMODCACHE: join(dir, 'modules'),
       })
-      const { payloadRoot } = snapshotPaths('apt-packages', dir)
-      // Without the staged payload, validation fails before publication.
+      const key = cacheKey('go-modules', { hash }, env)
       await expect(prepareCacheSnapshot({
-        kind: 'apt-packages',
-        key: cacheKey('apt-packages', { hash, week: '2027-W01' }, env),
+        kind: 'go-modules',
+        key,
         workspace: dir,
         env,
       })).rejects.toThrow('unusable')
-      writeTree(join(payloadRoot, 'apt-archives'), { 'libc_2.39-0ubuntu8_amd64.deb': 'package\n' })
-      const prepared = await prepareCacheSnapshot({
-        kind: 'apt-packages',
-        key: cacheKey('apt-packages', { hash, week: '2027-W01' }, env),
+      const { payloadRoot } = snapshotPaths('go-modules', dir)
+      writeTree(join(payloadRoot, 'gomod'), { module: 'download' })
+      const result = await prepareCacheSnapshot({
+        kind: 'go-modules',
+        key,
         workspace: dir,
         env,
       })
-      expect(prepared.result).toBe('ready')
-      expect(prepared.report['selected-files']).toBe(1)
+      expect(result.result).toBe('ready')
+      expect(readFileSync(join(payloadRoot, 'gomod', 'module'), 'utf8')).toBe('download')
     })
 
     it('reports skipped-capacity and removes the staging payload when capacity is short', async () => {
@@ -493,6 +593,20 @@ describe('cache snapshot core', () => {
         workspace: dir,
         env,
         capacityImpl: () => ({ freeBytes: Number.MAX_SAFE_INTEGER, availableInodes: 0 }),
+      })
+      expect(prepared.result).toBe('skipped-capacity')
+    })
+
+    it('counts empty directories when checking inode capacity', async () => {
+      const dir = fixture()
+      const env = goEnv(dir)
+      mkdirSync(join(env.GOCACHE, 'empty', 'nested'), { recursive: true })
+      const prepared = await prepareCacheSnapshot({
+        kind: 'native-go',
+        key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
+        workspace: dir,
+        env,
+        capacityImpl: () => ({ freeBytes: Number.MAX_SAFE_INTEGER, availableInodes: 1 }),
       })
       expect(prepared.result).toBe('skipped-capacity')
     })
@@ -606,9 +720,14 @@ describe('cache snapshot core', () => {
           '',
           '[dependencies]',
           'deplib = { path = "../../deplib" }',
+          'prefixdep = { path = "../rust-dependency" }',
           'git-sys = { path = "../../cargo-home/git/checkouts/myrepo/rev1" }',
           '',
         ].join('\n'),
+      })
+      writeTree(join(dir, 'desktop', 'rust-dependency'), {
+        'Cargo.toml': '[package]\nname = "prefixdep"\nversion = "0.1.0"\nedition = "2021"\n',
+        'src/lib.rs': 'pub fn value() -> u32 { 3 }\n',
       })
       writeTree(join(dir, 'deplib'), {
         'Cargo.toml': [
@@ -638,6 +757,7 @@ describe('cache snapshot core', () => {
         'leapmux-app': 'final binary\n',
         'rustc-info.json': 'rustc\n',
         'debug/deps/libdeplib-abc123.rlib': 'dep artifact\n',
+        'debug/deps/libprefixdep-abc123.rlib': 'external prefix dependency\n',
         'debug/deps/libapp-def456.rlib': 'workspace artifact\n',
         'debug/deps/git_sys-abc123.bin': 'dep artifact\n',
         'debug/incremental/cache.bin': 'incremental\n',
@@ -657,12 +777,13 @@ describe('cache snapshot core', () => {
       // Preparation executes the trim rule and stages the payload.
       const prepared = await prepareCacheSnapshot({
         kind: 'native-rust',
-        key: cacheKey('native-rust', { hash, week: '2027-W01' }, env),
+        key: cacheKey('native-rust', { hash }, env),
         workspace: dir,
         env,
         log: message => logs.push(message),
       })
       expect(prepared.result).toBe('ready')
+      expect(existsSync(join(payloadRoot, 'target', 'debug', 'deps', 'libprefixdep-abc123.rlib'))).toBe(true)
       // Trimmed in place: binaries, incremental data, workspace artifacts,
       // and bundles are gone; dependency artifacts of every profile remain.
       expect(existsSync(join(target, 'leapmux-app'))).toBe(false)
@@ -703,7 +824,7 @@ describe('cache snapshot core', () => {
       })
       await expect(prepareCacheSnapshot({
         kind: 'native-rust',
-        key: cacheKey('native-rust', { hash, week: '2027-W01' }, env),
+        key: cacheKey('native-rust', { hash }, env),
         workspace: dir,
         env,
       })).rejects.toThrow()
@@ -713,46 +834,70 @@ describe('cache snapshot core', () => {
   })
 
   describe('trimAptArchives', () => {
-    // apt-get exists only on Linux; every other platform skips this rule.
-    it.skipIf(process.platform !== 'linux')('selects exactly the packages of the simulated installation', () => {
+    it('selects current installed versions even when installation needs no download', async () => {
       const dir = fixture()
       const archiveDir = join(dir, 'apt')
-      const env = runnerEnv(dir, { LEAPMUX_APT_ARCHIVE_DIR: archiveDir })
       writeTree(archiveDir, {
-        'libc6_2.39-0ubuntu8_amd64.deb': 'wanted\n',
-        'libgtk-3-dev_3.24.41-4ubuntu5_amd64.deb': 'wanted\n',
-        'superseded_1.0-1_all.deb': 'superseded\n',
+        'current.deb': 'current package',
+        'old.deb': 'old version',
+        'other-arch.deb': 'other architecture',
       })
-      // A fake apt-get answers --print-uris like the real command: it lists
-      // the archive file of every package that the installation keeps.
-      const bin = join(dir, 'bin')
-      mkdirSync(bin, { recursive: true })
-      writeFileSync(join(bin, 'apt-get'), [
-        '#!/bin/sh',
-        '[ "$1" = "--print-uris" ] || exit 42',
-        'printf "%s\\n" "\'/var/cache/apt/archives/libc6_2.39-0ubuntu8_amd64.deb\'file" "\'/var/cache/apt/archives/libgtk-3-dev_3.24.41-4ubuntu5_amd64.deb\'file"',
-        '',
-      ].join('\n'))
-      chmodSync(join(bin, 'apt-get'), 0o755)
-      const packages = ['libwebkit2gtk-4.1-dev', 'libgtk-3-dev']
-      trimAptArchives({
-        kind: 'apt-packages',
+      const options = {
         workspace: dir,
-        packages,
-        env: {
-          ...process.env,
-          ...env,
-          PATH: `${bin}:${process.env.PATH}`,
+        env: runnerEnv(dir, { LEAPMUX_APT_ARCHIVE_DIR: archiveDir }),
+        run: (command, args) => {
+          if (command === 'dpkg-query')
+            return { status: 0, stdout: 'libgtk-3-dev\t2.0\tamd64\tinstall ok installed\n' }
+          if (command === 'dpkg-deb') {
+            const file = args.at(-1)
+            return {
+              status: 0,
+              stdout: file.endsWith('current.deb')
+                ? 'libgtk-3-dev\t2.0\tamd64\n'
+                : file.endsWith('old.deb')
+                  ? 'libgtk-3-dev\t1.0\tamd64\n'
+                  : 'libgtk-3-dev\t2.0\tarm64\n',
+            }
+          }
+          return { status: 0, stdout: '0 upgraded, 0 newly installed\n' }
         },
+      }
+      expect(trimAptArchives(options).selected).toBe(1)
+      const prepared = await prepareCacheSnapshot({
+        ...options,
+        kind: 'apt-packages',
+        key: cacheKey('apt-packages', { hash, week: '2027-W01' }, options.env),
       })
-      const { payloadRoot } = snapshotPaths('apt-packages', dir)
-      expect(readdirSafe(join(payloadRoot, 'apt-archives'))).toEqual([
-        'libgtk-3-dev_3.24.41-4ubuntu5_amd64.deb',
-        'libc6_2.39-0ubuntu8_amd64.deb',
-      ])
-      // The trim selects into the snapshot; the active archive keeps its
-      // superseded file for apt's own cleanup.
-      expect(existsSync(join(archiveDir, 'superseded_1.0-1_all.deb'))).toBe(true)
+      expect(prepared.result).toBe('ready')
+      expect(readdirSync(join(snapshotPaths('apt-packages', dir).payloadRoot, 'apt-archives'))).toEqual(['current.deb'])
+      expect(existsSync(join(archiveDir, 'old.deb'))).toBe(true)
+    })
+    it.skipIf(process.platform !== 'linux')('reads real archive metadata for an already-installed package', async () => {
+      const dir = fixture()
+      const archiveDir = join(dir, 'archives')
+      const packageDir = join(dir, 'package')
+      mkdirSync(join(packageDir, 'DEBIAN'), { recursive: true })
+      mkdirSync(archiveDir)
+      const installed = spawnSync('dpkg-query', ['--show', `--showformat=${['Version', 'Architecture'].map(field => `\${${field}}`).join('\t')}`, 'base-files'], { encoding: 'utf8' })
+      expect(installed.status, installed.stderr).toBe(0)
+      const [version, architecture] = installed.stdout.split('\t')
+      writeFileSync(join(packageDir, 'DEBIAN', 'control'), `Package: base-files\nVersion: ${version}\nArchitecture: ${architecture}\nMaintainer: Fixture <fixture@example.invalid>\nDescription: Cache fixture\n`)
+      const built = spawnSync('dpkg-deb', [
+        '--build',
+        '--root-owner-group',
+        packageDir,
+        join(archiveDir, 'current.deb'),
+      ], { encoding: 'utf8' })
+      expect(built.status, built.stderr).toBe(0)
+      const env = runnerEnv(dir, { LEAPMUX_APT_ARCHIVE_DIR: archiveDir })
+      const prepared = await prepareCacheSnapshot({
+        kind: 'apt-packages',
+        key: cacheKey('apt-packages', { hash, week: '2027-W01' }, env),
+        workspace: dir,
+        env,
+      })
+      expect(prepared.result).toBe('ready')
+      expect(readdirSync(join(prepared.archivePath, 'apt-archives'))).toEqual(['current.deb'])
     })
   })
 })
@@ -810,7 +955,6 @@ describe('cache transport lifecycle', () => {
 })
 
 describe('cache snapshot CLI', () => {
-  const { spawnSync } = require('node:child_process')
   const script = join(import.meta.dirname, 'cache-snapshot.mjs')
 
   function runCli(args, cwd, env) {
@@ -863,6 +1007,40 @@ describe('cache snapshot CLI', () => {
     expect(existsSync(active)).toBe(true)
     // The stdout copy mirrors the runner file for local runs.
     expect(result.stdout).toContain('outcome=writer-empty')
+  })
+
+  it('repopulates a partial exact hit without publishing over an occupied immutable key', () => {
+    const dir = fixture()
+    const env = runnerEnv(dir, {
+      GOMODCACHE: join(dir, 'active'),
+    })
+    const key = cacheKey('go-modules', { hash }, env)
+    writeTree(snapshotPaths('go-modules', dir).payloadRoot, { partial: 'missing gomod root' })
+    const output = join(dir, 'activation-output')
+    const result = runCli([
+      'activate',
+      '--kind',
+      'go-modules',
+      '--key',
+      key,
+      '--writer',
+      'true',
+      '--exact-hit',
+      'true',
+      '--matched',
+      'true',
+    ], dir, { ...env, GITHUB_OUTPUT: output })
+    expect(result.status, result.stderr).toBe(0)
+    expect(outputRecords(output)).toMatchObject({ 'outcome': 'writer-empty', 'cache-hit': 'false', 'save-required': 'false' })
+    writeTree(join(snapshotPaths('go-modules', dir).payloadRoot, 'gomod'), { current: 'recovered' })
+    publishDependencySnapshot({
+      kind: 'go-modules',
+      key,
+      workspace: dir,
+      env,
+    })
+    cleanupSnapshotStaging({ kind: 'go-modules', workspace: dir })
+    expect(readFileSync(join(env.GOMODCACHE, 'current'), 'utf8')).toBe('recovered')
   })
 
   it('prepares through the CLI and cleans the staging afterwards', () => {
@@ -945,6 +1123,21 @@ describe('cache snapshot CLI', () => {
 })
 
 describe('cache dependency lifecycle', () => {
+  it('checks the active volume before copying mandatory downloads', () => {
+    const dir = fixture()
+    const env = runnerEnv(dir, {
+      GOMODCACHE: join(dir, 'active'),
+    })
+    writeTree(join(snapshotPaths('go-modules', dir).payloadRoot, 'gomod'), { current: 'download' })
+    expect(() => publishDependencySnapshot({
+      kind: 'go-modules',
+      key: cacheKey('go-modules', { hash }, env),
+      workspace: dir,
+      env,
+      capacityImpl: () => ({ freeBytes: 0, availableInodes: 0 }),
+    })).toThrow('capacity')
+    expect(existsSync(join(env.GOMODCACHE, 'current'))).toBe(false)
+  })
   it('archives only the producer files of the current declarations beside inherited active downloads', async () => {
     const dir = fixture()
     const active = join(dir, 'gomod-active')

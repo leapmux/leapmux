@@ -1630,6 +1630,16 @@ tasks:
     cmds:
       - node scripts/check-docker-cache.mjs {{.CLI_ARGS}}
 
+  test-cache-linux:
+    desc: Test APT cache selection against real Linux package metadata
+    cmds:
+      - >-
+        docker run --rm
+        --volume {{printf "%s:/workspace" .ROOT_DIR | shellQuote}}
+        --workdir /workspace
+        oven/bun:{{.BUN_VERSION}}
+        bun test --timeout 30000 -t trimAptArchives ./scripts/cache-snapshot.test.mjs
+
   test-docker:
     desc: Test startup and shutdown of a built Docker image
     requires:
@@ -1650,10 +1660,11 @@ tasks:
       TAG: '{{.TAG | default "leapmux:latest"}}'
       LOAD: '{{.LOAD | default "false"}}'
     # Loading an image into the local docker store works for exactly one
-    # platform; a multi-platform load fails late inside buildx, so reject it
-    # before the build starts.
+    # platform. Evaluate this in the template because Task's shell does not
+    # negate the printf/grep pipeline the same way as Bash.
     preconditions:
-      - sh: '[ "{{.LOAD}}" != "true" ] || ! printf %s "{{.PLATFORM}}" | grep -q ,'
+      - &docker_load_platform
+        sh: '{{if and (eq .LOAD "true") (contains "," .PLATFORM)}}exit 1{{else}}exit 0{{end}}'
         msg: LOAD=true requires a single platform
     cmds:
       - >-
@@ -1681,11 +1692,10 @@ tasks:
       TAG: '{{.TAG | default "leapmux:ubuntu"}}'
       LOAD: '{{.LOAD | default "false"}}'
     # Loading an image into the local docker store works for exactly one
-    # platform; a multi-platform load fails late inside buildx, so reject it
-    # before the build starts.
+    # platform. Evaluate this in the template because Task's shell does not
+    # negate the printf/grep pipeline the same way as Bash.
     preconditions:
-      - sh: '[ "{{.LOAD}}" != "true" ] || ! printf %s "{{.PLATFORM}}" | grep -q ,'
-        msg: LOAD=true requires a single platform
+      - *docker_load_platform
     cmds:
       - >-
         docker buildx build

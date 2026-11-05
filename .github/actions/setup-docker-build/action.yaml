@@ -75,6 +75,11 @@ runs:
         echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
         echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
 
+    - name: Setup Node.js
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
     - name: Setup Docker Buildx
       id: buildx
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -128,7 +133,7 @@ runs:
         cache_path="$(node scripts/cache-snapshot.mjs active-path --kind docker-go --root go-build)"
         {
           echo "writes-shared=$writes_shared"
-          echo "key=${prefix}${hash}-${week}"
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind docker-go --hash "$hash" --week "$week")"
           echo "restore-prefix=${prefix}"
           echo "cache-path=$cache_path"
           echo "build-args<<LEAPMUX_BUILD_ARGS"

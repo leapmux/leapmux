@@ -1,38 +1,27 @@
-// Integration check for the Docker Go cache export. It builds the export
-// stages of docker/Dockerfile against a dedicated Buildx builder, proves
-// that the export reads the current cache mount content, and removes the
-// builder and its staging data afterwards. It never pushes an image and it
-// never writes a shared cache.
-//
-// `task test-docker-cache` runs this check. The scenarios:
-// - writer: a cold build populates the mount, the export stages it, a build
-//   with a changed VERSION value mutates the mount, and the second export
-//   must differ from the first; the snapshot preparation then validates the
-//   exported tree.
-// - reader and exact-hit: warm rebuilds that must issue no export command,
-//   because neither case publishes a replacement.
+// Validate the production Docker cache stages with a cold writer and two
+// fresh readers. The archive round trip uses the snapshot implementation.
+// Every reader imports the restored files and forces the builder stage to
+// execute, so a cached image layer cannot hide a missing Go cache.
+import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, join, relative, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { prepareCacheSnapshot } from './cache-snapshot.mjs'
+import { parseArgs } from 'node:util'
+import { activeRootsFor, cacheKey, snapshotPaths } from './cache-policy.mjs'
+import { activateCacheSnapshot, cleanupSnapshotStaging, prepareCacheSnapshot } from './cache-snapshot.mjs'
 
 const DOCKER_FILE = 'docker/Dockerfile'
 const EXPORT_TARGET = 'go-cache-files'
-const NO_CACHE_FILTER = 'go-cache-export'
+const IMPORT_TARGET = 'go-cache-import'
 
-// The base-image and toolchain build arguments that every docker/Dockerfile
-// build needs, read from the environment that the Task target fills from
-// versions.env. BASE_IMAGE composes from the variant's image exactly as
-// setup-docker-build does; VERSION is per export and stays separate.
-function baseBuildArgs(env = process.env, variant = 'alpine') {
-  const baseImage = variant === 'ubuntu'
-    ? env.UBUNTU_IMAGE
-    : env.ALPINE_IMAGE
-  const composed = {
-    BASE_IMAGE: baseImage,
+function baseBuildArgs(env, variant) {
+  const values = {
+    BASE_IMAGE: variant === 'ubuntu'
+      ? env.UBUNTU_IMAGE
+      : env.ALPINE_IMAGE,
     BUF_VERSION: env.BUF_VERSION,
     TASK_VERSION: env.TASK_VERSION,
     S6_OVERLAY_VERSION: env.S6_OVERLAY_VERSION,
@@ -40,251 +29,363 @@ function baseBuildArgs(env = process.env, variant = 'alpine') {
     NODE_VERSION: env.NODE_VERSION,
     GOLANG_VERSION: env.GOLANG_VERSION,
   }
-  const missing = Object.entries(composed).filter(([, value]) => !value).map(([name]) => name)
+  const missing = Object.entries(values).filter(([, value]) => !value).map(([name]) => name)
   if (missing.length > 0)
-    throw new Error(`The Docker cache check needs the build arguments that the task target fills from versions.env; missing: ${missing.join(', ')}.`)
-  return Object.entries(composed).flatMap(([name, value]) => ['--build-arg', `${name}=${value}`])
+    throw new Error(`Run the Docker cache check through Task; missing tool versions: ${missing.join(', ')}.`)
+  return Object.entries(values).flatMap(([name, value]) => ['--build-arg', `${name}=${value}`])
 }
 
-function realDocker(args, { timeout = 600000 } = {}) {
-  const result = spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout })
-  return {
-    status: result.status,
-    stderr: result.stderr ?? result.error?.message ?? '',
-    stdout: result.stdout ?? '',
-  }
+function realDocker(args) {
+  const result = spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 600000 })
+  return { status: result.status, stderr: result.error?.message ?? result.stderr ?? '', stdout: result.stdout ?? '' }
 }
 
-/** The buildx build arguments of one export of the Go cache mount. */
-export function exportCommand({ builder, dest, platform, version, dockerFile = DOCKER_FILE, baseArgs = [] }) {
+function realArchive(args) {
+  const result = spawnSync('tar', args, {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
+  })
+  return { status: result.status, stderr: result.error?.message ?? result.stderr ?? '', stdout: result.stdout ?? '' }
+}
+
+function buildCommand({ builder, platform, version, executionToken, dockerFile = DOCKER_FILE, baseArgs = [] }) {
+  if (typeof executionToken !== 'string' || executionToken === '')
+    throw new Error('A cache stage command requires a unique execution token.')
   return [
     'buildx',
     'build',
+    '--progress',
+    'plain',
     '--builder',
     builder,
     '--file',
     dockerFile,
-    '--target',
-    EXPORT_TARGET,
-    '--no-cache-filter',
-    NO_CACHE_FILTER,
-    '--output',
-    `type=local,dest=${dest}`,
     ...(platform
       ? ['--platform', platform]
       : []),
     ...baseArgs,
     '--build-arg',
     `VERSION=${version}`,
+    '--build-arg',
+    'GOFLAGS=-x',
+  ]
+}
+
+export function exportCommand(options) {
+  return [
+    ...buildCommand(options),
+    '--target',
+    EXPORT_TARGET,
+    '--build-arg',
+    `GO_CACHE_EXPORT_TOKEN=${options.executionToken}`,
+    '--output',
+    `type=local,dest=${options.dest}`,
     '.',
   ]
 }
 
-/** The buildx build arguments of one warm rebuild that must not export. */
-export function warmBuildCommand({ builder, platform, version, dockerFile = DOCKER_FILE, baseArgs = [] }) {
+export function importCommand(options) {
   return [
-    'buildx',
-    'build',
-    '--builder',
-    builder,
-    '--file',
-    dockerFile,
-    ...(platform
-      ? ['--platform', platform]
-      : []),
-    ...baseArgs,
+    ...buildCommand(options),
+    '--target',
+    IMPORT_TARGET,
     '--build-arg',
-    `VERSION=${version}`,
+    `GO_CACHE_IMPORT_TOKEN=${options.executionToken}`,
+    '--build-context',
+    `go-cache-input=${options.source}`,
+    '--output',
+    'type=cacheonly',
+    '.',
+  ]
+}
+
+export function warmBuildCommand(options) {
+  return [
+    ...buildCommand(options),
+    '--target',
+    'builder',
+    '--build-arg',
+    `GO_CACHE_BUILD_TOKEN=${options.executionToken}`,
+    '--output',
+    'type=cacheonly',
     '.',
   ]
 }
 
 function fingerprint(directory) {
-  let hash = createHash('sha256')
+  const hash = createHash('sha256')
   let files = 0
-  const stack = [directory]
-  while (stack.length > 0) {
-    const current = stack.pop()
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const path = join(current, entry.name)
-      if (entry.isDirectory()) {
-        stack.push(path)
-        continue
+  const buffer = Buffer.alloc(64 * 1024)
+  function visit(path) {
+    const stat = lstatSync(path)
+    const name = relative(directory, path).replaceAll('\\', '/')
+    if (stat.isDirectory()) {
+      for (const entry of readdirSync(path).sort()) visit(join(path, entry))
+      return
+    }
+    files++
+    hash.update(`${name}\0${stat.size}\0`)
+    if (stat.isSymbolicLink()) {
+      hash.update(readlinkSync(path))
+      return
+    }
+    const fd = openSync(path, 'r')
+    try {
+      let length = readSync(fd, buffer, 0, buffer.length, null)
+      while (length > 0) {
+        hash.update(buffer.subarray(0, length))
+        length = readSync(fd, buffer, 0, buffer.length, null)
       }
-      files++
-      hash = hash.update(entry.name)
+    }
+    finally {
+      closeSync(fd)
     }
   }
+  visit(directory)
   return {
     digest: hash.digest('hex'),
     files,
   }
 }
 
-function run(docker, args, what, log) {
-  log(`docker ${args.slice(0, 4).join(' ')}...`)
-  const result = docker(args)
-  if (result.status !== 0)
-    throw new Error(`${what} failed: ${result.stderr.slice(-1500).trim()}`)
-  return result
+export function dependencyCompilations(output, modules) {
+  const packages = new Set()
+  for (const match of output.matchAll(/\/compile(?:\.exe)?\s[^\n]*?\s-p\s+(\S+)/g)) {
+    const pkg = match[1]
+    if (pkg !== 'main' && !modules.some(module => pkg === module || pkg.startsWith(`${module}/`)))
+      packages.add(pkg)
+  }
+  return [...packages].sort()
 }
 
-/**
- * Run the Docker Go cache export check. Returns the measurements of the
- * two exports. The dedicated builder and the staging directory are removed
- * on every exit path.
- */
+/** Validate a real snapshot archive and prove Go dependency reuse in fresh builders. */
 export async function runDockerCacheCheck({
-  mode = 'writer',
   docker = realDocker,
+  archive = realArchive,
   workspace = process.cwd(),
   platform = null,
   variant = 'alpine',
-  versionBase = `cache-check-${process.pid}`,
+  versionBase = 'cache-check',
   log = () => {},
   buildArgs = null,
 } = {}) {
-  if (mode !== 'writer' && mode !== 'reader' && mode !== 'exact-hit')
-    throw new Error(`Unknown check mode ${mode}; use writer, reader, or exact-hit.`)
-  if (variant !== 'alpine' && variant !== 'ubuntu')
-    throw new Error(`Unknown image variant ${variant}; use alpine or ubuntu.`)
-  const builder = `leapmux-cache-check-${process.pid}`
-  const stageRoot = join(workspace, '.tmp', 'docker-cache-check', String(process.pid))
-  const exports = []
+  if (!['alpine', 'ubuntu'].includes(variant))
+    throw new Error(`Unknown image variant ${variant}.`)
+  const baseArgs = buildArgs ?? baseBuildArgs(process.env, variant)
+  const parent = join(workspace, '.tmp', 'docker-cache-check')
+  mkdirSync(parent, { recursive: true })
+  const stageRoot = mkdtempSync(join(parent, 'run-'))
+  const runId = basename(stageRoot)
+  const logsPath = join(workspace, '.tmp', 'docker-cache-check-reports', runId)
+  mkdirSync(logsPath, { recursive: true })
+  const snapshotWorkspace = join(stageRoot, 'snapshot-workspace')
+  mkdirSync(snapshotWorkspace)
+  const modules = ['backend/go.mod', 'desktop/go/go.mod'].flatMap((file) => {
+    const source = join(workspace, file)
+    return existsSync(source)
+      ? [/^module\s+(\S+)/m.exec(readFileSync(source, 'utf8'))?.[1]].filter(Boolean)
+      : []
+  })
+  const builders = new Set()
+  let commandIndex = 0
+  function run(executable, runner, args, label) {
+    log(`${label}: ${executable} ${args.slice(0, 4).join(' ')}...`)
+    const started = performance.now()
+    const result = runner(args)
+    writeFileSync(join(logsPath, `${++commandIndex}-${executable}.log`), `${result.stdout ?? ''}\n${result.stderr ?? ''}\nEXIT: ${result.status}\n`)
+    if (result.status !== 0)
+      throw new Error(`${label} failed: ${(result.stderr ?? '').slice(-1500).trim()}. Logs: ${logsPath}`)
+    return { ...result, seconds: (performance.now() - started) / 1000 }
+  }
+  function createBuilder(label) {
+    const builder = `leapmux-cache-${runId}-${label}`
+    run('docker', docker, ['buildx', 'create', '--name', builder], `Create ${label} builder`)
+    builders.add(builder)
+    return builder
+  }
+  function removeBuilder(builder) {
+    try {
+      const result = docker(['buildx', 'rm', '--force', builder])
+      if (result.status !== 0)
+        throw new Error(`Could not remove ${builder}: ${result.stderr ?? ''}`)
+      builders.delete(builder)
+      return null
+    }
+    catch (error) {
+      log(error.message)
+      return error
+    }
+  }
+  const env = {
+    ...process.env,
+    RUNNER_OS: process.platform === 'win32'
+      ? 'Windows'
+      : process.platform === 'darwin'
+        ? 'macOS'
+        : 'Linux',
+    RUNNER_ARCH: process.arch === 'arm64'
+      ? 'ARM64'
+      : 'X64',
+    GOLANG_VERSION: process.env.GOLANG_VERSION ?? '0.0.0',
+    RUNNER_TEMP: stageRoot,
+    GITHUB_REF: 'refs/heads/main',
+    GITHUB_EVENT_NAME: 'push',
+  }
+  const key = cacheKey('docker-go', {
+    hash: 'c'.repeat(64),
+    week: '2030-W01',
+  }, env)
+  const active = activeRootsFor('docker-go', env, snapshotWorkspace)[0].active
+  const payload = snapshotPaths('docker-go', snapshotWorkspace).payloadRoot
+  const readers = []
+  let result
+  let failure
   try {
-    mkdirSync(stageRoot, { recursive: true })
-    const baseArgs = buildArgs ?? baseBuildArgs(process.env, variant)
-    if (mode === 'writer') {
-      run(docker, ['buildx', 'create', '--name', builder], 'builder creation', log)
-      const firstDest = join(stageRoot, 'export-1')
-      const secondDest = join(stageRoot, 'export-2')
-      run(docker, exportCommand({
-        builder,
-        dest: firstDest,
+    const writer = createBuilder('writer')
+    const exports = []
+    const writerRuns = []
+    for (const suffix of ['a', 'b']) {
+      const dest = join(stageRoot, `export-${suffix}`)
+      writerRuns.push(run('docker', docker, exportCommand({
+        builder: writer,
+        dest,
         platform,
-        version: `${versionBase}-a`,
+        version: `${versionBase}-${suffix}`,
+        executionToken: `${runId}-export-${suffix}`,
         baseArgs,
-      }), 'the first export', log)
-      if (!existsSync(firstDest) || readdirSync(firstDest).length === 0)
-        throw new Error('The first export is empty; the export stage read nothing from the mount.')
-      const first = fingerprint(firstDest)
-      run(docker, exportCommand({
+      }), `Export writer ${suffix}`))
+      if (!existsSync(dest) || readdirSync(dest).length === 0)
+        throw new Error(`The ${suffix} export is empty.`)
+      exports.push(fingerprint(dest))
+    }
+    if (exports[0].digest === exports[1].digest)
+      throw new Error('The second export replayed the first instead of reading the changed mount.')
+    const coldCompilations = dependencyCompilations(`${writerRuns[0].stdout}\n${writerRuns[0].stderr}`, modules)
+    if (coldCompilations.length === 0)
+      throw new Error(`The cold build recorded no dependency compilation; reuse cannot be verified. Logs: ${logsPath}`)
+    rmSync(join(stageRoot, 'export-a'), { recursive: true, force: true })
+    renameSync(join(stageRoot, 'export-b'), active)
+    const prepared = await prepareCacheSnapshot({
+      kind: 'docker-go',
+      key,
+      workspace: snapshotWorkspace,
+      env,
+    })
+    if (prepared.result !== 'ready')
+      throw new Error(`The snapshot could not prepare: ${prepared.result}`)
+    const archivePath = join(stageRoot, 'snapshot.tar')
+    run('tar', archive, [
+      '--format=pax',
+      '-cf',
+      archivePath,
+      '-C',
+      payload,
+      '.',
+    ], 'Archive the snapshot')
+    const archiveBytes = statSync(archivePath).size
+    cleanupSnapshotStaging({ kind: 'docker-go', workspace: snapshotWorkspace })
+    removeBuilder(writer)
+    for (const mode of ['reader', 'exact-hit']) {
+      rmSync(active, { recursive: true, force: true })
+      mkdirSync(payload, { recursive: true })
+      run('tar', archive, ['-xf', archivePath, '-C', payload], `Restore ${mode} archive`)
+      const activated = await activateCacheSnapshot({
+        kind: 'docker-go',
+        key,
+        workspace: snapshotWorkspace,
+        env,
+        exactHit: true,
+        matchedKey: true,
+        writer: mode === 'exact-hit',
+      })
+      if (!activated.cacheHit || activated.saveRequired)
+        throw new Error(`The ${mode} must reuse its exact snapshot without publishing.`)
+      const restored = fingerprint(active)
+      if (restored.digest !== exports[1].digest)
+        throw new Error(`The ${mode} snapshot contents changed during the archive round trip.`)
+      const builder = createBuilder(mode)
+      run('docker', docker, importCommand({
         builder,
-        dest: secondDest,
+        source: active,
+        executionToken: `${runId}-${mode}-import`,
         platform,
         version: `${versionBase}-b`,
         baseArgs,
-      }), 'the second export', log)
-      if (!existsSync(secondDest) || readdirSync(secondDest).length === 0)
-        throw new Error('The second export is empty; the export stage read nothing from the mount.')
-      const second = fingerprint(secondDest)
-      if (second.digest === first.digest)
-        throw new Error('The second export equals the first; the export stage replayed a cached layer instead of reading the changed mount.')
-      exports.push(first, second)
-
-      // The production preparation must accept the exported tree as a
-      // docker-go snapshot payload.
-      const env = {
-        ...process.env,
-        RUNNER_OS: process.platform === 'win32'
-          ? 'Windows'
-          : process.platform === 'darwin'
-            ? 'macOS'
-            : 'Linux',
-        RUNNER_ARCH: process.arch === 'arm64'
-          ? 'ARM64'
-          : 'X64',
-        GOLANG_VERSION: process.env.GOLANG_VERSION ?? '0.0.0',
-        RUNNER_TEMP: stageRoot,
-        GITHUB_REF: 'refs/heads/main',
-        GITHUB_EVENT_NAME: 'push',
-      }
-      const { activeRootsFor, partitionPrefix } = await import('./cache-policy.mjs')
-      // The export destination of the build action is the active root that
-      // preparation reads; mirror that here.
-      const activeRoot = activeRootsFor('docker-go', env, workspace)[0].active
-      rmSync(activeRoot, { recursive: true, force: true })
-      mkdirSync(activeRoot, { recursive: true })
-      // The export wrote to firstDest; stage it at the active root.
-      const { cpSync } = await import('node:fs')
-      cpSync(firstDest, activeRoot, { recursive: true })
-      const key = `${partitionPrefix('docker-go', env)}${'c'.repeat(64)}-2030-W01`
-      const prepared = await prepareCacheSnapshot({
-        kind: 'docker-go',
-        key,
-        workspace,
-        env,
-      })
-      if (prepared.result !== 'ready')
-        throw new Error(`The exported Go cache did not prepare as a docker-go snapshot: ${prepared.result}`)
-      log(`Prepared the docker-go snapshot: ${prepared.report['selected-files']} files, ${prepared.report['selected-bytes']} bytes.`)
-      // The save action's always() cleanup removes the staging payload; the
-      // check mirrors it so no staging survives the run.
-      const { cleanupSnapshotStaging } = await import('./cache-snapshot.mjs')
-      cleanupSnapshotStaging({ kind: 'docker-go', workspace })
-    }
-    else {
-      // Reader and exact-hit modes rebuild warm and must issue no export.
-      run(docker, ['buildx', 'create', '--name', builder], 'builder creation', log)
-      run(docker, warmBuildCommand({
+      }), `Import ${mode} snapshot`)
+      const rebuilt = run('docker', docker, warmBuildCommand({
         builder,
+        executionToken: `${runId}-${mode}-build`,
         platform,
-        version: `${versionBase}-warm`,
+        version: `${versionBase}-b`,
         baseArgs,
-      }), 'the warm rebuild', log)
+      }), `Build ${mode} with restored Go cache`)
+      const compiled = dependencyCompilations(`${rebuilt.stdout}\n${rebuilt.stderr}`, modules)
+      if (compiled.length > 0)
+        throw new Error(`The ${mode} rebuilt ${compiled.length} dependencies: ${compiled.slice(0, 8).join(', ')}. Logs: ${logsPath}`)
+      readers.push({
+        mode,
+        dependencyCompilations: compiled.length,
+        seconds: rebuilt.seconds,
+        files: restored.files,
+      })
+      removeBuilder(builder)
     }
-    return { exports }
+    result = {
+      exports,
+      readers,
+      coldDependencyCompilations: coldCompilations.length,
+      coldWriterSeconds: writerRuns[0].seconds,
+      changedWriterSeconds: writerRuns[1].seconds,
+      selectedBytes: prepared.report['selected-bytes'],
+      archiveBytes,
+      logsPath,
+    }
+  }
+  catch (error) {
+    failure = error
   }
   finally {
-    // Cleanup must never mask the failure that brought the run here: a
-    // builder that the platform already forgot is not an error.
-    const removed = docker(['buildx', 'rm', '--force', builder])
-    if (removed.status !== 0)
-      log(`Note: the builder removal reported: ${removed.stderr.trim().split('\n').at(-1) ?? ''}`)
-    rmSync(stageRoot, { recursive: true, force: true })
-    // Leave no empty per-run parent behind; a concurrent run's directory
-    // makes the removal fail, which is fine.
+    for (const builder of [...builders]) {
+      const cleanupError = removeBuilder(builder)
+      failure ??= cleanupError
+    }
     try {
-      rmSync(dirname(stageRoot), { recursive: true })
+      rmSync(stageRoot, { recursive: true, force: true })
+      try {
+        rmdirSync(parent)
+      }
+      catch (error) {
+        if (error.code !== 'ENOTEMPTY' && error.code !== 'ENOENT' && error.code !== 'EEXIST')
+          failure ??= error
+      }
     }
-    catch {}
-  }
-}
-
-function parseArgs(argv) {
-  const args = { mode: 'writer', variant: 'alpine' }
-  for (let index = 0; index < argv.length; index++) {
-    if (argv[index] === '--mode') {
-      args.mode = argv[index + 1]
-      index++
-      continue
-    }
-    if (argv[index] === '--variant') {
-      args.variant = argv[index + 1]
-      index++
-      continue
-    }
-    if (argv[index] === '--platform') {
-      args.platform = argv[index + 1]
-      index++
+    catch (error) {
+      failure ??= error
     }
   }
-  return args
+  if (failure)
+    throw failure
+  return result
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-
 if (isMain) {
-  const { mode, platform, variant } = parseArgs(process.argv.slice(2))
+  const { values } = parseArgs({
+    options: {
+      variant: { type: 'string', default: 'alpine' },
+      platform: { type: 'string' },
+    },
+  })
   runDockerCacheCheck({
-    mode,
-    platform,
-    variant,
+    variant: values.variant,
+    platform: values.platform,
     log: message => console.log(message),
   }).then((result) => {
-    for (const [index, export_] of result.exports.entries())
-      console.log(`Export ${index + 1}: ${export_.files} files, fingerprint ${export_.digest.slice(0, 12)}.`)
-    console.log('Docker cache check passed.')
+    console.log(`Cold writer: ${result.coldWriterSeconds.toFixed(2)}s; changed writer: ${result.changedWriterSeconds.toFixed(2)}s.`)
+    console.log(`Snapshot: ${result.selectedBytes} selected bytes; ${result.archiveBytes} tar bytes; ${result.coldDependencyCompilations} cold dependency compilations.`)
+    for (const reader of result.readers) console.log(`${reader.mode}: ${reader.seconds.toFixed(2)}s; ${reader.files} restored files; ${reader.dependencyCompilations} dependency compilations.`)
+    console.log(`Docker cache check passed. Logs: ${result.logsPath}`)
   }).catch((error) => {
     console.error(`Docker cache check failed: ${error.message}`)
     process.exitCode = 1
