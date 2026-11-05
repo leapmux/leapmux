@@ -301,6 +301,49 @@ The native test target runs these checks:
 - Go desktop sidecar tests
 - Rust desktop tests and Clippy for the host platform
 - Frontend script and end-to-end helper tests, including native process and filesystem tests
+- The cache snapshot tests against this OS's real toolchains (`task test-cache-native`)
+
+### Build cache snapshots
+
+CI caches restore through one policy registry, `scripts/cache-policy.mjs`.
+Every archive key embeds the snapshot generation, so an archive that an older
+retention rule produced never restores again. The rules that the plan fixes:
+
+- A writer that misses its exact key starts from empty owned roots. It never
+  inherits a fallback snapshot.
+- A reader may restore a fallback snapshot from the current generation, but
+  it cannot save the resulting directory.
+- An unusable exact hit rebuilds active data. It does not publish over the
+  occupied archive key or request deletion of older archives.
+- Dependency archives populate an isolated empty directory from the current
+  declarations, so an inherited obsolete dependency cannot enter an archive.
+- Compiled archives trim before publication: the Rust rule keeps the
+  dependency outputs of every profile and the source data that reusing them
+  requires, and removes application binaries, bundles, and incremental data.
+- A failed build, test, trim, or export prevents the save. A capacity skip
+  reports `skipped-capacity`, saves nothing, and requests no remote pruning.
+- The remote pruner deletes older archives only after it verifies the
+  replacement archive under the exact key and branch.
+
+Run the snapshot tests against the real toolchains of this machine:
+```bash
+task test-cache-native
+```
+
+Test APT selection against real installed-package metadata in Linux:
+```bash
+task test-cache-linux
+```
+
+Prove that the Docker cache export reads the current mount, then restore
+its archive into fresh builders and verify that dependencies do not compile
+again. The check needs Docker and removes its builders after the run:
+```bash
+task test-docker-cache
+```
+
+The check retains complete command logs under `.tmp/docker-cache-check-reports/`.
+It reports cold-writer and warm-reader durations as observed measurements.
 
 Linux amd64 covers all frontend tests, repository script tests, and schema validation.
 Both Linux architectures run Go lint and vet checks for all three operating systems.

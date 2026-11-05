@@ -27,6 +27,8 @@ ARG BUN_VERSION
 
 WORKDIR /src
 
+ENV GOCACHE=/root/.cache/go-build
+
 # Copy the pinned Node.js runtime from the node stage
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
@@ -39,6 +41,15 @@ RUN apk add --no-cache bash curl git libatomic libgcc libstdc++ rsync && \
 
 # Install Bun (pinned)
 RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash -s "bun-v${BUN_VERSION}"
+
+# Import the restored Go snapshot into the same mount that the build uses.
+# The caller supplies go-cache-input as a local named build context.
+FROM tools AS go-cache-import
+
+COPY --from=go-cache-input / /cache-input/
+ARG GO_CACHE_IMPORT_TOKEN
+RUN --mount=type=cache,target=${GOCACHE} \
+    test -n "$GO_CACHE_IMPORT_TOKEN" && cp -a /cache-input/. "${GOCACHE}/"
 
 # ------------------------------------------------------------------
 # Stage: build everything via `task build-backend-docker`
@@ -54,6 +65,8 @@ COPY . .
 ARG VERSION=dev
 ARG COMMIT_HASH
 ARG COMMIT_TIME
+ARG GOFLAGS
+ARG GO_CACHE_BUILD_TOKEN
 # Import BuildKit's target values without defaults that override --platform.
 ARG TARGETOS
 ARG TARGETARCH
@@ -71,10 +84,26 @@ ARG TARGETARCH
 # Task downloads both dependency sets into the mounts below. Separate download layers are
 # unnecessary.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=${GOCACHE} \
     --mount=type=cache,target=/root/.bun/install/cache \
-    VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} \
+    VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} GOFLAGS=${GOFLAGS} \
     task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH}
+
+# ------------------------------------------------------------------
+# Stage: export the Go build cache mount (the CI extraction reads it)
+# ------------------------------------------------------------------
+FROM builder AS go-cache-export
+
+# A stage-local token reruns this copy without clearing the Go cache.
+# --no-cache-filter clears persistent mounts before the build, including
+# mounts shared with the builder stage, so it cannot refresh this export.
+ARG GO_CACHE_EXPORT_TOKEN
+RUN --mount=type=cache,target=${GOCACHE} \
+    test -n "$GO_CACHE_EXPORT_TOKEN" && mkdir -p /out && cp -a "${GOCACHE}/." /out/
+
+FROM scratch AS go-cache-files
+
+COPY --from=go-cache-export /out/ /
 
 # ------------------------------------------------------------------
 # Stage 2: Runtime image with s6-overlay

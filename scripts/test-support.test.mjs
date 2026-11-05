@@ -1,10 +1,45 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { Buffer } from 'node:buffer'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
-import { crateIndexResponse, git, gitRepository, isCrateIndexRead, scratchDirectories, writeFiles } from './test-support.mjs'
+import { crateIndexResponse, createSparseFile, git, gitRepository, isCrateIndexRead, scratchDirectories, writeFiles } from './test-support.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
+
+describe('createSparseFile', () => {
+  it('resolves a relative fixture path against the working directory', () => {
+    const directory = scratch.create('sparse-file-relative')
+    const file = join(directory, 'relative file.bin')
+    createSparseFile(relative(process.cwd(), file), 1)
+    expect(readFileSync(file)).toEqual(Buffer.alloc(1))
+  })
+
+  it.each([0, 37])('creates a zero-filled file with %i logical bytes', (size) => {
+    const directory = scratch.create('sparse-file')
+    const file = join(directory, 'file with spaces.bin')
+    createSparseFile(file, size)
+    expect(statSync(file).size).toBe(size)
+    expect(readFileSync(file)).toEqual(Buffer.alloc(size))
+  })
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    undefined,
+    null,
+    '',
+  ])('rejects invalid logical sizes such as %p before creating a file', (size) => {
+    const directory = scratch.create('sparse-file-invalid')
+    const file = join(directory, 'must-not-exist')
+    expect(() => createSparseFile(file, size)).toThrow('non-negative safe integer')
+    expect(existsSync(file)).toBe(false)
+  })
+})
 
 describe('scratchDirectories', () => {
   it('creates distinct directories under .tmp, and the cleanup removes every one of them', () => {

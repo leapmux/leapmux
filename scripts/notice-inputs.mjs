@@ -38,8 +38,12 @@ export const NOTICE_INPUTS = [
   '.github/workflows/notice.yaml',
   '.github/actions/setup-build/action.yaml',
   '.github/actions/build-output-cache/action.yaml',
+  '.github/actions/save-cache-snapshot/action.yaml',
   '.github/actions/dependency-caches/action.yaml',
+  '.github/actions/ci-resource-monitor/action.yaml',
   '.github/actions/load-versions/action.yaml',
+  'scripts/cache-policy.mjs',
+  'scripts/cache-snapshot.mjs',
 ]
 
 export function needsNotice(files) {

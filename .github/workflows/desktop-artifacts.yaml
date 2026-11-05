@@ -51,6 +51,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -69,6 +70,23 @@ jobs:
 
       - name: Check the unchanged native build
         run: task check-build-cache
+
+      - name: Save the Tauri tool snapshot
+        # The artifact job completed a full packaging build, so it publishes
+        # the trimmed Tauri tool cache. It remains a reader of the compiled
+        # caches and saves none of them.
+        if: runner.os != 'macOS' && steps.setup.outputs.tauri-save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: tauri-tools
+          key: ${{ steps.setup.outputs.tauri-cache-key }}
+
+      - name: Save the spinner source snapshot
+        if: steps.setup.outputs.spinner-save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
 
       - name: Diagnose linuxdeploy (on failure)
         # Tauri discards linuxdeploy output on failure and reports only "failed to run linuxdeploy".
@@ -107,6 +125,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -129,6 +148,13 @@ jobs:
 
       - name: Check the unchanged native build
         run: task check-build-cache
+
+      - name: Save the spinner source snapshot
+        if: steps.setup.outputs.spinner-save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
 
       - name: Tar unsigned .app for the signing job
         # tar preserves symlinks/permissions inside the .app bundle that
@@ -343,6 +369,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -359,6 +386,20 @@ jobs:
       - name: Check the unchanged native build
         shell: pwsh
         run: task check-build-cache
+
+      - name: Save the Tauri tool snapshot
+        if: steps.setup.outputs.tauri-save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: tauri-tools
+          key: ${{ steps.setup.outputs.tauri-cache-key }}
+
+      - name: Save the spinner source snapshot
+        if: steps.setup.outputs.spinner-save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
+        with:
+          kind: spinners
+          key: ${{ steps.setup.outputs.spinner-cache-key }}
 
       - name: Package CLI server zip
         shell: pwsh

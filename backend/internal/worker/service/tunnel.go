@@ -138,12 +138,9 @@ type tunnelManager struct {
 	// conn is never inserted, so a quiet interactive session cannot be mis-reaped.
 	halfClosed map[string]*halfCloseEntry
 
-	// now is the clock every idle-reaper decision reads: the lastActivity stamp on
-	// markHalfClosed and on each write, and the sweep's deadline. One seam for all
-	// three, because a test that controls only some of them is still racing the
-	// wall clock -- which is what made the write-activity test flaky, since it
-	// asserted survival across a real 60ms budget that a loaded machine can blow
-	// through between two writes. Defaults to time.Now.
+	// now supplies cancellation marker deadlines and timestamps for idle expiry.
+	// One clock drives stamps and expiry comparisons, so tests can advance time
+	// without racing the wall clock. Defaults to time.Now.
 	now func() time.Time
 
 	// sweeper drives the half-closed idle reaper. Lazily started on the first
@@ -197,7 +194,7 @@ func (m *tunnelManager) store(connID string, tc *tunnelConn) bool {
 func (m *tunnelManager) beginOpen(connID string, dialCancel context.CancelFunc) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.canceled.sweep(time.Now())
+	m.canceled.sweep(m.nowFn()())
 	if m.canceled.take(connID) {
 		// A close already arrived for this conn_id before its open was processed.
 		return false
@@ -225,7 +222,7 @@ func (m *tunnelManager) abortOpen(connID string) {
 func (m *tunnelManager) cancel(connID string) *tunnelConn {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := time.Now()
+	now := m.nowFn()()
 	m.canceled.sweep(now)
 	if tc := m.remove(connID); tc != nil {
 		return tc
@@ -513,17 +510,17 @@ const (
 // It is a var so tests can shorten it.
 var gracefulCloseTimeout = 5 * time.Second
 
-// staleCancelMarkerTTL bounds a cancel marker left for a conn with no in-flight
+// staleCancelMarkerTTL limits the lifetime of a marker left for a conn with no in-flight
 // open (see tunnelManager.cancel). The marker only has to outlast an open that
 // is still dispatching -- and conn_ids are unique per open, so it fences a
 // beginOpen racing with a close for the SAME id, which can only happen within
 // the ordered WebSocket dispatch window (sub-millisecond). 5s is ~1000x that
 // window, so it is generous. Expired markers are GC'd opportunistically by
-// sweepCanceledLocked on the next cancel/beginOpen rather than by a per-marker
+// cancelMarkers.sweep on the next cancel/beginOpen rather than by a per-marker
 // timer, so the connection-churn case (a browser or `git fetch` opening many
 // short-lived SOCKS5/port-forward conns) does not spawn a runtime timer per
-// closed conn. It is a var (not a const) so tests can shorten the sweep window.
-var staleCancelMarkerTTL time.Duration = 5 * time.Second
+// closed conn. Tests advance the manager's clock to exercise expiry.
+const staleCancelMarkerTTL = 5 * time.Second
 
 // halfCloseIdleTimeout bounds how long a half-closed worker tunnel conn (target
 // FIN relayed, read loop exited) may linger with no write activity before the

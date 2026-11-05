@@ -1,38 +1,86 @@
-name: Build output cache
-description: Restore build outputs and optionally save them after the job succeeds.
+name: Restore a cache snapshot
+description: |
+  Restore one cache snapshot of the policy registry (scripts/cache-policy.mjs)
+  and activate it into its active roots. This action is restore-only:
+  publication runs through the save-cache-snapshot action after the producing
+  workload completes.
+
+  A writer must pass no restore-keys. A writer that misses its exact key
+  starts from empty owned roots and never inherits a fallback snapshot. A
+  reader may pass the policy fallback prefixes; it can activate a fallback
+  but never saves the resulting directory.
 inputs:
-  path:
-    description: Cache paths, one per line.
+  kind:
+    description: The cache kind from the policy registry.
     required: true
   key:
-    description: The exact cache key.
+    description: The exact cache key of this generation.
     required: true
   restore-keys:
-    description: Fallback key prefixes, one per line.
-    required: true
-  save:
-    description: Save the outputs after a successful job when the exact key is absent.
+    description: Fallback key prefixes for a reader, one per line. A writer must leave this empty.
+    required: false
+    default: ''
+  writer:
+    description: Whether this job may publish a replacement archive later.
+    required: false
     default: 'false'
 outputs:
   cache-hit:
-    description: Whether the restored archive matches the exact key.
-    value: ${{ steps.writer.outputs.cache-hit || steps.reader.outputs.cache-hit || 'false' }}
+    description: Whether a usable snapshot matched the exact key.
+    value: ${{ steps.activate.outputs.cache-hit }}
+  save-required:
+    description: Whether this writer missed an unoccupied key and may publish a snapshot.
+    value: ${{ steps.activate.outputs.save-required }}
+  cache-key:
+    description: The validated requested archive key.
+    value: ${{ inputs.key }}
+  cache-outcome:
+    description: The activation outcome (activated-exact, activated-fallback, writer-empty, or miss).
+    value: ${{ steps.activate.outputs.outcome }}
+  active-path:
+    description: The resolved active root that consumers and Docker read.
+    value: ${{ steps.activate.outputs.active-path }}
 runs:
   using: composite
   steps:
-    - name: Restore and save build outputs
-      id: writer
-      if: inputs.save == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ inputs.path }}
-        key: ${{ inputs.key }}
-        restore-keys: ${{ inputs.restore-keys }}
-    - name: Restore build outputs
-      id: reader
-      if: inputs.save != 'true'
+    - name: Resolve the snapshot transport path
+      id: paths
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+        LEAPMUX_CACHE_KEY: ${{ inputs.key }}
+      run: |
+        node scripts/cache-snapshot.mjs validate-key --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
+        echo "payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$LEAPMUX_CACHE_KIND")" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the snapshot payload
+      id: restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ inputs.path }}
+        path: ${{ steps.paths.outputs.payload }}
         key: ${{ inputs.key }}
         restore-keys: ${{ inputs.restore-keys }}
+
+    - name: Activate the snapshot
+      id: activate
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+        LEAPMUX_CACHE_KEY: ${{ inputs.key }}
+        LEAPMUX_CACHE_WRITER: ${{ inputs.writer }}
+        LEAPMUX_CACHE_EXACT_HIT: ${{ steps.restore.outputs.cache-hit }}
+        LEAPMUX_CACHE_MATCHED_KEY: ${{ steps.restore.outputs['cache-matched-key'] }}
+      run: |
+        node scripts/cache-snapshot.mjs activate \
+          --kind "$LEAPMUX_CACHE_KIND" \
+          --key "$LEAPMUX_CACHE_KEY" \
+          --writer "${LEAPMUX_CACHE_WRITER:-false}" \
+          --exact-hit "${LEAPMUX_CACHE_EXACT_HIT:-false}" \
+          --matched "$([ -n "$LEAPMUX_CACHE_MATCHED_KEY" ] && printf true || printf false)"
+
+    - name: Clean the restored staging payload
+      if: always() && steps.activate.outputs.outcome != 'writer-empty'
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
+      run: node scripts/cache-snapshot.mjs cleanup --kind "$LEAPMUX_CACHE_KIND"

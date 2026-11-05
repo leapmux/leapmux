@@ -44,10 +44,50 @@ jobs:
       - name: Load tool versions
         uses: ./.github/actions/load-versions
 
+      - name: Derive the cache week
+        # The weekly epoch of the site snapshots. Setup-build is not used
+        # here, so this job derives the week itself.
+        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: site/go.sum
+          # The built-in cache combines the module and build directories and
+          # cannot exclude inherited files, so the site snapshots replace it.
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Locate the site Go build cache
+        run: echo "GOCACHE=$(go env GOCACHE)" >> "$GITHUB_ENV"
+
+      - name: Restore the site module downloads
+        uses: ./.github/actions/dependency-caches
+        with:
+          go: 'true'
+          go-scope: site
+          bun: 'false'
+          populate: 'true'
+
+      - name: Compute the site snapshot key
+        id: site-key
+        env:
+          CACHE_HASH: ${{ hashFiles('site/go.mod', 'site/go.sum') }}
+        run: echo "key=$(node scripts/cache-snapshot.mjs key --kind site-go --hash "$CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the site build outputs
+        # This workflow runs only on main, so every job is a writer and
+        # passes no fallback: a missed exact key builds the site from an
+        # empty Go build cache, and the save below publishes only this
+        # build's outputs.
+        id: site-go-restore
+        uses: ./.github/actions/build-output-cache
+        with:
+          kind: site-go
+          key: ${{ steps.site-key.outputs.key }}
+          writer: 'true'
 
       - name: Build site
         # GOWORK=off isolates the site module from the root go.work (which lists
@@ -56,9 +96,14 @@ jobs:
         working-directory: site
         run: GOWORK=off go tool hugo --gc --minify
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Save the site build outputs snapshot
+        # Saved before the deploy step receives the Cloudflare token, so a
+        # failed or skipped deploy cannot withhold a complete snapshot.
+        if: steps.site-go-restore.outputs.save-required == 'true'
+        uses: ./.github/actions/save-cache-snapshot
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          kind: site-go
+          key: ${{ steps.site-key.outputs.key }}
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:

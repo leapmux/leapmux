@@ -1,32 +1,41 @@
 name: Dependency caches
 description: |
-  Restore dependency archives and optionally populate each missing archive:
-  - Go modules.
+  Restore dependency archives and optionally populate each missing archive
+  from an isolated directory:
+  - Go modules (workspace scope or site scope).
   - Bun packages.
   - Cargo registry files.
 
 # Dependency-cache policy, shared by every job that downloads dependencies:
 #
-# * The key is the lockfile hash only. No compiler or toolchain version is in
-#   the key, because a toolchain change does not change what the lockfile
-#   lists.
-# * On a miss, one step downloads everything the lockfile lists and the next
-#   step saves the archive at once. Any job may do this, PR jobs included, so
-#   the content never depends on which job saved it.
-# * There are no restore keys. An archive holds exactly the current lockfile's
-#   set of files, so it cannot grow with a stale prefix match.
+# * The key is the lockfile hash only, under the generation prefix of the
+#   policy registry (scripts/cache-policy.mjs). No compiler or toolchain
+#   version is in the key, because a toolchain change does not change what
+#   the lockfile lists.
+# * On a miss, the download runs with the tool's cache pointed at an EMPTY
+#   isolated payload directory, so the archive can only hold files of the
+#   current dependency declarations. The payload is copied into the active
+#   downloads without removing them, saved immediately, and the staging is
+#   cleaned in every publication outcome.
+# * There are no restore keys. An archive holds exactly the current
+#   declarations' file set, so it cannot grow with a stale prefix match.
 # * Each archive is per OS. @actions/cache stores each path relative to the
-#   workspace. Windows places the workspace on D: and the home directory on C:.
-#   An archive from another operating system would restore paths to the wrong drive.
-#   The Linux architectures share Go archives because their path strings match.
-#   Bun archives remain per architecture because Bun installs platform-specific packages.
-# Callers must check out first because hashFiles reads the workspace lockfiles.
-# Store compressed Go downloads to reduce archive size. Clean runners expand them once per module.
+#   workspace. Windows places the workspace on D: and the home directory on
+#   C:. An archive from another operating system would restore paths to the
+#   wrong drive. The Linux architectures share Go archives because their
+#   path strings match. Bun archives remain per architecture because Bun
+#   installs platform-specific packages.
+# Callers must check out first, because hashFiles reads the workspace
+# lockfiles, and setup Node.js first, because the policy CLI runs on node.
 inputs:
   go:
     description: Restore the Go module downloads.
     required: false
     default: 'true'
+  go-scope:
+    description: The workspace modules or the site modules.
+    required: false
+    default: 'workspace'
   bun:
     description: Restore the Bun package downloads.
     required: false
@@ -34,25 +43,19 @@ inputs:
   cargo:
     description: >
       Restore the Cargo registry downloads. Requires `cargo` and `CARGO_HOME`
-      in the environment, which Setup Rust supplies.
-    required: false
-    default: 'false'
-  cargo-lookup-only:
-    description: Check the Cargo archive without downloading it on an exact hit.
+      in the environment for a population, which Setup Rust supplies.
     required: false
     default: 'false'
   populate:
     description: >
-      On a restore miss, run the full download for each selected ecosystem and
-      save the archive at once. Requires that ecosystem's tool. With 'false',
-      this action only restores.
+      On a restore miss, run the full download into an isolated directory for
+      each selected ecosystem and save the archive at once. Requires that
+      ecosystem's tool. With 'false', this action only restores and returns
+      an empty usable directory on a miss.
     required: false
     default: 'false'
 
 outputs:
-  cargo-cache-hit:
-    description: Whether the Cargo dependency archive exists for the exact key.
-    value: ${{ steps.cargo.outputs.cache-hit }}
   go-modcache:
     description: The Go module cache directory that holds `cache/download`.
     value: ${{ steps.paths.outputs.go-modcache }}
@@ -66,99 +69,164 @@ runs:
     - name: Set the dependency cache locations
       id: paths
       # Write the tools' own defaults explicitly, so that each cache path and
-      # each tool cannot disagree about where the downloads live.
+      # each tool cannot disagree about where the downloads live. The payload
+      # roots and the keys come from the policy registry, so no workflow text
+      # spells a cache layout.
       shell: bash
+      env:
+        GO_SCOPE: ${{ inputs.go-scope }}
+        GO_WORKSPACE_HASH: ${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
+        GO_SITE_HASH: ${{ hashFiles('site/go.mod', 'site/go.sum') }}
+        BUN_HASH: ${{ hashFiles('frontend/bun.lock') }}
+        CARGO_HASH: ${{ hashFiles('desktop/rust/Cargo.lock') }}
       run: |
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          gomodcache="$USERPROFILE\\go\\pkg\\mod"
-          go_downloads="$USERPROFILE\\go\\pkg\\mod\\cache\\download"
-          bun_cache="$USERPROFILE\\.bun\\install\\cache"
-        else
-          gomodcache="$HOME/go/pkg/mod"
-          go_downloads="$HOME/go/pkg/mod/cache/download"
-          bun_cache="$HOME/.bun/install/cache"
-        fi
+        case "$GO_SCOPE" in
+          site) go_kind=site-go-modules; go_hash="$GO_SITE_HASH"; go_directory=site; go_work=off ;;
+          workspace) go_kind=go-modules; go_hash="$GO_WORKSPACE_HASH"; go_directory=.; go_work='' ;;
+          *) echo "Invalid go-scope: $GO_SCOPE" >&2; exit 1 ;;
+        esac
+        gomodcache="$(node scripts/cache-snapshot.mjs active-path --kind "$go_kind" --root gomod)"
+        bun_cache="$(node scripts/cache-snapshot.mjs active-path --kind bun-packages --root bun-cache)"
         {
           echo "GOMODCACHE=$gomodcache"
           echo "BUN_INSTALL_CACHE_DIR=$bun_cache"
         } >> "$GITHUB_ENV"
         {
           echo "go-modcache=$gomodcache"
-          echo "go-downloads=$go_downloads"
           echo "bun-cache=$bun_cache"
+          echo "go-kind=$go_kind"
+          echo "go-directory=$go_directory"
+          echo "go-work=$go_work"
+          echo "go-key=$(node scripts/cache-snapshot.mjs key --kind "$go_kind" --hash "$go_hash")"
+          echo "go-payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$go_kind" --root gomod)"
+          echo "bun-key=$(node scripts/cache-snapshot.mjs key --kind bun-packages --hash "$BUN_HASH")"
+          echo "bun-payload=$(node scripts/cache-snapshot.mjs payload-path --kind bun-packages --root bun-cache)"
+          echo "cargo-key=$(node scripts/cache-snapshot.mjs key --kind cargo-downloads --hash "$CARGO_HASH")"
+          echo "cargo-payload=$(node scripts/cache-snapshot.mjs payload-path --kind cargo-downloads --root cargo-home)"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Restore Go module downloads
+    # --- Go modules -----------------------------------------------------
+
+    - name: Restore the Go module downloads
       id: go
       if: inputs.go == 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: ./.github/actions/build-output-cache
       with:
-        path: ${{ steps.paths.outputs.go-downloads }}
-        key: go-modules-${{ runner.os }}-${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
+        kind: ${{ steps.paths.outputs.go-kind }}
+        key: ${{ steps.paths.outputs.go-key }}
+        writer: ${{ inputs.populate }}
 
-    - name: Download Go modules
+    - name: Download the Go modules into the isolated payload
       # With no arguments, `go mod download` downloads `all` in workspace
-      # mode, which includes the `tool` dependencies.
+      # mode, which includes the `tool` dependencies. The site scope runs
+      # with GOWORK=off from site/.
       if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
       shell: bash
+      working-directory: ${{ steps.paths.outputs.go-directory }}
+      env:
+        GOMODCACHE: ${{ steps.paths.outputs.go-payload }}
+        GOWORK: ${{ steps.paths.outputs.go-work }}
       run: go mod download
 
-    - name: Save Go module downloads
+    - name: Publish the Go module downloads to the active cache
       if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.paths.outputs.go-downloads }}
-        key: ${{ steps.go.outputs.cache-primary-key }}
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: ${{ steps.paths.outputs.go-kind }}
+        LEAPMUX_CACHE_KEY: ${{ steps.paths.outputs.go-key }}
+      run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
 
-    - name: Restore Bun package downloads
+    - name: Save the Go module archive
+      if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.save-required == 'true'
+      uses: ./.github/actions/save-cache-snapshot
+      with:
+        kind: ${{ steps.paths.outputs.go-kind }}
+        key: ${{ steps.paths.outputs.go-key }}
+
+    - name: Clean the Go module staging
+      # A restore-only caller or an exact hit never saves, so the restored
+      # staging payload has no future after activation copied it.
+      if: always() && inputs.go == 'true' && steps.paths.outcome == 'success'
+      shell: bash
+      run: node scripts/cache-snapshot.mjs cleanup --kind "${{ steps.paths.outputs.go-kind }}"
+
+    # --- Bun packages ---------------------------------------------------
+
+    - name: Restore the Bun package downloads
       id: bun
       if: inputs.bun == 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: ./.github/actions/build-output-cache
       with:
-        path: ${{ steps.paths.outputs.bun-cache }}
-        key: bun-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+        kind: bun-packages
+        key: ${{ steps.paths.outputs.bun-key }}
+        writer: ${{ inputs.populate }}
 
-    - name: Download Bun packages
+    - name: Install the Bun packages into the isolated payload
       if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.cache-hit != 'true'
       shell: bash
       working-directory: frontend
+      env:
+        BUN_INSTALL_CACHE_DIR: ${{ steps.paths.outputs.bun-payload }}
       run: bun install --frozen-lockfile --ignore-scripts
 
-    - name: Save Bun package downloads
+    - name: Publish the Bun packages to the active cache
       if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.paths.outputs.bun-cache }}
-        key: ${{ steps.bun.outputs.cache-primary-key }}
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: bun-packages
+        LEAPMUX_CACHE_KEY: ${{ steps.paths.outputs.bun-key }}
+      run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
 
-    - name: Restore Cargo registry downloads
+    - name: Save the Bun package archive
+      if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.save-required == 'true'
+      uses: ./.github/actions/save-cache-snapshot
+      with:
+        kind: bun-packages
+        key: ${{ steps.paths.outputs.bun-key }}
+
+    - name: Clean the Bun package staging
+      if: always() && inputs.bun == 'true' && steps.paths.outcome == 'success'
+      shell: bash
+      run: node scripts/cache-snapshot.mjs cleanup --kind bun-packages
+
+    # --- Cargo registry -------------------------------------------------
+
+    - name: Restore the Cargo registry downloads
       id: cargo
-      # `git/db` does not exist today. Only zero matched paths fail a save, so
-      # its absence is harmless.
       if: inputs.cargo == 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: ./.github/actions/build-output-cache
       with:
-        lookup-only: ${{ inputs.cargo-lookup-only }}
-        path: |
-          ${{ env.CARGO_HOME }}/registry/index
-          ${{ env.CARGO_HOME }}/registry/cache
-          ${{ env.CARGO_HOME }}/git/db
-        key: cargo-registry-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+        kind: cargo-downloads
+        key: ${{ steps.paths.outputs.cargo-key }}
+        writer: ${{ inputs.populate }}
 
-    - name: Download Cargo registry
+    - name: Fetch the Cargo registry into the isolated payload
       # Without `--target`, `cargo fetch` reads the lockfile and fetches the
-      # crates for every platform.
+      # crates for every platform. The isolated CARGO_HOME keeps the Rust
+      # toolchain installation outside the download directory.
       if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.cache-hit != 'true'
       shell: bash
       working-directory: desktop/rust
+      env:
+        CARGO_HOME: ${{ steps.paths.outputs.cargo-payload }}
       run: cargo fetch --locked
 
-    - name: Save Cargo registry downloads
+    - name: Publish the Cargo registry to the active cache
       if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      shell: bash
+      env:
+        LEAPMUX_CACHE_KIND: cargo-downloads
+        LEAPMUX_CACHE_KEY: ${{ steps.paths.outputs.cargo-key }}
+      run: node scripts/cache-snapshot.mjs publish-dependency --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
+
+    - name: Save the Cargo registry archive
+      if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.save-required == 'true'
+      uses: ./.github/actions/save-cache-snapshot
       with:
-        path: |
-          ${{ env.CARGO_HOME }}/registry/index
-          ${{ env.CARGO_HOME }}/registry/cache
-          ${{ env.CARGO_HOME }}/git/db
-        key: ${{ steps.cargo.outputs.cache-primary-key }}
+        kind: cargo-downloads
+        key: ${{ steps.paths.outputs.cargo-key }}
+
+    - name: Clean the Cargo registry staging
+      if: always() && inputs.cargo == 'true' && steps.paths.outcome == 'success'
+      shell: bash
+      run: node scripts/cache-snapshot.mjs cleanup --kind cargo-downloads

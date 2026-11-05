@@ -384,14 +384,16 @@ tasks:
     desc: Obtain the spinner sources
     internal: true
     status:
-      - test -d "{{.SPINNERS_CACHE_DIR}}/spinners"
+      - >-
+        bun -e 'process.exit(Array.from(new Bun.Glob("*.json").scanSync({ cwd: process.argv[1], onlyFiles: true })).length > 0 ? 0 : 1)'
+        {{printf "%s/spinners" .SPINNERS_CACHE_DIR | shellQuote}}
     cmds:
-      - |
-        if [ -d "{{.SPINNERS_CACHE_DIR}}/.git" ]; then
-          bun scripts/sync-generated.mjs --out repository/spinners "{{.SPINNERS_CACHE_DIR}}/spinners" -- git clone --local --no-hardlinks "{{.SPINNERS_CACHE_DIR}}" {STAGING}/repository
-        else
-          git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners "{{.SPINNERS_CACHE_DIR}}"
-        fi
+      # Snapshot activation can leave an empty subtree without Git metadata.
+      # Clone privately so an existing cache directory cannot prevent a fetch.
+      - >-
+        bun scripts/sync-generated.mjs
+        --out repository/spinners {{printf "%s/spinners" .SPINNERS_CACHE_DIR | shellQuote}}
+        -- git clone --depth 1 https://github.com/AlexPl292/awesome-claude-spinners {STAGING}/repository
 
   generate-spinners:
     desc: Copy spinner verb JSON files from awesome-claude-spinners
@@ -1211,6 +1213,7 @@ tasks:
       - task: test-ci-monitor
       - task: test-backend-no-docker-run
       - task: test-desktop-run
+      - task: test-cache-native
       # Linux cannot analyze Rust code behind macOS and Windows cfg attributes.
       - cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings
 
@@ -1239,6 +1242,7 @@ tasks:
       - task: test-ci-monitor
       - task: test-backend-no-docker
       - task: test-desktop
+      - task: test-cache-native
 
   test-no-docker:
     desc: Run all tests, skipping the backend tests that need Docker
@@ -1618,6 +1622,26 @@ tasks:
     cmds:
       - bun test --timeout 30000 ./scripts/test-docker.test.mjs
 
+  test-cache-native:
+    desc: Test the cache snapshot modules against this OS's real toolchains
+    cmds:
+      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs
+
+  test-docker-cache:
+    desc: Prove that the Docker Go cache export reads the current cache mount
+    cmds:
+      - node scripts/check-docker-cache.mjs {{.CLI_ARGS}}
+
+  test-cache-linux:
+    desc: Test APT cache selection against real Linux package metadata
+    cmds:
+      - >-
+        docker run --rm
+        --volume {{printf "%s:/workspace" .ROOT_DIR | shellQuote}}
+        --workdir /workspace
+        oven/bun:{{.BUN_VERSION}}
+        bun test --timeout 30000 -t trimAptArchives ./scripts/cache-snapshot.test.mjs
+
   test-docker:
     desc: Test startup and shutdown of a built Docker image
     requires:
@@ -1636,10 +1660,19 @@ tasks:
     vars:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:latest"}}'
+      LOAD: '{{.LOAD | default "false"}}'
+    # Loading an image into the local docker store works for exactly one
+    # platform. Evaluate this in the template because Task's shell does not
+    # negate the printf/grep pipeline the same way as Bash.
+    preconditions:
+      - &docker_load_platform
+        sh: '{{if and (eq .LOAD "true") (contains "," .PLATFORM)}}exit 1{{else}}exit 0{{end}}'
+        msg: LOAD=true requires a single platform
     cmds:
       - >-
         docker buildx build
         --platform {{.PLATFORM}}
+        {{if eq .LOAD "true"}}--load{{end}}
         --build-arg BASE_IMAGE={{.ALPINE_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}
@@ -1659,10 +1692,17 @@ tasks:
     vars:
       PLATFORM: '{{.PLATFORM | default "linux/amd64,linux/arm64"}}'
       TAG: '{{.TAG | default "leapmux:ubuntu"}}'
+      LOAD: '{{.LOAD | default "false"}}'
+    # Loading an image into the local docker store works for exactly one
+    # platform. Evaluate this in the template because Task's shell does not
+    # negate the printf/grep pipeline the same way as Bash.
+    preconditions:
+      - *docker_load_platform
     cmds:
       - >-
         docker buildx build
         --platform {{.PLATFORM}}
+        {{if eq .LOAD "true"}}--load{{end}}
         --build-arg BASE_IMAGE={{.UBUNTU_IMAGE}}
         --build-arg BUF_VERSION={{.BUF_VERSION}}
         --build-arg TASK_VERSION={{.TASK_VERSION}}

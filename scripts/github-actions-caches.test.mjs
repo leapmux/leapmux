@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
+import { cacheKey, cacheKinds, cachePolicy, rootActivePath, validateCacheKey } from './cache-policy.mjs'
 import { NOTICE_INPUTS } from './notice-inputs.mjs'
-import { git, gitRepository, scratchDirectories } from './test-support.mjs'
+import { createStoredZip, git, gitRepository, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const scratch = scratchDirectories()
@@ -151,7 +152,9 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
   it('uses the prepared builder for every Docker cache and build operation', () => {
     const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
     const operations = steps.filter(step => String(step.uses).startsWith('docker/build-push-action@') || String(step.uses).startsWith('reproducible-containers/buildkit-cache-dance@'))
-    expect(operations).toHaveLength(4)
+    // Dependency injection, Go snapshot import, the tools stage, the image,
+    // and Go snapshot export.
+    expect(operations).toHaveLength(5)
     for (const step of operations) expect(step.with.builder).toBe(expression('inputs.builder'))
   })
 
@@ -195,13 +198,8 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       expect(job.concurrency.queue).toBe('max')
       expect(job.concurrency.group).toContain(expression('github.ref'))
       groups.push(job.concurrency.group)
-      const writer = job.steps.find(step => step.id === 'go-cache')
       const prune = job.steps.find(step => step.uses === './.github/actions/prune-build-cache')
-      expect(writer.if).toBe('github.ref == \'refs/heads/main\'')
-      expect(prune.if).toBe('github.ref == \'refs/heads/main\' && steps.go-cache.outputs.cache-hit != \'true\'')
-      expect(writer.with.save).toBe('true')
       expect(prune['continue-on-error'] ?? false).toBe(false)
-      expect(job.steps.indexOf(prune)).toBeGreaterThan(job.steps.indexOf(writer))
     }
     expect(new Set(groups).size).toBe(3)
     expect(ci.jobs.linux.concurrency.group).toContain(expression('matrix.arch'))
@@ -211,9 +209,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(docker.concurrency).toEqual(release.concurrency)
     expect(docker.concurrency).toEqual({ 'group': `compiled-go-docker-${expression('matrix.variant')}-${expression('matrix.arch')}`, 'cancel-in-progress': false, 'queue': 'max' })
     for (const job of [docker, release]) expect(job.permissions.actions).toBe('write')
-    const nativeRestore = actionSteps('.github/actions/setup-build/action.yaml').find(step => step.name === 'Restore Go build outputs')
-    expect(nativeRestore.if).toBe('inputs.save-build-caches != \'true\'')
-    expect(nativeRestore.with.save).toBe('false')
   })
 
   for (const [file, stepName] of [
@@ -235,7 +230,9 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
           writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`)
           chmodSync(join(bin, name), 0o755)
         }
-        const run = step.run.replace(/\$\{\{\s*hashFiles\([^)]*\)\s*\}\}/g, 'a'.repeat(64))
+        const run = step.run
+          .replaceAll(/\$\{\{\s*hashFiles\([^)]*\)\s*\}\}/g, 'a'.repeat(64))
+          .replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
         const result = runShell(run, dir, {
           FIXTURE_GOCACHE: join(dir, 'go-cache'),
           FIXTURE_WEEK: week,
@@ -296,89 +293,85 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(readFileSync(join(logs, 'cgo.log'), 'utf8')).toBe('CGO fixture\nEXIT: 18\n')
     expect(readFileSync(join(logs, 'arm64-loader.log'), 'utf8')).toMatch(/EXIT: \d+\n$/)
   })
-  it('restores build outputs before Docker extracts and saves them', () => {
+  it('restores the Docker Go snapshot before the build and saves it only after the export', () => {
     const helper = actionSteps('.github/actions/build-output-cache/action.yaml')
-    expect(helper).toHaveLength(2)
-    expect(helper.map(step => step.if)).toEqual(['inputs.save == \'true\'', 'inputs.save != \'true\''])
-    for (const step of helper) {
-      expect(step.with).toEqual({
-        'path': expression('inputs.path'),
-        'key': expression('inputs.key'),
-        'restore-keys': expression('inputs.restore-keys'),
-      })
-    }
-    expect(helper[0].uses).toStartWith('actions/cache@')
+    // The restore action is restore-only: publication lives in the save
+    // action, so no implicit post step can publish an archive.
+    expect(helper).toHaveLength(4)
+    expect(helper[0].id).toBe('paths')
     expect(helper[1].uses).toStartWith('actions/cache/restore@')
+    expect(helper[2].id).toBe('activate')
+    expect(helper[2].run).toContain('scripts/cache-snapshot.mjs activate')
     const buildSteps = actionSteps('.github/actions/build-docker-image/action.yaml')
-    expect(buildSteps.some(step => step.uses === './.github/actions/build-output-cache')).toBe(false)
-    expect(buildSteps.some(step => step.uses === './.github/actions/prune-build-cache')).toBe(false)
-    const pruning = yaml('.github/actions/prune-build-cache/action.yaml')
-    expect(pruning.runs['post-if']).toBe('success()')
-    expect(pruning.runs.using).toBe('node24')
-    for (const phase of ['main', 'post']) {
-      expect(existsSync(resolve(root, '.github/actions/prune-build-cache', pruning.runs[phase]))).toBe(true)
-    }
-    for (const [file, jobName] of [
-      ['ci.yaml', 'docker'],
-      ['docker.yaml', 'build'],
-      ['release.yaml', 'docker'],
+    const dances = buildSteps.filter(step => String(step.uses ?? '').startsWith('reproducible-containers/buildkit-cache-dance'))
+    // Injection only: the explicit export stage replaces the dance's
+    // automatic post extraction.
+    expect(dances).toHaveLength(1)
+    for (const dance of dances)
+      expect(dance.with['skip-extraction']).toBe(true)
+    const exportStep = buildSteps.find(step => step.name === 'Export the Go build cache')
+    expect(exportStep.with.target).toBe('go-cache-files')
+    expect(exportStep.with['no-cache-filters']).toBeUndefined()
+    expect(exportStep.with['build-args']).toContain('GO_CACHE_EXPORT_TOKEN=')
+    const exportOutput = ['type=local,dest=${', '{ inputs.cache-path }}'].join('')
+    expect(exportStep.with.outputs).toBe(exportOutput)
+    expect(exportStep.if).toBe('inputs.writes-shared == \'true\' && inputs.write-snapshot == \'true\'')
+    const testIndex = buildSteps.findIndex(step => step.name === 'Test the image')
+    expect(buildSteps.indexOf(exportStep)).toBeGreaterThan(testIndex)
+    for (const [file, jobName, reader] of [
+      ['ci.yaml', 'docker', true],
+      ['docker.yaml', 'build', false],
+      ['release.yaml', 'docker', false],
     ]) {
       const steps = yaml(`.github/workflows/${file}`).jobs[jobName].steps
       const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-docker-build')
-      const cacheIndex = steps.findIndex(step => step.uses === './.github/actions/build-output-cache')
-      const pruneIndex = steps.findIndex(step => step.uses === './.github/actions/prune-build-cache')
+      const restoreIndex = steps.findIndex(step => step.uses === './.github/actions/build-output-cache')
       const buildIndex = steps.findIndex(step => step.uses === './.github/actions/build-docker-image')
+      const saveIndex = steps.findIndex(step => step.name === 'Save the Docker Go build outputs snapshot')
+      const pruneIndex = steps.findIndex(step => step.uses === './.github/actions/prune-build-cache')
       expect(setupIndex).toBeGreaterThanOrEqual(0)
-      expect(cacheIndex).toBeGreaterThan(setupIndex)
-      expect(pruneIndex).toBeGreaterThan(cacheIndex)
-      expect(buildIndex).toBeGreaterThan(pruneIndex)
-      expect(steps[pruneIndex]['continue-on-error'] ?? false).toBe(false)
-      expect(steps[buildIndex]['continue-on-error'] ?? false).toBe(false)
-      expect(steps[pruneIndex].if).toBe('steps.setup.outputs.writes-shared == \'true\' && steps.go-cache.outputs.cache-hit != \'true\'')
-      expect(steps[cacheIndex].with.save).toBe(expression('steps.setup.outputs.writes-shared'))
-      expect(steps[cacheIndex].with.key).toBe(expression('steps.setup.outputs.cache-key'))
+      expect(restoreIndex).toBeGreaterThan(setupIndex)
+      expect(buildIndex).toBeGreaterThan(restoreIndex)
+      const restore = steps[restoreIndex]
+      expect(restore.with.kind).toBe('docker-go')
+      expect(restore.with.key).toBe(expression('steps.setup.outputs.cache-key'))
+      if (reader) {
+        // The pull-request job is a pure reader with no save and no prune.
+        expect(restore.with.writer).toBe(expression('steps.setup.outputs.writes-shared'))
+        expect(restore.with['restore-keys']).toBe(expression('steps.setup.outputs.cache-prefix'))
+        expect(saveIndex).toBe(-1)
+        expect(pruneIndex).toBe(-1)
+        continue
+      }
+      // A writer passes no fallback and publishes after the export, and the
+      // pruner follows a ready save only.
+      expect(restore.with.writer).toBe(expression('steps.setup.outputs.writes-shared'))
+      expect(restore.with['restore-keys']).toBeUndefined()
+      expect(saveIndex).toBeGreaterThan(buildIndex)
+      expect(steps[saveIndex].with).toEqual({
+        kind: 'docker-go',
+        key: expression('steps.setup.outputs.cache-key'),
+      })
+      expect(steps[saveIndex].if).toBe('steps.setup.outputs.writes-shared == \'true\' && steps.go-cache.outputs.save-required == \'true\'')
+      expect(pruneIndex).toBeGreaterThan(saveIndex)
+      expect(steps[pruneIndex].if).toBe('steps.setup.outputs.writes-shared == \'true\' && steps.go-cache-save.outputs.result == \'ready\'')
       expect(steps[pruneIndex].with).toEqual({
         key: expression('steps.setup.outputs.cache-key'),
         prefix: expression('steps.setup.outputs.cache-prefix'),
       })
-      expect(steps[buildIndex].with['go-cache-hit']).toBe(expression('steps.go-cache.outputs.cache-hit'))
-      expect(steps[buildIndex].with['cache-path']).toBe(steps[cacheIndex].with.path)
-      expect(steps[buildIndex].with.builder).toBe(expression('steps.setup.outputs.builder'))
-      expect(steps[buildIndex].with['build-args']).toBe(expression('steps.setup.outputs.build-args'))
+      const build = steps[buildIndex]
+      expect(build.with['write-snapshot']).toBe(expression('steps.go-cache.outputs.save-required'))
+      expect(build.with['cache-path']).toBe(expression('steps.setup.outputs.cache-path'))
+      expect(build.with.builder).toBe(expression('steps.setup.outputs.builder'))
+      expect(build.with['build-args']).toBe(expression('steps.setup.outputs.build-args'))
     }
+    // The pruner remains a node action whose post step deletes by ID.
+    const pruning = yaml('.github/actions/prune-build-cache/action.yaml')
+    expect(pruning.runs['post-if']).toBe('success()')
+    expect(pruning.runs.using).toBe('node24')
+    for (const phase of ['main', 'post'])
+      expect(existsSync(resolve(root, '.github/actions/prune-build-cache', pruning.runs[phase]))).toBe(true)
   })
-
-  it('uses a Cargo lookup before an exact Rust cache hit', () => {
-    const steps = actionSteps('.github/actions/setup-build/action.yaml')
-    const dependency = steps.find(step => step.id === 'deps')
-    const rust = steps.find(step => step.id === 'rust-cache')
-    const fallback = steps.find(step => step.name === 'Restore Cargo downloads after a Rust cache miss')
-    expect(dependency.with['cargo-lookup-only']).toBe(expression('inputs.setup-desktop == \'true\''))
-    expect(fallback.if).toBe('inputs.setup-desktop == \'true\' && steps.deps.outputs.cargo-cache-hit == \'true\' && steps.rust-cache.outputs.cache-hit != \'true\'')
-    expect(fallback.with).toEqual({
-      go: 'false',
-      bun: 'false',
-      cargo: 'true',
-      populate: 'false',
-    })
-    expect(steps.indexOf(dependency)).toBeLessThan(steps.indexOf(rust))
-    expect(steps.indexOf(rust)).toBeLessThan(steps.indexOf(fallback))
-    const cargoRestore = actionSteps('.github/actions/dependency-caches/action.yaml').find(step => step.id === 'cargo')
-    expect(cargoRestore.with['lookup-only']).toBe(expression('inputs.cargo-lookup-only'))
-  })
-
-  it('sets one shared Cargo debug level before cache restoration', () => {
-    const steps = actionSteps('.github/actions/setup-build/action.yaml')
-    const setting = steps.find(step => step.name === 'Set the Cargo debug information level')
-    expect(steps.indexOf(setting)).toBeLessThan(steps.findIndex(step => step.id === 'rust-cache'))
-    const dir = fixture()
-    expect(runShell(setting.run, dir).status).toBe(0)
-    expect(outputFile(dir, 'environment')).toBe('CARGO_PROFILE_DEV_DEBUG=line-tables-only\n')
-    for (const file of ['ci.yaml', 'desktop-artifacts.yaml']) {
-      expect(yaml(`.github/workflows/${file}`).env?.CARGO_PROFILE_DEV_DEBUG).toBeUndefined()
-    }
-  })
-
   it('writes validated image digests under their original artifact layout', () => {
     const action = actionSteps('.github/actions/upload-docker-digest/action.yaml')
     const digest = `sha256:${'a'.repeat(64)}`
@@ -497,17 +490,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       }
     })
   }
-  it('keeps the patch fingerprint in every Tauri restore prefix', () => {
-    const step = actionSteps('.github/actions/setup-build/action.yaml')
-      .find(entry => entry.name === 'Cache Tauri downloads')
-    const prefix = step.with['restore-keys']
-    for (const file of ['patch-linuxdeploy.sh', 'linuxdeploy-wrapper.c']) {
-      expect(prefix).toContain(file)
-    }
-    expect(prefix).not.toContain('CACHE_WEEK')
-    expect(step.with.key).toBe(`${prefix}\${{ env.CACHE_WEEK }}`)
-  })
-
   it('deploys the site with the locked wrangler, installed without install scripts', () => {
     const steps = yaml('.github/workflows/publish-site.yaml').jobs.publish.steps
     const index = name => steps.findIndex(step => step.name === name)
@@ -517,6 +499,37 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(index('Deploy to Cloudflare Workers')).toBeGreaterThan(index('Install the locked site tools'))
     expect(install).toMatchObject({ 'working-directory': 'site', 'run': 'bun install --frozen-lockfile --ignore-scripts' })
     expect(deploy).toMatchObject({ 'working-directory': 'site', 'run': './node_modules/.bin/wrangler deploy' })
+    // The site snapshots replace setup-go's combined cache: downloads and
+    // build outputs restore separately, a writer builds from an empty build
+    // cache on a miss, and both saves run before the deploy step receives
+    // the Cloudflare token.
+    const setupGo = steps.find(step => String(step.uses).startsWith('actions/setup-go@'))
+    expect(String(setupGo.with.cache)).toBe('false')
+    const moduleRestore = steps.find(step => step.name === 'Restore the site module downloads')
+    expect(moduleRestore.uses).toBe('./.github/actions/dependency-caches')
+    expect(moduleRestore.with).toEqual({
+      'go': 'true',
+      'go-scope': 'site',
+      'bun': 'false',
+      'populate': 'true',
+    })
+    const buildRestore = steps.find(step => step.name === 'Restore the site build outputs')
+    expect(buildRestore.uses).toBe('./.github/actions/build-output-cache')
+    expect(buildRestore.with.kind).toBe('site-go')
+    expect(buildRestore.with.key).toBe(expression('steps.site-key.outputs.key'))
+    const siteKey = steps.find(step => step.id === 'site-key')
+    expect(siteKey.env.CACHE_HASH).toBe(expression('hashFiles(\'site/go.mod\', \'site/go.sum\')'))
+    expect(siteKey.run).toContain('key --kind site-go')
+    expect(buildRestore.with.writer).toBe('true')
+    // The workflow runs only on main, so every job is a writer and passes
+    // no fallback.
+    expect(buildRestore.with['restore-keys']).toBeUndefined()
+    const buildSave = steps.find(step => step.name === 'Save the site build outputs snapshot')
+    expect(buildSave.uses).toBe('./.github/actions/save-cache-snapshot')
+    expect(buildSave.with).toEqual({ kind: 'site-go', key: buildRestore.with.key })
+    expect(buildSave.if).toBe('steps.site-go-restore.outputs.save-required == \'true\'')
+    expect(index('Build site')).toBeGreaterThan(index('Restore the site build outputs'))
+    expect(index('Save the site build outputs snapshot')).toBeGreaterThan(index('Build site'))
     expect(deploy.env).toEqual({
       CLOUDFLARE_API_TOKEN: expression('secrets.CLOUDFLARE_API_TOKEN'),
       CLOUDFLARE_ACCOUNT_ID: expression('secrets.CLOUDFLARE_ACCOUNT_ID'),
@@ -646,15 +659,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       expect(step.run).toBe('bash scripts/cleanup-apple-signing.sh')
     }
   })
-  it('stores the spinner cache in the directory that Task clones into', () => {
-    const step = actionSteps('.github/actions/setup-build/action.yaml')
-      .find(entry => entry.name === 'Cache awesome-claude-spinners')
-    const path = String(step?.with?.path ?? '')
-    const taskSuffix = String(yaml('Taskfile.yaml').vars.SPINNERS_CACHE_DIR.sh).match(/\/\.cache\/[\w-]+/)?.[0]
-    expect(taskSuffix).toBe('/.cache/awesome-claude-spinners')
-    expect(path.endsWith(taskSuffix)).toBe(true)
-  })
-
   it('builds desktop artifacts on the images that CI tests', () => {
     const ci = yaml('.github/workflows/ci.yaml')
     const desktop = yaml('.github/workflows/desktop-artifacts.yaml')
@@ -670,69 +674,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       const checkout = job.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
       expect(checkout.with.ref).toBe(expression('inputs.ref'))
     }
-  })
-
-  it('saves compiled caches only from the CI platform jobs', () => {
-    const savers = []
-    for (const file of workflowFiles) {
-      for (const { jobName, step } of jobSteps(yaml(file))) {
-        if (step.uses !== './.github/actions/setup-build')
-          continue
-        expect(step.with?.['rust-save-if']).toBeUndefined()
-        if ('save-build-caches' in (step.with ?? {})) {
-          savers.push({ job: `${file}:${jobName}`, value: step.with['save-build-caches'] })
-        }
-      }
-    }
-    expect(savers.map(saver => saver.job).sort()).toEqual([
-      '.github/workflows/ci.yaml:linux',
-      '.github/workflows/ci.yaml:macos',
-      '.github/workflows/ci.yaml:windows',
-    ])
-    const mainOnlySave = /^\$\{\{ github\.ref == 'refs\/heads\/main' \}\}$/
-    for (const saver of savers) {
-      expect(saver.value).toMatch(mainOnlySave)
-    }
-    for (const file of [
-      ...workflowFiles,
-      ...actionFiles,
-    ]) {
-      expect(raw(file)).not.toContain('rust-save-if')
-    }
-  })
-
-  it('restores the compiled Renovate RE2 engine after the package install, with the task state that accepts it', () => {
-    const steps = yaml('.github/workflows/ci.yaml').jobs.linux.steps
-    const index = name => steps.findIndex(step => step.name === name)
-    const install = index('Install the pinned Renovate packages')
-    const cache = index('Cache the compiled Renovate RE2 engine')
-    const extract = index('Validate Renovate dependency extraction')
-    expect(install).toBeGreaterThanOrEqual(0)
-    // bun install replaces a package directory that it installs anew, with a restored engine in it.
-    expect(cache).toBeGreaterThan(install)
-    expect(extract).toBeGreaterThan(cache)
-    expect(steps[install].run).toBe('task install-renovate-packages')
-    expect(steps[cache].if).toBe(steps[install].if)
-    expect(steps[cache].uses).toBe('./.github/actions/build-output-cache')
-    // The archive holds the outputs of the task, its Task checksum, and its task-state record.
-    const task = 'build-renovate-re2'
-    const outputs = yaml('Taskfile.yaml').tasks[task].vars.OUTPUTS
-    expect(outputs.length).toBeGreaterThan(0)
-    expect(cachePaths(steps[cache])).toEqual([
-      ...outputs,
-      `.task/checksum/${task}`,
-      `.task/artifacts/${createHash('sha256').update(task).digest('hex')}.sha256`,
-    ])
-    const { key, 'restore-keys': restoreKeys, save } = steps[cache].with
-    const lockHash = expression('hashFiles(\'.github/renovate/bun.lock\')')
-    expect(key).toStartWith('renovate-re2-')
-    expect(key).toContain(lockHash)
-    expect(key).toContain(expression('hashFiles(\'Taskfile.yaml\', \'scripts/task-state.mjs\')'))
-    expect(key).toEndWith(`-${expression('env.CACHE_WEEK')}`)
-    // A restored engine from another recipe fails the task-state check, and the task rebuilds it.
-    expect(key.startsWith(restoreKeys)).toBe(true)
-    expect(restoreKeys).toEndWith(`${lockHash}-`)
-    expect(save).toBe(expression('github.ref == \'refs/heads/main\''))
   })
 
   it('keeps per-commit build args out of the toolchain layers', () => {
@@ -774,12 +715,23 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
   })
 
+  it('reuses the shared tool layers before importing the restored Go snapshot', () => {
+    const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
+    const imported = steps.find(step => step.with?.target === 'go-cache-import')
+    const tools = steps.find(step => step.with?.target === 'tools')
+    expect(tools.with['cache-from']).toContain('scope=tools-')
+    expect(imported.with['cache-from']).toBe(tools.with['cache-from'])
+    expect(imported.with['cache-to']).toBeUndefined()
+  })
+
   it('allows cache export failures while retaining fatal Docker build failures', () => {
     const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
     const builds = steps.filter(step => String(step.uses).startsWith('docker/build-push-action@'))
-    expect(builds).toHaveLength(2)
+    // Go snapshot import, the tools stage, the image, and Go snapshot export.
+    expect(builds).toHaveLength(4)
     for (const step of builds) {
-      expect(String(step.with['cache-to'])).toContain('ignore-error=true')
+      if (step.with['cache-to'] !== undefined)
+        expect(String(step.with['cache-to'])).toContain('ignore-error=true')
       expect(step['continue-on-error']).not.toBe(true)
     }
   })
@@ -801,62 +753,10 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
   })
 
-  it('saves only package files in the APT cache', () => {
-    for (const file of [
-      ...workflowFiles,
-      ...actionFiles,
-    ]) {
-      for (const { step } of allSteps(yaml(file))) {
-        if (!String(step.uses ?? '').startsWith('actions/cache'))
-          continue
-        if (!String(step.with?.path ?? '').toLowerCase().includes('apt'))
-          continue
-        for (const path of cachePaths(step)) {
-          expect(path.endsWith('*.deb')).toBe(true)
-        }
-      }
-    }
-  })
-
   it('leaves Go module caching out of setup-go', () => {
     const step = actionSteps('.github/actions/setup-build/action.yaml')
       .find(entry => entry.name === 'Setup Go')
     expect(String(step?.with?.cache ?? '')).toBe('false')
-  })
-
-  it('removes the ambient Rust toolchains before rust-cache computes its key', () => {
-    const steps = actionSteps('.github/actions/setup-build/action.yaml')
-    const names = steps.map(entry => entry.name)
-    const removeIndex = names.indexOf('Remove ambient Rust toolchains')
-    const cacheIndex = steps.findIndex(entry =>
-      String(entry.uses ?? '').startsWith('Swatinem/rust-cache'))
-    expect(removeIndex).toBeGreaterThanOrEqual(0)
-    expect(cacheIndex).toBeGreaterThan(removeIndex)
-    const run = String(steps[removeIndex].run ?? '')
-    expect(run).toContain('rustup default "$RUST_VERSION"')
-    expect(run).toContain('rustup toolchain uninstall')
-  })
-
-  it('saves each dependency archive right after its full download', () => {
-    const steps = actionSteps('.github/actions/dependency-caches/action.yaml')
-    const commands = ['go mod download', 'bun install --frozen-lockfile --ignore-scripts', 'cargo fetch --locked']
-    const downloaded = new Set()
-    for (const [index, step] of steps.entries()) {
-      if (!String(step.uses ?? '').startsWith('actions/cache/save'))
-        continue
-      const download = steps[index - 1]
-      const command = commands.find(candidate => String(download?.run ?? '').includes(candidate))
-      expect(command).toBeDefined()
-      downloaded.add(command)
-      expect(step.if).toBe(download.if)
-      const key = String(step.with?.key ?? '')
-      const match = key.match(/^\$\{\{\s*steps\.(\w+)\.outputs\.cache-primary-key\s*\}\}$/)
-      expect(match).not.toBeNull()
-      const restore = steps.find(entry => entry.id === match[1])
-      expect(String(restore?.uses ?? '').startsWith('actions/cache/restore')).toBe(true)
-    }
-    for (const command of commands) expect(downloaded.has(command)).toBe(true)
-    for (const step of steps) expect(step.with?.['restore-keys']).toBeUndefined()
   })
 
   it('runs NOTICE again when an action that it uses changes', () => {
@@ -909,6 +809,136 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       ...actionFiles,
     ])
       expect(patterns.some(pattern => pattern.test(file)), file).toBe(true)
+  })
+
+  it('excludes an inherited obsolete dependency from the prepared archive', async () => {
+    // The configured archive-preparation path. The save action must own it:
+    // preparation runs before the pinned save and decides what the archive holds.
+    const saveAction = '.github/actions/save-cache-snapshot/action.yaml'
+    expect(existsSync(resolve(root, saveAction)), `The archive preparation action is absent: ${saveAction}`).toBe(true)
+    const steps = actionSteps(saveAction)
+    const prepare = steps.find(step => step.id === 'prepare')
+    const save = steps.find(step => step.id === 'save')
+    expect(prepare, 'The save action has no archive preparation step').toBeDefined()
+    expect(save, 'The save action has no archive save step').toBeDefined()
+    expect(steps.indexOf(save)).toBeGreaterThan(steps.indexOf(prepare))
+    expect(save.if).toBe('steps.prepare.outputs.result == \'ready\'')
+    const script = String(prepare.run ?? '').match(/(scripts\/[\w-]+\.mjs)/)?.[1]
+    expect(script, 'The preparation step does not run a project script').toBeDefined()
+    const { prepareCacheSnapshot, activateCacheSnapshot, cleanupSnapshotStaging } = await import(`../${script}`)
+    const { rootPayloadPath } = await import('./cache-policy.mjs')
+
+    // A writer missed its exact key, so activation created an empty payload.
+    // The restored active directory still holds an obsolete module beside the
+    // current one, and the population writes only the current module into the
+    // isolated payload. The recorded operations show which steps ran.
+    const dir = fixture()
+    const operations = []
+    const active = join(dir, 'gomod-active')
+    const moduleEnv = {
+      ...process.env,
+      RUNNER_OS: 'Linux',
+      RUNNER_ARCH: 'X64',
+      GOMODCACHE: active,
+    }
+    const moduleDir = name => join(active, 'cache', 'download', name, '@v')
+    mkdirSync(moduleDir('obsolete.mod'), { recursive: true })
+    writeFileSync(join(moduleDir('obsolete.mod'), 'v1.0.0.info'), 'obsolete\n')
+    mkdirSync(moduleDir('current.mod'), { recursive: true })
+    writeFileSync(join(moduleDir('current.mod'), 'v2.0.0.info'), 'current\n')
+    const activation = await activateCacheSnapshot({
+      kind: 'go-modules',
+      key: `go-modules-2-Linux-${'a'.repeat(64)}`,
+      writer: true,
+      exactHit: false,
+      workspace: root,
+      env: moduleEnv,
+      log: message => operations.push(`activate: ${message}`),
+    })
+    expect(activation.outcome).toBe('writer-empty')
+    const payloadRoot = rootPayloadPath('go-modules', 'gomod', moduleEnv, root)
+    operations.push('populate: go mod download into the isolated payload root')
+    // The population points GOMODCACHE at the payload root of the gomod
+    // active root, so the download tree grows inside it.
+    mkdirSync(join(payloadRoot, 'cache', 'download', 'current.mod', '@v', 'v2.0.0'), { recursive: true })
+    writeFileSync(join(payloadRoot, 'cache', 'download', 'current.mod', '@v', 'v2.0.0', 'v2.0.0.info'), 'current\n')
+    const prepared = await prepareCacheSnapshot({
+      kind: 'go-modules',
+      key: `go-modules-2-Linux-${'a'.repeat(64)}`,
+      workspace: root,
+      env: moduleEnv,
+      log: message => operations.push(`prepare: ${message}`),
+    })
+    expect(prepared.result).toBe('ready')
+    expect(operations.some(entry => entry.startsWith('populate: '))).toBe(true)
+    const archive = readdirSync(join(prepared.archivePath, 'gomod', 'cache', 'download'), { recursive: true })
+      .map(entry => entry.split(join.sep).join('/'))
+    expect(archive.some(entry => entry.includes('obsolete.mod'))).toBe(false)
+    expect(archive.some(entry => entry.includes('current.mod'))).toBe(true)
+    await cleanupSnapshotStaging({ kind: 'go-modules', workspace: root })
+    expect(existsSync(join(root, '.tmp', 'ci-cache', 'snapshots', 'go-modules'))).toBe(false)
+  })
+
+  it('prevents the save when archive preparation fails', async () => {
+    const saveAction = '.github/actions/save-cache-snapshot/action.yaml'
+    expect(existsSync(resolve(root, saveAction)), `The archive preparation action is absent: ${saveAction}`).toBe(true)
+    const steps = actionSteps(saveAction)
+    const prepare = steps.find(step => step.id === 'prepare')
+    const save = steps.find(step => step.id === 'save')
+    const cleanup = steps.find(step => step.id === 'cleanup')
+    expect(prepare, 'The save action has no archive preparation step').toBeDefined()
+    expect(save, 'The save action has no archive save step').toBeDefined()
+    expect(cleanup, 'The save action has no staging cleanup step').toBeDefined()
+    // Preparation failure must fail its step: no continue-on-error, no always().
+    expect(prepare['continue-on-error'] ?? false).toBe(false)
+    expect(prepare.if).toBeUndefined()
+    expect(save.if).toBe('steps.prepare.outputs.result == \'ready\'')
+    expect(cleanup.if).toBe('always()')
+    const script = String(prepare.run ?? '').match(/(scripts\/[\w-]+\.mjs)/)?.[1]
+    expect(script, 'The preparation step does not run a project script').toBeDefined()
+    const { prepareCacheSnapshot, cleanupSnapshotStaging } = await import(`../${script}`)
+
+    // The fixture records which operations actually execute. A native Go
+    // writer whose required build-output root is absent must fail
+    // preparation, so the conditional save never runs and the staging
+    // payload is removed.
+    const dir = fixture()
+    const operations = []
+    const executed = { prepare: 0, save: 0, cleanup: 0 }
+    const gocache = join(dir, 'go-build-absent')
+    let prepareOutcome
+    try {
+      executed.prepare++
+      const prepared = await prepareCacheSnapshot({
+        kind: 'native-go',
+        key: `go-build-2-Linux-X64-ubuntu24-go1.27.1-${'a'.repeat(64)}-2027-W01`,
+        workspace: root,
+        env: {
+          ...process.env,
+          RUNNER_OS: 'Linux',
+          RUNNER_ARCH: 'X64',
+          CACHE_IMAGE: 'ubuntu24',
+          GOLANG_VERSION: '1.27.1',
+          GITHUB_REF: 'refs/heads/main',
+          GITHUB_EVENT_NAME: 'push',
+          GOCACHE: gocache,
+          GOLANGCI_LINT_CACHE: '',
+        },
+        log: message => operations.push(`prepare: ${message}`),
+      })
+      prepareOutcome = prepared
+    }
+    catch (error) {
+      prepareOutcome = { failed: error.message.split('\n')[0] }
+    }
+    expect(prepareOutcome.failed, `Preparation unexpectedly succeeded: ${JSON.stringify(prepareOutcome)}`).toBeString()
+    // The action runs its save only on a ready preparation result.
+    if (prepareOutcome.result === 'ready')
+      executed.save++
+    await cleanupSnapshotStaging({ kind: 'native-go', workspace: root })
+    executed.cleanup++
+    expect(executed).toEqual({ prepare: 1, save: 0, cleanup: 1 })
+    expect(existsSync(join(root, '.tmp', 'ci-cache', 'snapshots', 'native-go'))).toBe(false)
   })
 })
 
@@ -1199,5 +1229,571 @@ describe('renovate workflow and protection', () => {
     expect(notice.on.push.paths).toBeUndefined()
     expect(notice.jobs.check.name).toBe('NOTICE')
     expect(notice.jobs.check.steps.find(step => step.name === 'Regenerate NOTICE').if).toBe('steps.inputs.outputs.needed == \'true\'')
+  })
+})
+
+describe('cache native setup', () => {
+  const setupSteps = () => actionSteps('.github/actions/setup-build/action.yaml')
+  const aptPackages = 'libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsoup-3.0-dev protobuf-compiler xdg-utils libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio'
+
+  it('restores the compiled caches in the setup and saves them only after the complete validation', () => {
+    const steps = setupSteps()
+    const goBuild = steps.find(step => step.id === 'go-build')
+    const goRestore = steps.find(step => step.id === 'go-restore')
+    const rustBuild = steps.find(step => step.id === 'rust-build')
+    const rustRestore = steps.find(step => step.id === 'rust-restore')
+    expect(goRestore.with).toEqual({
+      'kind': 'native-go',
+      'key': expression('steps.go-build.outputs.key'),
+      'restore-keys': expression('inputs.save-build-caches != \'true\' && steps.go-build.outputs.restore-prefix || \'\''),
+      'writer': expression('inputs.save-build-caches'),
+    })
+    expect(rustRestore.with).toEqual({
+      'kind': 'native-rust',
+      'key': expression('steps.rust-build.outputs.key'),
+      'restore-keys': expression('inputs.save-build-caches != \'true\' && steps.rust-build.outputs.restore-prefix || \'\''),
+      'writer': expression('inputs.save-build-caches'),
+    })
+    expect(steps.indexOf(goBuild)).toBeLessThan(steps.indexOf(goRestore))
+    expect(steps.indexOf(rustBuild)).toBeLessThan(steps.indexOf(rustRestore))
+    for (const name of ['linux', 'macos', 'windows']) {
+      const job = yaml('.github/workflows/ci.yaml').jobs[name]
+      const saveSteps = job.steps.filter(step => step.uses === './.github/actions/save-cache-snapshot')
+      const goSave = job.steps.find(step => step.id === 'go-cache-save')
+      const rustSave = saveSteps.find(step => step.with.kind === 'native-rust')
+      const prune = job.steps.find(step => step.uses === './.github/actions/prune-build-cache')
+      expect(goSave.with).toEqual({
+        kind: 'native-go',
+        key: expression('steps.setup.outputs.cache-key'),
+      })
+      expect(goSave.if).toBe('github.ref == \'refs/heads/main\' && steps.setup.outputs.go-save-required == \'true\'')
+      expect(rustSave.with).toEqual({
+        kind: 'native-rust',
+        key: expression('steps.setup.outputs.rust-cache-key'),
+      })
+      expect(rustSave.if).toBe('github.ref == \'refs/heads/main\' && steps.setup.outputs.rust-save-required == \'true\'')
+      // The pruner follows the Go save and a capacity skip cannot request it.
+      expect(prune.if).toBe('github.ref == \'refs/heads/main\' && steps.go-cache-save.outputs.result == \'ready\'')
+      expect(job.steps.indexOf(prune)).toBeGreaterThan(job.steps.indexOf(goSave))
+      // The saves run at the end of the job, after every validation step.
+      const lastValidation = Math.max(...job.steps.map((step, index) => /^task (?:test|test-native(?:-linux)?|build|check-build-cache|lint)$/.test(step.run ?? '')
+        ? index
+        : -1))
+      expect(job.steps.indexOf(goSave)).toBeGreaterThan(lastValidation)
+    }
+    // The artifact jobs stay readers: they save no compiled cache and pass no writer input.
+    const desktop = yaml('.github/workflows/desktop-artifacts.yaml')
+    for (const job of Object.values(desktop.jobs)) {
+      for (const step of job.steps ?? []) {
+        expect(['native-go', 'native-rust']).not.toContain(step.with?.kind)
+        expect(step.with?.['save-build-caches']).toBeUndefined()
+      }
+    }
+    // Every workflow's save-build-caches input belongs to a CI platform job on main.
+    const savers = []
+    for (const file of workflowFiles) {
+      for (const { jobName, step } of jobSteps(yaml(file))) {
+        if (step.uses !== './.github/actions/setup-build')
+          continue
+        if ('save-build-caches' in (step.with ?? {}))
+          savers.push(`${file}:${jobName}`)
+      }
+    }
+    expect(savers.sort()).toEqual([
+      '.github/workflows/ci.yaml:linux',
+      '.github/workflows/ci.yaml:macos',
+      '.github/workflows/ci.yaml:windows',
+    ])
+    for (const file of [
+      ...workflowFiles,
+      ...actionFiles,
+    ])
+      expect(raw(file)).not.toContain('rust-save-if')
+  })
+
+  it('separates the Rust download snapshot from the compiled snapshot and keeps one debug level', () => {
+    const steps = setupSteps()
+    const setting = steps.find(step => step.name === 'Set the Cargo debug information level')
+    const rustRestore = steps.findIndex(step => step.id === 'rust-restore')
+    const cargoDownloads = steps.findIndex(step => step.uses === './.github/actions/dependency-caches' && step.with.cargo === 'true')
+    const removeAmbient = steps.findIndex(step => step.name === 'Remove ambient Rust toolchains')
+    // The compiled restore needs the debug level, the trimmed compiler
+    // fingerprints need one toolchain, and the registry fill runs after the
+    // compiled restore so a fallback hit from an older lockfile still gets
+    // the current index and cache.
+    expect(steps.indexOf(setting)).toBeLessThan(rustRestore)
+    expect(removeAmbient).toBeGreaterThan(0)
+    expect(removeAmbient).toBeLessThan(rustRestore)
+    expect(cargoDownloads).toBeGreaterThan(rustRestore)
+    const dir = fixture()
+    expect(runShell(setting.run, dir).status).toBe(0)
+    expect(outputFile(dir, 'environment')).toBe('CARGO_PROFILE_DEV_DEBUG=line-tables-only\n')
+    for (const file of ['ci.yaml', 'desktop-artifacts.yaml'])
+      expect(yaml(`.github/workflows/${file}`).env?.CARGO_PROFILE_DEV_DEBUG).toBeUndefined()
+    // The compiled Rust key carries no weekly epoch; the trimming rule
+    // bounds its growth.
+    expect(String(rustBuildKey())).not.toContain('CACHE_WEEK')
+    function rustBuildKey() {
+      const build = setupSteps().find(step => step.id === 'rust-build')
+      return build.run
+    }
+  })
+
+  it('restores, trims, and saves the APT snapshot around the prerequisite installation', () => {
+    const steps = setupSteps()
+    const index = name => steps.findIndex(step => step.name === name || step.id === name)
+    const prepare = index('Prepare the APT package cache')
+    const restore = index('Restore the APT package snapshot')
+    const install = index('Install Tauri system dependencies')
+    const save = steps.findIndex(step => step.name === 'Save the APT package snapshot')
+    expect(restore).toBeGreaterThan(prepare)
+    expect(install).toBeGreaterThan(restore)
+    expect(save).toBeGreaterThan(install)
+    expect(steps[save].uses).toBe('./.github/actions/save-cache-snapshot')
+    expect(steps[save].if).toContain('steps.apt-restore.outputs.save-required == \'true\'')
+    expect(steps[save].with.key).toBe(expression('steps.apt-restore.outputs.cache-key'))
+    for (const pkg of aptPackages.split(' ')) expect(steps[install].run).toContain(pkg)
+  })
+
+  it('saves the Tauri and spinner snapshots after a complete packaging build', () => {
+    // The setup restores both tool caches as a writer without a fallback.
+    const steps = setupSteps()
+    const tauri = steps.find(step => step.id === 'tauri-restore')
+    const spinners = steps.find(step => step.id === 'spinners-restore')
+    expect(tauri.with.writer).toBe('true')
+    expect(tauri.with['restore-keys']).toBeUndefined()
+    expect(spinners.with.writer).toBe('true')
+    expect(spinners.with['restore-keys']).toBeUndefined()
+    // Every job that completes a packaging build publishes the tool caches;
+    // none of them saves compiled caches.
+    for (const file of ['.github/workflows/ci.yaml', '.github/workflows/desktop-artifacts.yaml']) {
+      const document = yaml(file)
+      for (const [jobName, job] of Object.entries(document.jobs)) {
+        const stepsWithBuild = (job.steps ?? []).some(step => step.run === 'task build')
+        if (!stepsWithBuild)
+          continue
+        const tauriSave = (job.steps ?? []).find(step => step.name === 'Save the Tauri tool snapshot')
+        const spinnerSave = (job.steps ?? []).find(step => step.name === 'Save the spinner source snapshot')
+        if (tauriSave !== undefined) {
+          expect(tauriSave.uses, file).toBe('./.github/actions/save-cache-snapshot')
+          expect(tauriSave.with).toEqual({
+            kind: 'tauri-tools',
+            key: expression('steps.setup.outputs.tauri-cache-key'),
+          })
+          expect(tauriSave.if).toContain('tauri-save-required == \'true\'')
+          // Only the CI platform jobs can run on macOS, so only they need
+          // the exclusion in the condition.
+          if (file.endsWith('ci.yaml'))
+            expect(tauriSave.if).toContain('runner.os != \'macOS\'')
+        }
+        expect(spinnerSave, `${file}:${jobName}`).toBeDefined()
+        expect(spinnerSave.with).toEqual({
+          kind: 'spinners',
+          key: expression(file.endsWith('ci.yaml')
+            ? 'steps.setup.outputs.spinner-cache-key'
+            : 'steps.setup.outputs.spinner-cache-key'),
+        })
+      }
+    }
+    // The artifact macOS job has no Tauri save step at all; the CI macOS
+    // job's save step carries the runner exclusion that the check above
+    // asserts.
+    const macos = yaml('.github/workflows/desktop-artifacts.yaml').jobs.macos
+    expect(macos.steps.some(step => step.name === 'Save the Tauri tool snapshot')).toBe(false)
+  })
+
+  it('keeps the patch fingerprint in every Tauri key and the spinner subtree in the clone directory', () => {
+    const tauri = setupSteps().find(step => step.id === 'tauri-restore')
+    const keys = setupSteps().find(step => step.id === 'tool-keys')
+    for (const file of ['patch-linuxdeploy.sh', 'linuxdeploy-wrapper.c']) expect(keys.env.TAURI_CACHE_HASH).toContain(file)
+    expect(tauri.with.key).toBe(expression('steps.tool-keys.outputs.tauri'))
+    const spinners = setupSteps().find(step => step.id === 'spinners-restore')
+    expect(spinners.with.kind).toBe('spinners')
+    expect(spinners.with.key).toBe(expression('steps.tool-keys.outputs.spinners'))
+    expect(rootActivePath('spinners', 'spinners', { RUNNER_OS: 'Linux', HOME: '/home/fixture' }, '/work')).toBe('/home/fixture/.cache/awesome-claude-spinners/spinners')
+  })
+
+  it('restores and saves the compiled Renovate RE2 engine around the extraction', () => {
+    const steps = yaml('.github/workflows/ci.yaml').jobs.linux.steps
+    const index = name => steps.findIndex(step => step.name === name)
+    const install = index('Install the pinned Renovate packages')
+    const restore = index('Restore the compiled Renovate RE2 engine')
+    const extract = index('Validate Renovate dependency extraction')
+    const save = index('Save the compiled Renovate RE2 engine')
+    // bun install replaces a package directory that it installs anew, with
+    // a restored engine in it, so the restore follows the install and the
+    // save follows the extraction that validates the engine.
+    expect(install).toBeGreaterThanOrEqual(0)
+    expect(restore).toBeGreaterThan(install)
+    expect(extract).toBeGreaterThan(restore)
+    expect(save).toBeGreaterThan(extract)
+    expect(steps[install].run).toBe('task install-renovate-packages')
+    expect(steps[restore].uses).toBe('./.github/actions/build-output-cache')
+    expect(steps[save].uses).toBe('./.github/actions/save-cache-snapshot')
+    const keys = steps.find(step => step.id === 're2-key')
+    expect(keys.env.CACHE_HASH).toContain('hashFiles(\'.github/renovate/bun.lock\')')
+    expect(keys.env.CACHE_HASH).toContain('hashFiles(\'Taskfile.yaml\', \'scripts/task-state.mjs\')')
+    expect(keys.run).toContain('key --kind renovate-re2')
+    expect(keys.run).toContain('restore-keys --kind renovate-re2')
+    expect(steps[restore].with.key).toBe(expression('steps.re2-key.outputs.key'))
+    expect(steps[save].with.key).toBe(steps[restore].with.key)
+    expect(steps[save].if).toContain('steps.re2-restore.outputs.save-required == \'true\'')
+  })
+
+  it('refreshes the Go key each UTC week and keeps the Rust key weekly-stable', () => {
+    const dir = fixture()
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'go'), '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_GOCACHE"\n')
+    chmodSync(join(bin, 'go'), 0o755)
+    const cli = `${root}/scripts/cache-snapshot.mjs`
+    const run = step => step.run
+      .replaceAll(/\$\{\{\s*hashFiles\([^)]*\)\s*\}\}/g, 'a'.repeat(64))
+      .replaceAll('node scripts/cache-snapshot.mjs', `node '${cli}'`)
+    const goBuild = setupSteps().find(step => step.id === 'go-build')
+    const rustBuild = setupSteps().find(step => step.id === 'rust-build')
+    const keys = []
+    const prefixes = []
+    for (const week of ['2026-W53', '2027-W01', '2027-W01']) {
+      const weekDir = fixture()
+      const result = runShell(run(goBuild), weekDir, {
+        FIXTURE_GOCACHE: join(weekDir, 'go-cache'),
+        CACHE_WEEK: week,
+        RUNNER_OS: 'Linux',
+        RUNNER_ARCH: 'ARM64',
+        CACHE_IMAGE: 'ubuntu24',
+        GOLANG_VERSION: '1.27.1',
+        GITHUB_REF: 'refs/heads/main',
+        GITHUB_EVENT_NAME: 'push',
+        RUNNER_TEMP: weekDir,
+      }, bin)
+      expect(result.status, result.stderr).toBe(0)
+      const output = outputFile(weekDir)
+      keys.push(/^key=(.*)$/m.exec(output)?.[1])
+      prefixes.push(/^restore-prefix=(.*)$/m.exec(output)?.[1])
+      expect(keys.at(-1)).toEndWith(`-${week}`)
+    }
+    expect(keys[0]).not.toBe(keys[1])
+    expect(keys[1]).toBe(keys[2])
+    expect(new Set(prefixes).size).toBe(1)
+    expect(prefixes[0]).not.toContain('2026-W53')
+    expect(prefixes[0]).not.toContain('2027-W01')
+    // The composed key belongs to this generation.
+    const validated = validateCacheKey('native-go', keys[1], {
+      RUNNER_OS: 'Linux',
+      RUNNER_ARCH: 'ARM64',
+      CACHE_IMAGE: 'ubuntu24',
+      GOLANG_VERSION: '1.27.1',
+    })
+    expect(validated.week).toBe('2027-W01')
+    // The Rust key ignores the week entirely.
+    const rustRuns = new Set(['2027-W01', '2027-W02'].map((week) => {
+      const weekDir = fixture()
+      const result = runShell(run(rustBuild), weekDir, {
+        CACHE_WEEK: week,
+        RUNNER_OS: 'Linux',
+        RUNNER_ARCH: 'ARM64',
+        CACHE_IMAGE: 'ubuntu24',
+        RUST_VERSION: '1.99.0',
+        GITHUB_REF: 'refs/heads/main',
+        GITHUB_EVENT_NAME: 'push',
+        RUNNER_TEMP: weekDir,
+      }, bin)
+      expect(result.status, result.stderr).toBe(0)
+      return /^key=(.*)$/m.exec(outputFile(weekDir))?.[1]
+    }))
+    expect(rustRuns.size).toBe(1)
+    expect([...rustRuns][0]).toContain('rust-build-2-Linux-ARM64-ubuntu24-rust1.99.0-')
+  })
+
+  it('classifies the installer caches and leaves them out of every project snapshot', () => {
+    // No policy root collects a toolchain or an installer directory.
+    for (const kind of cacheKinds()) {
+      const text = JSON.stringify(kind)
+      expect(text).not.toMatch(/rustup|toolchain|node_modules\/bun|setup-go|setup-node/)
+    }
+    // The site workflow keeps setup-go's own cache off (see the site tests).
+    const setupGo = setupSteps().find(step => step.name === 'Setup Go')
+    expect(String(setupGo.with.cache)).toBe('false')
+  })
+})
+
+describe('cache workflow execution', () => {
+  const contentHash = 'a'.repeat(64)
+  function environment(dir) {
+    return {
+      RUNNER_OS: 'Linux',
+      RUNNER_ARCH: 'X64',
+      CACHE_IMAGE: 'ubuntu24',
+      CACHE_WEEK: '2026-W45',
+      GOLANG_VERSION: '1.27.1',
+      RUST_VERSION: '1.99.0',
+      BUN_VERSION: '1.4.4',
+      TASK_VERSION: '3.54.0',
+      RUNNER_TEMP: dir,
+      HOME: join(dir, 'home'),
+      GOCACHE: '',
+    }
+  }
+  function evaluate(value, env, inputs = {}, outputs = {}) {
+    return String(value).replaceAll(/\$\{\{([^}]+)\}\}/g, (_, rawBody) => {
+      const body = rawBody.trim()
+      if (body.startsWith('hashFiles('))
+        return contentHash
+      if (body.startsWith('runner.')) {
+        return body === 'runner.os'
+          ? env.RUNNER_OS
+          : env.RUNNER_ARCH
+      }
+      if (body.startsWith('env.'))
+        return env[body.slice(4)] ?? ''
+      if (body.startsWith('inputs.'))
+        return inputs[body.slice(7)] ?? ''
+      const step = /^steps\.([\w-]+)\.outputs(?:\.([\w-]+)|\[['"]([\w-]+)['"]\])$/.exec(body)
+      if (step)
+        return outputs[step[1]]?.[step[2] ?? step[3]] ?? ''
+      throw new Error(`Unsupported workflow expression in the execution fixture: ${body}`)
+    })
+  }
+  function execute(step, dir, env, { inputs = {}, fakeBin, outputs = {} } = {}) {
+    const script = evaluate(step.run, env, inputs, outputs).replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
+    return runShell(script, dir, {
+      ...env,
+      ...Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [
+        key,
+        evaluate(value, env, inputs, outputs),
+      ])),
+    }, fakeBin)
+  }
+  function fields(text) {
+    return Object.fromEntries(text.trim().split('\n').filter(Boolean).map((line) => {
+      const split = line.indexOf('=')
+      return [
+        line.slice(0, split),
+        line.slice(split + 1),
+      ]
+    }))
+  }
+
+  it('exports the Go cache path that the snapshot policy consumes', () => {
+    const dir = fixture()
+    const env = environment(dir)
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'go'), '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_GOCACHE"\n')
+    chmodSync(join(bin, 'go'), 0o755)
+    const active = join(dir, 'go-active')
+    const result = execute(actionSteps('.github/actions/setup-build/action.yaml').find(step => step.id === 'go-build'), dir, { ...env, FIXTURE_GOCACHE: active }, { fakeBin: bin })
+    expect(result.status, result.stderr).toBe(0)
+    const exported = fields(outputFile(dir, 'environment'))
+    expect(exported.GOCACHE).toBe(active)
+    expect(rootActivePath('native-go', 'gocache', {
+      ...env,
+      ...exported,
+    }, dir)).toBe(active)
+  })
+
+  it('produces a Rust key accepted by its actual snapshot policy', () => {
+    const dir = fixture()
+    const env = environment(dir)
+    const result = execute(actionSteps('.github/actions/setup-build/action.yaml').find(step => step.id === 'rust-build'), dir, env)
+    expect(result.status, result.stderr).toBe(0)
+    expect(() => validateCacheKey('native-rust', fields(outputFile(dir)).key, env)).not.toThrow()
+  })
+
+  it('populates the selected site dependency payload', () => {
+    const dir = fixture()
+    const env = environment(dir)
+    const step = actionSteps('.github/actions/dependency-caches/action.yaml').find(entry => entry.id === 'paths')
+    const result = execute(step, dir, env, {
+      inputs: {
+        'go-scope': 'site',
+        'go': 'true',
+        'bun': 'false',
+        'cargo': 'false',
+      },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    const output = fields(outputFile(dir))
+    expect(output['go-kind']).toBe('site-go-modules')
+    expect(output['go-directory']).toBe('site')
+    expect(output['go-work']).toBe('off')
+    expect(output['go-payload']).toBe(join(dir, '.tmp', 'ci-cache', 'snapshots', 'site-go-modules', 'payload', 'gomod'))
+  })
+
+  it('downloads the site dependency graph instead of the parent workspace graph', () => {
+    const dir = fixture()
+    mkdirSync(join(dir, 'workspace'))
+    mkdirSync(join(dir, 'site'))
+    writeFileSync(join(dir, 'go.work'), 'go 1.24\nuse ./workspace\n')
+    writeFileSync(join(dir, 'workspace', 'go.mod'), 'module example.com/workspace\ngo 1.24\n')
+    writeFileSync(join(dir, 'site', 'go.mod'), 'module example.com/site\ngo 1.24\nrequire example.com/site-dep v1.0.0\n')
+    const proxy = join(dir, 'proxy', 'example.com', 'site-dep', '@v')
+    mkdirSync(proxy, { recursive: true })
+    const mod = 'module example.com/site-dep\ngo 1.24\n'
+    writeFileSync(join(proxy, 'v1.0.0.mod'), mod)
+    writeFileSync(join(proxy, 'v1.0.0.info'), '{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n')
+    writeFileSync(join(proxy, 'v1.0.0.zip'), createStoredZip({ 'example.com/site-dep@v1.0.0/go.mod': mod, 'example.com/site-dep@v1.0.0/dep.go': 'package sitedep\nfunc Value() int { return 42 }\n' }))
+    const env = {
+      ...environment(dir),
+      GOPROXY: pathToFileURL(join(dir, 'proxy')).href,
+      GOSUMDB: 'off',
+      GOPRIVATE: '',
+      GONOPROXY: '',
+      GOTOOLCHAIN: 'local',
+      GOWORK: '',
+      GOFLAGS: '',
+    }
+    const steps = actionSteps('.github/actions/dependency-caches/action.yaml')
+    const paths = steps.find(step => step.id === 'paths')
+    const inputs = { 'go-scope': 'site' }
+    expect(execute(paths, dir, env, { inputs }).status).toBe(0)
+    const locations = fields(outputFile(dir))
+    const download = steps.find(step => step.name === 'Download the Go modules into the isolated payload')
+    const result = execute(download, join(dir, 'site'), env, {
+      inputs,
+      outputs: { paths: locations },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(existsSync(join(locations['go-payload'], 'cache', 'download', 'example.com', 'site-dep', '@v', 'v1.0.0.zip'))).toBe(true)
+    const workspaceInputs = { 'go-scope': 'workspace' }
+    expect(execute(paths, dir, env, { inputs: workspaceInputs }).status).toBe(0)
+    const workspaceLocations = fields(outputFile(dir))
+    expect(workspaceLocations['go-directory']).toBe('.')
+    expect(workspaceLocations['go-work']).toBe('')
+    const workspaceDownload = execute(download, dir, env, {
+      inputs: workspaceInputs,
+      outputs: { paths: workspaceLocations },
+    })
+    expect(workspaceDownload.status, workspaceDownload.stderr).toBe(0)
+    expect(existsSync(join(workspaceLocations['go-payload'], 'cache', 'download', 'example.com', 'site-dep', '@v', 'v1.0.0.zip'))).toBe(false)
+  })
+
+  it('rejects an invalid dependency scope without interpreting it as shell code', () => {
+    const dir = fixture()
+    const marker = join(dir, 'must-not-exist')
+    const step = actionSteps('.github/actions/dependency-caches/action.yaml').find(entry => entry.id === 'paths')
+    const result = execute(step, dir, environment(dir), {
+      inputs: { 'go-scope': `site"; touch "${marker}"; #` },
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('Invalid go-scope')
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('generates valid tool, site, and Renovate keys through the policy CLI', () => {
+    for (const [file, id, kinds] of [
+      [
+        '.github/actions/setup-build/action.yaml',
+        'tool-keys',
+        { apt: 'apt-packages', tauri: 'tauri-tools', spinners: 'spinners' },
+      ],
+      [
+        '.github/workflows/publish-site.yaml',
+        'site-key',
+        { key: 'site-go' },
+      ],
+      [
+        '.github/workflows/ci.yaml',
+        're2-key',
+        { key: 'renovate-re2' },
+      ],
+    ]) {
+      const dir = fixture()
+      const env = environment(dir)
+      const document = yaml(file)
+      const steps = document.runs?.steps ?? Object.values(document.jobs).flatMap(job => job.steps ?? [])
+      const result = execute(steps.find(step => step.id === id), dir, env)
+      expect(result.status, result.stderr).toBe(0)
+      const output = fields(outputFile(dir))
+      for (const [name, kind] of Object.entries(kinds)) expect(() => validateCacheKey(kind, output[name], env)).not.toThrow()
+      if (id === 're2-key')
+        expect(output.key.startsWith(output['restore-keys'])).toBe(true)
+    }
+  })
+
+  it('exposes the validated activation result for a partial transport hit', () => {
+    const dir = fixture()
+    const env = {
+      ...environment(dir),
+      GOMODCACHE: join(dir, 'active'),
+    }
+    const key = `go-modules-2-Linux-${contentHash}`
+    const payload = join(dir, '.tmp', 'ci-cache', 'snapshots', 'go-modules', 'payload')
+    mkdirSync(payload, { recursive: true })
+    writeFileSync(join(payload, 'partial'), 'missing required root')
+    const action = yaml('.github/actions/build-output-cache/action.yaml')
+    const outputs = {
+      restore: { 'cache-hit': 'true', 'cache-matched-key': key },
+    }
+    const result = execute(action.runs.steps.find(step => step.id === 'activate'), dir, env, {
+      inputs: { kind: 'go-modules', key, writer: 'true' },
+      outputs,
+    })
+    expect(result.status, result.stderr).toBe(0)
+    outputs.activate = fields(outputFile(dir))
+    expect(evaluate(action.outputs['cache-hit'].value, env, {}, outputs)).toBe('false')
+    expect(evaluate(action.outputs['save-required'].value, env, {}, outputs)).toBe('false')
+  })
+
+  it('resolves every transport payload through the policy before lookup', () => {
+    const action = yaml('.github/actions/build-output-cache/action.yaml')
+    const resolver = action.runs.steps.find(step => step.id === 'paths')
+    const restore = action.runs.steps.find(step => step.id === 'restore')
+    expect(restore.with.path).toBe(expression('steps.paths.outputs.payload'))
+    const save = yaml('.github/actions/save-cache-snapshot/action.yaml').runs.steps.find(step => step.id === 'save')
+    expect(save.with.path).toBe(expression('steps.prepare.outputs.archive-path'))
+    for (const kind of cacheKinds()) {
+      const dir = fixture()
+      const env = environment(dir)
+      const policy = cachePolicy(kind)
+      const key = cacheKey(kind, {
+        hash: policy.hashSegment === 'required'
+          ? contentHash
+          : undefined,
+        week: policy.keyedByWeek ? env.CACHE_WEEK : undefined,
+      }, env)
+      const result = execute(resolver, dir, env, {
+        inputs: { kind, key },
+      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(fields(outputFile(dir)).payload).toBe(join(dir, '.tmp', 'ci-cache', 'snapshots', kind, 'payload'))
+    }
+  })
+
+  it('uses declared step outputs in parent action outputs and workflow conditions', () => {
+    for (const file of [
+      ...workflowFiles,
+      ...actionFiles,
+    ]) {
+      const document = yaml(file)
+      const scopes = document.jobs
+        ? Object.values(document.jobs).map(job => ({ steps: job.steps ?? [], values: job.steps ?? [] }))
+        : [
+            {
+              steps: document.runs?.steps ?? [],
+              values: [
+                document.outputs ?? {},
+                ...(document.runs?.steps ?? []),
+              ],
+            },
+          ]
+      for (const scope of scopes) {
+        for (const match of JSON.stringify(scope.values).matchAll(/steps\.([\w-]+)\.outputs(?:\.([\w-]+)|\[['"]([\w-]+)['"]\])/g)) {
+          const step = scope.steps.find(entry => entry.id === match[1])
+          expect(step, `${file}: missing step ${match[1]}`).toBeDefined()
+          if (String(step.uses).startsWith('./.github/actions/'))
+            expect(yaml(`${step.uses.slice(2)}/action.yaml`).outputs, `${file}: ${match[0]}`).toHaveProperty(match[2] ?? match[3])
+        }
+      }
+    }
+  })
+
+  it('supplies the validated image build arguments to the cache export', () => {
+    const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
+    const image = steps.find(step => step.id === 'image')
+    const exportStep = steps.find(step => step.with?.target === 'go-cache-files')
+    expect(exportStep.with['build-args']).toContain(image.with['build-args'])
+    expect(exportStep.with['build-args']).toContain('GO_CACHE_EXPORT_TOKEN=')
   })
 })

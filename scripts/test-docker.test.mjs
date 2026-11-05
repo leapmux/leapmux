@@ -1,8 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
+import { scratchDirectories } from './test-support.mjs'
+
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 
 const root = resolve(import.meta.dirname, '..')
 const yaml = path => Bun.YAML.parse(readFileSync(join(root, path), 'utf8'))
@@ -10,6 +14,80 @@ const actionSteps = path => yaml(path).runs.steps
 const expression = body => `\${{ ${body} }}`
 
 describe('docker image tests', () => {
+  it('evaluates Task defaults, load selection, and multi-platform refusal', () => {
+    const source = yaml('Taskfile.yaml')
+    const cases = [
+      {
+        platform: 'linux/arm64',
+        load: 'true',
+        ok: true,
+        loaded: true,
+      },
+      { platform: 'linux/amd64,linux/arm64', load: 'true', ok: false },
+      {
+        platform: 'linux/amd64,linux/arm64',
+        load: 'false',
+        ok: true,
+        loaded: false,
+      },
+      { platform: 'linux/arm64', ok: true, loaded: false },
+      { ok: true, loaded: false },
+    ]
+    for (const name of ['docker-build-alpine', 'docker-build-ubuntu']) {
+      for (const scenario of cases) {
+        const dir = scratch.create('docker-task-load')
+        const task = {
+          ...source.tasks[name],
+          cmds: source.tasks[name].cmds.map(command => command.replace('docker buildx build', 'bun record.mjs buildx build')),
+        }
+        const vars = Object.fromEntries([
+          'ALPINE_IMAGE',
+          'UBUNTU_IMAGE',
+          'BUF_VERSION',
+          'TASK_VERSION',
+          'S6_OVERLAY_VERSION',
+          'BUN_VERSION',
+          'NODE_VERSION',
+          'GOLANG_VERSION',
+          'VERSION',
+          'COMMIT_HASH',
+          'COMMIT_TIME',
+        ].map(key => [key, 'fixture']))
+        writeFileSync(join(dir, 'Taskfile.json'), JSON.stringify({
+          version: '3',
+          vars,
+          tasks: { [name]: task },
+        }))
+        writeFileSync(join(dir, 'record.mjs'), 'import {writeFileSync} from \'node:fs\';writeFileSync(\'recorded\',JSON.stringify(process.argv.slice(2)))\n')
+        const assignments = [
+          ...(scenario.platform
+            ? [`PLATFORM=${scenario.platform}`]
+            : []),
+          ...(scenario.load
+            ? [`LOAD=${scenario.load}`]
+            : []),
+        ]
+        const result = spawnSync('task', [
+          '--taskfile',
+          join(dir, 'Taskfile.json'),
+          name,
+          ...assignments,
+        ], {
+          cwd: dir,
+          encoding: 'utf8',
+          env: { ...process.env, PLATFORM: '', LOAD: '' },
+        })
+        expect(result.status === 0, result.stdout + result.stderr).toBe(scenario.ok)
+        expect(existsSync(join(dir, 'recorded'))).toBe(scenario.ok)
+        if (scenario.ok) {
+          const args = JSON.parse(readFileSync(join(dir, 'recorded'), 'utf8'))
+          expect(args[args.indexOf('--platform') + 1]).toBe(scenario.platform ?? 'linux/amd64,linux/arm64')
+          expect(args.includes('--load')).toBe(scenario.loaded)
+        }
+      }
+    }
+  })
+
   it('requires runtime tests for every published variant and architecture', () => {
     const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
     const buildIndex = steps.findIndex(step => step.id === 'image')

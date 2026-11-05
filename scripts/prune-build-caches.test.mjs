@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { createReplacementPlan, pruneBuildCaches, runCacheReplacement, selectArchivesToReplace } from './prune-build-caches.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const prefix = 'docker-go-build-arm64-go1.27.1-'
+const prefix = 'docker-go-build-2-arm64-go1.27.1-'
 const hash = 'a'.repeat(64)
 const key = `${prefix}${hash}-2027-W01`
 const scope = {
@@ -113,10 +113,10 @@ describe('createReplacementPlan', () => {
   it('accepts exact native and Docker partitions without retaining credentials', () => {
     for (const partition of [
       prefix,
-      'docker-go-build-amd64-go1.27.1-',
-      'go-build-Linux-X64-ubuntu24-go1.27.1-',
-      'go-build-Windows-X64-win22-go1.27.1-',
-      'go-build-macOS-ARM64-macos26-arm64-go1.27.1-',
+      'docker-go-build-2-amd64-go1.27.1-',
+      'go-build-2-Linux-X64-ubuntu24-go1.27.1-',
+      'go-build-2-Windows-X64-win22-go1.27.1-',
+      'go-build-2-macOS-ARM64-macos26-arm64-go1.27.1-',
     ]) {
       const value = createReplacementPlan({
         ...scope,
@@ -135,6 +135,9 @@ describe('createReplacementPlan', () => {
       { prefix: 'go-build-' },
       { prefix: 'docker-go-build-' },
       { prefix: 'bun-packages-Linux-' },
+      // The partitions of an older retention rule never manage deletions.
+      { prefix: 'docker-go-build-arm64-go1.27.1-' },
+      { prefix: 'go-build-Linux-X64-ubuntu24-go1.27.1-' },
       { key: `${prefix}${hash}` },
       { key: `${prefix}${hash}-2027-W00` },
       { key: `${prefix}${hash}-2027-W54` },
@@ -279,6 +282,7 @@ describe('pruneBuildCaches', () => {
       const api = fakeApi([
         archive(1),
         archive(2),
+        archive(3, { key }),
       ], { deleteStatus: status })
       const operation = pruneBuildCaches(plan, { token: 'fixture-token', apiUrl: api.apiUrl })
       if (status === 404)
@@ -290,9 +294,11 @@ describe('pruneBuildCaches', () => {
     }
   })
 
-  it('does not delete on an empty list or a failed network request', async () => {
+  it('does not delete on an empty list and preserves the archives when the replacement is absent there', async () => {
     const api = fakeApi([])
-    expect(await pruneBuildCaches(plan, { token: 'fixture-token', apiUrl: api.apiUrl })).toBe(0)
+    // An empty listing holds no replacement: publication failed, and the
+    // pruner must refuse instead of reporting a silent no-op.
+    await expect(pruneBuildCaches(plan, { token: 'fixture-token', apiUrl: api.apiUrl })).rejects.toThrow('replacement')
     expect(api.requests).toHaveLength(1)
     const refuseNetwork = async () => {
       throw new Error('fixture network failure')
@@ -322,6 +328,31 @@ describe('pruneBuildCaches', () => {
 })
 
 describe('cache replacement entrypoints', () => {
+  it('preserves older archives when the replacement archive is absent', async () => {
+    // The writer failed to publish its replacement archive: the listing holds
+    // older archives but nothing under the exact replacement key. The
+    // recorded API operations must show a complete read-only listing and no
+    // deletion.
+    for (const older of [
+      [
+        archive(1),
+      ],
+      [
+        archive(1),
+        archive(2, { key: `${prefix}${'b'.repeat(64)}-2026-W53` }),
+      ],
+    ]) {
+      const api = fakeApi(older)
+      await expect(pruneBuildCaches(plan, { token: 'fixture-token', apiUrl: api.apiUrl }))
+        .rejects
+        .toThrow('replacement')
+      expect(api.requests.map(request => request.method)).toEqual(['GET'])
+      expect([
+        ...api.caches.keys(),
+      ]).toEqual(older.map(entry => entry.id))
+    }
+  })
+
   it('preserves state and makes no API request when registration fails', async () => {
     mkdirSync(join(root, '.tmp'), { recursive: true })
     const dir = mkdtempSync(join(root, '.tmp', 'cache-registration-'))
@@ -420,6 +451,7 @@ describe('cache replacement entrypoints', () => {
   it('returns a failed post status when deletion fails', async () => {
     const api = fakeApi([
       archive(1),
+      archive(2, { key }),
     ], { deleteStatus: 403 })
     const result = await runNode('scripts/prune-build-caches.mjs', {
       GITHUB_ACTIONS: 'true',
@@ -434,6 +466,7 @@ describe('cache replacement entrypoints', () => {
     })
     expect(result.code).toBe(1)
     expect(result.stderr).toContain('HTTP 403')
-    expect(api.caches.size).toBe(1)
+    // The failed deletion and the replacement both remain.
+    expect(api.caches.size).toBe(2)
   })
 })

@@ -1,14 +1,14 @@
 name: Build Docker image
-description: Build one prepared native Docker image and extract its Go cache.
-# setup-docker-build supplies the builder and inputs. The caller registers the
-# cache writer and pruner between setup and this action as separate job steps.
-# The post steps run in this order:
-# - Extract the build outputs.
-# - Prune older archives.
-# - Save the new archive.
-# A failure at either earlier stage prevents the later stages.
+description: Build one prepared native Docker image and export its Go cache.
+# setup-docker-build supplies the builder and inputs; the restore-only cache
+# action runs before this composite. This action injects dependency downloads,
+# imports the Go snapshot, builds and tests the image, then exports the Go
+# cache mount of the current build for a writer that missed
+# its exact key. The caller trims and saves the exported snapshot through
+# save-cache-snapshot and registers the pruner after that save, so a failed
+# build, test, or export prevents the publication.
 # The tools stage uses mode=max. Final images use mode=min to exclude changing builder layers.
-# Cache export failures must not block image publication.
+# Layer-cache transport failures must not block image publication.
 inputs:
   variant:
     description: The alpine or ubuntu image variant.
@@ -28,8 +28,8 @@ inputs:
   writes-shared:
     description: Whether this build may save the shared Go and tools caches.
     default: 'false'
-  go-cache-hit:
-    description: Whether the Go build cache restored the exact weekly key.
+  write-snapshot:
+    description: Whether the validated restore permits publication under an unoccupied key.
     default: 'false'
   build-args:
     description: The complete Docker build arguments from setup-docker-build.
@@ -61,17 +61,26 @@ runs:
         skip-extraction: true
         scratch-dir: ${{ runner.temp }}/cache-dance-deps
 
-    - name: Inject the Go build outputs
-      # The caller registers the writer and pruner before this composite.
-      # Separate job steps propagate extraction failure before pruning or saving.
-      # scratch-dir shares the cache filesystem because extraction uses a rename.
-      uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+    - name: Import the Go build outputs
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         builder: ${{ inputs.builder }}
-        cache-map: |
-          {"${{ inputs.cache-path }}": "/root/.cache/go-build"}
-        skip-extraction: ${{ inputs.writes-shared != 'true' || inputs.go-cache-hit == 'true' }}
-        scratch-dir: ${{ runner.temp }}/cache-dance-go-build
+        context: .
+        file: docker/Dockerfile
+        target: go-cache-import
+        platforms: linux/${{ inputs.arch }}
+        # Importing the mount needs the tools stage before the image build
+        # imports its layers. Reuse the shared tool layers at this step too.
+        cache-from: type=gha,scope=tools-${{ inputs.arch }}
+        build-contexts: go-cache-input=${{ inputs.cache-path }}
+        build-args: |
+          ${{ inputs.build-args }}
+          GO_CACHE_IMPORT_TOKEN=${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.variant }}-${{ inputs.arch }}
+        outputs: type=cacheonly
+        push: false
+      env:
+        DOCKER_BUILD_SUMMARY: 'false'
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
 
     - name: Build the tools stage
       # `mode=max` exports every layer of the tools stage, which does not
@@ -130,3 +139,25 @@ runs:
       env:
         IMAGE: ${{ steps.image.outputs.imageid }}
       run: task test-docker IMAGE="$IMAGE"
+
+    - name: Export the Go build cache
+      # Only a writer that missed its exact key exports a replacement
+      # snapshot, and only after the image passed its runtime tests. The
+      # export lands in the active root that the snapshot preparation reads.
+      # A stage-local token reruns the export while retaining the cache mount.
+      if: inputs.writes-shared == 'true' && inputs.write-snapshot == 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        context: .
+        file: docker/Dockerfile
+        build-args: |
+          ${{ inputs.build-args }}
+          GO_CACHE_EXPORT_TOKEN=${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.variant }}-${{ inputs.arch }}
+        target: go-cache-files
+        platforms: linux/${{ inputs.arch }}
+        outputs: type=local,dest=${{ inputs.cache-path }}
+        push: false
+      env:
+        DOCKER_BUILD_SUMMARY: 'false'
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'

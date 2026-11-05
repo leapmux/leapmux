@@ -2,13 +2,17 @@ import { appendFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { PARTITION_PATTERN, WEEK_PATTERN_SOURCE } from './cache-policy.mjs'
 
 const mainRef = 'refs/heads/main'
 const stateKey = 'CACHE_REPLACEMENT'
 const pageSize = 100
-const weekPattern = '\\d{4}-W(?:0[1-9]|[1-4]\\d|5[0-3])'
+const weekPattern = WEEK_PATTERN_SOURCE
 const suffixPattern = new RegExp(`^[a-f0-9]{64}(?:-(${weekPattern}))?$`)
-const partitionPattern = /^(?:go-build-(?:Linux|macOS|Windows)-(?:X64|ARM64)-[\w.-]+-go\d+\.\d+\.\d+|docker-go-build-(?:amd64|arm64)-go\d+\.\d+\.\d+)-$/
+// The partition pattern of the policy registry covers this generation only,
+// so the archives of an older retention rule can never enter a replacement
+// decision.
+const partitionPattern = PARTITION_PATTERN
 
 function timestamp(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value))
@@ -163,6 +167,11 @@ export async function pruneBuildCaches(plan, { token, apiUrl = 'https://api.gith
       break
   }
   const selected = selectArchivesToReplace(plan, archives)
+  // Deletion requires a stored replacement: a failed or skipped publication
+  // must preserve the older archives, because they are the only usable ones.
+  const replacement = archives.find(archive => archive.ref === mainRef && archive.key === plan.key)
+  if (!replacement)
+    throw new Error(`The replacement archive is absent under ${plan.key}; preserving the older archives.`)
   let deleted = 0
   for (const archive of selected) {
     const response = await request(new URL(`${endpoint.href}/${archive.id}`), 'DELETE')

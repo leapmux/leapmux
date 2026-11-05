@@ -48,7 +48,7 @@ export async function selectExtractionFiles(files, policy) {
 
 function validateInventory(inventory, files, read, log) {
   const paths = new Set(Object.values(inventory).flat().map(file => file.packageFile))
-  const actions = files.filter(file => isGithubActionSource(file) && /^\s*(?:-\s*)?uses:\s*["']?[\w.-]+\//im.test(read(file)))
+  const actions = files.filter(file => isGithubActionSource(file) && /^\s*(?:-\s*)?uses:\s*["']?[\w-]+\//im.test(read(file)))
   for (const file of [
     ...Object.values(DEPENDENCY_INPUT_FILES).flat(),
     ...actions,
