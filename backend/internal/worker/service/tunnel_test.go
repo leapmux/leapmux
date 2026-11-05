@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -31,6 +32,21 @@ func tunnelTestSetup(t *testing.T) (*Service, *channel.Dispatcher, *testResponse
 	// setupTestService already registers the worker to "user-1", the identity its
 	// test channel is opened with.
 	return setupTestService(t)
+}
+
+func newTunnelManagerWithMockClock(t *testing.T) (*tunnelManager, *quartz.Mock) {
+	t.Helper()
+	clock := testutil.NewQuartzMock(t)
+	manager := newTunnelManager()
+	manager.now = func() time.Time { return clock.Now() }
+	return manager, clock
+}
+
+func hasTunnelCancelMarker(manager *tunnelManager, connID string) bool {
+	// The manager's mutex protects both marker reads and sweeps.
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.canceled.has(connID)
 }
 
 func TestOpenTunnelConn_HappyPath(t *testing.T) {
@@ -404,10 +420,9 @@ func TestTunnelReadLoopHalfCloseEvictsOnLifetimeCancel(t *testing.T) {
 	_ = target.Close()
 }
 
-// withShortHalfCloseReaper shortens the idle-reaper knobs for a test and restores
-// them on cleanup, mirroring the staleCancelMarkerTTL pattern. It also stops the
-// manager's sweeper goroutine at cleanup so a self-stopping-but-in-flight sweeper
-// from one test does not leak into the next. Returns the (shortened) idle timeout.
+// withShortHalfCloseReaper shortens the idle timeout and sweep interval for a test.
+// It restores both values and stops the manager's sweeper during cleanup, so the
+// goroutine cannot run in a later test. It returns the shortened idle timeout.
 func withShortHalfCloseReaper(t *testing.T, manager *tunnelManager) time.Duration {
 	t.Helper()
 	idleOrig, sweepOrig := halfCloseIdleTimeout, halfCloseSweepInterval
@@ -1035,30 +1050,22 @@ func TestWaitWriteTurnRejectsIllegitimateSeq(t *testing.T) {
 // are unique, so no later beginOpen/store clears it; the sweep bound added to
 // cancel must reclaim it.
 func TestTunnelManagerCancelSweepsStaleMarker(t *testing.T) {
-	manager := newTunnelManager()
-	originalTTL := staleCancelMarkerTTL
-	staleCancelMarkerTTL = 20 * time.Millisecond
-	t.Cleanup(func() { staleCancelMarkerTTL = originalTTL })
-
-	// Read canceled under manager.mu: sweepCanceledLocked deletes the marker
-	// under the same lock, so an unlocked poll would race the sweep's map write.
-	hasMarker := func(connID string) bool {
-		manager.mu.Lock()
-		defer manager.mu.Unlock()
-		ok := manager.canceled.has(connID)
-		return ok
-	}
+	manager, clock := newTunnelManagerWithMockClock(t)
+	ctx := testutil.DeadlineContext(t)
 
 	require.Nil(t, manager.cancel("already-gone"))
-	require.True(t, hasMarker("already-gone"), "cancel records a marker for a racing open")
+	require.True(t, hasTunnelCancelMarker(manager, "already-gone"), "cancel records a marker for a racing open")
+	clock.Advance(staleCancelMarkerTTL - time.Nanosecond).MustWait(ctx)
+	require.Nil(t, manager.cancel("before-expiry"))
+	require.True(t, hasTunnelCancelMarker(manager, "already-gone"), "a marker remains valid before its expiry")
 
 	// The marker is GC'd opportunistically -- once its TTL elapses, the next
 	// cancel/beginOpen sweeps it under the manager mutex, with no per-marker
 	// timer or background goroutine.
-	time.Sleep(2 * staleCancelMarkerTTL)
+	clock.Advance(time.Nanosecond).MustWait(ctx)
 	require.Nil(t, manager.cancel("unrelated")) // touches the manager, triggering the sweep
-	assert.False(t, hasMarker("already-gone"),
-		"the stale marker is swept on the first cancel/beginOpen after its TTL")
+	assert.False(t, hasTunnelCancelMarker(manager, "already-gone"),
+		"the stale marker is swept at its expiry")
 }
 
 // openTestTunnelConn opens a conn to a fresh echo server and returns its conn_id,
@@ -1313,43 +1320,33 @@ func TestSendTunnelData_AcceptsFrameAtChunkBound(t *testing.T) {
 // up to a full TTL early -- un-fencing the close so a later beginOpen for that id
 // would open a target conn the client had already given up on.
 func TestTunnelManagerSweepKeepsReMarkedCancelMarker(t *testing.T) {
-	manager := newTunnelManager()
-	originalTTL := staleCancelMarkerTTL
-	staleCancelMarkerTTL = 60 * time.Millisecond
-	t.Cleanup(func() { staleCancelMarkerTTL = originalTTL })
-
-	hasMarker := func(connID string) bool {
-		manager.mu.Lock()
-		defer manager.mu.Unlock()
-		ok := manager.canceled.has(connID)
-		return ok
-	}
+	manager, clock := newTunnelManagerWithMockClock(t)
+	ctx := testutil.DeadlineContext(t)
 
 	// First mark (no in-flight open) appends an expiry entry for "reused".
 	require.Nil(t, manager.cancel("reused"))
-	require.True(t, hasMarker("reused"))
+	require.True(t, hasTunnelCancelMarker(manager, "reused"))
 
 	// beginOpen clears the marker but leaves its expiry entry orphaned.
 	require.False(t, manager.beginOpen("reused", func() {}),
 		"beginOpen is fenced by the marker and clears it")
-	require.False(t, hasMarker("reused"))
+	require.False(t, hasTunnelCancelMarker(manager, "reused"))
 
-	// Re-mark near the end of the first entry's TTL, so the orphan expires while
-	// the new marker is still well within its own.
-	time.Sleep(staleCancelMarkerTTL - 20*time.Millisecond)
+	// Re-mark halfway through the first lifetime, so the orphan expires first.
+	clock.Advance(staleCancelMarkerTTL / 2).MustWait(ctx)
 	require.Nil(t, manager.cancel("reused"))
-	require.True(t, hasMarker("reused"))
+	require.True(t, hasTunnelCancelMarker(manager, "reused"))
 
 	// Let the ORPHANED first entry expire; the second marker's own TTL has not.
-	time.Sleep(30 * time.Millisecond)
+	clock.Advance(staleCancelMarkerTTL / 2).MustWait(ctx)
 	require.Nil(t, manager.cancel("unrelated")) // touches the manager, triggering the sweep
-	assert.True(t, hasMarker("reused"),
+	assert.True(t, hasTunnelCancelMarker(manager, "reused"),
 		"the orphaned entry must not expire the live marker that replaced it")
 
 	// The live marker still expires on its own deadline.
-	time.Sleep(2 * staleCancelMarkerTTL)
+	clock.Advance(staleCancelMarkerTTL / 2).MustWait(ctx)
 	require.Nil(t, manager.cancel("unrelated-2"))
-	assert.False(t, hasMarker("reused"), "the live marker expires by its own TTL")
+	assert.False(t, hasTunnelCancelMarker(manager, "reused"), "the live marker expires by its own TTL")
 }
 
 // A close for an in-flight open must NOT schedule a sweep -- the marker is
@@ -2162,30 +2159,20 @@ func TestTunnelReadLoopPreservesFrameContent(t *testing.T) {
 // expiry slice; a later sweep must pop it harmlessly while still reclaiming a
 // genuinely-expired marker.
 func TestTunnelManagerSweepSkipsEarlyClearedMarker(t *testing.T) {
-	manager := newTunnelManager()
-	originalTTL := staleCancelMarkerTTL
-	staleCancelMarkerTTL = 20 * time.Millisecond
-	t.Cleanup(func() { staleCancelMarkerTTL = originalTTL })
-
-	present := func(connID string) bool {
-		manager.mu.Lock()
-		defer manager.mu.Unlock()
-		ok := manager.canceled.has(connID)
-		return ok
-	}
+	manager, clock := newTunnelManagerWithMockClock(t)
+	ctx := testutil.DeadlineContext(t)
 
 	// cancel-before-open records a marker + expiry-slice entry, which a racing
 	// beginOpen consumes (clearing the map entry but leaving the slice entry).
 	require.Nil(t, manager.cancel("early"))
 	require.False(t, manager.beginOpen("early", func() {}), "the marker fences the racing beginOpen")
-	require.False(t, present("early"), "beginOpen cleared the map entry")
+	require.False(t, hasTunnelCancelMarker(manager, "early"), "beginOpen cleared the map entry")
 
-	// A second marker must survive the sweep that later pops the stale "early"
-	// slice entry alongside this now-expired one.
+	// The next sweep removes the expired marker while ignoring the orphaned entry.
 	require.Nil(t, manager.cancel("late"))
-	time.Sleep(2 * staleCancelMarkerTTL)
+	clock.Advance(staleCancelMarkerTTL).MustWait(ctx)
 	require.True(t, manager.beginOpen("fresh", func() {})) // triggers the sweep
-	assert.False(t, present("late"), "the expired marker is swept")
+	assert.False(t, hasTunnelCancelMarker(manager, "late"), "the expired marker is swept")
 }
 
 // recordingWriteConn is a net.Conn whose Write appends to an in-memory buffer

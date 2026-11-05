@@ -327,8 +327,8 @@ describe('cache snapshot core', () => {
   describe('snapshotPaths', () => {
     it('stages every kind beneath the workspace .tmp directory', () => {
       const paths = snapshotPaths('native-go', '/work/leapmux')
-      expect(paths.stagingRoot).toBe('/work/leapmux/.tmp/ci-cache/snapshots/native-go')
-      expect(paths.payloadRoot).toBe('/work/leapmux/.tmp/ci-cache/snapshots/native-go/payload')
+      expect(paths.stagingRoot).toBe(join('/work/leapmux', '.tmp', 'ci-cache', 'snapshots', 'native-go'))
+      expect(paths.payloadRoot).toBe(join('/work/leapmux', '.tmp', 'ci-cache', 'snapshots', 'native-go', 'payload'))
     })
 
     it('refuses an empty workspace', () => {
@@ -341,7 +341,7 @@ describe('cache snapshot core', () => {
       const roots = activeRootsFor('native-go', { ...linux, GOCACHE: '/home/fixture/.cache/go-build', GOLANGCI_LINT_CACHE: '/home/fixture/.cache/golangci-lint' }, '/work/leapmux')
       expect(roots.map(root => root.name)).toEqual(['gocache', 'lint-cache'])
       expect(roots[0].active).toBe('/home/fixture/.cache/go-build')
-      expect(roots[0].payload).toBe('/work/leapmux/.tmp/ci-cache/snapshots/native-go/payload/gocache')
+      expect(roots[0].payload).toBe(join('/work/leapmux', '.tmp', 'ci-cache', 'snapshots', 'native-go', 'payload', 'gocache'))
       expect(roots[0].clearOnWriterMiss).toBe(true)
     })
 
@@ -359,15 +359,21 @@ describe('cache snapshot core', () => {
     it('keeps the Rust active target inside the workspace and the sources under the Cargo home', () => {
       const roots = activeRootsFor('native-rust', linux, '/work/leapmux')
       expect(roots.map(root => root.name)).toEqual(['target', 'registry-src', 'git-checkouts'])
-      expect(roots[0].active).toBe('/work/leapmux/desktop/rust/target')
-      expect(roots[1].active).toBe('/home/fixture/.cargo/registry/src')
-      expect(roots[2].active).toBe('/home/fixture/.cargo/git/checkouts')
+      expect(roots[0].active).toBe(join('/work/leapmux', 'desktop', 'rust', 'target'))
+      expect(roots[1].active).toBe(join('/home/fixture', '.cargo', 'registry', 'src'))
+      expect(roots[2].active).toBe(join('/home/fixture', '.cargo', 'git', 'checkouts'))
     })
 
     it('resolves dependency roots from the tool defaults', () => {
-      expect(activeRootsFor('go-modules', linux, '/work').map(root => root.active)).toEqual(['/home/fixture/go/pkg/mod'])
-      expect(activeRootsFor('bun-packages', linux, '/work').map(root => root.active)).toEqual(['/home/fixture/.bun/install/cache'])
-      expect(activeRootsFor('cargo-downloads', linux, '/work').map(root => root.active)).toEqual(['/home/fixture/.cargo'])
+      expect(activeRootsFor('go-modules', linux, '/work').map(root => root.active)).toEqual([
+        join('/home/fixture', 'go', 'pkg', 'mod'),
+      ])
+      expect(activeRootsFor('bun-packages', linux, '/work').map(root => root.active)).toEqual([
+        join('/home/fixture', '.bun', 'install', 'cache'),
+      ])
+      expect(activeRootsFor('cargo-downloads', linux, '/work').map(root => root.active)).toEqual([
+        join('/home/fixture', '.cargo'),
+      ])
       expect(activeRootsFor('go-modules', { ...linux, GOMODCACHE: '/custom/mod' }, '/work').map(root => root.active)).toEqual(['/custom/mod'])
     })
 
@@ -377,26 +383,30 @@ describe('cache snapshot core', () => {
       const re2 = activeRootsFor('renovate-re2', linux, '/work/leapmux')
       expect(re2.map(root => root.name)).toEqual(['re2-node', 'task-checksum', 'task-record'])
       expect(re2.every(root => root.type === 'file')).toBe(true)
-      expect(re2[2].active).toEndWith(`/.task/artifacts/${taskArtifactRecordName('build-renovate-re2')}`)
+      expect(re2[2].active).toEndWith(join('/', '.task', 'artifacts', taskArtifactRecordName('build-renovate-re2')))
     })
 
     it('skips the Tauri root on macOS and refuses a required root that the runner cannot provide', () => {
       const macos = { ...linux, RUNNER_OS: 'macOS' }
       expect(() => activeRootsFor('tauri-tools', macos, '/work')).toThrow('does not apply')
       const windows = { ...linux, RUNNER_OS: 'Windows', USERPROFILE: '/c/fixture' }
-      expect(activeRootsFor('tauri-tools', windows, '/work').map(root => root.active)).toEqual(['/c/fixture/AppData/Local/tauri'])
-      expect(activeRootsFor('tauri-tools', linux, '/work').map(root => root.active)).toEqual(['/home/fixture/.cache/tauri'])
+      expect(activeRootsFor('tauri-tools', windows, '/work').map(root => root.active)).toEqual([
+        join('/c/fixture', 'AppData', 'Local', 'tauri'),
+      ])
+      expect(activeRootsFor('tauri-tools', linux, '/work').map(root => root.active)).toEqual([
+        join('/home/fixture', '.cache', 'tauri'),
+      ])
     })
 
     it('resolves the spinner subtree inside the clone that Task owns', () => {
       const roots = activeRootsFor('spinners', linux, '/work')
-      expect(roots[0].active).toBe('/home/fixture/.cache/awesome-claude-spinners/spinners')
-      expect(roots[0].payload).toEndWith('/spinners')
+      expect(roots[0].active).toBe(join('/home/fixture', '.cache', 'awesome-claude-spinners', 'spinners'))
+      expect(roots[0].payload).toEndWith(join('/', 'spinners'))
     })
 
     it('resolves a root payload and active path by name', () => {
-      expect(rootPayloadPath('go-modules', 'gomod', linux, '/work')).toBe('/work/.tmp/ci-cache/snapshots/go-modules/payload/gomod')
-      expect(rootActivePath('docker-go', 'go-build', linux, '/work')).toBe('/runner/temp/docker-go-build')
+      expect(rootPayloadPath('go-modules', 'gomod', linux, '/work')).toBe(join('/work', '.tmp', 'ci-cache', 'snapshots', 'go-modules', 'payload', 'gomod'))
+      expect(rootActivePath('docker-go', 'go-build', linux, '/work')).toBe(join('/runner/temp', 'docker-go-build'))
       expect(() => rootPayloadPath('go-modules', 'unknown', linux, '/work')).toThrow('no applicable root')
     })
   })

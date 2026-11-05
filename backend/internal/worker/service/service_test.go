@@ -46,8 +46,8 @@ import (
 // Three files deliberately opt out, and a new test in one of them must NOT add
 // t.Parallel():
 //
-//   - tunnel_test.go assigns the package-level halfClose*/staleCancelMarkerTTL
-//     knobs and swaps slog's default handler.
+//   - tunnel_test.go assigns the package-level halfClose* knobs and swaps slog's
+//     default handler.
 //   - options_view_test.go and open_default_effort_test.go call t.Setenv, which
 //     panics in a parallel test because the environment is process-wide.
 //

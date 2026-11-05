@@ -8,7 +8,6 @@ import {
   readFileSync,
   readlinkSync,
   symlinkSync,
-  truncateSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -26,7 +25,7 @@ import {
   publishDependencySnapshot,
   trimAptArchives,
 } from './cache-snapshot.mjs'
-import { scratchDirectories } from './test-support.mjs'
+import { createSparseFile, scratchDirectories } from './test-support.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
@@ -138,7 +137,7 @@ describe('cache snapshot core', () => {
       const file = join(dir, 'sparse.bin')
       writeFileSync(file, '')
       expect(measureCacheTree(file)).toEqual({ bytes: 0, files: 1, directories: 0 })
-      truncateSync(file, 1024 ** 4)
+      createSparseFile(file, 1024 ** 4)
       expect(measureCacheTree(file).bytes).toBe(1024 ** 4)
     })
   })
@@ -389,6 +388,7 @@ describe('cache snapshot core', () => {
       writeTree(join(payloadRoot, 'gomod', 'cache'), { 'real.txt': 'real\n' })
       symlinkSync('real.txt', join(payloadRoot, 'gomod', 'cache', 'relative.link'))
       symlinkSync('/usr/bin/strip', join(payloadRoot, 'gomod', 'cache', 'external.link'))
+      const externalTarget = readlinkSync(join(payloadRoot, 'gomod', 'cache', 'external.link'))
       const activated = await activateCacheSnapshot({
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
@@ -401,7 +401,7 @@ describe('cache snapshot core', () => {
       const copied = join(active, 'cache')
       expect(readlinkSync(join(copied, 'relative.link'))).toBe('real.txt')
       expect(readFileSync(join(copied, 'relative.link'), 'utf8')).toBe('real\n')
-      expect(readlinkSync(join(copied, 'external.link'))).toBe('/usr/bin/strip')
+      expect(readlinkSync(join(copied, 'external.link'))).toBe(externalTarget)
     })
 
     it('moves across volumes with a checked copy when a rename crosses a filesystem', async () => {
@@ -616,9 +616,8 @@ describe('cache snapshot core', () => {
       const env = goEnv(dir)
       writeTree(env.GOCACHE, { entry: 'x\n' })
       const capacity = filesystemCapacity(dir)
-      if (capacity.freeBytes === null)
-        return // This volume reports no free space, so the real check cannot run here.
-      truncateSync(join(env.GOCACHE, 'entry'), capacity.freeBytes * 4)
+      expect(capacity.freeBytes, 'The fixture requires free-space reporting.').not.toBeNull()
+      createSparseFile(join(env.GOCACHE, 'entry'), capacity.freeBytes * 4)
       const prepared = await prepareCacheSnapshot({
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),

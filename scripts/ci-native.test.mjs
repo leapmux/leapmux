@@ -7,10 +7,9 @@ import { afterEach, describe, expect, it } from 'bun:test'
 const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
 const expression = body => `\${{ ${body} }}`
-// The one Bun test that the native jobs run: the resource monitor reads each
-// OS through its own probe, so each runner tests its own.
+// Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs'
+const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs'
 const fixtures = []
 
 afterEach(() => {

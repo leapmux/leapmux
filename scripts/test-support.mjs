@@ -1,13 +1,46 @@
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { CRATES_INDEX } from './renovate-registry.mjs'
 
 // The shared fixtures of the script tests. bun test runs only `*.test.*` and `*.spec.*`
 // files, so it never runs this module as a test.
 
 const root = resolve(import.meta.dirname, '..')
+
+/** Create a zero-filled sparse fixture without allocating its logical length. */
+export function createSparseFile(file, size) {
+  if (!Number.isSafeInteger(size) || size < 0)
+    throw new RangeError('The sparse fixture size must be a non-negative safe integer.')
+  const sparseFile = resolve(file)
+  if (process.platform === 'win32') {
+    // Windows files need FSCTL_SET_SPARSE before extension. fsutil requires
+    // administrator privileges, so the helper uses the owned file handle.
+    const result = spawnSync('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      readFileSync(join(import.meta.dirname, 'test-support', 'create-sparse-file.ps1'), 'utf8'),
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        TEMP: dirname(sparseFile),
+        TMP: dirname(sparseFile),
+        LEAPMUX_TEST_SPARSE_FILE: sparseFile,
+        LEAPMUX_TEST_SPARSE_SIZE: String(size),
+      },
+    })
+    if (result.error || result.status !== 0)
+      throw new Error(`Cannot create sparse fixture ${sparseFile}: ${result.error?.message || result.stderr?.trim() || result.stdout?.trim() || `exit ${result.status}`}`)
+    return
+  }
+  writeFileSync(sparseFile, '')
+  truncateSync(sparseFile, size)
+}
 
 /**
  * Return a factory of scratch directories under `.tmp` of the checkout, and the cleanup
