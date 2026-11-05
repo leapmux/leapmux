@@ -587,6 +587,7 @@ func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 	defer cancel()
 	inst, err := start(ctx, cfg, d.deps)
 
+	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	require.Error(t, err)
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
@@ -611,6 +612,7 @@ func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
 		_, err = start(ctx, cfg, d.deps)
+		assert.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	})
 
 	require.Error(t, err)
@@ -816,6 +818,7 @@ func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testin
 	defer cancel()
 	inst, err := start(ctx, cfg, d.deps)
 
+	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	require.Error(t, err)
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
@@ -848,6 +851,7 @@ func TestSoloStart_ReadinessFailureStopsBeforeWorkerBringUp(t *testing.T) {
 		t.Cleanup(func() { _ = inst.Stop() })
 	}
 
+	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	require.ErrorIs(t, err, wantErr)
 	require.Nil(t, inst)
 	assert.False(t, broughtUp.Load(), "readiness failure must stop Worker bring-up")
