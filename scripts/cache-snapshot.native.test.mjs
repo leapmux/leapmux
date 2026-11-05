@@ -1,8 +1,8 @@
 // Real-tool snapshot tests. They run tiny Go and Rust builds against local
 // fixture dependencies, drive a full snapshot round trip, and prove reuse
 // through the tools' own records: a build that runs offline, a `-x` build
-// log without a dependency compile command, and Cargo's `Fresh` units with
-// preserved source timestamps. No external registry download happens.
+// log without a dependency compile command, and Cargo's fresh compiler
+// artifacts with preserved source timestamps. No external registry download happens.
 import { spawnSync } from 'node:child_process'
 import {
   cpSync,
@@ -62,6 +62,14 @@ function expectOk(result, what) {
   return result
 }
 
+function expectFreshCargoLibrary(result, crate) {
+  const artifacts = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)).filter(message => message.reason === 'compiler-artifact'
+    && message.target.name === crate.replaceAll('-', '_')
+    && message.target.kind.includes('lib'))
+  expect(artifacts).toHaveLength(1)
+  expect(artifacts[0].fresh).toBe(true)
+}
+
 // --- Go fixtures ------------------------------------------------------------
 
 function writeGoFixture(dir, depVersion, { appRequires } = {}) {
@@ -116,10 +124,9 @@ function writeGoFixture(dir, depVersion, { appRequires } = {}) {
 }
 
 // --- The Rust fixture registry ----------------------------------------------
-// A cargo directory source replaces crates.io with a local directory of
-// .crate files. Cargo caches and extracts them exactly as it does for a
-// remote registry, so the source extraction and timestamp behavior under
-// test is identical, and no loopback server is needed.
+// A Cargo local registry replaces crates.io with an index and packed .crate
+// files. Cargo extracts them into its registry source directory, so the tests
+// exercise source timestamps without a remote registry or a loopback server.
 
 function writeSysCrateSources(stage) {
   writeFileSync(join(stage, 'Cargo.toml'), [
@@ -151,7 +158,7 @@ function writeSysCrateSources(stage) {
 }
 
 // Build a cargo local-registry layout that serves one crate: the packed
-// .crate, its sparse index line, and the registry config. COPYFILE_DISABLE
+// .crate, its index record, and the registry config. COPYFILE_DISABLE
 // keeps macOS tar from adding AppleDouble entries that cargo rejects.
 function buildLocalRegistry(repoDir, stage, name, version) {
   const { createHash } = require('node:crypto')
@@ -375,119 +382,119 @@ describe('cache snapshot native', () => {
     cleanupSnapshotStaging({ kind: 'go-modules', workspace: dir })
   })
 
-  it('reuses the -sys sources with their timestamps and never reruns its build script', async () => {
+  it.each(['always', 'never'])('reuses the -sys sources without rerunning the build script with color set to %s', async (color) => {
     const dir = fixture()
     const name = 'git-sys'
     const version = '0.1.0'
     const stage = join(dir, 'stage', `${name}-${version}`)
     mkdirSync(join(stage, 'src'), { recursive: true })
     writeSysCrateSources(stage)
-    const registryDir = buildLocalRegistry(dir, stage, name, version)
-    try {
-      const workspace = join(dir, 'desktop', 'rust')
-      mkdirSync(join(workspace, 'src'), { recursive: true })
-      mkdirSync(join(workspace, '.cargo'), { recursive: true })
-      writeFileSync(join(workspace, '.cargo', 'config.toml'), [
-        '[source.crates-io]',
-        'replace-with = "fixture-registry"',
-        '',
-        '[source.fixture-registry]',
-        `local-registry = "${registryDir}"`,
-        '',
-      ].join('\n'))
-      writeFileSync(join(workspace, 'Cargo.toml'), [
-        '[package]',
-        'name = "consumer"',
-        'version = "0.1.0"',
-        'edition = "2021"',
-        '',
-        '[dependencies]',
-        `${name} = "${version}"`,
-        '',
-      ].join('\n'))
-      writeFileSync(join(workspace, 'src', 'lib.rs'), 'pub fn value() -> u32 { git_sys::value() }\n')
+    // A literal backslash on POSIX exercises the TOML escaping that Windows paths need.
+    const registryParent = join(dir, process.platform === 'win32'
+      ? 'registry storage'
+      : 'registry\\storage')
+    mkdirSync(registryParent)
+    // The fixture registry directory lives in the scratch tree.
+    const registryDir = buildLocalRegistry(registryParent, stage, name, version)
+    const workspace = join(dir, 'desktop', 'rust')
+    mkdirSync(join(workspace, 'src'), { recursive: true })
+    mkdirSync(join(workspace, '.cargo'), { recursive: true })
+    writeFileSync(join(workspace, '.cargo', 'config.toml'), [
+      '[source.crates-io]',
+      'replace-with = "fixture-registry"',
+      '',
+      '[source.fixture-registry]',
+      `local-registry = ${JSON.stringify(registryDir)}`,
+      '',
+    ].join('\n'))
+    writeFileSync(join(workspace, 'Cargo.toml'), [
+      '[package]',
+      'name = "consumer"',
+      'version = "0.1.0"',
+      'edition = "2021"',
+      '',
+      '[dependencies]',
+      `${name} = "${version}"`,
+      '',
+    ].join('\n'))
+    writeFileSync(join(workspace, 'src', 'lib.rs'), 'pub fn value() -> u32 { git_sys::value() }\n')
 
-      const writerHome = join(dir, 'writer-cargo')
-      const writerEnv = { ...process.env, CARGO_HOME: writerHome }
-      expectOk(run('cargo', ['generate-lockfile'], { cwd: workspace, env: writerEnv }), 'generate the lockfile')
-      expectOk(run('cargo', ['build', '--locked'], { cwd: workspace, env: writerEnv }), 'the writer build')
-      const registryRoot = join(writerHome, 'registry', 'src')
-      const registryId = readdirSync(registryRoot)[0]
-      const extracted = join(registryRoot, registryId, `${name}-${version}`)
-      expect(existsSync(extracted)).toBe(true)
-      const srcStat = statSync(join(extracted, 'src', 'lib.rs'))
+    const writerHome = join(dir, 'writer-cargo')
+    const writerEnv = { ...process.env, CARGO_HOME: writerHome, CARGO_TERM_COLOR: color }
+    expectOk(run('cargo', ['generate-lockfile'], { cwd: workspace, env: writerEnv }), 'generate the lockfile')
+    expectOk(run('cargo', ['build', '--locked'], { cwd: workspace, env: writerEnv }), 'the writer build')
+    const registryRoot = join(writerHome, 'registry', 'src')
+    const registryId = readdirSync(registryRoot)[0]
+    const extracted = join(registryRoot, registryId, `${name}-${version}`)
+    expect(existsSync(extracted)).toBe(true)
+    const srcStat = statSync(join(extracted, 'src', 'lib.rs'))
 
-      const environment = runnerEnv(dir)
-      const downloadKey = `cargo-downloads-2-${environment.RUNNER_OS}-${hash}`
-      const downloadPayload = snapshotPaths('cargo-downloads', dir).payloadRoot
-      isolatedCargoFetch(workspace, downloadPayload, writerEnv)
-      await prepareCacheSnapshot({
-        kind: 'cargo-downloads',
-        key: downloadKey,
-        workspace: dir,
-        env: {
-          ...process.env,
-          ...environment,
-          CARGO_HOME: writerHome,
-        },
-      })
-      // A local registry unpacks into the source directory instead of a
-      // .crate cache, so the payload carries the extracted sources.
-      expect(existsSync(join(downloadPayload, 'cargo-home', 'registry', 'src', registryId, `${name}-${version}`, 'src', 'lib.rs'))).toBe(true)
+    const environment = runnerEnv(dir)
+    const downloadKey = `cargo-downloads-2-${environment.RUNNER_OS}-${hash}`
+    const downloadPayload = snapshotPaths('cargo-downloads', dir).payloadRoot
+    isolatedCargoFetch(workspace, downloadPayload, writerEnv)
+    await prepareCacheSnapshot({
+      kind: 'cargo-downloads',
+      key: downloadKey,
+      workspace: dir,
+      env: {
+        ...process.env,
+        ...environment,
+        CARGO_HOME: writerHome,
+      },
+    })
+    // A local registry unpacks into the source directory instead of a
+    // .crate cache, so the payload carries the extracted sources.
+    expect(existsSync(join(downloadPayload, 'cargo-home', 'registry', 'src', registryId, `${name}-${version}`, 'src', 'lib.rs'))).toBe(true)
 
-      const rustKey = `rust-build-2-${environment.RUNNER_OS}-${environment.RUNNER_ARCH}-${environment.CACHE_IMAGE}-rust${environment.RUST_VERSION}-${hash}`
-      await prepareCacheSnapshot({
-        kind: 'native-rust',
-        key: rustKey,
-        workspace: dir,
-        env: {
-          ...process.env,
-          ...environment,
-          CARGO_HOME: writerHome,
-        },
-      })
-      const rustPayload = snapshotPaths('native-rust', dir).payloadRoot
-      expect(existsSync(join(rustPayload, 'registry-src', registryId, `${name}-${version}`, 'src', 'lib.rs'))).toBe(true)
+    const rustKey = `rust-build-2-${environment.RUNNER_OS}-${environment.RUNNER_ARCH}-${environment.CACHE_IMAGE}-rust${environment.RUST_VERSION}-${hash}`
+    await prepareCacheSnapshot({
+      kind: 'native-rust',
+      key: rustKey,
+      workspace: dir,
+      env: {
+        ...process.env,
+        ...environment,
+        CARGO_HOME: writerHome,
+      },
+    })
+    const rustPayload = snapshotPaths('native-rust', dir).payloadRoot
+    expect(existsSync(join(rustPayload, 'registry-src', registryId, `${name}-${version}`, 'src', 'lib.rs'))).toBe(true)
 
-      // The reader starts from a fresh Cargo home at the SAME path, which
-      // the dependency fingerprints require, and restores both archives as
-      // the transport delivers them.
-      rmSync(writerHome, { recursive: true, force: true })
-      const readerHome = writerHome
-      mkdirSync(readerHome, { recursive: true })
-      cpSync(join(downloadPayload, 'cargo-home'), readerHome, { recursive: true })
-      await activateCacheSnapshot({
-        kind: 'native-rust',
-        key: rustKey,
-        writer: false,
-        exactHit: true,
-        workspace: dir,
-        env: {
-          ...process.env,
-          CARGO_HOME: readerHome,
-          ...environment,
-        },
-      })
-      cleanupSnapshotStaging({ kind: 'native-rust', workspace: dir })
-      const readerExtracted = join(readerHome, 'registry', 'src', registryId, `${name}-${version}`)
-      expect(existsSync(join(readerExtracted, 'src', 'lib.rs'))).toBe(true)
-      // The extracted source timestamps survive the round trip.
-      expect(statSync(join(readerExtracted, 'src', 'lib.rs')).mtimeMs).toBe(srcStat.mtimeMs)
+    // The reader starts from a fresh Cargo home at the SAME path, which
+    // the dependency fingerprints require, and restores both archives as
+    // the transport delivers them.
+    rmSync(writerHome, { recursive: true, force: true })
+    const readerHome = writerHome
+    mkdirSync(readerHome, { recursive: true })
+    cpSync(join(downloadPayload, 'cargo-home'), readerHome, { recursive: true })
+    await activateCacheSnapshot({
+      kind: 'native-rust',
+      key: rustKey,
+      writer: false,
+      exactHit: true,
+      workspace: dir,
+      env: {
+        ...process.env,
+        CARGO_HOME: readerHome,
+        ...environment,
+      },
+    })
+    cleanupSnapshotStaging({ kind: 'native-rust', workspace: dir })
+    const readerExtracted = join(readerHome, 'registry', 'src', registryId, `${name}-${version}`)
+    expect(existsSync(join(readerExtracted, 'src', 'lib.rs'))).toBe(true)
+    // The extracted source timestamps survive the round trip.
+    expect(statSync(join(readerExtracted, 'src', 'lib.rs')).mtimeMs).toBe(srcStat.mtimeMs)
 
-      const readerBuild = expectOk(run('cargo', ['build', '--locked', '-v'], {
-        cwd: workspace,
-        env: { ...process.env, CARGO_HOME: readerHome },
-      }), 'the reader build')
-      // Cargo reports the dependency as fresh: neither the build script nor
-      // the compilation ran again.
-      expect(readerBuild.stderr).toMatch(new RegExp(`Fresh ${name}`))
-    }
-    finally {
-      // The fixture registry directory lives in the scratch tree.
-    }
+    const readerBuild = expectOk(run('cargo', ['build', '--locked', '--message-format=json'], {
+      cwd: workspace,
+      env: { ...writerEnv, CARGO_HOME: readerHome },
+    }), 'the reader build')
+    // Cargo's compiler-artifact event proves reuse without parsing colored status text.
+    expectFreshCargoLibrary(readerBuild, name)
   })
 
-  it('keeps the git database and checkout of a git dependency reusable', async () => {
+  it.each(['always', 'never'])('keeps Git dependency artifacts reusable with color set to %s', async (color) => {
     const dir = fixture()
     const repo = join(dir, 'git-repo')
     gitRepository(repo, {
@@ -517,7 +524,7 @@ describe('cache snapshot native', () => {
     writeFileSync(join(workspace, 'src', 'lib.rs'), 'pub fn value() -> u32 { gitdep::value() }\n')
 
     const writerHome = join(dir, 'writer-cargo')
-    const writerEnv = { ...process.env, CARGO_HOME: writerHome }
+    const writerEnv = { ...process.env, CARGO_HOME: writerHome, CARGO_TERM_COLOR: color }
     expectOk(run('cargo', ['generate-lockfile'], { cwd: workspace, env: writerEnv }), 'generate the lockfile')
     expectOk(run('cargo', ['build', '--locked'], { cwd: workspace, env: writerEnv }), 'the writer build')
     const checkoutDir = join(writerHome, 'git', 'checkouts')
@@ -578,10 +585,10 @@ describe('cache snapshot native', () => {
     expect(existsSync(join(readerHome, 'git', 'db', repoDir))).toBe(true)
     expect(existsSync(join(readerHome, 'git', 'checkouts', repoDir))).toBe(true)
     rmSync(repo, { recursive: true, force: true })
-    const readerBuild = expectOk(run('cargo', ['build', '--locked', '-v'], {
+    const readerBuild = expectOk(run('cargo', ['build', '--locked', '--message-format=json'], {
       cwd: workspace,
-      env: { ...process.env, CARGO_HOME: readerHome },
+      env: { ...writerEnv, CARGO_HOME: readerHome },
     }), 'the reader build')
-    expect(readerBuild.stderr).toMatch(/Fresh gitdep/)
+    expectFreshCargoLibrary(readerBuild, 'gitdep')
   })
 })

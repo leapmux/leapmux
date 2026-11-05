@@ -65,6 +65,29 @@ function runner(inventory = extracted(), onRun = () => {}) {
 }
 
 describe('extractRenovateInventory', () => {
+  it.each(['', '\'', '"'])('accepts local action and reusable-workflow references with %s quoting', async (quote) => {
+    const directory = fixture()
+    const action = '.github/actions/local/action.yaml'
+    const workflow = '.github/workflows/local-only.yaml'
+    write(directory, action, `name: Local\nruns:\n  using: composite\n  steps:\n    - uses: ${quote}./.github/actions/restore${quote}\n`)
+    write(directory, workflow, `name: Local\non: push\njobs:\n  build:\n    uses: ${quote}./.github/workflows/native.yaml${quote}\n`)
+    const result = await extractRenovateInventory({
+      root: directory,
+      run: runner(),
+    })
+    expect(result.snapshotFiles).toEqual(expect.arrayContaining([action, workflow]))
+  })
+
+  it.each(['actions/checkout@v7', '\'owner/tool/nested@v1\'', '"repo-owner/repository@v1"'])('rejects an omitted external action source containing %s', async (reference) => {
+    const directory = fixture()
+    const file = '.github/actions/external/action.yaml'
+    write(directory, file, `name: External\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/local\n    - uses: ${reference}\n`)
+    await expect(extractRenovateInventory({
+      root: directory,
+      run: runner(),
+    })).rejects.toThrow(`Renovate missed dependency source ${file}.`)
+  })
+
   it('matches unexpected manifests and their metadata without copying unrelated source assets', async () => {
     const manifests = [
       'packages/new/package.json',
