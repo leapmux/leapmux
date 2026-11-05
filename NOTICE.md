@@ -198,7 +198,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [core-graphics-types 0.2.0 (MIT OR Apache-2.0)](#core-graphics-types-020-mit-or-apache-20)
 - [cpufeatures 0.2.17 (MIT OR Apache-2.0)](#cpufeatures-0217-mit-or-apache-20)
 - [cpufeatures 0.3.1 (MIT OR Apache-2.0)](#cpufeatures-031-mit-or-apache-20)
-- [crc32fast 1.5.1 (MIT OR Apache-2.0)](#crc32fast-151-mit-or-apache-20)
+- [crc32fast 1.5.4 (MIT OR Apache-2.0)](#crc32fast-154-mit-or-apache-20)
 - [crossbeam-channel 0.5.17 (MIT OR Apache-2.0)](#crossbeam-channel-0517-mit-or-apache-20)
 - [crossbeam-utils 0.8.23 (MIT OR Apache-2.0)](#crossbeam-utils-0823-mit-or-apache-20)
 - [crunchy 0.2.4 (MIT)](#crunchy-024-mit)
@@ -662,7 +662,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@cfworker/json-schema 4.1.4 (MIT)](#cfworkerjson-schema-414-mit)
 - [@connectrpc/connect 2.3.0 (Apache-2.0)](#connectrpcconnect-230-apache-20)
 - [@connectrpc/connect-web 2.3.0 (Apache-2.0)](#connectrpcconnect-web-230-apache-20)
-- [@knadh/oat 1.0.0 (MIT)](#knadhoat-100-mit)
+- [@knadh/oat 1.1.0 (MIT)](#knadhoat-110-mit)
 - [@milkdown/core 7.23.0 (MIT)](#milkdowncore-7230-mit)
 - [@milkdown/ctx 7.23.0 (MIT)](#milkdownctx-7230-mit)
 - [@milkdown/plugin-clipboard 7.23.0 (MIT)](#milkdownplugin-clipboard-7230-mit)
@@ -22698,7 +22698,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### crc32fast 1.5.1 (MIT OR Apache-2.0)
+### crc32fast 1.5.4 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -98669,7 +98669,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### @knadh/oat 1.0.0 (MIT)
+### @knadh/oat 1.1.0 (MIT)
 
 ```
 The MIT License
