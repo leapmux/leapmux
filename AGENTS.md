@@ -116,6 +116,8 @@ the wrong line. Use `--` and ASCII punctuation, never `—` or smart quotes.
 Lint Rust/desktop with `task lint-desktop`, never `cargo clippy` directly: the
 task first builds the Go sidecar that Tauri's bundle resources point at
 (`../go/bin/*`), and without it clippy fails with a misleading build error.
+It also runs `cargo fmt --check`, because nothing else checks the Rust format.
+`task lint-fix-desktop` fixes both, on a tree with changes too.
 
 ## Coding conventions
 

@@ -24,10 +24,7 @@
 /// The handle is leaked deliberately. Loading the library here is what makes it
 /// already resident when the lazy resolve runs, so the two cannot disagree.
 pub(crate) fn available() -> bool {
-    for soname in [
-        c"libayatana-appindicator3.so.1",
-        c"libappindicator3.so.1",
-    ] {
+    for soname in [c"libayatana-appindicator3.so.1", c"libappindicator3.so.1"] {
         // SAFETY: a fixed soname that no user input reaches, opened lazily and
         // never closed.
         let handle = unsafe { libc::dlopen(soname.as_ptr(), libc::RTLD_LAZY) };

@@ -50,7 +50,7 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          rust-components: clippy
+          rust-components: clippy,rustfmt
           # Only push-to-main saves the compiled caches; see the input's docs.
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}

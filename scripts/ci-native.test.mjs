@@ -167,6 +167,23 @@ describe('native CI validation', () => {
       : recorded)
   })
 
+  // The runner's minimal Rust profile has no rustfmt, so the check needs the component.
+  it('installs rustfmt in the job that checks the Rust format', () => {
+    expect(commands(readYaml('Taskfile.yaml').tasks, 'lint-desktop')).toContain('cd desktop/rust && cargo fmt --check')
+    const steps = readYaml('.github/workflows/ci.yaml').jobs.linux.steps
+    const setup = steps.find(step => step.uses === './.github/actions/setup-build')
+    expect(setup.with['rust-components'].split(',')).toContain('rustfmt')
+  })
+
+  it('lets lint-fix-desktop run on a tree with changes and no built sidecar', () => {
+    const tasks = readYaml('Taskfile.yaml').tasks
+    const fix = commands(tasks, 'lint-fix-desktop')
+    expect(fix).toContain('cd desktop/rust && cargo clippy --fix --allow-dirty --all-targets')
+    expect(fix).toContain('cd desktop/rust && cargo fmt')
+    for (const command of commands(tasks, 'build-desktop-sidecar'))
+      expect(fix).toContain(command)
+  })
+
   it('keeps native Go tests, Rust tests and Rust lint without repeated portable validation', () => {
     const tasks = readYaml('Taskfile.yaml').tasks
     const native = commands(tasks, 'test-native')
