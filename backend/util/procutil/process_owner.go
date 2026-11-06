@@ -139,6 +139,14 @@ func (o *ProcessOwner) Capture(ctx context.Context) error {
 	return err
 }
 
+// CaptureBeforeStop records descendants before a stop closes stdin or signals the root.
+// Use the same capture limit as cancellation and termination so callers cannot shorten the process-table walk.
+func (o *ProcessOwner) CaptureBeforeStop() error {
+	ctx, cancel := context.WithTimeout(context.Background(), processCaptureTimeout)
+	defer cancel()
+	return o.Capture(ctx)
+}
+
 // PID returns the captured root PID without reading a command that Wait can release.
 func (o *ProcessOwner) PID() int {
 	if o == nil {

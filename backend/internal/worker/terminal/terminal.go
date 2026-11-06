@@ -592,11 +592,9 @@ func (t *Terminal) Stop() {
 	t.stopped = true
 	t.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := t.owner.Capture(ctx); err != nil {
+	if err := t.owner.CaptureBeforeStop(); err != nil {
 		slog.Warn("capture terminal process ownership", "terminal_id", t.id, "error", err)
 	}
-	cancel()
 	if err := t.owner.Terminate(); err != nil {
 		slog.Warn("terminate owned terminal processes",
 			"terminal_id", t.id,

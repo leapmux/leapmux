@@ -190,7 +190,7 @@ func TestProcessOwnerEndsOnlyItsDetachedChildAfterRootExit(t *testing.T) {
 	first.requirePong(t)
 	second.requirePong(t)
 	// Capture while the live parent still proves the exact child ancestry.
-	require.NoError(t, first.owner.Capture(t.Context()))
+	require.NoError(t, first.owner.CaptureBeforeStop())
 	require.NoError(t, first.stdin.Close())
 	require.NoError(t, first.cmd.Wait())
 	require.NoError(t, first.owner.Close())
