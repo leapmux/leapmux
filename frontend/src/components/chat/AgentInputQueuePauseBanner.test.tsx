@@ -30,6 +30,7 @@ describe('AgentInputQueuePauseBanner', () => {
       // reader the agent stopped, which is false for a database error -- and this
       // sentence is exactly what the banner prints.
       [AgentInputQueuePauseReason.STORE_FAULT, 'could not read its own data'],
+      [AgentInputQueuePauseReason.PROCESS_RECOVERY, 'waiting for login recovery'],
     ]
     for (const [reason, fragment] of cases)
       expect(pauseSentence(reason)).toContain(fragment)
@@ -68,6 +69,18 @@ describe('AgentInputQueuePauseBanner', () => {
       <AgentInputQueuePauseBanner paused reason={AgentInputQueuePauseReason.MANUAL} />
     ))
     expect(() => fireEvent.click(screen.getByRole('button', { name: 'Resume' }))).not.toThrow()
+  })
+
+  it('requests login recovery without resuming the queue', async () => {
+    const onResume = vi.fn()
+    const onRecover = vi.fn()
+    render(() => (
+      <AgentInputQueuePauseBanner paused reason={AgentInputQueuePauseReason.PROCESS_RECOVERY} onResume={onResume} onRecover={onRecover} />
+    ))
+    await fireEvent.click(screen.getByRole('button', { name: 'Recover login' }))
+    expect(onRecover).toHaveBeenCalledOnce()
+    expect(onResume).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
   })
 
   it('keeps the live region mounted while the queue runs, so a later pause announces', () => {

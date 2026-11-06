@@ -133,14 +133,13 @@ func TestCodexTurnStartAuthenticationRejectionMarksAndRefusesLaterInput(t *testi
 	assert.Len(t, requests(), 1, "the stale process receives no second turn/start")
 }
 
-// TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession covers a rejection
-// that arrives after a context clear retired its request: the late reply must
-// not mark the process that no longer waits for it.
-func TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession(t *testing.T) {
+// TestCodexLateTurnStartRejectionMarksTheSharedProcess covers authentication
+// evidence that outlives its request. A context clear keeps the same process.
+func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
 	held := make(chan func(agenttest.RPCReply), 1)
-	a, _, _ := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) {
+	a, _, requests := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) {
 		switch request.Method {
 		case "turn/start":
 			select {
@@ -184,8 +183,11 @@ func TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession(t *testing.T) {
 	a.handleCodexTurnStartResponse(pending, &providerkit.JSONRPCResponseError{
 		Message: "workspace routing discovery unauthorized (401)",
 	})
-	assert.False(t, recoveryRequired(a),
-		"a late reply for a retired request must not mark the current thread's process")
+	assert.True(t, recoveryRequired(a), "the same physical process still holds the rejected login")
+	assert.Equal(t, "new-thread", a.currentThreadID(), "the retired request cannot replace the current thread")
+	before := len(requests())
+	require.ErrorIs(t, a.SendInput("new input", nil), agent.ErrInputProcessRestartRequired)
+	assert.Len(t, requests(), before, "the new thread cannot send input through the stale process")
 	deliver(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
 }
 

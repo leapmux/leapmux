@@ -43,6 +43,7 @@ export interface AgentInputQueueProps {
   onDelete: (item: QueuedAgentInput) => void
   onMove: (item: QueuedAgentInput, beforeInputId: string) => void
   onRetry: (item: QueuedAgentInput, confirmUncertain: boolean) => void
+  onRecover?: () => void
   onSteer: (item: QueuedAgentInput) => void
   onPreempt: (item: QueuedAgentInput) => void
 }
@@ -316,6 +317,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     // for this row: it can only add a false term.
     const requiresTakeover = () => editedByOther() || (!item().editOwnerClientId && anyItemIsEdited())
     const retryable = () => item().state === AgentInputState.FAILED || item().state === AgentInputState.DELIVERY_UNCERTAIN
+    const canRecover = () => !!props.snapshot?.processRecovery && !!props.onRecover && isHead() && !isLocked() && !item().editOwnerClientId
     // The edit slot holds ONE button, and who owns the edit decides
     // which. A memo keeps the four cases in one place, so the icon,
     // the name and the handler of a case cannot drift apart.
@@ -434,12 +436,15 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
           >
             <Icon icon={Trash} size="xs" />
           </ConfirmButton>
-          <Show when={isHead() && retryable() && !item().editOwnerClientId}>
+          <Show when={isHead() && retryable() && !item().editOwnerClientId && !canRecover()}>
             <RowAction
               icon={RotateCcw}
               label="Retry"
               onClick={() => props.onRetry(item(), item().state === AgentInputState.DELIVERY_UNCERTAIN)}
             />
+          </Show>
+          <Show when={canRecover()}>
+            <LabelledRowAction icon={RotateCcw} label="Recover login" tooltip="Recover login" onClick={() => props.onRecover?.()} />
           </Show>
           {/*
             Steer and Preempt stay last, so the one button that still shows a

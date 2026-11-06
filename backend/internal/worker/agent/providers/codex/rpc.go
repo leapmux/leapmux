@@ -172,6 +172,12 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 		return
 	}
 	err := classifyCodexTurnStartRequestError("turn/start", responseErr)
+	// A retired request cannot settle its successor, but its authentication
+	// rejection still describes this physical process's cached login.
+	if codexAuthenticationRejection(responseErr) {
+		a.markAuthenticationRecoveryRequired()
+		err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
+	}
 	processEnded := false
 	select {
 	case <-a.ProcessDone():
@@ -187,15 +193,6 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 		pending.responseError <- err
 		a.Mu.Unlock()
 		return
-	}
-	// An EXPLICIT rejection states its cause, so an authentication failure
-	// marks this process before the request settles and its caller returns:
-	// the input that follows must not reach the process again. The uncertain
-	// branch above never reaches here, and a timeout or a lost response
-	// carries no JSON-RPC error to classify, so an uncertain delivery can
-	// never become recovery state -- or permission to replay input.
-	if codexAuthenticationRejection(err) {
-		a.authenticationRecoveryRequired = true
 	}
 	if a.finishCodexTurnStartLocked(pending, "", err) {
 		close(pending.done)

@@ -3,6 +3,8 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // InterruptUnavailableError reports that the provider cannot interrupt its current operation.
@@ -22,8 +24,15 @@ func (e *InterruptUnavailableError) Error() string {
 // Manager.mu guards done and exiting. The provider remains fixed.
 type agentRegistration struct {
 	provider Agent
-	done     chan struct{}
-	exiting  bool
+	// instanceID identifies this physical process registration. Output writer
+	// generations can advance before a replacement stops the previous process.
+	instanceID string
+	done       chan struct{}
+	exiting    bool
+}
+
+func newAgentRegistration(provider Agent, done chan struct{}) *agentRegistration {
+	return &agentRegistration{provider: provider, instanceID: id.Generate(), done: done}
 }
 
 func (r *agentRegistration) providerOrNil() Agent {

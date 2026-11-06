@@ -1,12 +1,14 @@
+import type { Locator } from '@playwright/test'
 import type { CodexAuthEnvironment } from '../helpers/codexAuthEnvironment'
 import type { ManagedNativeScenarioContext, NativeContextFixtures, NativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch, NativeStartupWrapper } from '../helpers/nativeStartupWrapper'
 import type { NativeWorker } from '../helpers/nativeWorker'
 import { expect } from '@playwright/test'
-import { AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentInputState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codexTest } from '../codex-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { CODEX_AUTH_OTHER_ACCOUNT, CODEX_AUTH_SAME_ACCOUNT, withCodexAuthEnvironment } from '../helpers/codexAuthEnvironment'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { currentNativeAgent, nativeModelConversationTurns, nativeScenarioModelContextText, nativeTextStep } from '../helpers/nativeScenario'
@@ -14,15 +16,15 @@ import { withNativeStartupWorker } from '../helpers/nativeStartupWorker'
 import { isAlive, listProcesses, withDescendants } from '../helpers/processTree'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
-import { assistantBubbles, inputQueue, openWorkspace, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, inputQueue, openWorkspace, queuePauseButton, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { CODEX_AGENT, nativeContext, nativeLaunch } from './scenarios'
 
 /**
  * Authentication recovery with the real Codex CLI: an expired or replaced
- * ChatGPT login recovers on the NEXT input, by replacing the affected process
- * through the ordinary start path, resuming the saved thread, and delivering
- * the message once. Native refreshes that succeed keep the process.
+ * ChatGPT login requires approval before replacing the affected process.
+ * Recovery resumes the saved thread and delivers queued input once.
+ * Native refreshes that succeed keep the process.
  *
  * Each scenario runs on its own private Worker whose Codex agents hold a
  * private CODEX_HOME with credentials the test controls; all content turns
@@ -136,6 +138,7 @@ async function sendRecoveredAnswer(
     answer: string
     priorPrompt: string
     priorAnswer: string
+    beforeApproval?: (dialog: Locator) => Promise<void>
   },
 ): Promise<void> {
   const { stalePid, generation, prompt, answer, priorPrompt, priorAnswer } = recovery
@@ -146,6 +149,16 @@ async function sendRecoveredAnswer(
     gate,
   })
   await sendMessage(context.page, context.modelScript.prompt(prompt))
+  await expectRecoveryInput(context)
+  expect(isAlive(stalePid), 'the stale runtime remains alive before approval').toBe(true)
+  let dialog = await openRecoveryDialog(context)
+  if (recovery.beforeApproval) {
+    await recovery.beforeApproval(dialog)
+    expect(isAlive(stalePid), 'cancelling recovery leaves the stale runtime alive').toBe(true)
+    await expectRecoveryInput(context)
+    dialog = await openRecoveryDialog(context)
+  }
+  await approveRecovery(dialog)
   await context.modelScript.waitForGate(gate)
   expect(isAlive(stalePid), 'the stale runtime exited before the recovered answer completes').toBe(false)
   expectContentGenerations(auth, before, [generation])
@@ -161,23 +174,48 @@ async function sendRecoveredAnswer(
   await waitForAgentIdle(context.page)
   expectContentGenerations(auth, before, [generation])
   await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+  await expect(queuePauseButton(context.page)).toHaveAttribute('aria-label', 'Pause Queue')
 }
 
-/**
- * Require that the selected tab retains its one input as a failed, retryable
- * item whose stated reason contains `reason`, and return that item.
- */
-async function expectRetainedInput(context: NativeScenarioContext & { leapmuxServer: Parameters<typeof readNativeInputQueue>[0] }, reason: string) {
+/** Require that unsubmitted input waits for approval of its current physical process. */
+async function expectRecoveryInput(context: ManagedNativeScenarioContext) {
   const agent = await currentNativeAgent(context)
   const item = await retryUntilPass(async () => {
     const snapshot = await readNativeInputQueue(context.leapmuxServer, agent.id)
-    const failed = snapshot.items.find(candidate =>
-      candidate.state === AgentInputState.FAILED && candidate.error.includes(reason))
-    expect(failed, 'the retained input stays failed with its reason').toBeDefined()
-    return failed!
+    expect(snapshot.pauseReason).toBe(AgentInputQueuePauseReason.PROCESS_RECOVERY)
+    expect(snapshot.processRecovery?.outputGeneration).toBeGreaterThan(0n)
+    expect(snapshot.processRecovery?.agentSessionId).toBe(agent.agentSessionId)
+    expect(snapshot.processRecovery?.processInstanceId).toBeTruthy()
+    const queued = snapshot.items.find(candidate => candidate.state === AgentInputState.QUEUED)
+    expect(queued, 'the input waits without reaching the provider').toBeDefined()
+    expect(queued?.error, 'the queue explains why approval is required').not.toBe('')
+    return queued!
   })
-  await expect(inputQueue(context.page).getByTestId(`queued-input-${item.id}`)).toContainText(reason)
+  await expect(inputQueue(context.page).getByTestId(`queued-input-${item.id}`)).toBeVisible()
   return item
+}
+
+/** Open a confirmation without authorizing any process replacement. */
+async function openRecoveryDialog(context: NativeScenarioContext): Promise<Locator> {
+  await context.page.getByRole('button', { name: 'Recover login', exact: true }).filter({ visible: true }).first().click()
+  const dialog = context.page.getByTestId('input-recovery-dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('Any running work in the selected tabs and their subagents will be interrupted.')
+  await expect(dialog).toContainText('Failed and uncertain inputs are not retried.')
+  await expect(dialog.getByRole('checkbox', { name: 'Recover all Codex tabs with login issues' })).not.toBeChecked()
+  await expect(dialog.getByTestId('input-recovery-summary')).toHaveText('1 Codex tab on 1 worker')
+  await expect(dialog.getByRole('button', { name: 'Recover login', exact: true })).toBeEnabled()
+  return dialog
+}
+
+/** Approve the captured processes and wait for their individual results. */
+async function approveRecovery(dialog: Locator, recovered = 1, total = 1): Promise<void> {
+  await dialog.getByRole('button', { name: 'Recover login', exact: true }).click()
+  await expect(dialog.getByTestId('input-recovery-result-summary')).toHaveText(`Recovered ${recovered} of ${total} Codex ${total === 1
+    ? 'tab'
+    : 'tabs'}.`)
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
 }
 
 /** Select one agent tab by its id: the tab bar's own tab, not the sidebar's leaf. */
@@ -224,7 +262,7 @@ codexTest('keeps the process through a successful native token refresh', async (
   })
 })
 
-codexTest('recovers on the next input after the refresh token expires and the same account logs in again', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+codexTest('recovers after approval when the refresh token expires and the same account logs in again', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withCodexAuthScenario({
     page,
     modelScript,
@@ -247,8 +285,7 @@ codexTest('recovers on the next input after the refresh token expires and the sa
     await sendFailingTurn(context, auth, 'Turn whose login cannot refresh.', ['old-1', 'expired'])
     expectContentGenerations(auth, refusedBefore, ['old-1', 'expired'])
 
-    // A fresh login of the same account exists; the NEXT input replaces the
-    // process, resumes the saved thread, and delivers once.
+    // A fresh login exists. Approval replaces the process and delivers the queued input once.
     auth.login(CODEX_AUTH_SAME_ACCOUNT)
     await sendRecoveredAnswer(context, auth, {
       stalePid,
@@ -257,6 +294,10 @@ codexTest('recovers on the next input after the refresh token expires and the sa
       answer: 'The replaced process resumed the saved thread.',
       priorPrompt: 'Turn before the login expired.',
       priorAnswer: 'The healthy turn completed.',
+      beforeApproval: async (dialog) => {
+        await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+        await expect(dialog).not.toBeVisible()
+      },
     })
     expectSameThread(before, await currentNativeAgent(context))
     expect(singleCodexPid(worker.dataDir, wrapper.directory)).not.toBe(stalePid)
@@ -264,7 +305,7 @@ codexTest('recovers on the next input after the refresh token expires and the sa
   })
 })
 
-codexTest('recovers on the next input after a logout and login with a different account', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+codexTest('recovers after approval following logout and login with a different account', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withCodexAuthScenario({
     page,
     modelScript,
@@ -286,8 +327,7 @@ codexTest('recovers on the next input after a logout and login with a different 
     await sendFailingTurn(context, auth, 'Turn after the account switched.')
     expectContentGenerations(auth, refusedBefore, ['old-1'])
 
-    // The next input replaces the process; the replacement loads the new
-    // account and resumes the saved thread.
+    // Approval replaces the process, loads the new account, and resumes the saved thread.
     await sendRecoveredAnswer(context, auth, {
       stalePid,
       generation: 'new-2',
@@ -323,18 +363,21 @@ codexTest('retains the input while signed out and delivers it after the login', 
     await sendFailingTurn(context, auth, 'Turn after the logout.')
     expectContentGenerations(auth, refusedBefore, ['old-1'])
 
-    // The next input replaces the process, whose fresh state is still
-    // signed out: the input is retained as a failed, retryable item, and
-    // the thread survives. (The queue is not paused: nothing transient
-    // holds it, only the missing login.)
+    // Approval while signed out replaces the process but cannot deliver the queued input.
     await sendMessage(page, context.modelScript.prompt('Turn retained while signed out.'))
-    const failed = await expectRetainedInput(context, 'sign-in')
+    const retained = await expectRecoveryInput(context)
+    expect(isAlive(stalePid), 'the old runtime remains alive until approval').toBe(true)
+    const signedOutDialog = await openRecoveryDialog(context)
+    await signedOutDialog.getByRole('button', { name: 'Recover login', exact: true }).click()
+    await expect(signedOutDialog.getByTestId('input-recovery-result-summary')).toHaveText('Recovered 0 of 1 Codex tab.')
+    await expect(signedOutDialog.getByTestId('input-recovery-results')).toContainText('sign-in')
+    await signedOutDialog.getByRole('button', { name: 'Done', exact: true }).click()
+    expect((await expectRecoveryInput(context)).id).toBe(retained.id)
     expectContentGenerations(auth, refusedBefore, ['old-1'])
-    expect(isAlive(stalePid), 'the signed-out replacement stopped the stale runtime').toBe(false)
+    expect(isAlive(stalePid), 'the approved replacement stopped the stale runtime').toBe(false)
     expectSameThread(before, await currentNativeAgent(context))
 
-    // The login returns; the retained input retries into the replacement
-    // and is delivered once.
+    // A login does not reuse the earlier approval. Confirm the new physical process explicitly.
     auth.login(CODEX_AUTH_SAME_ACCOUNT)
     const retryBefore = auth.contentGenerations().length
     const step = {
@@ -342,7 +385,7 @@ codexTest('retains the input while signed out and delivers it after the login', 
       gate: 'signed-out-retry',
     }
     const stepIndex = await context.modelScript.queue(step)
-    await inputQueue(page).getByTestId(`queued-input-${failed.id}`).getByRole('button', { name: 'Retry', exact: true }).click()
+    await approveRecovery(await openRecoveryDialog(context))
     await context.modelScript.waitForGate(step.gate)
     const retryRequest = await context.modelScript.requestAt(stepIndex)
     const retryText = nativeScenarioModelContextText(context, retryRequest)
@@ -423,7 +466,7 @@ codexTest('recovers one tab while another tab holds an active scripted turn', as
   })
 })
 
-codexTest('recovers several affected tabs independently as each receives input', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+codexTest('recovers several affected tabs independently after each approval', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withCodexAuthScenario({
     page,
     modelScript,
@@ -497,6 +540,231 @@ codexTest('recovers several affected tabs independently as each receives input',
       'new-2',
       'new-2',
     ])
+  })
+})
+
+codexTest('recovers only the approved batch across workers and requires approval for a later issue', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const fixtures = {
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }
+  await withCodexAuthScenario(fixtures, 'codex-auth-batch-a-', async (first) => {
+    await withCodexAuthScenario(fixtures, 'codex-auth-batch-b-', async (second) => {
+      await openWorkspace(page, fixtures.workspaceId)
+      const tabA = await openProviderAgent(first.server, fixtures.workspaceId, CODEX_AGENT, { directoryPrefix: 'codex-auth-batch-a-' })
+      await selectAgent(first.context, tabA.agentId)
+      await sendNativeAnswer(first.context, 'Batch A before the switch.', 'Batch A retained its conversation.')
+      const beforeA = await currentNativeAgent(first.context)
+      const staleA = singleCodexPid(first.worker.dataDir, first.wrapper.directory)
+
+      const tabB = await openProviderAgent(second.server, fixtures.workspaceId, CODEX_AGENT, { directoryPrefix: 'codex-auth-batch-b-' })
+      await selectAgent(second.context, tabB.agentId)
+      await sendNativeAnswer(second.context, 'Batch B before the switch.', 'Batch B retained its conversation.')
+      const beforeB = await currentNativeAgent(second.context)
+      const staleB = singleCodexPid(second.worker.dataDir, second.wrapper.directory)
+
+      // A healthy tab shares the first worker but has no observed login failure.
+      const healthy = await openProviderAgent(first.server, fixtures.workspaceId, CODEX_AGENT, { directoryPrefix: 'codex-auth-batch-healthy-' })
+      await selectAgent(first.context, healthy.agentId)
+      const heldGate = 'codex-auth-batch-healthy'
+      const heldIndex = await modelScript.queue({
+        ...nativeTextStep(first.context, 'The healthy held turn completed.'),
+        gate: heldGate,
+      })
+      await sendMessage(page, modelScript.prompt('Keep the healthy batch tab working.'))
+      await modelScript.waitForGate(heldGate)
+      const beforeHealthy = await currentNativeAgent(first.context)
+      const healthyPids = codexProcessIds(first.worker.dataDir, first.wrapper.directory).filter(pid => pid !== staleA)
+      expect(healthyPids).toHaveLength(1)
+      const healthyPid = healthyPids[0]!
+
+      first.auth.login(CODEX_AUTH_OTHER_ACCOUNT)
+      second.auth.login(CODEX_AUTH_OTHER_ACCOUNT)
+      await selectAgent(first.context, tabA.agentId)
+      await sendFailingTurn(first.context, first.auth, 'Batch A stale turn.')
+      await selectAgent(second.context, tabB.agentId)
+      await sendFailingTurn(second.context, second.auth, 'Batch B stale turn.')
+
+      const targets = [
+        {
+          scenario: first,
+          agentId: tabA.agentId,
+          before: beforeA,
+          stalePid: staleA,
+          prompt: 'Deliver batch A once.',
+          answer: 'Batch A recovered once.',
+          priorPrompt: 'Batch A before the switch.',
+          priorAnswer: 'Batch A retained its conversation.',
+          rule: 'batch-recovery-a',
+          gate: 'batch-recovery-a',
+        },
+        {
+          scenario: second,
+          agentId: tabB.agentId,
+          before: beforeB,
+          stalePid: staleB,
+          prompt: 'Deliver batch B once.',
+          answer: 'Batch B recovered once.',
+          priorPrompt: 'Batch B before the switch.',
+          priorAnswer: 'Batch B retained its conversation.',
+          rule: 'batch-recovery-b',
+          gate: 'batch-recovery-b',
+        },
+      ]
+      // Replacements run concurrently, so match their prompts rather than queue order.
+      await modelScript.rule(...targets.map(target => ({
+        name: target.rule,
+        when: { user: target.prompt },
+        respond: {
+          ...nativeTextStep(target.scenario.context, target.answer),
+          gate: target.gate,
+        },
+        once: true,
+      })))
+      for (const target of targets) {
+        await selectAgent(target.scenario.context, target.agentId)
+        await sendMessage(page, modelScript.prompt(target.prompt))
+        await expectRecoveryInput(target.scenario.context)
+        expect(isAlive(target.stalePid), 'unapproved queued input keeps its old process').toBe(true)
+      }
+      const healthySnapshot = await readNativeInputQueue(first.server, healthy.agentId)
+      expect(healthySnapshot.activeTurn).toBe(true)
+      expect(healthySnapshot.processRecovery).toBeUndefined()
+
+      const viewport = page.viewportSize()
+      const dialog = await openRecoveryDialog(second.context)
+      const batchChoice = dialog.getByRole('checkbox', { name: 'Recover all Codex tabs with login issues' })
+      await batchChoice.check()
+      await expect(dialog.getByTestId('input-recovery-summary')).toHaveText('2 Codex tabs on 2 workers')
+      const list = dialog.getByTestId('input-recovery-targets')
+      await expect(list).not.toBeVisible()
+      await expect(list.locator('li')).toHaveCount(2)
+      const capturedDialog = await dialog.elementHandle()
+      if (!capturedDialog)
+        throw new Error('The recovery confirmation has no DOM node to retain across the layout change.')
+      try {
+        // The shell replaces its editor at the mobile breakpoint. The captured
+        // confirmation must keep its process identities and selection through that change.
+        await page.setViewportSize({ width: 720, height: 480 })
+        await expect(page.getByTestId('mobile-swipe-band')).toBeVisible()
+        expect(await capturedDialog.evaluate(element => element.isConnected && element === document.querySelector('[data-testid="input-recovery-dialog"]')), 'the same confirmation remains mounted across the layout change').toBe(true)
+        await expect(dialog).toBeVisible()
+        await expect(batchChoice).toBeChecked()
+        await expect(dialog.getByTestId('input-recovery-summary')).toHaveText('2 Codex tabs on 2 workers')
+        await expect(list.locator('li')).toHaveCount(2)
+        await dialog.getByText('View affected tabs', { exact: true }).click()
+        await expect(list.locator('li')).toHaveCount(2)
+
+        await page.setViewportSize({ width: 1440, height: 1100 })
+        expect(await capturedDialog.evaluate(element => element.isConnected && element.matches(':modal')), 'the original confirmation stays connected and modal when returning to desktop').toBe(true)
+        await page.setViewportSize({ width: 720, height: 480 })
+        expect(await capturedDialog.evaluate(element => element.isConnected && element.matches(':modal')), 'the original confirmation stays connected and modal when returning to mobile').toBe(true)
+
+        // Clone only presentation rows, without creating more native processes.
+        // Remove them synchronously so no cloned row can enter the approval action.
+        const geometry = await list.evaluate((element) => {
+          const row = element.firstElementChild
+          if (!row)
+            throw new Error('The affected-tab list has no row to clone.')
+          const clones = Array.from({ length: 128 }, () => row.cloneNode(true))
+          try {
+            element.append(...clones)
+            element.scrollTop = element.scrollHeight
+            const dialog = element.closest('[data-testid="input-recovery-dialog"]')
+            if (!dialog)
+              throw new Error('The affected-tab list has no recovery dialog.')
+            const buttons = Array.from(dialog.querySelectorAll('footer button')).map(button => ({
+              text: button.textContent,
+              top: button.getBoundingClientRect().top,
+              bottom: button.getBoundingClientRect().bottom,
+            }))
+            return {
+              height: element.clientHeight,
+              scrollHeight: element.scrollHeight,
+              scrollTop: element.scrollTop,
+              overflow: getComputedStyle(element).overflowY,
+              viewportHeight: window.innerHeight,
+              buttons,
+            }
+          }
+          finally {
+            for (const clone of clones)
+              clone.parentNode?.removeChild(clone)
+            element.scrollTop = 0
+          }
+        })
+        expect(geometry.overflow).toBe('auto')
+        expect(geometry.height).toBeGreaterThan(0)
+        expect(geometry.height).toBeLessThan(geometry.viewportHeight / 2)
+        expect(geometry.scrollHeight).toBeGreaterThan(geometry.height)
+        expect(geometry.scrollTop).toBeGreaterThan(0)
+        expect(geometry.buttons.map(button => button.text)).toEqual(['Cancel', 'Recover login'])
+        for (const button of geometry.buttons) {
+          expect(button.top, `${button.text} stays above the viewport bottom`).toBeGreaterThanOrEqual(0)
+          expect(button.bottom, `${button.text} remains visible in the short viewport`).toBeLessThanOrEqual(geometry.viewportHeight)
+        }
+        await expect(list.locator('li')).toHaveCount(2)
+        await approveRecovery(dialog, 2, 2)
+      }
+      finally {
+        await capturedDialog.dispose()
+        if (viewport)
+          await page.setViewportSize(viewport)
+      }
+      for (const target of targets)
+        await modelScript.waitForGate(target.gate)
+      const status = await modelScript.status()
+      expect(status.pendingGates).toContain(heldGate)
+      expect(isAlive(healthyPid), 'the batch leaves the healthy process alive').toBe(true)
+      for (const target of targets) {
+        expect(isAlive(target.stalePid), 'approval stopped each affected process').toBe(false)
+        expect(status.ruleMatches[target.rule], 'each queued prompt reaches the model exactly once').toBe(1)
+        const request = ruleRequest(status, target.rule)
+        const text = nativeScenarioModelContextText(target.scenario.context, request)
+        expect(text).toContain(target.priorPrompt)
+        expect(text).toContain(target.priorAnswer)
+        expect(nativeModelConversationTurns(request).filter(turn => turn.role === 'user' && turn.text.includes(target.prompt))).toHaveLength(1)
+        await selectAgent(target.scenario.context, target.agentId)
+        expectSameThread(target.before, await currentNativeAgent(target.scenario.context))
+        await modelScript.releaseGate(target.gate)
+        await waitForAgentIdle(page)
+        await expect(assistantBubbles(page).filter({ hasText: target.answer }).first()).toBeVisible()
+      }
+      expect(first.auth.contentGenerations()).toEqual(['old-1', 'old-1', 'old-1', 'new-2'])
+      expect(second.auth.contentGenerations()).toEqual(['old-1', 'old-1', 'new-2'])
+
+      // A later issue in the previously healthy tab requires another explicit approval.
+      await selectAgent(first.context, healthy.agentId)
+      await modelScript.releaseGate(heldGate)
+      await modelScript.waitForSteps(heldIndex + 1)
+      await waitForAgentIdle(page)
+      expectSameThread(beforeHealthy, await currentNativeAgent(first.context))
+      expect(isAlive(healthyPid)).toBe(true)
+      await sendFailingTurn(first.context, first.auth, 'The healthy tab develops a later login issue.')
+      await sendRecoveredAnswer(first.context, first.auth, {
+        stalePid: healthyPid,
+        generation: 'new-2',
+        prompt: 'Recover the later issue after new approval.',
+        answer: 'The later issue required its own approval.',
+        priorPrompt: 'Keep the healthy batch tab working.',
+        priorAnswer: 'The healthy held turn completed.',
+      })
+      expectSameThread(beforeHealthy, await currentNativeAgent(first.context))
+      const completed = await modelScript.status()
+      for (const target of targets)
+        expect(completed.ruleMatches[target.rule]).toBe(1)
+      expect(first.auth.contentGenerations()).toEqual([
+        'old-1',
+        'old-1',
+        'old-1',
+        'new-2',
+        'old-1',
+        'new-2',
+      ])
+      expect(second.auth.contentGenerations()).toEqual(['old-1', 'old-1', 'new-2'])
+    })
   })
 })
 

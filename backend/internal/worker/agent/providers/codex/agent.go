@@ -631,23 +631,9 @@ func (a *Agent) CompactContext() error {
 		// An acknowledgment can end the caller's wait before the RPC reply.
 		// The reply observer retains a later authentication rejection.
 		_, requestErr := a.SendRequestObserved("thread/compact/start", params, 0, func(_ json.RawMessage, replyErr error) {
-			if !codexAuthenticationRejection(replyErr) {
-				return
+			if codexAuthenticationRejection(replyErr) {
+				a.markAuthenticationRecoveryRequired()
 			}
-			a.Mu.Lock()
-			if a.threadID != threadID || a.StoppedLocked() {
-				a.Mu.Unlock()
-				return
-			}
-			select {
-			case <-a.ProcessDone():
-				a.Mu.Unlock()
-				return
-			default:
-				a.authenticationRecoveryRequired = true
-			}
-			a.Mu.Unlock()
-			a.withdrawTurnRetryOffer()
 		})
 		response <- requestErr
 	}()
@@ -669,6 +655,9 @@ func (a *Agent) CompactContext() error {
 }
 
 func classifyCodexCompactionRequestError(err error) error {
+	if codexAuthenticationRejection(err) {
+		err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
+	}
 	return providerkit.ClassifyJSONRPCDeliveryError("thread/compact/start", err)
 }
 

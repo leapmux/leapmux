@@ -442,7 +442,7 @@ func TestBgTask_FinishedWithoutOutcomeClearsActivityAndCanBeEvicted(t *testing.T
 func TestBgTask_CapNoFinishedRowEvictsOldestActive(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupBgTaskTest(t)
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
 	// Seed MaxTasks running rows — no finished row for eviction to take.
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -461,13 +461,13 @@ func TestBgTask_CapNoFinishedRowEvictsOldestActive(t *testing.T) {
 		RowKey: "task-new", Kind: bgtask.KindSubagent, Title: "fresh", Status: bgtask.StatusRunning,
 	}))
 	rows := listRows()
-	require.Len(t, rows, bgtask.MaxTasks, "cap maintained")
-	keys := make(map[string]struct{}, len(rows))
-	for _, r := range rows {
-		keys[r.RowKey] = struct{}{}
-	}
+	require.Len(t, rows, bgtask.MaxTasks+1, "active rows remain in storage")
+	keys := displayedRowKeys(t, svc, ownerID)
+	require.Len(t, keys, bgtask.MaxTasks, "the display keeps its cap")
 	assert.NotContains(t, keys, "task-1", "oldest active row evicted at cap with no finished row")
 	assert.Contains(t, keys, "task-new", "new row linked")
+	assert.Contains(t, rowKeySet(rows), "task-1")
+	assert.EqualValues(t, bgtask.MaxTasks+1, svc.Output.AgentActivitySnapshot(ownerID, ownerID).ActiveTasks)
 }
 
 // TestBgTask_CapAllActiveLinkedHoldsTheDisplayCap verifies that a pool full of
@@ -553,8 +553,8 @@ func TestBgTask_CapAllActiveEvictsTheOldestWhateverItCarries(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// A row that carries NO transcript indexes nothing, so eviction must still
-// reclaim it: retention is for the linkage, not a licence to grow the table.
+// A finished row without a child transcript has no remaining ownership to
+// preserve, so eviction reclaims it.
 func TestBgTask_CapDeletesAnEvictedUnlinkedRow(t *testing.T) {
 	t.Parallel()
 
@@ -714,6 +714,8 @@ func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
 	require.NoError(t, err, "the child keeps its index")
 	assert.Equal(t, "spawn-key", row.RowKey)
+	assert.EqualValues(t, 1, svc.Output.AgentActivitySnapshot(ownerID, ownerID).ActiveTasks,
+		"a retained working child still counts after its duplicate leaves the display")
 }
 
 // When the winner carries the SAME child as the loser, the loser is deleted

@@ -35,6 +35,11 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 
 // handleCodexOutputLocked dispatches live or retained output with outputMu held.
 func (a *Agent) handleCodexOutputLocked(line *providerkit.ParsedLine) {
+	// Authentication belongs to the physical process. Thread retirement,
+	// missing child routes, and deferred output cannot discard its evidence.
+	if line.Method == "turn/completed" && codexTurnAuthFailure(line.Params) {
+		a.markAuthenticationRecoveryRequired()
+	}
 	if a.isRetiredCodexOutput(line.Params) {
 		return
 	}
@@ -739,14 +744,9 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 			}
 		}
 	}
-	// A completed authentication failure ends this process's usefulness for
-	// input: mark it before the turn-end publish releases the Worker's input
-	// queue, so the input that follows asks for a replacement instead of
-	// reaching this process. The failed turn itself stays in the transcript.
+	// Ingress already retained process authentication evidence. Keep the
+	// current turn's classification here to exclude automatic server retries.
 	authenticationFailure := codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo)
-	if authenticationFailure {
-		a.markAuthenticationRecoveryRequired()
-	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.Mu.Lock()
@@ -827,13 +827,6 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage, route codexChildRoute) {
 	a.codexRetryResolution(false, threadID).Reset()
 	completion := codexTurnCompletion(params)
-	if codexTurnAuthFailure(params) {
-		// A child thread's authentication failure belongs to the shared
-		// process: every thread in it holds the same login. Marking the
-		// process refuses later input only -- the still-running main turn and
-		// its sibling children keep their existing lifecycle.
-		a.markAuthenticationRecoveryRequired()
-	}
 	a.persistOpenCodexCompactionEnd(threadID, completion)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
@@ -942,15 +935,13 @@ func isRetryableCodexTurnFailure(message string) bool {
 	return codexRetryableDisconnectPattern.MatchString(message)
 }
 
-// codexCompletedTurnAuthFailure reports whether one completed turn failed with
-// an authentication failure. The main handler reads the error fields for its
-// own purposes and applies this rule to what it parsed; a child handler reads
-// them only for this rule, through codexTurnAuthFailure.
+// codexCompletedTurnAuthFailure classifies a completed turn's authentication
+// failure. Ingress and the main handler's retry policy share this rule.
 func codexCompletedTurnAuthFailure(status, message string, info json.RawMessage) bool {
 	return status == "failed" && codexAuthenticationFailure(message, info)
 }
 
-// The main and child handlers read the same native failure structure. Keep
+// Ingress and the main handler read the same native failure structure. Keep
 // codexTurnCompletion's status-only decoder independent of malformed errors.
 type codexCompletedTurnFailureWire struct {
 	Status string `json:"status"`

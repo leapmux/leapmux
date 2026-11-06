@@ -5,9 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -19,81 +17,82 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type inputRecoveryControlReadCounter struct {
-	db.DBTX
-	queries     atomic.Int32
-	legacyReads atomic.Int32
-}
-
-func (store *inputRecoveryControlReadCounter) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	if strings.Contains(query, "-- name: FindAgentInputRecoveryControlOwner :one") {
-		store.queries.Add(1)
-	}
-	return store.DBTX.QueryRowContext(ctx, query, args...)
-}
-
-func (store *inputRecoveryControlReadCounter) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	if strings.Contains(query, "-- name: ListDescendantAgentIDs :many") || strings.Contains(query, "-- name: ListControlRequestsByAgentID :many") {
-		store.legacyReads.Add(1)
-	}
-	return store.DBTX.QueryContext(ctx, query, args...)
-}
-
-func TestInputRecoveryControlCheckUsesOneQueryPerSafetyCheck(t *testing.T) {
+func TestInputRecoveryDiscoveryOnlyReturnsAffectedOpenProcesses(t *testing.T) {
 	t.Parallel()
-	svc, _ := newInputRecoveryService(t, nil)
-	const agentID = "control-query-root"
-	seedRecoveryAgent(t, svc, agentID, "control-query-thread")
-	for index := range 40 {
-		require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
-			ID:            fmt.Sprintf("historical-child-%d", index),
-			ParentAgentID: sql.NullString{String: agentID, Valid: true},
-			WorkingDir:    t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		}))
+	svc, _ := newInputRecoveryService(t, func(int) func(int) error { return func(int) error { return fmtRestartRequired() } })
+	for _, id := range []string{"a-stale", "b-stale", "c-healthy", "d-closed", "e-archived", "f-other-provider"} {
+		seedRecoveryAgent(t, svc, id, id+"-thread")
+		if id == "f-other-provider" {
+			_, err := svc.DB.ExecContext(t.Context(), "UPDATE agents SET agent_provider = ? WHERE id = ?", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, id)
+			require.NoError(t, err)
+		}
+		require.NoError(t, svc.ensureAgentRunning(id, resumeStoredSession, interactiveStart))
+		if id != "c-healthy" {
+			require.ErrorIs(t, svc.ensureAgentReadyForInput(id), agent.ErrInputProcessRestartRequired)
+		}
+		if id == "d-closed" {
+			_, err := svc.Queries.CloseAgent(t.Context(), id)
+			require.NoError(t, err)
+		}
+		if id == "e-archived" {
+			_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{ID: id, WorkspaceArchived: true})
+			require.NoError(t, err)
+		}
 	}
-	store := &inputRecoveryControlReadCounter{DBTX: svc.DB}
-	svc.Queries = db.New(store)
-	for range 2 {
-		require.NoError(t, svc.inputRecoveryBlocked(agentID))
+	targets, err := svc.listAgentInputRecoveries(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, err)
+	require.Len(t, targets, 2)
+	assert.Equal(t, "a-stale", targets[0].AgentId)
+	assert.Equal(t, "b-stale", targets[1].AgentId)
+	for _, target := range targets {
+		require.NotNil(t, target.Recovery)
+		assert.Positive(t, target.Recovery.OutputGeneration)
+		assert.NotEmpty(t, target.Recovery.ProcessInstanceId)
+		assert.Equal(t, target.AgentId+"-thread", target.Recovery.AgentSessionId)
+		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, target.Recovery.AgentProvider)
 	}
-	assert.Equal(t, int32(2), store.queries.Load())
-	assert.Zero(t, store.legacyReads.Load(), "historical descendants require no per-agent payload reads")
+	for _, invalid := range []leapmuxv1.AgentProvider{0, -1, 999999} {
+		_, err := svc.listAgentInputRecoveries(invalid)
+		require.ErrorIs(t, err, inputqueue.ErrInvalidInput)
+	}
 }
 
-func TestInputRecoveryControlCheckIncludesClosedDeepDescendant(t *testing.T) {
+func TestInputRecoveryPreservesConversationQuestionsAndRetiresBlockingControls(t *testing.T) {
 	t.Parallel()
-	svc, _ := newInputRecoveryService(t, nil)
-	const root = "closed-control-root"
-	seedRecoveryAgent(t, svc, root, "closed-control-thread")
+	svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
+	const root = "recovery-control-root"
+	seedRecoveryAgent(t, svc, root, "saved-thread")
+	require.ErrorIs(t, svc.ensureAgentReadyForInput(root), agent.ErrInputProcessRestartRequired)
 	parent := root
 	for _, child := range []string{"control-child", "control-grandchild"} {
-		require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
-			ID: child, ParentAgentID: sql.NullString{String: parent, Valid: true},
-			WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-		}))
+		require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{ID: child, ParentAgentID: sql.NullString{String: parent, Valid: true}, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}))
 		parent = child
 	}
 	_, err := svc.Queries.CloseAgent(t.Context(), parent)
 	require.NoError(t, err)
-	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
-		AgentID: parent, RequestID: "closed-grandchild-question", Payload: []byte(`{}`), NonBlocking: true,
-	})
-	err = svc.inputRecoveryBlocked(root)
-	require.ErrorContains(t, err, parent)
-	assert.ErrorContains(t, err, "unanswered control")
-	controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), parent)
-	require.NoError(t, err)
-	assert.Len(t, controls, 1)
+	for _, owner := range []string{root, parent} {
+		for _, nonblocking := range []bool{false, true} {
+			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{AgentID: owner, RequestID: fmt.Sprintf("control-%t", nonblocking), Payload: []byte(`{}`), NonBlocking: nonblocking})
+		}
+	}
+	for _, owner := range []string{root, parent} {
+		controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+		require.NoError(t, err)
+		require.Len(t, controls, 2, "approval has not stopped their process")
+	}
+	assert.False(t, starts.fake(0).wasStopped())
+	approveRecoveryInput(t, svc, root)
+	for _, owner := range []string{root, parent} {
+		controls, err := svc.Queries.ListControlRequestsByAgentID(t.Context(), owner)
+		require.NoError(t, err)
+		require.Len(t, controls, 1)
+		assert.True(t, controls[0].NonBlocking, "the same conversation retains its question")
+	}
 }
 
 func TestInputRecoveryPreservesQueuedAttachments(t *testing.T) {
 	t.Parallel()
-	svc, starts := newInputRecoveryService(t, func(launch int) func(int) error {
-		if launch == 1 {
-			return func(int) error { return fmtRestartRequired() }
-		}
-		return nil
-	})
+	svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
 	const id = "attachment-recovery"
 	seedRecoveryAgent(t, svc, id, "attachment-thread")
 	_, err := svc.InputQueue.Enqueue(t.Context(), inputqueue.NewItem{
@@ -101,6 +100,8 @@ func TestInputRecoveryPreservesQueuedAttachments(t *testing.T) {
 		Text: "read the attachment", Attachments: []inputqueue.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("retained attachment")}},
 	})
 	require.NoError(t, err)
+	recoveryQueuedItem(t, svc, id, "attachment-input")
+	approveRecoveryInput(t, svc, id)
 	waitForMessageCount(t, svc, id, 1)
 	require.Equal(t, 2, starts.count())
 	stale := starts.fake(0)
@@ -285,12 +286,7 @@ type inputRecoveryValueAgent struct {
 
 func TestInputRecoveryAcceptsNonComparableValueProvider(t *testing.T) {
 	t.Parallel()
-	svc, starts := newInputRecoveryService(t, func(launch int) func(int) error {
-		if launch == 1 {
-			return func(int) error { return fmtRestartRequired() }
-		}
-		return nil
-	})
+	svc, starts := newInputRecoveryService(t, staleFirstInputPreparation)
 	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		return svc.Agents.StartAgentWith(ctx, opts, sink, func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 			running, err := starts.start(ctx, opts, sink)
@@ -307,7 +303,8 @@ func TestInputRecoveryAcceptsNonComparableValueProvider(t *testing.T) {
 	seedRecoveryAgent(t, svc, agentID, "value-thread")
 	var err error
 	require.NotPanics(t, func() { err = svc.ensureAgentReadyForInput(agentID) })
-	require.NoError(t, err)
+	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
+	approveRecoveryInput(t, svc, agentID)
 	require.Equal(t, []string{"", "value-thread"}, starts.launches())
 	assert.True(t, starts.fake(0).wasStopped())
 	assert.False(t, starts.fake(1).wasStopped())

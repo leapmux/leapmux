@@ -647,6 +647,11 @@ func New(cfg Config) *Service {
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
 	svc.Output.SetQueueHeadDispatchFunc(svc.queueHeadDispatch)
+	svc.Output.SetInputProcessStateFunc(func(agentID string) {
+		if _, err := svc.InputQueue.RefreshSnapshot(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Warn("refresh agent input metadata after process state changed failed", "agent_id", agentID, "error", err)
+		}
+	})
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
@@ -744,8 +749,12 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 	return svc.startAgentWithTurnReset(ctx, opts, sink, start)
 }
 
-// startAgentWithTurnReset reconciles queue activity around a process startup.
+// startAgentWithTurnReset retires stopped-process controls and reconciles queue
+// activity around a process startup. The caller owns its lifecycle or startup.
 func (svc *Service) startAgentWithTurnReset(ctx context.Context, opts agent.Options, sink agent.ProviderServices, start agentLauncher) (map[string]string, error) {
+	if err := svc.retireStoppedProcessControls(opts.AgentID); err != nil {
+		return nil, fmt.Errorf("%w: %w", errAgentProcessStartBlocked, notReadyStoreFault(err))
+	}
 	// A new process owns no turn. See NoteAgentProcessStarted for why this does
 	// not wait for the old process's exit handler to have said so.
 	svc.Output.NoteAgentProcessStarted(opts.AgentID)
@@ -928,7 +937,9 @@ func (svc *Service) HandleAgentProcessExit(exit agent.ProcessExit) {
 			slog.Error("resolve unechoed steers after process exit failed", "agent_id", id, "error", err)
 		}
 	}
-	svc.Output.ClearPendingControlRequests(agentID)
+	for _, id := range subtreeIDs {
+		svc.Output.ClearPendingControlRequests(id)
+	}
 	if err := svc.Output.enqueueBackgroundTaskExit(exit.Output, stopped); err != nil {
 		slog.Error("retain the exited process registry", "agent_id", agentID, "error", err)
 	}

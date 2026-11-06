@@ -99,8 +99,8 @@ UPDATE agents SET title = ?, title_auto_generated = 0 WHERE id = ?;
 UPDATE agents SET agent_session_id = ?, pending_resume_session_id = '', session_start_seq = (SELECT COALESCE(MAX(m.seq), 0) FROM messages m WHERE m.agent_id = agents.id) WHERE agents.id = ?;
 
 -- MarkAgentResumedForInputRecovery records the durable intent to resume the
--- stored native session before the worker stops a stale process for input
--- recovery (an expired or replaced Codex login). Conditional on the CURRENT
+-- stored native session before an approved process replacement
+-- for input recovery. Conditional on the CURRENT
 -- stored session and an open tab, so a session or tab that changed while the
 -- worker waited affects zero rows and stops nothing. A later explicit context
 -- clear keeps its own authority to remove the session.
@@ -109,7 +109,9 @@ UPDATE agents
 SET resumed = 1
 WHERE id = sqlc.arg(agent_id)
   AND agent_session_id = sqlc.arg(agent_session_id)
+  AND output_generation = sqlc.arg(output_generation)
   AND agent_session_id <> ''
+  AND workspace_archived = 0
   AND closed_at IS NULL;
 
 -- name: ReopenAgent :exec
@@ -389,19 +391,6 @@ WITH RECURSIVE descendants AS (
     SELECT a.id AS id FROM agents a JOIN descendants ON a.parent_agent_id = descendants.id
 )
 SELECT descendants.id FROM descendants;
-
--- FindAgentInputRecoveryControlOwner checks the root and every descendant in
--- one read. Closed virtual tabs and nonblocking controls still own requests
--- that the physical process must finish before input recovery can stop it.
--- name: FindAgentInputRecoveryControlOwner :one
-WITH RECURSIVE agent_tree AS (
-    SELECT a.id AS id FROM agents a WHERE a.id = sqlc.arg(agent_id)
-    UNION
-    SELECT a.id AS id FROM agents a JOIN agent_tree ON a.parent_agent_id = agent_tree.id
-)
-SELECT agent_tree.id FROM agent_tree
-WHERE EXISTS (SELECT 1 FROM control_requests c WHERE c.agent_id = agent_tree.id)
-LIMIT 1;
 
 -- ListAgentTreeIDs returns the root id AND every descendant id (the whole
 -- subtree rooted at the given agent). It is the ONE read a root-tab close

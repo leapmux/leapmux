@@ -99,6 +99,11 @@ var agentHandlerCases = []agentHandlerCase{
 	{leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure, func(id string) proto.Message {
 		return &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},
+	{leapmuxv1connect.WorkerAgentInputServiceRecoverAgentInputProcessProcedure, func(id string) proto.Message {
+		return &leapmuxv1.RecoverAgentInputProcessRequest{AgentId: id,
+			Recovery: &leapmuxv1.AgentInputProcessRecovery{OutputGeneration: 1, AgentSessionId: "saved-session", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, ProcessInstanceId: "process-instance"},
+		}
+	}},
 	{leapmuxv1connect.WorkerAgentServiceSendAgentRawMessageProcedure, func(id string) proto.Message {
 		return &leapmuxv1.SendAgentRawMessageRequest{AgentId: id, Content: "{}"}
 	}},
@@ -325,6 +330,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		})
 	}
 	probes = append(probes,
+		ownerGuardedProbe{leapmuxv1connect.WorkerAgentInputServiceListAgentInputRecoveriesProcedure, leapmuxv1connect.WorkerAgentInputServiceListAgentInputRecoveriesProcedure, func() proto.Message {
+			return &leapmuxv1.ListAgentInputRecoveriesRequest{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, func() proto.Message {
 			return &leapmuxv1.OpenAgentRequest{WorkingDir: "/tmp"}
 		}},

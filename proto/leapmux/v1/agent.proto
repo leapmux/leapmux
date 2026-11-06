@@ -96,6 +96,12 @@ service WorkerAgentInputService {
   rpc ListAgentInputQueue(ListAgentInputQueueRequest) returns (ListAgentInputQueueResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
   }
+  rpc ListAgentInputRecoveries(ListAgentInputRecoveriesRequest) returns (ListAgentInputRecoveriesResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_READ };
+  }
+  rpc RecoverAgentInputProcess(RecoverAgentInputProcessRequest) returns (RecoverAgentInputProcessResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_AGENT_WRITE };
+  }
 }
 
 // AgentProvider identifies the coding agent backend.
@@ -504,6 +510,8 @@ enum AgentInputQueuePauseReason {
   // AGENT_STOPPED: that sentence is false for a database fault, and it is what
   // the reader sees.
   AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT = 6;
+  // Input did not reach the provider. Replacing its process requires approval.
+  AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY = 7;
 }
 
 message QueuedAgentInputAttachment {
@@ -556,7 +564,33 @@ message AgentInputQueueSnapshot {
   bool active_turn = 3;
   repeated QueuedAgentInput items = 4;
   bool active_turn_steerable = 5;
+  AgentInputProcessRecovery process_recovery = 6;
 }
+
+// Approval identifies one physical process and its current conversation.
+message AgentInputProcessRecovery {
+  int64 output_generation = 1;
+  string agent_session_id = 2;
+  AgentProvider agent_provider = 3;
+  // A writer generation can be allocated before the physical process starts.
+  // This opaque identity belongs to one process registration instead.
+  string process_instance_id = 4;
+}
+
+message AgentInputRecoveryTarget {
+  string agent_id = 1;
+  string title = 2;
+  AgentInputProcessRecovery recovery = 3;
+}
+
+message ListAgentInputRecoveriesRequest { AgentProvider agent_provider = 1; }
+message ListAgentInputRecoveriesResponse { repeated AgentInputRecoveryTarget targets = 1; }
+
+message RecoverAgentInputProcessRequest {
+  string agent_id = 1;
+  AgentInputProcessRecovery recovery = 2;
+}
+message RecoverAgentInputProcessResponse { AgentInputQueueSnapshot snapshot = 1; }
 
 message AgentInputQueueChanged {
   AgentInputQueueSnapshot snapshot = 1;

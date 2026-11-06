@@ -28,7 +28,8 @@ import (
 // MaxTasks caps the display rows for each background-task kind.
 // Eviction selects the oldest finished row first. A full pool with no finished row evicts its oldest active display row.
 // A row linked to a child transcript remains in storage after display eviction.
-// An unlinked row leaves storage also.
+// Pending and running unlinked rows stay in storage after display eviction.
+// Other unlinked rows leave storage also.
 // Separate pools keep a burst of shell tasks from evicting subagent display rows.
 const MaxTasks = 64
 

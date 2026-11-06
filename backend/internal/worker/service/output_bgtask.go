@@ -80,6 +80,10 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 	}
 }
 
+func backgroundTaskNeedsRetention(item bgtask.Item) bool {
+	return item.ChildAgentID != "" || item.Status.IsWorking()
+}
+
 // bgTaskOps supplies the shared operations for background task caches.
 // Each database operation uses the query handle supplied by its caller.
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
@@ -98,6 +102,11 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
 				entries[i] = seedEntry[bgtask.Item]{item: bgItemFromRow(r), seq: r.Seq}
 			}
 			return entries, nil
+		},
+		listWorkingKeys: func(ctx context.Context, q *db.Queries, ownerID string) ([]string, error) {
+			return q.ListWorkingAgentBackgroundTaskKeys(ctx, db.ListWorkingAgentBackgroundTaskKeysParams{
+				OwnerAgentID: ownerID, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+			})
 		},
 		reclaimFinishedBelowSeq: func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error {
 			_, err := q.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
@@ -122,14 +131,15 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
 			})
 			return err
 		},
-		// A row that carries a child transcript leaves the DISPLAY list at the
-		// cap but stays in the table. It is the only index from that child agent
+		// A working row survives display eviction, even without a child.
+		// A row that carries a child transcript also stays after completion.
+		// It is the only index from that child agent
 		// id back to (owner, row_key) -- the reverse lookup behind
 		// send-to-subagent and interrupt -- and the child agents row outlives the
 		// registry delete, so deleting the row leaves a subagent nobody can reach
 		// while its transcript is still readable.
 		retention: &registryRetention[bgtask.Item, string]{
-			keep: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
+			keep: backgroundTaskNeedsRetention,
 			load: func(ctx context.Context, q *db.Queries, ownerID, key string) (bgtask.Item, bool, error) {
 				return h.loadStoredBgTask(ctx, q, ownerID, key)
 			},
@@ -265,7 +275,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, generation
 // the contract:
 // a retained row that left the display list is not put back for a mutation that
 // turns out to be a no-op, because re-admitting evicts a displayed row -- and
-// deletes an unlinked one from the table -- and the applier then reports
+// can delete a finished unlinked one -- and the applier then reports
 // changed=false, so no broadcast tells the client its list moved. `admit` is
 // also the only route to a cache index, so an applier cannot write without it.
 func (h *OutputHandler) withBgTaskRow(
@@ -452,7 +462,7 @@ func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string, ge
 // The repair is for the DISPLAY list only. A retained row that left the list has
 // no cached copy to disagree with the store, so there is nothing to adopt and
 // nothing to broadcast -- and admitting it would evict a displayed row, and
-// delete an unlinked one, for a write that never happens.
+// delete a finished unlinked one, for a write that never happens.
 func (h *OutputHandler) adoptStoredBgTaskRowLocked(
 	ctx context.Context, reg bgTaskView, rowKey string, displayed bool, admit func() (int, error),
 ) (registryChange, error) {
@@ -604,22 +614,6 @@ func (h *OutputHandler) applyBackgroundTaskExit(rootID string, minimumGeneration
 		cache.seeded = false
 		if err := tx.ensureSeededLocked(ctx); err != nil {
 			return err
-		}
-		working, err := tx.queries.ListWorkingAgentBackgroundTaskKeys(ctx, db.ListWorkingAgentBackgroundTaskKeysParams{
-			OwnerAgentID: rootID, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
-		})
-		if err != nil {
-			return err
-		}
-		cache.evictedActive = nil
-		for _, key := range working {
-			if cache.indexOf(key) >= 0 {
-				continue
-			}
-			if cache.evictedActive == nil {
-				cache.evictedActive = make(map[string]struct{})
-			}
-			cache.evictedActive[key] = struct{}{}
 		}
 		snapshot = cache.snapshot()
 		return nil
@@ -1427,7 +1421,8 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 			// A replay can recreate the provisional key while its canonical row already exists.
 			// The canonical winner keeps its lifecycle. Retain a linked loser unless the
 			// winner already supplies the same child's index; deleting that duplicate loses no transcript route.
-			supersededChild := source.ChildAgentID != "" && source.ChildAgentID == target.ChildAgentID
+			// An unlinked source is a provisional alias, so the winner replaces it.
+			sourceSuperseded := source.ChildAgentID == "" || source.ChildAgentID == target.ChildAgentID
 			reg.deleteByKeyOverride = func(ctx context.Context, q *db.Queries, owner, key string) error {
 				rows, err := q.DeleteAgentBackgroundTaskForGeneration(ctx, db.DeleteAgentBackgroundTaskForGenerationParams{
 					OwnerAgentID: owner, RowKey: key, OutputGeneration: s.outputGeneration,
@@ -1440,7 +1435,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 				}
 				return nil
 			}
-			_, err := reg.deleteRowLocked(ctx, oldKey, supersededChild)
+			_, err := reg.deleteRowLocked(ctx, oldKey, sourceSuperseded)
 			return err
 		}
 		rows, err := reg.queries.RenameAgentBackgroundTask(ctx, db.RenameAgentBackgroundTaskParams{
@@ -1569,7 +1564,7 @@ func (s *agentOutputSink) logRegistryEviction(change registryChange) {
 	eviction := change.eviction
 	slog.Warn("The background task registry reached its display cap. It drops the oldest active display row because no row finished.",
 		"owner", s.rootAgentID, "row_key", eviction.incomingKey, "kind", int64(eviction.row.Kind), "cap", bgtask.MaxTasks,
-		"evicted_row_key", eviction.row.RowKey, "retained_in_store", eviction.row.ChildAgentID != "")
+		"evicted_row_key", eviction.row.RowKey, "retained_in_store", backgroundTaskNeedsRetention(eviction.row))
 }
 
 var errBackgroundTaskSuperseded = errors.New("a newer physical output writer owns this background task")

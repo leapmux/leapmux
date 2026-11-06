@@ -188,24 +188,22 @@ func TestNativeTurnRestartChecksOwnershipAfterLifecycleWait(t *testing.T) {
 						return newAgent, nil
 					})
 			}
-			paused := make(chan struct{})
-			var pauseOnce sync.Once
-			writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "native-restart-lifecycle"}}
-			writer.onEvent = func(event *leapmuxv1.AgentEvent) {
-				if changed := event.GetInputQueueChanged(); changed != nil && changed.GetSnapshot().GetPauseReason() != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
-					pauseOnce.Do(func() { close(paused) })
-				}
-			}
-			registerAgentWatch(svc, writer.channelID, id, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 			unlock := svc.Agents.LockAgent(id)
 			var unlockOnce sync.Once
 			release := func() { unlockOnce.Do(unlock) }
 			defer release()
 			sink.SetTurnState(agent.TurnState{}, 2)
+			testutil.RequireEventually(t, func() bool { return svc.Agents.LifecycleLockCallersForTest(id) == 2 })
+			waiting, err := svc.InputQueue.Snapshot(ctx, id)
+			require.NoError(t, err)
+			assert.True(t, waiting.ActiveTurn, "the native restart retains its delivery barrier while lifecycle ownership is unavailable")
+			require.Len(t, waiting.Items, 1)
+			assert.Equal(t, "queued-next", waiting.Items[0].ID)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, waiting.Items[0].State)
 			select {
-			case <-paused:
-			case <-ctx.Done():
-				t.Fatal("the restart did not reserve its queue pause before the lifecycle wait")
+			case content := <-old.sent:
+				t.Fatalf("queued input reached the old process during the lifecycle wait: %q", content)
+			default:
 			}
 			switch change {
 			case "identical ended":
@@ -360,6 +358,7 @@ func TestNativeTurnRestartRefusesMissingOrUnreadableRow(t *testing.T) {
 			queue, queueErr := svc.InputQueue.Snapshot(ctx, id)
 			require.NoError(t, queueErr)
 			assert.True(t, queue.Paused, "the queue stays paused when restart identity is unavailable")
+			assert.False(t, queue.ActiveTurn, "the observed native turn end survives a row read failure before guard admission")
 		})
 	}
 }

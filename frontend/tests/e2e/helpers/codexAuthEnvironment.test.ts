@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import {
   CODEX_AUTH_OTHER_ACCOUNT,
   CODEX_AUTH_SAME_ACCOUNT,
@@ -71,14 +72,6 @@ function interceptUpstream(handler: (init: RequestInit | undefined) => Promise<R
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => String(input).startsWith(upstreamURL)
     ? handler(init)
     : nativeFetch(input, init))
-}
-
-function deferred<T>(): { promise: Promise<T>, resolve: (value: T) => void } {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((accept) => {
-    resolve = accept
-  })
-  return { promise, resolve }
 }
 
 /** The stored access token of the fixture's current login. */

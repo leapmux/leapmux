@@ -5,8 +5,10 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
+  AgentInputProcessRecoverySchema,
   AgentInputQueueSnapshotSchema,
   AgentInputState,
+  AgentProvider,
   QueuedAgentInputSchema,
   QueueHeadDispatch,
 } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -32,14 +34,27 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
   })
 }
 
-function snapshotOf(items: ReturnType<typeof item>[]) {
-  return create(AgentInputQueueSnapshotSchema, { items })
+function snapshotOf(items: ReturnType<typeof item>[], recovery = false) {
+  return create(AgentInputQueueSnapshotSchema, {
+    items,
+    ...(recovery
+      ? {
+          processRecovery: create(AgentInputProcessRecoverySchema, {
+            outputGeneration: 1n,
+            agentSessionId: 'session-1',
+            agentProvider: AgentProvider.CODEX,
+            processInstanceId: 'process-1',
+          }),
+        }
+      : {}),
+  })
 }
 
 function renderQueue(overrides: {
   items?: ReturnType<typeof item>[]
   queueHeadDispatch?: QueueHeadDispatch
   activeEditInputId?: string
+  recovery?: boolean
 } = {}) {
   const handlers = {
     onEdit: vi.fn(),
@@ -49,6 +64,7 @@ function renderQueue(overrides: {
     onRetry: vi.fn(),
     onSteer: vi.fn(),
     onPreempt: vi.fn(),
+    onRecover: vi.fn(),
   }
   // A SIGNAL, not a fixed value, because the Worker pushes a whole new snapshot
   // for every queue event -- new objects, new array, same ids. `push` replays
@@ -56,7 +72,7 @@ function renderQueue(overrides: {
   const [snapshot, setSnapshot] = createSignal(snapshotOf(overrides.items ?? [
     item('one'),
     item('two'),
-  ]))
+  ], overrides.recovery))
   render(() => (
     <AgentInputQueue
       snapshot={snapshot()}
@@ -76,6 +92,33 @@ function renderQueue(overrides: {
 }
 
 describe('AgentInputQueue', () => {
+  it('offers recovery for held input without retrying it', async () => {
+    const handlers = renderQueue({
+      recovery: true,
+      items: [
+        item('held'),
+      ],
+    })
+    const row = within(screen.getByTestId('queued-input-held'))
+    await fireEvent.click(row.getByRole('button', { name: 'Recover login' }))
+    expect(handlers.onRecover).toHaveBeenCalledOnce()
+    expect(handlers.onRetry).not.toHaveBeenCalled()
+    expect(handlers.onSteer).not.toHaveBeenCalled()
+  })
+
+  it('keeps uncertain input separate from process recovery', async () => {
+    const handlers = renderQueue({
+      recovery: true,
+      items: [
+        item('uncertain', { state: AgentInputState.DELIVERY_UNCERTAIN }),
+      ],
+    })
+    const row = within(screen.getByTestId('queued-input-uncertain'))
+    expect(row.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    await fireEvent.click(row.getByRole('button', { name: 'Recover login' }))
+    expect(handlers.onRecover).toHaveBeenCalledOnce()
+    expect(handlers.onRetry).not.toHaveBeenCalled()
+  })
   it('labels an awaiting-echo row and disables its actions', () => {
     renderQueue({
       items: [

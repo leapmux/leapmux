@@ -273,6 +273,10 @@ func TestCodexPrepareInputProcessChecksAccountOnce(t *testing.T) {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, test.wantMarked, recoveryRequired(a))
+			if test.wantMarked {
+				assert.ErrorContains(t, err, "approve recovery")
+				assert.NotContains(t, err.Error(), "send the message again")
+			}
 			assert.Equal(t, test.wantChecked, inputChecked(a))
 			require.Len(t, requests(), 1)
 			assert.Equal(t, codexMethodAccountRead, requests()[0].Method)

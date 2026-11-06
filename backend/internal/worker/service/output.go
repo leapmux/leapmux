@@ -314,6 +314,9 @@ type OutputHandler struct {
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
 	turnState func(agentID string, admission agent.TurnStateAdmission)
+	// inputProcessState refreshes root metadata after process health changes.
+	// It reads current health rather than retaining provider-supplied state.
+	inputProcessState func(agentID string)
 	// requeueDroppedInput queues input that a provider dropped as the reader's
 	// next message, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
@@ -469,6 +472,11 @@ func (h *OutputHandler) SetAgentClosingFunc(fn func(agentID string) bool) {
 // provider publishes. Call it before any agent output is processed.
 func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, admission agent.TurnStateAdmission)) {
 	h.turnState = fn
+}
+
+// SetInputProcessStateFunc wires process-readiness publication before output starts.
+func (h *OutputHandler) SetInputProcessStateFunc(fn func(agentID string)) {
+	h.inputProcessState = fn
 }
 
 // SetRequeueDroppedInputFunc wires the input queue that takes back the input a
@@ -727,7 +735,7 @@ func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, pu
 // agent still waits for those prompts, and a later interrupt withdraws them. An
 // exit and a teardown end the lifetime that owned the prompts, so they clear
 // every prompt, not only the deleted ids.
-func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, agentKeepsRunning bool, deleteRequests func(context.Context) ([]db.ControlRequest, error)) {
+func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, agentKeepsRunning bool, deleteRequests func(context.Context) ([]db.ControlRequest, error)) error {
 	lock := h.lockControlMutation
 	if agentKeepsRunning {
 		lock = h.lockControlMutationRetainingEntry
@@ -744,9 +752,10 @@ func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, age
 		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
 	}
 	if agentKeepsRunning {
-		return
+		return err
 	}
 	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	return err
 }
 
 // ClearPendingControlRequests drops the agent's pending BLOCKING control_requests
@@ -767,7 +776,11 @@ func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, age
 // restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
-	h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+	_ = h.clearPendingControlRequests(agentID)
+}
+
+func (h *OutputHandler) clearPendingControlRequests(agentID string) error {
+	return h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
 		return h.queries.DeleteBlockingControlRequestsByAgentID(ctx, agentID)
 	})
 }
@@ -776,7 +789,7 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 // to another conversation. A stored session change leaves the Codex thread that
 // asked them, so no user can answer them there.
 func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, sessionID string) {
-	h.clearControlRequests(agentID, "retire non-blocking control requests outside the session: delete rows", true, func(ctx context.Context) ([]db.ControlRequest, error) {
+	_ = h.clearControlRequests(agentID, "retire non-blocking control requests outside the session: delete rows", true, func(ctx context.Context) ([]db.ControlRequest, error) {
 		return h.queries.DeleteNonBlockingControlRequestsOutsideSession(ctx, db.DeleteNonBlockingControlRequestsOutsideSessionParams{
 			AgentID: agentID, AgentSessionID: sessionID,
 		})
@@ -793,7 +806,7 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+	_ = h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
 		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
 	})
 	h.CleanupAgent(agentID)
@@ -1728,6 +1741,16 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	if len(changed) > 0 {
 		s.h.broadcastAgentSessionInfo(s.agentID, changed)
 	}
+}
+
+// PublishInputProcessState refreshes the feeding process's input metadata.
+func (s *agentOutputSink) PublishInputProcessState() {
+	if !s.registeredCurrent() || s.h.inputProcessState == nil {
+		return
+	}
+	// Carry only the root identity, and hold no source lock across the
+	// callback. It reads the current process if replacement overtook this call.
+	s.h.inputProcessState(s.rootAgentID)
 }
 
 type permissionCheckKey struct {

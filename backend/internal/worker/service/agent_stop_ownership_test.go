@@ -342,6 +342,9 @@ func TestEscalationDoesNotShareAnOldTurnResultWithANewTurn(t *testing.T) {
 	go func() { currentDone <- svc.forceStopAgentTurn(row, target, current) }()
 	require.Eventually(t, func() bool { return svc.Agents.LifecycleLockCallersForTest("agent-1") == 3 }, 30*time.Second, 5*time.Millisecond,
 		"the replacement turn must own a separate escalation result")
+	waiting, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.False(t, waiting.Paused, "waiting escalations cannot claim a restart guard before turn revalidation")
 	unlock()
 	released = true
 	require.NoError(t, <-oldDone, "an obsolete escalation changes no replacement turn")

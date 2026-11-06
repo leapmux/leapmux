@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -14,6 +15,112 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type codexChildRouteFailureServices struct{ agent.ProviderServices }
+
+func (codexChildRouteFailureServices) EnsureChildAgent(agent.ChildAgentSpec) (string, error) {
+	return "", assert.AnError
+}
+
+func TestCodexAuthenticationObservationPrecedesChildRouting(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"missing route", "route write failure", "event count limit", "event byte limit", "ordinary failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			a.inputAuthenticationChecked = true
+			feedCodexLines(a, `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)
+			originalServices := a.sink
+			if scenario == "route write failure" {
+				a.sink = codexChildRouteFailureServices{ProviderServices: a.sink}
+				a.Mu.Lock()
+				state := a.codexChildStateLocked("unrouted-child")
+				state.spawnCorrelationID = "spawn-unrouted"
+				state.parentThreadID = "main-thread"
+				a.Mu.Unlock()
+			}
+			if scenario == "event count limit" {
+				for range codexPendingChildEventLimit {
+					a.enqueuePendingCodexChildEvent("unrouted-child", codexPendingChildEvent{
+						kind: codexPendingTurnStarted, params: json.RawMessage(`{"threadId":"unrouted-child","turn":{"id":"child-turn"}}`),
+					})
+				}
+			}
+			if scenario == "event byte limit" {
+				params := `{"threadId":"unrouted-child","turn":{"id":"child-turn"},"padding":"` + strings.Repeat("x", codexPendingChildEventBytesLimit-128) + `"}`
+				a.enqueuePendingCodexChildEvent("unrouted-child", codexPendingChildEvent{kind: codexPendingTurnStarted, params: json.RawMessage(params)})
+			}
+			info := "unauthorized"
+			if scenario == "ordinary failure" {
+				info = "serverOverloaded"
+			}
+			feedCodexLines(a, fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"unrouted-child","turn":{"id":"child-turn","status":"failed","error":{"message":"request failed","codexErrorInfo":%q}}}}`, info))
+			if scenario == "ordinary failure" {
+				assert.False(t, recoveryRequired(a))
+				require.NoError(t, a.PrepareInputProcess())
+				require.NoError(t, a.SteerInput("ordinary input", nil))
+				require.Len(t, requests(), 1)
+				assert.Equal(t, "turn/steer", requests()[0].Method)
+				return
+			}
+			require.ErrorIs(t, a.PrepareInputProcess(), agent.ErrInputProcessRestartRequired)
+			require.ErrorIs(t, a.SteerInput("new input", nil), agent.ErrInputProcessRestartRequired)
+			assert.Empty(t, requests())
+			assert.Equal(t, "main-turn", a.mainTurn.id, "the child failure does not end its parent turn")
+			if scenario == "event count limit" || scenario == "event byte limit" {
+				a.Mu.Lock()
+				dropped := a.collabChildren["unrouted-child"].pendingOutputDropped
+				a.Mu.Unlock()
+				require.True(t, dropped, "the completion exceeded the pending-route limit")
+			}
+			a.sink = originalServices
+			feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"main-turn","item":{"type":"subAgentActivity","id":"spawn-unrouted","kind":"started","agentThreadId":"unrouted-child","agentPath":"/root/unrouted-child"}}}`)
+			assert.True(t, recoveryRequired(a), "route creation cannot erase process authentication evidence")
+		})
+	}
+}
+
+func TestCodexRetiredAuthenticationOutputOnlyChangesLiveProcessHealth(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"retired main", "retired child", "stopped process", "exited process"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			a.inputAuthenticationChecked = true
+			feedCodexLines(a, `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"current-turn"}}}`)
+			threadID := "retired-thread"
+			if scenario == "retired child" {
+				threadID = "retired-child"
+			}
+			a.retiredCodexThreads = map[string]struct{}{threadID: {}}
+			ended := scenario == "stopped process" || scenario == "exited process"
+			if ended {
+				a.SimulateExitForTest()
+			}
+			if scenario == "stopped process" {
+				a.Stop()
+			}
+			messages := len(sink.Messages())
+			notifications := len(sink.PersistedNotifications())
+			feedCodexLines(a, fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":%q,"turn":{"id":"old-turn","status":"failed","error":{"message":"request failed","codexErrorInfo":"unauthorized"}}}}`, threadID))
+			assert.Equal(t, !ended, recoveryRequired(a))
+			assert.Equal(t, "main-thread", a.currentThreadID())
+			if !ended {
+				assert.Equal(t, "current-turn", a.mainTurn.id)
+				require.ErrorIs(t, a.SendInput("later input", nil), agent.ErrInputProcessRestartRequired)
+			}
+			assert.Len(t, sink.Messages(), messages, "retired output writes no current transcript message")
+			assert.Len(t, sink.PersistedNotifications(), notifications)
+			assert.Empty(t, requests())
+		})
+	}
+}
 
 func TestCodexConcurrentInputAuthenticationSharesNativeCheck(t *testing.T) {
 	t.Parallel()
@@ -331,7 +438,7 @@ func TestCodexCompactionRetainsLateAuthenticationRejection(t *testing.T) {
 	}
 }
 
-func TestCodexRetiredCompactionCannotMarkOrClearTheNewThread(t *testing.T) {
+func TestCodexRetiredCompactionMarksTheProcessWithoutClearingTheNewRequest(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
 	held := make(chan func(agenttest.RPCReply), 2)
@@ -379,7 +486,7 @@ func TestCodexRetiredCompactionCannotMarkOrClearTheNewThread(t *testing.T) {
 	// A later round trip proves that the ordered reader consumed the old reply.
 	_, err = a.SendRequest("fixture/barrier", json.RawMessage(`{}`), a.APITimeout())
 	require.NoError(t, err)
-	assert.False(t, recoveryRequired(a))
+	assert.True(t, recoveryRequired(a), "a native thread change retains the physical process's authentication state")
 	a.Mu.Lock()
 	assert.Equal(t, newAck, a.compactionStartAck)
 	a.Mu.Unlock()

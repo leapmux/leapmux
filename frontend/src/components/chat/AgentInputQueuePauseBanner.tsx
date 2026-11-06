@@ -9,10 +9,8 @@ import * as styles from './AgentInputQueuePauseBanner.css'
 /**
  * Why the queue stopped, in one sentence for each reason.
  *
- * `satisfies Record<...>` is the enforcement: a sixth pause reason fails the
- * frontend typecheck until somebody writes its sentence here. Four of the five
- * reasons are automatic, so a missing entry would leave a user who pressed
- * nothing with no explanation at all.
+ * `satisfies Record<...>` requires a sentence for every pause reason.
+ * Automatic pauses need an explanation even when the user pressed nothing.
  *
  * `UNSPECIFIED` reads as the manual case on purpose. A Worker that sends it has
  * told us nothing, and inventing a cause is worse than describing the state.
@@ -25,6 +23,7 @@ const PAUSE_SENTENCES = {
   [AgentInputQueuePauseReason.DELIVERY_FAILED]: 'Queue paused because an input did not reach the agent.',
   [AgentInputQueuePauseReason.DELIVERY_UNCERTAIN]: 'Queue paused because an input may not have reached the agent.',
   [AgentInputQueuePauseReason.STORE_FAULT]: 'Queue paused because the worker could not read its own data. Resume to try again.',
+  [AgentInputQueuePauseReason.PROCESS_RECOVERY]: 'Queued input is waiting for login recovery.',
 } satisfies Record<AgentInputQueuePauseReason, string>
 
 /**
@@ -45,6 +44,7 @@ export interface AgentInputQueuePauseBannerProps {
   /** A resume RPC is in flight, so the button refuses a second press. */
   busy?: boolean
   onResume?: () => void
+  onRecover?: () => void
 }
 
 /**
@@ -61,7 +61,7 @@ export interface AgentInputQueuePauseBannerProps {
  *
  * ONE node carries the sentence, and it is ALWAYS mounted. A live region that
  * appears together with its content announces nothing on several screen
- * readers, and four of the five pause reasons arrive with no user action to
+ * readers, and several pause reasons arrive with no user action to
  * explain them -- so the region cannot wait for the pause. A SECOND node
  * holding the same sentence is equally wrong: a screen reader then announces
  * the sentence twice, and every lookup that matches on that text resolves two
@@ -84,10 +84,12 @@ export const AgentInputQueuePauseBanner: Component<AgentInputQueuePauseBannerPro
         class={`outline ${styles.resume}`}
         type="button"
         disabled={props.busy}
-        onClick={() => props.onResume?.()}
+        onClick={() => props.onRecover
+          ? props.onRecover()
+          : props.onResume?.()}
         data-testid="queue-pause-banner-resume"
       >
-        Resume
+        {props.onRecover ? 'Recover login' : 'Resume'}
       </button>
     </Show>
   </div>

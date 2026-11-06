@@ -847,8 +847,9 @@ func (h *OutputHandler) isProcessRunning(rootAgentID string) bool {
 // what it hid -- see hiddenActiveTasks -- because without it a root that fanned
 // out that wide settles while a subagent still runs.
 //
-// An UNLINKED row -- a shell task -- is deleted outright rather than retained,
-// so nothing can report it and the count does not try.
+// Working unlinked rows also survive eviction. Their hidden keys contribute to
+// the root's count until completion, including shell tasks and child rows whose
+// transcript linkage is not available yet.
 //
 // A CHILD's question is different, and the cap changes it sooner: see the miss
 // path in AgentActivitySnapshot.
@@ -859,15 +860,9 @@ func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 	}
 	rows, err := h.LoadBackgroundTasks(h.bgTaskCtx(), rootAgentID)
 	if err != nil {
-		// Report idle rather than guessing busy, and the seeding rule is what
-		// makes that safe rather than merely convenient. LoadBackgroundTasks
-		// fails only while the cache is unseeded, because ensureSeededLocked
-		// returns early once `seeded` is set and nothing ever clears it. At that
-		// point no row this process wrote can exist -- every write seeds first --
-		// and the boot sweep already interrupted every row the previous process
-		// left. So there is no active row to miss, and guessing busy would pin a
-		// spinner on an agent that owns no work. A turn in progress is unaffected
-		// either way: turnActive is a separate input.
+		// This display read remains best effort when seeding fails. Raw turn
+		// state is independent. Process recovery requires explicit approval
+		// because native work can start after the Worker observes idleness.
 		slog.Warn("activity: load background tasks", "agent_id", rootAgentID, "error", err)
 		return nil
 	}

@@ -184,15 +184,7 @@ func codexAuthenticationFailure(message string, codexErrorInfoRaw json.RawMessag
 	case codexErrorInfoUnauthorized:
 		return true
 	case codexErrorInfoHTTPStatus:
-		if info.status == nil {
-			return false
-		}
-		switch *info.status {
-		case 401:
-			return true
-		case 403:
-			return codexRefreshTokenFailureMessage(message)
-		}
+		return info.status != nil && *info.status == 401
 	case codexErrorInfoNone, codexErrorInfoOther:
 		// No credential signal: an absent value and an unrecognized variant
 		// keep the failure's existing handling.
@@ -216,13 +208,41 @@ func codexAuthenticationRejection(err error) bool {
 // belongs to the process, not the agent record.
 func (a *Agent) markAuthenticationRecoveryRequired() {
 	a.Mu.Lock()
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return
+	}
+	select {
+	case <-a.ProcessDone():
+		a.Mu.Unlock()
+		return
+	default:
+	}
+	changed := !a.authenticationRecoveryRequired
 	a.authenticationRecoveryRequired = true
 	a.Mu.Unlock()
 	a.withdrawTurnRetryOffer()
+	if changed && a.sink != nil {
+		a.sink.PublishInputProcessState()
+	}
 }
 
 // The assertion makes a drift from the shared preparation seam a compile error.
 var _ agent.InputProcessPreparer = (*Agent)(nil)
+
+func (a *Agent) InputProcessRecoveryRequired() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.StoppedLocked() || !a.authenticationRecoveryRequired {
+		return false
+	}
+	select {
+	case <-a.ProcessDone():
+		return false
+	default:
+		return true
+	}
+}
 
 // PrepareInputProcess implements agent.InputProcessPreparer. It reports the
 // retained recovery state first; otherwise it verifies the account state once,
@@ -308,11 +328,10 @@ func (a *Agent) checkInputAuthentication() error {
 		}
 	} else if *result.RequiresOpenaiAuth {
 		// Codex requires a sign-in and reports no account: the user is signed
-		// out on this machine. Mark the process, so the next input replaces it
-		// once a fresh login exists, and fail this preparation: the input
-		// stays in the queue for that retry.
+		// out on this machine. Mark the process for approved recovery after a
+		// fresh login, and keep the unsubmitted input in the queue.
 		a.markAuthenticationRecoveryRequired()
-		return errors.New("codex requires sign-in; log in and send the message again")
+		return errors.New("sign-in required: log in to Codex on this worker, then approve recovery")
 	}
 	a.Mu.Lock()
 	a.inputAuthenticationChecked = true

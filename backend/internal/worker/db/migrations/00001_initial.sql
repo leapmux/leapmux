@@ -261,7 +261,7 @@ CREATE TABLE agent_input_queue_state (
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     -- Optional AgentInputQueuePauseReason ordinal. NULL means no pause reason.
     -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
-    pause_reason    INTEGER CHECK (pause_reason IS NULL OR typeof(pause_reason) = 'integer') CHECK (pause_reason BETWEEN 1 AND 6),
+    pause_reason    INTEGER CHECK (pause_reason IS NULL OR typeof(pause_reason) = 'integer') CHECK (pause_reason BETWEEN 1 AND 7),
     -- Which cause created the pause that still holds. Only that cause may lift
     -- it: an archive resume, or the end of a planned restart, matches its own
     -- owner and leaves a pause that a later crash or the user created. A new

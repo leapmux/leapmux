@@ -4012,11 +4012,6 @@ func TestCodexCompletedAuthenticationFailuresMarkRecovery(t *testing.T) {
 			},
 			false, true,
 		},
-		{
-			"retired thread failure",
-			[]string{`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"old-thread","turn":{"id":"turn-8","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`},
-			false, false,
-		},
 	}
 	for _, test := range skipCases {
 		t.Run(test.name, func(t *testing.T) {

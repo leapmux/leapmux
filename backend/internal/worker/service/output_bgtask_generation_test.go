@@ -466,6 +466,65 @@ WHEN NEW.owner_agent_id = 'claim-storage-generation' BEGIN SELECT RAISE(ABORT, '
 	assert.Equal(t, before, storedRow(t, svc, "claim-storage-generation", "shared"))
 }
 
+func TestBackgroundTaskWorkingSeedFailurePreservesTheCache(t *testing.T) {
+	t.Parallel()
+	const owner = "working-seed-failure"
+	svc, sink := setupRootSink(t, owner)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "running-shell", Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
+	cache := svc.Output.bgTaskCache(owner)
+	cache.Mu.Lock()
+	cache.seeded = false
+	before := cache.mirrorLocked()
+	err := cache.on(db.New(workingBackgroundTaskReadFault{DBTX: svc.DB}), owner).ensureSeededLocked(t.Context())
+	after := cache.mirrorLocked()
+	cache.Mu.Unlock()
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Equal(t, before, after, "a failed seed must publish neither projection")
+	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), owner)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "running-shell", rows[0].RowKey)
+	assert.EqualValues(t, 1, svc.Output.AgentActivitySnapshot(owner, owner).ActiveTasks)
+}
+
+func TestBackgroundTaskHiddenWorkingRetentionSurvivesRollbackAndExit(t *testing.T) {
+	t.Parallel()
+	const owner = "hidden-working-rollback"
+	svc, sink := setupRootSink(t, owner)
+	for index := 0; index <= bgtask.MaxTasks; index++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("shell-%d", index), Kind: bgtask.KindShell, Status: bgtask.StatusRunning,
+		}))
+	}
+	cache := svc.Output.bgTaskCache(owner)
+	cache.Mu.Lock()
+	mirror := cache.mirrorLocked()
+	cache.Mu.Unlock()
+	require.Contains(t, mirror.evictedActive, "shell-0")
+	before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), owner)
+	require.NoError(t, err)
+	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER reject_hidden_status BEFORE UPDATE OF status ON agent_background_tasks
+WHEN NEW.owner_agent_id = 'hidden-working-rollback' AND NEW.row_key = 'shell-0' BEGIN SELECT RAISE(IGNORE); END`)
+	require.NoError(t, err)
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("shell-0", bgtask.StatusFailed, "rejected completion"))
+	after, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), owner)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	cache.Mu.Lock()
+	current := cache.mirrorLocked()
+	cache.Mu.Unlock()
+	assert.Equal(t, mirror, current, "rollback restores both display and hidden working rows")
+	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER reject_hidden_status")
+	require.NoError(t, err)
+	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: owner, Stopped: true, Output: sink})
+	working, err := svc.Queries.ListWorkingAgentBackgroundTaskKeys(t.Context(), db.ListWorkingAgentBackgroundTaskKeysParams{
+		OwnerAgentID: owner, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, working, "process exit finishes hidden working rows too")
+	assert.Zero(t, svc.Output.AgentActivitySnapshot(owner, owner).ActiveTasks)
+}
+
 func TestBackgroundTaskRejectedSQLRestoresClaimAndDisplayAdmission(t *testing.T) {
 	for _, operation := range []string{"status", "upsert"} {
 		t.Run(operation, func(t *testing.T) {
@@ -565,11 +624,20 @@ func TestBackgroundTaskCapWarningAllowsSynchronousSourceReplacement(t *testing.T
 	logger := slog.Default()
 	var warnings int
 	var cacheFree bool
+	var retainedInStore bool
+	var retentionReported bool
 	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
 		if record.Message != "The background task registry reached its display cap. It drops the oldest active display row because no row finished." {
 			return
 		}
 		warnings++
+		record.Attrs(func(attribute slog.Attr) bool {
+			if attribute.Key == "retained_in_store" {
+				retainedInStore = attribute.Value.Bool()
+				retentionReported = true
+			}
+			return true
+		})
 		cache := svc.Output.bgTaskCache("cap-warning-generation")
 		if !cache.Mu.TryLock() {
 			return
@@ -582,6 +650,9 @@ func TestBackgroundTaskCapWarningAllowsSynchronousSourceReplacement(t *testing.T
 	require.NoError(t, source.UpsertBackgroundTask(bgtask.Upsert{RowKey: "last-active", Kind: bgtask.KindShell, Title: "Last native command", Status: bgtask.StatusRunning}))
 	assert.Equal(t, 1, warnings)
 	assert.True(t, cacheFree, "the real cap warning must run after cache publication and unlock")
+	assert.True(t, retentionReported)
+	assert.True(t, retainedInStore, "the working unlinked victim remains in storage")
+	assert.Equal(t, "Active native command", storedRow(t, svc, "cap-warning-generation", "active-0").Title)
 	assert.Equal(t, "Last native command", storedRow(t, svc, "cap-warning-generation", "last-active").Title)
 }
 
