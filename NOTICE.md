@@ -38,7 +38,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
 - [github.com/fxamacker/cbor/v2 v2.10.0](#githubcomfxamackercborv2-v2100)
-- [github.com/go-jose/go-jose/v4 v4.1.7](#githubcomgo-josego-josev4-v417)
+- [github.com/go-jose/go-jose/v4 v4.1.8](#githubcomgo-josego-josev4-v418)
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
 - [github.com/go-ole/go-ole v1.3.0](#githubcomgo-olego-ole-v130)
@@ -3290,7 +3290,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/go-jose/go-jose/v4 v4.1.7
+### github.com/go-jose/go-jose/v4 v4.1.8
 
 ```
                                  Apache License
