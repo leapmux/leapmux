@@ -206,19 +206,22 @@ func decode64(field, s string) ([]byte, error) {
 	return b, nil
 }
 
-// State holds the worker's persistent state. runWorker writes it when it
-// generates the keypair and again after registration.
+// State holds the worker's persistent credentials. The register command
+// writes them; runtime execution reads them.
+//
+// hub_url is the Hub endpoint the registration succeeded against, and
+// the only endpoint execution and deregistration use: a runtime command
+// must never silently redirect saved credentials to another Hub.
+//
+// No PID and no registered_by: a process identifier in a credentials
+// file is never evidence of a running worker, and the Hub delivers the
+// worker's owner on every connect (leapmuxv1.WorkerIdentity), so a
+// persisted copy would be a second source of truth for the fact every
+// machine-scoped gate keys on.
 type State struct {
-	// PID is the process that wrote this file. It comes first in the JSON so
-	// a reader sees it before anything else, and it is stamped at write time
-	// by SaveState, never filled in by a caller.
-	PID       int    `json:"pid"`
+	HubURL    string `json:"hub_url"`
 	WorkerID  string `json:"worker_id"`
 	AuthToken string `json:"auth_token"`
-	// No registered_by: the Hub delivers the worker's owner on every connect
-	// (leapmuxv1.WorkerIdentity), so persisting a copy would be a second source of
-	// truth for the fact every machine-scoped gate keys on -- and a file that lost
-	// it left the worker denying its own legitimate owner, permanently.
 	KeyMaterial
 }
 
@@ -389,8 +392,10 @@ func (c *Config) Validate() error {
 		c.Name = hostname
 	}
 
-	// Ensure data dir exists.
-	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
+	// Ensure data dir exists, durably: the directory that will hold
+	// registration credentials must be published before any write below
+	// names a file inside it.
+	if err := atomicfile.MkdirAllDurable(c.DataDir); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
@@ -436,24 +441,38 @@ func (c *Config) LoadState() (*State, error) {
 	return &s, nil
 }
 
-// ClearState removes the persisted state file.
+// RemoveSensitiveRecord removes a credentials file and every temporary
+// copy an interrupted write left beside it. It always attempts both
+// removals -- even when one fails -- joins their failures, and succeeds
+// for files that are already gone, so a retry finishes a partial
+// cleanup without knowing which half failed.
 //
-// It does NOT remove the temp file an interrupted write left beside it, so a
-// deregistered worker leaves the same credentials on disk under a name with a
-// random suffix. `atomicfile.RemoveTempFiles` is the call that closes this;
-// https://github.com/leapmux/leapmux/issues/494 tracks it.
-func (c *Config) ClearState() error {
-	return os.Remove(c.StatePath())
+// These operations remove accessible files; they do not promise physical
+// secure erasure.
+func RemoveSensitiveRecord(path string) error {
+	removeErr := os.Remove(path)
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = fmt.Errorf("remove %s: %w", path, removeErr)
+	} else if removeErr != nil {
+		removeErr = nil
+	}
+	return errors.Join(removeErr, atomicfile.RemoveTempFiles(path))
 }
 
-// SaveState persists state to disk: atomically (a reader never sees a
-// half-written credentials file), with mode 0600 surviving the rename, and
-// the pid stamped from this process as the first field.
+// ClearState removes the persisted credentials and every interrupted
+// copy beside them.
+func (c *Config) ClearState() error {
+	return RemoveSensitiveRecord(c.StatePath())
+}
+
+// SaveState durably persists the credentials: a reader never sees a
+// half-written file, the mode 0600 survives the replacement, and the
+// directory entry that names the file is published before success is
+// reported.
 func (c *Config) SaveState(s *State) error {
-	s.PID = os.Getpid()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicfile.WriteFile(c.StatePath(), data, 0o600)
+	return atomicfile.WriteFileDurable(c.StatePath(), data, 0o600)
 }

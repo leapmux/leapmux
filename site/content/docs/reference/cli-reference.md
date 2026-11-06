@@ -48,7 +48,7 @@ Notes on dispatch:
 - The default TCP port for every mode is **4327**.
 - `-h`, `-help`, and `--help` are recognized at every level (help prints to stdout, exit 0). The bare `help` token works only at the top level.
 - `-version`, `--version`, and the `version` command all print the same version string.
-- Daemon flags must follow the command keyword — `leapmux solo -listen ...`, not `leapmux -listen ... solo`. LeapMux rejects an unknown leading `-flag` because it is not a top-level flag.
+- Daemon flags must follow the command keyword — `leapmux solo run -listen ...`, not `leapmux -listen ... solo`. LeapMux rejects an unknown leading `-flag` because it is not a top-level flag.
 - LeapMux rejects an unexpected positional argument and points you at `--help`.
 
 {{< callout >}}
@@ -62,7 +62,7 @@ Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are 
 Run a Hub and a Worker in one process on loopback. Local IPC needs no credential. A TCP browser sets the first `solo` password, then every TCP address asks for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) and [Network access](/docs/admin/configuration/#network-access).
 
 ```bash
-leapmux solo [flags]
+leapmux solo run [flags]
 # then open http://127.0.0.1:4327
 ```
 
@@ -94,7 +94,7 @@ The `public_url` setting applies in solo: it sets the URL in the startup banner,
 Run only the Hub: authentication, workspace management, Worker registration, and the encrypted relay. Binds all interfaces by default and requires a real login. See [Running LeapMux](/docs/admin/running-leapmux/#hub-mode) and [Configuration](/docs/admin/configuration/) for the complete key reference.
 
 ```bash
-leapmux hub [flags]
+leapmux hub run [flags]
 ```
 
 This table lists the most common flags. The full set — including all PostgreSQL/MySQL/CockroachDB/YugabyteDB/TiDB pool-tuning flags — is in [Configuration](/docs/admin/configuration/).
@@ -146,20 +146,56 @@ One hub config key has **no** CLI flag and is set only via YAML or env var: `enc
 
 Run a Worker that connects out to a Hub. Workers do not serve an inbound HTTP port; they register with the Hub using a key minted in the Hub UI. See [Managing Workers](/docs/admin/managing-workers/).
 
-```bash
-# First run — register with a key from the hub UI:
-leapmux worker -hub https://hub.example.com -registration-key <key>
+Every mode takes a lifecycle verb: `run` (foreground, never configures a service), `start`, `stop`, `restart`, `status`, `enable`, and `disable`. The worker adds `register`, `deregister`, and `cross-worker-pins`.
 
-# Subsequent runs — credentials are saved, no key needed:
-leapmux worker -hub https://hub.example.com
+```bash
+# Register once, with a key minted in the Hub UI. The key is consumed and
+# the credentials are saved under the data directory; no worker starts:
+leapmux worker register --hub https://hub.example.com --registration-key <key>
+
+# Run in the foreground with the saved credentials (the endpoint comes
+# from the registration; the runtime takes no --hub):
+leapmux worker run
+
+# Or configure automatic startup at login, then start it:
+leapmux worker enable --startup=login --yes
+leapmux worker start
 ```
+
+`enable` and the first `start` show the interactive choice above (POSIX example):
+
+```text
+When should LeapMux worker start automatically?
+
+  1. When you log in
+     Runs as your account.
+     Stops after your last applicable login session ends.
+
+  2. When the computer starts
+     Runs as your account even while you are logged out.
+
+Choose [1]:
+```
+
+Consent is `y`/`yes`; empty input declines. Pass `--startup=login|boot` with `--yes` to skip the prompt — `--yes` alone never selects a mode.
+
+**Lifecycle options**
+
+| Flag | Applies to | Default | Meaning |
+|------|-----------|---------|---------|
+| `--startup` | `enable`, `start` | saved choice, else the prompt | `login` or `boot` |
+| `--yes` | `enable`, `start`, `restart` | off | Accept the proposed configuration without the prompt |
+| `--timeout` | `start`, `restart`, `stop`, `status`, `register` | start/restart `60s`, stop `30s`, status `3s`, register `5m` | Wait budget; positive, with a unit suffix or bare seconds |
+| `--environment-file` | `enable` | none | YAML map of environment variables for the service (identity variables are refused) |
+
+`status` exits `0` for a running instance (including a registered-but-disconnected worker or `ready_for_setup`), `3` for a stopped instance, and `1` for failures and invalid use.
 
 **Worker options**
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-hub` | `http://127.0.0.1:4327` | Hub URL (`http[s]://...`, `unix:<socket>`, or `npipe:<name>`) |
-| `-registration-key` | empty | Registration key from the Hub UI (required on first run; never persisted) |
+| `-hub` | `http://127.0.0.1:4327` | Hub URL for `worker register` (`http[s]://...`, `unix:<socket>`, or `npipe:<name>`). The saved registration owns the runtime's endpoint. |
+| `-registration-key` | empty | Registration key from the Hub UI — `worker register` only; the runtime commands refuse it |
 | `-name` | empty (= hostname) | Worker display name |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory (holds `state.json`, `worker.db`) |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
@@ -192,7 +228,7 @@ leapmux worker -hub https://hub.example.com
 | `-version` | — | Print version and exit |
 
 {{< callout type="info" >}}
-An unregistered Worker with no saved credentials fails to start, and the error tells you to pass a registration key from the hub UI. Passing `-registration-key` again to an already-registered Worker also fails, which protects you from burning a one-time key.
+An unregistered Worker fails to start and the error names `leapmux worker register`. Registration keys never ride the runtime commands: passing `-registration-key` to an already-registered machine fails, which protects you from burning a one-time key. A lost registration response recovers on its own — the register command saves a durable attempt identity before its first network call, and a retry returns the original credentials instead of consuming a fresh key.
 {{< /callout >}}
 
 ### worker cross-worker-pins
@@ -209,7 +245,7 @@ leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--d
 | `show` | `--target-worker-id` | Print one pin (errors `no pin recorded for target_worker_id=<id>` if absent) |
 | `remove` | `--target-worker-id` | Remove the pin; prints `{"removed_target_worker_id": <id>}` |
 
-When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches what `leapmux worker` would use: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
+When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches what `leapmux worker run` would use: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
 
 {{< callout type="info" >}}
 The binary's own help text for this flag mentions `LEAPMUX_DATA_DIR`, but that variable is **not** read by the `leapmux` binary itself (only by the Docker entrypoint script), so it has no effect on this subcommand's data-dir resolution. Use `LEAPMUX_WORKER_DATA_DIR` (or `--data-dir`) here.
@@ -220,7 +256,7 @@ The binary's own help text for this flag mentions `LEAPMUX_DATA_DIR`, but that v
 Run a Hub and a Worker in one process with **real** password authentication — the same program as `solo` but with login enabled, binding all interfaces, and the first admin bootstrapped through the `/setup` flow. See [Running LeapMux](/docs/admin/running-leapmux/#dev-mode).
 
 ```bash
-leapmux dev [flags]
+leapmux dev run [flags]
 ```
 
 Dev mode uses the **same flag set as solo**.

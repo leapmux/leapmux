@@ -26,3 +26,7 @@ export const command = style({
   overflowX: 'auto',
   userSelect: 'all',
 })
+
+export const shellRow = style({
+  marginBottom: 'var(--space-3)',
+})

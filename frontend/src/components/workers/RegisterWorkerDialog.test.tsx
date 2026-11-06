@@ -114,7 +114,7 @@ describe('RegisterWorkerDialog', () => {
       expect(mockCreate).toHaveBeenCalledOnce()
     })
     const block = await screen.findByTestId('registration-command')
-    expect(block.textContent).toContain('leapmux worker --hub http://hub.test --registration-key KEY-ABC')
+    expect(block.textContent).toContain('leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'')
   })
 
   it('copies the rendered command to the clipboard', async () => {
@@ -126,7 +126,7 @@ describe('RegisterWorkerDialog', () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
-        'leapmux worker --hub http://hub.test --registration-key KEY-ABC',
+        'leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
       )
     })
   })
@@ -244,7 +244,7 @@ describe('RegisterWorkerDialog', () => {
     renderDialog()
 
     const block = await screen.findByTestId('registration-command')
-    expect(block.textContent).toContain('--hub unix:/tmp/leapmux-hub.sock')
+    expect(block.textContent).toContain('--hub \'unix:/tmp/leapmux-hub.sock\'')
     expect(block.textContent).not.toContain('hub.test')
   })
 
@@ -257,7 +257,7 @@ describe('RegisterWorkerDialog', () => {
     await waitFor(() => {
       expect(mockEmail).toHaveBeenCalledWith({
         registrationKey: 'KEY-ABC',
-        command: 'leapmux worker --hub http://hub.test --registration-key KEY-ABC',
+        command: 'leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
       })
     })
     expect(await screen.findByText(/Sent to me@example.com/)).toBeInTheDocument()

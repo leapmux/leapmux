@@ -160,6 +160,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       const localListen = `unix:${join(socketDir, 'hub.sock')}`
       proc = spawn(options.binaryPath, [
         'dev',
+        'run',
         '-listen',
         `${E2E_HUB_HOST}:0`,
         '-listen',

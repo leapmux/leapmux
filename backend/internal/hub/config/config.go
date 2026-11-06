@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
@@ -826,8 +826,11 @@ var hubFlagCategoryOrder = []string{
 
 // Validate checks the configuration values and ensures required directories exist.
 func (c *Config) Validate() error {
-	// Ensure data dir exists.
-	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
+	// Ensure data dir exists, durably: the directory that will hold the
+	// hub's database must be published before anything writes into it.
+	// Offline commands keep the same creation this validation always
+	// performed for them.
+	if err := atomicfile.MkdirAllDurable(c.DataDir); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 

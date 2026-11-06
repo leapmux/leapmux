@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,24 +14,28 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// SaveState stamps the pid as the FIRST field and names this process. The pid
-// is how a reader tells a live credentials file from a crashed run's, and the
-// first position is what the reader sees before anything else.
-func TestSaveState_PIDIsFirstAndNamesThisProcess(t *testing.T) {
+// SaveState writes the saved endpoint as the FIRST field: a reader of
+// a credentials file sees which hub owns it before anything else. No
+// process identifier belongs in a credentials file -- the registration
+// command's pid is never evidence of a running worker.
+func TestSaveState_HubURLIsFirstAndNoPid(t *testing.T) {
 	cfg := &Config{DataDir: t.TempDir()}
-	in := &State{WorkerID: "w1", AuthToken: "tok"}
+	in := &State{HubURL: "http://hub.example", WorkerID: "w1", AuthToken: "tok"}
 
 	require.NoError(t, cfg.SaveState(in))
 
 	raw, err := os.ReadFile(cfg.StatePath())
 	require.NoError(t, err)
-	assert.Regexp(t, regexp.MustCompile(`^\{\s*"pid"`), string(raw),
-		"pid must be the first JSON key")
-	assert.Equal(t, os.Getpid(), in.PID, "the writer names this process")
+	assert.Regexp(t, regexp.MustCompile(`^\{\s*"hub_url"`), string(raw),
+		"hub_url must be the first JSON key")
+	assert.NotContains(t, string(raw), `"pid"`,
+		"a credentials file states no process identifier")
 
 	var got State
 	require.NoError(t, json.Unmarshal(raw, &got))
-	assert.Equal(t, os.Getpid(), got.PID)
+	assert.Equal(t, in.HubURL, got.HubURL)
+	assert.False(t, got.Registered() == false && got.AuthToken != "",
+		"Registered reflects the complete credentials")
 }
 
 // The credentials file keeps mode 0600 through the atomic replace: the auth
@@ -54,8 +59,14 @@ func TestSaveState_LeavesNoTemporaryFileBehind(t *testing.T) {
 
 	entries, err := os.ReadDir(cfg.DataDir)
 	require.NoError(t, err)
-	require.Len(t, entries, 1, "a successful write must leave only the state file")
-	assert.Equal(t, "state.json", entries[0].Name())
+	var names []string
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".leapmux") {
+			names = append(names, e.Name())
+		}
+	}
+	assert.Equal(t, []string{"state.json"}, names,
+		"a successful write must leave only the state file beside the lifecycle metadata")
 
 	// A destination the rename cannot replace: the write fails after the temp
 	// is complete, and the temp must still not survive.
@@ -66,8 +77,14 @@ func TestSaveState_LeavesNoTemporaryFileBehind(t *testing.T) {
 
 	entries, err = os.ReadDir(cfg.DataDir)
 	require.NoError(t, err)
-	require.Len(t, entries, 1, "a failed write must not leave its temporary file behind")
-	assert.Equal(t, "state.json", entries[0].Name())
+	var after []string
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".leapmux") {
+			after = append(after, e.Name())
+		}
+	}
+	assert.Equal(t, []string{"state.json"}, after,
+		"a failed write must not leave its temporary file behind")
 }
 
 // A round trip keeps every field, secrets included, so the atomic write cannot
@@ -111,7 +128,7 @@ func TestSaveState_PersistsOnlyThePrivateHalves(t *testing.T) {
 		keys = append(keys, k)
 	}
 	assert.ElementsMatch(t,
-		[]string{"pid", "worker_id", "auth_token", "x25519_private_key", "mlkem_private_key", "slhdsa_private_key"},
+		[]string{"hub_url", "worker_id", "auth_token", "x25519_private_key", "mlkem_private_key", "slhdsa_private_key"},
 		keys)
 }
 
@@ -270,4 +287,27 @@ func TestSaveState_TempNameIsSweepable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{leftover}, matches,
 		"the residue name must be discoverable from the destination alone")
+}
+
+// ClearState must remove the interrupted write's copy too: a
+// deregistered worker that keeps `state.json.tmp1234` on the disk keeps
+// the same credentials under a name no listing of the destination shows.
+// The base removed only the destination, which this regression records.
+func TestClearStateRemovesInterruptedCopies(t *testing.T) {
+	cfg := &Config{DataDir: t.TempDir()}
+	require.NoError(t, cfg.SaveState(&State{WorkerID: "w1", AuthToken: "tok"}))
+	leftover := cfg.StatePath() + ".tmp12345"
+	require.NoError(t, os.WriteFile(leftover, []byte(`{"pid":0}`), 0o600))
+	abandoned := cfg.StatePath() + ".tmpdeadbeef"
+	require.NoError(t, os.WriteFile(abandoned, []byte(`{"pid":0}`), 0o600))
+
+	require.NoError(t, cfg.ClearState())
+
+	entries, err := os.ReadDir(cfg.DataDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries,
+		"ClearState must remove the destination and every temporary copy beside it")
+
+	// A destination that never existed is already the desired end state.
+	require.NoError(t, cfg.ClearState())
 }

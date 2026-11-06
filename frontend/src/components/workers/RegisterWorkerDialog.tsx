@@ -1,4 +1,6 @@
 import type { Component } from 'solid-js'
+import type { ShellKind } from './workerRegistrationCommands'
+import type { PillOptions } from '~/components/common/pillOptions'
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -8,12 +10,19 @@ import { workerClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Dialog } from '~/components/common/Dialog'
 import { Icon } from '~/components/common/Icon'
+import { PillGroup } from '~/components/common/PillGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import { useAuth } from '~/context/AuthContext'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { getWorkerHubUrl, isEmailEnabled, isSoloMode } from '~/lib/systemInfo'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './RegisterWorkerDialog.css'
+import { workerRegistrationCommands } from './workerRegistrationCommands'
+
+const shellOptions: PillOptions<ShellKind> = [
+  { key: 'posix', label: 'POSIX' },
+  { key: 'powershell', label: 'PowerShell' },
+]
 
 interface RegisterWorkerDialogProps {
   onClose: () => void
@@ -34,18 +43,27 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
   const [emailing, setEmailing] = createSignal(false)
   const [emailSent, setEmailSent] = createSignal(false)
 
-  const command = createMemo(() => {
+  const [shell, setShell] = createSignal<ShellKind>('posix')
+
+  const commands = createMemo(() => {
     const k = registrationKey()
     if (!k)
-      return ''
+      return null
     // Prefer the URL the hub advertises (unix:/npipe: in desktop's
     // local-only mode); fall back to the browser origin everywhere else
     // since that already reflects any reverse-proxy hostname.
     const hubUrl = getWorkerHubUrl() || window.location.origin
-    return `leapmux worker --hub ${hubUrl} --registration-key ${k}`
+    return workerRegistrationCommands({
+      hubUrl,
+      registrationKey: k,
+      shell: shell(),
+    })
   })
 
-  const { copied, copy } = useCopyButton(() => command())
+  // A key or endpoint with characters that cannot form a safe displayed
+  // command refuses every clipboard write; the user sees the refusal.
+  const { copied: copiedRegister, copy: copyRegister } = useCopyButton(() => commands()?.register ?? '')
+  const { copied: copiedStart, copy: copyStart } = useCopyButton(() => commands()?.start ?? '')
 
   const canEmail = createMemo(() => Boolean(auth.user()?.emailVerified))
 
@@ -119,7 +137,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
     try {
       await workerClient.emailRegistrationInstructions({
         registrationKey: k,
-        command: command(),
+        command: commands()?.register ?? '',
       })
       setEmailSent(true)
     }
@@ -144,7 +162,21 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
         </p>
 
         <Show when={registrationKey()} fallback={<p>Generating registration key…</p>}>
-          <pre class={styles.command} data-testid="registration-command">{command()}</pre>
+          <div class={styles.shellRow} role="radiogroup" aria-label="Shell">
+            <PillGroup
+              label="Shell"
+              selectedKey={shell()}
+              onSelect={setShell}
+              options={shellOptions}
+            />
+          </div>
+          <Show when={commands()} fallback={<p class={errorText}>This registration key cannot be shown as a safe command. Mint a new key.</p>}>
+            <p>1. Register the worker.</p>
+            <pre class={styles.command} data-testid="registration-command">{commands()!.register}</pre>
+            <p>2. After registration succeeds, start the worker.</p>
+            <pre class={styles.command} data-testid="start-command">{commands()!.start}</pre>
+            <p>Keep this dialog open until registration completes.</p>
+          </Show>
         </Show>
 
         <Show when={error()}>
@@ -186,22 +218,44 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
             </Tooltip>
           </Show>
 
-          <button
-            type="button"
-            data-testid="copy-registration-command"
-            onClick={() => void copy()}
-          >
-            <Icon
-              icon={copied()
-                ? Check
-                : Copy}
-              size="sm"
-            />
-            {' '}
-            {copied()
-              ? 'Copied'
-              : 'Copy command'}
-          </button>
+          <Tooltip text="Copy the registration command" ariaLabel>
+            <button
+              type="button"
+              data-testid="copy-registration-command"
+              disabled={!commands()}
+              onClick={() => void copyRegister()}
+            >
+              <Icon
+                icon={copiedRegister()
+                  ? Check
+                  : Copy}
+                size="sm"
+              />
+              {' '}
+              {copiedRegister()
+                ? 'Copied'
+                : 'Copy registration command'}
+            </button>
+          </Tooltip>
+          <Tooltip text="Copy the start command" ariaLabel>
+            <button
+              type="button"
+              data-testid="copy-start-command"
+              disabled={!commands()}
+              onClick={() => void copyStart()}
+            >
+              <Icon
+                icon={copiedStart()
+                  ? Check
+                  : Copy}
+                size="sm"
+              />
+              {' '}
+              {copiedStart()
+                ? 'Copied'
+                : 'Copy start command'}
+            </button>
+          </Tooltip>
         </Show>
       </footer>
     </Dialog>

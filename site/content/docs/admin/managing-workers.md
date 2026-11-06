@@ -5,9 +5,9 @@ type: docs
 weight: 3
 ---
 
-A **Worker** is the long-running daemon (`leapmux worker`) that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a powerful desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register one, and how the UI shows Worker status. It also covers TOFU key pinning and how you pick which Worker hosts a new tab.
+A **Worker** is the long-running daemon (`leapmux worker run`) that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a powerful desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register one, and how the UI shows Worker status. It also covers TOFU key pinning and how you pick which Worker hosts a new tab.
 
-If you only ever run `leapmux solo`, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
+If you only ever run `leapmux solo run`, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
 
 ## How a Worker reaches a Hub
 
@@ -19,7 +19,7 @@ The Worker always **dials the Hub** — it opens a single outbound bidirectional
 You tell the Worker where its Hub is with the `--hub` flag:
 
 ```bash
-leapmux worker --hub https://hub.example.com --registration-key <key>
+leapmux worker register --hub https://hub.example.com -registration-key <key>
 ```
 
 The default is `http://127.0.0.1:4327` (a Hub on the same machine). The `--hub` value accepts three URL forms:
@@ -78,7 +78,7 @@ This is the everyday path for users.
 2. The **Register worker** dialog opens and immediately mints a key, showing a ready-to-run command:
 
    ```bash
-   leapmux worker --hub https://hub.example.com --registration-key <key>
+   leapmux worker register --hub https://hub.example.com -registration-key <key>
    ```
 
    The `--hub` value is filled in with the address your Hub advertises (falling back to your browser's origin).
@@ -168,7 +168,7 @@ When the Hub shuts down gracefully it tells the Worker how long to wait before r
 {{< callout type="info" >}}
 Auto-reconnect handles transient failures, **not** revocation. What the Worker does depends on what the Hub tells it:
 
-- When the Hub tells the Worker that it was deregistered or deleted, a standalone Worker (`leapmux worker`) clears its local state and exits, and an auto-registered Worker stops.
+- When the Hub tells the Worker that it was deregistered or deleted, a standalone Worker (`leapmux worker run`) clears its local state and exits, and an auto-registered Worker stops.
 - When the Hub refuses the Worker's keys, the Worker stops and keeps its state.
 - The Worker keeps retrying every other refusal, such as a 401 or 403 from a proxy in front of the Hub.
 
@@ -187,7 +187,7 @@ Deregistering tells the Hub to forget a Worker and tear down everything running 
 leapmux control admin worker deregister --id <worker-id>
 ```
 
-On deregistration a standalone Worker (`leapmux worker`) acknowledges the request, shuts down gracefully, clears its local credentials, and exits. The Hub refuses this command for an auto-registered Worker while it is connected. An offline one leaves the Worker list at once. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
+On deregistration a standalone Worker (`leapmux worker run`) acknowledges the request, shuts down gracefully, clears its local credentials, and exits. The Hub refuses this command for an auto-registered Worker while it is connected. An offline one leaves the Worker list at once. See [Control CLI](/docs/using/control-cli/) for the full administrator surface.
 
 ## Tunnels (desktop app)
 

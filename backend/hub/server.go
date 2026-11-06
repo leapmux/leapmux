@@ -49,6 +49,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/drain"
@@ -281,12 +282,35 @@ type Server struct {
 	// the per-user and admin surfaces, the user-deletion cascade and
 	// RetireLocalWorker.
 	workerEffects *service.WorkerDeregisterEffects
+	// directory is the data-directory lease this server owns. Serve
+	// releases it with the rest of its teardown, after the store closes;
+	// a construction that fails releases it through acquiredResources.
+	directory *lifecycle.DirectoryLease
+	// ready closes when required Hub initialization has completed and
+	// serving has begun: the point a caller's readiness wait may treat
+	// as "the Hub answers". A bound socket alone does not close it.
+	ready chan struct{}
+}
+
+// Ready reports when required Hub initialization completes and serving
+// begins: database, runtime lease, listeners, and the seeded revocation
+// cursor. A socket that accepts connections does not by itself mean any
+// of that finished.
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
 }
 
 // NewServer creates a new Hub server. It binds every address of the bind set
 // (to fail fast on conflicts), opens the database, runs migrations,
 // bootstraps defaults, and wires all services. Call Serve() to start listening.
-func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
+//
+// directory is the held, ownership-validated lease of the Hub's data
+// directory. NewServer takes ownership of it: it validates the lease
+// against cfg.DataDir and the Hub component before anything opens, a
+// construction failure releases it through acquiredResources, and a
+// successful construction hands it to the returned Server, whose Serve
+// releases it after the store and listener cleanup.
+func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...ServerOption) (*Server, error) {
 	so := serverOptions{listenLocal: locallisten.Listen}
 	for _, opt := range opts {
 		opt(&so)
@@ -295,10 +319,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
+	if err := validateHubLease(cfg, directory); err != nil {
+		return nil, err
+	}
 
 	// Records each resource as it is acquired, so every failure below closes
 	// exactly what is open without restating the subset (see acquiredResources).
+	// The lease joined first: a construction that fails below releases the
+	// directory it was given.
 	var acquired acquiredResources
+	acquired.directory = directory
 
 	// Bind the whole bind set before any database work so that concurrent
 	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
@@ -715,6 +745,9 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// torn down by any of the four is told to stop, loses its memoized
 	// delegation scope, and leaves its owner's client informed.
 	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
+	// The worker's own self-deregistration runs the same effects the four
+	// operator surfaces run; the connector binds the one shared instance.
+	connectorSvc.SetDeregisterEffects(workerEffects)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
@@ -1085,7 +1118,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		})
 	}
 
-	return &Server{
+	hubServer := &Server{
 		cfg:               cfg,
 		store:             st,
 		keystore:          ks,
@@ -1109,7 +1142,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
-	}, nil
+		directory:         directory,
+		ready:             make(chan struct{}),
+	}
+	// The lease is the Server's now; a failure below this point goes
+	// through Serve's teardown, not the construction close.
+	acquired.directory = nil
+	return hubServer, nil
 }
 
 // Store returns the Hub's store for direct database access
@@ -1353,13 +1392,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			primary = nil
 		}
 		return serverTeardownErrors{
-			primary:       primary,
-			tcpListener:   s.listeners.Close(),
-			localListener: closeServerListeners(s.localLns),
-			stateFile:     removeStateFile(s.statePath),
-			httpClose:     s.server.Close(),
-			watcherClose:  watcherCloseErr,
-			storeClose:    s.store.Close(),
+			primary:        primary,
+			tcpListener:    s.listeners.Close(),
+			localListener:  closeServerListeners(s.localLns),
+			stateFile:      removeStateFile(s.statePath),
+			httpClose:      s.server.Close(),
+			watcherClose:   watcherCloseErr,
+			storeClose:     s.store.Close(),
+			directoryLease: s.directory.Close(),
 		}.finalize()
 	}
 
@@ -1459,8 +1499,10 @@ func (s *Server) Serve(ctx context.Context) error {
 			"hub: websocket handler drain timed out during shutdown; abandoning hijacked handlers")
 
 		shutdownDone <- serverTeardownErrors{
-			httpShutdown: httpShutdownErr,
-			httpClose:    httpCloseErr,
+			httpShutdown:   httpShutdownErr,
+			httpClose:      httpCloseErr,
+			storeClose:     nil,
+			directoryLease: nil,
 		}
 	}()
 
@@ -1485,6 +1527,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else {
 		slog.Info("hub listening", "local", s.localListenURLs)
 	}
+
+	// Required initialization is complete and serving has begun: the
+	// database is open and migrated, the runtime lease is held, every
+	// listener of the bind set answers, and the revocation cursor is
+	// seeded. This -- not the bound socket a probe can reach earlier --
+	// is the Hub's readiness.
+	close(s.ready)
 
 	var teardownErrs serverTeardownErrors
 	localsHeard := 0
@@ -1563,6 +1612,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	teardownErrs.foldPendingListenerError(s.listenerErrs)
 	teardownErrs.foldPendingWatcherError(s.revocationWatcher.Errors())
 	teardownErrs.storeClose = s.store.Close()
+	// The lease releases after the store it guards closed, exactly as
+	// the construction-failure path orders it.
+	teardownErrs.directoryLease = s.directory.Close()
 	return teardownErrs.finalize()
 }
 
@@ -1628,14 +1680,15 @@ func (e *serverTeardownErrors) foldPendingWatcherError(watcherErrors <-chan erro
 // runtime shutdown all populate the resources they owned so no cleanup error
 // is silently dropped.
 type serverTeardownErrors struct {
-	primary       error
-	tcpListener   error
-	localListener error
-	stateFile     error
-	httpShutdown  error
-	httpClose     error
-	watcherClose  error
-	storeClose    error
+	primary        error
+	tcpListener    error
+	localListener  error
+	stateFile      error
+	httpShutdown   error
+	httpClose      error
+	watcherClose   error
+	storeClose     error
+	directoryLease error
 }
 
 func (e serverTeardownErrors) finalize() error {
@@ -1648,6 +1701,7 @@ func (e serverTeardownErrors) finalize() error {
 		errwrap.Wrap(e.httpClose, "force-close HTTP server"),
 		errwrap.Wrap(e.watcherClose, "close revocation watcher"),
 		errwrap.Wrap(e.storeClose, "close store"),
+		errwrap.Wrap(e.directoryLease, "release the data directory lease"),
 	)
 }
 
@@ -1683,6 +1737,10 @@ type acquiredResources struct {
 	crdtRegistry   *crdt.Registry
 	cancelHandlers context.CancelFunc
 	cancelServing  context.CancelFunc
+	// directory is the data-directory lease the construction owns until
+	// it succeeds. The SERVER owns it afterwards, so a successful
+	// construction clears it here and Serve releases it instead.
+	directory *lifecycle.DirectoryLease
 }
 
 // close releases the acquired resources, joining the primary construction
@@ -1710,7 +1768,33 @@ func (r acquiredResources) close(primary error) error {
 		localListener: closeServerListeners(r.localLns),
 		stateFile:     removeStateFile(r.statePath),
 		tcpListener:   errors.Join(closeServerListeners(r.tcpLns), closeListenerSet(r.listeners)),
+		// The lease releases after the storage it guards closed.
+		directoryLease: r.directory.Close(),
 	}.finalize()
+}
+
+// validateHubLease states what NewServer accepts as its directory lease:
+// a live lease for the Hub component over this configuration's data
+// directory. Anything else is refused before a listener binds or a store
+// opens, so no half-constructed server ever holds a foreign lease.
+func validateHubLease(cfg *config.Config, directory *lifecycle.DirectoryLease) error {
+	if directory == nil {
+		return errors.New("hub: NewServer requires the data directory's lease")
+	}
+	if directory.Closed() {
+		return errors.New("hub: NewServer received a closed lease; acquire a fresh one")
+	}
+	if directory.Mode() != lifecycle.RoleHub {
+		return fmt.Errorf("hub: NewServer requires the hub component's lease, not %s", directory.Mode())
+	}
+	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	if directory.Path() != canonical {
+		return fmt.Errorf("hub: the lease holds %s, not the configured data directory %s", directory.Path(), canonical)
+	}
+	return nil
 }
 
 func closeListenerSet(set *listenerSet) error {

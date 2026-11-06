@@ -15,16 +15,16 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 
 | Mode | Account needed? | What you see |
 | --- | --- | --- |
-| **Solo** (`leapmux solo`) | One fixed account | No signup screen. Local IPC uses `solo` without a credential. TCP asks the first caller to set its password. |
-| **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
-| **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
+| **Solo** (`leapmux solo run`) | One fixed account | No signup screen. Local IPC uses `solo` without a credential. TCP asks the first caller to set its password. |
+| **Dev** (`leapmux dev run`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
+| **Hub** (`leapmux hub run`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
 In **solo mode** there is nothing to sign up for. Local IPC opens the app without a credential. A passwordless TCP connection shows only the first-password setup screen. It cannot call another protected RPC. After setup, TCP shows the normal sign-in page. Solo mode also disables most account actions in every state: it refuses a change to your profile or your email, and it refuses to detach an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
 **Password is the exception.** **Preferences → Account → Password** is the one account row solo mode keeps, and it both sets the account's first password and changes it afterwards. Setting one is also what lets the Hub answer on a network address, so **Preferences → Administration → Network access** asks for that first password as well, beside the addresses it guards. See [Network access](/docs/admin/configuration/#network-access).
 
 {{< callout type="info" >}}
-If the Hub answers on a non-loopback address before setup, the first TCP caller can claim the `solo` account. LeapMux warns at startup. Set the password from a trusted connection. Every TCP address then asks for it, including `127.0.0.1`. For a multi-user deployment, run `leapmux hub` or `leapmux dev`. See [Security & Threat Model](/docs/admin/security/).
+If the Hub answers on a non-loopback address before setup, the first TCP caller can claim the `solo` account. LeapMux warns at startup. Set the password from a trusted connection. Every TCP address then asks for it, including `127.0.0.1`. For a multi-user deployment, run `leapmux hub run` or `leapmux dev run`. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 The rest of this chapter applies to **hub** and **dev** mode, where accounts are real.

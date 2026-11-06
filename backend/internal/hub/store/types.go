@@ -214,6 +214,14 @@ type Worker struct {
 	// derived from it and DeletedAt (see WorkerStatusOf).
 	DeregisteringAt *time.Time
 	DeletedAt       *time.Time
+	// RegistrationAttemptID is the durable attempt identity a
+	// registration-key Register carried, or "" when the row was not
+	// created by one (the solo launcher's in-process bypass). With it
+	// comes RegistrationKeyHash, the SHA-256 digest of the consumed key.
+	// Both stay internal: the public Worker message and the worker
+	// listings never carry them.
+	RegistrationAttemptID string
+	RegistrationKeyHash   []byte
 }
 
 // WorkerStatusOf derives a worker's lifecycle state from its two timestamps.
@@ -880,14 +888,40 @@ type CreateWorkerParams struct {
 	// PublicKeys is the set the Worker will present in every WorkerHello. The
 	// Hub pins it here, and Connect refuses a hello that differs.
 	PublicKeys WorkerPublicKeys
+	// RegistrationAttemptID and RegistrationKeyHash carry the durable
+	// registration attempt, when the row comes from a registration-key
+	// Register. Both are empty together otherwise; an AutoRegistered row
+	// cannot carry an attempt.
+	RegistrationAttemptID string
+	RegistrationKeyHash   []byte
 }
 
-// Validate reports whether the row is insertable. The key set is the only
-// field the store can check, and it must: the pins are NOT NULL columns, and a
-// partial set could never match a complete hello.
+// Validate reports whether the row is insertable. The key set and the
+// registration-attempt pair are the fields the store can check, and it
+// must: the pins are NOT NULL columns a partial set could never match,
+// and the schema CHECKs would reject a half-present attempt after the
+// insert reached the database.
 func (p CreateWorkerParams) Validate() error {
 	if err := workerkeys.Validate(p.PublicKeys.Proto()); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	switch {
+	case p.RegistrationAttemptID == "" && len(p.RegistrationKeyHash) == 0:
+		return nil
+	case p.RegistrationAttemptID == "" || len(p.RegistrationKeyHash) == 0:
+		return fmt.Errorf("%w: a registration attempt needs both its identity and its key digest", ErrInvalidArgument)
+	case len(p.RegistrationAttemptID) != 32:
+		return fmt.Errorf("%w: the registration attempt identity must hold 32 lowercase hexadecimal characters", ErrInvalidArgument)
+	case len(p.RegistrationKeyHash) != 32:
+		return fmt.Errorf("%w: the registration key digest must hold 32 bytes", ErrInvalidArgument)
+	}
+	for _, c := range p.RegistrationAttemptID {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return fmt.Errorf("%w: the registration attempt identity must hold 32 lowercase hexadecimal characters", ErrInvalidArgument)
+		}
+	}
+	if p.AutoRegistered {
+		return fmt.Errorf("%w: a bundled worker cannot carry a registration attempt", ErrInvalidArgument)
 	}
 	return nil
 }

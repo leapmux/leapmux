@@ -9,9 +9,9 @@ Short answers to the questions people ask most often about LeapMux. Each one lin
 
 ## Do I need a server, or can I just run it locally?
 
-You can run everything locally. The `leapmux solo` command starts a Hub and a Worker on `127.0.0.1:4327`. A TCP browser sets the first `solo` password before it opens the app. The desktop app listens only on a local socket and needs no credential. Add another address under **Preferences → Administration → Network access** to reach the same Hub from another machine.
+You can run everything locally. The `leapmux solo run` command starts a Hub and a Worker on `127.0.0.1:4327`. A TCP browser sets the first `solo` password before it opens the app. The desktop app listens only on a local socket and needs no credential. Add another address under **Preferences → Administration → Network access** to reach the same Hub from another machine.
 
-You only need a separate Hub when you want multiple users, remote Workers, or sign-in. In that case run `leapmux hub` (central relay, real authentication) and connect one or more `leapmux worker` processes to it.
+You only need a separate Hub when you want multiple users, remote Workers, or sign-in. In that case run `leapmux hub run` (central relay, real authentication) and connect one or more `leapmux worker run` processes to it.
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for solo vs. distributed.
 
@@ -20,7 +20,7 @@ See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Conce
 No. Solo mode is single-user by design. It has one account, `solo`. Local IPC uses that account without a credential. A passwordless TCP caller can only set the first password, but the first successful caller claims the account.
 
 {{< callout type="warning" >}}
-If you bind solo mode to a non-loopback address before setup, another machine can claim the account. LeapMux logs a warning. Set the password first and use a firewall, VPN, or SSH tunnel. Use `leapmux hub` for multi-user service.
+If you bind solo mode to a non-loopback address before setup, another machine can claim the account. LeapMux logs a warning. Set the password first and use a firewall, VPN, or SSH tunnel. Use `leapmux hub run` for multi-user service.
 {{< /callout >}}
 
 For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/) and [Managing Workers](/docs/admin/managing-workers/).

@@ -28,6 +28,7 @@ import (
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
 
@@ -275,11 +276,72 @@ type Instance struct {
 	listenURL     string
 	hubErr        error         // set before hubDone is closed
 	hubDone       chan struct{} // closed when the Hub goroutine exits
+	// rootLease is the combined instance's containing lease. It
+	// releases LAST, after every component's work joined -- the plan's
+	// "all instance work is joined before releasing the combined root
+	// lease".
+	rootLease *lifecycle.DirectoryLease
+	// workerLease is the worker component's lease while the worker has
+	// not started. bringUpLocalWorker TRANSFERS it into worker.Run when
+	// the worker goroutine launches; a worker that never starts leaves
+	// it here, and the combined shutdown closes it. Idempotent Close
+	// makes the transfer and the shutdown release safe together.
+	workerLease *lifecycle.DirectoryLease
+	// startupState and its mutex carry the combined startup snapshot the
+	// Instance exposes; usable at the zero value, as the fields above
+	// are, for the half-built instances the failure paths drive.
+	startupMu    sync.Mutex
+	startupState StartupSnapshot
 	// watcherDone closes when the goroutine that turns a cancelled parent
 	// context (or a Hub that exited on its own) into an ordered teardown has
 	// finished. join waits for it so no report or teardown step can still be in
 	// flight after Stop returns.
 	watcherDone chan struct{}
+}
+
+// StartupSnapshot states where a combined startup stands. It is the
+// Instance's own view, for the CLI's status surfaces: the hub's
+// readiness, the worker's, and the deferred-setup window a fresh dev
+// instance waits in.
+type StartupSnapshot struct {
+	// HubReady reports whether the Hub finished its initialization.
+	HubReady bool
+	// WorkerReady reports whether the embedded worker finished its
+	// local initialization.
+	WorkerReady bool
+	// WorkerPendingSetup reports a fresh dev instance whose worker
+	// waits for the first administrator: the instance is ready to
+	// serve SETUP, not yet fully ready.
+	WorkerPendingSetup bool
+}
+
+// Startup snapshots the combined startup state.
+func (i *Instance) Startup() StartupSnapshot {
+	i.startupMu.Lock()
+	defer i.startupMu.Unlock()
+	return i.startupState
+}
+
+// markWorkerReady records the worker's local readiness.
+func (i *Instance) markWorkerReady() {
+	i.startupMu.Lock()
+	i.startupState.WorkerReady = true
+	i.startupState.WorkerPendingSetup = false
+	i.startupMu.Unlock()
+}
+
+// markWorkerPendingSetup records the deferred-setup window.
+func (i *Instance) markWorkerPendingSetup() {
+	i.startupMu.Lock()
+	i.startupState.WorkerPendingSetup = true
+	i.startupMu.Unlock()
+}
+
+// markHubReady records the hub's readiness.
+func (i *Instance) markHubReady() {
+	i.startupMu.Lock()
+	i.startupState.HubReady = true
+	i.startupMu.Unlock()
 }
 
 // LocalListenURL returns the URL at which the Hub is accepting local IPC
@@ -292,6 +354,11 @@ type Instance struct {
 func (i *Instance) LocalListenURL() string {
 	return i.listenURL
 }
+
+// WaitDone closes when Wait's subject -- the Hub goroutine -- has
+// exited. A caller that only needs a termination signal selects on it;
+// Wait and Stop remain the error reporters.
+func (i *Instance) WaitDone() <-chan struct{} { return i.hubDone }
 
 // Wait blocks until the Hub exits (either via Stop or because it failed on its
 // own) and returns its terminal error, verbatim. Safe to call multiple times.
@@ -380,6 +447,12 @@ func (i *Instance) join() {
 	if i.watcherDone != nil {
 		<-i.watcherDone
 	}
+	// The retained worker lease (a worker that never started) and the
+	// combined root lease release here, after every component's work
+	// joined. Idempotent Close keeps the double release with a
+	// transferred worker lease a no-op.
+	_ = i.workerLease.Close()
+	_ = i.rootLease.Close()
 }
 
 // startupFailure reports the error to attribute to a startup that is already
@@ -536,25 +609,18 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 	}, modeName
 }
 
-func Start(ctx context.Context, cfg Config) (*Instance, error) {
-	return start(ctx, cfg, defaultDeps())
-}
-
-func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
+// start is the one body every entry shares: the prepared launch, the
+// supplied root lease (ownership already validated by StartPrepared),
+// and the per-call dependency seams.
+func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, root *lifecycle.DirectoryLease) (*Instance, error) {
 	logging.Setup()
 
-	// The side effects below stay HERE, in this order: the banner is printed
-	// before the data dir is created, and the log level is applied before either.
-	// Only the pure derivation moved out.
-	opts, modeName := soloLoadOptions(cfg)
-	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, opts)
-	if err != nil {
-		return nil, fmt.Errorf("load hub config: %w", err)
-	}
-	hubCfg.DevMode = cfg.DevMode
+	hubCfg := prepared.hubCfg
+	modeName := prepared.role.String()
 
 	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {
+		_ = root.Close()
 		return nil, fmt.Errorf("invalid log level: %w", err)
 	}
 	logging.SetLevel(level)
@@ -563,10 +629,46 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		logging.PrintBanner(modeName)
 	}
 
-	// Split data dir into hub and worker subdirectories.
-	dataDir := hubCfg.DataDir
-	hubCfg.DataDir = filepath.Join(dataDir, "hub")
+	// The combined root lease is held from here. Every failure below
+	// releases it along with whatever this frame acquired.
+	dataDir := prepared.dataDir
+	hubDataDir := filepath.Join(dataDir, "hub")
 	workerDataDir := filepath.Join(dataDir, "worker")
+	// Component leases: both under the SAME containing owner, so a
+	// direct launcher of either component cannot hold the same
+	// directory while this instance lives. Aliased component paths are
+	// rejected before any application state is touched.
+	if hubDataDir == workerDataDir {
+		_ = root.Close()
+		return nil, fmt.Errorf("solo: the hub and worker components resolve to one directory %s", hubDataDir)
+	}
+	owner := root.Owner()
+	hubLease, err := lifecycle.AcquireDirectory(owner, lifecycle.RoleHub, hubDataDir)
+	if err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("acquire the hub component directory: %w", err)
+	}
+	workerLease, err := lifecycle.AcquireDirectory(owner, lifecycle.RoleWorker, workerDataDir)
+	if err != nil {
+		_ = hubLease.Close()
+		_ = root.Close()
+		return nil, fmt.Errorf("acquire the worker component directory: %w", err)
+	}
+	// Release bookkeeping: until the Instance below owns them, this
+	// frame releases every lease it acquired on the failure paths. The
+	// root lease releases only while the Instance does NOT own it; a
+	// committed startup hands all three leases to the Instance and its
+	// components, and join() releases them.
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_ = hubLease.Close()
+		_ = workerLease.Close()
+		_ = root.Close()
+	}()
+	hubCfg.DataDir = hubDataDir
 
 	// NoTCP (the desktop) opens no TCP port: the bind set becomes the local
 	// IPC half of what the launcher configured -- the local entries when it
@@ -579,10 +681,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 			return nil, fmt.Errorf("resolve local listen addresses: %w", localErr)
 		}
 		hubCfg.Listen = local
-	}
-
-	if err := os.MkdirAll(dataDir, 0o750); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
 	// Resolved BEFORE NewServer, so its failure paths cannot leak the server:
@@ -615,10 +713,15 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	}
 	hubCfg.RuntimeLeaseWait = time.Until(probeDeadline)
 
-	server, err := hub.NewServer(hubCfg)
+	// The component directories exist durably already: acquisition
+	// created and validated them. NewServer takes the hub lease's
+	// ownership here; its Serve releases it with the store cleanup.
+	server, err := hub.NewServer(hubCfg, hubLease)
 	if err != nil {
 		return nil, fmt.Errorf("create hub server: %w", err)
 	}
+	// The server owns the hub lease from here; the deferred close above
+	// is an idempotent no-op once its own cleanup ran.
 
 	// AFTER NewServer, and reading the SOCKETS rather than the flag.
 	//
@@ -658,7 +761,14 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		listenURL:    listenURL,
 		hubDone:      make(chan struct{}),
 		watcherDone:  make(chan struct{}),
+		rootLease:    root,
+		workerLease:  workerLease,
 	}
+	// The Instance owns the root and worker leases now; its join()
+	// releases them after the work joins. The deferred cleanup above
+	// still releases the HUB lease should this frame fail before the
+	// server's own teardown can (a no-op when it already ran).
+	committed = true
 
 	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers, and
 	// hubDone is the ONLY "the Hub is finished" signal -- a second one (a wait
@@ -717,20 +827,20 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		return nil, inst.failStartup(startErr)
 	}
 
+	inst.markHubReady()
+
 	// In dev mode the first admin may not exist yet; defer worker bringup
 	// until /setup completes.
-	statePath := filepath.Join(workerDataDir, "state.json")
 	setupWorker := func(ctx context.Context) error {
 		return d.bringUpWorker(ctx, workerBringUp{
-			work:          &inst.workerWork,
-			drained:       &inst.workerDrained,
-			server:        server,
-			statePath:     statePath,
-			workerDataDir: workerDataDir,
-			hubCfg:        hubCfg,
-			listenURL:     listenURL,
-			modeName:      modeName,
-			runWorker:     d.runWorker,
+			work:        &inst.workerWork,
+			drained:     &inst.workerDrained,
+			server:      server,
+			workerLease: workerLease,
+			hubCfg:      hubCfg,
+			listenURL:   listenURL,
+			modeName:    modeName,
+			runWorker:   d.runWorker,
 		})
 	}
 	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
@@ -794,8 +904,10 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	switch {
 	case err == nil:
 		// Worker is up.
+		inst.markWorkerReady()
 	case errors.Is(err, errNoAdminYet) && cfg.DevMode:
 		slog.Info("dev mode: deferring worker auto-registration until first admin signs up via /setup")
+		inst.markWorkerPendingSetup()
 		// Counted with the Worker, not the Hub: it is the thing that brings the
 		// Worker up, so the ordered shutdown has to wait it out before it can
 		// know no Worker is on its way. Added while the bring-up token is still
@@ -885,12 +997,15 @@ func pollForDeferredWorkerSetup(ctx context.Context, work, drained *drain.Counte
 type workerBringUp struct {
 	work, drained *drain.Counter
 	server        *hub.Server
-	statePath     string
-	workerDataDir string
-	hubCfg        *hubconfig.Config
-	listenURL     string
-	modeName      string
-	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
+	// workerLease is the worker component's held lease. bringUpLocalWorker
+	// TRANSFERS it into worker.Run when the worker goroutine launches;
+	// until then the Instance retains it, and the combined shutdown
+	// closes it. Paths derive from lease.Path().
+	workerLease *lifecycle.DirectoryLease
+	hubCfg      *hubconfig.Config
+	listenURL   string
+	modeName    string
+	runWorker   func(ctx context.Context, cfg worker.RunConfig) error
 }
 
 // bringUpLocalWorker loads (or creates, then persists) the local worker's
@@ -900,7 +1015,7 @@ type workerBringUp struct {
 // completes. Callers must key on THAT sentinel, not on the store.ErrNotFound
 // underneath it, which also reaches here from lookups that are real failures.
 func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
-	state, compositeKey, err := loadOrCreateWorkerState(ctx, p.server, p.statePath, p.workerDataDir)
+	state, compositeKey, err := loadOrCreateWorkerState(ctx, p.server, p.workerLease)
 	if err != nil {
 		return err
 	}
@@ -919,6 +1034,18 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 		"key_fingerprint", compositeKey.Fingerprint(),
 	)
 
+	// readiness carries the worker's own verdict to this bring-up: nil
+	// once its local initialization completed (OnReady), or its failure
+	// when it never got there. Start does not return a healthy Instance
+	// for a worker whose database never opened.
+	ready := make(chan error, 1)
+	reportReady := func() {
+		select {
+		case ready <- nil:
+		default:
+		}
+	}
+
 	p.work.Add()
 	p.drained.Add()
 	// Guarded so the drain signal is released exactly once whether the Worker
@@ -932,7 +1059,8 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 		wErr := p.runWorker(ctx, worker.RunConfig{
 			Drained:      releaseDrained,
 			HubURL:       p.listenURL,
-			DataDir:      p.workerDataDir,
+			Directory:    p.workerLease,
+			OnReady:      reportReady,
 			AuthToken:    state.AuthToken,
 			CompositeKey: compositeKey,
 			WorkerID:     state.WorkerID,
@@ -952,6 +1080,12 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			RegisteredBy:            state.RegisteredBy,
 		})
 		if wErr != nil {
+			// A startup that failed before readiness ends the bring-up
+			// with its cause; a teardown-caused cancel does not.
+			select {
+			case ready <- wErr:
+			default:
+			}
 			slog.Error("worker error", "error", wErr)
 		}
 		// Run also returns with ctx live. Instance.Wait does not learn of it, and
@@ -966,7 +1100,16 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 		}
 	}()
 
-	return nil
+	// The bring-up verdict: the worker's local readiness, its startup
+	// failure, or the context's end. A caller cancelling during the
+	// worker's initialization reports through the stage gates above,
+	// not as the worker's fault.
+	select {
+	case err := <-ready:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // workerRegistrar is the slice of *hub.Server that worker-state loading needs:
@@ -985,10 +1128,11 @@ type workerRegistrar interface {
 // loadOrCreateWorkerState returns the local Worker's state and its keypair: the
 // saved ones when they can be launched (reuseSavedWorkerState), and a freshly
 // registered Worker's otherwise.
-func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, statePath, workerDataDir string) (*soloState, *noiseutil.CompositeKeypair, error) {
-	if err := os.MkdirAll(workerDataDir, 0o750); err != nil {
-		return nil, nil, fmt.Errorf("create worker data dir: %w", err)
-	}
+func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, lease *lifecycle.DirectoryLease) (*soloState, *noiseutil.CompositeKeypair, error) {
+	// The component directory exists durably and is owned by this
+	// instance: acquisition created and validated it before any state
+	// read. Every path derives from the lease.
+	statePath := filepath.Join(lease.Path(), "state.json")
 
 	saved, savedKey, err := reuseSavedWorkerState(ctx, server, statePath)
 	if err != nil || saved != nil {

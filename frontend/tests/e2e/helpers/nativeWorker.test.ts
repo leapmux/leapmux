@@ -46,6 +46,27 @@ const options = { dataDirPrefix: 'native-worker-unit', workerName: 'Private unit
 let directory: string
 let proc: ChildProcess
 
+/**
+ * Route spawn calls the way the real helper does: the registration
+ * command is its own short-lived process that exits 0 once its
+ * listener is attached; every other spawn is the current worker
+ * process the test controls.
+ */
+function routeSpawnToProc(current: () => ChildProcess) {
+  return (_command: string, args: readonly string[]) => {
+    if (args[0] === 'worker' && args[1] === 'register') {
+      const registerProc = Object.assign(new ChildProcess(), {
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        pid: 31233,
+      })
+      queueMicrotask(() => registerProc.emit('exit', 0, null))
+      return registerProc
+    }
+    return current()
+  }
+}
+
 beforeEach(() => {
   vi.resetAllMocks()
   mkdirSync(scratchRoot, { recursive: true })
@@ -60,7 +81,10 @@ beforeEach(() => {
   calls.online.mockResolvedValue('private-worker')
   calls.deregister.mockResolvedValue(undefined)
   calls.directory.mockReturnValue(directory)
-  calls.spawn.mockReturnValue(proc)
+  // The registration command is its own short-lived process that exits
+  // 0 once its listener is attached; every other spawn -- the worker
+  // itself -- is the shared `proc` the tests control.
+  calls.spawn.mockImplementation(routeSpawnToProc(() => proc))
   calls.environment.mockImplementation(value => ({ ...value, PRIVATE_ENV_FILTERED: 'true' }))
   calls.alive.mockReturnValue(false)
   calls.stop.mockImplementation(async () => {
@@ -119,14 +143,23 @@ describe('withNativeWorker', () => {
       REMOVED_VALUE: undefined,
       LEAPMUX_WORKER_NAME: options.workerName,
     })
-    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+    expect(calls.spawn).toHaveBeenNthCalledWith(1, '/isolated/leapmux', [
       'worker',
+      'register',
       '--hub',
       server.hubUrl,
-      '--data-dir',
-      directory,
       '--registration-key',
       'private-registration-key',
+      '--data-dir',
+      directory,
+    ], expect.objectContaining({
+      env: expect.objectContaining({ HOME: server.agentEnv.HOME, PRIVATE_ENV_FILTERED: 'true' }),
+    }))
+    expect(calls.spawn).toHaveBeenNthCalledWith(2, '/isolated/leapmux', [
+      'worker',
+      'run',
+      '--data-dir',
+      directory,
     ], expect.objectContaining({
       env: expect.objectContaining({ HOME: server.agentEnv.HOME, PRIVATE_ENV_FILTERED: 'true' }),
     }))
@@ -257,7 +290,7 @@ describe('withNativeWorker', () => {
       stderr: new PassThrough(),
       pid: 31235,
     })
-    calls.spawn.mockReturnValue(proc)
+    calls.spawn.mockImplementation(routeSpawnToProc(() => proc))
     await expect(withNativeWorker(server, options, async () => {})).rejects.toThrow('The private Worker failed')
     expect(calls.alive).toHaveBeenCalledWith(31235)
   })
@@ -374,8 +407,7 @@ describe('spawnWorkerProcess', () => {
     })).toBe(proc)
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
       'worker',
-      '--hub',
-      server.hubUrl,
+      'run',
       '--data-dir',
       directory,
     ], {
@@ -399,8 +431,7 @@ describe('spawnWorkerProcess', () => {
     })
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
       'worker',
-      '--hub',
-      server.hubUrl,
+      'run',
       '--data-dir',
       directory,
       '--encryption-mode',
@@ -434,14 +465,23 @@ describe('spawnRegisteredWorker', () => {
       onSpawn,
     })
     expect(registered).toEqual({ proc, workerId: 'private-worker' })
-    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+    expect(calls.spawn).toHaveBeenNthCalledWith(1, '/isolated/leapmux', [
       'worker',
+      'register',
       '--hub',
       server.hubUrl,
-      '--data-dir',
-      directory,
       '--registration-key',
       'private-registration-key',
+      '--data-dir',
+      directory,
+    ], expect.objectContaining({
+      env: expect.objectContaining({ PRIVATE_ENV_FILTERED: 'true' }),
+    }))
+    expect(calls.spawn).toHaveBeenNthCalledWith(2, '/isolated/leapmux', [
+      'worker',
+      'run',
+      '--data-dir',
+      directory,
       '--encryption-mode',
       'post-quantum',
     ], expect.objectContaining({

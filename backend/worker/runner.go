@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/clockjump"
 )
 
@@ -33,7 +34,12 @@ type RunConfig struct {
 	// connection pool per protocol and one h2c verdict.
 	HubEndpoint *hubtransport.Endpoint
 
-	DataDir              string                      // Directory for persistent state
+	// Directory is the held, ownership-validated lease of the worker's
+	// data directory. Run takes ownership of it: it validates the lease
+	// before anything opens, derives every storage path from
+	// Directory.Path(), and releases it after the database closes on
+	// every return path.
+	Directory            *lifecycle.DirectoryLease
 	AuthToken            string                      // Pre-provisioned auth token Run connects with
 	CompositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
 	WorkerID             string                      // Worker ID (from registration)
@@ -75,6 +81,28 @@ type RunConfig struct {
 	// a caller that must forget this worker does so before anything can stop it.
 	// Run then shuts down, calls Drained and returns nil, with ctx still live.
 	OnDeregister func()
+	// OnReady, when non-nil, runs after local database initialization
+	// and runtime wiring complete: the point at which the worker is
+	// locally ready whatever its Hub connection is doing. It runs at
+	// most once, and never on a startup that fails before it.
+	OnReady func()
+	// OnConnectionState, when non-nil, reports the Hub connection's
+	// transitions: the accepted Hub identity once the first stream is
+	// admitted, and each later disconnection. A worker whose Hub is
+	// unavailable becomes locally ready and reports reconnecting through
+	// this hook, so a launcher can distinguish "registered and ready"
+	// from "registered and connected".
+	OnConnectionState func(state ConnectionState)
+}
+
+// ConnectionState is one Hub-connection transition a launcher observes.
+type ConnectionState struct {
+	// Connected is true when the Hub accepted this worker's identity.
+	Connected bool
+	// HubURL is the endpoint the transition concerns.
+	HubURL string
+	// Err states the disconnection's cause when Connected is false.
+	Err error
 }
 
 // Run starts the worker and blocks until ctx is cancelled, the Hub stops this
@@ -99,6 +127,23 @@ type RunConfig struct {
 // cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
 // solo, dev and the desktop app all reach, and the `leapmux worker` command.
 func Run(ctx context.Context, cfg RunConfig) error {
+	// The lease is required, held for the worker component, and not
+	// already released: every storage path below derives from it, and
+	// its lock is what makes this process the directory's only worker.
+	if cfg.Directory == nil {
+		return errors.New("worker: RunConfig.Directory is required: Run owns the worker data directory's lease")
+	}
+	if cfg.Directory.Mode() != lifecycle.RoleWorker {
+		return fmt.Errorf("worker: RunConfig.Directory must hold the worker component's lease, not %s", cfg.Directory.Mode())
+	}
+	if cfg.Directory.Closed() {
+		return errors.New("worker: RunConfig.Directory is a closed lease: acquire a fresh one for this run")
+	}
+	// Ownership transfers here: whatever this function returns, the
+	// lease releases after the database below closes.
+	defer func() { _ = cfg.Directory.Close() }()
+	dataDir := cfg.Directory.Path()
+
 	// workerkeys.Of refuses a nil keypair too. Checking here, before anything
 	// opens, also keeps bootstrap.Wire from panicking on a keypair it cannot
 	// describe, on a goroutine that solo does not recover.
@@ -123,7 +168,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	clockjump.StartLoop(clockCtx)
 
 	// Open the Worker-local database for persistent state.
-	dbPath := filepath.Join(cfg.DataDir, "worker.db")
+	dbPath := filepath.Join(dataDir, "worker.db")
 	sqlDB, err := workerdb.Open(dbPath, sqlitedb.Config{
 		MaxConns:  cfg.DBMaxConns,
 		CacheSize: cfg.DBCacheSize,
@@ -197,7 +242,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		WorkerID:             cfg.WorkerID,
 		Name:                 workerName,
 		HomeDir:              homeDir,
-		DataDir:              cfg.DataDir,
+		DataDir:              dataDir,
 		AuthToken:            cfg.AuthToken,
 		SeedRegisteredBy:     cfg.RegisteredBy,
 		AgentStartupTimeout:  cfg.AgentStartupTimeout,
@@ -208,6 +253,14 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		UseLoginShell:           cfg.UseLoginShell,
 		WakeLock:                wakeLockTracker,
 	})
+
+	// Local readiness: the database is open, migrated, and wired. A
+	// registered worker with an unavailable Hub is ready HERE, and its
+	// connection state says reconnecting -- local readiness and Hub
+	// connectivity are separate facts and both hooks report them.
+	if cfg.OnReady != nil {
+		cfg.OnReady()
+	}
 
 	// runShutdown drains service state. It must run BEFORE the bidi
 	// stream is torn down, not merely before client.Stop(): Client.Connect
@@ -275,5 +328,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		watcher.Wait()
 	}()
 
+	// The connection transitions reach the launcher before the stream
+	// loop takes over.
+	if cfg.OnConnectionState != nil {
+		client.OnConnectionState = func(connected bool, err error) {
+			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: cfg.HubURL, Err: err})
+		}
+	}
 	return client.ConnectWithReconnect(runCtx, cfg.AuthToken)
 }

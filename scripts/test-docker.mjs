@@ -116,17 +116,18 @@ try {
   const probe = join(directory, 'probe')
   writeFileSync(probe, `#!/bin/sh
 set -eu
-test "$#" -eq 3
+test "$#" -eq 4
 test "$1" = "$LEAPMUX_MODE"
-test "$2" = -config
-test "$3" = "$LEAPMUX_DATA_DIR/$LEAPMUX_MODE/$LEAPMUX_MODE.yaml"
+test "$2" = run
+test "$3" = -config
+test "$4" = "$LEAPMUX_DATA_DIR/$LEAPMUX_MODE/$LEAPMUX_MODE.yaml"
 test "$LEAPMUX_HUB_LOG_LEVEL" = debug
-test -f "$3"
-test "$(stat -c %a "$3")" = 600
+test -f "$4"
+test "$(stat -c %a "$4")" = 600
 if test "$PROBE_EXISTING" = yes; then
-  test "$(cat "$3")" = preserved
+  test "$(cat "$4")" = preserved
 else
-  test ! -s "$3"
+  test ! -s "$4"
 fi
 echo probe-ran
 if test "$PROBE_EXIT" = signal; then kill -KILL $$; fi

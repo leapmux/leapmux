@@ -38,7 +38,7 @@ printf '%s\n' "$@" > "$LEAPMUX_CAPTURE"
 
 	args, err := os.ReadFile(capturePath)
 	require.NoError(t, err)
-	assert.Equal(t, "solo\n-config\n"+filepath.Join(dataDir, "solo", "solo.yaml")+"\n", string(args))
+	assert.Equal(t, "solo\nrun\n-config\n"+filepath.Join(dataDir, "solo", "solo.yaml")+"\n", string(args))
 	assert.FileExists(t, filepath.Join(dataDir, "solo", "solo.yaml"))
 }
 

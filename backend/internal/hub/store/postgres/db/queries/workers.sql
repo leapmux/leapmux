@@ -1,13 +1,19 @@
 -- name: CreateWorker :exec
 INSERT INTO workers (id, auth_token, registered_by, auto_registered,
-                     x25519_public_key, mlkem_public_key, slhdsa_public_key)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+                     x25519_public_key, mlkem_public_key, slhdsa_public_key,
+                     registration_attempt_id, registration_key_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetWorkerByID :one
 SELECT * FROM workers WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: GetWorkerByIDIncludeDeleted :one
 SELECT * FROM workers WHERE id = $1;
+
+-- name: GetWorkerByRegistrationAttemptID :one
+-- Includes deleted rows: the registration recovery path must tell a
+-- completed-then-deleted attempt from an unknown one.
+SELECT * FROM workers WHERE registration_attempt_id = $1;
 
 -- name: GetWorkerByAuthTokenIncludeDeleted :one
 -- The token read of AuthenticateWorkerBearer, which every worker credential

@@ -130,14 +130,14 @@ func TestDispatchGroup_Abbreviation(t *testing.T) {
 // TestRunCLI_TopLevelAbbreviation verifies the top-level command dispatch
 // resolves unambiguous prefixes.
 func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
-	t.Run("abbreviated solo dispatches", func(t *testing.T) {
+	t.Run("abbreviated solo dispatches its run verb", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		var calls []cliCall
-		code := runCLI([]string{"sol"}, &stdout, &stderr, testCLIRunners(&calls))
+		code := runCLI([]string{"sol", "run"}, &stdout, &stderr, testCLIRunners(&calls))
 		assert.Equal(t, 0, code)
 		require.Len(t, calls, 1)
 		assert.Equal(t, "solo", calls[0].command)
-		assert.True(t, calls[0].soloMode)
+		assert.Equal(t, []string{"run"}, calls[0].args)
 	})
 
 	t.Run("abbreviated version dispatches", func(t *testing.T) {
@@ -166,20 +166,20 @@ func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
 		assert.Equal(t, "control", calls[0].command)
 	})
 
-	t.Run("abbreviated dev dispatches", func(t *testing.T) {
+	t.Run("abbreviated dev dispatches its run verb", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		var calls []cliCall
-		code := runCLI([]string{"d"}, &stdout, &stderr, testCLIRunners(&calls))
+		code := runCLI([]string{"d", "run"}, &stdout, &stderr, testCLIRunners(&calls))
 		assert.Equal(t, 0, code)
 		require.Len(t, calls, 1)
-		assert.Equal(t, "solo", calls[0].command)
-		assert.False(t, calls[0].soloMode)
+		assert.Equal(t, "dev", calls[0].command)
+		assert.Equal(t, []string{"run"}, calls[0].args)
 	})
 
 	t.Run("full command names still work", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		var calls []cliCall
-		code := runCLI([]string{"hub"}, &stdout, &stderr, testCLIRunners(&calls))
+		code := runCLI([]string{"hub", "status"}, &stdout, &stderr, testCLIRunners(&calls))
 		assert.Equal(t, 0, code)
 		require.Len(t, calls, 1)
 		assert.Equal(t, "hub", calls[0].command)

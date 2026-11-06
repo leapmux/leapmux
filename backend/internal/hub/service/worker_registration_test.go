@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -231,14 +233,24 @@ func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*leapmuxv1.Regist
 }
 
 // registerWithKeys registers with an explicit key set, for the tests that must
-// present a malformed one or a second set.
+// present a malformed one or a second set. Each call mints a fresh attempt
+// identity, the way the worker's register command does per invocation.
 func (e *regKeyEnv) registerWithKeys(t *testing.T, key string, keys *leapmuxv1.WorkerPublicKeys) (*leapmuxv1.RegisterResponse, error) {
 	t.Helper()
 	ctx, info := connect.NewClientContext(context.Background())
 	if key != "" {
 		info.RequestHeader().Set("Authorization", "Bearer "+key)
 	}
-	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Keys: keys})
+	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Keys: keys, AttemptId: testAttemptID(t)})
+}
+
+// testAttemptID mints one valid durable attempt identity.
+func testAttemptID(t *testing.T) string {
+	t.Helper()
+	var buf [16]byte
+	_, err := rand.Read(buf[:])
+	require.NoError(t, err)
+	return hex.EncodeToString(buf[:])
 }
 
 func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
@@ -841,7 +853,8 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 			info.RequestHeader().Set("Authorization", "Bearer "+key)
 		}
 		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{
-			Keys: workerkeystest.Keys(0x31),
+			Keys:      workerkeystest.Keys(0x31),
+			AttemptId: testAttemptID(t),
 		})
 		return err
 	}

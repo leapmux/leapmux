@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/leapmux/leapmux/internal/util/filelock"
 )
 
 // lockFileName is the lock file of each agent directory. The worker that owns
@@ -93,14 +95,14 @@ type lockFile struct {
 // a lock on a file that no longer has a name, which is why the check at the
 // end compares the file under the lock with the file at the path.
 func createLock(path string) (*lockFile, error) {
-	file, err := openLockFile(path, true)
+	file, err := filelock.Open(path, true)
 	if errors.Is(err, fs.ErrExist) || errors.Is(err, fs.ErrNotExist) {
 		return nil, errLockTaken
 	}
 	if err != nil {
 		return nil, err
 	}
-	held, err := tryLock(file)
+	held, err := filelock.TryLock(file)
 	if err == nil && !held {
 		err = errLockTaken
 	}
@@ -123,14 +125,14 @@ func createLock(path string) (*lockFile, error) {
 // lock, so createLock of a worker that still creates the directory fails, and
 // that worker makes another directory.
 func claimLock(path string) (*lockFile, bool, error) {
-	file, err := openLockFile(path, false)
+	file, err := filelock.Open(path, false)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	held, err := tryLock(file)
+	held, err := filelock.TryLock(file)
 	if err != nil || !held || !stillAt(file, path) {
 		_ = file.Close()
 		return nil, false, err
@@ -157,5 +159,5 @@ func (l *lockFile) release() error {
 	if l == nil {
 		return nil
 	}
-	return errors.Join(unlock(l.file), l.file.Close())
+	return errors.Join(filelock.Unlock(l.file), l.file.Close())
 }

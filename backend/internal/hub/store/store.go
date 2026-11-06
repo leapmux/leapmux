@@ -247,6 +247,10 @@ type WorkerStore interface {
 	// deregistering worker must still be admitted: Connect is how it is told
 	// to stop, and its other calls keep working until then.
 	GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*Worker, error)
+	// GetByRegistrationAttemptID returns the worker a durable registration
+	// attempt created, deleted rows included: recovery must tell a
+	// completed-then-deleted attempt from an unknown one.
+	GetByRegistrationAttemptID(ctx context.Context, attemptID string) (*Worker, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)

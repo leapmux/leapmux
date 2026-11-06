@@ -155,7 +155,29 @@ CREATE TABLE workers (
     -- just register a fresh worker, and the running worker would stop until
     -- that launch.
     auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
-    deleted_at    TIMESTAMPTZ
+    -- Registration recovery metadata. attempt_id is the worker-side
+    -- durable attempt identity (32 lowercase hex chars, validated at
+    -- the application boundary); key_hash is the SHA-256 digest of the
+    -- registration key. Both are NULL together on every row a
+    -- registration attempt did not create; UNIQUE admits one NULL, so
+    -- two rows cannot share an attempt or a key digest.
+    registration_attempt_id TEXT COLLATE "C" DEFAULT NULL UNIQUE,
+    registration_key_hash BYTEA DEFAULT NULL UNIQUE,
+    deleted_at    TIMESTAMPTZ,
+    CONSTRAINT workers_registration_attempt CHECK (
+        (registration_attempt_id IS NULL AND registration_key_hash IS NULL)
+        OR (
+            registration_attempt_id IS NOT NULL
+            AND length(registration_attempt_id) = 32
+            AND registration_key_hash IS NOT NULL
+            AND octet_length(registration_key_hash) = 32
+        )
+    ),
+    -- The solo launcher's in-process bypass creates no registration
+    -- attempt, so a bundled row can never carry one.
+    CONSTRAINT workers_auto_registration_attempt CHECK (
+        auto_registered = FALSE OR registration_attempt_id IS NULL
+    )
 );
 -- See the sqlite migration for which query each index serves.
 CREATE INDEX idx_workers_registered_by ON workers(registered_by);

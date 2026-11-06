@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -65,6 +66,14 @@ type WorkerConnectorService struct {
 	// worker discards every user's channels on that machine where dropping a
 	// tab costs a reconnect. See sendq.Pool on membership as a blast radius.
 	queuePool *sendq.Pool
+	// challenges holds the outstanding registration-recovery
+	// challenges. In memory only: a Hub restart invalidates them, and a
+	// client obtains a fresh one through its durable attempt record.
+	challenges *registrationChallengeStore
+	// deregisterEffects runs the out-of-database half of the worker's
+	// self-deregistration, exactly as every other removal surface runs
+	// it. Nil in unit tests that exercise only the store half.
+	deregisterEffects *WorkerDeregisterEffects
 	// maxWorkersPerUser bounds how many ACTIVE worker rows one account may hold,
 	// so a machine is turned away at registration -- where the operator can be
 	// told which key to raise -- rather than at its first Connect. Zero is
@@ -110,7 +119,16 @@ func NewWorkerConnectorService(
 		crdtRegistry: registry,
 		queuePool:    queuePool,
 		clock:        clock,
+		challenges:   newRegistrationChallengeStore(clock),
 	}
+}
+
+// SetDeregisterEffects binds the out-of-database deregistration
+// effects. Production wires the same instance every other removal
+// surface uses; the setter keeps the constructor stable for the test
+// environments that exercise only one half.
+func (s *WorkerConnectorService) SetDeregisterEffects(effects *WorkerDeregisterEffects) {
+	s.deregisterEffects = effects
 }
 
 // workerIdleTimeout is how long a Connect stream may stay silent: before the
@@ -233,6 +251,33 @@ func (s *WorkerConnectorService) Register(
 	if err := workerkeys.Validate(req.GetKeys()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
+	// The durable attempt identity: 32 lowercase hexadecimal characters
+	// the worker minted and saved before its first network call. It is
+	// what turns a lost response into a recoverable attempt instead of a
+	// consumed key with no credentials.
+	attemptID := req.GetAttemptId()
+	if !validateAttemptIdentity(attemptID) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			"attempt_id must hold 32 lowercase hexadecimal characters")
+	}
+	keyDigest := registrationKeyDigest(regKey)
+
+	// A repeated Register with the same attempt is the committed attempt
+	// it already served, not a new worker. The digest and the pinned
+	// public keys must both agree; a disagreement on either is a
+	// different key or a different worker trying this attempt, and
+	// neither recovers anything.
+	if existing, err := s.store.Workers().GetByRegistrationAttemptID(ctx, attemptID); err == nil {
+		if subtle.ConstantTimeCompare(existing.RegistrationKeyHash, keyDigest) == 1 &&
+			workerkeys.Equal(req.GetKeys(), existing.PublicKeys.Proto()) {
+			return nil, connect.NewError(connect.CodeAlreadyExists,
+				"this registration attempt already created a worker; recover its credentials")
+		}
+		return nil, connect.NewError(connect.CodeUnauthenticated,
+			"registration attempt unknown or already consumed")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read the registration attempt: %w", err))
+	}
 
 	workerID := id.Generate()
 	authToken := id.Generate()
@@ -274,10 +319,12 @@ func (s *WorkerConnectorService) Register(
 			return err
 		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:           workerID,
-			AuthToken:    authToken,
-			RegisteredBy: registrantUID,
-			PublicKeys:   store.WorkerPublicKeysFromProto(req.GetKeys()),
+			ID:                    workerID,
+			AuthToken:             authToken,
+			RegisteredBy:          registrantUID,
+			PublicKeys:            store.WorkerPublicKeysFromProto(req.GetKeys()),
+			RegistrationAttemptID: attemptID,
+			RegistrationKeyHash:   keyDigest,
 		}); err != nil {
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 		}

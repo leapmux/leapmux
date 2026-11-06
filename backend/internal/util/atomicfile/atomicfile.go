@@ -5,6 +5,7 @@
 package atomicfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,52 @@ import (
 // temporary file's name. WriteFile composes the name and RemoveTempFiles
 // recognizes it, so the two agree by construction.
 const tempSuffix = ".tmp"
+
+// fileOps is the filesystem seam every writer in this package goes
+// through. It exists so a test can observe the REAL operation order of a
+// write -- create, chmod, write, sync, close, rename, and (for the
+// durable writers) the parent-directory sync -- rather than infer it from
+// a mocked return value. defaultFileOps performs the operations; a test
+// wraps it and records.
+//
+// The operations are one-to-one with the calls WriteFile already made;
+// introducing the seam changed their order nowhere.
+type fileOps interface {
+	createTemp(dir, pattern string) (*os.File, error)
+	chmod(f *os.File, mode os.FileMode) error
+	write(f *os.File, data []byte) error
+	sync(f *os.File) error
+	close(f *os.File) error
+	rename(oldpath, newpath string) error
+	remove(path string) error
+	// syncDir flushes a directory entry. No writer below calls it until
+	// WriteFileDurable; it is on the seam so the same observation point
+	// covers the publication step.
+	syncDir(path string) error
+}
+
+// defaultFileOps performs each operation through the os package.
+type defaultFileOps struct{}
+
+func (defaultFileOps) createTemp(dir, pattern string) (*os.File, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
+func (defaultFileOps) chmod(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
+
+func (defaultFileOps) write(f *os.File, data []byte) error { _, err := f.Write(data); return err }
+
+func (defaultFileOps) sync(f *os.File) error { return f.Sync() }
+
+func (defaultFileOps) close(f *os.File) error { return f.Close() }
+
+func (defaultFileOps) rename(oldpath, newpath string) error { return replaceFile(oldpath, newpath) }
+
+func (defaultFileOps) remove(path string) error { return os.Remove(path) }
+
+// ops is the seam the package's writers use. Package-private on purpose:
+// only this package's writers and its tests substitute it.
+var ops fileOps = defaultFileOps{}
 
 // WriteFile writes data to path atomically: it first writes the bytes
 // to a UNIQUE temporary file beside path with mode, then replaces path
@@ -43,7 +90,16 @@ const tempSuffix = ".tmp"
 // callers responsible for first-time setup should call os.MkdirAll on
 // the parent themselves.
 func WriteFile(path string, data []byte, mode os.FileMode) error {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix)
+	return writeFileSequenced(path, data, mode, ops.rename)
+}
+
+// writeFileSequenced is the one implementation of the temporary-file
+// write sequence, shared by WriteFile and WriteFileDurable. replace is
+// the publication step: the atomic writer passes the platform replace,
+// the durable one passes its write-through variant. The operations run
+// through the package's seam in one order for both.
+func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) error {
+	f, err := ops.createTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix)
 	if err != nil {
 		return err
 	}
@@ -57,26 +113,26 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 		if committed {
 			return
 		}
-		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = ops.close(f)
+		_ = ops.remove(tmp)
 	}()
 
 	// os.CreateTemp always creates at 0600, so WriteFile applies a mode
 	// that must be wider (or narrower) here rather than after the rename,
 	// where a reader could see the file at the wrong mode.
-	if err := f.Chmod(mode); err != nil {
+	if err := ops.chmod(f, mode); err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
+	if err := ops.write(f, data); err != nil {
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := ops.sync(f); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := ops.close(f); err != nil {
 		return err
 	}
-	if err := replaceFile(tmp, path); err != nil {
+	if err := replace(tmp, path); err != nil {
 		return err
 	}
 	committed = true
@@ -93,6 +149,11 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 // deletes path must call this too, or it reports the content gone while
 // a copy of it stays on the disk.
 //
+// Every matching entry is attempted even when one removal fails, and
+// every independent failure is joined into the result: a caller that
+// could see only the first error could not name the copies that stayed
+// behind, and the retry would not know what to look for.
+//
 // A missing directory is not a failure: there is nothing to remove.
 func RemoveTempFiles(path string) error {
 	dir, base := filepath.Split(path)
@@ -107,16 +168,14 @@ func RemoveTempFiles(path string) error {
 		return err
 	}
 	prefix := base + tempSuffix
-	var firstErr error
+	var errs []error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
 			continue
 		}
-		// This loop attempts every entry and reports the FIRST failure: a
-		// file this process cannot remove must not hide the ones it can.
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) && firstErr == nil {
-			firstErr = err
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }

@@ -66,7 +66,7 @@ Each mode looks for a YAML config file in its own directory under `~/.config/lea
 Override the path with the `--config` (or `-config`) flag, which accepts `--config=PATH`, `--config PATH`, `-config=PATH`, or `-config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
 
 ```bash
-leapmux hub --config /etc/leapmux/hub.yaml
+leapmux hub run --config /etc/leapmux/hub.yaml
 ```
 
 ### Data directory resolution
@@ -418,7 +418,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 
 ### Solo and dev extras (worker-scoped)
 
-`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. They are rejected by `leapmux hub`, which has no Worker to configure.
+`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. They are rejected by `leapmux hub run`, which has no Worker to configure.
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
@@ -428,7 +428,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 | `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
 
 {{< callout type="info" >}}
-`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
+`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub run`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
 {{< /callout >}}
 
 ### Connections per user
@@ -685,7 +685,7 @@ storage:
 ```
 
 ```bash
-leapmux hub --config /etc/leapmux/hub.yaml
+leapmux hub run --config /etc/leapmux/hub.yaml
 
 # Behavioral settings live in the database now — set once, then they
 # survive and can change under the running Hub:
@@ -712,7 +712,7 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 
 ```bash
 # First run only: pass the registration key minted in the Hub UI
-leapmux worker --registration-key "<key-from-hub-ui>"
+leapmux worker register --registration-key "<key-from-hub-ui>"
 # Subsequent runs: the key is already saved in state.json
 leapmux worker
 ```

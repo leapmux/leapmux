@@ -77,6 +77,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 
   const proc = spawnTestProcess(binaryPath, [
     'dev',
+    'run',
     '-listen',
     '127.0.0.1:0',
     '-data-dir',
@@ -164,6 +165,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const proc = spawnTestProcess(binaryPath, [
     'solo',
+    'run',
     '-listen',
     requestedListen,
     '-data-dir',

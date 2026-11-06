@@ -84,13 +84,15 @@ func startRefusingHub(t *testing.T, code connect.Code, reason leapmuxv1.WorkerCo
 	}})
 }
 
-// writeRegisteredState writes the state of a Worker that already registered, and
-// returns the data directory that holds it.
-func writeRegisteredState(t *testing.T) *config.Config {
+// writeRegisteredState writes the state of a Worker that already
+// registered against hubURL, and returns the configuration that reads
+// it. The saved endpoint is the one the runtime dials: a --hub flag on
+// a runtime command never redirects saved credentials.
+func writeRegisteredStateAgainst(t *testing.T, hubURL string) *config.Config {
 	t.Helper()
 	cfg := &config.Config{DataDir: t.TempDir()}
 	// The keypair comes first: a state that holds a token refuses to generate one.
-	state := &config.State{}
+	state := &config.State{HubURL: hubURL}
 	_, _, err := state.EnsureCompositeKeypair()
 	require.NoError(t, err)
 	state.WorkerID = "worker-1"
@@ -103,11 +105,11 @@ func writeRegisteredState(t *testing.T) *config.Config {
 //
 // Not parallel: runWorker sets the process-global log level.
 func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
-	cfg := writeRegisteredState(t)
 	hubURL := startRefusingHub(t, connect.CodeUnauthenticated,
 		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+	cfg := writeRegisteredStateAgainst(t, hubURL)
 
-	require.NoError(t, runWorker([]string{"--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "error"}))
+	require.NoError(t, runWorker([]string{"--data-dir", cfg.DataDir, "--log-level", "error"}))
 
 	_, err := os.Stat(cfg.StatePath())
 	assert.ErrorIs(t, err, os.ErrNotExist, "a deleted worker must forget its registration")
@@ -118,11 +120,11 @@ func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
 //
 // Not parallel: runWorker sets the process-global log level.
 func TestRunWorkerKeepsTheStateAndAdvisesWhenTheHubRefusesItsKeys(t *testing.T) {
-	cfg := writeRegisteredState(t)
 	hubURL := startRefusingHub(t, connect.CodePermissionDenied,
 		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+	cfg := writeRegisteredStateAgainst(t, hubURL)
 
-	err := runWorker([]string{"--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "error"})
+	err := runWorker([]string{"--data-dir", cfg.DataDir, "--log-level", "error"})
 
 	require.ErrorIs(t, err, hub.ErrKeysRefused)
 	assert.Contains(t, err.Error(), reregistrationSteps(cfg.StatePath()))
@@ -144,9 +146,9 @@ func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			hubURL, connected := startReceivingHub(t)
-			cfg := writeRegisteredState(t)
+			cfg := writeRegisteredStateAgainst(t, hubURL)
 
-			cmd := exec.Command(os.Args[0], "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
+			cmd := exec.Command(os.Args[0], "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
 			cmd.Env = append(os.Environ(), runMainEnv+"=1")
 			var output testutil.LogBuffer
 			cmd.Stdout, cmd.Stderr = &output, &output

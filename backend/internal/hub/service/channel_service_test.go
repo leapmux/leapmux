@@ -205,7 +205,8 @@ func (e *channelTestEnv) createWorkerWithKeys(t *testing.T, token string, fill b
 	ctx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+createResp.GetRegistrationKey())
 	regResp, err := e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{
-		Keys: workerkeystest.Keys(fill),
+		Keys:      workerkeystest.Keys(fill),
+		AttemptId: testAttemptID(t),
 	})
 	require.NoError(t, err)
 

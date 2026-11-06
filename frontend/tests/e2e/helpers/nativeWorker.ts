@@ -14,6 +14,11 @@ import { createServerOutput } from './serverOutput'
 
 /** The command line, the environment, and the output capture of one Worker process. */
 export interface WorkerProcessOptions {
+  /**
+   * The Hub endpoint the worker's REGISTRATION named; the run process
+   * reads it from the saved credentials and takes no endpoint flag.
+   */
+
   /** The Hub that the Worker connects to. */
   hubUrl: string
   /** The Worker name. The Worker reads it from `LEAPMUX_WORKER_NAME`, and the output capture uses it as the label. */
@@ -38,10 +43,11 @@ export interface WorkerProcessOptions {
  * With no registration key in `extraArgs`, the Worker uses the registration that its data directory holds.
  */
 export function spawnWorkerProcess(options: WorkerProcessOptions): ChildProcess {
+  // Runtime execution: the saved registration in the data directory is
+  // the only credential source, so this process RUNS the worker.
   const proc = spawnTestProcess(getGlobalState().binaryPath, [
     'worker',
-    '--hub',
-    options.hubUrl,
+    'run',
     '--data-dir',
     options.dataDir,
     ...options.extraArgs ?? [],
@@ -83,13 +89,35 @@ export interface RegisteredWorker {
  * registrations with one Hub can therefore select the same Worker, so a caller must serialize them.
  */
 export async function spawnRegisteredWorker(hub: WorkerHub, options: RegisteredWorkerOptions): Promise<RegisteredWorker> {
+  // Registration is its OWN process now: mint the key, run
+  // `worker register` to completion, and only then run the worker.
+  // The registration process is tracked with the worker so a suite
+  // cleanup stops both.
   const registrationKey = await mintRegistrationKeyViaAPI(hub.hubUrl, hub.adminToken)
   const previousWorkers = new Set(await listOnlineWorkerIDsViaAPI(hub.hubUrl, hub.adminToken))
   const { onSpawn, extraArgs = [], ...processOptions } = options
+  const registerProc = spawnTestProcess(getGlobalState().binaryPath, [
+    'worker',
+    'register',
+    '--hub',
+    hub.hubUrl,
+    '--registration-key',
+    registrationKey,
+    '--data-dir',
+    options.dataDir,
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: hubSpawnEnv(options.env),
+  })
+  options.output.capture(registerProc, options.name)
+  const registerExit = await new Promise<{ code: number | null }>(resolve => registerProc.once('exit', (code: number | null) => resolve({ code })))
+  if (registerExit.code !== 0)
+    throw new Error(`The Worker ${options.name} failed to register: exit code ${registerExit.code}.`)
+
   const proc = spawnWorkerProcess({
     ...processOptions,
     hubUrl: hub.hubUrl,
-    extraArgs: ['--registration-key', registrationKey, ...extraArgs],
+    extraArgs,
   })
   const subject = `The Worker ${options.name}`
   return cleanupOnFailure(async () => {
