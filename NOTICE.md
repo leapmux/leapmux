@@ -142,9 +142,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [arboard 3.7.0 (MIT OR Apache-2.0)](#arboard-370-mit-or-apache-20)
 - [async-broadcast 0.7.2 (MIT OR Apache-2.0)](#async-broadcast-072-mit-or-apache-20)
 - [async-channel 2.5.0 (Apache-2.0 OR MIT)](#async-channel-250-apache-20-or-mit)
-- [async-executor 1.14.0 (Apache-2.0 OR MIT)](#async-executor-1140-apache-20-or-mit)
+- [async-executor 1.14.1 (Apache-2.0 OR MIT)](#async-executor-1141-apache-20-or-mit)
 - [async-io 2.6.0 (Apache-2.0 OR MIT)](#async-io-260-apache-20-or-mit)
-- [async-lock 3.4.2 (Apache-2.0 OR MIT)](#async-lock-342-apache-20-or-mit)
+- [async-lock 3.5.0 (Apache-2.0 OR MIT)](#async-lock-350-apache-20-or-mit)
 - [async-process 2.5.0 (Apache-2.0 OR MIT)](#async-process-250-apache-20-or-mit)
 - [async-recursion 1.2.0 (MIT OR Apache-2.0)](#async-recursion-120-mit-or-apache-20)
 - [async-signal 0.2.14 (Apache-2.0 OR MIT)](#async-signal-0214-apache-20-or-mit)
@@ -179,7 +179,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [cargo_metadata 0.19.2 (MIT)](#cargo_metadata-0192-mit)
 - [cargo_toml 1.0.1 (Apache-2.0 OR MIT)](#cargo_toml-101-apache-20-or-mit)
 - [cargo-platform 0.1.9 (MIT OR Apache-2.0)](#cargo-platform-019-mit-or-apache-20)
-- [cc 1.4.4 (MIT OR Apache-2.0)](#cc-144-mit-or-apache-20)
+- [cc 1.11.0 (MIT OR Apache-2.0)](#cc-1110-mit-or-apache-20)
 - [cesu8 1.1.0 (Apache-2.0/MIT)](#cesu8-110-apache-20mit)
 - [cfb 0.14.0 (MIT)](#cfb-0140-mit)
 - [cfg_aliases 0.2.2 (MIT)](#cfg_aliases-022-mit)
@@ -329,9 +329,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [itoa 1.0.18 (MIT OR Apache-2.0)](#itoa-1018-mit-or-apache-20)
 - [javascriptcore-rs 1.1.2 (MIT)](#javascriptcore-rs-112-mit)
 - [javascriptcore-rs-sys 1.1.1 (MIT)](#javascriptcore-rs-sys-111-mit)
-- [jiff 0.2.35 (Unlicense OR MIT)](#jiff-0235-unlicense-or-mit)
-- [jiff-core 0.1.0 (Unlicense OR MIT)](#jiff-core-010-unlicense-or-mit)
-- [jiff-static 0.2.35 (Unlicense OR MIT)](#jiff-static-0235-unlicense-or-mit)
+- [jiff 0.2.39 (Unlicense OR MIT)](#jiff-0239-unlicense-or-mit)
+- [jiff-core 0.1.2 (Unlicense OR MIT)](#jiff-core-012-unlicense-or-mit)
+- [jiff-static 0.2.39 (Unlicense OR MIT)](#jiff-static-0239-unlicense-or-mit)
 - [jiff-tzdb 0.1.9 (Unlicense OR MIT)](#jiff-tzdb-019-unlicense-or-mit)
 - [jiff-tzdb-platform 0.1.3 (Unlicense OR MIT)](#jiff-tzdb-platform-013-unlicense-or-mit)
 - [jni 0.21.1 (MIT/Apache-2.0)](#jni-0211-mitapache-20)
@@ -676,7 +676,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@noble/curves 2.4.0 (MIT)](#noblecurves-240-mit)
 - [@noble/hashes 2.4.0 (MIT)](#noblehashes-240-mit)
 - [@noble/post-quantum 0.7.1 (MIT)](#noblepost-quantum-071-mit)
-- [@shikijs/rehype 4.5.0 (MIT)](#shikijsrehype-450-mit)
+- [@shikijs/rehype 4.6.0 (MIT)](#shikijsrehype-460-mit)
 - [@simplewebauthn/browser 14.0.0 (MIT)](#simplewebauthnbrowser-1400-mit)
 - [@solidjs/router 1.0.1 (MIT)](#solidjsrouter-101-mit)
 - [@solidjs/start 2.1.0 (MIT)](#solidjsstart-210-mit)
@@ -702,7 +702,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [remark-gfm 4.0.1 (MIT)](#remark-gfm-401-mit)
 - [remark-parse 11.0.0 (MIT)](#remark-parse-1100-mit)
 - [remark-rehype 11.1.2 (MIT)](#remark-rehype-1112-mit)
-- [shiki 4.5.0 (MIT)](#shiki-450-mit)
+- [shiki 4.6.0 (MIT)](#shiki-460-mit)
 - [solid-js 1.9.18 (MIT)](#solid-js-1918-mit)
 - [source-map-js 1.2.2 (BSD-3-Clause)](#source-map-js-122-bsd-3-clause)
 - [tinykeys 4.0.1 (MIT)](#tinykeys-401-mit)
@@ -13076,7 +13076,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### async-executor 1.14.0 (Apache-2.0 OR MIT)
+### async-executor 1.14.1 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -13540,7 +13540,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### async-lock 3.4.2 (Apache-2.0 OR MIT)
+### async-lock 3.5.0 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -19111,7 +19111,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### cc 1.4.4 (MIT OR Apache-2.0)
+### cc 1.11.0 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -43358,7 +43358,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### jiff 0.2.35 (Unlicense OR MIT)
+### jiff 0.2.39 (Unlicense OR MIT)
 
 ```
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -43417,7 +43417,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### jiff-core 0.1.0 (Unlicense OR MIT)
+### jiff-core 0.1.2 (Unlicense OR MIT)
 
 ```
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -43476,7 +43476,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### jiff-static 0.2.35 (Unlicense OR MIT)
+### jiff-static 0.2.39 (Unlicense OR MIT)
 
 ```
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -99034,7 +99034,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @shikijs/rehype 4.5.0 (MIT)
+### @shikijs/rehype 4.6.0 (MIT)
 
 ```
 MIT License
@@ -100419,7 +100419,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### shiki 4.5.0 (MIT)
+### shiki 4.6.0 (MIT)
 
 ```
 MIT License

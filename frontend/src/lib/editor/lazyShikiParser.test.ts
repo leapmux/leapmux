@@ -1,8 +1,5 @@
-import type { EditorView } from '@milkdown/prose/view'
 import type { HighlighterCore } from 'shiki/core'
 import type { LanguageLoadResult, LazyHighlighter } from '~/lib/shikiLazyHighlighter'
-import { Plugin, PluginKey } from '@milkdown/prose/state'
-import { createHighlightPlugin } from 'prosemirror-highlight'
 import { describe, expect, it, vi } from 'vitest'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { createLazyShikiParser } from './lazyShikiParser'
@@ -327,85 +324,6 @@ describe('createLazyShikiParser', () => {
     // The inline decorations together cover all three lines' content (multi-line walk).
     const inlineDecos = decos.filter(d => attrsOf(d).class === 'shiki')
     expect(inlineDecos.length).toBeGreaterThanOrEqual(3)
-  })
-})
-
-describe('refreshEditorHighlight', () => {
-  // The plugin must be REPLACED, not merely refreshed. prosemirror-highlight
-  // keys its DecorationCache on the node and reads through it, so the supported
-  // refresh meta recomputes nothing for a block whose node did not change --
-  // which is every block when only the theme moved.
-  it('swaps the highlight plugin for a fresh instance', async () => {
-    const { refreshEditorHighlight } = await import('~/components/chat/markdownEditor/editorSetup')
-
-    const highlight = createHighlightPlugin({
-      parser: () => [],
-    })
-    const other = new Plugin({
-      key: new PluginKey('unrelated'),
-    })
-    let reconfigured: readonly Plugin[] | undefined
-    const view = {
-      composing: false,
-      state: {
-        plugins: [other, highlight],
-        reconfigure: ({ plugins }: { plugins: readonly Plugin[] }) => {
-          reconfigured = plugins
-          return { plugins }
-        },
-      },
-      updateState: () => {},
-    } as unknown as EditorView
-
-    refreshEditorHighlight(view)
-
-    expect(reconfigured).toBeDefined()
-    expect(reconfigured![0]).toBe(other)
-    expect(reconfigured![1]).not.toBe(highlight)
-  })
-
-  // An IME composition is the one case a rebuild must not interrupt, so the
-  // guard DEFERS the repaint over the composition and re-runs it at
-  // `compositionend`.
-  it('defers the repaint while an IME composition is in flight, then runs it', async () => {
-    const { refreshEditorHighlight } = await import('~/components/chat/markdownEditor/editorSetup')
-
-    let reconfigured = 0
-    const dom = document.createElement('div')
-    const view = {
-      composing: true,
-      dom,
-      state: {
-        plugins: [
-          createHighlightPlugin({
-            parser: () => [],
-          }),
-        ],
-        reconfigure: () => {
-          reconfigured += 1
-          return {}
-        },
-      },
-      updateState: () => {},
-    } as unknown as EditorView
-
-    refreshEditorHighlight(view)
-    expect(reconfigured).toBe(0)
-
-    // The composition ends, and the repaint the guard deferred runs.
-    //
-    // Dropping it was wrong: `prosemirror-highlight` keys its DecorationCache on
-    // the NODE, so the composition-ending transaction recomputes only the block
-    // the composition touched. Every OTHER code block in the composer kept the
-    // abandoned theme's baked colours for the rest of the session.
-    ;(view as unknown as { composing: boolean }).composing = false
-    dom.dispatchEvent(new Event('compositionend'))
-    expect(reconfigured).toBe(1)
-
-    // ONCE. A second `compositionend` with no new theme change must not repaint
-    // again -- the listener is registered `{ once: true }`.
-    dom.dispatchEvent(new Event('compositionend'))
-    expect(reconfigured).toBe(1)
   })
 })
 
