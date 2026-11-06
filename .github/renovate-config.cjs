@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const process = require('node:process')
+const { GO_TOOL_MODULES } = require('../scripts/go-tools.mjs')
 const { configureDetailsCapture } = require('../scripts/renovate-pr-details.mjs')
 
 // Renovate's loader and config-validator.js both call an exported function and await its result.
@@ -83,6 +84,10 @@ module.exports = async () => {
         'desktop/go/go.sum',
         'site/go.mod',
         'site/go.sum',
+        ...GO_TOOL_MODULES.flatMap(file => [
+          file,
+          file.replace('go.mod', 'go.sum'),
+        ]),
         'site/hugo.yaml',
         ...prepared.importFiles,
         'buf.gen.yaml',

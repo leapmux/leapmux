@@ -5,6 +5,7 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { cacheKey, cacheKinds, cachePolicy, rootActivePath, validateCacheKey } from './cache-policy.mjs'
+import { GO_TOOL_NAMES } from './go-tools.mjs'
 import { NOTICE_INPUTS } from './notice-inputs.mjs'
 import { createStoredZip, git, gitRepository, scratchDirectories } from './test-support.mjs'
 
@@ -1556,7 +1557,9 @@ describe('cache workflow execution', () => {
     })
   }
   function execute(step, dir, env, { inputs = {}, fakeBin, outputs = {} } = {}) {
-    const script = evaluate(step.run, env, inputs, outputs).replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
+    const script = evaluate(step.run, env, inputs, outputs)
+      .replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
+      .replaceAll('node scripts/download-go-modules.mjs', `node '${root}/scripts/download-go-modules.mjs'`)
     return runShell(script, dir, {
       ...env,
       ...Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [
@@ -1634,6 +1637,18 @@ describe('cache workflow execution', () => {
     writeFileSync(join(proxy, 'v1.0.0.mod'), mod)
     writeFileSync(join(proxy, 'v1.0.0.info'), '{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n')
     writeFileSync(join(proxy, 'v1.0.0.zip'), createStoredZip({ 'example.com/site-dep@v1.0.0/go.mod': mod, 'example.com/site-dep@v1.0.0/dep.go': 'package sitedep\nfunc Value() int { return 42 }\n' }))
+    for (const name of GO_TOOL_NAMES) {
+      const directory = join(dir, 'tools', name)
+      const dependency = `example.com/tool-${name}`
+      const module = `module ${dependency}\ngo 1.24\n`
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'go.mod'), `module example.com/${name}\ngo 1.24\nrequire ${dependency} v1.0.0\n`)
+      const proxy = join(dir, 'proxy', dependency, '@v')
+      mkdirSync(proxy, { recursive: true })
+      writeFileSync(join(proxy, 'v1.0.0.mod'), module)
+      writeFileSync(join(proxy, 'v1.0.0.info'), '{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n')
+      writeFileSync(join(proxy, 'v1.0.0.zip'), createStoredZip({ [`${dependency}@v1.0.0/go.mod`]: module }))
+    }
     const env = {
       ...environment(dir),
       GOPROXY: pathToFileURL(join(dir, 'proxy')).href,
@@ -1656,6 +1671,8 @@ describe('cache workflow execution', () => {
     })
     expect(result.status, result.stderr).toBe(0)
     expect(existsSync(join(locations['go-payload'], 'cache', 'download', 'example.com', 'site-dep', '@v', 'v1.0.0.zip'))).toBe(true)
+    for (const name of GO_TOOL_NAMES)
+      expect(existsSync(join(locations['go-payload'], 'cache', 'download', 'example.com', `tool-${name}`, '@v', 'v1.0.0.zip'))).toBe(false)
     const workspaceInputs = { 'go-scope': 'workspace' }
     expect(execute(paths, dir, env, { inputs: workspaceInputs }).status).toBe(0)
     const workspaceLocations = fields(outputFile(dir))
@@ -1667,6 +1684,8 @@ describe('cache workflow execution', () => {
     })
     expect(workspaceDownload.status, workspaceDownload.stderr).toBe(0)
     expect(existsSync(join(workspaceLocations['go-payload'], 'cache', 'download', 'example.com', 'site-dep', '@v', 'v1.0.0.zip'))).toBe(false)
+    for (const name of GO_TOOL_NAMES)
+      expect(existsSync(join(workspaceLocations['go-payload'], 'cache', 'download', 'example.com', `tool-${name}`, '@v', 'v1.0.0.zip'))).toBe(true)
   })
 
   it('rejects an invalid dependency scope without interpreting it as shell code', () => {

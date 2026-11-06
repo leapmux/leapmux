@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { postUpgrade, validateUpgrades } from './renovate-post-upgrade.mjs'
 
-const replacement = version => `replace google.golang.org/genproto => google.golang.org/genproto ${version}\n`
-const baseline = replacement('v0.0.0-20260420184626-e10c466a9529')
 function upgrade(extra = {}) {
   return {
     manager: 'gomod',
@@ -14,12 +12,10 @@ function upgrade(extra = {}) {
   }
 }
 
-function preparation({ conflict = false, failDownload = false, siteParticipates = false } = {}) {
+function preparation({ failDownload = false, siteParticipates = false } = {}) {
   const files = {
-    'backend/go.mod': baseline,
-    'desktop/go/go.mod': conflict
-      ? replacement('v0.0.0-other')
-      : baseline,
+    'backend/go.mod': 'module example.com/backend\ngo 1.27.1\n',
+    'desktop/go/go.mod': 'module example.com/desktop\ngo 1.27.1\n',
     'site/go.mod': 'tool example.com/hugo/cmd/hugo\nrequire example.com/hugo v1.0.0\nrequire github.com/imfing/hextra v0.12.3 // indirect\n',
     'site/hugo.yaml': 'module:\n  imports:\n    - path: github.com/imfing/hextra\n',
   }
@@ -42,8 +38,6 @@ function preparation({ conflict = false, failDownload = false, siteParticipates 
           imports = JSON.parse(options.input)
           expect(generated).toBe(false)
         }
-        if (command === 'go' && args[0] === 'mod' && args[1] === 'edit' && args[2]?.startsWith('-replace='))
-          files[`${options.cwd}/go.mod`] = replacement(args[2].split('@')[1])
         if (command === 'go' && args[1] === 'download') {
           if (failDownload)
             throw new Error('metadata download failed')
@@ -220,24 +214,6 @@ describe('postUpgrade', () => {
     expect(fixture.calls.some(call => call.command === 'task' && call.args[0] === 'generate-notice')).toBe(true)
     expect(fixture.calls.filter(call => call.command === 'go' && call.args[0] === 'work')).toHaveLength(2)
     expect(fixture.calls.filter(call => call.command === 'go' && call.args[0] === 'mod' && call.args[1] === 'tidy').map(call => call.options.cwd)).toEqual(['backend', 'desktop/go'])
-  })
-  it('rejects conflicting replacements before entering workspace mode', async () => {
-    const fixture = preparation({ conflict: true })
-    await expect(postUpgrade([
-      upgrade(),
-    ], fixture.options)).rejects.toThrow('Conflicting genproto')
-    expect(fixture.calls).toHaveLength(0)
-    const targeted = preparation()
-    await expect(postUpgrade(['v0.0.0-a', 'v0.0.0-b'].map(newValue => upgrade({ depName: 'google.golang.org/genproto', depType: 'replace', newValue })), targeted.options)).rejects.toThrow('conflicting versions')
-    expect(targeted.calls).toHaveLength(0)
-  })
-  it('updates both genproto replacements from one unambiguous target', async () => {
-    const fixture = preparation({ conflict: true })
-    await postUpgrade([
-      upgrade({ depName: 'google.golang.org/genproto', depType: 'replace', newValue: 'v0.0.0-20261020000000-abcdefabcdef' }),
-    ], fixture.options)
-    expect(fixture.calls.slice(0, 2).map(call => call.options.cwd)).toEqual(['backend', 'desktop/go'])
-    expect(fixture.imports()).toEqual([])
   })
   it('keeps independent site and workspace module migrations in their own graphs', async () => {
     const fixture = preparation({ siteParticipates: true })

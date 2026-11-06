@@ -4,6 +4,7 @@ import { delimiter, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
+import { GO_TOOL_MODULES } from './go-tools.mjs'
 import { renovateModule } from './renovate-engine.mjs'
 import { securityCompanions } from './renovate-prepare.mjs'
 import { CLAIMS } from './sync-versions.mjs'
@@ -243,6 +244,7 @@ describe('trusted Renovate configuration', () => {
       'backend/go.sum',
       'desktop/go/go.sum',
       'site/go.sum',
+      ...GO_TOOL_MODULES.map(file => file.replace('go.mod', 'go.sum')),
       'site/hugo.yaml',
       'backend/cmd/example/main.go',
       'desktop/go/example.go',

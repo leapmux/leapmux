@@ -147,13 +147,15 @@ Before you begin, ensure you have the following installed:
 - **Rust toolchain** - For the Tauri desktop app (built by `task build`)
 - **Tauri desktop prerequisites** - WebView/system packages required by Tauri on your platform
 
-The Go build tools live as `tool` dependencies in `backend/go.mod`:
+The Go build tools live as `tool` dependencies in separate modules under `tools/`:
 
 - `sqlc`
 - `golangci-lint`
 - `gotestsum`
 
-Task runs each tool through `go tool <name>`.
+Task builds each tool with its own dependency graph through `scripts/run-go-tool.mjs`.
+The launcher runs the tool in the caller's directory and preserves the application workspace.
+The tool modules stay outside `go.work`.
 You do not need to install these tools separately.
 
 Install dekit with its [official installation instructions](https://github.com/pvolok/dekit#install) for your operating system.

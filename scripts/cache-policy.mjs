@@ -167,7 +167,7 @@ const CACHE_POLICIES = {
   'go-modules': {
     kind: 'go-modules',
     category: 'dependency',
-    description: 'Workspace Go module downloads, populated by workspace-mode `go mod download` including tool dependencies.',
+    description: 'Workspace and isolated tool module downloads, populated by scripts/download-go-modules.mjs.',
     population: POPULATION_ISOLATED_DOWNLOAD,
     trim: TRIM_NONE,
     writerScope: WRITER_SCOPE_ANY,

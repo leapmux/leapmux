@@ -194,7 +194,9 @@ Building from source is for contributors and administrators who want to compile 
 - **Rust toolchain** and your platform's Tauri WebView/system packages — only for the desktop app
 - **Docker** — only for building Docker images
 
-The Go-based tools `sqlc`, `golangci-lint`, and `gotestsum` are declared as `tool` dependencies in `go.mod` and invoked via `go tool <name>`; you don't install them separately.
+The Go-based tools `sqlc`, `golangci-lint`, and `gotestsum` each have a separate module under `tools/`.
+Task builds each tool with its own dependency graph and runs it in the application directory.
+You do not need to install these tools separately.
 
 ### Build and run
 

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { ALL_ICON_FILES, ICO_FILE, TRAY_ICON_FILES } from '../desktop/rust/scripts/icon-set.mjs'
 import { cacheKey, rootActivePath, rootPayloadPath } from './cache-policy.mjs'
 import { activateCacheSnapshot, prepareCacheSnapshot } from './cache-snapshot.mjs'
+import { GO_TOOL_MODULES } from './go-tools.mjs'
 import { gitRepository, writeFiles } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -566,6 +567,12 @@ describe('task build cache', () => {
       'backend/go.sum',
       'desktop/go/go.mod',
       'desktop/go/go.sum',
+      ...GO_TOOL_MODULES.flatMap(file => [
+        file,
+        file.replace('go.mod', 'go.sum'),
+      ]),
+      'scripts/go-tools.mjs',
+      'scripts/run-go-tool.mjs',
     ]) {
       write(dir, input, 'changed workspace manifest')
       expect(run(dir, target), input).toEqual([target])

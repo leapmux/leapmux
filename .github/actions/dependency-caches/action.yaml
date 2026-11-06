@@ -75,7 +75,7 @@ runs:
       shell: bash
       env:
         GO_SCOPE: ${{ inputs.go-scope }}
-        GO_WORKSPACE_HASH: ${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
+        GO_WORKSPACE_HASH: ${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum', 'tools/*/go.mod', 'tools/*/go.sum') }}
         GO_SITE_HASH: ${{ hashFiles('site/go.mod', 'site/go.sum') }}
         BUN_HASH: ${{ hashFiles('frontend/bun.lock') }}
         CARGO_HASH: ${{ hashFiles('desktop/rust/Cargo.lock') }}
@@ -117,16 +117,21 @@ runs:
         writer: ${{ inputs.populate }}
 
     - name: Download the Go modules into the isolated payload
-      # With no arguments, `go mod download` downloads `all` in workspace
-      # mode, which includes the `tool` dependencies. The site scope runs
-      # with GOWORK=off from site/.
+      # Populate the workspace and each isolated tool graph in the same payload.
+      # The site scope downloads only its own graph with GOWORK=off.
       if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
       shell: bash
       working-directory: ${{ steps.paths.outputs.go-directory }}
       env:
         GOMODCACHE: ${{ steps.paths.outputs.go-payload }}
         GOWORK: ${{ steps.paths.outputs.go-work }}
-      run: go mod download
+        GO_SCOPE: ${{ inputs.go-scope }}
+      run: |
+        if [ "$GO_SCOPE" = 'site' ]; then
+          go mod download
+        else
+          node scripts/download-go-modules.mjs
+        fi
 
     - name: Publish the Go module downloads to the active cache
       if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'

@@ -322,6 +322,10 @@ tasks:
       - versions.env
       - scripts/task-state.mjs
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/go.mod
       - backend/go.sum
       - scripts/sync-generated.mjs
@@ -334,7 +338,7 @@ tasks:
       - *forget_artifacts
       # Generate below backend/ and publish through scripts/sync-generated.mjs.
       # Identical files retain their modification times. Deleted queries also remove their obsolete generated files.
-      # go tool must resolve sqlc inside the module, and sqlc has no output-directory override.
+      # sqlc has no output-directory override, so it runs from the staging directory.
       # Copy the configuration and database inputs into staging. --cwd-staging makes sqlc write its relative output there.
       - for: { var: BACKENDS }
         cmd: >-
@@ -342,7 +346,7 @@ tasks:
           --copy backend/internal/hub/store/{{.ITEM}}/sqlc.yaml sqlc.yaml
           --copy backend/internal/hub/store/{{.ITEM}}/db db
           --out generated/db backend/internal/hub/store/{{.ITEM}}/generated/db
-          -- go tool sqlc generate
+          -- node {{.ROOT_DIR | shellQuote}}/scripts/run-go-tool.mjs sqlc generate
       - *record_artifacts
 
   generate-sqlc-worker:
@@ -355,6 +359,10 @@ tasks:
       - versions.env
       - scripts/task-state.mjs
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/go.mod
       - backend/go.sum
       - scripts/sync-generated.mjs
@@ -377,7 +385,7 @@ tasks:
         --copy backend/internal/worker/sqlc.yaml sqlc.yaml
         --copy backend/internal/worker/db db
         --out generated/db backend/internal/worker/generated/db
-        -- go tool sqlc generate
+        -- node {{.ROOT_DIR | shellQuote}}/scripts/run-go-tool.mjs sqlc generate
       - *record_artifacts
 
   fetch-spinners:
@@ -693,6 +701,10 @@ tasks:
       - desktop/go/go.mod
       - desktop/go/go.sum
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
@@ -726,6 +738,10 @@ tasks:
       - desktop/go/go.mod
       - desktop/go/go.sum
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
@@ -1160,7 +1176,7 @@ tasks:
       - task: prepare-backend
       - task: lint-backend
       # lint-backend already runs vet for each supported operating system.
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
+      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
@@ -1170,7 +1186,7 @@ tasks:
       # It also verifies fallback snapshots and compaction of private clones.
       # TestFallbackBaselineRacesCompaction detects in-place pruning only under -race.
       # Without the detector, that test can pass despite the race.
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
+      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
 
   test-backend-no-docker:
     desc: Run backend tests, skipping the tests that need Docker
@@ -1186,7 +1202,7 @@ tasks:
       # storetest.SQLContainer skips each test that starts a container.
       LEAPMUX_TEST_SKIP_DOCKER: '1'
     cmds:
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off ./...
+      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off ./...
 
   test-desktop:
     desc: Run desktop tests
@@ -1200,7 +1216,7 @@ tasks:
     # Tauri validates the sidecar resources even in a test build.
     deps: [prepare-desktop, build-desktop-sidecar]
     cmds:
-      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
+      - cd desktop/go && node ../../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test --locked
 
   test-native:
@@ -1363,6 +1379,10 @@ tasks:
       - README.md
       - site/content/docs/getting-started/installation.md
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/go.mod
       - desktop/go/go.mod
       - site/go.mod
@@ -1439,6 +1459,10 @@ tasks:
       - versions.env
       - scripts/task-state.mjs
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
@@ -1455,7 +1479,7 @@ tasks:
     cmds:
       - *forget_artifacts
       # The linter uses one process lock across worktrees. Wait for its current owner.
-      - cd backend && go tool golangci-lint run --allow-serial-runners ./...
+      - cd backend && node ../scripts/run-go-tool.mjs golangci-lint run --allow-serial-runners ./...
       # golangci-lint checks only the host build configuration.
       # An untagged caller can compile here but fail on Windows if its callee exists only in a Unix-tagged file.
       # Cross-platform go vet checks test files also. go build omits _test.go files and cannot detect that failure.
@@ -1483,6 +1507,10 @@ tasks:
       - desktop/rust/capabilities/**/*
       - proto/**/*
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
@@ -1504,7 +1532,7 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - cd desktop/go && go tool golangci-lint run --allow-serial-runners ./...
+      - cd desktop/go && node ../../scripts/run-go-tool.mjs golangci-lint run --allow-serial-runners ./...
       # Check the desktop's platform-specific files, including tests, as lint-backend does.
       - cd desktop/go && GOOS=windows go vet ./...
       - cd desktop/go && GOOS=linux go vet ./...
@@ -1531,7 +1559,7 @@ tasks:
     desc: Auto-fix backend lint violations
     cmds:
       - task: prepare-backend
-      - cd backend && go tool golangci-lint run --fix --allow-serial-runners ./...
+      - cd backend && node ../scripts/run-go-tool.mjs golangci-lint run --fix --allow-serial-runners ./...
 
   lint-fix-desktop:
     desc: Auto-fix desktop lint violations
@@ -1539,7 +1567,7 @@ tasks:
       - task: prepare-desktop
       # Tauri's build script fails without the sidecar its bundle resources point at.
       - task: build-desktop-sidecar
-      - cd desktop/go && go tool golangci-lint run --fix --allow-serial-runners ./...
+      - cd desktop/go && node ../../scripts/run-go-tool.mjs golangci-lint run --fix --allow-serial-runners ./...
       # A fix runs on work in progress, so a tree with changes is the normal case.
       - cd desktop/rust && cargo clippy --fix --allow-dirty --all-targets
       - cd desktop/rust && cargo fmt
@@ -1588,6 +1616,10 @@ tasks:
       - desktop/go/go.mod
       - desktop/go/go.sum
       - go.work
+      - tools/*/go.mod
+      - tools/*/go.sum
+      - scripts/go-tools.mjs
+      - scripts/run-go-tool.mjs
       - backend/internal/hub/store/*/db/migrations/*.sql
       - backend/internal/worker/db/migrations/*.sql
       - backend/internal/hub/generated/frontend/public/**/*
@@ -1629,9 +1661,9 @@ tasks:
       - bun test --timeout 30000 ./scripts/test-docker.test.mjs
 
   test-cache-native:
-    desc: Test the cache snapshot modules against this OS's real toolchains
+    desc: Test cache snapshots and isolated Go tools against this OS's real toolchains
     cmds:
-      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs
+      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs
 
   test-docker-cache:
     desc: Prove that the Docker Go cache export reads the current cache mount

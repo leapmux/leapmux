@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { GO_TOOL_MODULES, GO_WORKSPACE_MODULES } from './go-tools.mjs'
 import { renovateModule } from './renovate-engine.mjs'
 
 const { getConfig } = await renovateModule('config/defaults.js')
@@ -10,7 +11,11 @@ const { matchRegexOrGlob } = await renovateModule('util/string-match.js')
 const { getMatchingFiles } = await renovateModule('workers/repository/extract/file-match.js')
 const policy = JSON.parse(readFileSync(resolve(import.meta.dirname, '../renovate.json'), 'utf8'))
 export const DEPENDENCY_INPUT_FILES = Object.freeze({
-  gomod: Object.freeze(['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod']),
+  gomod: Object.freeze([
+    ...GO_WORKSPACE_MODULES,
+    'site/go.mod',
+    ...GO_TOOL_MODULES,
+  ]),
   bun: Object.freeze(['frontend/package.json', '.github/renovate/package.json', 'site/package.json']),
   cargo: Object.freeze(['desktop/rust/Cargo.toml']),
   // Renovate uses "regex" in post-update metadata for the configured custom.regex manager.

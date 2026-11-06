@@ -1,53 +1,17 @@
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { newModulePath } from './go-module-path.mjs'
-import { DEPENDENCY_INPUT_FILES } from './renovate-inputs.mjs'
+import { GO_TOOL_MODULES, GO_WORKSPACE_MODULES } from './go-tools.mjs'
 import { refreshSite } from './renovate-site.mjs'
 
-const GENPROTO = 'google.golang.org/genproto'
-
-export function replacementVersion(moduleText) {
-  const values = [
-    ...moduleText.matchAll(/^\s*(?:replace\s+)?google\.golang\.org\/genproto\s*=>\s*google\.golang\.org\/genproto\s+(\S+)/gm),
-  ].map(match => match[1])
-  if (values.length !== 1)
-    throw new Error('Each workspace module must contain exactly one genproto replacement.')
-  return values[0]
-}
-
-export function verifyReplacements(texts) {
-  const versions = texts.map(replacementVersion)
-  if (new Set(versions).size !== 1)
-    throw new Error('Conflicting genproto replacements; both modules must change together before workspace commands.')
-}
-
 /** Prepare validated Go upgrades before any updated generator runs. */
-export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
-  const hasWorkspaceGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod')
+export function prepareGoUpgrades(upgrades, { trusted, run }) {
+  const hasWorkspaceGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && GO_WORKSPACE_MODULES.includes(upgrade.packageFile))
   const hasSiteGo = upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile === 'site/go.mod')
-  const state = { hasWorkspaceGo, hasSiteGo }
-  if (!hasWorkspaceGo && !hasSiteGo)
+  const toolModules = GO_TOOL_MODULES.filter(file => upgrades.some(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile === file))
+  const state = { hasWorkspaceGo, hasSiteGo, toolModules }
+  if (!hasWorkspaceGo && !hasSiteGo && toolModules.length === 0)
     return state
-  if (hasWorkspaceGo) {
-    let texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
-    const targets = [
-      ...new Set(upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.packageFile !== 'site/go.mod' && upgrade.depName === GENPROTO && upgrade.depType === 'replace').map(upgrade => upgrade.newValue)),
-    ]
-    if (targets.length > 1)
-      throw new Error('The genproto update specifies conflicting versions.')
-    // Renovate can report only one replacement occurrence. Apply its single target to both
-    // module files without entering workspace mode, then validate before any workspace command.
-    if (targets.length === 1) {
-      for (const cwd of ['backend', 'desktop/go']) {
-        run('go', ['mod', 'edit', `-replace=${GENPROTO}=${GENPROTO}@${targets[0]}`], {
-          cwd,
-          env: { GOWORK: 'off' },
-        })
-      }
-      texts = ['backend/go.mod', 'desktop/go/go.mod'].map(read)
-    }
-    verifyReplacements(texts)
-  }
   const goUpgrades = upgrades.filter(upgrade => upgrade.manager === 'gomod' && upgrade.newValue && !['golang', 'toolchain'].includes(upgrade.depType))
   const changes = new Map()
   for (const upgrade of goUpgrades) {
@@ -64,9 +28,11 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
     change.directories = [
       ...new Set([
         ...change.directories,
-        ...(upgrade.packageFile === 'site/go.mod'
-          ? ['site']
-          : ['backend', 'desktop/go']),
+        ...(GO_WORKSPACE_MODULES.includes(upgrade.packageFile)
+          ? GO_WORKSPACE_MODULES.map(file => file.replace('/go.mod', ''))
+          : [
+              upgrade.packageFile.replace('/go.mod', ''),
+            ]),
       ]),
     ]
     changes.set(key, change)
@@ -88,11 +54,17 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
       env: { GOWORK: 'off' },
     })
   }
-  // Updated tools may import newly moved transitive modules. Resolve all metadata and
-  // checksums before go tool sqlc or any other updated tool runs.
-  for (const file of DEPENDENCY_INPUT_FILES.gomod.filter(file => file === 'site/go.mod'
-    ? hasSiteGo
-    : hasWorkspaceGo)) {
+  // Resolve metadata before an updated generator runs. Keep unrelated graphs untouched.
+  const modules = [
+    ...(hasWorkspaceGo
+      ? GO_WORKSPACE_MODULES
+      : []),
+    ...(hasSiteGo
+      ? ['site/go.mod']
+      : []),
+    ...toolModules,
+  ]
+  for (const file of modules) {
     run('go', ['mod', 'download', 'all'], {
       cwd: file.replace('/go.mod', ''),
       env: { GOWORK: 'off', GOFLAGS: '-mod=mod' },
@@ -102,18 +74,27 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
     // go work sync refreshes go.work.sum. .gitignore and the post-upgrade file filters
     // keep that file out of every commit.
     run('go', ['work', 'sync'])
-    verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
   }
   return state
 }
 
-/** Generate and tidy only the graphs selected during preparation. */
-export function finishGoUpgrades({ hasWorkspaceGo, hasSiteGo }, { root, run, read, write }) {
-  if (hasWorkspaceGo) {
-    // tidy reads the generated packages and the embedded assets, so they exist first.
+/** Tidy updated tools and refresh the applications after their code changes. */
+export function finishGoUpgrades({ hasWorkspaceGo, hasSiteGo, toolModules }, { root, run, read, write }) {
+  for (const file of toolModules) {
+    run('go', ['mod', 'tidy'], {
+      cwd: file.replace('/go.mod', ''),
+      env: { GOWORK: 'off' },
+    })
+  }
+  if (hasWorkspaceGo || toolModules.includes('tools/sqlc/go.mod')) {
     run('task', ['prepare-backend'])
-    for (const cwd of ['backend', 'desktop/go'])
-      run('go', ['mod', 'tidy'], { cwd })
+    // Generated code can introduce runtime imports. Resolve them after generation,
+    // without adding the generator's own dependencies to the application graph.
+    for (const file of GO_WORKSPACE_MODULES) {
+      run('go', ['mod', 'tidy'], {
+        cwd: file.replace('/go.mod', ''),
+      })
+    }
     run('go', ['work', 'sync'])
   }
   if (hasSiteGo)

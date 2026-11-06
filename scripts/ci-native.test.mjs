@@ -9,7 +9,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs'
+const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs'
 const fixtures = []
 
 afterEach(() => {
@@ -53,7 +53,7 @@ describe('native CI validation', () => {
   it('keeps cross-platform Go vet in lint instead of repeating it during tests', () => {
     const tasks = readYaml('Taskfile.yaml').tasks
     for (const name of ['test-backend', 'test-backend-no-docker-run', 'test-desktop-run']) {
-      const testCommands = commands(tasks, name).filter(cmd => cmd.includes('go tool gotestsum'))
+      const testCommands = commands(tasks, name).filter(cmd => cmd.includes('run-go-tool.mjs gotestsum'))
       expect(testCommands).toHaveLength(1)
       expect(testCommands[0]).toContain('-- -vet=off ')
       // No build tag hides a test. A test that needs Docker skips itself instead.
@@ -84,8 +84,11 @@ describe('native CI validation', () => {
       if (!command.includes('cargo clippy'))
         expect(linux).toContain(command)
     }
-    for (const module of ['backend', 'desktop/go'])
-      expect(linux).toContain(`cd ${module} && go tool golangci-lint run --allow-serial-runners ./...`)
+    for (const module of ['backend', 'desktop/go']) {
+      expect(linux).toContain(`cd ${module} && node ${module === 'backend'
+        ? '..'
+        : '../..'}/scripts/run-go-tool.mjs golangci-lint run --allow-serial-runners ./...`)
+    }
     expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
     expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     expect(linux).toContain(MONITOR_TEST)
@@ -187,8 +190,8 @@ describe('native CI validation', () => {
   it('keeps native Go tests, Rust tests and Rust lint without repeated portable validation', () => {
     const tasks = readYaml('Taskfile.yaml').tasks
     const native = commands(tasks, 'test-native')
-    expect(native.some(cmd => cmd.includes('cd backend && go tool gotestsum'))).toBe(true)
-    expect(native.some(cmd => cmd.includes('cd desktop/go && go tool gotestsum'))).toBe(true)
+    expect(native.some(cmd => cmd.includes('cd backend && node ../scripts/run-go-tool.mjs gotestsum'))).toBe(true)
+    expect(native.some(cmd => cmd.includes('cd desktop/go && node ../../scripts/run-go-tool.mjs gotestsum'))).toBe(true)
     expect(native).toContain('cd desktop/rust && cargo test --locked')
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
@@ -197,7 +200,7 @@ describe('native CI validation', () => {
     expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // The no-Docker run tests every package. The container tests skip themselves.
-    const backend = native.find(cmd => cmd.includes('cd backend && go tool gotestsum'))
+    const backend = native.find(cmd => cmd.includes('cd backend && node ../scripts/run-go-tool.mjs gotestsum'))
     expect(backend).toEndWith('-- -vet=off ./...')
     expect(native.some(cmd => cmd.includes('build-sidecar.mjs') || cmd.includes('go build'))).toBe(true)
   })
