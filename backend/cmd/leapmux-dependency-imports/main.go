@@ -310,10 +310,20 @@ func planModuleRewrites(changes []moduleChange, directories []string, roots map[
 
 func moduleDirectories() ([]string, error) {
 	directories := []string{"backend", "desktop/go", "site"}
-	entries, err := os.ReadDir("tools")
+	// On Windows, os.ReadDir of a regular file reports ERROR_PATH_NOT_FOUND,
+	// which errors.Is matches os.ErrNotExist. Stat first, so a file named
+	// "tools" can never pass for a missing tools directory.
+	info, err := os.Stat("tools")
 	if errors.Is(err, os.ErrNotExist) {
 		return directories, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("read tool directories: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("read tool directories: %s is not a directory", "tools")
+	}
+	entries, err := os.ReadDir("tools")
 	if err != nil {
 		return nil, fmt.Errorf("read tool directories: %w", err)
 	}
