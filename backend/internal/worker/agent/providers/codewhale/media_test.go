@@ -244,14 +244,42 @@ func TestToolMediaReadsTwoNativeWindowsAndRejectsChangedWindows(t *testing.T) {
 	require.Greater(t, len(data), mediaReadWindowBytes)
 	require.LessOrEqual(t, len(data), contracts.CodewhaleMediaRuleMaxImageBytes)
 	digest := sha256.Sum256(data)
+	descriptor, _ := mediaFixture(t)
+	descriptor.ByteSize = len(data)
+	descriptor.Width = 4096
+	descriptor.Height = 1100
+	descriptor.SHA256 = hex.EncodeToString(digest[:])
+	// Prepare the large response before the client's request deadline starts.
+	responseWindow := func(offset int, failure string) []byte {
+		end := min(offset+mediaReadWindowBytes, len(data))
+		_, response := mediaFixture(t)
+		response["artifact"].(map[string]any)["byte_size"] = descriptor.ByteSize
+		response["size"] = descriptor.ByteSize
+		response["revision"] = descriptor.SHA256
+		response["offset"] = offset
+		response["bytes"] = end - offset
+		response["truncated"] = end < len(data)
+		response["content"] = base64.StdEncoding.EncodeToString(data[offset:end])
+		switch failure {
+		case "revision":
+			response["revision"] = strings.Repeat("0", 64)
+		case "offset":
+			response["offset"] = offset + 1
+		case "zero progress":
+			response["bytes"] = 0
+		case "early truncation":
+			response["truncated"] = true
+		}
+		raw, err := json.Marshal(response)
+		require.NoError(t, err)
+		return raw
+	}
+	firstWindow := responseWindow(0, "")
 	for _, failure := range []string{"", "revision", "offset", "zero progress", "early truncation"} {
+		secondWindow := responseWindow(mediaReadWindowBytes, failure)
 		t.Run("second window "+failure, func(t *testing.T) {
 			t.Parallel()
-			d, _ := mediaFixture(t)
-			d.ByteSize = len(data)
-			d.Width = 4096
-			d.Height = 1100
-			d.SHA256 = hex.EncodeToString(digest[:])
+			d := descriptor
 			rt := newFakeRuntime(t)
 			path := "/v1/sessions/" + d.SessionID + "/artifacts/" + d.OutputFileID
 			rt.handle(http.MethodGet, path, func(w http.ResponseWriter, r *http.Request) {
@@ -263,30 +291,18 @@ func TestToolMediaReadsTwoNativeWindowsAndRejectsChangedWindows(t *testing.T) {
 				require.LessOrEqual(t, limit, mediaReadWindowBytes)
 				require.GreaterOrEqual(t, offset, 0)
 				require.Less(t, offset, len(data))
-				end := min(offset+limit, len(data))
-				_, response := mediaFixture(t)
-				response["artifact"].(map[string]any)["byte_size"] = d.ByteSize
-				response["size"] = d.ByteSize
-				response["revision"] = d.SHA256
-				response["offset"] = offset
-				response["bytes"] = end - offset
-				response["truncated"] = end < len(data)
-				response["content"] = base64.StdEncoding.EncodeToString(data[offset:end])
+				require.Equal(t, min(mediaReadWindowBytes, len(data)-offset), limit)
+				response := firstWindow
 				if offset > 0 {
-					switch failure {
-					case "revision":
-						response["revision"] = strings.Repeat("0", 64)
-					case "offset":
-						response["offset"] = offset + 1
-					case "zero progress":
-						response["bytes"] = 0
-					case "early truncation":
-						response["truncated"] = true
-					}
+					require.Equal(t, mediaReadWindowBytes, offset)
+					response = secondWindow
 				}
-				writeFakeJSON(w, http.StatusOK, response)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(response)
 			})
-			a, _ := newTestAgent(t, rt)
+			// Race instrumentation can exceed the default request budget while decoding both large windows under load.
+			a, _ := newTestAgentWith(t, rt, testAgentOptions{apiTimeout: 30 * time.Second})
 			raw, err := json.Marshal([]mediaDescriptor{d})
 			require.NoError(t, err)
 			supplement := a.recoverToolMedia(itemMetadata{ToolMedia: raw}, d.ToolCallID, "read_media", 0)

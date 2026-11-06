@@ -95,12 +95,12 @@ type Process struct {
 	// A separate goroutine for each reply would permit unlimited stacks.
 	// Each queued frame holds its bytes. Each former goroutine also held an 8 KiB stack.
 	stdinQueue chan stdinFrame
-	// stdinClosed ends the writer. Stop closes it after it closes stdin.
-	// stdinClosedOnce prevents a repeated close. Keep the channel after closure.
+	// stdinClosed ends the writer after stdin closes. Keep the channel after closure.
+	// stdinCloseOnce makes concurrent stop and natural-exit cleanup close stdin once.
 	// A nil channel never selects its case.
 	// Clearing this channel would leave WriteStdin blocked after the writer exits.
-	stdinClosed     chan struct{}
-	stdinClosedOnce bool
+	stdinClosed    chan struct{}
+	stdinCloseOnce sync.Once
 
 	discardOutput atomic.Bool
 
@@ -173,7 +173,7 @@ type stdinFrame struct {
 // A process that never writes needs no writer goroutine.
 func (p *Process) stdinWriterLocked() (chan stdinFrame, chan struct{}) {
 	// Create the close signal first, and reuse an existing signal.
-	// Stop can close it before the first write.
+	// A stop or natural exit can close it before the first write.
 	// The new writer then answers the frame and exits through that closed signal.
 	// Replacing the signal would leave the writer without a shutdown signal.
 	if p.stdinClosed == nil {
@@ -217,7 +217,7 @@ func (p *Process) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
 
 // writeStdinNow performs one Write.
 // The writer goroutine serializes these calls while it runs.
-// After Stop ends the writer, the two closed-channel paths call this function directly.
+// After stdin closes, the closed-channel paths call this function directly.
 // Their writes fail through the closed stdin.
 // A failed write that transfers bytes has an uncertain delivery outcome.
 // The returned error retains the original write error.
@@ -245,7 +245,7 @@ func (p *Process) WriteStdin(data []byte) error {
 	p.stdinMu.Unlock()
 	select {
 	case <-closed:
-		// Write directly after the writer exits. Stop closes stdin before this signal.
+		// closeStdin closes the pipe before this signal.
 		// The caller then receives the original error from the closed stdin.
 		return p.writeStdinNow(data)
 	default:
@@ -299,7 +299,7 @@ func (p *Process) writeStdinDetached(data []byte, describe string) {
 	p.stdinMu.Unlock()
 	select {
 	case <-closed:
-		// Write directly after the writer exits. Stop already closed stdin.
+		// closeStdin already closed the pipe.
 		// Log the write refusal for a request that arrives during shutdown.
 		if err := p.writeStdinNow(data); err != nil {
 			slog.Debug("write to a closed agent stdin", "agent_id", p.agentID, "frame", describe, "error", err)
@@ -360,20 +360,7 @@ func (p *Process) Stop() {
 	}
 	cancelCapture()
 	p.sendStopSignal()
-	if p.stdin != nil {
-		if err := p.stdin.Close(); err != nil {
-			slog.Debug("close agent stdin", "agent_id", p.agentID, "error", err)
-		}
-	}
-	p.stdinMu.Lock()
-	if p.stdinClosed == nil {
-		p.stdinClosed = make(chan struct{})
-	}
-	if !p.stdinClosedOnce {
-		p.stdinClosedOnce = true
-		close(p.stdinClosed)
-	}
-	p.stdinMu.Unlock()
+	p.closeStdin()
 
 	grace := p.shutdownGrace
 	if grace <= 0 {
@@ -393,6 +380,24 @@ func (p *Process) Stop() {
 		}
 	}
 	<-p.processDone
+}
+
+// closeStdin ends writes after a stop or natural process exit.
+// Close stdin before signaling the writer so later writes receive the pipe's error.
+func (p *Process) closeStdin() {
+	p.stdinCloseOnce.Do(func() {
+		if p.stdin != nil {
+			if err := p.stdin.Close(); err != nil {
+				slog.Debug("close agent stdin", "agent_id", p.agentID, "error", err)
+			}
+		}
+		p.stdinMu.Lock()
+		if p.stdinClosed == nil {
+			p.stdinClosed = make(chan struct{})
+		}
+		close(p.stdinClosed)
+		p.stdinMu.Unlock()
+	})
 }
 
 // sendStopSignal sends the provider's stop signal to the process group.
@@ -962,6 +967,7 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 		waitErr = p.cmd.Wait()
 	}
 	p.recordProcessExit(waitErr)
+	p.closeStdin()
 	p.awaitStderrDrain()
 	if err := p.pipes.closeStderrReader(); err != nil {
 		slog.Warn("close agent stderr", "agent_id", p.agentID, "error", err)

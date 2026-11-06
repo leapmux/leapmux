@@ -127,6 +127,10 @@ type Sink struct {
 	// (no-op upsert, absorbed reject) are skipped so length asserts stay
 	// meaningful.
 	bgTaskStatuses map[string][]bgtask.Status
+	// OnUpsertBackgroundTask runs before UpsertBackgroundTask takes the lock.
+	// A test can pause a provider's update after child registration.
+	// Set this hook before the first upsert.
+	OnUpsertBackgroundTask func(task bgtask.Upsert)
 	// OnCloseBackgroundTask runs before CloseBackgroundTask takes the lock.
 	// A test can observe the process state when a row reaches its final status.
 	// Set this hook before the first close.
@@ -1168,6 +1172,9 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		}
 		item := registry.bgTasks[rowKey]
 		item.RowKey, item.ChildAgentID, item.Kind = rowKey, cid, bgtask.KindSubagent
+		if item.Status == bgtask.StatusUnspecified {
+			item.Status = bgtask.StatusRunning
+		}
 		if item.ParentAgentID == "" {
 			item.ParentAgentID = s.childAgentID()
 		}
@@ -1175,6 +1182,7 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 			item.Title = spec.Title
 		}
 		registry.bgTasks[rowKey] = item
+		registry.recordBgTaskStatusLocked(rowKey, item.Status)
 		registry.bgTasksMu.Unlock()
 	}
 	return cid, nil
@@ -1313,6 +1321,9 @@ func (s *Sink) PersistChildUserMessage(childAgentID, text string) error {
 var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	if s.OnUpsertBackgroundTask != nil {
+		s.OnUpsertBackgroundTask(task)
+	}
 	// An upsert with no key has no identity to open a row under: the registry
 	// refuses it, as production does, rather than deriving a key for bytes no
 	// provider sent. A caller with no linkage skips the call entirely.
@@ -1479,9 +1490,10 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	if s.ReviveErr != nil {
 		return s.ReviveErr
 	}
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	item, ok := r.bgTasks[rowKey]
 	if !ok || !item.Status.IsFinished() {
 		return nil
 	}
@@ -1493,9 +1505,9 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	item.ActiveForm = ""
 	item.Description = ""
 	item.EndedAt = time.Time{}
-	s.bgTasks[rowKey] = item
-	s.recordBgTaskStatusLocked(rowKey, item.Status)
-	s.revivedTasks = append(s.revivedTasks, rowKey)
+	r.bgTasks[rowKey] = item
+	r.recordBgTaskStatusLocked(rowKey, item.Status)
+	r.revivedTasks = append(r.revivedTasks, rowKey)
 	return nil
 }
 

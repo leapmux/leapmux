@@ -179,6 +179,25 @@ func TestFinishOutputRecordsNaturalExitBeforeWaitingForStderr(t *testing.T) {
 	assert.Contains(t, process.Stderr(), "Model not found: mock/missing")
 }
 
+func TestNaturalExitClosesStdinWriter(t *testing.T) {
+	t.Parallel()
+	process := startExitWithStderr(t, testutil.NewQuartzMock(t), func(process *Process, stderr io.Reader) {
+		process.DrainStderr(stderr)
+		require.NoError(t, process.WriteStdin([]byte{}))
+	})
+	awaitProcessDone(t, testutil.DeadlineContext(t), process)
+	process.stdinMu.Lock()
+	closed := process.stdinClosed
+	process.stdinMu.Unlock()
+	select {
+	case <-closed:
+	default:
+		t.Error("natural process exit leaves the stdin writer running")
+	}
+	assert.False(t, process.IsStopped(), "a natural exit is not an intentional stop")
+	assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
+}
+
 func TestFinishOutputKeepsAnIntentionalStopBeforeNativeExit(t *testing.T) {
 	t.Parallel()
 	process := startExitWithStderr(t, testutil.NewQuartzMock(t), func(process *Process, stderr io.Reader) {

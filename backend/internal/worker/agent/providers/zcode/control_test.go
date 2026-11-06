@@ -1054,6 +1054,25 @@ func (w *zcodeBlockedStdin) Write(p []byte) (int, error) {
 
 func (w *zcodeBlockedStdin) Close() error { return w.rec.Close() }
 
+// zcodeAfterRecordPause holds the first Write return after the recorder ran.
+type zcodeAfterRecordPause struct {
+	delegate *zcodeBlockedStdin
+	recorded chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (writer *zcodeAfterRecordPause) Write(data []byte) (int, error) {
+	n, err := writer.delegate.Write(data)
+	writer.once.Do(func() {
+		close(writer.recorded)
+		<-writer.release
+	})
+	return n, err
+}
+
+func (writer *zcodeAfterRecordPause) Close() error { return writer.delegate.Close() }
+
 // The envelope id is the reply address alone: a cancellation that specifies it
 // cancels nothing. The logical id is the cancellation key.
 func TestAnswerProviderRuntimeHeaders_CancelsByLogicalIDAndNotByEnvelopeID(t *testing.T) {
@@ -1145,7 +1164,10 @@ func TestAnswerProviderRuntimeHeaders_TheGateCommitsBeforeTheWrite(t *testing.T)
 	a, _ := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
 	rec := a.StdinForTest().(*zcodeRecordedStdin)
 	blocked := zcodeBlockFirstStdin(rec)
-	a.SetStdinForTest(blocked)
+	writePause := &zcodeAfterRecordPause{delegate: blocked, recorded: make(chan struct{}), release: make(chan struct{})}
+	a.SetStdinForTest(writePause)
+	releaseReturn := sync.OnceFunc(func() { close(writePause.release) })
+	t.Cleanup(releaseReturn)
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(blocked.release) }) }
 	t.Cleanup(unblock)
@@ -1165,8 +1187,23 @@ func TestAnswerProviderRuntimeHeaders_TheGateCommitsBeforeTheWrite(t *testing.T)
 
 	unblock()
 	_ = zcodeAwaitReplies(t, rec, 1)
+	select {
+	case <-writePause.recorded:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the runtime headers reply was not recorded")
+	}
 	a.runtimeHeaderMu.Lock()
 	remaining := len(a.runtimeHeaderAnswers)
+	a.runtimeHeaderMu.Unlock()
+	assert.Equal(t, 1, remaining, "the registration stays until the write returns")
+	releaseReturn()
+	select {
+	case <-answer.ctx.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the runtime headers answer did not finish after the write")
+	}
+	a.runtimeHeaderMu.Lock()
+	remaining = len(a.runtimeHeaderAnswers)
 	a.runtimeHeaderMu.Unlock()
 	assert.Zero(t, remaining, "completion removes its own registration after the write")
 }

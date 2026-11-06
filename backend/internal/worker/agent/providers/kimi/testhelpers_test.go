@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // The fake kap-server the tests drive.
@@ -715,6 +716,21 @@ func newOfflineKimiAgent(t *testing.T, sink agent.ServiceFacets) *Agent {
 		sessionID:  "session_1",
 		settings:   kimiSettings{model: "kimi-k2", effort: agent.EffortAuto, permission: "manual"},
 	}
+}
+
+// pauseBackgroundTaskUpsert holds the provider's registry update until the test releases it.
+// EnsureChildAgent can create the row before the provider supplies its remaining fields.
+func pauseBackgroundTaskUpsert(t *testing.T, sink *agenttest.ControlSink, rowKey string) func() {
+	t.Helper()
+	released := make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	t.Cleanup(release)
+	sink.OnUpsertBackgroundTask = func(task bgtask.Upsert) {
+		if task.RowKey == rowKey {
+			<-released
+		}
+	}
+	return release
 }
 
 // waitFor polls cond until it holds. The deadline is generous and never

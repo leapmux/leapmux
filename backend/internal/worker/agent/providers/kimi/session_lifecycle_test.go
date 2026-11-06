@@ -379,10 +379,29 @@ func TestKimiReconnectReadsBackTheStatusTheStreamMissed(t *testing.T) {
 // missed, and it replays none.
 func resyncAfterAGap(t *testing.T, rig *kimiTestRig) {
 	t.Helper()
+	snapshots := beginResyncAfterAGap(rig)
+	waitFor(t, func() bool { return resyncFinished(rig, snapshots) }, "the resync finishes applying its snapshot")
+}
+
+func beginResyncAfterAGap(rig *kimiTestRig) int {
+	snapshots := len(rig.fake.requestsTo("GET " + kimiSessionPath(rig.sessionID(), "/snapshot")))
 	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
 		return 0, kimiAck{Accepted: sub.IDs, ResyncRequired: sub.IDs}
 	})
 	rig.fake.closeConnections()
+	return snapshots
+}
+
+func resyncFinished(rig *kimiTestRig, snapshots int) bool {
+	if len(rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/snapshot"))) <= snapshots {
+		return false
+	}
+	// The snapshot request runs under dispatchMu, which stays held through reconciliation.
+	if !rig.agent.dispatchMu.TryLock() {
+		return false
+	}
+	rig.agent.dispatchMu.Unlock()
+	return true
 }
 
 // inFlightTurn returns a pointer to a turn id, as fakeKapSession.InFlightTurn takes it.
@@ -790,6 +809,29 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		row, _ := rig.sink.BackgroundTask("session_1/agent-0")
 		assert.Equal(t, bgtask.StatusRunning, row.Status, "the roster states the run before the follow-up turn, and that turn's own end closes the row")
 	})
+}
+
+func TestKimiResyncWaitsForTheSubagentRegistryUpdate(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	release := pauseBackgroundTaskUpsert(t, rig.sink, "session_1/agent-9")
+	rig.fake.update("session_1", func(session *fakeKapSession) {
+		session.Subagents = []map[string]any{kimiRosterEntry("agent-9", "running", "working", "call_swarm", map[string]any{"swarm_index": 1})}
+	})
+	snapshots := beginResyncAfterAGap(rig)
+	assert.False(t, resyncFinished(rig, snapshots), "the resync has not applied its snapshot")
+	waitFor(t, func() bool {
+		_, ok := rig.sink.BackgroundTask("session_1/agent-9")
+		return ok
+	}, "child creation reaches the paused registry update")
+	assert.False(t, resyncFinished(rig, snapshots), "a received snapshot does not mean its registry updates finished")
+	release()
+	waitFor(t, func() bool { return resyncFinished(rig, snapshots) }, "the resync finishes its registry update")
+	row, child := childOf(t, rig.sink, "session_1/agent-9")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, bgtask.KindWorkflow, row.Kind)
+	assert.Equal(t, "session_1/call_swarm", row.GroupKey)
+	assert.Equal(t, []bool{true}, child.TurnActives())
 }
 
 // A snapshot that cannot be read leaves the status, whose `busy` is false only

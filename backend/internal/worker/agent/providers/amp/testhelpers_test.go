@@ -80,8 +80,40 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
 		return json.Marshal(map[string]any{"id": threadID, "messages": []any{}})
 	}
-	t.Cleanup(h.agent.Stop)
+	t.Cleanup(func() {
+		h.agent.Stop()
+		// A completed process is no longer the agent's current process.
+		// Stop every fake to release the stdin writers that earlier exits left behind.
+		h.agent.sendMu.Lock()
+		h.mu.Lock()
+		procs := append([]*fakeProc(nil), h.procs...)
+		h.mu.Unlock()
+		h.agent.sendMu.Unlock()
+		for _, proc := range procs {
+			proc.Stop()
+		}
+	})
 	return h
+}
+
+func TestHarnessCleanupStopsExitedProcesses(t *testing.T) {
+	t.Parallel()
+	var procs []*fakeProc
+	t.Run("a process that exited before cleanup", func(t *testing.T) {
+		h := newHarness(t)
+		for range 2 {
+			exited := h.send("go")
+			procs = append(procs, exited)
+			h.feed(exited, textLine("done", stopReasonEndTurn))
+			exited.exit()
+			exited.awaitHandled(t)
+		}
+		procs = append(procs, h.send("still running"))
+	})
+	for _, proc := range procs {
+		require.Error(t, proc.SendRawInput([]byte(`{"type":"user"}`), agent.StopContext{}),
+			"cleanup must close the input of every process")
+	}
 }
 
 // eventSink records each banner publication and withdrawal in the order that

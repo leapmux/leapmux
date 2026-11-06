@@ -592,6 +592,47 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 	assert.NotContains(t, s.ChildAgentIDs(), "tu-spawn", "the spawn span is the key, not the id")
 }
 
+func TestSink_EnsureChildAgentStartsTheRegistryRowRunning(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	spec := agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Reviewer"}
+	childID, err := sink.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	row, ok := sink.BackgroundTask(spec.ProviderChildKey)
+	require.True(t, ok)
+	assert.Equal(t, childID, row.ChildAgentID)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning}, sink.BackgroundTaskStatuses(spec.ProviderChildKey))
+
+	require.NoError(t, sink.CloseBackgroundTask(spec.ProviderChildKey, bgtask.StatusFailed))
+	replayed, err := sink.EnsureChildAgent(spec)
+	require.NoError(t, err)
+	assert.Equal(t, childID, replayed)
+	row, ok = sink.BackgroundTask(spec.ProviderChildKey)
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusFailed, row.Status, "replaying child creation keeps the finished status")
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusFailed}, sink.BackgroundTaskStatuses(spec.ProviderChildKey))
+}
+
+func TestSink_ReviveBackgroundTaskUsesTheSharedRegistry(t *testing.T) {
+	t.Parallel()
+	root := &Sink{}
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "child"})
+	require.NoError(t, err)
+	child := root.Child(childID)
+	_, err = child.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "grandchild"})
+	require.NoError(t, err)
+	require.NoError(t, child.CloseBackgroundTask("grandchild", bgtask.StatusFailed))
+	require.NoError(t, child.ReviveBackgroundTask("grandchild"))
+	row, ok := root.BackgroundTask("grandchild")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero())
+	assert.Equal(t, []string{"grandchild"}, root.RevivedTasks())
+	require.NoError(t, child.ReviveBackgroundTask("grandchild"))
+	assert.Equal(t, []string{"grandchild"}, child.RevivedTasks(), "an active row is not revived twice")
+}
+
 func TestSink_IndependentUnlinkedChildrenKeepTheirNativeIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
