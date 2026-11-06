@@ -12,6 +12,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -33,14 +34,17 @@ import (
 // Wait blocks until Stop, so the manager registers it like a live process.
 type recoveryAgent struct {
 	agenttest.IdleAgent
-	agentID string
-	stopped chan struct{}
+	agentID   string
+	stopped   chan struct{}
+	stopOnce  sync.Once
+	stopCalls atomic.Int32
 
-	mu            sync.Mutex
-	prepareScript func(call int) error
-	prepareCalls  int
-	sentTexts     []string
-	sentSessions  []string
+	mu              sync.Mutex
+	prepareScript   func(call int) error
+	prepareCalls    int
+	sentTexts       []string
+	sentSessions    []string
+	sentAttachments [][]*leapmuxv1.Attachment
 }
 
 func newRecoveryAgent(agentID string, prepare func(call int) error) *recoveryAgent {
@@ -65,27 +69,26 @@ func (a *recoveryAgent) PrepareInputProcess() error {
 	return script(call)
 }
 
-func (a *recoveryAgent) SendInput(content string, _ []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
+	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.mu.Unlock()
 	return nil
 }
 
-func (a *recoveryAgent) SendInputForSession(sessionID, content string, _ []*leapmuxv1.Attachment) error {
+func (a *recoveryAgent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	a.sentTexts = append(a.sentTexts, content)
+	a.sentAttachments = append(a.sentAttachments, attachments)
 	a.sentSessions = append(a.sentSessions, sessionID)
 	a.mu.Unlock()
 	return nil
 }
 
 func (a *recoveryAgent) Stop() {
-	select {
-	case <-a.stopped:
-	default:
-		close(a.stopped)
-	}
+	a.stopCalls.Add(1)
+	a.stopOnce.Do(func() { close(a.stopped) })
 }
 
 func (a *recoveryAgent) IsStopped() bool {
@@ -271,7 +274,7 @@ func TestInputRecoveryReplacesStaleProcessAndDeliversOnce(t *testing.T) {
 	assert.Empty(t, texts, "no input reached the stale process")
 	replacement := starts.fake(1)
 	require.NotNil(t, replacement)
-	assert.Equal(t, 1, replacement.preparations(), "the replacement is prepared before delivery")
+	assert.Equal(t, 2, replacement.preparations(), "readiness and delivery each prepare the replacement")
 	texts, _ = replacement.sent()
 	assert.Equal(t, []string{"continue"}, texts, "the input is delivered once, to the replacement")
 	row, err := svc.Queries.GetAgentByID(context.Background(), agentID)
@@ -291,14 +294,16 @@ func TestInputRecoveryStillSignedOutRetainsInputAndThread(t *testing.T) {
 		if launch == 1 {
 			return func(int) error { return fmtRestartRequired() }
 		}
-		// The replacement is still signed out at its first check; the login
-		// exists before the retained input is retried.
-		return func(call int) error {
-			if call == 1 {
-				return signedOut
+		if launch == 2 {
+			// A signed-out process retains its failed account check until replaced.
+			return func(call int) error {
+				if call == 1 {
+					return signedOut
+				}
+				return fmtRestartRequired()
 			}
-			return nil
 		}
+		return nil
 	})
 	const agentID = "agent-1"
 	seedRecoveryAgent(t, svc, agentID, "thread-1")
@@ -308,23 +313,30 @@ func TestInputRecoveryStillSignedOutRetainsInputAndThread(t *testing.T) {
 	assert.Contains(t, item.Error, "sign-in")
 	assert.Equal(t, 2, starts.count(), "no replacement loop")
 
-	// Login becomes available before the retry: the retained input is
-	// delivered once, through the registered replacement whose next check
-	// succeeds. No third launch exists -- the process is healthy, only its
-	// login was missing.
+	// Login becomes available before retry. The signed-out process requires
+	// replacement so the next process reads the new login.
 	row, err := svc.Queries.GetAgentByID(context.Background(), agentID)
 	require.NoError(t, err)
 	assert.Equal(t, "thread-1", row.AgentSessionID)
+	assert.Equal(t, int64(1), row.Resumed)
 	_, err = svc.InputQueue.Retry(context.Background(), agentID, "input-1", false)
 	require.NoError(t, err)
 	waitForMessageCount(t, svc, agentID, 1)
-	assert.Equal(t, []string{"", "thread-1"}, starts.launches(),
-		"no second replacement: the signed-out process stays until a check passes")
-	replacement := starts.fake(1)
+	assert.Equal(t, []string{"", "thread-1", "thread-1"}, starts.launches())
+	signedOutProcess := starts.fake(1)
+	require.NotNil(t, signedOutProcess)
+	assert.True(t, signedOutProcess.wasStopped())
+	texts, _ := signedOutProcess.sent()
+	assert.Empty(t, texts)
+	replacement := starts.fake(2)
 	require.NotNil(t, replacement)
-	assert.Equal(t, 2, replacement.preparations(), "the retry checked the account again")
-	texts, _ := replacement.sent()
+	assert.Equal(t, 2, replacement.preparations())
+	texts, _ = replacement.sent()
 	assert.Equal(t, []string{"continue"}, texts)
+	row, err = svc.Queries.GetAgentByID(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "thread-1", row.AgentSessionID)
+	assert.Equal(t, int64(1), row.Resumed)
 }
 
 // TestInputRecoveryFailedLaunchPreservesThreadAndRetry covers a replacement
@@ -373,9 +385,18 @@ func TestInputRecoveryFailedLaunchPreservesThreadAndRetry(t *testing.T) {
 // input reaches the stale process.
 func TestInputRecoveryConcurrentCallersReplaceOnce(t *testing.T) {
 	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	entered := make(chan struct{}, 2)
+	releasePreparation := make(chan struct{})
+	release := sync.OnceFunc(func() { close(releasePreparation) })
+	defer release()
 	svc, starts := newInputRecoveryService(t, func(launch int) func(call int) error {
 		if launch == 1 {
-			return func(int) error { return fmtRestartRequired() }
+			return func(int) error {
+				entered <- struct{}{}
+				<-releasePreparation
+				return fmtRestartRequired()
+			}
 		}
 		return nil
 	})
@@ -398,9 +419,16 @@ func TestInputRecoveryConcurrentCallersReplaceOnce(t *testing.T) {
 			}
 		}()
 	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("both callers did not capture the stale process")
+		}
+	}
+	release()
 	wg.Wait()
-	assert.LessOrEqual(t, int(failures.Load()), 1,
-		"at most the losing racer fails; the winner's replacement serves both")
+	assert.Equal(t, int32(1), failures.Load(), "the caller holding the retired registration must retry")
 	assert.Equal(t, 2, starts.count(), "exactly one replacement")
 	stale := starts.fake(0)
 	assert.True(t, stale.wasStopped())
@@ -509,7 +537,7 @@ func TestInputRecoveryRefusesWhileWorkAndControlsRemain(t *testing.T) {
 		svc.Output.WaitActivityRefreshes()
 		// A virtual child with its own unanswered control.
 		require.NoError(t, svc.Queries.CreateChildAgent(context.Background(), db.CreateChildAgentParams{
-			ID: "child-1", ParentAgentID: sqlNullString(agentID),
+			ID: "child-1", ParentAgentID: sql.NullString{String: agentID, Valid: true},
 			WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		}))
 		createTestControlRequest(t, context.Background(), svc.Queries, db.StoreControlRequestParams{
@@ -544,7 +572,10 @@ func TestInputRecoveryReadFailureStopsNothing(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(context.Background(), agentID)
-		return err == nil && snapshot.PauseReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT
+		if err != nil || snapshot.PauseReason != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT {
+			return false
+		}
+		return len(snapshot.Items) == 1 && snapshot.Items[0].Error != ""
 	}, inputQueueWait, 10*time.Millisecond, "the dispatch's store fault pauses the queue")
 	assert.Equal(t, 1, starts.count(), "a failed read stops no process")
 	assert.False(t, starts.fake(0).wasStopped())
@@ -555,7 +586,7 @@ func TestInputRecoveryReadFailureStopsNothing(t *testing.T) {
 func TestInputRecoveryLeavesOtherTabsAlone(t *testing.T) {
 	t.Parallel()
 	svc, starts := newInputRecoveryService(t, func(launch int) func(call int) error {
-		if launch == 1 {
+		if launch == 2 {
 			return func(int) error { return fmtRestartRequired() }
 		}
 		return nil
@@ -565,14 +596,28 @@ func TestInputRecoveryLeavesOtherTabsAlone(t *testing.T) {
 	require.NoError(t, svc.ensureAgentRunning("busy-tab", resumeIfConversation, interactiveStart))
 	svc.Output.WaitActivityRefreshes()
 
+	starts.sinkOf(1).SetTurnState(agent.TurnState{Active: true}, 1)
+	require.True(t, svc.Output.TurnActive("busy-tab"))
 	enqueueRecoveryInput(t, svc, "stale-tab", "input-1")
 	waitForMessageCount(t, svc, "stale-tab", 1)
 
-	assert.Equal(t, 2, starts.count())
+	assert.Equal(t, 3, starts.count())
+	assert.Equal(t, []string{"", "", "thread-stale"}, starts.launches())
+	stale := starts.fake(1)
+	assert.True(t, stale.wasStopped())
+	assert.Equal(t, int32(1), stale.stopCalls.Load())
+	texts, _ := stale.sent()
+	assert.Empty(t, texts)
+	texts, _ = starts.fake(2).sent()
+	assert.Equal(t, []string{"continue"}, texts)
 	busy := starts.fake(0)
 	require.NotNil(t, busy)
 	assert.Equal(t, "busy-tab", busy.AgentID())
 	assert.False(t, busy.wasStopped(), "another tab's process is never touched")
+	assert.True(t, svc.Output.TurnActive("busy-tab"))
+	assert.Zero(t, busy.preparations())
+	texts, _ = busy.sent()
+	assert.Empty(t, texts)
 }
 
 // TestInputRecoveryRefusesClosedAndChangedSessions covers the store guards:
@@ -613,8 +658,10 @@ func TestInputRecoveryRefusesClosedAndChangedSessions(t *testing.T) {
 		seedRecoveryAgent(t, svc, agentID, "thread-1")
 		require.NoError(t, svc.ensureAgentRunning(agentID, resumeIfConversation, interactiveStart))
 		svc.Output.WaitActivityRefreshes()
-		// The guarded write matches nothing: the stored session changed.
-		svc.Queries = db.New(zeroRowExecFault{DBTX: svc.DB})
+		// Change the row before executing the actual conditional write.
+		svc.Queries = db.New(&recoveryIntentStore{DBTX: svc.DB, before: func(ctx context.Context) error {
+			return db.New(svc.DB).UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: agentID, AgentSessionID: "changed-thread"})
+		}})
 
 		err := svc.ensureAgentReadyForInput(agentID)
 		require.Error(t, err)
@@ -623,6 +670,12 @@ func TestInputRecoveryRefusesClosedAndChangedSessions(t *testing.T) {
 		assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
 		assert.Equal(t, 1, starts.count(), "nothing stopped when the session changed")
 		assert.False(t, starts.fake(0).wasStopped())
+		row, readErr := db.New(svc.DB).GetAgentByID(t.Context(), agentID)
+		require.NoError(t, readErr)
+		assert.Equal(t, "changed-thread", row.AgentSessionID)
+		assert.Zero(t, row.Resumed)
+		texts, _ := starts.fake(0).sent()
+		assert.Empty(t, texts)
 	})
 }
 
@@ -728,38 +781,12 @@ func fmtRestartRequired() error {
 		agent.ErrInputProcessRestartRequired)
 }
 
-// sqlNullString wraps a parent id the way the sqlc params do.
-func sqlNullString(value string) sql.NullString {
-	return sql.NullString{String: value, Valid: true}
-}
+// descendantReadFault fails the combined root and descendant control lookup.
+type descendantReadFault struct{ db.DBTX }
 
-// descendantReadFault fails the descendant listing and passes the rest on.
-type descendantReadFault struct {
-	db.DBTX
-}
-
-func (store descendantReadFault) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	if strings.Contains(query, "-- name: ListDescendantAgentIDs :many") {
-		return nil, assert.AnError
+func (store descendantReadFault) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if strings.Contains(query, "-- name: FindAgentInputRecoveryControlOwner :one") {
+		return store.DBTX.QueryRowContext(ctx, "SELECT missing_input_recovery_control_column")
 	}
-	return store.DBTX.QueryContext(ctx, query, args...)
-}
-
-// zeroRowExecFault answers the guarded resume-intent write with zero affected
-// rows: the state the database holds when the session or the tab changed
-// between the row read and the write.
-type zeroRowExecFault struct {
-	db.DBTX
-}
-
-type zeroRowResult struct{}
-
-func (zeroRowResult) LastInsertId() (int64, error) { return 0, nil }
-func (zeroRowResult) RowsAffected() (int64, error) { return 0, nil }
-
-func (store zeroRowExecFault) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if strings.Contains(query, "-- name: MarkAgentResumedForInputRecovery :execrows") {
-		return zeroRowResult{}, nil
-	}
-	return store.DBTX.ExecContext(ctx, query, args...)
+	return store.DBTX.QueryRowContext(ctx, query, args...)
 }

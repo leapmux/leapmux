@@ -390,6 +390,19 @@ WITH RECURSIVE descendants AS (
 )
 SELECT descendants.id FROM descendants;
 
+-- FindAgentInputRecoveryControlOwner checks the root and every descendant in
+-- one read. Closed virtual tabs and nonblocking controls still own requests
+-- that the physical process must finish before input recovery can stop it.
+-- name: FindAgentInputRecoveryControlOwner :one
+WITH RECURSIVE agent_tree AS (
+    SELECT a.id AS id FROM agents a WHERE a.id = sqlc.arg(agent_id)
+    UNION
+    SELECT a.id AS id FROM agents a JOIN agent_tree ON a.parent_agent_id = agent_tree.id
+)
+SELECT agent_tree.id FROM agent_tree
+WHERE EXISTS (SELECT 1 FROM control_requests c WHERE c.agent_id = agent_tree.id)
+LIMIT 1;
+
 -- ListAgentTreeIDs returns the root id AND every descendant id (the whole
 -- subtree rooted at the given agent). It is the ONE read a root-tab close
 -- makes, and it serves three consumers: stamping closed_at on the root and all

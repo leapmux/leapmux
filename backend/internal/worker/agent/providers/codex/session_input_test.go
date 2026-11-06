@@ -3,12 +3,15 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +36,76 @@ func TestCodexRecoveryRefusesNewInputAdmission(t *testing.T) {
 	err = a.SendInputForSession("main-thread", "hello", nil)
 	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
 	assert.Empty(t, requests(), "no request reached the stale process")
+}
+
+func TestCodexAuthenticationFailureAfterTurnSettingsCaptureRefusesReservation(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	a.turnDispatchMu.Lock()
+	defer a.turnDispatchMu.Unlock()
+	a.Mu.Lock()
+	err := a.checkCodexInputLocked(nil)
+	threadID, settings := a.threadID, a.turnSettingsLocked()
+	a.Mu.Unlock()
+	require.NoError(t, err, "the input passed the early admission check")
+	a.markAuthenticationRecoveryRequired()
+	pending, err := a.beginCodexTurnStart(threadID, []map[string]interface{}{{"type": "text", "text": "later input"}}, settings, nil)
+	require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
+	assert.Nil(t, pending)
+	assert.Empty(t, requests())
+}
+
+func TestCodexAuthenticationFailureBeforeSteerWritePreservesOnlyValidatedAnswers(t *testing.T) {
+	t.Parallel()
+	for _, validated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("validated %t", validated), func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			a, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			feedCodexLines(a, `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)
+			a.turnDispatchMu.Lock()
+			var once sync.Once
+			release := func() { once.Do(a.turnDispatchMu.Unlock) }
+			t.Cleanup(release)
+			done := make(chan error, 1)
+			go func() {
+				if validated {
+					done <- a.SteerInputForSession("main-thread", "the answer", nil)
+				} else {
+					done <- a.SteerInput("new input", nil)
+				}
+			}()
+			require.Eventually(t, func() bool {
+				a.Mu.Lock()
+				defer a.Mu.Unlock()
+				return a.mainTurn.steers == 1
+			}, 30*time.Second, time.Millisecond, "the steer passed its early check and waits to write")
+			a.markAuthenticationRecoveryRequired()
+			release()
+			select {
+			case err := <-done:
+				if validated {
+					require.NoError(t, err)
+					require.Len(t, requests(), 1)
+					assert.Equal(t, "turn/steer", requests()[0].Method)
+				} else {
+					require.ErrorIs(t, err, agent.ErrInputProcessRestartRequired)
+					assert.Empty(t, requests())
+				}
+			case <-ctx.Done():
+				t.Fatal("the reserved steer did not settle")
+			}
+			a.Mu.Lock()
+			assert.Zero(t, a.mainTurn.steers)
+			a.Mu.Unlock()
+		})
+	}
 }
 
 // TestCodexTurnStartAuthenticationRejectionMarksAndRefusesLaterInput covers the
@@ -65,8 +138,9 @@ func TestCodexTurnStartAuthenticationRejectionMarksAndRefusesLaterInput(t *testi
 // not mark the process that no longer waits for it.
 func TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession(t *testing.T) {
 	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
 	held := make(chan func(agenttest.RPCReply), 1)
-	a, _, requests := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) {
+	a, _, _ := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) {
 		switch request.Method {
 		case "turn/start":
 			select {
@@ -84,7 +158,16 @@ func TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession(t *testing.T) {
 
 	first := make(chan error, 1)
 	go func() { first <- a.SendInput("held", nil) }()
-	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
+	var deliver func(agenttest.RPCReply)
+	select {
+	case deliver = <-held:
+	case <-ctx.Done():
+		t.Fatal("the fixture did not capture the held reply")
+	}
+	a.Mu.Lock()
+	pending := a.pendingStart
+	a.Mu.Unlock()
+	require.NotNil(t, pending)
 
 	// A context clear retires the pending turn/start and replaces the thread.
 	_, err := a.ClearContext()
@@ -92,20 +175,18 @@ func TestCodexLateTurnStartRejectionDoesNotMarkTheNextSession(t *testing.T) {
 	select {
 	case err := <-first:
 		require.Error(t, err, "the clear settles the retired request's waiter")
-	case <-time.After(time.Second):
+	case <-ctx.Done():
 		t.Fatal("the retired turn/start did not settle its waiter")
 	}
 
-	// The retired request's authentication rejection arrives now.
-	select {
-	case deliver := <-held:
-		deliver(agenttest.RPCReply{Error: json.RawMessage(
-			`{"code":-32000,"message":"workspace routing discovery unauthorized (401)"}`)})
-	case <-time.After(time.Second):
-		t.Fatal("the fixture did not capture the held reply")
-	}
+	// Invoke the retired request's handler synchronously. A buffered peer reply
+	// would not prove that the detached handler ran before the assertion.
+	a.handleCodexTurnStartResponse(pending, &providerkit.JSONRPCResponseError{
+		Message: "workspace routing discovery unauthorized (401)",
+	})
 	assert.False(t, recoveryRequired(a),
 		"a late reply for a retired request must not mark the current thread's process")
+	deliver(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
 }
 
 // TestCodexMarkedProcessRefusesCompactionAndClear covers the remaining

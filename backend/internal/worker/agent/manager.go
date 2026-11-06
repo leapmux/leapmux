@@ -520,9 +520,10 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 // under the lifecycle lock so input that arrives during this interval reaches
 // the new process.
 //
-// The lock covers only provider resolution. A blocked provider write must not
-// block a restart or explicit steering. A restart can still start between the
-// resolution and the write, but the interval is only the provider call setup.
+// The lock covers only provider resolution. Preparation and provider writes run
+// after it releases, so neither can prevent a restart or explicit steering.
+// Delivery prepares and retains that instance, and the provider checks native
+// admission if its process or session changes before the write.
 // A text-route provider observes the goal command after a successful delivery.
 //
 // Never call this from a caller that already holds the lifecycle lock
@@ -545,6 +546,9 @@ func SendInputToSession(provider Agent, sessionID, content string, attachments [
 }
 
 func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
+	}
 	var err error
 	if expected == nil {
 		err = p.SendInput(content, attachments)
@@ -565,6 +569,15 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 		observeGoalCommand(p, GoalDeliverySend, content)
 	}
 	return err
+}
+
+// Prepare the retained delivery target. A readiness check in the service may
+// precede a lifecycle replacement, so its result cannot authorize this instance.
+func prepareProviderProcessForInput(p Agent) error {
+	if preparer, ok := p.(InputProcessPreparer); ok {
+		return preparer.PrepareInputProcess()
+	}
+	return nil
 }
 
 // observeGoalCommand tells a text-route provider what LeapMux just delivered.
@@ -589,6 +602,9 @@ func (m *Manager) CompactContext(agentID string) error {
 	if !ok {
 		return ErrCompactionUnsupported
 	}
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
+	}
 	return compactor.CompactContext()
 }
 
@@ -606,6 +622,9 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	steerer, ok := p.(InputSteerer)
 	if !ok {
 		return ErrSteeringUnsupported
+	}
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
 	}
 	err = steerer.SteerInput(content, attachments)
 	if err == nil {

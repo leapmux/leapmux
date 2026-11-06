@@ -728,12 +728,8 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if turnRaw, ok := parsed["turn"]; ok {
 			var turn struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-				Error  struct {
-					Message        string          `json:"message"`
-					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-				} `json:"error"`
+				ID string `json:"id"`
+				codexCompletedTurnFailureWire
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnStatus = turn.Status
@@ -747,7 +743,8 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// input: mark it before the turn-end publish releases the Worker's input
 	// queue, so the input that follows asks for a replacement instead of
 	// reaching this process. The failed turn itself stays in the transcript.
-	if codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo) {
+	authenticationFailure := codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo)
+	if authenticationFailure {
 		a.markAuthenticationRecoveryRequired()
 	}
 	// Clear provider turn state before the deferred publish below releases the
@@ -783,7 +780,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	a.sink.ResetSpans()
 
 	if turnStatus != "" {
-		retryable := turnStatus == "failed" &&
+		retryable := !authenticationFailure && turnStatus == "failed" &&
 			(codexErrorInfoName(turnErrorInfo) == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
 		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retryable, params)
 		if turnStatus == "completed" && collaborationMode == CollaborationPlan && sawPlan && planText != "" {
@@ -953,17 +950,21 @@ func codexCompletedTurnAuthFailure(status, message string, info json.RawMessage)
 	return status == "failed" && codexAuthenticationFailure(message, info)
 }
 
+// The main and child handlers read the same native failure structure. Keep
+// codexTurnCompletion's status-only decoder independent of malformed errors.
+type codexCompletedTurnFailureWire struct {
+	Status string `json:"status"`
+	Error  struct {
+		Message        string          `json:"message"`
+		CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+	} `json:"error"`
+}
+
 // codexTurnAuthFailure reads one completed turn's error fields and reports
 // whether they state an authentication failure.
 func codexTurnAuthFailure(params json.RawMessage) bool {
 	var value struct {
-		Turn struct {
-			Status string `json:"status"`
-			Error  struct {
-				Message        string          `json:"message"`
-				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-			} `json:"error"`
-		} `json:"turn"`
+		Turn codexCompletedTurnFailureWire `json:"turn"`
 	}
 	if json.Unmarshal(params, &value) != nil {
 		return false
@@ -1475,7 +1476,7 @@ func (a *Agent) handleSafetyBufferingUpdated(line *providerkit.ParsedLine) {
 	// a faster model, the running turn, no agent text yet, the turn's input
 	// retained, and no retry in flight.
 	// LeapMux also requires the replacement model to accept the retained audio.
-	eligible := a.turnRetrySupported && notif.ShowBufferingUI && notif.FasterModel != "" && notif.FasterModel != a.model &&
+	eligible := !a.authenticationRecoveryRequired && a.turnRetrySupported && notif.ShowBufferingUI && notif.FasterModel != "" && notif.FasterModel != a.model &&
 		a.turnInputRetainedLocked(notif.TurnID) && !a.mainTurn.agentMessageStarted &&
 		a.retry == nil && a.pendingStart == nil && a.validateCodexAudioInputLocked(a.mainTurn.input, notif.FasterModel) == nil
 	var offer *codexTurnRetryOffer

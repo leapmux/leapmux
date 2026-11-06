@@ -1,11 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { Buffer } from 'node:buffer'
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
-import { cleanupOnFailure } from './cleanup'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { finishCleanup, withCleanup } from './cleanup'
 import { CODEX_NATIVE_DEFAULT_MODEL, MODEL_KEY } from './mockAgentEnvironment'
+import { readMockBody, writeMockJSON } from './mockHttp'
 
 /**
  * A private Codex login fixture for browser scenarios that reproduce managed
@@ -17,14 +20,14 @@ import { CODEX_NATIVE_DEFAULT_MODEL, MODEL_KEY } from './mockAgentEnvironment'
  *
  * - a local authentication service answers the token endpoint (the refresh
  *   exchange) and the ChatGPT backend paths, and
- * - every model request is PROXIED to the suite's scripted mock, carrying the
- *   suite's own mock credential, while the fixture records only the GENERATION
- *   LABEL of the bearer token that the request originally held. Token values
- *   never reach a log, a report, or a test.
+ * - each authenticated content request is proxied to the scripted mock with the
+ *   suite's own mock credential. The fixture records only the generation
+ *   label of the bearer token that the request originally held. Request
+ *   journals contain no credential values.
  *
  * Codex keeps its credential storage to itself: the fixture writes and removes
- * `auth.json` the way `codex login` and `codex logout` do, and reads no token
- * beyond the labels it minted itself.
+ * `auth.json` the way `codex login` and `codex logout` do. All credentials
+ * belong to fake accounts that this fixture controls.
  */
 
 /** One fake ChatGPT identity: its account, user, and credential-generation label. */
@@ -55,8 +58,8 @@ export interface CodexAuthEnvironment {
   /** How many refresh exchanges reached the token endpoint. */
   tokenEndpointCalls: () => number
   /**
-   * The generation labels of the model requests the fixture forwarded, in
-   * order. Each label names the credential that the running Codex process
+   * The generation labels of the content requests the fixture answered, in
+   * order. Each label identifies the credential that the running Codex process
    * held; no token value is retained.
    */
   contentGenerations: () => string[]
@@ -86,20 +89,26 @@ export async function withCodexAuthEnvironment<T>(
   use: (environment: CodexAuthEnvironment) => Promise<T>,
 ): Promise<T> {
   const codexHome = join(options.homeDir, '.codex-auth')
-  mkdirSync(codexHome, { recursive: true })
   let refreshPolicy: RefreshPolicy = { kind: 'reject' }
   let tokenEndpointCalls = 0
   const contentGenerations: string[] = []
   let storedAccount: CodexAuthAccount = CODEX_AUTH_SAME_ACCOUNT
   let storedGeneration = ''
   let generationCounter = 0
-  // Whether the stored access token expired. A running process caches its
-  // token in memory and rereads nothing, so the EXPIRY must reject the stored
-  // generation at the backend until a refresh exchange mints a fresh one.
+  // A running process caches credentials and may reload them after a 401.
+  // Refuse the expired generation until refresh or login replaces it.
   let storedAccessExpired = false
   // The label of an access token whose expiry the test forced. A model
   // request that carries it answers 401, which is what drives the refresh.
   const EXPIRED_GENERATION = 'expired'
+
+  const issuedCredentials = new Map<string, string>()
+  const mint = (account: CodexAuthAccount, generation: string): CodexCredentials => {
+    const credentials = mintCredentials(account, generation)
+    issuedCredentials.set(credentials.accessToken, generation)
+    return credentials
+  }
+  const activeRequests = new Map<AbortController, Promise<void>>()
 
   const journalPath = join(codexHome, 'requests.log')
   const journal = (line: string): void => {
@@ -111,10 +120,21 @@ export async function withCodexAuthEnvironment<T>(
     }
   }
   const server = createServer((request, response) => {
+    const controller = new AbortController()
+    const disconnect = () => controller.abort()
+    request.once('aborted', disconnect)
+    response.once('close', disconnect)
     journal(`${request.method} ${request.url ?? '/'} authorization=${codexAuthGenerationLabel(request.headers.authorization) ?? 'none'}`)
-    handleAuthRequest(request, response, {
+    const pending = handleAuthRequest(request, response, {
       mockModelURL: options.mockModelURL,
-      mint: (account, generation) => mintCredentials(account, generation),
+      mint,
+      signal: controller.signal,
+      credentialGeneration: (authorization) => {
+        const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1]
+        return token === undefined
+          ? undefined
+          : issuedCredentials.get(token)
+      },
       currentAccount: () => storedAccount,
       currentGeneration: () => storedGeneration,
       accessExpired: () => storedAccessExpired,
@@ -129,63 +149,88 @@ export async function withCodexAuthEnvironment<T>(
         return policy
       },
       recordContent: generation => contentGenerations.push(generation),
+    }).finally(() => {
+      request.off('aborted', disconnect)
+      response.off('close', disconnect)
+      activeRequests.delete(controller)
     })
+    activeRequests.set(controller, pending)
   })
-  const listening = new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  await listening
-  const address = server.address() as AddressInfo
-  const url = `http://127.0.0.1:${address.port}`
+  return await withCleanup(async () => {
+    mkdirSync(codexHome, { recursive: true })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    const address = server.address() as AddressInfo
+    const url = `http://127.0.0.1:${address.port}`
 
-  writeFileSync(join(codexHome, 'config.toml'), codexAuthConfig(url), { mode: 0o600 })
-  const nextGeneration = (account: CodexAuthAccount): string => {
-    generationCounter++
-    return `${account.generation}-${generationCounter}`
-  }
-  const writeAuth = (account: CodexAuthAccount, generation: string) => {
-    storedAccount = account
-    storedGeneration = generation
-    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(authDocument(mintCredentials(account, generation))), { mode: 0o600 })
-  }
+    writeFileSync(join(codexHome, 'config.toml'), codexAuthConfig(url), { mode: 0o600 })
+    const nextGeneration = (account: CodexAuthAccount): string => {
+      generationCounter++
+      return `${account.generation}-${generationCounter}`
+    }
+    const writeAuth = (account: CodexAuthAccount, generation: string) => {
+      storedAccount = account
+      storedGeneration = generation
+      writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(authDocument(mint(account, generation))), { mode: 0o600 })
+    }
 
-  const environment: CodexAuthEnvironment = {
-    codexHome,
-    url,
-    journalPath,
-    workerEnvironment: {
-      CODEX_HOME: codexHome,
-      CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${url}/oauth/token`,
-    },
-    tokenEndpointCalls: () => tokenEndpointCalls,
-    contentGenerations: () => [...contentGenerations],
-    expireAccessToken: () => {
-      storedAccessExpired = true
-      // Keep the stored login; only the access token's label states expiry,
-      // which the content proxy answers with 401 until a refresh replaces it.
-      writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(authDocument(mintCredentials(storedAccount, EXPIRED_GENERATION))), { mode: 0o600 })
-    },
-    succeedNextRefresh: () => {
-      refreshPolicy = { kind: 'succeed' }
-    },
-    logout: () => {
-      // A removed login invalidates the stored credential at the backend:
-      // every token the running processes still hold is refused from here
-      // on, and the account reads answer with no account.
-      storedGeneration = ''
-      rmSync(join(codexHome, 'auth.json'), { force: true })
-    },
-    login: (account) => {
-      storedAccessExpired = false
-      writeAuth(account, nextGeneration(account))
-    },
-  }
-  writeAuth(CODEX_AUTH_SAME_ACCOUNT, nextGeneration(CODEX_AUTH_SAME_ACCOUNT))
+    const environment: CodexAuthEnvironment = {
+      codexHome,
+      url,
+      journalPath,
+      workerEnvironment: {
+        CODEX_HOME: codexHome,
+        CODEX_REFRESH_TOKEN_URL_OVERRIDE: `${url}/oauth/token`,
+      },
+      tokenEndpointCalls: () => tokenEndpointCalls,
+      contentGenerations: () => [...contentGenerations],
+      expireAccessToken: () => {
+        storedAccessExpired = true
+        // Keep the stored login; only the access token's label states expiry,
+        // which the content proxy answers with 401 until a refresh replaces it.
+        writeFileSync(join(codexHome, 'auth.json'), JSON.stringify(authDocument(mint(storedAccount, EXPIRED_GENERATION))), { mode: 0o600 })
+      },
+      succeedNextRefresh: () => {
+        refreshPolicy = { kind: 'succeed' }
+      },
+      logout: () => {
+        // A removed login invalidates the stored credential at the backend:
+        // every token the running processes still hold is refused from here
+        // on, and the account reads answer with no account.
+        storedGeneration = ''
+        rmSync(join(codexHome, 'auth.json'), { force: true })
+      },
+      login: (account) => {
+        storedAccessExpired = false
+        writeAuth(account, nextGeneration(account))
+      },
+    }
+    writeAuth(CODEX_AUTH_SAME_ACCOUNT, nextGeneration(CODEX_AUTH_SAME_ACCOUNT))
 
-  return await cleanupOnFailure(async () => use(environment), async () => {
-    await new Promise<void>((resolve, reject) => server.close(error => error
-      ? reject(error)
-      : resolve()))
-    if (existsSync(codexHome))
-      rmSync(codexHome, { recursive: true, force: true })
+    return await use(environment)
+  }, async () => {
+    for (const controller of activeRequests.keys())
+      controller.abort()
+    const closed = new Promise<void>((resolve, reject) => {
+      if (!server.listening) {
+        resolve()
+        return
+      }
+      server.close(error => error
+        ? reject(error)
+        : resolve())
+    })
+    server.closeAllConnections()
+    await finishCleanup([
+      closed,
+      ...activeRequests.values(),
+      Promise.resolve().then(() => rmSync(codexHome, { recursive: true, force: true })),
+    ])
   })
 }
 
@@ -195,7 +240,7 @@ function fakeJWT(payload: Record<string, unknown>): string {
   return `e30.${encoded}.fake`
 }
 
-/** Decode a fixture-minted bearer token to the generation label it carries. */
+/** Read a generation label for diagnostics. This does not validate a credential. */
 export function codexAuthGenerationLabel(bearer: string | undefined): string | null {
   if (bearer === undefined)
     return null
@@ -269,11 +314,11 @@ model = "${CODEX_NATIVE_DEFAULT_MODEL}"
 generate_memories = false
 use_memories = false
 dedicated_tools = false
-# The startup consolidation sweep of past rollouts runs model requests the
-# scenario never scripted, and its internal turn refuses a concurrent
-# turn/start while it retries them. No rollouts are ever consolidated here.
-max_rollouts_per_startup = 0
-min_rollout_idle_hours = 100000
+# Codex supports at least one rollout and at most 48 idle hours here.
+# These settings reduce eligible startup work. The fixture answers native
+# memory consolidation separately so it consumes no scripted content turn.
+max_rollouts_per_startup = 1
+min_rollout_idle_hours = 48
 
 [model_providers.leapmux-e2e-auth]
 name = "LeapMux E2E auth"
@@ -287,6 +332,8 @@ stream_max_retries = 0
 }
 
 interface AuthRequestHandling {
+  signal: AbortSignal
+  credentialGeneration: (authorization: string | undefined) => string | undefined
   mockModelURL: string
   mint: (account: CodexAuthAccount, generation: string) => CodexCredentials
   currentAccount: () => CodexAuthAccount
@@ -308,16 +355,16 @@ async function handleAuthRequest(request: IncomingMessage, response: ServerRespo
         // The native permanent rejection: the running process's stored login no
         // longer refreshes. The observed account-switch and revoked-token
         // failures both surface through this answer.
-        await readBody(request)
-        respondJSON(response, 401, {
+        await readMockBody(request)
+        writeMockJSON(response, 401, {
           error: { code: 'refresh_token_invalidated' },
         })
         return
       }
       const credentials = handling.mint(handling.currentAccount(), handling.currentGeneration())
       handling.refreshSucceeded()
-      await readBody(request)
-      respondJSON(response, 200, {
+      await readMockBody(request)
+      writeMockJSON(response, 200, {
         access_token: credentials.accessToken,
         id_token: credentials.idToken,
         refresh_token: credentials.refreshToken,
@@ -326,41 +373,31 @@ async function handleAuthRequest(request: IncomingMessage, response: ServerRespo
       })
       return
     }
-    if (request.method === 'GET' && url.pathname.includes('/v1/')) {
-      // The model catalog read forwards like a content request, but no turn
-      // produced it, so it counts in neither the generations nor the refresh
-      // totals a scenario asserts.
-      await proxyModelRequest(request, response, handling, Buffer.alloc(0))
-      return
-    }
-    if (request.method === 'POST' && url.pathname.includes('/v1/')) {
-      const body = await readBody(request)
-      if (isCodexMemoryConsolidation(body)) {
+    if ((request.method === 'GET' || request.method === 'POST') && url.pathname.includes('/v1/')) {
+      const body = request.method === 'POST'
+        ? await readMockBody(request)
+        : Buffer.alloc(0)
+      if (request.method === 'POST' && isCodexMemoryConsolidation(request, body)) {
         handling.journal('decision=consolidation')
-        // Codex's startup memory pipeline sends one consolidation turn per
-        // fresh process, scripted by nobody. The fixture answers it directly:
-        // an empty completed response ends the pipeline at once, and the
-        // scenario's steps stay reserved for the turns the test sends.
+        // Dedicated native housekeeping consumes no scripted content turn.
         respondConsolidation(response)
         return
       }
-      const generation = codexAuthGenerationLabel(request.headers.authorization) ?? 'unknown'
-      // Every model request counts, including the ones the fixture rejects:
-      // the counts are the proof of how many exchanges a scenario really made.
-      handling.recordContent(generation)
+      const generation = handling.credentialGeneration(request.headers.authorization)
+      // Catalog reads produce no turn. Count every content request, including
+      // rejected requests, so the scenarios can detect duplicate delivery.
+      if (request.method === 'POST')
+        handling.recordContent(generation ?? 'unknown')
       if (generation === 'expired' || (generation === handling.currentGeneration() && handling.accessExpired())) {
         handling.journal(`decision=expired generation=${generation}`)
-        respondJSON(response, 401, {
+        writeMockJSON(response, 401, {
           error: { code: 'token_expired', message: 'leapmux e2e expired access token' },
         })
         return
       }
-      if (generation !== handling.currentGeneration() && generation !== 'unknown') {
-        handling.journal(`decision=stale generation=${generation} current=${handling.currentGeneration()}`)
-        // The stored login moved on; the credential this process holds is no
-        // longer accepted. This is the observed behavior of the real backend
-        // after a logout or an account switch.
-        respondJSON(response, 401, {
+      if (generation === undefined || generation !== handling.currentGeneration() || handling.currentGeneration() === '') {
+        handling.journal('decision=invalid-credential')
+        writeMockJSON(response, 401, {
           error: { code: 'refresh_token_invalidated', message: 'leapmux e2e stale credential' },
         })
         return
@@ -370,13 +407,13 @@ async function handleAuthRequest(request: IncomingMessage, response: ServerRespo
       return
     }
     if (request.method === 'POST') {
-      await readBody(request)
-      respondJSON(response, 200, {})
+      await readMockBody(request)
+      writeMockJSON(response, 200, {})
       return
     }
     // The ChatGPT backend reads of the managed account. The workspace-routing
     // discovery reads the account list here; a login that exists answers it.
-    respondJSON(response, 200, {
+    writeMockJSON(response, 200, {
       accounts: handling.currentGeneration() === ''
         ? []
         : [
@@ -389,12 +426,16 @@ async function handleAuthRequest(request: IncomingMessage, response: ServerRespo
       models: [],
     })
   }
-  catch (error) {
-    response.writeHead(500, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({
+  catch {
+    if (response.destroyed)
+      return
+    if (response.headersSent || handling.signal.aborted) {
+      response.destroy()
+      return
+    }
+    writeMockJSON(response, 500, {
       error: { message: 'the codex auth fixture failed' },
-    }))
-    void error
+    })
   }
 }
 
@@ -415,6 +456,7 @@ async function proxyModelRequest(request: IncomingMessage, response: ServerRespo
       : value
   }
   const upstream = await fetch(target, {
+    signal: handling.signal,
     method: request.method ?? 'GET',
     headers,
     body: body.length === 0
@@ -427,21 +469,25 @@ async function proxyModelRequest(request: IncomingMessage, response: ServerRespo
       responseHeaders[name] = value
   })
   response.writeHead(upstream.status, responseHeaders)
-  if (upstream.body !== null) {
-    for await (const chunk of upstream.body)
-      response.write(chunk)
+  if (upstream.body === null) {
+    response.end()
+    return
   }
-  response.end()
+  await pipeline(Readable.from(upstream.body, { objectMode: false }), response, { signal: handling.signal })
 }
 
 /** Whether a model request is Codex's startup memory-consolidation turn. */
-function isCodexMemoryConsolidation(body: Buffer): boolean {
+function isCodexMemoryConsolidation(request: IncomingMessage, body: Buffer): boolean {
+  if (request.headers['x-openai-subagent'] !== 'memory_consolidation' || request.headers['x-openai-memgen-request'] !== 'true')
+    return false
   try {
     const parsed = JSON.parse(body.toString('utf8')) as { input?: unknown }
     if (!Array.isArray(parsed.input))
       return false
     for (const item of parsed.input) {
       if (typeof item !== 'object' || item === null)
+        continue
+      if ((item as { role?: unknown }).role !== 'user')
         continue
       const content = (item as { content?: unknown }).content
       const texts = typeof content === 'string'
@@ -484,22 +530,5 @@ function respondConsolidation(response: ServerResponse): void {
   ]
   const body = events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('')
   response.writeHead(200, { 'content-type': 'text/event-stream' })
-  response.end(body)
-}
-
-function readBody(request: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = []
-    request.on('data', chunk => chunks.push(chunk))
-    request.on('end', () => resolve(Buffer.concat(chunks)))
-  })
-}
-
-function respondJSON(response: ServerResponse, status: number, value: unknown): void {
-  const body = JSON.stringify(value)
-  response.writeHead(status, {
-    'content-type': 'application/json',
-    'content-length': Buffer.byteLength(body),
-  })
   response.end(body)
 }

@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"golang.org/x/sync/singleflight"
 )
 
 // How long a `turn/start` waits for its `turn/started` ack before it reports
@@ -59,7 +60,7 @@ type Agent struct {
 	resumingThread atomic.Bool
 
 	// Codex-specific state.
-	threadID           string // from thread/start response
+	threadID           string // from thread/start or thread/resume
 	turnRetrySupported bool   // Confirmed durable paginated start with raw events.
 	mainTurn           codexMainTurn
 	// authenticationRecoveryRequired retains a confirmed authentication
@@ -69,6 +70,7 @@ type Agent struct {
 	// inputAuthenticationChecked records the one account/read that this
 	// process's first input paid (session.go). Guarded by Mu.
 	inputAuthenticationChecked bool
+	inputAuthenticationChecks  singleflight.Group
 	steerLedger                providerkit.SteerLedger
 	// Mu protects the requests and the held native turn end.
 	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
@@ -626,7 +628,27 @@ func (a *Agent) CompactContext() error {
 	}
 	response := make(chan error, 1)
 	go func() {
-		_, requestErr := a.SendRequest("thread/compact/start", params, 0)
+		// An acknowledgment can end the caller's wait before the RPC reply.
+		// The reply observer retains a later authentication rejection.
+		_, requestErr := a.SendRequestObserved("thread/compact/start", params, 0, func(_ json.RawMessage, replyErr error) {
+			if !codexAuthenticationRejection(replyErr) {
+				return
+			}
+			a.Mu.Lock()
+			if a.threadID != threadID || a.StoppedLocked() {
+				a.Mu.Unlock()
+				return
+			}
+			select {
+			case <-a.ProcessDone():
+				a.Mu.Unlock()
+				return
+			default:
+				a.authenticationRecoveryRequired = true
+			}
+			a.Mu.Unlock()
+			a.withdrawTurnRetryOffer()
+		})
 		response <- requestErr
 	}()
 	timer := a.Clock().NewTimer(turnStartAckTimeout, codexCompactionAckTimerTag)
@@ -637,12 +659,6 @@ func (a *Agent) CompactContext() error {
 	case requestErr := <-response:
 		clearAck()
 		if requestErr != nil {
-			// An explicit rejection can state an authentication failure, which
-			// marks the process. A timeout keeps its uncertain classification:
-			// a lost answer is no permission to retry the compaction either.
-			if codexAuthenticationRejection(requestErr) {
-				a.markAuthenticationRecoveryRequired()
-			}
 			return classifyCodexCompactionRequestError(requestErr)
 		}
 		return nil

@@ -51,11 +51,22 @@ func (svc *Service) prepareAgentInputProcess(agentID string, allowReplacement bo
 		return notReadyInput(fmt.Errorf("%w: %s", agent.ErrAgentNotFound, agentID))
 	}
 	preparer, supports := provider.(agent.InputProcessPreparer)
-	release()
 	if !supports {
+		release()
 		return nil
 	}
-	err := preparer.PrepareInputProcess()
+	target, err := svc.Agents.CaptureStopTarget(agentID)
+	release()
+	if err != nil {
+		return notReadyInput(err)
+	}
+	err = preparer.PrepareInputProcess()
+	unlock := svc.Agents.LockAgent(agentID)
+	current := target.IsCurrent()
+	unlock()
+	if !current {
+		return notReadyInput(errors.New("the agent process changed while its input preparation was checked; retry the input"))
+	}
 	if err == nil {
 		return nil
 	}
@@ -65,7 +76,7 @@ func (svc *Service) prepareAgentInputProcess(agentID string, allowReplacement bo
 	if !allowReplacement {
 		return err
 	}
-	if err := svc.stopStaleInputProcess(agentID, provider); err != nil {
+	if err := svc.stopStaleInputProcess(agentID, target); err != nil {
 		return err
 	}
 	// The stale process stopped under the lifecycle lock, which has now
@@ -91,14 +102,13 @@ func (svc *Service) prepareAgentInputProcess(agentID string, allowReplacement bo
 //
 // The caller starts the replacement AFTER this returns, once the lifecycle lock
 // has released: the cold start takes that lock itself.
-func (svc *Service) stopStaleInputProcess(agentID string, stale agent.Agent) error {
+func (svc *Service) stopStaleInputProcess(agentID string, target agent.StopTarget) error {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 
-	// The lifecycle lock serializes registration, so this map read answers
-	// which provider the preparation result still belongs to. LockProvider
-	// would deadlock on the non-reentrant lifecycle lock.
-	if current := svc.Agents.RunningAgent(agentID); current != stale {
+	// Registration identity also works for provider values containing slices,
+	// maps, or functions. Agent interface values need not be comparable.
+	if !target.IsCurrent() {
 		return notReadyInput(errors.New("the agent process changed while its input recovery was checked; retry the input"))
 	}
 	row, err := svc.readOpenAgentForLaunch(agentID)
@@ -133,7 +143,7 @@ func (svc *Service) stopStaleInputProcess(agentID string, stale agent.Agent) err
 	// stop. Work that started or a control that appeared since the first check
 	// must survive, and control-answer delivery must stay available: clearing
 	// controls to make recovery possible would strand the process they wait on.
-	if current := svc.Agents.RunningAgent(agentID); current != stale {
+	if !target.IsCurrent() {
 		return notReadyInput(errors.New("the agent process changed while its input recovery was checked; retry the input"))
 	}
 	if blocked := svc.inputRecoveryBlocked(agentID); blocked != nil {
@@ -166,18 +176,12 @@ func (svc *Service) inputRecoveryBlocked(agentID string) error {
 	if svc.Output.AgentActivitySnapshot(agentID, agentID).ActiveTasks > 0 {
 		return fmt.Errorf("agent %s still runs a background task; finish or stop it before the agent can recover", agentID)
 	}
-	agentIDs, err := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+	owner, err := svc.Queries.FindAgentInputRecoveryControlOwner(bgCtx(), agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
-		return notReadyStoreFault(fmt.Errorf("list the subagents for input recovery: %w", err))
+		return notReadyStoreFault(fmt.Errorf("read the pending controls for input recovery: %w", err))
 	}
-	for _, id := range append([]string{agentID}, agentIDs...) {
-		requests, err := svc.Queries.ListControlRequestsByAgentID(bgCtx(), id)
-		if err != nil {
-			return notReadyStoreFault(fmt.Errorf("read the pending controls of agent %s for input recovery: %w", id, err))
-		}
-		if len(requests) > 0 {
-			return fmt.Errorf("agent %s still waits on an unanswered control; answer or stop it before the agent can recover", id)
-		}
-	}
-	return nil
+	return fmt.Errorf("agent %s still waits on an unanswered control; answer or stop it before the agent can recover", owner)
 }

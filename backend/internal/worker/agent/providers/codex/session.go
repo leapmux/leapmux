@@ -17,6 +17,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"golang.org/x/sync/singleflight"
 )
 
 // codexMethodAccountRead is a Codex method that no contract table lists,
@@ -107,25 +108,21 @@ func codexParsedErrorInfo(raw json.RawMessage) (codexErrorInfo, bool) {
 	// The app-server protocol serializes the enum's data-carrying variants as
 	// one-member objects with camelCase names ({"httpConnectionFailed":
 	// {"httpStatusCode": 403}}), the spelling the installed CLI emits.
-	var object struct {
-		HTTPConnectionFailed           *codexHTTPStatus `json:"httpConnectionFailed"`
-		ResponseStreamConnectionFailed *codexHTTPStatus `json:"responseStreamConnectionFailed"`
-		ResponseStreamDisconnected     *codexHTTPStatus `json:"responseStreamDisconnected"`
-		ResponseTooManyFailedAttempts  *codexHTTPStatus `json:"responseTooManyFailedAttempts"`
-	}
+	var object map[string]json.RawMessage
 	if json.Unmarshal(raw, &object) != nil {
 		return codexErrorInfo{}, false
 	}
-	info := codexErrorInfo{}
-	for _, variant := range []*codexHTTPStatus{
-		object.HTTPConnectionFailed,
-		object.ResponseStreamConnectionFailed,
-		object.ResponseStreamDisconnected,
-		object.ResponseTooManyFailedAttempts,
-	} {
-		if variant != nil {
-			info.kind, info.status = codexErrorInfoHTTPStatus, variant.HTTPStatusCode
-			return info, true
+	if len(object) != 1 {
+		return codexErrorInfo{kind: codexErrorInfoOther}, true
+	}
+	for kind, payload := range object {
+		switch kind {
+		case "httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts":
+			var status codexHTTPStatus
+			if json.Unmarshal(payload, &status) != nil {
+				return codexErrorInfo{}, false
+			}
+			return codexErrorInfo{kind: codexErrorInfoHTTPStatus, status: status.HTTPStatusCode}, true
 		}
 	}
 	return codexErrorInfo{kind: codexErrorInfoOther}, true
@@ -221,6 +218,7 @@ func (a *Agent) markAuthenticationRecoveryRequired() {
 	a.Mu.Lock()
 	a.authenticationRecoveryRequired = true
 	a.Mu.Unlock()
+	a.withdrawTurnRetryOffer()
 }
 
 // The assertion makes a drift from the shared preparation seam a compile error.
@@ -238,13 +236,29 @@ func (a *Agent) PrepareInputProcess() error {
 	checked := a.inputAuthenticationChecked
 	a.Mu.Unlock()
 	if recoveryRequired {
-		return fmt.Errorf("%w: the Codex login that this process holds cannot accept further input",
-			agent.ErrInputProcessRestartRequired)
+		return errCodexInputRecoveryRequired()
 	}
 	if checked {
 		return nil
 	}
-	return a.checkInputAuthentication()
+	return (<-a.beginInputAuthenticationCheck()).Err
+}
+
+// beginInputAuthenticationCheck shares one in-flight native check. A failed
+// check is not cached, so a later input can retry a transient failure.
+func (a *Agent) beginInputAuthenticationCheck() <-chan singleflight.Result {
+	return a.inputAuthenticationChecks.DoChan("account", func() (any, error) {
+		a.Mu.Lock()
+		recoveryRequired, checked := a.authenticationRecoveryRequired, a.inputAuthenticationChecked
+		a.Mu.Unlock()
+		if recoveryRequired {
+			return nil, errCodexInputRecoveryRequired()
+		}
+		if checked {
+			return nil, nil
+		}
+		return nil, a.checkInputAuthentication()
+	})
 }
 
 // checkInputAuthentication reads the account state once, before this
@@ -252,10 +266,10 @@ func (a *Agent) PrepareInputProcess() error {
 // does not claim to prove model entitlement or that the server will accept a
 // token.
 //
-// A successful check records inputAuthenticationChecked, so one process pays
-// one account/read. A malformed response or a transient transport failure
-// leaves the flag false, marks nothing, and stays a visible failure: the next
-// input checks again rather than trusting an unreadable answer.
+// A successful check records inputAuthenticationChecked, so later preparation
+// avoids another account/read. A malformed response or a transient transport
+// failure leaves the flag false, marks nothing, and stays a visible failure:
+// the next input checks again rather than trusting an unreadable answer.
 //
 // Codex keeps its credential storage to itself: this method sends Codex's own
 // account/read request and reads its answer. LeapMux reads no token, no
@@ -282,10 +296,17 @@ func (a *Agent) checkInputAuthentication() error {
 		Account            json.RawMessage `json:"account"`
 		RequiresOpenaiAuth *bool           `json:"requiresOpenaiAuth"`
 	}
-	if err := json.Unmarshal(resp, &result); err != nil || result.RequiresOpenaiAuth == nil {
-		return fmt.Errorf("codex account/read: response %q stated no requiresOpenaiAuth", string(resp))
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return fmt.Errorf("codex account/read: malformed response: %w", err)
 	}
-	if *result.RequiresOpenaiAuth && providerkit.RawKindOf(result.Account) != providerkit.RawValue {
+	if result.RequiresOpenaiAuth == nil {
+		return errors.New("codex account/read: response did not specify requiresOpenaiAuth")
+	}
+	if providerkit.RawKindOf(result.Account) == providerkit.RawValue {
+		if err := validateCodexAccount(result.Account); err != nil {
+			return fmt.Errorf("codex account/read: invalid account: %w", err)
+		}
+	} else if *result.RequiresOpenaiAuth {
 		// Codex requires a sign-in and reports no account: the user is signed
 		// out on this machine. Mark the process, so the next input replaces it
 		// once a fresh login exists, and fail this preparation: the input
@@ -297,4 +318,57 @@ func (a *Agent) checkInputAuthentication() error {
 	a.inputAuthenticationChecked = true
 	a.Mu.Unlock()
 	return nil
+}
+
+// validateCodexAccount validates the native tagged account structure without
+// interpreting subscription entitlements. The account itself is optional;
+// callers handle an omitted or null account before this function.
+func validateCodexAccount(raw json.RawMessage) error {
+	var account map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &account); err != nil {
+		return fmt.Errorf("expected an account object: %w", err)
+	}
+	var kind string
+	if err := json.Unmarshal(account["type"], &kind); err != nil {
+		return fmt.Errorf("expected an account type: %w", err)
+	}
+	switch kind {
+	case "apiKey", "gcp":
+		return nil
+	case "chatgpt":
+		if _, exists := account["email"]; !exists {
+			return errors.New("the ChatGPT account did not specify email")
+		}
+		for _, field := range []string{"email", "workspaceName"} {
+			value, exists := account[field]
+			if !exists || providerkit.RawKindOf(value) == providerkit.RawNull {
+				continue
+			}
+			var text string
+			if err := json.Unmarshal(value, &text); err != nil {
+				return fmt.Errorf("expected a string or null for %s: %w", field, err)
+			}
+		}
+		var plan string
+		if err := json.Unmarshal(account["planType"], &plan); err != nil {
+			return fmt.Errorf("expected a plan type: %w", err)
+		}
+		if plan == "" {
+			return errors.New("the ChatGPT account did not specify a plan type")
+		}
+		return nil
+	case "amazonBedrock":
+		if rawManaged, exists := account["usesCodexManagedCredentials"]; exists {
+			var managed *bool
+			if err := json.Unmarshal(rawManaged, &managed); err != nil {
+				return fmt.Errorf("expected a boolean for usesCodexManagedCredentials: %w", err)
+			}
+			if managed == nil {
+				return errors.New("usesCodexManagedCredentials cannot be null")
+			}
+		}
+		return nil
+	default:
+		return errors.New("unsupported account type")
+	}
 }

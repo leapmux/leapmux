@@ -36,7 +36,7 @@ func accountReadReply(account string, requiresAuth bool) agenttest.RPCReply {
 	if account == "" {
 		accountJSON = "null"
 	} else {
-		accountJSON = fmt.Sprintf(`{"id":%q}`, account)
+		accountJSON = fmt.Sprintf(`{"type":"chatgpt","email":%q,"planType":"pro"}`, account+"@example.invalid")
 	}
 	return agenttest.RPCReply{Result: json.RawMessage(
 		fmt.Sprintf(`{"account":%s,"requiresOpenaiAuth":%t}`, accountJSON, requiresAuth))}

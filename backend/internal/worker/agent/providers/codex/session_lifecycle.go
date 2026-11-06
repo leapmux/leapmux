@@ -270,6 +270,11 @@ func (s codexTurnRetryStage) String() string {
 func (a *Agent) BeginTurnRetry(turnID, model string) (agent.TurnRetry, error) {
 	a.retryOfferMu.Lock()
 	a.Mu.Lock()
+	if a.authenticationRecoveryRequired {
+		a.Mu.Unlock()
+		a.retryOfferMu.Unlock()
+		return nil, fmt.Errorf("%w: %w", agent.ErrTurnRetryUnavailable, errCodexInputRecoveryRequired())
+	}
 	offer := a.retryOffer
 	ended := a.mainTurn.ended
 	if !a.turnRetrySupported || a.StoppedLocked() || a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil || offer == nil || offer.turnID != turnID || offer.model != model ||
@@ -320,6 +325,14 @@ func (r *codexTurnRetry) Replace() error {
 		r.abandon()
 		return errCodexTurnRetryTurnEnded
 	}
+	a.Mu.Lock()
+	recoveryRequired := a.authenticationRecoveryRequired
+	a.Mu.Unlock()
+	if recoveryRequired {
+		err := errCodexInputRecoveryRequired()
+		r.fail(codexTurnRetryStopping, err)
+		return err
+	}
 	accepted, err := a.interruptMainTurn(r.threadID, r.turnID)
 	if !accepted {
 		// Codex refuses to interrupt a turn that already ended, and it writes
@@ -350,10 +363,16 @@ func (r *codexTurnRetry) Replace() error {
 	}
 	a.Mu.Lock()
 	current := a.threadID == r.threadID && !a.StoppedLocked()
+	recoveryRequired = a.authenticationRecoveryRequired
 	a.Mu.Unlock()
 	if !current {
 		r.abandon()
 		return errCodexTurnRetryCancelled
+	}
+	if recoveryRequired {
+		err := errCodexInputRecoveryRequired()
+		r.fail(codexTurnRetryPreparing, err)
+		return err
 	}
 	params, err := json.Marshal(map[string]string{"threadId": r.threadID, "beforeTurnId": r.turnID})
 	if err != nil {
