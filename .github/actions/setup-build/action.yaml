@@ -436,7 +436,7 @@ runs:
       # setup_only installs the CLI and skips the build/lint/format checks, so
       # the Task steps below run `buf generate` themselves. The post step runs
       # `buf registry logout`, which is harmless without a login.
-      uses: bufbuild/buf-action@85aebf73123b5c15fd5528aaecbf9129cddf7fa7 # v1.6.0
+      uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0
       with:
         version: ${{ env.BUF_VERSION }}
         github_token: ${{ inputs.github-token }}
