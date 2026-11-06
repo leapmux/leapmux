@@ -14,5 +14,10 @@ func TestCodexBaseArgsAlwaysEnableRequiredFeatures(t *testing.T) {
 		"--enable", "memories",
 		"--enable", "code_mode_interrupt",
 		"app-server",
+		"--listen", "stdio://",
 	}, codexBaseArgs())
+	// One independently owned app-server process per tab: never a daemon or
+	// proxy lifecycle command, whose shared process no tab owns.
+	assert.NotContains(t, codexBaseArgs(), "daemon")
+	assert.NotContains(t, codexBaseArgs(), "proxy")
 }

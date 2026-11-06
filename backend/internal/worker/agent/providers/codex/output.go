@@ -718,8 +718,12 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	collaborationMode := a.collaborationMode
 	a.Mu.Unlock()
 
-	// Read turn data without changing the native parameters.
-	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
+	// Read turn data without changing the native parameters. codexErrorInfo
+	// stays raw: the structured variants are objects, and a string-only field
+	// would fail the whole decode of a turn that carried one, losing the
+	// status and the ID with it.
+	var turnStatus, turnID, turnErrorMessage string
+	var turnErrorInfo json.RawMessage
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if turnRaw, ok := parsed["turn"]; ok {
@@ -727,8 +731,8 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 				Error  struct {
-					Message        string `json:"message"`
-					CodexErrorInfo string `json:"codexErrorInfo"`
+					Message        string          `json:"message"`
+					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
@@ -738,6 +742,13 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 				turnErrorInfo = turn.Error.CodexErrorInfo
 			}
 		}
+	}
+	// A completed authentication failure ends this process's usefulness for
+	// input: mark it before the turn-end publish releases the Worker's input
+	// queue, so the input that follows asks for a replacement instead of
+	// reaching this process. The failed turn itself stays in the transcript.
+	if codexCompletedTurnAuthFailure(turnStatus, turnErrorMessage, turnErrorInfo) {
+		a.markAuthenticationRecoveryRequired()
 	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
@@ -773,7 +784,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 
 	if turnStatus != "" {
 		retryable := turnStatus == "failed" &&
-			(turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
+			(codexErrorInfoName(turnErrorInfo) == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
 		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retryable, params)
 		if turnStatus == "completed" && collaborationMode == CollaborationPlan && sawPlan && planText != "" {
 			// Persist plan content so initiatePlanExecution can use it.
@@ -819,6 +830,13 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage, route codexChildRoute) {
 	a.codexRetryResolution(false, threadID).Reset()
 	completion := codexTurnCompletion(params)
+	if codexTurnAuthFailure(params) {
+		// A child thread's authentication failure belongs to the shared
+		// process: every thread in it holds the same login. Marking the
+		// process refuses later input only -- the still-running main turn and
+		// its sibling children keep their existing lifecycle.
+		a.markAuthenticationRecoveryRequired()
+	}
 	a.persistOpenCodexCompactionEnd(threadID, completion)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
@@ -925,6 +943,32 @@ func codexTurnCompletion(params json.RawMessage) agent.MessageCompletion {
 
 func isRetryableCodexTurnFailure(message string) bool {
 	return codexRetryableDisconnectPattern.MatchString(message)
+}
+
+// codexCompletedTurnAuthFailure reports whether one completed turn failed with
+// an authentication failure. The main handler reads the error fields for its
+// own purposes and applies this rule to what it parsed; a child handler reads
+// them only for this rule, through codexTurnAuthFailure.
+func codexCompletedTurnAuthFailure(status, message string, info json.RawMessage) bool {
+	return status == "failed" && codexAuthenticationFailure(message, info)
+}
+
+// codexTurnAuthFailure reads one completed turn's error fields and reports
+// whether they state an authentication failure.
+func codexTurnAuthFailure(params json.RawMessage) bool {
+	var value struct {
+		Turn struct {
+			Status string `json:"status"`
+			Error  struct {
+				Message        string          `json:"message"`
+				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
+			} `json:"error"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(params, &value) != nil {
+		return false
+	}
+	return codexCompletedTurnAuthFailure(value.Turn.Status, value.Turn.Error.Message, value.Turn.Error.CodexErrorInfo)
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.

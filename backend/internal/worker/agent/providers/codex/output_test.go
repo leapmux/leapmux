@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3957,4 +3958,120 @@ func TestHandleCodexOutput_SubagentAutoReviewRoutesToTheChildTranscript(t *testi
 	child := sink.Child("child-of-spawn-1")
 	require.Equal(t, 1, child.NotificationCount())
 	assert.JSONEq(t, review, string(child.LastNotification().Content))
+}
+
+// TestCodexCompletedAuthenticationFailuresMarkRecovery feeds the completed-turn
+// failure shapes through the real handler and asserts the process is marked,
+// and that ordinary failures and transient retry notices leave it unmarked.
+func TestCodexCompletedAuthenticationFailuresMarkRecovery(t *testing.T) {
+	t.Parallel()
+	failure := func(info, message string) string {
+		return fmt.Sprintf(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-9","status":"failed","error":{"message":%q,"codexErrorInfo":%s}}}}`,
+			message, info)
+	}
+	markCases := []struct {
+		name  string
+		frame string
+	}{
+		{"native unauthorized", failure(`"unauthorized"`,
+			"Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.")},
+		{"refresh expired", failure(`null`,
+			"Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.")},
+		{"structured 401", failure(`{"httpConnectionFailed":{"httpStatusCode":401}}`, "unexpected status 401 Unauthorized")},
+		{"structured 403 refresh revoked", failure(`{"httpConnectionFailed":{"httpStatusCode":403}}`,
+			`unexpected status 403 Forbidden: {"error": {"code": "refresh_token_invalidated"}}, url: https://api.openai.com/v1/responses`)},
+	}
+	for _, test := range markCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			feedCodexLines(a, test.frame)
+			assert.True(t, recoveryRequired(a), "a completed authentication failure marks the process")
+		})
+	}
+
+	skipCases := []struct {
+		name   string
+		frames []string
+		// wantTurnEnded: the handler runs its ordinary turn-end handling.
+		wantTurnEnded bool
+		// wantNotified: the frame persists as a notification.
+		wantNotified bool
+	}{
+		{"ordinary 403", []string{failure(`{"httpConnectionFailed":{"httpStatusCode":403}}`, "The request is not allowed")}, true, false},
+		{"rate limit 429", []string{failure(`{"httpConnectionFailed":{"httpStatusCode":429}}`, "rate limited")}, true, false},
+		{"server error", []string{failure(`"serverOverloaded"`, "server overloaded")}, true, false},
+		{"completed turn", []string{`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-9","status":"completed","error":null}}}`}, true, false},
+		{
+			"transient retry notification",
+			[]string{
+				`{"jsonrpc":"2.0","method":"error","params":{"threadId":"main-thread","turnId":"turn-9","willRetry":true,"error":{"message":"Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.","codexErrorInfo":"unauthorized"}}}`,
+			},
+			false, true,
+		},
+		{
+			"retired thread failure",
+			[]string{`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"old-thread","turn":{"id":"turn-8","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`},
+			false, false,
+		},
+	}
+	for _, test := range skipCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			a.retiredCodexThreads = map[string]struct{}{"old-thread": {}}
+			for _, frame := range test.frames {
+				feedCodexLines(a, frame)
+			}
+			assert.False(t, recoveryRequired(a), "this failure must keep its existing handling")
+			assert.Equal(t, test.wantTurnEnded, slices.Contains(sink.TurnActives(), false),
+				"the handler's ordinary turn-end handling is unchanged")
+			if test.wantNotified {
+				assert.NotEmpty(t, sink.PersistedNotifications(), "the notification still reaches the transcript")
+			} else if !test.wantTurnEnded {
+				assert.Empty(t, sink.PersistedNotifications(), "a retired thread's frames reach no transcript")
+			}
+		})
+	}
+}
+
+// TestCodexChildAuthenticationFailureMarksSharedProcess covers a child thread's
+// failure marking the shared process while the main turn keeps running.
+func TestCodexChildAuthenticationFailureMarksSharedProcess(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"main-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-thread","agentPath":"/root/child"}}}`,
+		`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`,
+	)
+	assert.True(t, recoveryRequired(a), "a child authentication failure belongs to the shared process")
+	// The main turn keeps its own lifecycle: it stays active.
+	a.Mu.Lock()
+	mainActive := a.mainTurn.id == "main-turn"
+	a.Mu.Unlock()
+	assert.True(t, mainActive, "a child failure must not end the still-running main turn")
+	assert.NotNil(t, sink.Child("child-of-spawn-1"), "the child transcript still exists")
+}
+
+// TestCodexDuplicateCompletedFailuresMarkOnce feeds the same failed
+// turn/completed twice; the flag is a boolean, so a duplicate changes nothing.
+func TestCodexDuplicateCompletedFailuresMarkOnce(t *testing.T) {
+	t.Parallel()
+	a, _, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	frame := `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-9","status":"failed","error":{"message":"signed in to another account","codexErrorInfo":"unauthorized"}}}}`
+	feedCodexLines(a, frame, frame)
+	assert.True(t, recoveryRequired(a))
 }

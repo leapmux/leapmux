@@ -947,6 +947,28 @@ type NativeTurnRestarter interface {
 	NativeTurnRestartRequired() bool
 }
 
+// InputProcessPreparer reports whether a running process can accept input, and
+// prepares it when it can. The Worker calls it before it delivers any native
+// input, after it confirms that a process exists. A provider that does not
+// implement this interface keeps its current behavior: a running process
+// receives input with no preparation step.
+//
+// The method returns nil when the process is ready. Any error means the
+// provider did NOT accept input: the Worker delivers nothing and retains the
+// input for a later attempt. ErrInputProcessRestartRequired states the stronger
+// fact that no preparation can make this process ready -- the authentication
+// state it holds cannot recover -- and asks the Worker to replace the process.
+// The provider must state a restart ONLY from state a fresh process cannot
+// inherit: the flag belongs to the physical process, and a replacement starts
+// clean.
+//
+// The call can wait for a native response, so the Worker releases its
+// lifecycle lock first. A close or a shutdown that stops the process during
+// the wait must surface as the method's own error, never as a stuck lock.
+type InputProcessPreparer interface {
+	PrepareInputProcess() error
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
@@ -1006,6 +1028,14 @@ var (
 	// that it states is empty or is no longer the provider's current session. The
 	// provider sends nothing in that case.
 	ErrInputSessionChanged = errors.New("the input belongs to a different provider session")
+
+	// ErrInputProcessRestartRequired is what InputProcessPreparer returns when
+	// the running process can no longer accept input at all, so the Worker must
+	// replace the process before it delivers anything. The provider accepted no
+	// input, so a replacement cannot duplicate delivery. Codex's expired or
+	// replaced ChatGPT login is the case: the process keeps its cached account
+	// after an external login, and no account refresh adopts another account.
+	ErrInputProcessRestartRequired = errors.New("the agent process must be replaced before it can accept input")
 )
 
 // AgentBusyError adds the provider's current turn classification to an

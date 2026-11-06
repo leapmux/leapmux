@@ -41,10 +41,19 @@ var errCodexTurnRetryTurnEnded = errors.New("the turn ended before the retry cou
 
 // ClearContext sends thread/start on the running Codex process.
 // It replaces the current thread with a fresh one.
+//
+// A process that input recovery marked keeps no native clear: the thread it
+// would start serves the stale login, and the flag must survive on this
+// process. ErrContextClearUnsupported routes the caller through the existing
+// restart fallback, which replaces the process.
 func (a *Agent) ClearContext() (string, error) {
 	a.turnDispatchMu.Lock()
 	defer a.turnDispatchMu.Unlock()
 	a.Mu.Lock()
+	if a.authenticationRecoveryRequired {
+		a.Mu.Unlock()
+		return "", agent.ErrContextClearUnsupported
+	}
 	permissions := a.permissionSettingsLocked()
 	serviceTier := a.serviceTier
 	model := a.model

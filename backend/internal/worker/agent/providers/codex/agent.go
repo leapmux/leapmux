@@ -62,7 +62,14 @@ type Agent struct {
 	threadID           string // from thread/start response
 	turnRetrySupported bool   // Confirmed durable paginated start with raw events.
 	mainTurn           codexMainTurn
-	steerLedger        providerkit.SteerLedger
+	// authenticationRecoveryRequired retains a confirmed authentication
+	// failure (session.go) on THIS physical process: no later input may reach
+	// it, and the Worker must replace it. Guarded by Mu.
+	authenticationRecoveryRequired bool
+	// inputAuthenticationChecked records the one account/read that this
+	// process's first input paid (session.go). Guarded by Mu.
+	inputAuthenticationChecked bool
+	steerLedger                providerkit.SteerLedger
 	// Mu protects the requests and the held native turn end.
 	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
 	pendingSteerTurnEnd json.RawMessage
@@ -594,6 +601,10 @@ func (a *Agent) CompactContext() error {
 		a.Mu.Unlock()
 		return fmt.Errorf("codex agent has no active thread")
 	}
+	if a.authenticationRecoveryRequired {
+		a.Mu.Unlock()
+		return errCodexInputRecoveryRequired()
+	}
 	if a.compactionStartAck != nil {
 		a.Mu.Unlock()
 		return fmt.Errorf("context compaction request is already pending")
@@ -626,6 +637,12 @@ func (a *Agent) CompactContext() error {
 	case requestErr := <-response:
 		clearAck()
 		if requestErr != nil {
+			// An explicit rejection can state an authentication failure, which
+			// marks the process. A timeout keeps its uncertain classification:
+			// a lost answer is no permission to retry the compaction either.
+			if codexAuthenticationRejection(requestErr) {
+				a.markAuthenticationRecoveryRequired()
+			}
 			return classifyCodexCompactionRequestError(requestErr)
 		}
 		return nil
@@ -672,6 +689,14 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
+	// A steer with no validated session is a NEW prompt, so input recovery
+	// refuses it: it must not reach a process whose login cannot accept input.
+	// A session-validated answer (SteerInputForSession) passes, so the turn
+	// that asked the question can still finish on this process.
+	if a.authenticationRecoveryRequired && expected == nil {
+		a.Mu.Unlock()
+		return errCodexInputRecoveryRequired()
+	}
 	if a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil {
 		a.Mu.Unlock()
 		// Pending input or turn completion keeps the queue active. This refusal must not report an idle turn.
@@ -687,7 +712,7 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
 	var ticket providerkit.SteerTicket
 	if err == nil {
-		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho)
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho, expected != nil)
 	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()

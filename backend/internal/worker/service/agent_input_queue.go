@@ -190,10 +190,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	}
 
 	ensureRunning := func() error {
-		if svc.Agents.AgentAlive(item.AgentID) {
-			return nil
-		}
-		if svc.Agents.HasAgent(item.AgentID) {
+		if !svc.Agents.AgentAlive(item.AgentID) && svc.Agents.HasAgent(item.AgentID) {
 			// The process exited and its exit callback still runs. The slot
 			// stays registered until that callback pauses the queue, and
 			// ensureAgentRunning returns at once for a registered slot, so a
@@ -201,11 +198,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
+		// Readiness covers an ALIVE process too, not only an absent one: a
+		// provider that reports its process unable to accept input (an expired
+		// or replaced login) gets it replaced here, before native delivery.
 		// ensureAgentRunning resolves the resumed session itself, from the row
 		// that it reads after the join. dbAgent was read before the join and
 		// before a plan context replaced the session, so a session resolved
 		// from it can be one that the provider already moved away from.
-		return svc.ensureAgentRunning(item.AgentID, resumeIfConversation, queuedStart)
+		return svc.ensureAgentReadyForInput(item.AgentID)
 	}
 
 	switch item.Kind {
@@ -353,8 +353,18 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		}
 		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		// A validated answer steers into an existing turn, so it must keep
+		// reaching the process whose question asked it -- even one that input
+		// recovery would replace, which the blockers there already refuse. An
+		// idle question ends its steer and returns through Dispatch readiness.
 		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, attachments)
 	} else {
+		// A new prompt steered at the root is subject to the same readiness as
+		// a dispatched one: a process that cannot accept input is replaced
+		// before the steer reaches it.
+		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
+			return inputqueue.DispatchResult{}, err
+		}
 		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}
 	return inputqueue.DispatchResult{
