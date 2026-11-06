@@ -3,7 +3,9 @@ package zcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // A snapshot that reports a sequence past the dispatch cursor reveals a gap
@@ -424,7 +427,7 @@ func TestZCodeTurnRecovery_MultiplePartsAggregateAndDoNotDuplicate(t *testing.T)
 	turn := &zcodeTurnState{
 		id: "turn-1",
 		contentByScope: map[string]*zcodeScopeContent{
-			zcodeTextScope("msg-1"): {observed: []byte("hello ")},
+			zcodeTextScope("msg-1"): {observed: []byte("hello "), submitted: len("hello ")},
 		},
 		toolInvocationIDs: map[string]struct{}{},
 	}
@@ -661,7 +664,7 @@ func TestZCodeTurnRecovery_IDlessBoundaryForSoleUnsettledOwner(t *testing.T) {
 
 	projection := zcodeProjectionState{TurnCount: 1}
 	a.Mu.Lock()
-	evidence := a.attributeZCodePromptBoundaryForUnsettledLocked(
+	evidence := a.attributeZCodePromptBoundaryForSoleOwnerLocked(
 		contracts.ZCodeStateReasonPromptCompleted, 5, projection, []byte(`{}`))
 	a.Mu.Unlock()
 	assert.NotNil(t, evidence, "the sole unsettled owner takes the ID-less boundary")
@@ -674,7 +677,7 @@ func TestZCodeTurnRecovery_IDlessBoundaryForSoleUnsettledOwner(t *testing.T) {
 	a.turns["turn-2"] = second
 	a.Mu.Unlock()
 	a.Mu.Lock()
-	evidence = a.attributeZCodePromptBoundaryForUnsettledLocked(
+	evidence = a.attributeZCodePromptBoundaryForSoleOwnerLocked(
 		contracts.ZCodeStateReasonPromptCompleted, 5, projection, []byte(`{}`))
 	a.Mu.Unlock()
 	assert.Nil(t, evidence, "two unsettled owners make the ID-less boundary ambiguous")
@@ -1132,10 +1135,714 @@ func TestZCodeRecoveryCoverage_CompletedResponsesAreNotRecoveredAgain(t *testing
 			a.Mu.Lock()
 			owner := a.turns["turn"]
 			a.Mu.Unlock()
-			require.NoError(t, a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "message", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "hello world"}}}}))
+			messages := []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "message", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "hello world"}}}}
+			require.NoError(t, a.applyZCodeRecoveredMessagesLocked(owner, messages))
+			require.NoError(t, a.applyZCodeRecoveredMessagesLocked(owner, messages), "repeating the same canonical evidence must preserve accepted coverage")
 			texts, _ := zcodePersistedTextsAndClosings(t, sink)
 			assert.Empty(t, texts)
 			assert.Empty(t, a.generationBuffer.ScopeIDs(), "native response coverage already represents the entire answer")
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_EmptyArchiveResponseDoesNotCoverCanonicalText(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{"messageId":"user"}`))
+	a.dispatchMu.Lock()
+	a.markZCodeCanonicalRecoveryLocked()
+	a.dispatchZCodeEventLocked(zcodeEventEnvelope{
+		Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", archive: true,
+		Payload: json.RawMessage(`{"content":"","querySource":"main_turn","stopReason":"end_turn"}`),
+	})
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{{
+		Info:  zcodeNativeMessageInfo{ID: "message", Role: "assistant"},
+		Parts: []zcodeNativePart{{Type: "text", Text: "The final answer."}},
+	}})
+	if err == nil {
+		a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	}
+	a.unlockZCodeDispatch()
+	require.NoError(t, err)
+	texts, _ := zcodePersistedTextsAndClosings(t, sink)
+	assert.Equal(t, []string{"The final answer."}, texts)
+}
+
+func TestZCodeRecoveryCoverage_EmptyCompletionPreservesStreamedText(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, text string }{
+		{"plain", "The final answer."},
+		{"unicode", "Hello 世界 🙂"},
+		{"whitespace", " "},
+		{"large", strings.Repeat("The final answer. ", 4096)},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			payload, err := json.Marshal(zcodeModelStreaming{Kind: StreamTextDelta, AssistantMessageID: "message", Delta: tc.text})
+			require.NoError(t, err)
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, string(payload)))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"end_turn"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 4, "turn", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			texts, _ := zcodePersistedTextsAndClosings(t, sink)
+			if tc.text == "" {
+				assert.Empty(t, texts)
+			} else {
+				assert.Equal(t, []string{tc.text}, texts)
+			}
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_EmptyToolResponseDoesNotMisalignTheFinalAnswer(t *testing.T) {
+	t.Parallel()
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream %t", stream), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"tool_input_start","assistantMessageId":"tool-message","toolCallId":"call"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"tool-calls"}`))
+			if stream {
+				a.HandleOutput(zcodeTurnEventLine(t, 4, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"answer","delta":"The final "}`))
+			}
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"The final answer.","querySource":"main_turn","stopReason":"stop"}`))
+			a.Mu.Lock()
+			owner := a.turns["turn"]
+			a.Mu.Unlock()
+			messages := []zcodeNativeMessage{
+				{Info: zcodeNativeMessageInfo{ID: "tool-message", Role: "assistant"}},
+				{Info: zcodeNativeMessageInfo{ID: "answer", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "The final answer."}}},
+			}
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			a.unlockZCodeDispatch()
+			require.NoError(t, err)
+			assert.Empty(t, a.generationBuffer.ScopeIDs(), "the accepted final answer must not be emitted twice")
+			require.Len(t, sink.Messages(), 1)
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_EmptyCompletionPreservesOrderAndOtherOwners(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "foreground", contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "foreground", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"foreground-message","delta":"Foreground answer."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "foreground", contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","assistantMessageId":"foreground-message","delta":"Foreground reasoning."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "background", contracts.ZCodeEventTurnStarted, `{"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "background", contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","assistantMessageId":"background-message","delta":"Background reasoning."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "background", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"background-message","delta":"Background answer."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "background", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"end_turn"}`))
+	texts, _ := zcodePersistedTextsAndClosings(t, sink)
+	require.Equal(t, []string{"Background reasoning.", "Background answer."}, texts, "an empty completion must persist its stream before a later response")
+	_, foregroundText, found := a.generationBuffer.ScopeSnapshot(zcodeTextScope("foreground-message"))
+	assert.True(t, found)
+	assert.Equal(t, "Foreground answer.", foregroundText)
+	_, foregroundReasoning, found := a.generationBuffer.ScopeSnapshot(zcodeReasoningScope("foreground-message"))
+	assert.True(t, found)
+	assert.Equal(t, "Foreground reasoning.", foregroundReasoning)
+	a.HandleOutput(zcodeTurnEventLine(t, 8, "background", contracts.ZCodeEventSessionUpdated, `{"content":"Later background response.","querySource":"main_turn","stopReason":"stop"}`))
+	require.Len(t, sink.Messages(), 3)
+	var response struct {
+		Payload struct {
+			Content string `json:"content"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(sink.Messages()[2].Content, &response))
+	assert.Equal(t, "Later background response.", response.Payload.Content)
+}
+
+func TestZCodeRecoveryCoverage_EmptyCompletionPreservesStreamOrder(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	const messageCount = 32
+	var expected []string
+	for index := range messageCount {
+		text := fmt.Sprintf("Message %02d.", index)
+		expected = append(expected, text)
+		payload, err := json.Marshal(zcodeModelStreaming{
+			Kind: StreamTextDelta, AssistantMessageID: fmt.Sprintf("message-%02d", index), Delta: text,
+		})
+		require.NoError(t, err)
+		a.HandleOutput(zcodeTurnEventLine(t, int64(index+2), "turn", contracts.ZCodeEventModelStreaming, string(payload)))
+	}
+	a.HandleOutput(zcodeTurnEventLine(t, messageCount+2, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"end_turn"}`))
+	texts, _ := zcodePersistedTextsAndClosings(t, sink)
+	assert.Equal(t, expected, texts)
+}
+
+func TestZCodeRecoveryCoverage_EmptyCompletionPreservesMixedScopeOrder(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"Earlier answer."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","assistantMessageId":"second","delta":"Later reasoning."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"second","delta":"Later answer."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"end_turn"}`))
+	texts, _ := zcodePersistedTextsAndClosings(t, sink)
+	assert.Equal(t, []string{"Earlier answer.", "Later reasoning.", "Later answer."}, texts)
+}
+
+func TestZCodeRecoveryCoverage_CanonicalPartsPreserveNativeOrder(t *testing.T) {
+	t.Parallel()
+	for _, parts := range [][]zcodeNativePart{
+		{{ID: "r", Type: "reasoning", Text: "Think"}, {ID: "t", Type: "text", Text: "Answer"}},
+		{{ID: "t", Type: "text", Text: "Answer"}, {ID: "r", Type: "reasoning", Text: "Think"}},
+		{{ID: "r", Type: "reasoning", Text: "Think"}},
+		{{ID: "t", Type: "text", Text: "Answer"}},
+		{{ID: "r", Type: "reasoning", Text: "Think"}, {ID: "r", Type: "text", Text: "Duplicate"}, {ID: "t", Type: "text", Text: "Answer"}},
+	} {
+		t.Run(fmt.Sprint(parts), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			owner := &zcodeTurnState{}
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "message"}, Parts: parts}})
+			if err == nil {
+				a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+			}
+			a.unlockZCodeDispatch()
+			require.NoError(t, err)
+			var want []string
+			seen := make(map[string]bool)
+			for _, part := range parts {
+				if !seen[part.ID] {
+					want = append(want, part.Text)
+					seen[part.ID] = true
+				}
+			}
+			texts, _ := zcodePersistedTextsAndClosings(t, sink)
+			assert.Equal(t, want, texts)
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_UncertainResponsesWaitForCanonicalOrder(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.dispatchMu.Lock()
+	a.markZCodeCanonicalRecoveryLocked()
+	a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Accepted answer.","querySource":"main_turn","stopReason":"stop"}`)})
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	assert.Empty(t, sink.Messages(), "an uncertain later response cannot overtake missing native output")
+	err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{
+		{Info: zcodeNativeMessageInfo{ID: "earlier"}, Parts: []zcodeNativePart{{Type: "text", Text: "Recovered earlier response."}}},
+		{Info: zcodeNativeMessageInfo{ID: "answer"}, Parts: []zcodeNativePart{{Type: "reasoning", Text: "Final reasoning."}, {Type: "text", Text: "Accepted answer."}}},
+	})
+	if err == nil {
+		a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	}
+	a.unlockZCodeDispatch()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Recovered earlier response.", "Final reasoning.", "Accepted answer."}, zcodeRecoveryTranscriptTexts(t, sink))
+}
+
+func TestZCodeRecoveryCoverage_OlderReasoningPrecedesTheFinalAnswer(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.dispatchMu.Lock()
+	a.markZCodeCanonicalRecoveryLocked()
+	a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Final answer.","querySource":"main_turn","stopReason":"stop"}`)})
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{
+		{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "reasoning", Text: "Old reasoning 1."}}},
+		{Info: zcodeNativeMessageInfo{ID: "second"}, Parts: []zcodeNativePart{{Type: "reasoning", Text: "Old reasoning 2."}}},
+		{Info: zcodeNativeMessageInfo{ID: "answer"}, Parts: []zcodeNativePart{{Type: "text", Text: "Final answer."}}},
+	})
+	if err == nil {
+		a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	}
+	a.unlockZCodeDispatch()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Old reasoning 1.", "Old reasoning 2.", "Final answer."}, zcodeRecoveryTranscriptTexts(t, sink))
+}
+
+func TestZCodeRecoveryCoverage_DefersAResponseWithAStaleMessageIdentity(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method == MethodSessionEvents {
+			return json.RawMessage(`{"sessionId":"sess-1","eventSeq":5,"events":[]}`)
+		}
+		return nil
+	})
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"Earlier response."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Final response.","querySource":"main_turn","stopReason":"stop"}`))
+	require.NoError(t, a.replayZCodeEvents(t.Context()))
+	assert.Empty(t, sink.Messages())
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	assert.Empty(t, owner.acceptedResponses)
+	a.Mu.Unlock()
+	a.dispatchMu.Lock()
+	err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{
+		{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "text", Text: "Earlier response."}}},
+		{Info: zcodeNativeMessageInfo{ID: "last"}, Parts: []zcodeNativePart{{Type: "text", Text: "Final response."}}},
+	})
+	if err == nil {
+		a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	}
+	a.unlockZCodeDispatch()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Earlier response.", "Final response."}, zcodeRecoveryTranscriptTexts(t, sink))
+}
+
+func TestZCodeRecoveryCoverage_RejectsMissingTextBeforeAnAcceptedResponse(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"", "First "} {
+		t.Run(prefix, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			a.Mu.Lock()
+			owner := a.turns["turn"]
+			a.Mu.Unlock()
+			if prefix != "" {
+				a.HandleOutput(zcodeTurnEventLine(t, 0, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"First "}`))
+				a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+			}
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"second","delta":"Second"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Second","querySource":"main_turn","stopReason":"stop"}`))
+			before := zcodeRecoveryTranscriptTexts(t, sink)
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{
+				{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "text", Text: "First answer"}}},
+				{Info: zcodeNativeMessageInfo{ID: "second"}, Parts: []zcodeNativePart{{Type: "text", Text: "Second"}}},
+			})
+			a.unlockZCodeDispatch()
+			require.ErrorContains(t, err, "order")
+			assert.Empty(t, a.generationBuffer.ScopeIDs())
+			assert.Equal(t, before, zcodeRecoveryTranscriptTexts(t, sink))
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_UncertainResponsesSurviveTeardown(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"exit", "stop", "session replacement", "expiry"} {
+		t.Run(action, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+				if request.Method == MethodSessionStop {
+					return json.RawMessage(`{}`)
+				}
+				return nil
+			})
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"Done"}`))
+			a.dispatchMu.Lock()
+			a.markZCodeCanonicalRecoveryLocked()
+			a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"","querySource":"main_turn","stopReason":"stop"}`)})
+			a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Done","querySource":"main_turn","stopReason":"stop","future":"preserved"}`)})
+			a.unlockZCodeDispatch()
+			assert.Empty(t, sink.Messages(), "uncertain content must wait for reconciliation or teardown")
+			switch action {
+			case "exit":
+				a.SimulateExitForTest()
+				require.NoError(t, a.Wait())
+			case "stop":
+				a.SimulateExitForTest()
+				a.Stop()
+			case "session replacement":
+				var replacement zcodeStateSnapshot
+				replacement.Session.SessionID = "replacement"
+				a.adoptCompleteZCodeSessionSnapshot(replacement, true)
+			case "expiry":
+				a.Mu.Lock()
+				owner := a.turns["turn"]
+				pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool) {}}}
+				owner.pendingNative = pending
+				state := owner.recovery
+				a.Mu.Unlock()
+				settled, err := a.expireZCodeNativeSettlement(t.Context(), owner, state, pending)
+				require.NoError(t, err)
+				assert.True(t, settled)
+			}
+			assert.Equal(t, []string{"Done", "Done"}, zcodeRecoveryTranscriptTexts(t, sink))
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			assert.Contains(t, string(rows[1].Content), `"future":"preserved"`)
+			assert.Equal(t, "sess-1", rows[1].AgentSessionID)
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_AnonymousResponseCannotConsumeSubmittedText(t *testing.T) {
+	t.Parallel()
+	for _, later := range []bool{false, true} {
+		t.Run(fmt.Sprint(later), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"Same answer."}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"","querySource":"main_turn","stopReason":"stop"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 4, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Same answer.","querySource":"main_turn","stopReason":"stop"}`))
+			messages := []zcodeNativeMessage{
+				{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same answer."}}},
+				{Info: zcodeNativeMessageInfo{ID: "second"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same answer."}}},
+			}
+			want := []string{"Same answer.", "Same answer."}
+			if later {
+				a.HandleOutput(zcodeTurnEventLine(t, 5, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"third","delta":"Last answer."}`))
+				a.HandleOutput(zcodeTurnEventLine(t, 6, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Last answer.","querySource":"main_turn","stopReason":"stop"}`))
+				messages = append(messages, zcodeNativeMessage{Info: zcodeNativeMessageInfo{ID: "third"}, Parts: []zcodeNativePart{{Type: "text", Text: "Last answer."}}})
+				want = append(want, "Last answer.")
+			}
+			a.Mu.Lock()
+			owner := a.turns["turn"]
+			a.Mu.Unlock()
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			if err == nil {
+				err = a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			}
+			if err == nil {
+				a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+				err = a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			}
+			a.unlockZCodeDispatch()
+			require.NoError(t, err)
+			assert.Equal(t, want, zcodeRecoveryTranscriptTexts(t, sink))
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_RejectsAmbiguousAnonymousResponses(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	owner := &zcodeTurnState{acceptedResponses: []zcodeModelResponseText{{text: "Same answer."}}}
+	a.dispatchMu.Lock()
+	err := a.applyZCodeRecoveredMessagesLocked(owner, []zcodeNativeMessage{
+		{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same answer."}}},
+		{Info: zcodeNativeMessageInfo{ID: "second"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same answer."}}},
+	})
+	a.unlockZCodeDispatch()
+	require.ErrorContains(t, err, "ambiguous")
+	assert.Empty(t, owner.contentByScope)
+	assert.Empty(t, a.generationBuffer.ScopeIDs())
+}
+
+func TestZCodeRecoveryCoverage_RejectsAbsentOrDuplicateNativeMessageIDs(t *testing.T) {
+	t.Parallel()
+	for _, ids := range [][]string{{""}, {"same", "same"}} {
+		t.Run(fmt.Sprint(ids), func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+			responses := []zcodeModelResponseText{{text: "Answer"}}
+			owner := &zcodeTurnState{acceptedResponses: responses}
+			var messages []zcodeNativeMessage
+			for _, id := range ids {
+				messages = append(messages, zcodeNativeMessage{Info: zcodeNativeMessageInfo{ID: id}, Parts: []zcodeNativePart{{Type: "text", Text: "Answer"}}})
+			}
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			a.unlockZCodeDispatch()
+			require.ErrorContains(t, err, "reconciliation conflict")
+			assert.Empty(t, owner.contentByScope)
+			assert.Equal(t, responses, owner.acceptedResponses)
+			assert.Empty(t, a.generationBuffer.ScopeIDs())
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_FallbackScopeIdentitySurvivesPartialFlush(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.dispatchMu.Lock()
+	a.markZCodeCanonicalRecoveryLocked()
+	for _, text := range []string{"First", "Second"} {
+		a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(fmt.Sprintf(`{"content":%q,"querySource":"main_turn","stopReason":"stop"}`, text))})
+	}
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	require.True(t, a.prepareZCodeDeferredResponses(owner))
+	scopes := a.zcodeTurnBufferedScopes(owner, nil)
+	require.Len(t, scopes, 2)
+	require.True(t, a.persistZCodeGenerationScopes(owner, scopes[:1], agent.MessageCompletionComplete))
+	a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Third","querySource":"main_turn","stopReason":"stop"}`)})
+	require.True(t, a.prepareZCodeDeferredResponses(owner))
+	a.Mu.Lock()
+	second := owner.contentByScope[scopes[1]].text()
+	a.Mu.Unlock()
+	assert.Equal(t, "Second", second, "a new response cannot replace an earlier pending scope")
+	a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	a.unlockZCodeDispatch()
+	assert.Equal(t, []string{"First", "Second", "Third"}, zcodeRecoveryTranscriptTexts(t, sink))
+}
+
+func TestZCodeRecoveryCoverage_GlobalFlushRetriesPendingOutputWithoutOpenScopes(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.generationBuffer.Append("scope", agent.AssembledMessageKindText, "Retained", providerkit.JoinVerbatim)
+	sink.PersistErr = errors.New("storage unavailable")
+	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
+	assert.Empty(t, a.generationBuffer.ScopeIDs())
+	assert.True(t, a.generationBuffer.HasPendingWrites())
+	sink.PersistErr = nil
+	a.flushZCodeGeneration(agent.MessageCompletionComplete)
+	var stored []agenttest.Message
+	for _, row := range sink.Messages() {
+		if row.Stored() {
+			stored = append(stored, row)
+		}
+	}
+	require.Len(t, stored, 1)
+	assert.JSONEq(t, `{"type":"assembled_message","kind":"text","text":"Retained","completion":"interrupted"}`, string(stored[0].Content))
+	assert.False(t, a.generationBuffer.HasPendingWrites())
+}
+
+func TestZCodeRecoveryCoverage_UnprovenStreamIdentityCannotCoverAnotherResponse(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"first","delta":"Same"}`))
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+	a.dispatchMu.Lock()
+	a.markZCodeCanonicalRecoveryLocked()
+	a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Same","querySource":"main_turn","stopReason":"stop"}`)})
+	a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	pending := &zcodePendingNativeSettlement{settlement: zcodeTurnSettlement{persistEnd: func(int, bool) {}}}
+	owner.pendingNative = pending
+	state := owner.recovery
+	a.Mu.Unlock()
+	settled, err := a.expireZCodeNativeSettlement(t.Context(), owner, state, pending)
+	require.NoError(t, err)
+	assert.True(t, settled)
+	assert.Equal(t, []string{"Same", "Same"}, zcodeRecoveryTranscriptTexts(t, sink))
+}
+
+func TestZCodeRecoveryCoverage_DeferredIdentitySurvivesAnotherCanonicalMessage(t *testing.T) {
+	t.Parallel()
+	for _, prepared := range []bool{false, true} {
+		t.Run(fmt.Sprint(prepared), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+			a.dispatchMu.Lock()
+			defer a.unlockZCodeDispatch()
+			a.markZCodeCanonicalRecoveryLocked()
+			a.dispatchZCodeEventLocked(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated, TurnID: "turn", Payload: json.RawMessage(`{"content":"Same","querySource":"main_turn","stopReason":"stop"}`)})
+			a.Mu.Lock()
+			owner := a.turns["turn"]
+			a.Mu.Unlock()
+			messages := []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "first"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same"}}}}
+			if prepared {
+				require.True(t, a.prepareZCodeDeferredResponses(owner))
+			}
+			require.NoError(t, a.applyZCodeRecoveredMessagesLocked(owner, messages))
+			messages = append(messages, zcodeNativeMessage{Info: zcodeNativeMessageInfo{ID: "second"}, Parts: []zcodeNativePart{{Type: "text", Text: "Same"}}})
+			require.NoError(t, a.applyZCodeRecoveredMessagesLocked(owner, messages), "a proven response identity must not become ambiguous on retry")
+			a.flushZCodeGenerationForTurn(owner, agent.MessageCompletionComplete)
+			assert.Equal(t, []string{"Same", "Same"}, zcodeRecoveryTranscriptTexts(t, sink))
+		})
+	}
+}
+
+func TestZCodeNativeEnd_LocalStopBeforeNativeEndPreservesCanonicalOrder(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := zcodeCanonicalReplayFixtureWithClock(t, quartz.NewReal(), false)
+	a.Mu.Lock()
+	owner := a.turns["turn-A"]
+	a.stopWindow.open(a.Clock().Now(), agent.StopContext{}, owner.id, owner.generation)
+	generation := a.stopWindow.generation
+	a.Mu.Unlock()
+	a.endStoppedZCodeTurn(generation)
+	require.NotContains(t, zcodeRecoveryTranscriptTexts(t, sink.ControlSink), "Answer", "local stop must keep uncertain output for reconciliation")
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-A", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	request := waitZCodeRequest(t, stdin, MethodSessionMessages)
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), zcodeCanonicalMessages()))
+	waitZCodeCanonicalEnd(t, sink)
+	assert.Equal(t, []string{"H", "ello", "Answer"}, zcodeRecoveryTranscriptTexts(t, sink.ControlSink))
+	assert.Len(t, zcodeNativeTurnEndRows(t, sink.Messages()), 1)
+	sink.workerMu.Lock()
+	assert.Empty(t, sink.workerMessages)
+	sink.workerMu.Unlock()
+}
+
+func TestZCodeRecoveryCoverage_LocalStopRetainsRecoveryForALateBoundary(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a, sink, _ := zcodeCanonicalReplayFixtureWithClock(t, clock, false)
+	a.Mu.Lock()
+	owner := a.turns["turn-A"]
+	state := owner.recovery
+	a.stopWindow.open(a.Clock().Now(), agent.StopContext{}, owner.id, owner.generation)
+	generation := a.stopWindow.generation
+	a.Mu.Unlock()
+	a.endStoppedZCodeTurn(generation)
+	a.Mu.Lock()
+	watcher := owner.recovery
+	a.Mu.Unlock()
+	require.Same(t, state, watcher, "a locally stopped turn still needs its canonical output")
+	a.HandleOutput([]byte(`{"method":"state.updated","params":{"scope":"session","sessionId":"sess-1","reason":"prompt_completed","revision":10,"patch":{"projection":{"currentTurnId":"turn-A","status":"idle"}}}}`))
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		switch request.Method {
+		case MethodSessionRead:
+			return json.RawMessage(`{"runtime":{"eventSeq":4,"stateRevision":10,"activeTurnId":""},"projection":{"currentTurnId":"turn-A","status":"idle"}}`)
+		case MethodSessionMessages:
+			return zcodeCanonicalMessages()
+		}
+		return nil
+	})
+	settled, err := a.checkZCodeTurnRecovery(t.Context(), owner, state)
+	require.NoError(t, err)
+	assert.False(t, settled)
+	settled, err = a.checkZCodeTurnRecovery(t.Context(), owner, state)
+	require.NoError(t, err)
+	assert.True(t, settled)
+	assert.Equal(t, []string{"H", "ello", "Answer"}, zcodeRecoveryTranscriptTexts(t, sink.ControlSink))
+}
+
+func zcodeRecoveryTranscriptTexts(t *testing.T, sink *agenttest.ControlSink) []string {
+	t.Helper()
+	var texts []string
+	for _, row := range sink.Messages() {
+		_, text, _, assembled := agenttest.DecodeAssembledMessage(row.Content)
+		if !assembled {
+			var envelope struct {
+				Payload struct {
+					Content string `json:"content"`
+				} `json:"payload"`
+			}
+			require.NoError(t, json.Unmarshal(row.Content, &envelope))
+			text = envelope.Payload.Content
+			if len(row.SupplementalContent) > 0 {
+				var supplement map[string]map[string]string
+				require.NoError(t, json.Unmarshal(row.SupplementalContent, &supplement))
+				text = strings.TrimPrefix(text, supplement[contracts.ZCodeSupplementResponseText][contracts.ZCodeResponseTextAcceptedPrefix])
+			}
+		}
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
+func TestZCodeRecoveryCoverage_SkipsUnmatchedMessageBodies(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	owner := &zcodeTurnState{acceptedResponses: []zcodeModelResponseText{{messageID: "missing", text: "Answer"}}}
+	messages := []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "other"}, Parts: []zcodeNativePart{{Type: "reasoning", Text: strings.Repeat("x", 10*1024*1024)}}}}
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := a.applyZCodeRecoveredMessagesLocked(owner, messages); err == nil {
+				b.Fatal("a missing accepted response must fail reconciliation")
+			}
+		}
+	})
+	assert.Less(t, result.AllocedBytesPerOp(), int64(1024*1024))
+	assert.Empty(t, owner.contentByScope)
+	assert.Empty(t, a.generationBuffer.ScopeIDs())
+}
+
+func TestZCodeRecoveryCoverage_OwnerSelectionDoesNotAllocateForOtherOwners(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	owner := &zcodeTurnState{contentByScope: map[string]*zcodeScopeContent{"owned": {}}}
+	a.generationBuffer.Append("owned", agent.AssembledMessageKindText, "Owned", providerkit.JoinVerbatim)
+	for index := range 2048 {
+		a.generationBuffer.Append(fmt.Sprint(index), agent.AssembledMessageKindText, "Foreign", providerkit.JoinVerbatim)
+	}
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if scopes := a.zcodeTurnBufferedScopes(owner, nil); len(scopes) != 1 || scopes[0] != "owned" {
+				b.Fatal("owner selection changed")
+			}
+		}
+	})
+	assert.Less(t, result.AllocedBytesPerOp(), int64(4096))
+}
+
+func TestZCodeRecoveryCoverage_MatchesAcceptedResponsesWithFollowingMissingMessages(t *testing.T) {
+	t.Parallel()
+	for _, messageID := range []string{"answer", ""} {
+		t.Run(fmt.Sprintf("message ID %q", messageID), func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+			owner := &zcodeTurnState{acceptedResponses: []zcodeModelResponseText{{messageID: messageID, text: "Accepted answer."}}}
+			messages := []zcodeNativeMessage{
+				{Info: zcodeNativeMessageInfo{ID: "answer", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "Accepted answer."}}},
+				{Info: zcodeNativeMessageInfo{ID: "missing", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "Recovered later response."}}},
+			}
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			a.unlockZCodeDispatch()
+			require.NoError(t, err)
+			_, text, found := a.generationBuffer.ScopeSnapshot(zcodeTextScope("missing"))
+			assert.True(t, found)
+			assert.Equal(t, "Recovered later response.", text)
+			_, _, found = a.generationBuffer.ScopeSnapshot(zcodeTextScope("answer"))
+			assert.False(t, found)
+		})
+	}
+}
+
+func TestZCodeRecoveryCoverage_RejectsContradictoryAcceptedResponses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		responses []zcodeModelResponseText
+	}{
+		{"missing", []zcodeModelResponseText{{messageID: "missing", text: "Accepted answer."}}},
+		{"rewritten", []zcodeModelResponseText{{messageID: "answer", text: "Different accepted answer."}}},
+		{"unidentified missing", []zcodeModelResponseText{{text: "Different accepted answer."}}},
+		{"reordered", []zcodeModelResponseText{{messageID: "answer", text: "Accepted answer."}, {messageID: "earlier", text: "Earlier answer."}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+			owner := &zcodeTurnState{acceptedResponses: tc.responses}
+			messages := []zcodeNativeMessage{
+				{Info: zcodeNativeMessageInfo{ID: "earlier", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "Earlier answer."}}},
+				{Info: zcodeNativeMessageInfo{ID: "answer", Role: "assistant"}, Parts: []zcodeNativePart{{Type: "text", Text: "Accepted answer."}}},
+			}
+			a.dispatchMu.Lock()
+			err := a.applyZCodeRecoveredMessagesLocked(owner, messages)
+			a.unlockZCodeDispatch()
+			require.Error(t, err)
+			assert.Empty(t, a.generationBuffer.ScopeIDs())
+			assert.Empty(t, owner.contentByScope)
 		})
 	}
 }
@@ -1160,6 +1867,29 @@ func TestZCodeRecoveryCoverage_LateResponseExcludesAnAcceptedInterruptedPrefix(t
 	var original zcodeEventEnvelope
 	require.NoError(t, json.Unmarshal(rows[1].Content, &original))
 	assert.Contains(t, string(original.Payload), `"content":"hello world"`, "the native response remains unchanged")
+}
+
+func TestZCodeRecoveryCoverage_RejectedResponsePreservesPendingReasoning(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"message","delta":"Accepted "}`))
+	a.Mu.Lock()
+	owner := a.turns["turn"]
+	a.Mu.Unlock()
+	a.flushZCodeGenerationKindForTurn(owner, agent.AssembledMessageKindText, agent.MessageCompletionInterrupted)
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"reasoning_delta","assistantMessageId":"message","delta":"Pending reasoning."}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Conflicting answer","querySource":"main_turn","stopReason":"stop"}`))
+	assert.Equal(t, []string{"Accepted "}, zcodeRecoveryTranscriptTexts(t, sink), "a rejected response must not commit reasoning")
+	_, reasoning, present := a.generationBuffer.ScopeSnapshot(zcodeReasoningScope("message"))
+	assert.True(t, present)
+	assert.Equal(t, "Pending reasoning.", reasoning)
+	a.Mu.Lock()
+	assert.Zero(t, owner.contentByScope[zcodeReasoningScope("message")].submitted)
+	a.Mu.Unlock()
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"Accepted suffix","querySource":"main_turn","stopReason":"stop"}`))
+	assert.Equal(t, []string{"Accepted ", "Pending reasoning.", "suffix"}, zcodeRecoveryTranscriptTexts(t, sink))
 }
 
 func TestZCodeRecoveryEvidence_AbsentRuntimeProofDoesNotConfirmIdle(t *testing.T) {
@@ -1788,6 +2518,7 @@ func TestZCodeNativeEnd_DelayedCanonicalOutputPreservesTheNewForeground(t *testi
 				generation := a.stopWindow.generation
 				a.Mu.Unlock()
 				a.endStoppedZCodeTurn(generation)
+				assert.NotContains(t, zcodeRecoveryTranscriptTexts(t, sink.ControlSink), "Answer", "a local stop must retain the answer for the outstanding canonical read")
 			}
 			a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-B", contracts.ZCodeEventTurnStarted, `{"messageId":"user-B"}`))
 			a.HandleOutput(zcodeTurnEventLine(t, 7, "turn-B", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"message-B","delta":"B keeps working"}`))
@@ -1798,6 +2529,7 @@ func TestZCodeNativeEnd_DelayedCanonicalOutputPreservesTheNewForeground(t *testi
 			progress, cancels := sink.ProgressSnapshot(), sink.cancelCount()
 			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), zcodeCanonicalMessages()))
 			waitZCodeCanonicalEnd(t, sink)
+			assert.Equal(t, []string{"H", "ello", "Answer"}, zcodeRecoveryTranscriptTexts(t, sink.ControlSink))
 			assert.Equal(t, progress, sink.ProgressSnapshot(), "the older output must not reset the new foreground")
 			assert.Equal(t, cancels, sink.cancelCount(), "the older end must not cancel the new foreground's retry")
 			a.Mu.Lock()
@@ -2095,4 +2827,28 @@ func TestZCodeNativeEnd_PreservesToolsOfALocallySettledOwner(t *testing.T) {
 	a.Mu.Unlock()
 	assert.True(t, open)
 	assert.Equal(t, "Bash", a.sink.GetSpanType(zcodeTestSpanID(t, &sink.Sink, "tool-A")))
+}
+
+func TestZCodeRecoveryCoverage_ReusesCanonicalStringsForRecoveredSuffixes(t *testing.T) {
+	const size = 1024 * 1024
+	text := strings.Repeat("x", size)
+	a := newZCodeTestAgent(t, agent.NewProviderServices(agenttest.Nop()))
+	owner := &zcodeTurnState{}
+	messages := []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "message"}, Parts: []zcodeNativePart{{Type: "text", Text: text}}}}
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			a.generationBuffer.Reset()
+			owner.contentByScope = nil
+			if err := a.applyZCodeRecoveredMessagesLocked(owner, messages); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// The budget covers canonical aggregation, retained bytes, and the open buffer.
+	// A recovered suffix reuses the immutable canonical string.
+	assert.Less(t, result.AllocedBytesPerOp(), int64(size*7/2))
+	_, buffered, present := a.generationBuffer.ScopeSnapshot(zcodeTextScope("message"))
+	assert.True(t, present)
+	assert.Equal(t, text, buffered)
 }

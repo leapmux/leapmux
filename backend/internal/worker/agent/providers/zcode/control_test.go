@@ -1186,22 +1186,14 @@ func TestAnswerProviderRuntimeHeaders_TheGateCommitsBeforeTheWrite(t *testing.T)
 	assert.Equal(t, `"server-1"`, string(answer.envelopeID))
 
 	unblock()
-	_ = zcodeAwaitReplies(t, rec, 1)
-	select {
-	case <-writePause.recorded:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the runtime headers reply was not recorded")
-	}
+	zcodeTestReceive(t, writePause.recorded)
+	assert.Len(t, rec.Requests(t), 1)
 	a.runtimeHeaderMu.Lock()
 	remaining := len(a.runtimeHeaderAnswers)
 	a.runtimeHeaderMu.Unlock()
-	assert.Equal(t, 1, remaining, "the registration stays until the write returns")
+	assert.Equal(t, 1, remaining, "recording reply bytes does not finish the write")
 	releaseReturn()
-	select {
-	case <-answer.ctx.Done():
-	case <-time.After(30 * time.Second):
-		t.Fatal("the runtime headers answer did not finish after the write")
-	}
+	zcodeTestReceive(t, answer.ctx.Done())
 	a.runtimeHeaderMu.Lock()
 	remaining = len(a.runtimeHeaderAnswers)
 	a.runtimeHeaderMu.Unlock()

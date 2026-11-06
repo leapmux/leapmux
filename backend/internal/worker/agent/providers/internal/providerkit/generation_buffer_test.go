@@ -100,6 +100,21 @@ func TestGenerationBufferDiscardsOnlyTheSelectedScope(t *testing.T) {
 	assert.Contains(t, string(rows[0]), "worker owns this")
 }
 
+func TestGenerationBufferOrderOpenScopeIDsKeepsOnlySelectedOpenScopes(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	assert.Empty(t, buffer.OrderOpenScopeIDs(nil))
+	for _, scope := range []string{"first", "foreign", "second", "discarded"} {
+		buffer.Append(scope, agent.AssembledMessageKindText, scope, JoinVerbatim)
+	}
+	buffer.Discard("discarded")
+	assert.Equal(t, []string{"first", "second"}, buffer.OrderOpenScopeIDs([]string{"second", "missing", "discarded", "first", "second", ""}))
+	assert.Equal(t, []string{"first", "foreign", "second"}, buffer.ScopeIDs())
+	_, text, present := buffer.ScopeSnapshot("first")
+	assert.True(t, present)
+	assert.Equal(t, "first", text)
+}
+
 func TestGenerationBufferKeepsReasoningDeltasVerbatim(t *testing.T) {
 	t.Parallel()
 

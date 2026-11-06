@@ -592,7 +592,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 	}
 	compacting := turnID == ""
 	if owner != nil {
-		if owner.pendingNative == nil {
+		if owner.pendingNative == nil && len(owner.deferredResponses) == 0 {
 			a.stopZCodeTurnWatcherLocked(owner)
 		}
 		owner.settled = true
@@ -744,12 +744,12 @@ func (a *Agent) Stop() {
 	a.stopAllZCodeTurnWatchers()
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
+	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
 	a.Mu.Lock()
 	a.compactionSessionID = ""
 	// The tear-down clears every turn owner: nothing survives the process.
 	a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
-	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
 	if stopWasPending {
 		a.persistZCodeStopRow()
@@ -769,12 +769,12 @@ func (a *Agent) Wait() error {
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
+	completion := a.ProcessExitCompletion()
+	a.flushZCodeGeneration(completion)
 	a.Mu.Lock()
 	a.compactionSessionID = ""
 	a.clearZCodeTurnsLocked()
 	a.Mu.Unlock()
-	completion := a.ProcessExitCompletion()
-	a.flushZCodeGeneration(completion)
 	a.persistIncompleteZCodeTools(completion)
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.resetZCodeSteers()

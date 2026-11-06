@@ -15,6 +15,8 @@ const RECOVERY_WIRE = {
   started: ZCODE_EVENT.TurnStarted,
   completed: ZCODE_EVENT.TurnCompleted,
   failed: ZCODE_EVENT.TurnFailed,
+  streaming: ZCODE_EVENT.ModelStreaming,
+  updated: ZCODE_EVENT.SessionUpdated,
   snapshots: [
     'session/read',
     'session/create',
@@ -27,13 +29,15 @@ const RECOVERY_WIRE = {
 
 type RecoveryWire = typeof RECOVERY_WIRE
 export type RecoveryDirection = 'worker' | 'native'
+export type RecoveryMode = 'turn-end' | 'stream-gap' | 'reasoning-gap' | 'empty-response'
 interface SelectedTurn { sessionId: string, inputId: string, turnId?: string, omittedSeq?: number }
 
-/** Present one omitted native turn end as a consistent event log. Other payloads retain their native values. */
-export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWire = RECOVERY_WIRE) {
+/** Inject one selected delivery fault while preserving unrelated native messages. */
+export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWire = RECOVERY_WIRE, mode: RecoveryMode = 'turn-end') {
   if (!marker.trim())
     throw new Error('The recovery relay requires a prompt marker.')
   let selected: SelectedTurn | undefined
+  let faultInjected = false
   const pending = new Map<string, { method: string, sessionId: string }>()
   function object(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -70,6 +74,12 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
   function eventSession(event: Record<string, unknown>, hint: string): string {
     return string(event.sessionId) || hint
   }
+  function documentSession(document: Record<string, unknown>, hint: string): string {
+    const session = object(document.session)
+      ? document.session
+      : {}
+    return string(document.sessionId) || string(session.sessionId) || hint
+  }
   function observeEvent(event: unknown, hint: string): void {
     if (!object(event) || !selected || eventSession(event, hint) !== selected.sessionId)
       return
@@ -84,7 +94,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
         throw new Error('The selected native input started more than one turn.')
       selected.turnId = turnId
     }
-    if (selected.turnId === undefined || event.turnId !== selected.turnId || (event.type !== wire.completed && event.type !== wire.failed))
+    if (mode !== 'turn-end' || selected.turnId === undefined || event.turnId !== selected.turnId || (event.type !== wire.completed && event.type !== wire.failed))
       return
     const endSequence = sequence(event.seq)
     if (endSequence === 0)
@@ -94,10 +104,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
     selected.omittedSeq = endSequence
   }
   function observeDocument(document: Record<string, unknown>, hint: string): void {
-    const session = object(document.session)
-      ? document.session
-      : {}
-    const sessionId = string(document.sessionId) || string(session.sessionId) || hint
+    const sessionId = documentSession(document, hint)
     if (Array.isArray(document.events)) {
       // Discover starts first even when a fetched batch arrives out of order.
       for (const event of document.events) {
@@ -123,10 +130,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
       : { ...event, seq }
   }
   function projectDocument(document: Record<string, unknown>, hint: string): Record<string, unknown> {
-    const session = object(document.session)
-      ? document.session
-      : {}
-    const sessionId = string(document.sessionId) || string(session.sessionId) || hint
+    const sessionId = documentSession(document, hint)
     let result = document
     function replace(key: string, value: unknown): void {
       if (value !== document[key])
@@ -182,23 +186,46 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
     if (frame.method === wire.stateUpdated)
       return frame
     if (frame.method === wire.event && object(frame.params)) {
-      const nested = frame.params.event
+      const params = frame.params
+      const nested = params.event
       const event = object(nested)
         ? nested
-        : frame.params
-      const hint = string(frame.params.sessionId) || selected?.sessionId || ''
+        : params
+      const hint = string(params.sessionId) || selected?.sessionId || ''
+      function replaceNativeEvent(replacement: unknown): Record<string, unknown> {
+        return replacement === event
+          ? frame
+          : {
+              ...frame,
+              params: object(nested)
+                ? { ...params, event: replacement }
+                : replacement,
+            }
+      }
       observeEvent(event, hint)
+      if (!faultInjected && selected?.turnId !== undefined
+        && eventSession(event, hint) === selected.sessionId && event.turnId === selected.turnId
+        && object(event.payload)) {
+        if (mode === 'empty-response' && event.type === wire.updated
+          && event.payload.querySource === 'main_turn' && typeof event.payload.stopReason === 'string'
+          && typeof event.payload.content === 'string' && event.payload.content.length > 0) {
+          faultInjected = true
+          return replaceNativeEvent({
+            ...event,
+            payload: { ...event.payload, content: '' },
+          })
+        }
+        if (event.type === wire.streaming
+          && ((mode === 'stream-gap' && event.payload.kind === 'text_delta')
+            || (mode === 'reasoning-gap' && event.payload.kind === 'reasoning_delta'))) {
+          faultInjected = true
+          return null
+        }
+      }
       const projected = projectEvent(event, hint)
       if (projected === null)
         return null
-      return projected === event
-        ? frame
-        : {
-            ...frame,
-            params: object(nested)
-              ? { ...frame.params, event: projected }
-              : projected,
-          }
+      return replaceNativeEvent(projected)
     }
     // A native request may reuse the numeric ID of an unrelated Worker request.
     if (typeof frame.method === 'string')
@@ -253,7 +280,7 @@ export function createZcodeRecoveryTransformer(marker: string, wire: RecoveryWir
 export interface ZcodeRecoveryRelay { directory: string, scriptPath: string, evidencePath: string }
 
 /** Run the installed native process through the controlled omission. Auxiliary invocations pass through. */
-export function writeZcodeRecoveryRelay(directory: string, options: { launch: NativeStartupLaunch, marker: string, evidencePath: string }): ZcodeRecoveryRelay {
+export function writeZcodeRecoveryRelay(directory: string, options: { launch: NativeStartupLaunch, marker: string, evidencePath: string, mode?: RecoveryMode }): ZcodeRecoveryRelay {
   if (![directory, options.launch.executable, options.evidencePath].every(isAbsolute))
     throw new Error('The recovery relay requires absolute paths.')
   createZcodeRecoveryTransformer(options.marker)
@@ -268,6 +295,7 @@ export function writeZcodeRecoveryRelay(directory: string, options: { launch: Na
     marker: options.marker,
     evidencePath: options.evidencePath,
     wire: RECOVERY_WIRE,
+    mode: options.mode ?? 'turn-end',
   }
   const source = `
 const { Buffer } = require('node:buffer');
@@ -275,7 +303,7 @@ const { spawn } = require('node:child_process');
 const { appendFileSync } = require('node:fs');
 const config = ${JSON.stringify(config)};
 const createTransformer = ${createZcodeRecoveryTransformer.toString()};
-const transform = createTransformer(config.marker, config.wire);
+const transform = createTransformer(config.marker, config.wire, config.mode);
 const argv = [...config.args, ...process.argv.slice(2)];
 const controlled = argv.includes('app-server') && argv.includes('--stdio') && !argv.includes('--prepare-storage');
 const child = spawn(config.executable, argv, { stdio: controlled ? ['pipe', 'pipe', 'pipe'] : 'inherit', env: process.env });
@@ -296,15 +324,18 @@ function write(output, bytes) {
   return new Promise((resolve, reject) => output.write(bytes, error => error ? reject(error) : resolve()));
 }
 async function forward(direction, input, output) {
-  let tail = Buffer.alloc(0);
+  const pending = [];
+  let pendingLength = 0;
   try {
     for await (const chunk of input) {
-      const bytes = Buffer.concat([tail, chunk]);
       let start = 0;
       for (;;) {
-        const end = bytes.indexOf(10, start);
+        const end = chunk.indexOf(10, start);
         if (end < 0) break;
-        const raw = bytes.subarray(start, end + 1);
+        const segment = chunk.subarray(start, end + 1);
+        const raw = pendingLength ? Buffer.concat([...pending, segment], pendingLength + segment.length) : segment;
+        pending.length = 0;
+        pendingLength = 0;
         const text = raw.toString('utf8');
         const projected = transform.transform(direction, text);
         const forwarded = projected === null ? null : projected === text ? raw : Buffer.from(projected, 'utf8');
@@ -312,9 +343,17 @@ async function forward(direction, input, output) {
         if (forwarded !== null) await write(output, forwarded);
         start = end + 1;
       }
-      tail = Buffer.from(bytes.subarray(start));
+      if (start < chunk.length) {
+        const segment = chunk.subarray(start);
+        pending.push(segment);
+        pendingLength += segment.length;
+      }
     }
-    if (tail.length) { evidence(direction, tail, tail, true); await write(output, tail); }
+    if (pendingLength) {
+      const tail = Buffer.concat(pending, pendingLength);
+      evidence(direction, tail, tail, true);
+      await write(output, tail);
+    }
     if (direction === 'worker') output.end();
   } catch (error) { fail(error); }
 }
