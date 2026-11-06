@@ -54,7 +54,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	assert.Contains(t, granted, "worker:read", "file:read implies reaching the machine")
 	assert.NotContains(t, granted, "terminal:write", "asking for file:read must not grant a terminal write")
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext: ctx,
 		BearerToken:     bearer,
 	})
@@ -106,7 +106,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	// id instead. Without this the assertion above would pass for an
 	// unimplemented method.
 	wide, _ := authorizeScopedCredential(t, httpClient, hubURL, "file:read terminal:write")
-	wideCh, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	wideCh, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext: ctx,
 		BearerToken:     wide,
 	})
@@ -208,7 +208,7 @@ func TestChannelOpenReadsTheAnnouncedGrant(t *testing.T) {
 
 	// The session from first-password setup is unscoped. It reaches every
 	// method, which is what SCOPE_ALL means.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,

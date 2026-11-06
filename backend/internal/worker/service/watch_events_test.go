@@ -11,6 +11,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
@@ -367,52 +369,64 @@ func TestWatchEvents_CancelFrameUnwatchesAndEnds(t *testing.T) {
 
 func TestWorkerPrivateEvents_CancelReleasesSubscriber(t *testing.T) {
 	t.Parallel()
-
-	svc, d, w := setupTestService(t)
-
-	done := make(chan struct{})
-	go func() {
-		dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w)
-		close(done)
+	svc, d, first := setupTestService(t)
+	second := newTestWriter()
+	firstDone, secondDone := make(chan struct{}), make(chan struct{})
+	secondStarted := false
+	// Stop also covers failure before a controller binds. Cancellation alone
+	// could miss that controller and leave the dispatch running.
+	defer func() {
+		svc.PrivateEvents.Stop()
+		first.deliverStreamRequest(nil, true)
+		second.deliverStreamRequest(nil, true)
+		<-firstDone
+		if secondStarted {
+			<-secondDone
+		}
 	}()
-
-	require.Eventually(t, func() bool {
+	go func() {
+		defer close(firstDone)
+		dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, first)
+	}()
+	countSubscribers := func() int {
 		svc.PrivateEvents.mu.Lock()
 		defer svc.PrivateEvents.mu.Unlock()
-		return len(svc.PrivateEvents.subscribers["user-1"]) == 1
-	}, time.Second, 10*time.Millisecond, "precondition: one subscriber registered")
-
-	w.deliverStreamRequest(nil, true)
-	<-done
-
-	require.Eventually(t, func() bool {
-		svc.PrivateEvents.mu.Lock()
-		defer svc.PrivateEvents.mu.Unlock()
-		_, ok := svc.PrivateEvents.subscribers["user-1"]
-		return !ok
-	}, time.Second, 10*time.Millisecond, "cancel must release the subscriber")
-
-	w2 := newTestWriter()
-	go dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, w2)
-
-	require.Eventually(t, func() bool {
-		svc.PrivateEvents.mu.Lock()
-		defer svc.PrivateEvents.mu.Unlock()
-		return len(svc.PrivateEvents.subscribers["user-1"]) == 1
-	}, time.Second, 10*time.Millisecond, "re-subscribe must register exactly one subscriber")
-
-	svc.PrivateEvents.PublishTabRenamed(userid.MustNew("user-1"), "tab-1",
-		leapmuxv1.TabType_TAB_TYPE_AGENT, "renamed", "")
-
+		return len(svc.PrivateEvents.subscribers["user-1"])
+	}
+	require.Eventually(t, func() bool { return countSubscribers() == 1 }, 30*time.Second, 10*time.Millisecond,
+		"the first subscription must register")
+	first.deliverStreamRequest(nil, true)
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-firstDone:
+	case <-ctx.Done():
+		t.Fatal("the first subscription did not finish after cancellation")
+	}
+	assert.Zero(t, countSubscribers())
+	secondStarted = true
+	go func() {
+		defer close(secondDone)
+		dispatch(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, &leapmuxv1.WatchWorkerPrivateEventsRequest{}, second)
+	}()
+	require.Eventually(t, func() bool { return countSubscribers() == 1 }, 30*time.Second, 10*time.Millisecond,
+		"the second subscription must register")
+	svc.PrivateEvents.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "renamed", "")
 	require.Eventually(t, func() bool {
 		count := 0
-		for _, s := range w2.streamsSnapshot() {
-			if len(s.GetPayload()) > 0 {
+		for _, frame := range second.streamsSnapshot() {
+			if len(frame.GetPayload()) > 0 {
 				count++
 			}
 		}
 		return count == 1
-	}, time.Second, 10*time.Millisecond, "one live subscriber must receive exactly one event")
+	}, 30*time.Second, 10*time.Millisecond, "the second subscription must receive exactly one event")
+	second.deliverStreamRequest(nil, true)
+	select {
+	case <-secondDone:
+	case <-ctx.Done():
+		t.Fatal("the second subscription did not finish after cancellation")
+	}
+	assert.Zero(t, countSubscribers(), "both canceled dispatches must release their exact subscriptions")
 }
 
 func TestWatchEvents_UndecodableRevisionSurvives(t *testing.T) {
@@ -916,7 +930,7 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	})
 	require.NoError(t, err)
-	d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+	dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload,
 	}, refusing)
 
@@ -1535,10 +1549,10 @@ func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
 	replacementWriter := &testResponseWriter{channelID: oldWriter.ChannelID()}
 	var replacement *watchSession
 	writer := &replayErrorReplacementWriter{testResponseWriter: oldWriter, onError: func() {
-		replacement = newWatchSession(svc, caller, replacementWriter)
+		replacement = newWatchSession(context.Background(), svc, caller, replacementWriter)
 		replacement.apply(&leapmuxv1.WatchEventsRequest{UpdateId: 18, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: ownerID, Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}})
 	}}
-	failed := newWatchSession(svc, caller, writer)
+	failed := newWatchSession(context.Background(), svc, caller, writer)
 	defer failed.OnCancel()
 	failed.submit(&leapmuxv1.WatchEventsRequest{UpdateId: 17, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: ownerID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}}})
 	completed := make(chan struct{})
@@ -1566,7 +1580,7 @@ func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
 
 // parkingStreamWriter stands in for a watcher whose transport cannot take the
 // session's End frame, so the session goroutine parks inside SendStream on the
-// cancel path -- the state whose join WaitWatchSessions exists to cover.
+// cancel path -- the state whose join WaitHandlers exists to cover.
 type parkingStreamWriter struct {
 	*testResponseWriter
 	release chan struct{}
@@ -1582,10 +1596,10 @@ func (w *parkingStreamWriter) SendStream(msg *leapmuxv1.InnerStreamMessage) erro
 	return w.testResponseWriter.SendStream(msg)
 }
 
-// A watch session outlives the handler that started it, and its apply reads
-// the database. WaitWatchSessions is what joins it, so it must not return
+// A watch session applies replay inside its handler and reads the database.
+// The dispatcher joins the complete handler, so it must not return
 // while the session goroutine is still writing.
-func TestWaitWatchSessionsJoinsARunningSession(t *testing.T) {
+func TestDispatcherWaitHandlersJoinsARunningWatchSession(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		svc, d, _ := setupTestService(t)
@@ -1607,7 +1621,7 @@ func TestWaitWatchSessionsJoinsARunningSession(t *testing.T) {
 			Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 		})
 		require.NoError(t, err)
-		d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")),
+		d.DispatchAsync(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")),
 			&leapmuxv1.InnerRpcRequest{
 				Method:  leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
 				Payload: payload,
@@ -1624,15 +1638,36 @@ func TestWaitWatchSessionsJoinsARunningSession(t *testing.T) {
 		}
 
 		waited := make(chan bool, 1)
-		go func() { waited <- svc.WaitWatchSessions(time.Second) }()
+		go func() { waited <- d.WaitHandlers(time.Second) }()
 		synctest.Wait()
 		select {
 		case joined := <-waited:
-			t.Fatalf("WaitWatchSessions returned while the session was parked: %v", joined)
+			t.Fatalf("WaitHandlers returned while the session was parked: %v", joined)
 		default:
 		}
 
 		releaseFn()
 		assert.True(t, <-waited, "the released session joins inside the budget")
 	})
+}
+
+func TestWatchEventsRequestCancellationJoinsItsHandler(t *testing.T) {
+	svc, dispatcher, writer := setupTestService(t)
+	createClaimTestAgent(t, svc, "request-canceled-watch")
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "request-canceled-watch", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dispatcher.DispatchAsync(ctx, channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload,
+	}, writer)
+	waitAgentWatchCount(t, svc, "request-canceled-watch", 1)
+	cancel()
+	require.True(t, dispatcher.WaitHandlers(30*time.Second), "request cancellation must end the watch without a client cancel frame")
+	assert.False(t, svc.Watchers.agents.hasEntity("request-canceled-watch"))
+	writer.mu.Lock()
+	controller := writer.streamCtrl
+	writer.mu.Unlock()
+	assert.Nil(t, controller, "handler must release its stream binding")
+	assert.Empty(t, svc.Watchers.channelOwners)
 }

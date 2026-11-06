@@ -12,12 +12,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func getAgentMessage(t *testing.T, d *channel.Dispatcher, agentID string, seq int64) (*leapmuxv1.GetAgentMessageResponse, *testResponseWriter) {
+func getAgentMessage(t *testing.T, d testRPCDispatcher, agentID string, seq int64) (*leapmuxv1.GetAgentMessageResponse, *testResponseWriter) {
 	t.Helper()
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceGetAgentMessageProcedure, &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, w)
@@ -51,19 +50,20 @@ func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
+	// The target follows a decoy, so selecting the first row cannot pass.
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		ID: "m2", AgentID: "agent-1", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:   []byte(`{"content":"other"}`),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
+	})
+	require.NoError(t, err)
+
 	seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID:        "m1",
 		AgentID:   "agent-1",
 		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:   []byte(`{"content":"hello world"}`),
 		MarkType:  workerdb.OptionalStorageEnum(leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE),
-		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
-	})
-	require.NoError(t, err)
-	// A second row at a different seq to prove the handler selects by seq, not "first".
-	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID: "m2", AgentID: "agent-1", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:   []byte(`{"content":"other"}`),
 		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -86,6 +86,8 @@ func TestGetAgentMessage_MissingSeq_ReturnsUnset(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
+
+	seedMark(t, svc, "agent-1", "existing-message", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
 
 	resp, w := getAgentMessage(t, d, "agent-1", 999)
 	require.Empty(t, w.errors, "a missing seq is a normal empty result, not an error")

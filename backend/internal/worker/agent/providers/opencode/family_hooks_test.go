@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -81,49 +82,54 @@ func (s *parkingControlSink) CancelControlRequest(requestID string) {
 // cancelAll, whose writes go through CancelControlRequest, and Base.Wait calls
 // the hook after it admits its final cleanup.
 func TestAfterWaitCleanupJoinsTheQuestionBridge(t *testing.T) {
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseFn)
-	sink := &parkingControlSink{Sink: &agenttest.Sink{}, release: release, entered: make(chan struct{})}
-	f := &FamilyBase{}
-	f.SetSinkForTest(agent.NewProviderServices(sink))
-	f.Questions.Configure(agent.NewProviderServices(sink))
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseFn)
+		sink := &parkingControlSink{Sink: &agenttest.Sink{}, release: release, entered: make(chan struct{})}
+		f := &FamilyBase{}
+		f.SetSinkForTest(agent.NewProviderServices(sink))
+		f.Questions.Configure(agent.NewProviderServices(sink))
 
-	// The pending question is what cancelAll answers for, so it is in place
-	// before the bridge can reach its deferred cancelAll.
-	f.Questions.mu.Lock()
-	f.Questions.pending = map[string]string{"req-1": "daemon-1"}
-	f.Questions.mu.Unlock()
-	ctx, cancel := context.WithCancel(context.Background())
-	f.Questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", "http://127.0.0.1:1")
-	// The run loop sees the ended context on its first turn and falls into
-	// its deferred cancelAll with the pending question above.
-	cancel()
+		// The pending question is what cancelAll answers for, so it is in place
+		// before the bridge can reach its deferred cancelAll.
+		f.Questions.mu.Lock()
+		f.Questions.pending = map[string]string{"req-1": "daemon-1"}
+		f.Questions.mu.Unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		f.Questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", "http://127.0.0.1:1")
+		// The run loop sees the ended context on its first turn and falls into
+		// its deferred cancelAll with the pending question above.
+		cancel()
 
-	select {
-	case <-sink.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the bridge never reached cancelAll")
-	}
+		select {
+		case <-sink.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the bridge never reached cancelAll")
+		}
 
-	joined := make(chan struct{})
-	go func() {
-		FamilyHooks(f).AfterWaitCleanup()
-		close(joined)
-	}()
-	select {
-	case <-joined:
-		t.Fatal("AfterWaitCleanup returned while cancelAll was parked in the sink")
-	case <-time.After(50 * time.Millisecond):
-	}
+		joined := make(chan struct{})
+		go func() {
+			FamilyHooks(f).AfterWaitCleanup()
+			close(joined)
+		}()
+		synctest.Wait()
+		select {
+		case <-joined:
+			t.Fatal("AfterWaitCleanup returned while cancelAll was parked in the sink")
+		default:
+		}
 
-	releaseFn()
-	select {
-	case <-joined:
-	case <-time.After(5 * time.Second):
-		t.Fatal("AfterWaitCleanup did not return after the release")
-	}
+		releaseFn()
+		select {
+		case <-joined:
+		case <-time.After(5 * time.Second):
+			t.Fatal("AfterWaitCleanup did not return after the release")
+		}
+
+	})
 }
 
 // A bridge whose discovery fails ends its goroutine all the same, and the

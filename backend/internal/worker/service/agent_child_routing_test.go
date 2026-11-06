@@ -18,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -29,7 +28,7 @@ func (childRoutingTestProvider) ChildCapabilities(optionmap.Map) agent.ChildCapa
 	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}
 }
 
-func setupChildRoutingService(t *testing.T) (*Service, *channel.Dispatcher, *testResponseWriter) {
+func setupChildRoutingService(t *testing.T) (*Service, testRPCDispatcher, *testResponseWriter) {
 	t.Helper()
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	plugin := childRoutingTestProvider{Provider: testRegistry.Plugin(provider)}
@@ -40,7 +39,7 @@ func setupChildRoutingService(t *testing.T) (*Service, *channel.Dispatcher, *tes
 // tests. The child is linked to the root via a background-task registry row so
 // queue dispatch and InterruptAgent can resolve (ownerID, rowKey). Returns the
 // service, dispatcher, the child agent id, and the root agent id.
-func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, string) {
+func setupChildAgentTest(t *testing.T) (*Service, testRPCDispatcher, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	svc, d, _ := setupChildRoutingService(t)

@@ -41,8 +41,7 @@ func (transport *encryptedNotificationTransport) snapshot() []*leapmuxv1.AgentEv
 
 func newEncryptedNotificationTransport(t *testing.T) *encryptedNotificationTransport {
 	t.Helper()
-	keys, err := noiseutil.GenerateCompositeKeypair()
-	require.NoError(t, err)
+	keys := newClassicalServiceTestKeys(t)
 	transport := &encryptedNotificationTransport{}
 	var initiator *noiseutil.Session
 	var fragments []byte

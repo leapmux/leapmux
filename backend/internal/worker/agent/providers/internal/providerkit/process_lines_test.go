@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -247,40 +248,46 @@ func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
 		{name: "Stop", end: func(process *Process) { process.Stop() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entered := make(chan struct{})
-			announce := sync.OnceFunc(func() { close(entered) })
-			gate := make(chan struct{})
-			release := sync.OnceFunc(func() { close(gate) })
-			process := startLineServer(t, "", func([]byte) {
-				announce()
-				<-gate
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				announce := sync.OnceFunc(func() { close(entered) })
+				gate := make(chan struct{})
+				release := sync.OnceFunc(func() { close(gate) })
+				process := startLineServer(t, "", func([]byte) {
+					announce()
+					<-gate
+				})
+				// Runs before the cleanup of startLineServer, whose Stop waits for
+				// the same handler.
+				t.Cleanup(release)
+				select {
+				case <-entered:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the handler never received a line")
+				}
+
+				_ = process.owner.Wait()
+				<-process.stderrDone
+
+				ended := make(chan struct{})
+				go func() {
+					defer close(ended)
+					tc.end(process)
+				}()
+				synctest.Wait()
+				select {
+				case <-ended:
+					t.Fatal("the process completed while a handler still ran")
+				default:
+				}
+
+				release()
+				select {
+				case <-ended:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the process never completed after the handler returned")
+				}
 			})
-			// Runs before the cleanup of startLineServer, whose Stop waits for
-			// the same handler.
-			t.Cleanup(release)
-			select {
-			case <-entered:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the handler never received a line")
-			}
-
-			ended := make(chan struct{})
-			go func() {
-				defer close(ended)
-				tc.end(process)
-			}()
-			select {
-			case <-ended:
-				t.Fatal("the process completed while a handler still ran")
-			case <-time.After(200 * time.Millisecond):
-			}
-
-			release()
-			select {
-			case <-ended:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the process never completed after the handler returned")
-			}
 		})
 	}
 }

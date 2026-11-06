@@ -110,30 +110,22 @@ type Wiring struct {
 	dispatcher *channel.Dispatcher
 }
 
-// handlerDrainTimeout is the one budget for the dispatcher's handlers and the
-// watch sessions, so a wedged handler costs the shutdown once, not once per
-// wait.
+// handlerDrainTimeout limits the join of all admitted handlers, including watches.
 const handlerDrainTimeout = 5 * time.Second
 
-// WaitHandlers joins the dispatcher's in-flight handlers and then the watch
-// sessions, both limited by the one handler budget.
+// WaitHandlers joins the dispatcher's handlers within one shutdown budget.
 //
-// It lives on the Wiring because neither half is reachable from worker.Run:
-// Run holds no dispatcher, and the service's watch-session counter is the
-// only join for a stream whose handler already returned. The deferred call in
-// Run orders it AFTER client.Stop, so the goodbye still travels on the live
+// It lives on Wiring because worker.Run holds no dispatcher. The deferred call
+// in Run orders it after client.Stop, so the goodbye still travels on the live
 // stream before the handlers that write to it are joined.
 func (w *Wiring) WaitHandlers() {
 	if w == nil || w.dispatcher == nil {
 		// A caller that returns before Wire succeeded has nothing to join.
 		return
 	}
-	deadline := time.Now().Add(handlerDrainTimeout)
 	// Each wait logs its own expiry (drain.Counter), so the wrapper adds none:
 	// one expired wait is one Warn, not two.
-	handlersDone := w.dispatcher.WaitHandlers(time.Until(deadline))
-	sessionsDone := w.Service.WaitWatchSessions(time.Until(deadline))
-	if handlersDone && sessionsDone {
+	if w.dispatcher.WaitHandlers(handlerDrainTimeout) {
 		slog.Info("worker handlers joined")
 	}
 }

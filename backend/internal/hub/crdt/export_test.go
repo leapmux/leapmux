@@ -33,3 +33,16 @@ func NewRegistryWithWedgedJanitorForTest(factory ManagerFactory, logger *slog.Lo
 	r.doneCh = make(chan struct{})
 	return r
 }
+
+// PreparePendingPresenceClearForTest creates one owned resource that Discard must stop.
+func (m *Manager) PreparePendingPresenceClearForTest() {
+	m.presenceCtl.OnConnect("discard-observer")
+	m.presenceCtl.OnDisconnect("discard-observer")
+}
+
+// PendingPresenceClearsForTest observes teardown without process-wide goroutine counts.
+func (m *Manager) PendingPresenceClearsForTest() int {
+	m.presenceCtl.mu.Lock()
+	defer m.presenceCtl.mu.Unlock()
+	return len(m.presenceCtl.clearTimers)
+}

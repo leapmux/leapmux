@@ -281,16 +281,7 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
 	userID := adminUserID(t, st)
 
-	tokenID := newTestTokenID()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       tv.HashSecret(secret),
-	}))
+	tokenID, secret := seedInterceptorAPIToken(t, st, tv, userID)
 
 	resp, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
 		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
@@ -319,16 +310,7 @@ func TestInterceptor_LeapMuxBearer_FlightFollowsTheHubsLifetime(t *testing.T) {
 			servingCtx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			client, st, tv := setupBearerTestServer(t, auth.InterceptorOptions{ServingCtx: servingCtx})
-			tokenID := newTestTokenID()
-			secret := auth.MintAccessSecret()
-			require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-				ID:               tokenID,
-				UserID:           userid.MustNew(adminUserID(t, st)),
-				ClientID:         oauthapp.ControlCLIClientID,
-				InstallationName: "test",
-				GrantedScopes:    authscope.NonAdminGrant().String(),
-				SecretHash:       tv.HashSecret(secret),
-			}))
+			tokenID, secret := seedInterceptorAPIToken(t, st, tv, adminUserID(t, st))
 			if tc.hubEnded {
 				cancel()
 			}
@@ -350,16 +332,7 @@ func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T
 	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
 	userID := adminUserID(t, st)
 
-	tokenID := newTestTokenID()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       tv.HashSecret(secret),
-	}))
+	tokenID, secret := seedInterceptorAPIToken(t, st, tv, userID)
 
 	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
 		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
@@ -375,16 +348,7 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
 	userID := adminUserID(t, st)
 
-	tokenID := newTestTokenID()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       tv.HashSecret(secret),
-	}))
+	tokenID, secret := seedInterceptorAPIToken(t, st, tv, userID)
 	_, err := st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
 
@@ -438,12 +402,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	userID := adminUserID(t, st)
-	tokenID := newTestTokenID()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID, InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
-		SecretHash: tv.HashSecret(secret),
-	}))
+	tokenID, secret := seedInterceptorAPIToken(t, st, tv, userID)
 
 	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 
@@ -915,16 +874,7 @@ func TestBearerRequest_SendsNoSessionCookie(t *testing.T) {
 	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
 	userID := adminUserID(t, st)
 
-	tokenID := newTestTokenID()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       tv.HashSecret(secret),
-	}))
+	tokenID, secret := seedInterceptorAPIToken(t, st, tv, userID)
 
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
@@ -987,4 +937,15 @@ func TestAuthContextRegistry_EvictInvalidatesCache(t *testing.T) {
 	_, err = client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func seedInterceptorAPIToken(t *testing.T, st store.Store, validator *auth.TokenValidator, userID string) (tokenID, secret string) {
+	t.Helper()
+	tokenID = newTestTokenID()
+	secret = auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
+		ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
+		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(), SecretHash: validator.HashSecret(secret),
+	}))
+	return tokenID, secret
 }

@@ -1531,7 +1531,7 @@ tasks:
     desc: Auto-fix backend lint violations
     cmds:
       - task: prepare-backend
-      - cd backend && go tool golangci-lint run --fix ./...
+      - cd backend && go tool golangci-lint run --fix --allow-serial-runners ./...
 
   lint-fix-desktop:
     desc: Auto-fix desktop lint violations
@@ -1539,7 +1539,7 @@ tasks:
       - task: prepare-desktop
       # Tauri's build script fails without the sidecar its bundle resources point at.
       - task: build-desktop-sidecar
-      - cd desktop/go && go tool golangci-lint run --fix ./...
+      - cd desktop/go && go tool golangci-lint run --fix --allow-serial-runners ./...
       # A fix runs on work in progress, so a tree with changes is the normal case.
       - cd desktop/rust && cargo clippy --fix --allow-dirty --all-targets
       - cd desktop/rust && cargo fmt

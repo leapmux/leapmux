@@ -13,7 +13,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -257,7 +256,7 @@ func seedResumableAgent(t *testing.T, svc *Service, id, handle, title, workingDi
 }
 
 // listAgentSessions drives the RPC and returns the decoded response.
-func listAgentSessions(t *testing.T, d *channel.Dispatcher, w *testResponseWriter, provider leapmuxv1.AgentProvider, workingDir string) *leapmuxv1.ListAgentSessionsResponse {
+func listAgentSessions(t *testing.T, d testRPCDispatcher, w *testResponseWriter, provider leapmuxv1.AgentProvider, workingDir string) *leapmuxv1.ListAgentSessionsResponse {
 	t.Helper()
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceListAgentSessionsProcedure, &leapmuxv1.ListAgentSessionsRequest{
 		AgentProvider: provider,

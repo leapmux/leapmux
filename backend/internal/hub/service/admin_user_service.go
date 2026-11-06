@@ -8,14 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/util/drain"
-
 	"connectrpc.com/connect/v2"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -44,13 +41,8 @@ type AdminUserService struct {
 	// workerEffects runs the out-of-database half of a deregistration for
 	// the workers a user deletion tears down.
 	workerEffects *WorkerDeregisterEffects
-	// mail and renderer send the issuance notice for the credential
-	// IssueAPIToken mints. See notifyCredentialIssued.
-	mail     mail.Sender
-	renderer mail.Renderer
-	// notices counts the detached credential-notice sends; see
-	// AdminUserServiceDeps.Notices.
-	notices *drain.Counter
+	// notices owns detached issuance mail and its shutdown join.
+	notices *CredentialNotices
 
 	// The clock this service reads. It mints an API token pair exactly as
 	// OAuthServerHandler.issueAPIToken does, and it requires the same elevation
@@ -71,19 +63,13 @@ type AdminUserServiceDeps struct {
 	Lifecycle *auth.CredentialLifecycleEffects
 	// WorkerEffects runs the out-of-database half of a deregistration.
 	WorkerEffects *WorkerDeregisterEffects
-	// Mail and Renderer send the "a CLI credential was issued" notice, on the
-	// same terms OAuthServerDeps states: Mail may be nil and issuance then
-	// sends nothing, and Renderer is a struct value whose zero value is valid.
-	Mail     mail.Sender
-	Renderer mail.Renderer
-	// Notices counts the detached credential-notice sends, so the Hub's
-	// shutdown can join them up to a limit before the store closes. Required.
-	Notices *drain.Counter
+	// Notices owns detached issuance mail and its shutdown join. Required.
+	Notices *CredentialNotices
 }
 
 func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
 	if deps.Notices == nil {
-		panic("admin user service requires the credential notice counter")
+		panic("admin user service requires credential notices")
 	}
 	return &AdminUserService{
 		set:           deps.Settings,
@@ -91,8 +77,6 @@ func NewAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
 		validator:     deps.Validator,
 		lifecycle:     deps.Lifecycle,
 		workerEffects: deps.WorkerEffects,
-		mail:          deps.Mail,
-		renderer:      deps.Renderer,
 		notices:       deps.Notices,
 	}
 }
@@ -1140,12 +1124,12 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 	if noticeName == "" {
 		noticeName = clientID
 	}
-	notifyCredentialIssued(ctx, s.mail, s.renderer, user, credentialNotice{
+	s.notices.Notify(ctx, user, credentialNotice{
 		AppName:          noticeName,
 		InstallationName: installationName,
 		Scopes:           granted.SortedTokens(),
 		IssuedByAdmin:    issuedByAnotherPerson(actor, user),
-	}, s.notices)
+	})
 	// The secrets cross the wire exactly once; they cannot be retrieved. The
 	// client id and the granted scopes state what the hub DECIDED, not what
 	// was asked: the envelope is the one record an operator captures, and an

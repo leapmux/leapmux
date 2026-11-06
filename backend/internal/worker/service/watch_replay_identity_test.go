@@ -66,11 +66,11 @@ func replayIdentityRequest(updateID, replayID uint64, agentID string, cursor int
 	}}}
 }
 
-func openReplayIdentityWatch(t *testing.T, dispatcher *channel.Dispatcher, request *leapmuxv1.WatchEventsRequest, writer *replayIdentityWriter) {
+func openReplayIdentityWatch(t *testing.T, dispatcher testRPCDispatcher, request *leapmuxv1.WatchEventsRequest, writer *replayIdentityWriter) {
 	t.Helper()
 	payload, err := proto.Marshal(request)
 	require.NoError(t, err)
-	dispatcher.DispatchWith(t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload}, writer)
+	dispatchTestRequest(dispatcher, t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload}, writer)
 	t.Cleanup(func() { writer.deliverStreamRequest(nil, true); waitStreamEnded(t, writer.testResponseWriter) })
 }
 

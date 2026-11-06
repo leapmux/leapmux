@@ -16,7 +16,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -29,7 +28,7 @@ import (
 // built. A status that the call read before git is older than every event that
 // the Worker broadcast during git, and a browser that applied such an event
 // then takes the older reply over it.
-func listAgentsDuringGit(t *testing.T, d *channel.Dispatcher, agentID string, change func()) leapmuxv1.AgentStatus {
+func listAgentsDuringGit(t *testing.T, d testRPCDispatcher, agentID string, change func()) leapmuxv1.AgentStatus {
 	t.Helper()
 	gitStarted, gitRelease := installBlockingGit(t)
 	w := newTestWriter()

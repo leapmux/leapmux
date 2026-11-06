@@ -1060,15 +1060,15 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// context bound to the stream's correlation id (via BindStream). An
 	// InnerStreamRequest that selects cancel from the client cancels that ctx,
 	// which exits the subscribe loop and deletes the subscriber. The
-	// dispatcher ctx is intentionally not used: it only covers the initial
-	// subscribe call and would cancel the moment the handler returns.
+	// parent dispatch context also cancels the subscription, including an
+	// idle local-IPC stream whose caller ends without sending a cancel frame.
 	// Registered as STREAMING, because the proto declares it server-streaming:
 	// the browser opens this with channelManager.stream and holds the
 	// correlation id in streamListeners only. Every reply is therefore a stream
 	// frame, a refusal or a panic included (see channel.Registration).
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure, dispatchPlain,
-		func(_ context.Context, caller channel.Caller, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
-			ctx, cancel := context.WithCancel(bgCtx())
+		func(parent context.Context, caller channel.Caller, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
+			ctx, cancel := context.WithCancel(parent)
 			ctrl := &privateEventsController{cancel: cancel}
 			release, ok := sender.BindStream(ctrl)
 			if !ok {

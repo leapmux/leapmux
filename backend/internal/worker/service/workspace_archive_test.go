@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,23 +87,16 @@ func requireOneStatusChange(t *testing.T, w *testResponseWriter, agentID string)
 	return changes[0]
 }
 
-// watchAgent subscribes to one agent's events so a test can read the broadcasts
-// archival makes.
-//
-// The catch-up replay cannot forge a status: it replays MESSAGES, and an agent
-// StatusChange reaches a subscriber only from broadcastStatusChange. So every
-// status agentStatuses reports is one this operation emitted.
-func watchAgent(t *testing.T, d *channel.Dispatcher, agentID string) *testResponseWriter {
+// watchAgent opens a notification subscription before the archive starts.
+// Notification mode sends no catch-up status that could satisfy the live-event assertion.
+func watchAgent(t *testing.T, d testRPCDispatcher, agentID string) *testResponseWriter {
 	t.Helper()
-	w := newTestWriter()
+	writer := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{
-			AgentId: agentID,
-			Replay:  leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
-			Mode:    leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
-		}},
-	}, w)
-	return w
+		UpdateId: 1, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	}, writer)
+	testutil.AssertEventually(t, func() bool { ack := lastWatchUpdateAck(t, writer); return ack != nil && ack.UpdateId == 1 }, "the notification subscription must be applied before archival")
+	return writer
 }
 
 func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
@@ -922,7 +916,7 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 		"a closed row must not spend a resume permit only to be skipped")
 }
 
-// TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain pins the atomicity of
+// TestWorkspaceArchive_HoldsTabLockThroughArchiveDrain pins the atomicity of
 // one tab's lifecycle: the flag write and the teardown that follows it are ONE
 // operation, not two.
 //
@@ -933,79 +927,49 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 // INACTIVE for a row that says active. The user watches an agent they just
 // unarchived go inactive again, with no error anywhere.
 //
-// LockAgent is the seam that makes this deterministic. The archive drain takes
-// it per agent, so holding it here parks A precisely mid-drain, with its flag
-// already committed. B must then WAIT. Without the per-tab lock B runs straight
-// through and answers with a resume id while A is still tearing that agent
-// down, which is the race in one step.
-func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
+// The archive must retain the shared per-tab lock while its process drain waits
+// for the agent lifecycle lock. Both archive states acquire that same lock before
+// writing flags, so its ownership keeps unarchive behind the complete drain.
+func TestWorkspaceArchive_HoldsTabLockThroughArchiveDrain(t *testing.T) {
 	t.Parallel()
-
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	const agentID = "archive-drain-race"
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Resumed: 1,
-	}))
-	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		AgentID: agentID, WorkingDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Resumed: 1}))
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}, newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
 	require.NoError(t, err)
-
 	tabs := []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
-
-	// Park the archive inside its drain, holding the agent's lifecycle lock.
-	releaseAgent := svc.Agents.LockAgent(agentID)
-	archiveDone := make(chan struct{})
-	go func() {
-		defer close(archiveDone)
-		_, archiveErr := svc.ApplyTabArchiveState(ctx,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, tabs)
-		assert.NoError(t, archiveErr)
-	}()
-
-	// The archive committed its flag and is now blocked in the drain.
-	testutil.AssertEventually(t, func() bool {
+	withHeldArchiveAgent(svc.Agents, agentID, func(releaseAgent func()) {
+		archiveDone := make(chan struct{})
+		go func() {
+			defer close(archiveDone)
+			_, archiveErr := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, testTabOwner, tabs)
+			assert.NoError(t, archiveErr)
+		}()
+		defer func() { releaseAgent(); <-archiveDone }()
+		testutil.AssertEventually(t, func() bool { return svc.Agents.LifecycleLockCallersForTest(agentID) == 2 }, "the archive must reach its process drain")
+		value, ok := svc.archiveTabLocks.Load("agent:" + agentID)
+		require.True(t, ok)
+		mutex := value.(*sync.Mutex)
+		acquired := mutex.TryLock()
+		if acquired {
+			mutex.Unlock()
+		}
+		require.False(t, acquired, "the archive must retain the shared tab lock throughout its drain")
 		row, rowErr := svc.Queries.GetAgentByID(ctx, agentID)
-		return rowErr == nil && row.WorkspaceArchived
-	}, "the archive commits its flag before it drains")
-
-	unarchiveDone := make(chan []string, 1)
-	go func() {
-		resumeIDs, unarchiveErr := svc.ApplyTabArchiveState(ctx,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
-		assert.NoError(t, unarchiveErr)
-		unarchiveDone <- resumeIDs
-	}()
-
-	select {
-	case <-unarchiveDone:
-		require.FailNow(t, "the unarchive answered while the archive was still draining that same tab; "+
-			"its resume would be stopped by the drain that is still running")
-	case <-time.After(150 * time.Millisecond):
-	}
-	row, err := svc.Queries.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	assert.True(t, row.WorkspaceArchived,
-		"the unarchive must not commit its flag while the archive still owns the tab")
-
-	// Let the drain finish; the unarchive then proceeds in full.
-	releaseAgent()
-	<-archiveDone
-	select {
-	case resumeIDs := <-unarchiveDone:
-		assert.Equal(t, []string{agentID}, resumeIDs,
-			"the unarchive that ran after the drain must offer the resume")
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "the unarchive never completed after the archive drain returned")
-	}
-	settled, err := svc.Queries.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	assert.False(t, settled.WorkspaceArchived)
-	assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
-	assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
+		require.NoError(t, rowErr)
+		assert.True(t, row.WorkspaceArchived)
+		releaseAgent()
+		<-archiveDone
+		resumeIDs, resumeErr := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, testTabOwner, tabs)
+		require.NoError(t, resumeErr)
+		assert.Equal(t, []string{agentID}, resumeIDs)
+		settled, settledErr := svc.Queries.GetAgentByID(ctx, agentID)
+		require.NoError(t, settledErr)
+		assert.False(t, settled.WorkspaceArchived)
+		assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
+		assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
+	})
 }
 
 // TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree pins that both
@@ -1066,4 +1030,38 @@ func TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, resumed.Paused,
 		"the unarchive left the child queue paused, so no later message reaches the child")
+}
+
+func withHeldArchiveAgent(manager *agent.Manager, id string, body func(release func())) {
+	release := sync.OnceFunc(manager.LockAgent(id))
+	defer release()
+	body(release)
+}
+
+func TestArchiveAgentLeaseReleasesAfterAFatalAssertion(t *testing.T) {
+	manager := agent.NewManager(testRegistry, nil)
+	recorder := &fatalAssertionRecorder{}
+	var release func()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		withHeldArchiveAgent(manager, "fatal-archive", func(held func()) {
+			release = held
+			require.FailNow(recorder, "forced assertion failure")
+		})
+	}()
+	<-done
+	callers := manager.LifecycleLockCallersForTest("fatal-archive")
+	release()
+	assert.Zero(t, callers, "a fatal assertion must release the lifecycle lease before fixture cleanup")
+	require.NotEmpty(t, recorder.messages)
+}
+
+func TestArchiveWatchUsesNotifyInterest(t *testing.T) {
+	svc, dispatcher, _ := setupTestService(t)
+	const id = "archive-notify-interest"
+	createAgentForPath(t, svc, id, t.TempDir())
+	writer := watchAgent(t, dispatcher, id)
+	waitAgentWatchCount(t, svc, id, 1)
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, svc.Watchers.AgentModesForChannel(writer.ChannelID())[id])
 }

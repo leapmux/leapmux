@@ -2,7 +2,9 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -50,6 +52,9 @@ type AuthURLOptions struct {
 	ForceReauthentication bool
 }
 
+// ErrRefreshTokenRejected means the provider definitively rejected the refresh token.
+var ErrRefreshTokenRejected = errors.New("the provider rejected the refresh token")
+
 // Provider defines the interface for OAuth/OIDC identity providers.
 type Provider interface {
 	// AuthURL returns the authorization URL to redirect the user to.
@@ -60,7 +65,8 @@ type Provider interface {
 	// Exchange trades an authorization code for tokens and user claims.
 	Exchange(ctx context.Context, code, codeVerifier string) (*TokenSet, *UserClaims, error)
 
-	// Refresh exchanges a refresh token for new tokens.
+	// Refresh exchanges a refresh token for new tokens. An error that wraps
+	// ErrRefreshTokenRejected means the stored credential must be deleted.
 	Refresh(ctx context.Context, refreshToken string) (*TokenSet, error)
 }
 
@@ -94,6 +100,11 @@ func refreshWithConfig(ctx context.Context, cfg *oauth2.Config, refreshToken, la
 	tokenSource := cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
 	token, err := tokenSource.Token()
 	if err != nil {
+		var refusal *oauth2.RetrieveError
+		if errors.As(err, &refusal) && refusal != nil && refusal.Response != nil &&
+			refusal.Response.StatusCode == http.StatusBadRequest && refusal.ErrorCode == "invalid_grant" {
+			return nil, fmt.Errorf("%s refresh: %w: %w", label, ErrRefreshTokenRejected, err)
+		}
 		return nil, fmt.Errorf("%s refresh: %w", label, err)
 	}
 

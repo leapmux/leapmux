@@ -73,9 +73,11 @@ var previousHubWait = revocationwatcher.DefaultLeaseDuration + 5*time.Second
 const previousHubProbeTimeout = 100 * time.Millisecond
 
 // addressHeld makes ONE dial and answers whether a Hub still holds the
-// address. A successful dial means a live listener; a dial that times out
-// means an address a predecessor holds but cannot answer from (mid-drain);
-// any other failure means the address is free.
+// address:
+//   - A successful dial means a live listener.
+//   - A dial that times out means a predecessor holds the address but cannot
+//     answer while it drains.
+//   - Any other failure means the address is free.
 func addressHeld(ctx context.Context, dial func(context.Context) (net.Conn, error)) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, previousHubProbeTimeout)
 	defer cancel()

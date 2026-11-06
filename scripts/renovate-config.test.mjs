@@ -14,6 +14,10 @@ await initializeRenovateLogger()
 
 const root = resolve(import.meta.dirname, '..')
 const scratch = scratchDirectories()
+// The native manager graph and preset planners are an integration workload.
+// Match the subprocess and enclosing budgets used by goExportData.test.mjs.
+const nativePresetSubprocessTimeout = 120_000
+const nativePresetTestTimeout = 180_000
 afterEach(scratch.cleanup)
 function fixtureDirectory(packageRules = []) {
   const dir = scratch.create('renovate-config')
@@ -52,7 +56,7 @@ describe('trusted Renovate configuration', () => {
   it('keeps repository groups authoritative after native global and repository preset resolution', () => {
     const directory = fixtureDirectory()
     const source = `
-      const root=process.argv[1];
+      const root=process.argv[1]; console.error('phase: importing native Renovate modules');
       const {pathToFileURL}=await import('node:url'); const {resolve}=await import('node:path');
       const engine=p=>import(pathToFileURL(resolve(root,'.github/renovate/node_modules/renovate/dist',p)).href);
       await (await engine('logger/index.js')).init();
@@ -60,19 +64,34 @@ describe('trusted Renovate configuration', () => {
       const {GlobalConfig}=await engine('config/global.js');
       const {mergeRenovateConfig}=await engine('workers/repository/init/merge.js');
       const {branchifyUpgrades}=await engine('workers/repository/updates/branchify.js');
+      console.error('phase: resolving global presets');
       const parsedGlobal=await parseConfigs({RENOVATE_CONFIG_FILE:resolve(root,'.github/renovate-config.cjs'),RENOVATE_DRY_RUN:'full'},['node','renovate']);
+      console.error('phase: resolving repository presets');
       const config=await mergeRenovateConfig({...GlobalConfig.set(parsedGlobal),repository:'leapmux/leapmux',errors:[],warnings:[]});
       const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,depType:'dependencies',currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
+      console.error('phase: grouping main updates');
       const {branches}=await branchifyUpgrades({...config,repoIsOnboarded:true},{bun:[{packageFile:'frontend/package.json',deps:[dep('@tauri-apps/api','https://github.com/tauri-apps/tauri'),dep('@xterm/xterm','https://github.com/xtermjs/xterm.js')]}],cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[dep('tauri','https://github.com/tauri-apps/tauri')]}]});
       // Branchify each gtk update alone: one branch keeps one update of a dependency, so a
       // shared run would hide a minor update behind the patch.
       const gtk={};
       for (const update of [{updateType:'patch',newValue:'0.18',newVersion:'0.18.3'},{updateType:'minor',newValue:'0.19',newVersion:'0.19.0'},{updateType:'major',newValue:'1.0',newVersion:'1.0.0'}]) {
+        console.error('phase: grouping gtk '+update.updateType);
         const result=await branchifyUpgrades({...config,repoIsOnboarded:true},{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[{depName:'gtk',packageName:'gtk',sourceUrl:'https://github.com/gtk-rs/gtk3-rs',depType:'dependencies',currentValue:'0.18',currentVersion:'0.18.2',updates:[update]}]}]});
         gtk[update.updateType]=result.branches.filter(branch=>!branch.isLockFileMaintenance).flatMap(branch=>branch.upgrades.map(upgrade=>branch.groupName+' '+upgrade.depName+' '+upgrade.newVersion));
       }
       console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,gtk,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group)),titles:branches.map(branch=>branch.prTitle)}));
     `
+    // Poison the inherited escape hatches so the native result also proves
+    // that another Renovate invocation cannot alter this fixture.
+    const inherited = {
+      ...process.env,
+      RENOVATE_X_STATIC_REPO_CONFIG_FILE: resolve(directory, 'inherited-config-must-not-be-read.json'),
+      LEAPMUX_TOOL_SHIMS: resolve(directory, 'inherited-shims-must-not-be-used'),
+    }
+    for (const key of Object.keys(inherited)) {
+      if (key.startsWith('RENOVATE_') || key === 'LEAPMUX_TOOL_SHIMS')
+        delete inherited[key]
+    }
     const result = spawnSync('node', [
       '--input-type=module',
       '-e',
@@ -80,14 +99,18 @@ describe('trusted Renovate configuration', () => {
       root,
     ], {
       encoding: 'utf8',
+      timeout: nativePresetSubprocessTimeout,
+      killSignal: 'SIGKILL',
       env: {
-        ...process.env,
+        ...inherited,
         RENOVATE_TRUSTED_ROOT: directory,
         LOG_LEVEL: 'fatal',
         LOG_FORMAT: 'json',
       },
     })
-    expect(result.status, result.stderr).toBe(0)
+    const diagnostics = JSON.stringify({ error: result.error?.message, signal: result.signal, stderr: result.stderr })
+    expect(result.error, diagnostics).toBeUndefined()
+    expect(result.status, diagnostics).toBe(0)
     const { titles, ...configuration } = JSON.parse(result.stdout)
     expect(configuration).toEqual({
       dryRun: 'full',
@@ -113,7 +136,7 @@ describe('trusted Renovate configuration', () => {
       expect(title).toMatch(/^chore\(deps\): Update /)
       expect(title.length).toBeLessThan(72)
     }
-  })
+  }, nativePresetTestTimeout)
   it('passes dry-run flags and no schedule override to the actual Task command', () => {
     const directory = scratch.create('renovate-task-env')
     mkdirSync(resolve(directory, 'scripts'))

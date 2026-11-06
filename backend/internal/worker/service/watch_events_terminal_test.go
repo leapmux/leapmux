@@ -330,7 +330,7 @@ func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
 		{
 			name: "a startup in flight states its phase message",
 			setup: func(t *testing.T, svc *Service, id string) db.Terminal {
-				require.NotNil(t, svc.TerminalStartup.begin(id, func() {}))
+				beginForTest(t, &svc.TerminalStartup.startupCore, id)
 				svc.TerminalStartup.setMessage(id, "Starting zsh…")
 				return db.Terminal{ID: id}
 			},
@@ -340,7 +340,7 @@ func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
 		{
 			name: "a failed startup states the error from the registry",
 			setup: func(t *testing.T, svc *Service, id string) db.Terminal {
-				handle := svc.TerminalStartup.begin(id, func() {})
+				handle := beginForTest(t, &svc.TerminalStartup.startupCore, id)
 				require.NotNil(t, handle)
 				svc.TerminalStartup.setMessage(id, "Starting zsh…")
 				svc.TerminalStartup.fail(handle, "spawn failed")

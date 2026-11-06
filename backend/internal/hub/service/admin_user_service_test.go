@@ -32,7 +32,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/util/drain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -199,7 +198,7 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	sender := &mailSenderDouble{}
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, newAdminUserService(service.AdminUserServiceDeps{
-		Store: st, Validator: tv, Lifecycle: lifecycle, Mail: sender,
+		Store: st, Validator: tv, Lifecycle: lifecycle, Notices: service.NewCredentialNotices(sender, mail.Renderer{}),
 	}))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
@@ -254,14 +253,14 @@ func (e *adminUserEnv) elevateAdminSession(t *testing.T) {
 	hubtestutil.ElevateSession(t, e.st, e.token, e.adminID)
 }
 
-func TestNewAdminUserServiceRequiresTheNoticeCounter(t *testing.T) {
+func TestNewAdminUserServiceRequiresCredentialNotices(t *testing.T) {
 	t.Parallel()
 
-	assert.PanicsWithValue(t, "admin user service requires the credential notice counter", func() {
+	assert.PanicsWithValue(t, "admin user service requires credential notices", func() {
 		service.NewAdminUserService(service.AdminUserServiceDeps{})
 	})
 	assert.NotPanics(t, func() {
-		service.NewAdminUserService(service.AdminUserServiceDeps{Notices: &drain.Counter{}})
+		service.NewAdminUserService(service.AdminUserServiceDeps{Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
 	})
 }
 

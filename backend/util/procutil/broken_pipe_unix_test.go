@@ -67,8 +67,8 @@ func TestHelperBrokenPipeProcess(t *testing.T) {
 }
 
 // spawnBrokenPipeGrandchild runs a shell whose stdout is a pipe with no
-// reader. echo writes a few bytes, far below the pipe buffer's size, so the
-// shell survives only while its SIGPIPE disposition is the default one.
+// reader. Default SIGPIPE terminates the shell. Ignoring the signal instead
+// makes the shell handle EPIPE from its failed writes.
 func spawnBrokenPipeGrandchild(t *testing.T) {
 	t.Helper()
 	pr, pw, err := os.Pipe()
@@ -90,7 +90,9 @@ func spawnBrokenPipeGrandchild(t *testing.T) {
 		}
 	}
 	if marker := os.Getenv(brokenPipeMarker); marker != "" {
-		_ = os.WriteFile(marker, []byte(outcome+"\n"), 0o600)
+		if err := os.WriteFile(marker, []byte(outcome+"\n"), 0o600); err != nil {
+			os.Exit(3)
+		}
 	}
 	os.Exit(0)
 }
@@ -148,28 +150,28 @@ func TestBrokenPipeKillsAProcessThatDidNotOptIn(t *testing.T) {
 	assert.True(t, signaled, "the helper must die by SIGPIPE")
 }
 
-func TestKeepRunningOnBrokenPipeSurvivesALostStderr(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "marker")
-	cmd, pr := startBrokenPipeHelper(t, "stderr", brokenPipeOptIn+"=1", brokenPipeMarker+"="+marker)
-
-	err, signaled := waitBrokenPipeHelper(t, cmd, pr)
-	require.NoError(t, err, "the helper must exit 0 after the write failed")
-	assert.False(t, signaled)
-	contents, readErr := os.ReadFile(marker)
-	require.NoError(t, readErr, "the helper must write its marker after surviving")
-	assert.Equal(t, "survived\n", string(contents))
+func TestKeepRunningOnBrokenPipeSurvivesLostOutput(t *testing.T) {
+	for _, target := range []string{"stderr", "stdout"} {
+		t.Run(target, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "marker")
+			cmd, pr := startBrokenPipeHelper(t, target, brokenPipeOptIn+"=1", brokenPipeMarker+"="+marker)
+			err, signaled := waitBrokenPipeHelper(t, cmd, pr)
+			require.NoError(t, err, "the helper must exit 0 after the write failed")
+			assert.False(t, signaled)
+			contents, readErr := os.ReadFile(marker)
+			require.NoError(t, readErr, "the helper must write its marker after surviving")
+			assert.Equal(t, "survived\n", string(contents))
+		})
+	}
 }
 
-func TestKeepRunningOnBrokenPipeSurvivesALostStdout(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "marker")
-	cmd, pr := startBrokenPipeHelper(t, "stdout", brokenPipeOptIn+"=1", brokenPipeMarker+"="+marker)
-
+func TestBrokenPipeChildReportsMarkerWriteFailure(t *testing.T) {
+	cmd, pr := startBrokenPipeHelper(t, "stderr", brokenPipeOptIn+"=1", brokenPipeSpawn+"=1", brokenPipeMarker+"="+t.TempDir())
 	err, signaled := waitBrokenPipeHelper(t, cmd, pr)
-	require.NoError(t, err, "the helper must exit 0 after the write failed")
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, 3, exitErr.ExitCode(), "a failed marker write must not report successful helper completion")
 	assert.False(t, signaled)
-	contents, readErr := os.ReadFile(marker)
-	require.NoError(t, readErr, "the helper must write its marker after surviving")
-	assert.Equal(t, "survived\n", string(contents))
 }
 
 // A Go-installed SIGPIPE handler resets to the default disposition across
@@ -180,7 +182,7 @@ func TestKeepRunningOnBrokenPipeLeavesChildrenTheDefault(t *testing.T) {
 	cmd, pr := startBrokenPipeHelper(t, "stderr", brokenPipeOptIn+"=1", brokenPipeSpawn+"=1", brokenPipeMarker+"="+marker)
 
 	err, signaled := waitBrokenPipeHelper(t, cmd, pr)
-	require.NoError(t, err, "the helper must exit 0 after its own write failed")
+	require.NoError(t, err, "the helper must report its child's signal status successfully")
 	assert.False(t, signaled)
 	contents, readErr := os.ReadFile(marker)
 	require.NoError(t, readErr)

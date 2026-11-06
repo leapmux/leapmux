@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -443,63 +442,112 @@ func TestRegistryGetRefusedAfterShutdown(t *testing.T) {
 // the store close with nothing stopping it.
 func TestRegistryGetDuringShutdownDiscardsTheManager(t *testing.T) {
 	release := make(chan struct{})
-	var factories atomic.Int32
+	releaseFactory := sync.OnceFunc(func() { close(release) })
+	entered := make(chan *crdt.Manager, 1)
 	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
-		if factories.Add(1) == 1 {
-			// Park the FIRST factory across Shutdown's latch.
-			<-release
-		}
-		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
-	}, nil)
-	var releaseOnce sync.Once
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(release) })
-		registry.Shutdown(time.Second)
-	})
-
+		m := crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now, crdt.WithPresenceClearGrace(time.Hour))
+		m.PreparePendingPresenceClearForTest()
+		entered <- m
+		<-release
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
 	var getErr error
 	getDone := make(chan struct{})
 	go func() {
 		defer close(getDone)
-		_, getErr = registry.Get(context.Background(), registryUserID(99).String())
+		_, getErr = registry.Get(t.Context(), registryUserID(99).String())
 	}()
+	var created *crdt.Manager
+	t.Cleanup(func() {
+		releaseFactory()
+		<-getDone
+		registry.Shutdown(time.Second)
+		if created != nil {
+			created.Discard()
+		}
+	})
+	select {
+	case created = <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Get never entered its factory")
+	}
+	require.Equal(t, 1, created.PendingPresenceClearsForTest())
 	registry.Shutdown(time.Second)
-	releaseOnce.Do(func() { close(release) })
+	releaseFactory()
 	<-getDone
-
-	assert.ErrorIs(t, getErr, crdt.ErrRegistryClosed,
-		"a Get that lost the race to Shutdown's latch must be refused")
+	assert.ErrorIs(t, getErr, crdt.ErrRegistryClosed, "Get must not install a manager after shutdown")
+	require.Eventually(t, func() bool { return created.PendingPresenceClearsForTest() == 0 }, 30*time.Second, time.Millisecond,
+		"the rejected manager must complete its own presence teardown")
 }
 
-// Two concurrent Gets for one user race for the map slot. The loser's manager
-// is discarded with Discard, which closes the stop channel without waiting on
-// m.done: a duplicate whose Start never ran has a done that nothing closes,
-// so a Stop there would park the losing goroutine for ever. The goroutine
-// count is what observes the park: after the race settles, every racer has
-// returned, so only the winner's manager goroutine may remain.
+// Concurrent factories build distinct managers for one user. Every Get returns
+// the winner, and each unstarted loser must discard its pending presence timer.
 func TestRegistryGetRaceDiscardsTheDuplicate(t *testing.T) {
-	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
-		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
-	}, nil)
-	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
-
-	// Settle the runloop first, so the baseline holds no parked racers.
-	time.Sleep(50 * time.Millisecond)
-	baseline := runtime.NumGoroutine()
-
 	const n = 8
-	var wg sync.WaitGroup
-	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = registry.Get(context.Background(), registryUserID(7).String())
-		}()
+	release := make(chan struct{})
+	releaseFactories := sync.OnceFunc(func() { close(release) })
+	entered := make(chan *crdt.Manager, n)
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now, crdt.WithPresenceClearGrace(time.Hour))
+		m.PreparePendingPresenceClearForTest()
+		entered <- m
+		<-release
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
+	type result struct {
+		manager *crdt.Manager
+		err     error
 	}
-	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
-	assert.LessOrEqual(t, after, baseline+2,
-		"the race must leave no goroutine parked behind a discarded manager: %d before, %d after", baseline, after)
+	results := make(chan result, n)
+	var racers sync.WaitGroup
+	for range n {
+		racers.Go(func() {
+			m, err := registry.Get(t.Context(), registryUserID(7).String())
+			results <- result{m, err}
+		})
+	}
+	created := make([]*crdt.Manager, 0, n)
+	t.Cleanup(func() {
+		releaseFactories()
+		racers.Wait()
+		registry.Shutdown(5 * time.Second)
+		for _, m := range created {
+			m.Discard()
+		}
+	})
+	for range n {
+		select {
+		case m := <-entered:
+			require.Equal(t, 1, m.PendingPresenceClearsForTest())
+			created = append(created, m)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the concurrent Gets did not all enter distinct factories")
+		}
+	}
+	releaseFactories()
+	var winner *crdt.Manager
+	for range n {
+		select {
+		case got := <-results:
+			require.NoError(t, got.err)
+			require.NotNil(t, got.manager)
+			if winner == nil {
+				winner = got.manager
+			}
+			assert.Same(t, winner, got.manager)
+		case <-time.After(30 * time.Second):
+			t.Fatal("Get did not return after its factory was released")
+		}
+	}
+	racers.Wait()
+	losers := 0
+	for _, m := range created {
+		if m == winner {
+			continue
+		}
+		losers++
+		require.Eventually(t, func() bool { return m.PendingPresenceClearsForTest() == 0 }, 30*time.Second, time.Millisecond,
+			"each unstarted loser must complete its own presence teardown")
+	}
+	assert.Equal(t, n-1, losers)
 }

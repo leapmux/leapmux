@@ -91,7 +91,7 @@ func TestGenerationProgressPublisherStampsATailWithTheSessionOfItsCapture(t *tes
 	var mu sync.Mutex
 	current := "session-1"
 	updates := make(chan map[string]interface{}, 2)
-	publisher := newGenerationProgressPublisher(func(info map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
 		updates <- info
 	}, func() string {
 		mu.Lock()
@@ -125,7 +125,7 @@ func TestGenerationProgressPublisherReplacesATailLeftByAnEndedSession(t *testing
 	var mu sync.Mutex
 	current := "session-1"
 	updates := make(chan map[string]interface{}, 2)
-	publisher := newGenerationProgressPublisher(func(info map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
 		updates <- info
 	}, func() string {
 		mu.Lock()
@@ -151,7 +151,7 @@ func TestGenerationProgressPublisherReplacesATailLeftByAnEndedSession(t *testing
 func TestGenerationProgressPublisherDropTailAcceptsAnUnknownSpan(t *testing.T) {
 	t.Parallel()
 
-	publisher := newGenerationProgressPublisher(func(map[string]interface{}) {}, func() string { return "session-1" })
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return "session-1" })
 	t.Cleanup(publisher.close)
 
 	assert.NotPanics(t, func() { publisher.dropTail("never-seen") })

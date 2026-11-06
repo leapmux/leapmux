@@ -684,6 +684,14 @@ func (s *WorkerConnectorService) Connect(
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
 	if s.notifier != nil && current.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
 		notifyDone = make(chan struct{})
+		// Delivery owns a detached MarkDeleted write after acknowledgement.
+		// Every return joins it before unregistering, so store shutdown cannot
+		// leave the worker's local registration gone and its Hub row pending.
+		// Cancel first to release SendAndWait when no acknowledgement arrived.
+		defer func() {
+			cancelConn()
+			<-notifyDone
+		}()
 		go func() {
 			defer close(notifyDone)
 			s.notifier.DeliverOnConnect(ctx, current, conn)
@@ -787,16 +795,9 @@ func (s *WorkerConnectorService) Connect(
 			// connCtx ends either because the stream's own request context
 			// ended (hub shutdown, transport close) or because this conn was
 			// fenced or replaced — the request context is the tell between
-			// them. A pending DEREGISTER delivery is joined first: deliver
-			// runs MarkDeleted under a detached context, and a hub that
-			// closed its store first would leave the worker having deleted
-			// its own state while its row stays deregistering until the
-			// 7-day sweep. deliver ends by itself -- SendAndWait honours the
-			// cancelled context and MarkDeleted has apiTimeout -- and
-			// httpDrainTimeout limits this handler beyond it.
-			if notifyDone != nil {
-				<-notifyDone
-			}
+			// them. The deferred delivery join covers this and every other
+			// return path. SendAndWait observes connection cancellation,
+			// while an acknowledged deletion keeps its own API deadline.
 			if reqCtx.Err() != nil {
 				exitReason = "request context ended (hub shutdown or transport closed)"
 			} else {

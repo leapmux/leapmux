@@ -20,6 +20,8 @@ import (
 
 var errAuthorizationGrantUnavailable = errors.New("authorization grant unavailable")
 
+var errAuthorizationCodeUnavailable = fmt.Errorf("authorization code unavailable: %w", errAuthorizationGrantUnavailable)
+
 // --- /oauth/token ---
 
 // handleToken is the ONE token endpoint. It serves all three grant types, and
@@ -275,22 +277,17 @@ func (h *OAuthServerHandler) handleTokenAuthorizationCode(w http.ResponseWriter,
 		consume: func(tx store.Store) error {
 			if _, err := tx.OAuthAuthorizationCodes().Consume(r.Context(), code, h.now().UTC()); err != nil {
 				if errors.Is(err, store.ErrNotFound) {
-					return errAuthorizationGrantUnavailable
+					return errAuthorizationCodeUnavailable
 				}
 				return fmt.Errorf("consume authorization code: %w", err)
 			}
 			return nil
 		},
-		afterCommit: func(ctx context.Context, tokenID string) {
-			// Stamped AFTER the mint, so a replay can identify what to revoke.
-			// A failure here is logged and not fatal: the credential is
-			// already live, and refusing to return it would be worse than
-			// losing the ability to auto-revoke on a replay that may never
-			// happen.
-			if err := h.store.OAuthAuthorizationCodes().MarkMinted(ctx, code, tokenID); err != nil {
-				slog.ErrorContext(ctx, "could not record which credential an authorization code minted",
-					"code_id", code, "token_id", tokenID, "err", err)
+		recordMint: func(tx store.Store, tokenID string) error {
+			if err := tx.OAuthAuthorizationCodes().MarkMinted(r.Context(), code, tokenID); err != nil {
+				return fmt.Errorf("record authorization code credential: %w", err)
 			}
+			return nil
 		},
 	})
 }
@@ -350,8 +347,9 @@ type consentedGrant struct {
 	internalMsg     string
 	// consume spends the grant inside the mint's transaction.
 	consume func(tx store.Store) error
-	// afterCommit runs once the credential exists, with its id. Optional.
-	afterCommit func(ctx context.Context, tokenID string)
+	// recordMint links the credential inside the transaction that consumes the grant.
+	// Device grants need no replay link and leave this callback nil.
+	recordMint func(tx store.Store, tokenID string) error
 }
 
 // issueTokenResponse mints an app credential for an already-validated OAuth
@@ -363,6 +361,11 @@ type consentedGrant struct {
 func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.Request, grant consentedGrant) {
 	resp, user, reachable, err := h.issueAPIToken(r.Context(), grant)
 	if err != nil {
+		if errors.Is(err, errAuthorizationCodeUnavailable) {
+			// The failed transaction has unwound. The winner committed its token and
+			// replay link together, so every validated reuse can identify that token.
+			h.revokeReplayedCode(r.Context(), grant.id, grant.app)
+		}
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", grant.invalidGrantMsg)
 		} else {
@@ -370,17 +373,9 @@ func (h *OAuthServerHandler) issueTokenResponse(w http.ResponseWriter, r *http.R
 		}
 		return
 	}
-	if grant.afterCommit != nil {
-		// Detached from the request's context, for the same reason the
-		// refresh stage detaches its work: a client that disconnects in the
-		// window between the commit and this update must not lose the
-		// replay-revocation link -- the credential is live, and a later
-		// replay of the code relies on MarkMinted to identify what to
-		// revoke.
-		grant.afterCommit(h.servingCtx, resp.TokenID)
-	}
+
 	// After the commit and before the response, so the notice cannot be the
-	// reason a minted token is never delivered. See notifyCredentialIssued.
+	// reason a minted token is never delivered. See CredentialNotices.Notify.
 	h.notifyTokenIssued(r.Context(), user, grant, reachable.SortedTokens())
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -760,6 +755,11 @@ func (h *OAuthServerHandler) issueAPIToken(
 		if err := tx.APITokens().Create(ctx, minted.Params); err != nil {
 			return fmt.Errorf("create api token: %w", err)
 		}
+		if grant.recordMint != nil {
+			if err := grant.recordMint(tx, minted.TokenID); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -778,18 +778,18 @@ func (h *OAuthServerHandler) issueAPIToken(
 	}, user, reachable, nil
 }
 
-// notifyTokenIssued supplies this handler's mailer to the shared notice. See
-// notifyCredentialIssued, which both mint surfaces call.
+// notifyTokenIssued supplies the grant to the shared notice owner. See
+// CredentialNotices.Notify, which both mint surfaces call.
 //
 // The notice lists the REACHABLE grant the mint already computed, so the
 // recipient reads the same permission list the response's `scope` states: the
 // two are one value, not two derivations that can drift.
 func (h *OAuthServerHandler) notifyTokenIssued(ctx context.Context, user *store.User, grant consentedGrant, scopes []string) {
 	// The owner performed this consent in their own browser.
-	notifyCredentialIssued(ctx, h.mail, h.renderer, user, credentialNotice{
+	h.notices.Notify(ctx, user, credentialNotice{
 		AppName:          grant.app.ClientName,
 		InstallationName: grant.installationName,
 		Scopes:           scopes,
 		IssuedByAdmin:    false,
-	}, h.notices)
+	})
 }

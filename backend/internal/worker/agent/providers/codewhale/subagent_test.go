@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
@@ -27,10 +29,294 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const testChildID = "agent_34dcb3be"
+
+type finalizationServices struct {
+	agent.ProviderServices
+	reportBlocked atomic.Bool
+	closeBlocked  atomic.Bool
+	cleanups      atomic.Int32
+}
+
+func (s *finalizationServices) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+	if s.reportBlocked.Load() {
+		return false, errors.New("the report write failed")
+	}
+	return s.ProviderServices.PersistSubagentReport(write)
+}
+
+func (s *finalizationServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if s.reportBlocked.Load() {
+		return false, errors.New("the report write failed")
+	}
+	return s.ProviderServices.PersistNotification(source, content)
+}
+
+func (s *finalizationServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if s.closeBlocked.Load() {
+		return errors.New("the task close failed")
+	}
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+func (s *finalizationServices) CleanupChildAgent(childID string) {
+	s.cleanups.Add(1)
+	s.ProviderServices.CleanupChildAgent(childID)
+}
+
+func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
+	for _, completion := range []string{"watcher", "parent wait"} {
+		for _, failure := range []string{"report", "close", "preceding output"} {
+			t.Run(completion+"/"+failure, func(t *testing.T) {
+				t.Parallel()
+				services := &finalizationServices{}
+				a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+					services.ProviderServices = inner
+					return services
+				}})
+				child := &codewhaleChild{
+					agentID: testChildID, childID: "retained-child", title: "counter", answer: "The retained report.",
+					path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
+				}
+				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+					RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+				}))
+				require.True(t, a.children.start(child, func(ctx context.Context, _ *codewhaleChild) { <-ctx.Done() }))
+				services.reportBlocked.Store(failure == "report")
+				services.closeBlocked.Store(failure == "close")
+				var precedingBlocked atomic.Bool
+				if failure == "preceding output" {
+					precedingBlocked.Store(true)
+					agent.OutputQueueFor(a.sink).Append(agent.OutputWrite{Label: "preceding output", Run: func() error {
+						if precedingBlocked.Load() {
+							return errors.New("the preceding write failed")
+						}
+						return nil
+					}})
+				}
+				if completion == "watcher" {
+					line := transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": child.answer})
+					a.persistChildRecord(a.sink.ChildSink(child.childID), child, []byte(line))
+				} else {
+					a.settleChild(child.agentID, bgtask.StatusSucceeded)
+				}
+				task, found := sink.BackgroundTask(child.agentID)
+				require.True(t, found)
+				assert.Equal(t, bgtask.StatusRunning, task.Status, "a failed dependency must keep the task open")
+				assert.Zero(t, services.cleanups.Load(), "cleanup must wait for the report and close writes")
+				services.reportBlocked.Store(false)
+				services.closeBlocked.Store(false)
+				precedingBlocked.Store(false)
+				require.NoError(t, agent.FlushPendingOutput(a.sink))
+				task, found = sink.BackgroundTask(child.agentID)
+				require.True(t, found)
+				assert.Equal(t, bgtask.StatusSucceeded, task.Status)
+				reports := sink.LeapMuxNotifications()
+				require.Len(t, reports, 1)
+				assert.Equal(t, child.answer, reports[0][contracts.NotificationFieldText])
+				assert.Equal(t, int32(1), services.cleanups.Load())
+				require.NoError(t, agent.FlushPendingOutput(a.sink))
+				assert.Len(t, sink.LeapMuxNotifications(), 1)
+				assert.Equal(t, int32(1), services.cleanups.Load(), "another flush must not repeat cleanup")
+			})
+		}
+	}
+}
+
+func TestChildFinalizationHandlesEmptyAndDuplicateReports(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		summary   string
+		duplicate bool
+	}{
+		{name: "empty"},
+		{name: "whitespace", summary: " \t\n"},
+		{name: "new report", summary: "The retained report."},
+		{name: "existing report", summary: "The retained report.", duplicate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			services := &finalizationServices{}
+			a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+				services.ProviderServices = inner
+				return services
+			}})
+			child := &codewhaleChild{agentID: testChildID, childID: "completed-child", title: "counter"}
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+			}))
+			if tc.duplicate {
+				stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{
+					ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, tc.summary),
+					Report:   agent.SubagentReport{Label: child.title, Text: tc.summary, Status: bgtask.StatusWire(bgtask.StatusSucceeded)},
+				})
+				require.NoError(t, err)
+				require.True(t, stored)
+			}
+			a.finishChild(a.sink.ChildSink(child.childID), child, bgtask.StatusSucceeded, tc.summary)
+			require.NoError(t, agent.FlushPendingOutput(a.sink))
+			task, found := sink.BackgroundTask(child.agentID)
+			require.True(t, found)
+			assert.Equal(t, bgtask.StatusSucceeded, task.Status)
+			assert.Equal(t, int32(1), services.cleanups.Load())
+			reportCount := 0
+			if strings.TrimSpace(tc.summary) != "" {
+				reportCount = 1
+			}
+			assert.Len(t, sink.LeapMuxNotifications(), reportCount)
+			assert.False(t, agent.OutputQueueFor(a.sink).HasPending())
+		})
+	}
+}
+
+func TestChildrenStopJoinsAcceptedWatcher(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		childWatcher bool
+	}{{name: "shared watcher"}, {name: "child watcher", childWatcher: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				children := newCodewhaleChildren(context.Background())
+				originalCancel := children.cancel
+				var cancellationLocked atomic.Bool
+				children.cancel = func() {
+					unlocked := children.mu.TryLock()
+					if unlocked {
+						children.mu.Unlock()
+					}
+					cancellationLocked.Store(!unlocked)
+					originalCancel()
+				}
+				entered := make(chan struct{})
+				released := make(chan struct{})
+				release := sync.OnceFunc(func() { close(released) })
+				defer children.stopAll()
+				defer release()
+				watch := func(context.Context) {
+					close(entered)
+					<-released
+				}
+				if tc.childWatcher {
+					require.True(t, children.start(&codewhaleChild{agentID: "admitted-child"}, func(ctx context.Context, _ *codewhaleChild) { watch(ctx) }))
+				} else {
+					require.True(t, children.run(watch))
+				}
+				<-entered
+				stopped := make(chan struct{})
+				go func() {
+					children.stopAll()
+					close(stopped)
+				}()
+				// A mutex wait is not durably blocking in synctest. Check
+				// cancellation's lock ownership directly; only the watcher and
+				// wait-group join remain blocked at this scheduler barrier.
+				synctest.Wait()
+				assert.True(t, cancellationLocked.Load(), "cancellation must serialize with watcher admission")
+				select {
+				case <-stopped:
+					t.Error("stopAll returned while an admitted watcher was still running")
+				default:
+				}
+				release()
+				<-stopped
+			})
+		})
+	}
+}
+
+type settlementServices struct {
+	agent.ProviderServices
+	writeEntered chan struct{}
+	writeRelease chan struct{}
+	rowClosed    chan struct{}
+	writeOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func (s *settlementServices) ChildSink(childID string) agent.ProviderServices {
+	return &settlementChildServices{ProviderServices: s.ProviderServices.ChildSink(childID), owner: s}
+}
+
+func (s *settlementServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.closeOnce.Do(func() { close(s.rowClosed) })
+	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
+}
+
+type settlementChildServices struct {
+	agent.ProviderServices
+	owner *settlementServices
+}
+
+func (s *settlementChildServices) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	s.owner.writeOnce.Do(func() {
+		close(s.owner.writeEntered)
+		<-s.owner.writeRelease
+	})
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func TestSettleChildJoinsTranscriptWatcher(t *testing.T) {
+	t.Parallel()
+	services := &settlementServices{
+		writeEntered: make(chan struct{}), writeRelease: make(chan struct{}), rowClosed: make(chan struct{}),
+	}
+	release := sync.OnceFunc(func() { close(services.writeRelease) })
+	defer release()
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		services.ProviderServices = inner
+		return services
+	}})
+	child := &codewhaleChild{
+		agentID: testChildID, childID: "settled-child", title: "counter",
+		path: filepath.Join(t.TempDir(), "child.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
+	}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+	}))
+	appendTranscript(t, child.path, transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": "The settled answer."}))
+	watchContext := make(chan context.Context, 1)
+	require.True(t, a.children.start(child, func(ctx context.Context, child *codewhaleChild) {
+		watchContext <- ctx
+		a.watchChild(ctx, child)
+	}))
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-services.writeEntered:
+	case <-ctx.Done():
+		t.Fatal("the watcher never reached transcript persistence")
+	}
+	watchCtx := <-watchContext
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		a.settleChild(testChildID, bgtask.StatusSucceeded)
+	}()
+	defer func() {
+		release()
+		<-settled
+	}()
+	select {
+	case <-watchCtx.Done():
+	case <-services.rowClosed:
+	case <-ctx.Done():
+		t.Fatal("settlement neither cancelled the watcher nor closed the row")
+	}
+	release()
+	select {
+	case <-settled:
+	case <-ctx.Done():
+		t.Fatal("settlement did not finish after transcript persistence resumed")
+	}
+	a.children.stopAll()
+	reports := sink.LeapMuxNotifications()
+	require.Len(t, reports, 1, "settlement must retain the answer being persisted by its watcher")
+	assert.Equal(t, "The settled answer.", reports[0][contracts.NotificationFieldText])
+	assert.Len(t, sink.Child(child.childID).Messages(), 1, "the transcript record must persist once")
+}
 
 var agentStartInput = map[string]any{"action": "start", "prompt": "Count the files.\nThen report.", "type": "explore", "name": "counter"}
 
@@ -227,9 +513,9 @@ type childEndServices struct {
 	writes *[]string
 }
 
-func (s childEndServices) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
+func (s childEndServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
 	*s.writes = append(*s.writes, "report")
-	return s.ProviderServices.PersistSubagentReport(write)
+	return s.ProviderServices.PersistNotification(source, content)
 }
 
 func (s childEndServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
@@ -243,14 +529,21 @@ func (s childEndServices) CloseBackgroundTask(rowKey string, status bgtask.Statu
 func TestFinishChildWritesTheReportBeforeItClosesTheRow(t *testing.T) {
 	t.Parallel()
 	var writes []string
-	a, _ := newTestAgentWith(t, nil, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
 		return childEndServices{ProviderServices: services, writes: &writes}
 	}})
 	child := &codewhaleChild{agentID: testChildID, childID: "child-of-call_spawn", title: "counter"}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
+	}))
 
 	a.finishChild(a.sink.ChildSink(child.childID), child, bgtask.StatusSucceeded, "There are 3 files.")
 
 	assert.Equal(t, []string{"report", "close"}, writes)
+	assert.Len(t, sink.LeapMuxNotifications(), 1)
+	task, found := sink.BackgroundTask(child.agentID)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 }
 
 // The runtime can identify a started child in result text, metadata, or both.

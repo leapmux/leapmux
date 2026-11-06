@@ -54,6 +54,11 @@ func startWiringHub(t *testing.T, opts ...ServerOption) *wiringHub {
 	api := httptest.NewServer(srv.server.Handler)
 	t.Cleanup(api.Close)
 
+	return newWiringIdentity(t, srv, api.URL)
+}
+
+func newWiringIdentity(t *testing.T, srv *Server, serverURL string) *wiringHub {
+	t.Helper()
 	ctx := context.Background()
 	hash, err := password.Hash(wiringAdminPassword)
 	require.NoError(t, err)
@@ -71,7 +76,7 @@ func startWiringHub(t *testing.T, opts ...ServerOption) *wiringHub {
 	session, _, _, err := auth.Login(ctx, srv.store, wiringAdminName, wiringAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	hubtestutil.ElevateSession(t, srv.store, session, admin.ID)
-	return &wiringHub{srv: srv, url: api.URL, adminID: admin.ID, session: session}
+	return &wiringHub{srv: srv, url: serverURL, adminID: admin.ID, session: session}
 }
 
 // storedToken writes an API token and returns its bearer and refresh strings.
@@ -214,8 +219,7 @@ func (s *parkedMailSender) Send(context.Context, mail.Message) error {
 	return nil
 }
 
-// Serve joins the notices through one counter, and two surfaces mint. A surface
-// that NewServer gave no counter would send past the store close unjoined.
+// Both mint surfaces must use the notice owner that Serve joins before store close.
 func TestNewServerCountsTheNoticesOfBothMintSurfaces(t *testing.T) {
 	sender := &parkedMailSender{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	hub := startWiringHub(t, withMailSender(sender))

@@ -19,7 +19,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
@@ -36,7 +35,7 @@ import (
 
 type closeTabFixture struct {
 	svc   *Service
-	d     *channel.Dispatcher
+	d     testRPCDispatcher
 	w     *testResponseWriter
 	wtDir string
 	wtID  string

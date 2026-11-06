@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -52,6 +52,24 @@ func startFakeHub(t *testing.T, connector *fakeConnector) string {
 	httpServer.Start()
 	t.Cleanup(httpServer.Close)
 	return httpServer.URL
+}
+
+// startReceivingHub reports every received frame without blocking the stream.
+func startReceivingHub(t *testing.T) (string, <-chan struct{}) {
+	t.Helper()
+	connected := make(chan struct{}, 1)
+	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
+		for {
+			if _, err := stream.Receive(); err != nil {
+				return ctx.Err()
+			}
+			select {
+			case connected <- struct{}{}:
+			default:
+			}
+		}
+	}})
+	return hubURL, connected
 }
 
 // startRefusingHub answers every Connect with a refusal for good.
@@ -112,108 +130,59 @@ func TestRunWorkerKeepsTheStateAndAdvisesWhenTheHubRefusesItsKeys(t *testing.T) 
 	assert.NoError(t, statErr, "a key refusal must keep the worker's state")
 }
 
-// A signal ends a connected Worker with a clean exit, after its shutdown ran.
-// The child is the real entry point, because the signal must reach the process.
-func TestWorkerExitsCleanlyOnASignal(t *testing.T) {
-	t.Parallel()
+// Each supported shutdown signal drains a connected Worker before exit.
+func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal cannot send SIGTERM on Windows")
+		t.Skip("POSIX process signals are unavailable on Windows")
 	}
-	ctx := testutil.DeadlineContext(t)
-	connected := make(chan struct{}, 1)
-	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-		for {
-			if _, err := stream.Receive(); err != nil {
-				return ctx.Err()
-			}
+	for _, tc := range []struct {
+		name   string
+		signal os.Signal
+	}{{name: "sigterm", signal: syscall.SIGTERM}, {name: "sighup", signal: syscall.SIGHUP}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			hubURL, connected := startReceivingHub(t)
+			cfg := writeRegisteredState(t)
+
+			cmd := exec.Command(os.Args[0], "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
+			cmd.Env = append(os.Environ(), runMainEnv+"=1")
+			var output testutil.LogBuffer
+			cmd.Stdout, cmd.Stderr = &output, &output
+			require.NoError(t, cmd.Start())
+			exited := make(chan error, 1)
+			reaped := make(chan struct{})
+			go func() {
+				exited <- cmd.Wait()
+				close(reaped)
+			}()
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				<-reaped
+			})
+
 			select {
-			case connected <- struct{}{}:
-			default:
+			case <-connected:
+			case err := <-exited:
+				require.FailNow(t, "the worker exited before it connected", "%v\n%s", err, output.String())
+			case <-ctx.Done():
+				require.FailNow(t, "the worker did not connect", "%s", output.String())
 			}
-		}
-	}})
-	cfg := writeRegisteredState(t)
 
-	cmd := exec.Command(os.Args[0], "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
-	cmd.Env = append(os.Environ(), runMainEnv+"=1")
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
-	require.NoError(t, cmd.Start())
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-
-	select {
-	case <-connected:
-	case err := <-exited:
-		require.FailNow(t, "the worker exited before it connected", "%v\n%s", err, output.String())
-	case <-ctx.Done():
-		require.FailNow(t, "the worker did not connect", "%s", output.String())
-	}
-
-	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
-	select {
-	case err := <-exited:
-		require.NoError(t, err, "%s", output.String())
-	case <-ctx.Done():
-		require.FailNow(t, "the worker did not exit after the signal", "%s", output.String())
-	}
-	assert.Contains(t, output.String(), "shutdown signal received")
-	assert.Contains(t, output.String(), "worker state drained", "the shutdown must finish before the exit")
-	_, err := os.Stat(cfg.StatePath())
-	assert.NoError(t, err, "a signal must keep the worker's state")
-}
-
-// The hang-up of the terminal that runs the worker must take the same clean
-// path: the worker drains its state before it exits.
-func TestWorkerExitsCleanlyOnAHangUp(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Process.Signal cannot send SIGHUP on Windows")
-	}
-	ctx := testutil.DeadlineContext(t)
-	connected := make(chan struct{}, 1)
-	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-		for {
-			if _, err := stream.Receive(); err != nil {
-				return ctx.Err()
-			}
+			require.NoError(t, cmd.Process.Signal(tc.signal))
 			select {
-			case connected <- struct{}{}:
-			default:
+			case err := <-exited:
+				require.NoError(t, err, "%s", output.String())
+			case <-ctx.Done():
+				require.FailNow(t, "the worker did not exit after the signal", "%s", output.String())
 			}
-		}
-	}})
-	cfg := writeRegisteredState(t)
-
-	cmd := exec.Command(os.Args[0], "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
-	cmd.Env = append(os.Environ(), runMainEnv+"=1")
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
-	require.NoError(t, cmd.Start())
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-
-	select {
-	case <-connected:
-	case err := <-exited:
-		require.FailNow(t, "the worker exited before it connected", "%v\n%s", err, output.String())
-	case <-ctx.Done():
-		require.FailNow(t, "the worker did not connect", "%s", output.String())
+			assert.Contains(t, output.String(), "shutdown signal received")
+			assert.Contains(t, output.String(), "worker state drained", "the shutdown must finish before the exit")
+			_, err := os.Stat(cfg.StatePath())
+			assert.NoError(t, err, "a signal must keep the worker's state")
+		})
 	}
-
-	require.NoError(t, cmd.Process.Signal(syscall.SIGHUP))
-	select {
-	case err := <-exited:
-		require.NoError(t, err, "%s", output.String())
-	case <-ctx.Done():
-		require.FailNow(t, "the worker did not exit after the hang-up", "%s", output.String())
-	}
-	assert.Contains(t, output.String(), "shutdown signal received")
-	assert.Contains(t, output.String(), "worker state drained", "the shutdown must finish before the exit")
-	_, err := os.Stat(cfg.StatePath())
-	assert.NoError(t, err, "a hang-up must keep the worker's state")
 }
 
 // The re-registration advice appears on exactly the two errors no reconnect can

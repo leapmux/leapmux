@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/util/drain"
 )
 
 // The gate is a property of the MINT, not of what each handler remembered to
@@ -199,30 +199,68 @@ func noticeRecipient() *store.User {
 func TestNotifyCredentialIssuedCountsTheSendUntilItEnds(t *testing.T) {
 	t.Parallel()
 	sender := newParkedSender()
-	inFlight := &drain.Counter{}
+	release := sync.OnceFunc(func() { close(sender.release) })
+	defer release()
+	notices := NewCredentialNotices(sender, mail.Renderer{})
 
-	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, noticeRecipient(), credentialNotice{AppName: "app"}, inFlight)
+	notices.Notify(context.Background(), noticeRecipient(), credentialNotice{AppName: "app"})
 
 	sender.awaitEntered(t)
-	assert.False(t, inFlight.Wait(0, ""), "a running send must be counted")
-	close(sender.release)
-	assert.True(t, inFlight.Wait(30*time.Second, ""), "an ended send must leave the count")
+	assert.False(t, notices.Wait(0, ""), "a running send must be counted")
+	release()
+	assert.True(t, notices.Wait(30*time.Second, ""), "an ended send must leave the count")
 }
 
 // A notice that never starts must leave nothing for the shutdown to wait for.
 func TestNotifyCredentialIssuedCountsNothingWhenItSendsNothing(t *testing.T) {
 	t.Parallel()
-	unverified := noticeRecipient()
-	unverified.EmailVerified = false
-	sender := newParkedSender()
-	inFlight := &drain.Counter{}
+	for _, mode := range []string{"nil sender", "nil user", "empty address", "unverified address"} {
+		t.Run(mode, func(t *testing.T) {
+			sender := newParkedSender()
+			user := noticeRecipient()
+			var delivery mail.Sender = sender
+			switch mode {
+			case "nil sender":
+				delivery = nil
+			case "nil user":
+				user = nil
+			case "empty address":
+				user.Email = ""
+			case "unverified address":
+				user.EmailVerified = false
+			}
+			notices := NewCredentialNotices(delivery, mail.Renderer{})
+			notices.Notify(context.Background(), user, credentialNotice{AppName: "app"})
+			assert.True(t, notices.Wait(0, ""))
+			select {
+			case <-sender.entered:
+				t.Fatal("ineligible recipient received a notice")
+			default:
+			}
+		})
+	}
+}
 
-	notifyCredentialIssued(context.Background(), sender, mail.Renderer{}, unverified, credentialNotice{AppName: "app"}, inFlight)
+type credentialNoticeSenderFunc func(context.Context, mail.Message) error
 
-	assert.True(t, inFlight.Wait(0, ""), "no send ran, so nothing may stay counted")
-	select {
-	case <-sender.entered:
-		t.Fatal("an unverified address must receive no notice")
-	default:
+func (f credentialNoticeSenderFunc) Send(ctx context.Context, msg mail.Message) error {
+	return f(ctx, msg)
+}
+
+func TestCredentialNoticesDetachAndCompleteFailedSends(t *testing.T) {
+	t.Parallel()
+	for _, sendErr := range []error{nil, mail.ErrEmailDisabled, errors.New("delivery failed")} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		observed := make(chan error, 1)
+		notices := NewCredentialNotices(credentialNoticeSenderFunc(func(sendCtx context.Context, _ mail.Message) error {
+			observed <- sendCtx.Err()
+			_, hasDeadline := sendCtx.Deadline()
+			assert.True(t, hasDeadline, "detached delivery requires a deadline")
+			return sendErr
+		}), mail.Renderer{})
+		notices.Notify(ctx, noticeRecipient(), credentialNotice{AppName: "app"})
+		assert.True(t, notices.Wait(30*time.Second, ""))
+		assert.NoError(t, <-observed, "request cancellation must not cancel the notice")
 	}
 }

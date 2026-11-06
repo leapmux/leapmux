@@ -27,44 +27,83 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-// TestOpenAgent_SyncPrologueReturnsFast asserts that even when startAgent
-// blocks for seconds, the OpenAgent RPC response lands in the test writer
-// within ~200 ms — the whole point of the OpenAgent split.
-func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
+// A blocked provider startup must not prevent the initial STARTING response.
+func TestOpenAgent_ReturnsBeforeStartupCompletes(t *testing.T) {
 	t.Parallel()
-
 	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
+	workingDir := t.TempDir()
+	startup := holdAgentStartup(t, svc)
+	request := &leapmuxv1.OpenAgentRequest{WorkingDir: workingDir, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}
+	rpcDone := make(chan struct{})
+	go func() {
+		defer close(rpcDone)
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, w)
+	}()
+	defer func() { startup.release(); <-rpcDone }()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-startup.entered:
+	case <-ctx.Done():
+		t.Fatal("provider startup never reached its hold")
+	}
+	select {
+	case <-rpcDone:
+	case <-ctx.Done():
+		t.Fatal("the initial response waited for blocked provider startup")
+	}
+	select {
+	case <-startup.returned:
+		t.Fatal("the starter returned before the response assertion")
+	default:
+	}
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.NotNil(t, resp.GetAgent())
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, resp.GetAgent().GetStatus())
+}
 
-	released := make(chan struct{})
+type heldAgentStartup struct {
+	entered  <-chan struct{}
+	returned <-chan struct{}
+	release  func()
+}
+
+func holdAgentStartup(t *testing.T, svc *Service) heldAgentStartup {
+	t.Helper()
+	entered, returned, released := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	announceEntry := sync.OnceFunc(func() { close(entered) })
+	announceReturn := sync.OnceFunc(func() { close(returned) })
+	release := sync.OnceFunc(func() { close(released) })
 	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		announceEntry()
+		defer announceReturn()
 		select {
 		case <-released:
 		case <-ctx.Done():
 		}
 		return map[string]string{}, nil
 	}
-	defer close(released)
+	t.Cleanup(func() { release(); drainAllInFlight(svc) })
+	return heldAgentStartup{entered: entered, returned: returned, release: release}
+}
 
-	start := time.Now()
-	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, w)
-	syncLatency := time.Since(start)
-
-	assert.Less(t, syncLatency, 200*time.Millisecond,
-		"sync prologue must return well under 200 ms even when startAgent blocks; got %v", syncLatency)
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-
-	var resp leapmuxv1.OpenAgentResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	require.NotNil(t, resp.GetAgent())
-	// Initial response carries STARTING — runtime fields (session_id,
-	// available_models) are filled in by the subsequent AgentStatusChange.
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, resp.GetAgent().GetStatus(),
-		"OpenAgent should return with STARTING before subprocess startup completes")
+func waitForFullStartupAgentWatch(t *testing.T, writer *testResponseWriter, agentID string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		ack := lastWatchUpdateAck(t, writer)
+		if ack == nil {
+			return false
+		}
+		for _, state := range ack.GetAgentStates() {
+			if state.GetAgentId() == agentID && state.GetMode() == leapmuxv1.WatchMode_WATCH_MODE_FULL && state.GetReplayId() == 1 {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "the full agent watch was not acknowledged before startup release")
 }
 
 // TestOpenAgent_DelayedStartupBroadcastsActive asserts the goroutine
@@ -73,17 +112,12 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
+	workingDir := t.TempDir()
+	startup := holdAgentStartup(t, svc)
 
-	releaseAfter := 150 * time.Millisecond
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-		time.Sleep(releaseAfter)
-		return map[string]string{}, nil
-	}
-
-	// Subscribe before opening so the broadcast is captured.
+	// Keep startup held until the watcher acknowledges its registration.
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    t.TempDir(),
+		WorkingDir:    workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -97,6 +131,8 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
+	waitForFullStartupAgentWatch(t, wWatch, agentID)
+	startup.release()
 
 	require.Eventually(t, func() bool {
 		for _, s := range wWatch.streamsSnapshot() {
@@ -185,7 +221,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
-	// handleWatchEvents returns once the request is SUBMITTED; the session
+	// the test dispatch helper returns once the request is SUBMITTED; the session
 	// goroutine registers the watch afterwards. Releasing startup before that
 	// lands would broadcast ACTIVE to nobody, and the assertion below would then
 	// spend its whole budget waiting for an event that was never going to
@@ -358,7 +394,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
-	// handleWatchEvents returns once the request is SUBMITTED; the session
+	// the test dispatch helper returns once the request is SUBMITTED; the session
 	// goroutine registers the watch afterwards. Releasing startup before that
 	// lands broadcasts ACTIVE to nobody, and the assertion below then spends its
 	// whole budget waiting for an event that was never going to arrive. Wait for
@@ -955,6 +991,7 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 
 	const title = "Terminal Ada"
 	wTitle := newTestWriter()
@@ -990,7 +1027,6 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 	assert.Equal(t, title, row.Title,
 		"shutdown snapshot must not overwrite the pre-start title with empty manager metadata")
 
-	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 }
 
 // TestOpenAgent_CatchUpReplaySurfacesStartupMessage mirrors the
@@ -1024,7 +1060,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	agentID := openResp.GetAgent().GetId()
 
-	// Wait until the goroutine has progressed past phase 2 so the
+	// Wait until the goroutine has entered phase 2 so the
 	// registry holds "Starting Claude Code…" (the last registered
 	// message before startAgent blocks).
 	require.Eventually(t, func() bool {
@@ -1070,16 +1106,11 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
-
-	// Block startAgent briefly so the test can subscribe before ACTIVE lands.
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-		time.Sleep(100 * time.Millisecond)
-		return map[string]string{}, nil
-	}
+	repoDir := initRepo(t)
+	startup := holdAgentStartup(t, svc)
 
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    initRepo(t),
+		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Len(t, w.responses, 1)
@@ -1092,6 +1123,8 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
+	waitForFullStartupAgentWatch(t, wWatch, agentID)
+	startup.release()
 
 	require.Eventually(t, func() bool {
 		for _, s := range wWatch.streamsSnapshot() {
@@ -1252,51 +1285,33 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "expected STARTUP_FAILED broadcast")
 }
 
-// TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack asserts that
-// a startAgentFn error produces a STARTUP_FAILED status with the error
-// string visible to a subscribed watcher, and that the agent is closed.
-func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
+// A failed startup retains its open row and persisted error for the startup panel.
+func TestOpenAgent_StartupFailureRetainsOpenRowAndError(t *testing.T) {
 	t.Parallel()
-
-	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-
-	var startCalls sync.WaitGroup
-	startCalls.Add(1)
-	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
-		defer startCalls.Done()
-		return nil, errors.New("forced startup failure: boom")
+	const failure = "forced startup failure: boom"
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		return nil, errors.New(failure)
 	}
-
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var openResp leapmuxv1.OpenAgentResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
-	agentID := openResp.GetAgent().GetId()
+	var resp leapmuxv1.OpenAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	agentID := resp.GetAgent().GetId()
 	require.NotEmpty(t, agentID)
-
-	startCalls.Wait()
-
-	// Agent's DB row stays open after startup failure — the in-tab
-	// error UI remains reachable across page refreshes; the user
-	// dismisses the failed agent via the "Close tab" button which
-	// calls CloseTab.
-	require.Eventually(t, func() bool {
-		row, err := svc.Queries.GetAgentByID(ctx, agentID)
-		return err == nil && !row.ClosedAt.Valid
-	}, 5*time.Second, 20*time.Millisecond, "agent DB row should stay open after startup failure")
-
-	// Startup registry should report STARTUP_FAILED with the error.
-	require.Eventually(t, func() bool {
-		status, errStr, _, ok := svc.AgentStartup.status(agentID)
-		return ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED && errStr != ""
-	}, 5*time.Second, 20*time.Millisecond, "expected Startup registry to retain STARTUP_FAILED")
-
+	svc.AgentStartup.WaitForInFlight()
+	row, err := svc.Queries.GetAgentByID(t.Context(), agentID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "the failed agent remains reachable until the user closes its tab")
+	assert.Contains(t, row.StartupError, failure)
+	status, errorText, _, found := svc.AgentStartup.status(agentID)
+	require.True(t, found)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
+	assert.Equal(t, row.StartupError, errorText)
 }
 
 // TestExecuteCreateWorktree_FailureIsRecoverable is a unit test of the
@@ -1384,9 +1399,9 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	// runAgentStartup spawns, every STARTING broadcast lands live; we
 	// require the phase-0 label AND the rollback label to both appear
 	// before the STARTUP_FAILED.
-	var sawPhase0, sawRollback, sawFailed bool
+	phase0Index, rollbackIndex, failedIndex := -1, -1, -1
 	var failedError string
-	for _, s := range wWatch.streamsSnapshot() {
+	for index, s := range wWatch.streamsSnapshot() {
 		var resp leapmuxv1.WatchEventsResponse
 		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
 			continue
@@ -1398,22 +1413,30 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		switch sc.GetStatus() {
 		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
 			if strings.Contains(sc.GetStartupMessage(), "Creating worktree") && strings.Contains(sc.GetStartupMessage(), branchName) {
-				sawPhase0 = true
+				if phase0Index < 0 {
+					phase0Index = index
+				}
 			}
 			if strings.Contains(sc.GetStartupMessage(), "Rolling back worktree") && strings.Contains(sc.GetStartupMessage(), branchName) {
-				sawRollback = true
+				if rollbackIndex < 0 {
+					rollbackIndex = index
+				}
 			}
 		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
-			sawFailed = true
+			if failedIndex < 0 {
+				failedIndex = index
+			}
 			failedError = sc.GetStartupError()
 		default:
 			// Only the STARTING progress messages and the terminal
 			// STARTUP_FAILED matter to this assertion.
 		}
 	}
-	assert.True(t, sawPhase0, `expected STARTING "Creating worktree %q…" broadcast`, branchName)
-	assert.True(t, sawRollback, `expected STARTING "Rolling back worktree %q…" broadcast`, branchName)
-	assert.True(t, sawFailed, "expected final STARTUP_FAILED broadcast")
+	require.NotEqual(t, -1, phase0Index, `expected STARTING "Creating worktree %q…" broadcast`, branchName)
+	require.NotEqual(t, -1, rollbackIndex, `expected STARTING "Rolling back worktree %q…" broadcast`, branchName)
+	require.NotEqual(t, -1, failedIndex, "expected final STARTUP_FAILED broadcast")
+	assert.Less(t, phase0Index, rollbackIndex)
+	assert.Less(t, rollbackIndex, failedIndex)
 	assert.Contains(t, failedError, "forced start failure")
 
 	// After rollback completes, the worktree dir and branch should be gone.

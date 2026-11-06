@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"io"
 	"runtime"
 	"strings"
 	"sync"
@@ -137,107 +138,138 @@ type parkingMarkWorkers struct {
 
 func (w *parkingMarkWorkers) MarkDeleted(ctx context.Context, workerID string) error {
 	w.park.once.Do(func() { close(w.park.entered) })
-	select {
-	case <-w.park.release:
-	case <-ctx.Done():
-	}
-	return w.park.Store.Workers().MarkDeleted(ctx, workerID)
+	// Only the gate completes this simulated in-flight write. A deadline
+	// must not release it before the test observes the handler's join.
+	<-w.park.release
+	return w.park.Store.Workers().MarkDeleted(context.WithoutCancel(ctx), workerID)
 }
 
-// A hub shutdown that ends the connection must wait for the DEREGISTER
-// delivery to complete: the worker deletes its own state on the instruction,
-// and a hub that closed its store first would leave the row deregistering
-// until the 7-day sweep. The conn leaves the manager only at handler exit, so
-// it is still registered while the deletion is parked.
-func TestConnectWaitsForDeregisterCompletionAtShutdown(t *testing.T) {
+// Every handler exit joins an acknowledged DEREGISTER delivery before it
+// unregisters. A worker that already removed its registration must not leave a
+// deregistering Hub row because its detached deletion outlived the handler.
+func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	logs := testutil.CaptureDefaultLogger(t)
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseFn)
-	// Wrapped GLOBALLY: the delivery's MarkDeleted runs on the notifier's
-	// store, which the connector-only wrapper never reaches.
-	real := hubtestutil.OpenTestStore(t)
-	park := &parkingMarkStore{Store: real, release: release, entered: make(chan struct{})}
-	env := regKeyEnvFromStore(t, park, testConfig(), seedSMTP, nil, nil)
+	for _, cause := range []string{"shutdown", "worker EOF", "second hello", "EOF before acknowledgement"} {
+		t.Run(cause, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+			defer releaseFn()
+			// Wrapped GLOBALLY: the delivery's MarkDeleted runs on the notifier's
+			// store, which the connector-only wrapper never reaches.
+			real := hubtestutil.OpenTestStore(t)
+			park := &parkingMarkStore{Store: real, release: release, entered: make(chan struct{})}
+			env := regKeyEnvFromStore(t, park, testConfig(), seedSMTP, nil, nil)
 
-	token := env.login(t, "admin", "admin123")
-	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
-		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
-	require.NoError(t, err)
-	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
-	require.NoError(t, err)
-	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
-	require.NoError(t, err)
-	// The deregistering status is what starts the delivery on connect.
-	// The deregistering status is what starts the delivery on connect: the
-	// row's deregistering_at is the durable intent.
-	// The concrete store carries the test helper; the wrapper hides it behind
-	// the plain interface.
-	helperStore, ok := park.Store.(interface {
-		TestHelper() store.TestHelper
-	})
-	require.True(t, ok, "the test store must expose the test helper")
-	require.NoError(t, helperStore.TestHelper().SetDeregisteringAt(context.Background(), worker.ID, time.Now().UTC()))
+			token := env.login(t, "admin", "admin123")
+			createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+				&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+			require.NoError(t, err)
+			regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+			require.NoError(t, err)
+			worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
+			require.NoError(t, err)
+			// The deregistering status is what starts the delivery on connect: the
+			// row's deregistering_at is the durable intent.
+			// The concrete store carries the test helper; the wrapper hides it behind
+			// the plain interface.
+			helperStore, ok := park.Store.(interface {
+				TestHelper() store.TestHelper
+			})
+			require.True(t, ok, "the test store must expose the test helper")
+			require.NoError(t, helperStore.TestHelper().SetDeregisteringAt(context.Background(), worker.ID, time.Now().UTC()))
 
-	streamCtx, info := connect.NewClientContext(context.Background())
-	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-deregister-wait"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
-	stream, err := connectorClient.Connect(streamCtx)
-	require.NoError(t, err)
-	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
-	_, err = stream.Receive() // the WorkerIdentity greeting
-	require.NoError(t, err)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			streamCtx, info := connect.NewClientContext(ctx)
+			info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+			connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+				env.serveOverUnixSocket(t, "hub-deregister-wait"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			stream, err := connectorClient.Connect(streamCtx)
+			require.NoError(t, err)
+			require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
+			_, err = stream.Receive() // the WorkerIdentity greeting
+			require.NoError(t, err)
+			defer func() { _ = stream.Close() }()
+			conn := env.wMgr.ConnForTrustedPath(worker.ID)
+			require.NotNil(t, conn)
 
-	// The DEREGISTER instruction arrives on this same stream. The worker
-	// acknowledges it, and the delivery walks into the parked deletion.
-	var dereg *leapmuxv1.ConnectResponse
-	require.Eventually(t, func() bool {
-		frame, recvErr := stream.Receive()
-		if recvErr != nil {
-			return false
-		}
-		if frame.GetDeregister() != nil {
-			dereg = frame
-			return true
-		}
-		return false
-	}, 10*time.Second, 10*time.Millisecond, "the DEREGISTER instruction must arrive")
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		RequestId: dereg.GetRequestId(),
-		Payload:   &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
-	}))
-	select {
-	case <-park.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the delivery never reached MarkDeleted")
+			// The DEREGISTER instruction arrives on this same stream. The worker
+			// acknowledges it, and the delivery walks into the parked deletion.
+			var dereg *leapmuxv1.ConnectResponse
+			for {
+				frame, receiveErr := stream.Receive()
+				require.NoError(t, receiveErr, "the DEREGISTER instruction must arrive")
+				if frame.GetDeregister() != nil {
+					dereg = frame
+					break
+				}
+			}
+			if cause == "EOF before acknowledgement" {
+				require.NoError(t, stream.CloseSend())
+				_, receiveErr := stream.Receive()
+				require.ErrorIs(t, receiveErr, io.EOF)
+				row, readErr := env.store.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+				require.NoError(t, readErr)
+				require.Nil(t, row.DeletedAt, "a worker must not be deleted without acknowledgement")
+				select {
+				case <-park.entered:
+					t.Fatal("an unacknowledged delivery attempted deletion")
+				default:
+				}
+				require.Contains(t, logs.String(), "worker did not acknowledge DEREGISTER")
+				require.NotContains(t, logs.String(), context.DeadlineExceeded.Error(), "EOF must cancel the pending send before its deadline")
+				return
+			}
+			require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+				RequestId: dereg.GetRequestId(),
+				Payload:   &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+			}))
+			select {
+			case <-park.entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the delivery never reached MarkDeleted")
+			}
+
+			switch cause {
+			case "shutdown":
+				env.wMgr.FenceAll()
+			case "worker EOF":
+				require.NoError(t, stream.CloseSend())
+			case "second hello":
+				require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
+			}
+			select {
+			case <-conn.Done():
+			case <-ctx.Done():
+				t.Fatal("the connection did not enter teardown")
+			}
+			// EOF and protocol errors unregister before fencing in the old code.
+			// A joined delivery cancels first and keeps membership until the write ends.
+			require.True(t, env.wMgr.OnlineForTrustedPath(worker.ID),
+				"handler teardown must join the in-flight deletion before unregistering")
+			require.NotContains(t, logs.String(), `msg="worker disconnected"`)
+
+			// The deletion completes, and only then does the handler return: it
+			// unregisters, and the disconnect log carries the joined-delivery exit.
+			releaseFn()
+			require.Eventually(t, func() bool {
+				return !env.wMgr.OnlineForTrustedPath(worker.ID) &&
+					strings.Contains(logs.String(), `msg="worker disconnected"`)
+			}, 10*time.Second, 10*time.Millisecond,
+				"the handler must return once the delivery finished")
+			row, err := env.store.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+			require.NoError(t, err)
+			require.NotNil(t, row.DeletedAt, "deletion must commit before handler teardown finishes")
+			_, receiveErr := stream.Receive()
+			if cause == "second hello" {
+				require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(receiveErr))
+			} else {
+				require.ErrorIs(t, receiveErr, io.EOF)
+			}
+		})
 	}
-
-	// The shutdown lands: the fence cancels the connection's context -- what
-	// NotifyShutdownAndFence ends its pass with, and the one cancellation
-	// that does NOT also end the stream the receive pump reads -- so the
-	// handler's ctx.Done case is the one that fires, while the delivery is
-	// parked inside its deletion.
-	env.wMgr.FenceAll()
-
-	// While the deletion is parked, the handler must still be inside its
-	// join: it returns only after notifyDone closes, so it must not
-	// unregister -- and not log its exit -- while the release is held.
-	require.Never(t, func() bool {
-		return !env.wMgr.OnlineForTrustedPath(worker.ID)
-	}, 2*time.Second, 50*time.Millisecond,
-		"the handler must not return while the delivery is parked")
-
-	// The deletion completes, and only then does the handler return: it
-	// unregisters, and the disconnect log carries the joined-delivery exit.
-	releaseFn()
-	require.Eventually(t, func() bool {
-		return !env.wMgr.OnlineForTrustedPath(worker.ID) &&
-			strings.Contains(logs.String(), `msg="worker disconnected"`)
-	}, 10*time.Second, 10*time.Millisecond,
-		"the handler must return once the delivery finished")
 }

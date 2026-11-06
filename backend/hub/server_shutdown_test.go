@@ -162,53 +162,32 @@ func TestConstructionServerErrorsPreserveListenerCloseFailures(t *testing.T) {
 // drain waits for it, so a handler that reads the store after Serve returned
 // still finds it open.
 func TestServeWaitsForARunningWebSocketHandler(t *testing.T) {
-	cfg := &config.Config{
-		DataDir: t.TempDir(),
-		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
-		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
-	}
-	srv, err := NewServer(cfg)
-	require.NoError(t, err)
-
-	// Park a handler through the same wrapper the routes carry, past a short
-	// fallback that is SHORTER than the websocket drain: with the join wired,
-	// the drain holds Serve's teardown open while the handler sleeps, so the
-	// read lands on a still-open store. Without the join, Serve's teardown
-	// runs to completion -- the store closes -- and the late read fails.
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseFn)
-	readDone := make(chan error, 1)
-	go func() {
-		handler := trackWebSocket(srv.webSockets, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-			defer releaseFn()
-			// The short fallback is what orders this read against Serve's
-			// teardown; see the test's comment.
-			time.Sleep(time.Second)
-			// The key does not exist; ErrNotFound is the store's healthy
-			// answer and proves the read reached an open store.
+	synctest.Test(t, func(t *testing.T) {
+		srv := newShutdownTestServer(t)
+		release := make(chan struct{})
+		releaseFn := sync.OnceFunc(func() { close(release) })
+		defer releaseFn()
+		entered := make(chan struct{})
+		readDone := make(chan error, 1)
+		go trackWebSocket(srv.webSockets, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-release
 			_, err := srv.store.Settings().Get(r.Context(), "nonexistent-key")
 			readDone <- err
-		}))
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws", nil))
-	}()
-
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx) }()
-	time.Sleep(100 * time.Millisecond) // Serve binds and enters its select loop.
-	cancelServe()
-	serveErr := <-served
-
-	select {
-	case err := <-readDone:
-		assert.ErrorIs(t, err, store.ErrNotFound,
-			"the joined handler must find the store open: a healthy read answers, not a closed-store error")
-	case <-time.After(10 * time.Second):
-		t.Fatal("the parked handler never finished its read")
-	}
-	assert.NoError(t, serveErr)
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws", nil))
+		<-entered
+		cancel, served := serveForShutdownTest(t, srv)
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-served:
+			t.Fatalf("Serve returned before the WebSocket handler finished: %v", err)
+		default:
+		}
+		releaseFn()
+		assert.ErrorIs(t, <-readDone, store.ErrNotFound, "the joined handler must read an open store")
+		require.NoError(t, <-served)
+	})
 }
 
 // Both WebSocket routes are wrapped: a closed gate answers 503 on each of
@@ -259,47 +238,32 @@ func TestJoinLoopsWaitsUnderOneDeadline(t *testing.T) {
 // The join must precede the store close: a loop that reads the store after
 // Serve returned must still find it open.
 func TestServeWaitsForABackgroundLoopBeforeClosingTheStore(t *testing.T) {
-	cfg := &config.Config{
-		DataDir: t.TempDir(),
-		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
-		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
-	}
-	srv, err := NewServer(cfg)
-	require.NoError(t, err)
-
-	// The loop's pass sleeps out a SHORT fallback -- shorter than the join
-	// budget -- and then reads the store. With the join wired, Serve's
-	// teardown holds while the loop sleeps and reads, so the read lands on a
-	// still-open store. Without the join, the teardown runs to completion --
-	// the store closes -- and the late read fails.
-	readDone := make(chan error, 1)
-	loop := make(chan struct{})
-	go func() {
-		defer close(loop)
-		// The short fallback orders this read against Serve's teardown.
-		time.Sleep(time.Second)
-		_, err := srv.store.Settings().Get(context.Background(), "nonexistent-key")
-		readDone <- err
-	}()
-
-	// Registered before Serve, so the append happens-before Serve's own and
-	// the shutdown goroutine reads the whole set.
-	srv.backgroundLoops = append(srv.backgroundLoops, loop)
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx) }()
-	time.Sleep(100 * time.Millisecond) // Serve binds and starts its loops.
-	cancelServe()
-
-	// Serve returned: with the join wired, it waited for our loop channel.
-	assert.NoError(t, <-served)
-	select {
-	case err := <-readDone:
-		assert.ErrorIs(t, err, store.ErrNotFound,
-			"the joined loop must find the store open: a healthy read answers, not a closed-store error")
-	case <-time.After(10 * time.Second):
-		t.Fatal("the loop never finished its read")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		srv := newShutdownTestServer(t)
+		release := make(chan struct{})
+		releaseFn := sync.OnceFunc(func() { close(release) })
+		defer releaseFn()
+		readDone := make(chan error, 1)
+		loop := make(chan struct{})
+		go func() {
+			defer close(loop)
+			<-release
+			_, err := srv.store.Settings().Get(t.Context(), "nonexistent-key")
+			readDone <- err
+		}()
+		srv.backgroundLoops = append(srv.backgroundLoops, loop)
+		cancel, served := serveForShutdownTest(t, srv)
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-served:
+			t.Fatalf("Serve returned before its background loop finished: %v", err)
+		default:
+		}
+		releaseFn()
+		assert.ErrorIs(t, <-readDone, store.ErrNotFound, "the joined loop must read an open store")
+		require.NoError(t, <-served)
+	})
 }
 
 // warnCountingHandler counts Warn records, so a test can assert the expiry
@@ -328,9 +292,10 @@ func (h *warnCountingHandler) WithGroup(name string) slog.Handler       { return
 // Renewal must keep running through the whole drain: with renewal derived
 // from the serve context, it stopped when shutdown began, and the 30-second
 // lease could lapse while the CRDT drain (up to 10 seconds) still wrote.
-// A 200ms lease renews every 50ms; a manager whose goroutine parks in a test
-// seed holds the CRDT drain open; and a second SQLite connection reads
-// lease_expires_at while the hub drains.
+// The test keeps the drain observable:
+//   - A 200ms lease renews every 50ms.
+//   - A manager parked in a test seed holds the CRDT drain open.
+//   - A second SQLite connection reads lease_expires_at during the drain.
 func TestServeRenewsTheLeaseDuringTheDrain(t *testing.T) {
 	cfg := &config.Config{
 		DataDir: t.TempDir(),
@@ -349,12 +314,11 @@ func TestServeRenewsTheLeaseDuringTheDrain(t *testing.T) {
 	var gateOnce sync.Once
 	gateRelease := func() { gateOnce.Do(func() { close(gate) }) }
 	t.Cleanup(gateRelease)
-	go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { <-gate })
+	seedEntered := make(chan struct{})
+	go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { close(seedEntered); <-gate })
+	<-seedEntered
 
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx) }()
-	time.Sleep(100 * time.Millisecond) // Serve acquires the lease and binds.
+	cancelServe, served := serveForShutdownTest(t, srv)
 
 	// Begin the shutdown and observe lease_expires_at while the drain runs.
 	cancelServe()
@@ -419,36 +383,57 @@ func TestServeEndsServingCtxWhenTheLeaseIsRefused(t *testing.T) {
 // A credential notice can outlive every other drain, so Serve must join it, and
 // servingCtx must stay live until it ends. On return servingCtx must have ended.
 func TestServeJoinsACredentialNoticeBeforeItEndsServingCtx(t *testing.T) {
-	cfg := &config.Config{
-		DataDir: t.TempDir(),
-		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
-		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
-	}
-	srv, err := NewServer(cfg)
-	require.NoError(t, err)
-	srv.credentialNotices.Add()
+	synctest.Test(t, func(t *testing.T) {
+		sender := &parkedMailSender{entered: make(chan struct{}, 1), release: make(chan struct{})}
+		finishNotice := sync.OnceFunc(func() { close(sender.release) })
+		defer finishNotice()
+		srv := newShutdownTestServer(t, withMailSender(sender))
+		api := httptest.NewServer(srv.server.Handler)
+		defer api.Close()
+		identity := newWiringIdentity(t, srv, api.URL)
+		identity.mintThroughAdmin(t)
+		<-sender.entered
+		// A live HTTP listener prevents synctest from reaching quiescence. The
+		// notice already runs, so its issuer no longer needs the HTTP fixture.
+		api.Close()
 
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	defer cancelServe()
+		cancel, served := serveForShutdownTest(t, srv)
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-served:
+			t.Fatalf("Serve returned while a notice still ran: %v", err)
+		default:
+		}
+		assert.False(t, srv.credentialNotices.Wait(0, ""), "shutdown must retain the active notice")
+		assert.NoError(t, srv.servingCtx.Err(), "servingCtx must outlive the notice join")
+		finishNotice()
+		require.NoError(t, <-served)
+		assert.ErrorIs(t, srv.servingCtx.Err(), context.Canceled)
+	})
+}
+
+func newShutdownTestServer(t *testing.T, opts ...ServerOption) *Server {
+	t.Helper()
+	srv, err := NewServer(&config.Config{DataDir: t.TempDir(), Listen: []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")}, Storage: config.StorageConfig{Type: config.StorageTypeSQLite}}, opts...)
+	require.NoError(t, err)
+	return srv
+}
+
+func serveForShutdownTest(t *testing.T, srv *Server) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
 	served := make(chan error, 1)
-	go func() { served <- srv.Serve(serveCtx) }()
+	go func() { served <- srv.Serve(ctx) }()
 	select {
 	case <-srv.LeaseHeld():
 	case err := <-served:
-		t.Fatalf("Serve ended before it held the lease: %v", err)
+		t.Fatalf("Serve ended before it held the runtime lease: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Serve never acquired its runtime lease")
 	}
-	cancelServe()
-
-	select {
-	case err := <-served:
-		t.Fatalf("Serve returned while a notice still ran: %v", err)
-	case <-time.After(2 * time.Second):
-	}
-	assert.NoError(t, srv.servingCtx.Err(), "servingCtx must outlive the notice join")
-
-	srv.credentialNotices.Done()
-	require.NoError(t, <-served)
-	assert.ErrorIs(t, srv.servingCtx.Err(), context.Canceled)
+	return cancel, served
 }
 
 // A construction failure has no Serve to end servingCtx, so its teardown must.

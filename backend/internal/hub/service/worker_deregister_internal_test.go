@@ -30,7 +30,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
-	"github.com/leapmux/leapmux/util/drain"
 )
 
 // deletingAdminCtx carries the elevated administrator DeleteUser now
@@ -87,10 +86,10 @@ func newDeregisterTestStore(t *testing.T) store.Store {
 // The admin surface used to run NONE of the deregister effects: nothing
 // told the worker to stop, its memoized delegation scope kept outstanding
 // tokens reaching across workers, and no client learned the list changed.
-// newTestAdminUserService supplies the required notice counter. These tests
+// newTestAdminUserService supplies the required notice owner. These tests
 // mint nothing, so nothing waits on it.
 func newTestAdminUserService(deps AdminUserServiceDeps) *AdminUserService {
-	deps.Notices = &drain.Counter{}
+	deps.Notices = NewCredentialNotices(nil, mail.Renderer{})
 	return NewAdminUserService(deps)
 }
 

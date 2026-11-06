@@ -18,7 +18,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -86,11 +85,11 @@ func TestLateTerminalWritesPreserveConcurrentClose(t *testing.T) {
 	}
 }
 
-// dispatchRestart marshals + dispatches a RestartTerminalRequest with the
-// standard payload used across these tests (workspace ws-1, 80x25). The
-// terminal id is the only field that varies; tests that need to override
+// dispatchRestart marshals and dispatches a RestartTerminalRequest with the
+// standard 200x25 dimensions. The terminal id is the only field that varies.
+// Tests that need to override
 // other fields should call dispatch directly.
-func dispatchRestart(d *channel.Dispatcher, terminalID string, w *testResponseWriter) {
+func dispatchRestart(d testRPCDispatcher, terminalID string, w *testResponseWriter) {
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
 		TerminalId: terminalID,
 		// Match openTerminalViaRPC's wide-cols workaround: cmd.exe's
@@ -129,6 +128,7 @@ func (f *fakeRemoteIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func
 	f.mu.Unlock()
 	cleanup := func() {
 		f.mu.Lock()
+		f.cleanupsPending--
 		f.cleanupsExecuted++
 		f.mu.Unlock()
 	}
@@ -142,8 +142,8 @@ func (f *fakeRemoteIPC) snapshot() (tokens []string, pending, executed int) {
 }
 
 // TestRestartTerminal_HappyPath drives the full OpenTerminal → exit →
-// RestartTerminal → exit-again loop and verifies the exit notice carries
-// the right exit codes ("0" both times for a clean `exit`).
+// RestartTerminal → exit-again loop. The first exit uses code 0. On platforms
+// that propagate an explicit shell exit code, the second exit uses code 7.
 func TestRestartTerminal_HappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -177,10 +177,11 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 	}, "restart spawn")
 
 	require.Equal(t, int64(2), ipc.count.Load(), "TerminalSpawning should fire again on restart")
-	tokensAfter, _, cleanupsExecuted := ipc.snapshot()
+	tokensAfter, pending, cleanupsExecuted := ipc.snapshot()
 	require.Len(t, tokensAfter, 2)
 	assert.NotEqual(t, tokensAfter[0], tokensAfter[1], "restart must mint a token distinct from the previous spawn")
-	assert.GreaterOrEqual(t, cleanupsExecuted, 1, "the previous spawn's cleanup must run before the new token is minted")
+	assert.Equal(t, 1, cleanupsExecuted, "the previous spawn's cleanup must run exactly once")
+	assert.Equal(t, 1, pending, "only the restarted shell may retain a cleanup")
 
 	// Exit the restarted shell with a non-zero code so we can assert the
 	// new notice carries a different value. Skipped on Windows because
@@ -261,7 +262,9 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 
 	const id = "tm-worker-restart"
 	workingDir := t.TempDir()
-	persistedScreen := []byte("old session output\r\n[Worker disconnected - Press Enter to restart]\r\n")
+	// A large retained screen prevents the ordinary startup prompt from
+	// satisfying the offset check without the persisted baseline.
+	persistedScreen := append(bytes.Repeat([]byte("old output\r\n"), 6000), []byte("[Worker disconnected - Press Enter to restart]\r\n")...)
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         id,
 		WorkingDir: workingDir,
@@ -353,7 +356,7 @@ func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) 
 	// Exit handler arrives first with a real exit code.
 	require.True(t, svc.persistTerminalOnExit("term-race", 42))
 	// Shutdown's late call with exitCodeUnknown must be a no-op.
-	require.True(t, svc.persistTerminalOnExit("term-race", exitCodeUnknown))
+	require.True(t, svc.persistTerminalDisconnected("term-race"))
 
 	row, err := svc.Queries.GetTerminal(ctx, "term-race")
 	require.NoError(t, err)
@@ -361,6 +364,43 @@ func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) 
 	assert.Contains(t, string(row.Screen), "(42)", "exit handler's notice text must survive")
 	assert.NotContains(t, string(row.Screen), "Worker disconnected",
 		"Shutdown must not append the worker-disconnected notice when the exit handler already finished")
+}
+
+func TestPersistTerminalOnExitSavesObservedNegativeStatus(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const terminalID = "observed-negative-status"
+	startTestTerminal(t, svc, t.Context(), terminalID)
+	testutil.FreezeTerminalOutput(t, svc.Terminals, terminalID)
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("previous output")))
+	require.True(t, svc.persistTerminalOnExit(terminalID, 42))
+	svc.Terminals.UpdateTitle(terminalID, "latest title")
+
+	require.True(t, svc.persistTerminalOnExit(terminalID, -1))
+
+	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(-1), row.ExitCode, "an observed status must replace the prior status even when it is negative")
+	assert.Equal(t, "latest title", row.Title, "the latest snapshot must not be skipped")
+}
+
+func TestPersistTerminalDisconnectedKeepsItsOwnNotice(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const terminalID = "disconnect-notice"
+	startTestTerminal(t, svc, t.Context(), terminalID)
+	testutil.FreezeTerminalOutput(t, svc.Terminals, terminalID)
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("retained output")))
+
+	require.True(t, svc.persistTerminalDisconnected(terminalID))
+	require.True(t, svc.persistTerminalDisconnected(terminalID))
+
+	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	assert.Equal(t, 1, strings.Count(string(row.Screen), "Worker disconnected - Press Enter to restart"))
+	assert.NotContains(t, string(row.Screen), "Terminal process exited (-1)")
+	assert.False(t, svc.persistTerminalDisconnected("missing-terminal"))
 }
 
 // TestFormatTerminalExitedNotice exercises the formatter directly so a
@@ -378,7 +418,7 @@ func TestFormatTerminalExitedNotice(t *testing.T) {
 		{name: "zero", code: 0, want: "[Terminal process exited (0) - Press Enter to restart]"},
 		{name: "positive", code: 255, want: "[Terminal process exited (255) - Press Enter to restart]"},
 		{name: "negative non-sentinel", code: -2, want: "[Terminal process exited (-2) - Press Enter to restart]"},
-		{name: "unknown sentinel", code: exitCodeUnknown, want: "[Worker disconnected - Press Enter to restart]"},
+		{name: "negative one", code: -1, want: "[Terminal process exited (-1) - Press Enter to restart]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -514,7 +554,7 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 // TestRestartTerminal_CloseDuringRestart exercises the closed_at guard
 // in runTerminalRestart. We force the race deterministically by setting
 // closed_at on the DB row *before* dispatching RestartTerminal:
-// requireAccessibleTerminal doesn't check closed_at, so the spawn
+// requireTerminalForRestart doesn't check closed_at, so the spawn
 // proceeds, and the post-spawn re-fetch inside runTerminalRestart sees
 // the closed row and tears the freshly-spawned PTY back down.
 //

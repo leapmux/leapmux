@@ -40,8 +40,8 @@ type watchSession struct {
 	notify       chan struct{} // cap 1
 }
 
-func newWatchSession(svc *Service, caller channel.Caller, sender channel.ResponseWriter) *watchSession {
-	ctx, cancel := context.WithCancel(bgCtx())
+func newWatchSession(parent context.Context, svc *Service, caller channel.Caller, sender channel.ResponseWriter) *watchSession {
+	ctx, cancel := context.WithCancel(parent)
 	channelID := sender.ChannelID()
 	return &watchSession{
 		svc:       svc,

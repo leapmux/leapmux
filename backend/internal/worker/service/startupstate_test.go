@@ -1,6 +1,10 @@
 package service
 
 import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -119,18 +123,21 @@ func TestStartupCore_ColdStartRefusesAStartupInFlight(t *testing.T) {
 	core.WaitForInFlight()
 }
 
-// beginForTest records an entry and returns a cleanup that pairs with
-// finish() to keep WaitForInFlight happy. Tests use this to exercise
-// the startupCore primitives without the full startup-goroutine
-// machinery.
-func beginForTest(t *testing.T, r *startupCore, id string) {
+// beginForTest owns a synthetic startup claim until test cleanup. A test that
+// runs an actual startup body leaves finishEntry to that body instead.
+func beginForTest(t *testing.T, r *startupCore, id string) *startupEntry {
 	t.Helper()
 	entry := r.begin(id, func() {})
+	trackStartupForTest(t, r, entry)
+	return entry
+}
+
+// trackStartupForTest pairs a synthetic claim with cancellation and completion
+// before the service fixture joins startup work or closes its database.
+func trackStartupForTest(t *testing.T, r *startupCore, entry *startupEntry) {
+	t.Helper()
 	require.NotNil(t, entry)
-	t.Cleanup(func() {
-		r.cancelAndClear(id, keepWorktreeOnClose)
-		r.finishEntry(entry)
-	})
+	t.Cleanup(func() { r.cancelAndClear(entry.id, keepWorktreeOnClose); r.finishEntry(entry) })
 }
 
 func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing.T) {
@@ -197,7 +204,7 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 	id := "term-clear-drain"
 	beginForTest(t, &r, id)
 
-	require.True(t, r.setPendingResize(id, 120, 40))
+	require.True(t, r.setPendingResize(r.entries[id], 120, 40))
 
 	// Capture the chan reference before clearing so we can inspect its
 	// buffer independently of later takePendingResize calls.
@@ -207,7 +214,7 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 	require.NotNil(t, ch)
 	require.Equal(t, 1, len(ch), "setPendingResize should have buffered a signal")
 
-	r.clearPendingResize(id)
+	r.clearPendingResize(r.entries[id])
 	assert.Equal(t, 0, len(ch),
 		"clearPendingResize must drain the buffered signal so a later waiter can't wake on it")
 
@@ -270,7 +277,7 @@ func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
 	call := newTimer.MustWait(ctx)
 	assert.Equal(t, 30*time.Second, call.Duration)
 	call.MustRelease(ctx)
-	require.True(t, r.setPendingResize(id, 90, 30))
+	require.True(t, r.setPendingResize(r.entries[id], 90, 30))
 	stopTimer.MustWait(ctx).MustRelease(ctx)
 	got := <-result
 	cols, rows, ok := got.cols, got.rows, got.ok
@@ -292,7 +299,7 @@ func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
 	id := "term-prestashed"
 	beginForTest(t, &r, id)
 
-	require.True(t, r.setPendingResize(id, 100, 50))
+	require.True(t, r.setPendingResize(r.entries[id], 100, 50))
 	cols, rows, ok := r.waitForPendingResize(id, 500*time.Millisecond)
 	require.True(t, ok)
 	assert.Equal(t, uint16(100), cols)
@@ -346,7 +353,7 @@ func TestStartupCore_OldWaitCannotTakeReplacementResize(t *testing.T) {
 
 	newEntry := core.begin("term-replaced", func() {})
 	require.NotNil(t, newEntry)
-	require.True(t, core.setPendingResize("term-replaced", 120, 50))
+	require.True(t, core.setPendingResize(core.entries["term-replaced"], 120, 50))
 	_, _, ok := core.takePendingResize(oldEntry)
 	assert.False(t, ok, "an old wait must not take a replacement startup's resize")
 	cols, rows, ok := core.takePendingResize(newEntry)
@@ -615,7 +622,7 @@ func TestStartupCore_StaleTransitionsCannotRetireAReplacement(t *testing.T) {
 			var replacementCancelled bool
 			replacement := core.begin("tab-1", func() { replacementCancelled = true })
 			require.NotNil(t, replacement, "the close freed the id, so the replacement claims it")
-			require.True(t, core.setPendingResize("tab-1", 120, 50))
+			require.True(t, core.setPendingResize(core.entries["tab-1"], 120, 50))
 
 			tc.stale(&core, retired)
 
@@ -704,10 +711,7 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 			ctx := testutil.DeadlineContext(t)
 			h := core.begin("tab-1", func() {})
 			require.NotNil(t, h)
-			newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
-			defer newTimer.Close()
-			stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
-			defer stopTimer.Close()
+			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, startupAwaitTimerTag)
 
 			done := make(chan startupWait, 1)
 			go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
@@ -747,10 +751,7 @@ func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	h := core.begin("tab-1", func() {})
 	require.NotNil(t, h)
-	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
-	defer newTimer.Close()
-	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
-	defer stopTimer.Close()
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, startupAwaitTimerTag)
 
 	done := make(chan startupWait, 1)
 	go func() { done <- core.awaitInFlight("tab-1", 90*time.Second) }()
@@ -758,9 +759,7 @@ func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	call := newTimer.MustWait(ctx)
 	assert.Equal(t, 90*time.Second, call.Duration, "the wait must use its supplied limit")
 	call.MustRelease(ctx)
-	advance := clock.Advance(90 * time.Second)
-	stopTimer.MustWait(ctx).MustRelease(ctx)
-	advance.MustWait(ctx)
+	testutil.AdvanceAndAwaitStop(t, ctx, clock, 90*time.Second, stopTimer)
 	select {
 	case got := <-done:
 		assert.Equal(t, startupWait{}, got,
@@ -785,10 +784,7 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	h := core.begin("tab-1", func() {})
 	require.NotNil(t, h)
-	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
-	defer newTimer.Close()
-	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
-	defer stopTimer.Close()
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, startupAwaitTimerTag)
 
 	const waiters = 8
 	done := make(chan startupWait, waiters)
@@ -916,10 +912,7 @@ func TestStartupCore_AbandonWakesAWaiterWithoutRecordingAClose(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)
 	h := core.begin("tab-1", func() {})
 	require.NotNil(t, h)
-	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
-	defer newTimer.Close()
-	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
-	defer stopTimer.Close()
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, startupAwaitTimerTag)
 
 	done := make(chan startupWait, 1)
 	go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
@@ -1184,5 +1177,383 @@ func TestClaimRefusedAfterCloseClaims(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("WaitForInFlight must return at once after closeClaims")
+	}
+}
+
+func TestTerminalResizeCompletionPreservesReplacementPending(t *testing.T) {
+	core := newTestStartupCore(t)
+	old := core.begin("resize-owner", func() {})
+	require.NotNil(t, old)
+	defer core.finishEntry(old)
+	core.cancelAndClear(old.id, keepWorktreeOnClose)
+	replacement := core.begin(old.id, func() {})
+	require.NotNil(t, replacement)
+	defer core.finishEntry(replacement)
+	defer core.cancelAndClear(replacement.id, keepWorktreeOnClose)
+	require.True(t, core.setPendingResize(core.entries[replacement.id], 180, 50))
+	core.clearPendingResize(old)
+	cols, rows, ok := core.takePendingResize(replacement)
+	require.True(t, ok, "old resize completion must preserve replacement dimensions")
+	assert.Equal(t, uint16(180), cols)
+	assert.Equal(t, uint16(50), rows)
+}
+
+func TestTerminalResizeSerializesPendingApply(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestStartupCore(t)
+		h := core.begin("resize", func() {})
+		defer core.finishEntry(h)
+		defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+		entered, release := make(chan struct{}), make(chan struct{})
+		releaseOnce := sync.OnceFunc(func() { close(release) })
+		defer releaseOnce()
+		require.True(t, core.setPendingResize(h, 100, 30))
+		var physical atomic.Uint32
+		startupDone := make(chan error, 1)
+		go func() {
+			startupDone <- core.withTerminalResizeEntry(context.Background(), h, func() error {
+				cols, _, ok := core.takePendingResize(h)
+				if !ok {
+					return fmt.Errorf("startup lost its pending dimensions")
+				}
+				close(entered)
+				<-release
+				physical.Store(uint32(cols))
+				return nil
+			})
+		}()
+		<-entered
+		directDone := make(chan error, 1)
+		go func() {
+			directDone <- core.withTerminalResize(context.Background(), h.id, func(*startupEntry) error {
+				physical.Store(180)
+				core.clearPendingResize(h)
+				return nil
+			})
+		}()
+		synctest.Wait()
+		completed := false
+		select {
+		case err := <-directDone:
+			require.NoError(t, err)
+			completed = true
+			t.Error("direct resize completed inside pending apply")
+		default:
+		}
+		releaseOnce()
+		require.NoError(t, <-startupDone)
+		if !completed {
+			require.NoError(t, <-directDone)
+		}
+		synctest.Wait()
+		assert.Equal(t, uint32(180), physical.Load())
+	})
+}
+
+func TestTerminalResizeRejectsCanceledAndRetiredOwners(t *testing.T) {
+	for _, mode := range []string{"canceled", "retired", "shutdown"} {
+		t.Run(mode, func(t *testing.T) {
+			core := newTestStartupCore(t)
+			h := core.begin("resize", func() {})
+			defer core.finishEntry(h)
+			defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch mode {
+			case "canceled":
+				cancel()
+			case "retired":
+				core.cancelAndClear(h.id, keepWorktreeOnClose)
+			case "shutdown":
+				core.closeClaims()
+			}
+			called := false
+			err := core.withTerminalResizeEntry(ctx, h, func() error { called = true; return nil })
+			assert.Error(t, err)
+			assert.False(t, called, "invalid owner must not perform physical I/O")
+		})
+	}
+}
+
+func TestTerminalResizeQueuedStartupJoinsBeforeActiveRPC(t *testing.T) {
+	for _, mode := range []string{"cancel", "shutdown"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				core := newTestStartupCore(t)
+				h := core.begin("resize", func() {})
+				entered, release := make(chan struct{}), make(chan struct{})
+				releaseOnce := sync.OnceFunc(func() { close(release) })
+				defer releaseOnce()
+				activeDone := make(chan error, 1)
+				go func() {
+					activeDone <- core.withTerminalResize(context.Background(), h.id, func(*startupEntry) error {
+						close(entered)
+						<-release
+						return nil
+					})
+				}()
+				<-entered
+				startupDone := make(chan error, 1)
+				go func() {
+					defer core.finishEntry(h)
+					startupDone <- core.withTerminalResizeEntry(context.Background(), h, func() error {
+						t.Error("retired queued startup performed physical I/O")
+						return nil
+					})
+				}()
+				synctest.Wait()
+				// A different terminal needs neither the occupied permit nor a global lock.
+				require.NoError(t, core.withTerminalResize(context.Background(), "other", func(*startupEntry) error { return nil }))
+				if mode == "cancel" {
+					core.cancelAndClear(h.id, keepWorktreeOnClose)
+				} else {
+					core.closeClaims()
+					core.closeClaims()
+				}
+				require.Error(t, <-startupDone)
+				core.WaitForInFlight()
+				select {
+				case err := <-activeDone:
+					t.Fatalf("active RPC returned before its physical I/O was released: %v", err)
+				default:
+				}
+				releaseOnce()
+				require.NoError(t, <-activeDone)
+				core.cancelAndClear(h.id, keepWorktreeOnClose)
+			})
+		})
+	}
+}
+
+func TestTerminalResizeMissingOwnerCannotMutateALaterStartup(t *testing.T) {
+	core := newTestStartupCore(t)
+	var replacement *startupEntry
+	err := core.withTerminalResize(context.Background(), "resize", func(owner *startupEntry) error {
+		require.Nil(t, owner)
+		replacement = core.begin("resize", func() {})
+		require.True(t, core.setPendingResize(replacement, 180, 50))
+		assert.False(t, core.setPendingResize(owner, 100, 30))
+		core.clearPendingResize(owner)
+		return nil
+	})
+	require.NoError(t, err)
+	defer core.finishEntry(replacement)
+	defer core.cancelAndClear(replacement.id, keepWorktreeOnClose)
+	cols, rows, ok := core.takePendingResize(replacement)
+	require.True(t, ok)
+	assert.Equal(t, uint16(180), cols)
+	assert.Equal(t, uint16(50), rows)
+}
+
+// resizeStateContext observes an Err snapshot without changing its value.
+// The permit test pauses the registry lock after that snapshot.
+type resizeStateContext struct {
+	context.Context
+	calls        atomic.Int32
+	observeAt    int32
+	snapshots    chan error
+	resume       <-chan struct{}
+	doneObserved func()
+}
+
+func (c *resizeStateContext) Err() error {
+	err := c.Context.Err()
+	if c.calls.Add(1) == c.observeAt {
+		c.snapshots <- err
+		if c.resume != nil {
+			<-c.resume
+		}
+	}
+	return err
+}
+
+func (c *resizeStateContext) Done() <-chan struct{} {
+	if c.doneObserved != nil {
+		c.doneObserved()
+	}
+	return c.Context.Done()
+}
+
+func TestTerminalResizeCancellationWhileCheckingStateSkipsIO(t *testing.T) {
+	for _, withOwner := range []bool{true, false} {
+		t.Run(fmt.Sprint(withOwner), func(t *testing.T) {
+			core := newTestStartupCore(t)
+			parent, cancel := context.WithCancel(testutil.DeadlineContext(t))
+			defer cancel()
+			observedDone := make(chan struct{})
+			resume := make(chan struct{})
+			ctx := &resizeStateContext{Context: parent, observeAt: 1, snapshots: make(chan error, 1), doneObserved: sync.OnceFunc(func() { close(observedDone) })}
+			var h *startupEntry
+			if withOwner {
+				h = core.begin("resize", func() {})
+				defer core.finishEntry(h)
+				defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+				h.resizePermit <- struct{}{}
+				ctx.observeAt = 2
+			} else {
+				ctx.resume = resume
+			}
+			called := false
+			done := make(chan error, 1)
+			go func() {
+				done <- core.withTerminalResize(ctx, "resize", func(*startupEntry) error { called = true; return nil })
+			}()
+			if withOwner {
+				<-observedDone
+				core.mu.Lock()
+				<-h.resizePermit
+				require.NoError(t, <-ctx.snapshots)
+			} else {
+				require.NoError(t, <-ctx.snapshots)
+				core.mu.Lock()
+				close(resume)
+			}
+			cancel()
+			core.mu.Unlock()
+			assert.ErrorIs(t, <-done, context.Canceled)
+			assert.False(t, called, "cancellation during state validation must precede physical I/O")
+			if h != nil {
+				require.NoError(t, core.withTerminalResizeEntry(context.Background(), h, func() error { return nil }), "canceled request must release the permit")
+			}
+		})
+	}
+}
+
+func TestTerminalResizeCallerCancellationReleasesQueuedPermit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestStartupCore(t)
+		h := core.begin("resize", func() {})
+		defer core.finishEntry(h)
+		defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+		h.resizePermit <- struct{}{}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		called := false
+		done := make(chan error, 1)
+		go func() { done <- core.withTerminalResizeEntry(ctx, h, func() error { called = true; return nil }) }()
+		synctest.Wait()
+		cancel()
+		assert.ErrorIs(t, <-done, context.Canceled)
+		assert.False(t, called)
+		<-h.resizePermit
+		require.NoError(t, core.withTerminalResizeEntry(context.Background(), h, func() error { return nil }))
+	})
+}
+
+func TestTerminalResizeRejectsFailedAndNilEntries(t *testing.T) {
+	core := newTestStartupCore(t)
+	h := core.begin("resize", func() {})
+	defer core.finishEntry(h)
+	defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+	core.fail(h, "startup failed")
+	core.mu.Lock()
+	failed := core.entries[h.id]
+	core.mu.Unlock()
+	require.NotNil(t, failed)
+	require.Nil(t, failed.resizePermit)
+	for _, entry := range []*startupEntry{nil, failed} {
+		called := false
+		assert.ErrorIs(t, core.withTerminalResizeEntry(context.Background(), entry, func() error { called = true; return nil }), errStartupEntryChanged)
+		assert.False(t, called)
+	}
+}
+
+func TestTerminalResizeActiveCompletionCannotMutateReplacement(t *testing.T) {
+	for _, clear := range []bool{true, false} {
+		t.Run(fmt.Sprint(clear), func(t *testing.T) {
+			core := newTestStartupCore(t)
+			old := core.begin("resize", func() {})
+			defer core.finishEntry(old)
+			entered, release := make(chan struct{}), make(chan struct{})
+			finish := sync.OnceFunc(func() { close(release) })
+			defer finish()
+			done := make(chan error, 1)
+			go func() {
+				done <- core.withTerminalResize(context.Background(), old.id, func(owner *startupEntry) error {
+					close(entered)
+					<-release
+					if clear {
+						core.clearPendingResize(owner)
+					} else if core.setPendingResize(owner, 100, 30) {
+						return fmt.Errorf("old completion changed pending dimensions")
+					}
+					return nil
+				})
+			}()
+			<-entered
+			core.cancelAndClear(old.id, keepWorktreeOnClose)
+			replacement := core.begin(old.id, func() {})
+			defer core.finishEntry(replacement)
+			defer core.cancelAndClear(replacement.id, keepWorktreeOnClose)
+			require.NoError(t, core.withTerminalResize(context.Background(), replacement.id, func(owner *startupEntry) error {
+				if !core.setPendingResize(owner, 180, 50) {
+					return fmt.Errorf("replacement lost resize ownership")
+				}
+				return nil
+			}), "replacement must progress while old physical I/O remains blocked")
+			finish()
+			require.NoError(t, <-done)
+			cols, rows, ok := core.takePendingResize(replacement)
+			require.True(t, ok)
+			assert.Equal(t, uint16(180), cols)
+			assert.Equal(t, uint16(50), rows)
+		})
+	}
+}
+
+func TestTerminalResizeSerializesPendingUpdates(t *testing.T) {
+	for _, clear := range []bool{true, false} {
+		t.Run(fmt.Sprint(clear), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				core := newTestStartupCore(t)
+				h := core.begin("resize", func() {})
+				defer core.finishEntry(h)
+				defer core.cancelAndClear(h.id, keepWorktreeOnClose)
+				require.True(t, core.setPendingResize(h, 90, 24))
+				entered, release := make(chan struct{}), make(chan struct{})
+				finish := sync.OnceFunc(func() { close(release) })
+				defer finish()
+				first, second := make(chan error, 1), make(chan error, 1)
+				go func() {
+					first <- core.withTerminalResize(context.Background(), h.id, func(owner *startupEntry) error {
+						close(entered)
+						<-release
+						if clear {
+							core.clearPendingResize(owner)
+						} else if !core.setPendingResize(owner, 100, 30) {
+							return fmt.Errorf("first resize lost ownership")
+						}
+						return nil
+					})
+				}()
+				<-entered
+				go func() {
+					second <- core.withTerminalResize(context.Background(), h.id, func(owner *startupEntry) error {
+						if !core.setPendingResize(owner, 180, 50) {
+							return fmt.Errorf("second resize lost ownership")
+						}
+						return nil
+					})
+				}()
+				synctest.Wait()
+				completed := false
+				select {
+				case err := <-second:
+					require.NoError(t, err)
+					completed = true
+					t.Error("second pending update bypassed the first operation")
+				default:
+				}
+				finish()
+				require.NoError(t, <-first)
+				if !completed {
+					require.NoError(t, <-second)
+				}
+				cols, rows, ok := core.takePendingResize(h)
+				require.True(t, ok)
+				assert.Equal(t, uint16(180), cols)
+				assert.Equal(t, uint16(50), rows)
+			})
+		})
 	}
 }

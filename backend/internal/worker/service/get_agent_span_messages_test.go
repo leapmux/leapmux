@@ -11,17 +11,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func getAgentSpanMessages(t *testing.T, dispatcher *channel.Dispatcher, agentID, spanID string) (*leapmuxv1.GetAgentSpanMessagesResponse, *testResponseWriter) {
+func getAgentSpanMessages(t *testing.T, dispatcher testRPCDispatcher, agentID, spanID string) (*leapmuxv1.GetAgentSpanMessagesResponse, *testResponseWriter) {
 	t.Helper()
 	writer := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceGetAgentSpanMessagesProcedure, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
-	if len(writer.responses) == 0 {
+	if len(writer.errors) > 0 {
 		return nil, writer
 	}
+	require.Len(t, writer.responses, 1, "a successful lookup must send its response even when no messages match")
 	var response leapmuxv1.GetAgentSpanMessagesResponse
 	require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &response))
 	return &response, writer

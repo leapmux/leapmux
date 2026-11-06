@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -895,4 +896,100 @@ func TestDispatcherCloseAdmissionRacesDispatch(t *testing.T) {
 	assert.Equal(t, int32(1), late.errors.Load(),
 		"a dispatch after the close is refused in the writer's shape")
 	assert.Equal(t, int32(n), admitted.Load(), "the late dispatch ran no handler")
+}
+
+func TestDispatcherInvocationLifecycle(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		for _, tracked := range []bool{false, true} {
+			for _, bound := range []bool{false, true} {
+				for _, panics := range []bool{false, true} {
+					t.Run(fmt.Sprintf("async=%t/tracked=%t/cleanup=%t/panic=%t", async, tracked, bound, panics), func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							d := NewDispatcher()
+							var cleanup sync.WaitGroup
+							if bound {
+								d.BindCleanup(&cleanup)
+							}
+							entered := make(chan struct{})
+							release := make(chan struct{})
+							finish := sync.OnceFunc(func() { close(release) })
+							defer finish()
+							d.Handle("lifecycle", Registration{Tracked: tracked}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) {
+								close(entered)
+								<-release
+								if panics {
+									panic("lifecycle test")
+								}
+							})
+							dispatched := make(chan struct{})
+							w := &recordingWriter{}
+							go func() {
+								defer close(dispatched)
+								req := &leapmuxv1.InnerRpcRequest{Method: "lifecycle"}
+								caller := LocalAgentCaller(userid.MustNew("u"))
+								if async {
+									d.DispatchAsync(t.Context(), caller, req, w)
+								} else {
+									d.DispatchWith(t.Context(), caller, req, w)
+								}
+							}()
+							<-entered
+							d.CloseAdmission()
+							cleaned := make(chan struct{})
+							go func() { cleanup.Wait(); close(cleaned) }()
+							joined := make(chan bool, 1)
+							go func() { joined <- d.WaitHandlers(time.Second) }()
+							synctest.Wait()
+							select {
+							case <-joined:
+								t.Fatal("the handler joined before release")
+							default:
+							}
+							select {
+							case <-cleaned:
+								assert.False(t, tracked && bound, "tracked work must hold cleanup")
+							default:
+								assert.True(t, tracked && bound, "untracked work must not hold cleanup")
+							}
+							finish()
+							require.True(t, <-joined)
+							<-cleaned
+							<-dispatched
+							if panics {
+								assert.Equal(t, int32(1), w.errors.Load())
+							} else {
+								assert.Zero(t, w.errors.Load())
+							}
+							assert.True(t, d.WaitHandlers(0))
+						})
+					})
+				}
+			}
+		}
+	}
+}
+
+type preparableRecordingWriter struct {
+	recordingWriter
+	prepared atomic.Int32
+	released atomic.Int32
+}
+
+func (w *preparableRecordingWriter) prepareStream() (func(), bool) {
+	w.prepared.Add(1)
+	return func() { w.released.Add(1) }, true
+}
+
+func TestDispatcherClosedAdmissionReleasesPreparedStream(t *testing.T) {
+	d := NewDispatcher()
+	invoked := false
+	d.Handle("stream", Registration{Streaming: true}, func(context.Context, Caller, *leapmuxv1.InnerRpcRequest, ResponseWriter) { invoked = true })
+	d.CloseAdmission()
+	w := &preparableRecordingWriter{}
+	d.DispatchAsync(t.Context(), LocalAgentCaller(userid.MustNew("u")), &leapmuxv1.InnerRpcRequest{Method: "stream"}, w)
+	assert.False(t, invoked)
+	assert.Equal(t, int32(1), w.prepared.Load())
+	assert.Equal(t, int32(1), w.released.Load())
+	assert.Equal(t, int32(1), w.streams.Load())
+	assert.Zero(t, w.errors.Load())
 }

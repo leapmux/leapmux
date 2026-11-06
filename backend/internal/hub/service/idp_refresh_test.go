@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -22,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -65,7 +70,8 @@ func (p *refreshStubProvider) Refresh(ctx context.Context, refreshToken string) 
 // tokenSpyStore records token deletes, so a test can prove a branch never ran.
 type tokenSpyStore struct {
 	store.Store
-	deletes atomic.Int32
+	deletes   atomic.Int32
+	deleteErr error
 }
 
 func (s *tokenSpyStore) OAuthTokens() store.OAuthTokenStore {
@@ -80,7 +86,111 @@ type tokenSpyTokens struct {
 
 func (t *tokenSpyTokens) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
 	t.spy.deletes.Add(1)
+	if t.spy.deleteErr != nil {
+		return t.spy.deleteErr
+	}
 	return t.OAuthTokenStore.DeleteByUserAndProvider(ctx, p)
+}
+
+func TestRefreshProtectsAdmittedRotationFromShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var survivedCancel, hasDeadline bool
+	var calls int
+	refreshedUser := ""
+	h, spy := refreshFixture(t, func(workCtx context.Context, refreshToken string) (*huboauth.TokenSet, error) {
+		calls++
+		if calls == 1 {
+			refreshedUser = "user-1"
+			if refreshToken == "second-refresh-token" {
+				refreshedUser = "user-2"
+			}
+		}
+		_, hasDeadline = workCtx.Deadline()
+		cancel()
+		survivedCancel = workCtx.Err() == nil
+		if err := workCtx.Err(); err != nil {
+			return nil, err
+		}
+		return &huboauth.TokenSet{AccessToken: "new-access", RefreshToken: "new-refresh", TokenType: "bearer"}, nil
+	})
+	seedSecondExpiringToken(t, h)
+	h.refreshExpiringTokens(ctx)
+	require.Equal(t, 1, calls, "shutdown must not admit another refresh after the current operation")
+	assert.True(t, survivedCancel, "shutdown must not cancel a refresh that may already have rotated its token")
+	assert.True(t, hasDeadline, "an admitted refresh must retain its own deadline")
+	row, err := spy.Store.OAuthTokens().Get(t.Context(), store.GetOAuthTokensParams{UserID: userid.MustNew(refreshedUser), ProviderID: "gh"})
+	require.NoError(t, err)
+	decrypted, err := h.keystore.Decrypt(row.RefreshToken, keystore.RefreshTokenAAD(refreshedUser, "gh"))
+	require.NoError(t, err)
+	assert.Equal(t, "new-refresh", string(decrypted))
+}
+
+func TestRefreshLeavesAnAlreadyCancelledSweepQuiet(t *testing.T) {
+	var calls int
+	h, _ := refreshFixture(t, func(context.Context, string) (*huboauth.TokenSet, error) {
+		calls++
+		return nil, errors.New("an already cancelled sweep must not reach the provider")
+	})
+	logs := testutil.CaptureDefaultLogger(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	h.refreshExpiringTokens(ctx)
+	assert.Zero(t, calls)
+	assert.NotContains(t, logs.String(), "oauth refresh: list expiring tokens")
+}
+
+func TestRefreshRetainsTokensAfterTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "transport", err: errors.New("connection reset")},
+		{name: "throttled", err: &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusTooManyRequests}, ErrorCode: "temporarily_unavailable"}},
+		{name: "provider failure", err: &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable}, ErrorCode: "server_error"}},
+		{name: "invalid client", err: &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusUnauthorized}, ErrorCode: "invalid_client"}},
+		{name: "unclassified response", err: &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}}},
+		{name: "server failure with invalid grant", err: &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusServiceUnavailable}, ErrorCode: "invalid_grant"}},
+		{name: "missing response", err: &oauth2.RetrieveError{ErrorCode: "invalid_grant"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var recovered atomic.Bool
+			h, spy := refreshFixture(t, func(context.Context, string) (*huboauth.TokenSet, error) {
+				if !recovered.Load() {
+					return nil, fmt.Errorf("refresh failed: %w", tc.err)
+				}
+				return &huboauth.TokenSet{AccessToken: "retry-access", RefreshToken: "retry-refresh", TokenType: "bearer"}, nil
+			})
+			key := store.GetOAuthTokensParams{UserID: userid.MustNew("user-1"), ProviderID: "gh"}
+			before, err := spy.Store.OAuthTokens().Get(t.Context(), key)
+			require.NoError(t, err)
+			h.refreshExpiringTokens(t.Context())
+			assert.Zero(t, spy.deletes.Load(), "a temporary failure must not destroy a reusable token")
+			after, err := spy.Store.OAuthTokens().Get(t.Context(), key)
+			require.NoError(t, err)
+			assert.Equal(t, before.RefreshToken, after.RefreshToken)
+			assert.Equal(t, before.AccessToken, after.AccessToken)
+			recovered.Store(true)
+			h.refreshExpiringTokens(t.Context())
+			after, err = spy.Store.OAuthTokens().Get(t.Context(), key)
+			require.NoError(t, err)
+			plain, err := h.keystore.Decrypt(after.RefreshToken, keystore.RefreshTokenAAD("user-1", "gh"))
+			require.NoError(t, err)
+			assert.Equal(t, "retry-refresh", string(plain), "the retained credential must remain eligible for retry")
+		})
+	}
+}
+
+func TestRefreshReportsFailureToDeleteARefusedToken(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	h, spy := refreshFixture(t, func(context.Context, string) (*huboauth.TokenSet, error) {
+		return nil, huboauth.ErrRefreshTokenRejected
+	})
+	spy.deleteErr = errors.New("the token delete failed")
+	h.refreshExpiringTokens(t.Context())
+	assert.Equal(t, int32(1), spy.deletes.Load())
+	assert.Contains(t, logs.String(), spy.deleteErr.Error(), "a failed deletion must remain diagnosable")
 }
 
 // refreshFixture seeds one expiring token for user-1 at provider gh, encrypted
@@ -135,7 +245,7 @@ func mustEncrypt(t *testing.T, ks *keystore.Keystore, plain, providerID string) 
 
 // A provider that rotated its tokens before the shutdown's cancel landed must
 // still have its new pair stored: on a rotating provider the OLD refresh token
-// is already dead, and dropping the write would unlink the account.
+// is already dead, and dropping the write would lose the usable credentials.
 func TestRefreshStoresRotatedTokensAfterCancel(t *testing.T) {
 	var (
 		cancelLoop context.CancelFunc
@@ -228,12 +338,14 @@ func seedSecondExpiringToken(t *testing.T, h *IdPHandler) {
 // dead on the provider's side, and the row would only invite a doomed retry.
 func TestRefreshStillDeletesARefusedToken(t *testing.T) {
 	h, spy := refreshFixture(t, func(context.Context, string) (*huboauth.TokenSet, error) {
-		return nil, errors.New("the provider refused the grant")
+		return nil, fmt.Errorf("the provider refused the grant: %w", huboauth.ErrRefreshTokenRejected)
 	})
 
 	h.refreshExpiringTokens(context.Background())
 
 	assert.Equal(t, int32(1), spy.deletes.Load(), "a refused token must be deleted")
+	_, err := spy.Store.OAuthTokens().Get(t.Context(), store.GetOAuthTokensParams{UserID: userid.MustNew("user-1"), ProviderID: "gh"})
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
 // errorCountingHandlerForWarns counts Warn records, so a test can assert a
@@ -258,3 +370,42 @@ func (h *errorCountingHandlerForWarns) Handle(_ context.Context, r slog.Record) 
 
 func (h *errorCountingHandlerForWarns) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
 func (h *errorCountingHandlerForWarns) WithGroup(name string) slog.Handler       { return h }
+
+// refreshResponseTransport supplies a provider response without external I/O.
+type refreshResponseTransport func(*http.Request) (*http.Response, error)
+
+func (f refreshResponseTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRefreshDeletesGitHubRejectedTokens(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest} {
+		for _, contentType := range []string{"application/json", "application/x-www-form-urlencoded"} {
+			t.Run(fmt.Sprintf("%d/%s", status, contentType), func(t *testing.T) {
+				provider := huboauth.NewGitHubProvider("cid", "secret", "http://localhost/cb", nil)
+				h, spy := refreshFixture(t, provider.Refresh)
+				requests := 0
+				client := &http.Client{Transport: refreshResponseTransport(func(r *http.Request) (*http.Response, error) {
+					requests++
+					assert.Equal(t, "github.com", r.URL.Host)
+					assert.Equal(t, "/login/oauth/access_token", r.URL.Path)
+					require.NoError(t, r.ParseForm())
+					assert.Equal(t, "refresh_token", r.Form.Get("grant_type"))
+					assert.Equal(t, "old-refresh-token", r.Form.Get("refresh_token"))
+					body := `{"error":"bad_refresh_token"}`
+					if contentType != "application/json" {
+						body = "error=bad_refresh_token"
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})}
+				ctx := context.WithValue(t.Context(), oauth2.HTTPClient, client)
+				h.refreshExpiringTokens(ctx)
+				require.Positive(t, requests)
+				assert.Equal(t, int32(1), spy.deletes.Load())
+				_, err := spy.Store.OAuthTokens().Get(t.Context(), store.GetOAuthTokensParams{UserID: userid.MustNew("user-1"), ProviderID: "gh"})
+				assert.ErrorIs(t, err, store.ErrNotFound)
+				before := requests
+				h.refreshExpiringTokens(ctx)
+				assert.Equal(t, before, requests, "a rejected credential must not be retried")
+			})
+		}
+	}
+}

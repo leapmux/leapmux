@@ -5,18 +5,16 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -29,37 +27,12 @@ import (
 // path waits for it.
 const childTimeout = 60 * time.Second
 
-// guardedBuffer collects child output. The reader goroutine writes while the
-// test reads, so every access takes the mutex.
-type guardedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *guardedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *guardedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func (b *guardedBuffer) writeString(s string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf.WriteString(s)
-}
-
 // lostStderrProcess is a running command whose stderr the test can revoke the
 // way a dead pipe peer does.
 type lostStderrProcess struct {
 	cmd    *exec.Cmd
 	stderr *os.File
-	output guardedBuffer
+	output testutil.LogBuffer
 	exited chan error
 	reaped chan struct{}
 }
@@ -95,7 +68,7 @@ func startWithStderrPipe(t *testing.T, args ...string) *lostStderrProcess {
 	go func() {
 		for {
 			line, readErr := reader.ReadString('\n')
-			p.output.writeString(line)
+			_, _ = p.output.Write([]byte(line))
 			if readErr != nil {
 				return
 			}
@@ -179,18 +152,7 @@ func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 		// The readiness mark is the fake Hub's first received frame, not a
 		// log line: the worker installs its signal handling only after
 		// registration, and a cancel before that fails the start.
-		connected := make(chan struct{}, 1)
-		hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-			for {
-				if _, err := stream.Receive(); err != nil {
-					return ctx.Err()
-				}
-				select {
-				case connected <- struct{}{}:
-				default:
-				}
-			}
-		}})
+		hubURL, connected := startReceivingHub(t)
 		cfg := writeRegisteredState(t)
 		p := startWithStderrPipe(t, "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
 		select {

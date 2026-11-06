@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,6 +73,15 @@ func (svc *Service) announceTerminalStarting(terminalID, shell string) {
 // Worker does not own, so it gets a deadline rather than the caller's patience.
 const terminalProcessScanTimeout = 5 * time.Second
 
+// validateTerminalDimensions rejects values that cannot reach the PTY without
+// narrowing. Zero remains available for each caller's existing default policy.
+func validateTerminalDimensions(cols, rows uint32) error {
+	if cols > math.MaxUint16 || rows > math.MaxUint16 {
+		return fmt.Errorf("columns and rows must be at most %d", math.MaxUint16)
+	}
+	return nil
+}
+
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	// InspectTerminalProcesses lists what runs inside each terminal, so a
@@ -130,6 +140,10 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			rows := r.GetRows()
 			if rows == 0 {
 				rows = 25
+			}
+			if err := validateTerminalDimensions(cols, rows); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
 			}
 
 			// Resolve the default shell here (not inside terminal.Start) so
@@ -376,6 +390,10 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if rows == 0 {
 				rows = uint32(dbTerm.Rows)
 			}
+			if err := validateTerminalDimensions(cols, rows); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
 			// No default-shell fallback — an empty value here means the
 			// OpenTerminal path that wrote the row skipped its own
@@ -401,6 +419,11 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				// for one PTY and one control socket. During a shutdown the
 				// claim is refused by the latch, and the answer states that.
 				svc.sendStartupRefused(sender, "a restart for this terminal is already in progress")
+				return
+			}
+			if !svc.Terminals.ExitHandlerFinished(terminalID) {
+				svc.TerminalStartup.abandon(startupHandle)
+				sendFailedPrecondition(sender, "terminal exit cleanup is still in progress; try again")
 				return
 			}
 			svc.announceTerminalStarting(terminalID, shell)
@@ -455,7 +478,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 
 	// ResizeTerminal changes a terminal's dimensions.
 	registerTerminalGuardedByID(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			cols := r.GetCols()
@@ -464,31 +487,29 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 				sendInvalidArgument(sender, "cols and rows must be > 0")
 				return
 			}
+			if err := validateTerminalDimensions(cols, rows); err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
 
-			err := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows))
-			switch {
-			case err == nil:
-				// Drop any dims stashed during STARTING — the resize just
-				// landed on the real PTY, so the post-startup apply in
-				// runTerminalStartup must not overwrite it with older dims.
-				svc.TerminalStartup.clearPendingResize(terminalID)
-			case errors.Is(err, terminal.ErrTerminalNotFound):
-				// Async startup: the tab exists but the PTY isn't in the
-				// Manager yet. Stash the latest dims and ack success so the
-				// frontend's first fit() isn't silently dropped — vim/nvim
-				// would otherwise see the placeholder 80x24 from the
-				// OpenTerminal request on its first TIOCGWINSZ query.
-				if !svc.TerminalStartup.setPendingResize(terminalID, uint16(cols), uint16(rows)) {
-					// Benign TOCTOU: the PTY exited between the frontend's
-					// status check and this RPC arriving. The frontend restricts
-					// EXITED/DISCONNECTED/STARTUP_FAILED, so reaching here
-					// means READY at check time and gone now — no PTY to
-					// resize, but not actionable either.
-					slog.Debug("resize on missing terminal", "terminal_id", terminalID, "error", err)
-					sendInternalError(sender, fmt.Sprintf("resize: %v", err))
-					return
+			err := svc.TerminalStartup.withTerminalResize(ctx, terminalID, func(h *startupEntry) error {
+				resizeErr := svc.Terminals.Resize(terminalID, uint16(cols), uint16(rows))
+				switch {
+				case resizeErr == nil:
+					svc.TerminalStartup.clearPendingResize(h)
+					return nil
+				case errors.Is(resizeErr, terminal.ErrTerminalInstanceChanged):
+					// The request belongs to an obsolete physical instance.
+					return nil
+				case errors.Is(resizeErr, terminal.ErrTerminalNotFound):
+					// Startup owns these dimensions until its physical terminal is ready.
+					if svc.TerminalStartup.setPendingResize(h, uint16(cols), uint16(rows)) {
+						return nil
+					}
 				}
-			default:
+				return resizeErr
+			})
+			if err != nil {
 				slog.Error("failed to resize terminal", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, fmt.Sprintf("resize: %v", err))
 				return
@@ -996,10 +1017,13 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// above (e.g. the frontend's fit() was unusually slow, or a second
 	// resize has since landed). The PTY is already the correct size for
 	// the pre-wait case; this handler covers the rare late-arriving dims.
-	if cols, rows, ok := svc.TerminalStartup.takePendingResize(h); ok {
-		if err := svc.Terminals.Resize(terminalID, cols, rows); err != nil {
-			slog.Warn("apply pending resize after startup", "terminal_id", terminalID, "error", err)
+	if err := svc.TerminalStartup.withTerminalResizeEntry(ctx, h, func() error {
+		if cols, rows, ok := svc.TerminalStartup.takePendingResize(h); ok {
+			return svc.Terminals.Resize(terminalID, cols, rows)
 		}
+		return nil
+	}); err != nil && !errors.Is(err, terminal.ErrTerminalInstanceChanged) && !errors.Is(err, errStartupEntryChanged) && !errors.Is(err, errStartupClaimsClosed) && !errors.Is(err, context.Canceled) {
+		slog.Warn("apply pending resize after startup", "terminal_id", terminalID, "error", err)
 	}
 
 	// Spawn succeeded and no close-race; hand cleanup ownership to the
@@ -1515,22 +1539,20 @@ func terminalProgressState(state terminal.ProgressState) leapmuxv1.TerminalProgr
 // through those.
 func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
-		// A terminal the shutdown sweep hung up already carries its
-		// disconnect row: the sweeps stamped the sentinel exit code and the
-		// one notice, and this shell's exit -- often its response to the
-		// hang-up signal itself -- must not append a second notice with a
-		// real exit code over the sentinel, or publish a TerminalClosed for
-		// a worker that is going away. The bell bookkeeping still clears.
-		//
-		// A shell that exited on its own is not in the set -- neither sweep
-		// stamps an exited terminal -- so its real exit code survives, also
-		// when this handler runs after Shutdown stored the set.
-		if stamped := svc.hungUpTerminals.Load(); stamped != nil {
-			if _, hungUp := (*stamped)[tid]; hungUp {
+		// A successful shutdown notice stays authoritative only when the
+		// hang-up request preceded the observed exit. Save the latest retained
+		// screen without another notice or a TerminalClosed event. A natural
+		// exit observed before that request keeps its own exit code.
+		if notices := svc.shutdownNotifiedTerminals.Load(); notices != nil {
+			if _, notified := (*notices)[tid]; notified && svc.Terminals.HangUpRequested(tid) {
+				if snapshot, ok := svc.captureTerminalExit(tid); ok {
+					svc.saveTerminalExit(tid, exitCodeUnknown, snapshot)
+				}
 				svc.clearTerminalBellCoalesce(tid)
 				return
 			}
 		}
+
 		svc.persistTerminalOnExit(tid, exitCode)
 		svc.clearTerminalBellCoalesce(tid)
 		svc.Watchers.PublishTerminalStatus(tid, &leapmuxv1.TerminalEvent{
@@ -1580,15 +1602,15 @@ func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
 	if !row.IsQuake || row.ClosedAt.Valid {
 		return
 	}
-	// Counted like every other deferred refresh, so Shutdown's
-	// WaitActivityRefreshes joins the close before the database closes. A
-	// shutdown that already began admits nothing: the row stays open here,
+	// Counted as service cleanup, so Shutdown joins the close before the
+	// database closes. A shutdown that already began admits nothing: the row
+	// stays open here,
 	// and the boot sweep (CloseOrphanedQuakeTerminals) closes it.
-	if !svc.Output.beginActivityRefresh() {
+	if !svc.beginCleanup() {
 		return
 	}
 	go func() {
-		defer svc.Output.activityRefreshes.Done()
+		defer svc.Cleanup.Done()
 		svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", terminalID)
 	}()
 }

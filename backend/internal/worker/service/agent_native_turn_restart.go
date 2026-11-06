@@ -27,8 +27,8 @@ func (svc *Service) scheduleNativeTurnRestart(agentID string, admission agent.Tu
 }
 
 func (svc *Service) reserveNativeTurnRestart(agentID string) (reserved, newReservation bool) {
-	svc.nativeTurnRestartMu.Lock()
-	defer svc.nativeTurnRestartMu.Unlock()
+	svc.lifecycleMu.Lock()
+	defer svc.lifecycleMu.Unlock()
 	if svc.shuttingDown.Load() {
 		return false, false
 	}
@@ -45,9 +45,9 @@ func (svc *Service) reserveNativeTurnRestart(agentID string) (reserved, newReser
 
 func (svc *Service) restartAfterNativeTurn(agentID string, admission agent.TurnStateAdmission) {
 	defer func() {
-		svc.nativeTurnRestartMu.Lock()
+		svc.lifecycleMu.Lock()
 		delete(svc.nativeTurnRestarts, agentID)
-		svc.nativeTurnRestartMu.Unlock()
+		svc.lifecycleMu.Unlock()
 		svc.nativeTurnRestartWG.Done()
 	}()
 	if !admission.IsCurrent() {

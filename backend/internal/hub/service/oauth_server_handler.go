@@ -30,12 +30,10 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -51,10 +49,9 @@ const (
 	// that became the leader disconnects.
 	RefreshWorkTimeout = 15 * time.Second
 	// CredentialNoticeTimeout limits the detached "an app credential was
-	// issued" mail send. It is generous, because nothing waits for it: the
-	// token response went out before the goroutine started. It exists so a
-	// relay that accepts a connection and never answers cannot hold a
-	// goroutine for the life of the process.
+	// issued" mail send. The send runs outside the token response path, and
+	// shutdown joins it under CredentialNoticeJoinTimeout. Its own deadline
+	// prevents an unresponsive relay from keeping the send alive indefinitely.
 	CredentialNoticeTimeout = 30 * time.Second
 	// CredentialNoticeJoinTimeout limits how long a shutdown waits for the
 	// detached notice sends: the send budget plus a margin, so one full SMTP
@@ -125,23 +122,13 @@ type OAuthServerDeps struct {
 	// Nil disables the throttle, which is what a unit test wants and what a
 	// hub never has.
 	Limiter *ratelimit.Manager
-	// Mail and Renderer send the "an app credential was issued" notice.
-	//
-	// Mail may be nil, and issuance then sends nothing. In the hub it never
-	// is: mail.NewSettingsSender always returns a sender, which routes an
-	// unconfigured relay to a disabled one internally. Renderer is a struct
-	// value and CANNOT be nil; its zero value is valid and prints links with
-	// an empty base URL.
-	Mail     mail.Sender
-	Renderer mail.Renderer
-	// Notices counts the detached credential-notice sends, so the Hub's
-	// shutdown can join them up to a limit before the store closes. Required.
-	Notices *drain.Counter
+	// Notices owns detached issuance mail and its shutdown join. Required.
+	Notices *CredentialNotices
 	// ServingCtx is the hub's own lifetime, canceled only when the shutdown
 	// has joined every drain and is about to close the store. Work that must
-	// outlive its request but not the Hub (the refresh flight, an afterCommit
-	// link) runs on it: a client disconnect cannot end that work, and the work
-	// cannot read a closed store. It holds none of the request's values.
+	// outlive its request, such as the refresh flight, runs on this context.
+	// A client disconnect cannot end that work. The work cannot read a closed
+	// store, and the context holds none of the request's values.
 	// Required.
 	ServingCtx context.Context
 }
@@ -156,11 +143,7 @@ type OAuthServerHandler struct {
 	soloGate  *auth.SoloGate
 	lifecycle *auth.CredentialLifecycleEffects
 	hubURL    func() string
-	mail      mail.Sender
-	renderer  mail.Renderer
-	// notices counts the detached credential-notice sends; see
-	// OAuthServerDeps.Notices.
-	notices *drain.Counter
+	notices   *CredentialNotices
 	// servingCtx is the hub's lifetime, canceled just before the store
 	// closes; see OAuthServerDeps.ServingCtx.
 	servingCtx    context.Context
@@ -183,7 +166,7 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		panic("OAuth server requires the Hub's serving context")
 	}
 	if deps.Notices == nil {
-		panic("OAuth server requires the credential notice counter")
+		panic("OAuth server requires credential notices")
 	}
 	return &OAuthServerHandler{
 		store:      deps.Store,
@@ -192,8 +175,6 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		soloGate:   deps.SoloGate,
 		lifecycle:  deps.Lifecycle,
 		hubURL:     deps.HubURL,
-		mail:       deps.Mail,
-		renderer:   deps.Renderer,
 		notices:    deps.Notices,
 		set:        deps.Settings,
 		limiter:    deps.Limiter,

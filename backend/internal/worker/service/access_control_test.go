@@ -55,8 +55,8 @@ func seedTerminal(t *testing.T, svc *Service, terminalID string) {
 	}))
 }
 
-// agentHandlerCases enumerates the agent-ID-scoped handlers restricted via
-// requireAccessibleAgent. Each entry builds the request proto for a given
+// agentHandlerCases lists the agent-ID-scoped handlers.
+// Each entry builds the request proto for a given
 // agent ID and returns the RPC method name to dispatch.
 type agentHandlerCase struct {
 	method string
@@ -145,8 +145,7 @@ var agentHandlerCases = []agentHandlerCase{
 	}},
 }
 
-// terminalHandlerCases enumerates terminal-ID-scoped handlers gated via
-// requireAccessibleTerminal.
+// terminalHandlerCases lists the terminal-ID-scoped handlers.
 type terminalHandlerCase struct {
 	method string
 	req    func(terminalID string) proto.Message
@@ -554,7 +553,7 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 	for _, method := range streaming {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
+			dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -608,12 +607,12 @@ func TestAccessControl_CleanupWorkspaceRequiresOnlyWorkspaceWrite(t *testing.T) 
 	t.Parallel()
 
 	owner := userid.MustNew("user-1")
-	cleanup := func(t *testing.T, d *channel.Dispatcher, grant string, tabs ...*leapmuxv1.TabIdent) *testResponseWriter {
+	cleanup := func(t *testing.T, d testRPCDispatcher, grant string, tabs ...*leapmuxv1.TabIdent) *testResponseWriter {
 		t.Helper()
 		payload, err := proto.Marshal(&leapmuxv1.CleanupWorkspaceRequest{Tabs: tabs})
 		require.NoError(t, err)
 		w := newTestWriter()
-		d.DispatchWith(context.Background(), channel.NewCaller(owner, mustScopes(grant)), &leapmuxv1.InnerRpcRequest{
+		dispatchTestRequest(d, context.Background(), channel.NewCaller(owner, mustScopes(grant)), &leapmuxv1.InnerRpcRequest{
 			Method: leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, Payload: payload,
 		}, w)
 		return w
@@ -712,7 +711,7 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 		t.Run(method+" denies a non-owner", func(t *testing.T) {
 			w := newTestWriter()
 			// "user-2" holds a valid channel but does not own this worker.
-			d.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
+			dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(userid.MustNew("user-2")), &leapmuxv1.InnerRpcRequest{
 				Method: method,
 			}, w)
 
@@ -808,7 +807,7 @@ func TestScopeDenialsFollowTheDeclaredShape(t *testing.T) {
 	for _, method := range streaming {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
+			dispatchTestRequest(d, context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
 			assert.Empty(t, w.errors, "a streaming method must not refuse with a unary error")
 			frames := w.streamsSnapshot()
 			require.Len(t, frames, 1, "the denial must arrive as exactly one stream frame")
@@ -819,7 +818,7 @@ func TestScopeDenialsFollowTheDeclaredShape(t *testing.T) {
 	for _, method := range unary {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
+			dispatchTestRequest(d, context.Background(), noGrant, &leapmuxv1.InnerRpcRequest{Method: method}, w)
 			assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
 			require.Len(t, w.errors, 1, "the denial must arrive as exactly one unary error")
 			assert.Equal(t, codePermissionDenied, w.errors[0].code)
@@ -868,7 +867,7 @@ func TestAStreamingMethodDeniesWithAStreamFrame(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), tc.caller, &leapmuxv1.InnerRpcRequest{Method: method, Payload: tc.body}, w)
+			dispatchTestRequest(d, context.Background(), tc.caller, &leapmuxv1.InnerRpcRequest{Method: method, Payload: tc.body}, w)
 			assert.Empty(t, w.errors, "a streaming method must not refuse with a unary error")
 			frames := w.streamsSnapshot()
 			require.Len(t, frames, 1)
@@ -899,7 +898,7 @@ func TestAUnaryMethodDeniesWithAUnaryError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), tc.caller, &leapmuxv1.InnerRpcRequest{Method: method, Payload: tc.body}, w)
+			dispatchTestRequest(d, context.Background(), tc.caller, &leapmuxv1.InnerRpcRequest{Method: method, Payload: tc.body}, w)
 			assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
 			require.Len(t, w.errors, 1)
 			assert.Equal(t, int32(tc.code), w.errors[0].code)
@@ -957,7 +956,7 @@ func TestEveryOwnerOnlyMethodRefusesAnUndecodablePayloadInItsShape(t *testing.T)
 	for _, method := range streaming {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
+			dispatchTestRequest(d, context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
 			assert.Empty(t, w.errors, "a streaming method must not refuse with a unary error")
 			assert.Empty(t, w.responses, "a refused call must return no data")
 			frames := w.streamsSnapshot()
@@ -970,7 +969,7 @@ func TestEveryOwnerOnlyMethodRefusesAnUndecodablePayloadInItsShape(t *testing.T)
 	for _, method := range unary {
 		t.Run(method, func(t *testing.T) {
 			w := newTestWriter()
-			d.DispatchWith(context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
+			dispatchTestRequest(d, context.Background(), owner, &leapmuxv1.InnerRpcRequest{Method: method, Payload: undecodable}, w)
 			assert.Empty(t, w.streamsSnapshot(), "a unary method must not refuse with a stream frame")
 			assert.Empty(t, w.responses, "a refused call must return no data")
 			require.Len(t, w.errors, 1, "the refusal must arrive as exactly one unary error")
@@ -1456,7 +1455,7 @@ func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
 				payload, err := proto.Marshal(&leapmuxv1.CloseTabRequest{Tab: tab, WorktreeAction: action})
 				require.NoError(t, err)
 				w := newTestWriter()
-				d.DispatchWith(context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
+				dispatchTestRequest(d, context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
 					Method: leapmuxv1connect.WorkerTabServiceCloseTabProcedure, Payload: payload,
 				}, w)
 				return w
@@ -1504,12 +1503,12 @@ func TestAccessControl_CloseTabRequiresTheScopeOfItsTabType(t *testing.T) {
 		require.NoError(t, err)
 		return scopes
 	}
-	closeTab := func(t *testing.T, svc *Service, d *channel.Dispatcher, scopes authscope.ScopeSet, tab *leapmuxv1.TabIdent) *testResponseWriter {
+	closeTab := func(t *testing.T, svc *Service, d testRPCDispatcher, scopes authscope.ScopeSet, tab *leapmuxv1.TabIdent) *testResponseWriter {
 		t.Helper()
 		payload, err := proto.Marshal(&leapmuxv1.CloseTabRequest{Tab: tab})
 		require.NoError(t, err)
 		w := newTestWriter()
-		d.DispatchWith(context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
+		dispatchTestRequest(d, context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
 			Method: leapmuxv1connect.WorkerTabServiceCloseTabProcedure, Payload: payload,
 		}, w)
 		return w

@@ -695,8 +695,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
 				HubURL:    func() string { return srv.URL },
-				Mail:      sender,
-				Renderer:  mail.Renderer{BaseURL: func() string { return srv.URL }},
+				Notices:   service.NewCredentialNotices(sender, mail.Renderer{BaseURL: func() string { return srv.URL }}),
 			})
 			h.RegisterRoutes(mux)
 

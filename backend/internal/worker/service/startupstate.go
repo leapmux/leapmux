@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -31,8 +32,8 @@ const (
 //     from "inactive".
 //   - let CloseTab cancel an in-flight startup goroutine.
 //   - retain the startup error so the frontend can re-fetch it after a
-//     page refresh (it is not persisted across worker restarts; that is
-//     an acceptable edge case).
+//     page refresh. The database startup_error column supplies it after
+//     registry eviction or a worker restart.
 //   - hold a pending terminal resize (cols/rows) that arrived before the
 //     PTY was registered in the Manager, so runTerminalStartup can apply
 //     it the moment StartTerminal returns.
@@ -73,6 +74,8 @@ type startupEntry struct {
 	// most-recent signal — takePendingResize under the lock is the
 	// authoritative read.
 	resizeSignal chan struct{}
+	// resizePermit serializes pending updates and physical resize operations for this startup.
+	resizePermit chan struct{}
 	// closeDisposition / closeRaced record what a close that landed on this
 	// IN-FLIGHT startup decided about the worktree, and that such a close
 	// happened at all.
@@ -198,7 +201,8 @@ type startupCore struct {
 	// claimsClosed refuses every later claim. closeClaims sets it directly
 	// before the caller's WaitForInFlight: the WaitGroup contract needs that
 	// no Add follows a Wait, and nothing else in the registry enforced it.
-	claimsClosed bool
+	claimsClosed   bool
+	claimsClosedCh chan struct{}
 }
 
 func newStartupCore(clock quartz.Clock) startupCore {
@@ -210,6 +214,7 @@ func newStartupCore(clock quartz.Clock) startupCore {
 		inflight:        make(map[string]*startupEntry),
 		closeInProgress: make(map[string]int),
 		clock:           clock,
+		claimsClosedCh:  make(chan struct{}),
 	}
 }
 
@@ -357,7 +362,10 @@ func (r *startupCore) beginColdStart(id string, cancel context.CancelFunc) (*sta
 // flight when the latch closed.
 func (r *startupCore) closeClaims() {
 	r.mu.Lock()
-	r.claimsClosed = true
+	if !r.claimsClosed {
+		r.claimsClosed = true
+		close(r.claimsClosedCh)
+	}
 	r.mu.Unlock()
 }
 
@@ -393,6 +401,7 @@ func (r *startupCore) claim(id string, cancel context.CancelFunc, mode claimMode
 		id:           id,
 		cancel:       cancel,
 		resizeSignal: make(chan struct{}, 1),
+		resizePermit: make(chan struct{}, 1),
 		done:         make(chan struct{}),
 		finished:     make(chan struct{}),
 		replacement:  mode.replacement,
@@ -788,15 +797,14 @@ func (r *startupCore) phase0Complete(entry *startupEntry) bool {
 	return entry.phase0Complete
 }
 
-// setPendingResize records the latest ResizeTerminal dims for id. Returns
-// false if no startup is in flight for id (caller should treat that as
+// setPendingResize records dimensions only for the captured startup. Returns
+// false if that startup no longer owns its entry (caller should treat that as
 // "terminal not found"). Overwrites any prior stashed dims so only the
 // most recent resize is applied when startup completes.
-func (r *startupCore) setPendingResize(id string, cols, rows uint16) bool {
+func (r *startupCore) setPendingResize(entry *startupEntry, cols, rows uint16) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := r.entries[id]
-	if !ok || entry.failed {
+	if entry == nil || r.entries[entry.id] != entry || entry.failed {
 		return false
 	}
 	entry.pendingResize = [2]uint16{cols, rows}
@@ -871,17 +879,16 @@ func (r *startupCore) waitForPendingResize(id string, timeout time.Duration) (co
 	return r.takePendingResize(entry)
 }
 
-// clearPendingResize drops any stashed dims for id. Called from the
+// clearPendingResize drops dimensions only for the captured startup. Called from the
 // ResizeTerminal handler when the PTY is already in the Manager so the
 // direct Resize call has already been applied; leaving a stale stash in
 // place would cause runTerminalStartup to overwrite the newer size.
 // Also drains the buffered resizeSignal so a later waitForPendingResize
 // on the same entry can't wake on a stash that no longer exists.
-func (r *startupCore) clearPendingResize(id string) {
+func (r *startupCore) clearPendingResize(entry *startupEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := r.entries[id]
-	if !ok {
+	if entry == nil || r.entries[entry.id] != entry || entry.failed {
 		return
 	}
 	entry.hasPendingResize = false
@@ -971,4 +978,73 @@ func newTerminalStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.T
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,
 	)
+}
+
+var (
+	errStartupEntryChanged = errors.New("terminal startup changed during resize")
+	errStartupClaimsClosed = errors.New("terminal resize refused during shutdown")
+)
+
+// withTerminalResize captures one startup owner before any physical I/O.
+// An operation with no startup owner cannot mutate a later startup's dimensions.
+func (r *startupCore) withTerminalResize(ctx context.Context, id string, operation func(*startupEntry) error) error {
+	r.mu.Lock()
+	h := r.entries[id]
+	r.mu.Unlock()
+	if h == nil {
+		if err := r.terminalResizeState(ctx, nil); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return operation(nil)
+	}
+	return r.withTerminalResizeEntry(ctx, h, func() error { return operation(h) })
+}
+
+// withTerminalResizeEntry serializes pending replay with direct resize requests.
+// Cancellation and shutdown release queued startup work without waiting for an
+// already admitted native operation. Native I/O never holds the registry mutex.
+func (r *startupCore) withTerminalResizeEntry(ctx context.Context, h *startupEntry, operation func() error) error {
+	if h == nil {
+		return errStartupEntryChanged
+	}
+	if err := r.terminalResizeState(ctx, h); err != nil {
+		return err
+	}
+	select {
+	case h.resizePermit <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h.done:
+		return errStartupEntryChanged
+	case <-r.claimsClosedCh:
+		return errStartupClaimsClosed
+	}
+	defer func() { <-h.resizePermit }()
+	// A select can acquire an available permit when cancellation is also ready.
+	// Recheck all admission conditions before invoking the physical operation.
+	if err := r.terminalResizeState(ctx, h); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return operation()
+}
+
+func (r *startupCore) terminalResizeState(ctx context.Context, h *startupEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.claimsClosed {
+		return errStartupClaimsClosed
+	}
+	if h != nil && (r.entries[h.id] != h || h.failed) {
+		return errStartupEntryChanged
+	}
+	return nil
 }

@@ -17,11 +17,10 @@ import (
 // `tee` that died, a closed terminal -- so the drain and the lease release can
 // still finish.
 //
-// signal.Ignore is impossible here: SIG_IGN survives exec, so every child --
-// agent CLI and shell alike -- would inherit it and never learn that its
-// reader went away (`yes | head` would spin forever). A Go-installed handler
-// resets to the default disposition in each child, so children keep the
-// behaviour their own code expects.
+// Do not use signal.Ignore here: SIG_IGN survives exec. A child would receive
+// EPIPE instead of default SIGPIPE termination and would need to handle the
+// write error itself. A Go-installed handler resets to the default disposition
+// in each child, so children keep the behaviour their own code expects.
 //
 // Only a long-lived entry point calls this. A short-lived command such as
 // `leapmux control ... | head` must keep dying by SIGPIPE, which is what stops

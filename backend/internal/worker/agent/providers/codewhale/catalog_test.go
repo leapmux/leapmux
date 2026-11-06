@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -221,42 +223,50 @@ func TestTheEndOfAnAgentJoinsACatalogRead(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rt := newFakeRuntime(t)
-			rt.handle(http.MethodGet, routeProviders+"/custom"+providerRouteModels, func(w http.ResponseWriter, _ *http.Request) {
-				writeFakeJSON(w, http.StatusOK, map[string]any{"models": []map[string]any{{"id": "m1"}}})
+			synctest.Test(t, func(t *testing.T) {
+				rt := newFakeRuntime(t)
+				rt.handle(http.MethodGet, routeProviders+"/custom"+providerRouteModels, func(w http.ResponseWriter, _ *http.Request) {
+					writeFakeJSON(w, http.StatusOK, map[string]any{"models": []map[string]any{{"id": "m1"}}})
+				})
+				parked := parkedRefreshServices{entered: make(chan struct{}), release: make(chan struct{})}
+				a, sink := newTestAgentWith(t, rt, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
+					parked.ProviderServices = services
+					return parked
+				}})
+				release := sync.OnceFunc(func() { close(parked.release) })
+				defer func() { release(); a.Stop() }()
+				a.settings.provider = "deepseek"
+
+				a.HandleOutput(runtimeEvent(1, "thread.updated", "", "", map[string]any{"thread": map[string]any{"id": testThreadID, "model_provider": "custom"}}))
+				select {
+				case <-parked.entered:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the catalog read never reached its settings write")
+				}
+
+				rt.server.Close()
+				a.endpoint.Close()
+
+				ended := make(chan struct{})
+				go func() {
+					defer close(ended)
+					tc.end(a)
+				}()
+				synctest.Wait()
+				select {
+				case <-ended:
+					t.Fatal("the agent ended while a catalog read still ran")
+				default:
+				}
+
+				release()
+				select {
+				case <-ended:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the agent never ended after the catalog read finished")
+				}
+				assert.Equal(t, 1, sink.SettingsRefreshCount())
 			})
-			parked := parkedRefreshServices{entered: make(chan struct{}), release: make(chan struct{})}
-			a, sink := newTestAgentWith(t, rt, testAgentOptions{services: func(services agent.ProviderServices) agent.ProviderServices {
-				parked.ProviderServices = services
-				return parked
-			}})
-			a.settings.provider = "deepseek"
-
-			a.HandleOutput(runtimeEvent(1, "thread.updated", "", "", map[string]any{"thread": map[string]any{"id": testThreadID, "model_provider": "custom"}}))
-			select {
-			case <-parked.entered:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the catalog read never reached its settings write")
-			}
-
-			ended := make(chan struct{})
-			go func() {
-				defer close(ended)
-				tc.end(a)
-			}()
-			select {
-			case <-ended:
-				t.Fatal("the agent ended while a catalog read still ran")
-			case <-time.After(200 * time.Millisecond):
-			}
-
-			close(parked.release)
-			select {
-			case <-ended:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the agent never ended after the catalog read finished")
-			}
-			assert.Equal(t, 1, sink.SettingsRefreshCount())
 		})
 	}
 }

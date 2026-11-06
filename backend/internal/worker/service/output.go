@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/util/drain"
+
 	"github.com/coder/quartz"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -245,6 +247,8 @@ type OutputHandler struct {
 	// Otherwise the parent retains the child's tracker and handler until the parent ends.
 	// Settings refreshes use this registry as their source identity also.
 	rootSinks sync.Map // rootAgentID -> *agentOutputSink
+	// progressPublishers includes retired publishers until their callbacks return.
+	progressPublishers drain.Counter
 	// rootSinkMu serializes source replacement with settings settlement.
 	// rootSinkMutations counts mutation holders and waiters for controlled tests.
 	rootSinkMu        sync.RWMutex
@@ -856,7 +860,7 @@ func (h *OutputHandler) NewRootSink(agentID string, agentProvider leapmuxv1.Agen
 		messageSession:   &nativeSessionFact{id: source.AgentSessionID},
 	}
 	s.tracker = h.rootTracker(agentID)
-	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+	s.progress = newGenerationProgressPublisher(&h.progressPublishers, func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
 	}, s.currentMessageSessionID)
 	unlockRootSinks := h.lockRootSinkMutation()

@@ -36,6 +36,7 @@ func (a *Agent) CompactContext() error {
 	pending := &droidCompaction{requestID: id, sessionID: sessionID, done: make(chan struct{})}
 	if sessionID != "" && !active && !compacting && !stopped {
 		a.compaction = pending
+		a.compactionOperations.Add(1)
 	}
 	a.Mu.Unlock()
 	if stopped {
@@ -49,6 +50,7 @@ func (a *Agent) CompactContext() error {
 	}
 	if err := a.writeRequest(id, droidMethodCompactSession, map[string]string{"sessionId": sessionID}); err != nil {
 		a.finishCompaction(pending, false)
+		a.compactionOperations.Done()
 		return err
 	}
 	a.dispatchMu.Lock()
@@ -62,24 +64,18 @@ func (a *Agent) CompactContext() error {
 		target.state.compactionLive = true
 	}
 	a.dispatchMu.Unlock()
-	// The watcher is counted under a.Mu, and only while the agent is not
-	// stopped: a WaitGroup Add that starts after Wait's zero-count Wait is a
-	// misuse, and Wait sets a.stopped. A stop that lands between the start
-	// publication above and this count leaves no watcher to run, so the
-	// compaction this call published is this call's to end -- outside a.Mu and
-	// dispatchMu, which endAbortedCompaction takes itself.
+	// Setup remains counted until it hands its operation to the watcher.
+	// A stop during setup ends the published compaction here instead.
 	a.Mu.Lock()
 	stoppedNow := a.stopped
-	if !stoppedNow {
-		a.compactionWatchers.Add(1)
-	}
 	a.Mu.Unlock()
 	if stoppedNow {
 		a.endAbortedCompaction(pending)
+		a.compactionOperations.Done()
 		return nil
 	}
 	go func() {
-		defer a.compactionWatchers.Done()
+		defer a.compactionOperations.Done()
 		a.awaitCompactionResult(pending)
 	}()
 	return nil

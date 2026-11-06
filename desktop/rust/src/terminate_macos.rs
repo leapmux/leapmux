@@ -117,13 +117,7 @@ pub(crate) fn install(shell: Arc<DesktopShell>) -> Result<(), String> {
 
 /// The delegate of the running NSApplication, if there is one.
 fn shared_app_delegate() -> Option<&'static AnyObject> {
-    let class = AnyClass::get(c"NSApplication")?;
-    // SAFETY: `sharedApplication` is AppKit's class method for the one
-    // application of this process.
-    let app: *mut AnyObject = unsafe { msg_send![class, sharedApplication] };
-    // SAFETY: the application lives for the length of the process, so the
-    // borrow outlives every use.
-    let app = unsafe { app.as_ref()? };
+    let app = shared_application()?;
     // SAFETY: `delegate` answers the object AppKit keeps for the length of
     // the process.
     let delegate: *mut AnyObject = unsafe { msg_send![app, delegate] };

@@ -208,12 +208,6 @@ func connectSoloFrame(id uint64) *desktoppb.Frame {
 	}}}
 }
 
-// signal sends sig to the sidecar process.
-func (s *sidecarSession) signal(t *testing.T, sig os.Signal) {
-	t.Helper()
-	require.NoError(t, s.cmd.Process.Signal(sig))
-}
-
 // waitStderr waits until the drained stderr holds line. The pipes stay open,
 // so the drain goroutine keeps collecting. The sidecar can log the line and
 // exit in the same poll window, so the exit observation never consumes
@@ -305,7 +299,7 @@ func TestSidecarIgnoresASignalDuringShutdown(t *testing.T) {
 	s := startSoloSidecar(t)
 	s.waitStderr(t, "connected to hub")
 
-	s.signal(t, syscall.SIGTERM)
+	require.NoError(t, s.cmd.Process.Signal(syscall.SIGTERM))
 	s.waitStderr(t, "draining worker state for graceful shutdown")
 	s.hammerSignal(t, syscall.SIGTERM)
 	s.waitExit(t)

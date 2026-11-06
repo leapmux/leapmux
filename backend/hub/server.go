@@ -258,10 +258,10 @@ type Server struct {
 	// handlers, and drains them before the store closes: http.Server.Shutdown
 	// and Close cannot reach a hijacked handler, and nothing else joined one.
 	webSockets *drain.Gate
-	// credentialNotices counts the detached credential-notice emails both
+	// credentialNotices owns the detached credential-notice emails both
 	// mint surfaces send, so the shutdown joins them up to a limit before the
 	// store closes.
-	credentialNotices *drain.Counter
+	credentialNotices *service.CredentialNotices
 	// servingCtx is the hub's own lifetime; see the comment where it is
 	// created. Serve cancels it beside the store close.
 	servingCtx context.Context
@@ -448,9 +448,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	shutdownCh := make(chan struct{})
 	leaseHeld := make(chan struct{})
-	// One counter for BOTH notice senders, so the shutdown joins every
-	// detached credential-notice email with a single limited wait.
-	credentialNotices := &drain.Counter{}
 	webSockets := &drain.Gate{}
 
 	// Bot-protection managers, shared between the interceptor chain and the
@@ -472,8 +469,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// servingCtx is the hub's OWN lifetime. It outlives handlerCtx -- which is
 	// canceled handlerGrace into shutdown -- and ends only when the teardown
 	// has joined every drain and is about to close the store. Work detached
-	// from its request's context (the refresh flight, a grant's afterCommit
-	// link, the bearer-validation flight) ends here, so none of it reads a
+	// from its request's context (the refresh flight or the bearer-validation
+	// flight) ends here, so none of it reads a
 	// closed store. Canceled beside the store close below.
 	servingCtx, cancelServing := context.WithCancel(context.Background())
 	acquired.cancelServing = cancelServing
@@ -632,6 +629,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		return settings.BaseURL(setMgr.Snapshot(context.Background()), listenReports.PrimaryListenAddr())
 	}
 	mailRenderer := mail.Renderer{BaseURL: hubBaseURL}
+	// Both mint surfaces and shutdown share one notice owner.
+	credentialNotices := service.NewCredentialNotices(mailSender, mailRenderer)
 
 	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on
@@ -760,8 +759,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// The three anonymous legs share the interceptor's budget table; see
 		// ratelimit.AllowHTTP.
 		Limiter:    rateLimitMgr,
-		Mail:       mailSender,
-		Renderer:   mailRenderer,
 		Notices:    credentialNotices,
 		ServingCtx: servingCtx,
 	})
@@ -853,8 +850,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Validator:     tokenValidator,
 		Lifecycle:     lifecycle,
 		WorkerEffects: workerEffects,
-		Mail:          mailSender,
-		Renderer:      mailRenderer,
 		Notices:       credentialNotices,
 	})
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminUserSvc)
@@ -1542,8 +1537,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		"hub: credential notice sends did not finish in the shutdown budget; abandoning the emails")
 
 	// 5b. End the hub's own lifetime context: every piece of detached work it
-	// carries -- the refresh flight, a grant's afterCommit link, the
-	// bearer-validation flight -- ends here, so none of it reads the store
+	// carries, such as the refresh flight and the bearer-validation flight,
+	// ends here, so none of it reads the store
 	// the steps below close.
 	s.cancelServing()
 

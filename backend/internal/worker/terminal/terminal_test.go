@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
@@ -25,6 +27,43 @@ import (
 type writeCountingPTY struct {
 	pty.Pty
 	writes atomic.Int64
+}
+
+func TestHangUpAllKeepsJoinBudgetForImmediateAndLargeGrace(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		grace time.Duration
+	}{
+		{name: "negative", grace: -time.Hour},
+		{name: "zero"},
+		{name: "maximum", grace: time.Duration(1<<63 - 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager()
+				exited := make(chan struct{})
+				m.draining[&terminalRegistration{id: "draining", done: exited}] = struct{}{}
+				release := sync.OnceFunc(func() { close(exited) })
+				defer release()
+				joined := make(chan []string, 1)
+				go func() { joined <- m.HangUpAll(tc.grace) }()
+				synctest.Wait()
+				var ids []string
+				returnedEarly := false
+				select {
+				case ids = <-joined:
+					returnedEarly = true
+				default:
+				}
+				release()
+				if !returnedEarly {
+					ids = <-joined
+				}
+				assert.False(t, returnedEarly, "the grace must not remove or overflow the exit-handler join budget")
+				assert.Empty(t, ids)
+			})
+		})
+	}
 }
 
 func (p *writeCountingPTY) Write([]byte) (int, error) {
@@ -728,7 +767,7 @@ func TestInstallTerminal_EarlyReaderCompletionSkipsDrainStage(t *testing.T) {
 // about and no exported call answers it without blocking.
 func readerEnded(m *Manager, id string) bool {
 	m.mu.RLock()
-	t, ok := m.terminals[id]
+	t, ok := m.currentTerminalLocked(id)
 	m.mu.RUnlock()
 	if !ok {
 		return false
@@ -1557,14 +1596,14 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	// its resume cursor).
 	m.StopTerminal(id)
 	testutil.AssertEventually(t, func() bool { return m.IsExited(id) }, "exit")
-	preTerm := m.terminals[id]
+	preTerm, _ := m.currentTerminalLocked(id)
 	_, preTotal, _ := m.ScreenSnapshotSince(id, 0)
 	require.Greater(t, preTotal, int64(0), "should have written some bytes pre-restart")
 
 	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
-	newTerm := m.terminals[id]
+	newTerm, _ := m.currentTerminalLocked(id)
 	require.NotSame(t, preTerm, newTerm, "manager should swap in a fresh *Terminal on restart")
 	// The restart's new pid falls out of that swap, which is the whole reason
 	// shellPID is captured in the constructor and mirrored nowhere else. This
@@ -1603,7 +1642,7 @@ func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
 	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
-	newTerm := m.terminals[id]
+	newTerm, _ := m.currentTerminalLocked(id)
 	require.NotNil(t, newTerm, "manager should have a *Terminal after restart")
 	_, total, _ := m.ScreenSnapshotSince(id, 0)
 	assert.GreaterOrEqual(t, total, fallback,
@@ -1626,11 +1665,11 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
-	original := m.terminals[id]
+	original, _ := m.currentTerminalLocked(id)
 	err := m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still running")
-	assert.Same(t, original, m.terminals[id], "failed restart must not swap out the live *Terminal")
+	assert.Same(t, original, m.current[id].terminal, "failed restart must not swap out the live *Terminal")
 }
 
 // closeErr discards the affected-row count from an :execresult tab close and
@@ -1639,3 +1678,194 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 // closeTabCommon uses it to tell a live close from a re-close of an
 // already-closed row.
 func closeErr(_ sql.Result, err error) error { return err }
+
+type observedResizePTY struct {
+	pty.Pty
+	mu          sync.Mutex
+	cols        int
+	rows        int
+	calls       int
+	afterResize func(int)
+	resizeErr   error
+}
+
+func (p *observedResizePTY) Resize(cols, rows int) error {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	if p.resizeErr == nil {
+		p.cols, p.rows = cols, rows
+	}
+	p.mu.Unlock()
+	if p.afterResize != nil {
+		p.afterResize(call)
+	}
+	return p.resizeErr
+}
+
+func (p *observedResizePTY) dimensions() (int, int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cols, p.rows, p.calls
+}
+
+func installResizeTestTerminal(m *Manager, id string, device *observedResizePTY) *Terminal {
+	term := newDrainTestTerminal(id, quartz.NewReal())
+	term.ptmx = device
+	cols, rows, _ := device.dimensions()
+	m.mu.Lock()
+	m.current[id] = &terminalRegistration{id: id, terminal: term, meta: TerminalMeta{Cols: uint32(cols), Rows: uint32(rows)}, done: make(chan struct{})}
+	m.mu.Unlock()
+	return term
+}
+
+func TestManagerResizePreservesReplacementMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		remove      bool
+		nativeError bool
+	}{
+		{name: "replacement"},
+		{name: "removal", remove: true},
+		{name: "replacement after native error", nativeError: true},
+		{name: "removal after native error", remove: true, nativeError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := NewManager()
+				entered := make(chan struct{})
+				released := make(chan struct{})
+				release := sync.OnceFunc(func() { close(released) })
+				defer release()
+				oldDevice := &observedResizePTY{cols: 80, rows: 24, afterResize: func(int) { close(entered); <-released }}
+				if tc.nativeError {
+					oldDevice.resizeErr = assert.AnError
+				}
+				installResizeTestTerminal(m, "resized", oldDevice)
+				resized := make(chan error, 1)
+				go func() { resized <- m.Resize("resized", 120, 40) }()
+				<-entered
+				// Replace the registration while native I/O has succeeded but its manager
+				// metadata has not committed. This models the verified restart window.
+				replacement := &observedResizePTY{cols: 80, rows: 24}
+				if tc.remove {
+					m.mu.Lock()
+					delete(m.current, "resized")
+					m.mu.Unlock()
+				} else {
+					installResizeTestTerminal(m, "resized", replacement)
+				}
+				release()
+				assert.ErrorIs(t, <-resized, ErrTerminalInstanceChanged, "an obsolete completion must not expose an old native error")
+				if tc.remove {
+					_, exists := m.GetMeta("resized")
+					assert.False(t, exists)
+					return
+				}
+				meta, exists := m.GetMeta("resized")
+				require.True(t, exists)
+				assert.Equal(t, uint32(80), meta.Cols)
+				assert.Equal(t, uint32(24), meta.Rows)
+				require.NoError(t, m.Resize("resized", 120, 40))
+				cols, rows, calls := replacement.dimensions()
+				assert.Equal(t, 120, cols)
+				assert.Equal(t, 40, rows)
+				assert.Equal(t, 1, calls, "stale metadata must not suppress the replacement's native resize")
+			})
+		})
+	}
+}
+
+func TestManagerResizeSerializesNativeAndMetadataUpdates(t *testing.T) {
+	for _, secondCols := range []uint16{100, 120} {
+		t.Run(fmt.Sprint(secondCols), func(t *testing.T) {
+			m := NewManager()
+			entered := make(chan struct{})
+			released := make(chan struct{})
+			release := sync.OnceFunc(func() { close(released) })
+			var term *Terminal
+			device := &observedResizePTY{cols: 80, rows: 24, afterResize: func(call int) {
+				unlocked := term.managedResizeMu.TryLock()
+				if unlocked {
+					term.managedResizeMu.Unlock()
+				}
+				assert.False(t, unlocked, "the per-instance resize lock must cover native I/O")
+				if call == 1 {
+					close(entered)
+					<-released
+				}
+			}}
+			term = installResizeTestTerminal(m, "ordered", device)
+			firstDone, secondDone := make(chan error, 1), make(chan error, 1)
+			var operations sync.WaitGroup
+			operations.Go(func() { firstDone <- m.Resize("ordered", 120, 40) })
+			defer func() { release(); operations.Wait() }()
+			select {
+			case <-entered:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the first resize never reached native I/O")
+			}
+			operations.Go(func() { secondDone <- m.Resize("ordered", secondCols, 40) })
+			release()
+			require.NoError(t, <-firstDone)
+			require.NoError(t, <-secondDone)
+			cols, rows, calls := device.dimensions()
+			meta, exists := m.GetMeta("ordered")
+			require.True(t, exists)
+			assert.Equal(t, int(secondCols), cols)
+			assert.Equal(t, 40, rows)
+			assert.Equal(t, uint32(cols), meta.Cols, "metadata must describe the last native resize")
+			assert.Equal(t, uint32(rows), meta.Rows)
+			expectedCalls := 2
+			if secondCols == 120 {
+				expectedCalls = 1
+			}
+			assert.Equal(t, expectedCalls, calls, "a queued duplicate must compare against committed dimensions")
+		})
+	}
+}
+
+func TestManagerResizeKeepsIndependentTerminalsConcurrent(t *testing.T) {
+	m := NewManager()
+	entered := make(chan struct{})
+	released := make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	blocked := &observedResizePTY{cols: 80, rows: 24, afterResize: func(int) { close(entered); <-released }}
+	installResizeTestTerminal(m, "blocked", blocked)
+	installResizeTestTerminal(m, "independent", &observedResizePTY{cols: 80, rows: 24})
+	blockedDone, independentDone := make(chan error, 1), make(chan error, 1)
+	independentExited := make(chan struct{})
+	go func() { blockedDone <- m.Resize("blocked", 120, 40) }()
+	independentStarted := false
+	defer func() {
+		release()
+		assert.NoError(t, <-blockedDone)
+		if independentStarted {
+			<-independentExited
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the blocked resize never reached native I/O")
+	}
+	independentStarted = true
+	go func() { defer close(independentExited); independentDone <- m.Resize("independent", 100, 30) }()
+	select {
+	case err := <-independentDone:
+		require.NoError(t, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("a blocked terminal resize serialized an unrelated terminal")
+	}
+}
+
+func TestManagerResizeKeepsMetadataAfterNativeFailure(t *testing.T) {
+	m := NewManager()
+	device := &observedResizePTY{cols: 80, rows: 24, resizeErr: assert.AnError}
+	installResizeTestTerminal(m, "failed", device)
+	require.ErrorIs(t, m.Resize("failed", 120, 40), assert.AnError)
+	meta, exists := m.GetMeta("failed")
+	require.True(t, exists)
+	assert.Equal(t, uint32(80), meta.Cols)
+	assert.Equal(t, uint32(24), meta.Rows)
+}

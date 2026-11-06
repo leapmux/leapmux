@@ -2,8 +2,8 @@ package drain
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -32,7 +32,7 @@ func TestGateBeginDoneIsIdempotent(t *testing.T) {
 	})
 
 	// Drain still returns promptly: the counter reached zero on the first call.
-	assert.NotPanics(t, func() { g.Drain(0, "") })
+	assert.True(t, g.Drain(0, ""), "every admitted operation must complete")
 }
 
 // TestGateBeginRejectsAfterClose verifies the gate flips closed under the same
@@ -72,7 +72,7 @@ func TestGateConcurrentBeginDone(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			done, ok := g.Begin(nil)
-			if !ok {
+			if !assert.True(t, ok, "an open gate must admit every operation") {
 				return
 			}
 			// A stray extra done() per goroutine -- the scenario the wrapper prevents.
@@ -81,7 +81,7 @@ func TestGateConcurrentBeginDone(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	assert.NotPanics(t, func() { g.Drain(0, "") })
+	assert.True(t, g.Drain(0, ""), "every admitted operation must complete")
 }
 
 // TestGateDrainJoinsOperationReleasedMidWait covers the released-mid-drain
@@ -89,77 +89,49 @@ func TestGateConcurrentBeginDone(t *testing.T) {
 // timeout 0: Begin, start Drain in a goroutine, release, assert Drain returns
 // promptly.
 func TestGateDrainJoinsOperationReleasedMidWait(t *testing.T) {
-	var g Gate
-	done, ok := g.Begin(nil)
-	require.True(t, ok)
-
-	finished := make(chan bool, 1)
-	go func() { finished <- g.Drain(2*time.Second, "") }()
-
-	// Wait until the drain has observably parked: Pending reports a live
-	// completion channel only while the counter is positive, which proves the
-	// drain goroutine holds the channel done() must close. A bare sleep could
-	// lose this race -- done() would zero the counter first and the drain would
-	// take the idle pre-closed fast path, passing without ever exercising the
-	// mid-wait join.
-	parkDeadline := time.Now().Add(time.Second)
-	for !g.wc.Pending() {
-		if time.Now().After(parkDeadline) {
-			t.Fatal("drain goroutine never parked on the counter's zero channel")
+	synctest.Test(t, func(t *testing.T) {
+		var g Gate
+		done, ok := g.Begin(nil)
+		require.True(t, ok)
+		defer done()
+		g.Close(nil)
+		finished := make(chan bool, 1)
+		go func() { finished <- g.Drain(2*time.Second, "") }()
+		synctest.Wait()
+		select {
+		case <-finished:
+			t.Error("the drain returned before the admitted operation completed")
+		default:
 		}
-		time.Sleep(time.Millisecond)
-	}
-	done()
-
-	select {
-	case joined := <-finished:
-		assert.True(t, joined, "the operation finished inside the budget")
-	case <-time.After(time.Second):
-		t.Fatal("drain must return promptly once the in-flight operation finishes")
-	}
+		done()
+		assert.True(t, <-finished)
+	})
 }
 
-// The onAdmit hook exists so a tracked registration is atomic with the admit:
-// once Begin returns, a concurrent Close must not be able to finish first, or
-// an admitted operation would escape both the tracking and the cancel.
+// Registration and cancellation both run under the admission mutex.
 func TestGateBeginRunsOnAdmitUnderTheLock(t *testing.T) {
 	var g Gate
-	admitted := make(chan struct{}, 1)
-	var admissions atomic.Int32
-	beginDone := make(chan struct{})
-	go func() {
-		defer close(beginDone)
-		done, ok := g.Begin(func() {
-			admissions.Add(1)
-			admitted <- struct{}{}
-			// Hold the admission lock while the test closes the gate, so the
-			// Close below cannot return before this hook did.
-			time.Sleep(50 * time.Millisecond)
-		})
-		require.True(t, ok)
-		done()
-	}()
-
-	// Wait until Begin holds the lock inside onAdmit, then close: Close must
-	// wait for the hook behind the admission lock.
-	<-admitted
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		g.Close(nil)
-	}()
-
-	select {
-	case <-closed:
-		t.Fatal("Close returned while onAdmit was still running under the admission lock")
-	case <-time.After(10 * time.Millisecond):
+	admitted, cancelled := false, false
+	assertLocked := func() {
+		unlocked := g.mu.TryLock()
+		if unlocked {
+			g.mu.Unlock()
+		}
+		assert.False(t, unlocked, "the admission mutex must remain held during callbacks")
 	}
-
-	select {
-	case <-beginDone:
-	case <-time.After(time.Second):
-		t.Fatal("the admitted operation never finished")
-	}
-	<-closed
-	assert.Equal(t, int32(1), admissions.Load())
+	done, ok := g.Begin(func() {
+		admitted = true
+		assertLocked()
+	})
+	require.True(t, ok)
+	assert.True(t, admitted)
+	g.Close(func() {
+		cancelled = true
+		assertLocked()
+	})
+	assert.True(t, cancelled)
+	done()
+	assert.True(t, g.Drain(0, ""))
+	_, ok = g.Begin(nil)
+	assert.False(t, ok)
 }

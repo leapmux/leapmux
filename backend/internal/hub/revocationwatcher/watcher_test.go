@@ -764,17 +764,7 @@ const suspendedLeaseDuration = 25 * time.Millisecond
 // kills a desktop app that only went to sleep.
 func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	// The suspend. The durable row lapses; the local deadline (a full
@@ -814,17 +804,7 @@ func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
 func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 
 	require.Contains(t, logs.String(), "acquired the Hub runtime lease",
 		"the holder ID must be anchored before it can appear in a fatal error")
@@ -853,17 +833,7 @@ func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 // from also papering over a genuine takeover.
 func TestWatcher_LeaseTakenDuringSuspendIsFatal(t *testing.T) {
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	time.Sleep(4 * suspendedLeaseDuration)
@@ -906,18 +876,7 @@ func TestWatcher_CompactedGapAfterLapseIsFatal(t *testing.T) {
 	// either way.
 	const localLease = time.Second
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-		revocationwatcher.WithLeaseDuration(localLease),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env, revocationwatcher.WithLeaseDuration(localLease))
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	time.Sleep(localLease * 3 / 5)
@@ -1359,4 +1318,13 @@ type failingAcquireEvents struct {
 
 func (s failingAcquireEvents) AcquireHubRuntimeLease(_ context.Context, _ store.AcquireHubRuntimeLeaseParams) (int64, error) {
 	return 0, errors.New("the store is broken")
+}
+
+func newSuspendedLeaseWatcher(t *testing.T, env *envT, opts ...revocationwatcher.Option) *revocationwatcher.Watcher {
+	t.Helper()
+	injected := injectedRevocationStore{Store: env.st, events: suspendedLeaseRevocationEvents{RevocationEventStore: env.st.RevocationEvents(), durableLease: suspendedLeaseDuration}}
+	opts = append([]revocationwatcher.Option{revocationwatcher.WithInterval(time.Hour)}, opts...)
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil), opts...)
+	require.NoError(t, w.SeedCursor(t.Context()))
+	return w
 }
