@@ -98,6 +98,22 @@ UPDATE agents SET title = ?, title_auto_generated = 0 WHERE id = ?;
 -- name: UpdateAgentSessionID :exec
 UPDATE agents SET agent_session_id = ?, pending_resume_session_id = '', session_start_seq = (SELECT COALESCE(MAX(m.seq), 0) FROM messages m WHERE m.agent_id = agents.id) WHERE agents.id = ?;
 
+-- MarkAgentResumedForInputRecovery records the durable intent to resume the
+-- stored native session before an approved process replacement
+-- for input recovery. Conditional on the CURRENT
+-- stored session and an open tab, so a session or tab that changed while the
+-- worker waited affects zero rows and stops nothing. A later explicit context
+-- clear keeps its own authority to remove the session.
+-- name: MarkAgentResumedForInputRecovery :execrows
+UPDATE agents
+SET resumed = 1
+WHERE id = sqlc.arg(agent_id)
+  AND agent_session_id = sqlc.arg(agent_session_id)
+  AND output_generation = sqlc.arg(output_generation)
+  AND agent_session_id <> ''
+  AND workspace_archived = 0
+  AND closed_at IS NULL;
+
 -- name: ReopenAgent :exec
 UPDATE agents SET closed_at = NULL WHERE id = ?;
 

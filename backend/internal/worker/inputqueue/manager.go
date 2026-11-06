@@ -26,8 +26,8 @@ type coordinator struct {
 	// request before it stops, and the request dies with the read that answers
 	// it.
 	drainAgain bool
-	// plannedRestarts counts the restarts in flight for this agent. The last
-	// one to finish resumes the pause that the first one created.
+	// plannedRestarts is zero or one. A restart refuses another restart until
+	// its guard finishes, so one guard owns the temporary pause.
 	//
 	// This replaces a mutex that BeginPlannedRestart held until Finish. That
 	// mutex deadlocked the Worker: Finish runs only after StopAndWaitAgent
@@ -188,6 +188,7 @@ type PlannedRestart struct {
 	coordinator *coordinator
 	agentID     string
 	resumeQueue bool
+	recovery    *inputRecoveryPause
 	once        sync.Once
 	err         error
 }
@@ -267,7 +268,7 @@ func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
 // canDrainAutomatically selects work that the store must validate again before delivery.
 func canDrainAutomatically(snapshot Snapshot) bool {
 	head := snapshot.HeadIndex()
-	if snapshot.Paused || head < 0 {
+	if head < 0 {
 		return false
 	}
 	// A head whose scheduled instant has not arrived does not drain. The
@@ -275,12 +276,16 @@ func canDrainAutomatically(snapshot Snapshot) bool {
 	if snapshot.Items[head].ReorderGroup != "" {
 		return false
 	}
+	if snapshot.Paused {
+		return canSteerAutomatically(snapshot)
+	}
 	return !snapshot.ActiveTurn || snapshot.Items[head].requiresContextReplacement() || canSteerAutomatically(snapshot)
 }
 
 func canSteerAutomatically(snapshot Snapshot) bool {
 	head := snapshot.HeadIndex()
-	return !snapshot.Paused && snapshot.ActiveTurn && head >= 0 &&
+	canAnswer := !snapshot.Paused || snapshot.PauseReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY
+	return canAnswer && snapshot.ActiveTurn && head >= 0 &&
 		automaticSteeringKind(snapshot.Items[head].Kind) && snapshot.Items[head].CanSteer
 }
 
@@ -566,7 +571,13 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
 	}
 	c.mu.Lock()
-	snapshot, err := m.store.SetPaused(ctx, agentID, paused, reason)
+	var snapshot Snapshot
+	var err error
+	if !paused && c.plannedRestarts == 0 {
+		snapshot, err = m.store.resumeWithNoRestart(ctx, agentID)
+	} else {
+		snapshot, err = m.store.SetPaused(ctx, agentID, paused, reason)
+	}
 	if err == nil {
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
@@ -575,6 +586,12 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 		m.scheduleDrain(agentID)
 	}
 	return snapshot, err
+}
+
+func (m *Manager) RefreshSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	return m.mutateLocked(agentID, alwaysChanged(func() (Snapshot, error) {
+		return m.store.RefreshSnapshot(ctx, agentID)
+	}))
 }
 
 func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {
@@ -1000,15 +1017,40 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 // exit goroutine calls Pause, Pause took the guard's lock, and the stop waits
 // for that same exit goroutine.
 func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*PlannedRestart, error) {
+	return m.beginPlannedRestart(ctx, agentID, false)
+}
+
+// BeginInputRecovery keeps recovery's pause authority until the replacement
+// prepares. A crash or a user pause takes that authority before finalization.
+func (m *Manager) BeginInputRecovery(ctx context.Context, agentID string) (*PlannedRestart, error) {
+	return m.beginPlannedRestart(ctx, agentID, true)
+}
+
+func (m *Manager) beginPlannedRestart(ctx context.Context, agentID string, inputRecovery bool) (*PlannedRestart, error) {
 	if !m.beginActivity() {
 		return nil, ErrManagerStopped
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	snapshot, resumeQueue, err := m.store.pauseForPlannedRestart(ctx, agentID)
+	if c.plannedRestarts != 0 {
+		c.mu.Unlock()
+		m.endActivity()
+		return nil, ErrPlannedRestart
+	}
+	var snapshot Snapshot
+	var resumeQueue bool
+	var recovery *inputRecoveryPause
+	var err error
+	if inputRecovery {
+		var previous inputRecoveryPause
+		snapshot, previous, err = m.store.pauseForInputRecovery(ctx, agentID)
+		recovery = &previous
+	} else {
+		snapshot, resumeQueue, err = m.store.pauseForPlannedRestart(ctx, agentID)
+	}
 	if err == nil {
 		c.plannedRestarts++
-		if resumeQueue {
+		if resumeQueue || inputRecovery {
 			m.enqueueSnapshotLocked(c, snapshot)
 		}
 	}
@@ -1018,7 +1060,7 @@ func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*Pla
 		return nil, err
 	}
 	return &PlannedRestart{
-		manager: m, coordinator: c, agentID: agentID, resumeQueue: resumeQueue,
+		manager: m, coordinator: c, agentID: agentID, resumeQueue: resumeQueue, recovery: recovery,
 	}, nil
 }
 
@@ -1026,6 +1068,27 @@ func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*Pla
 // replacement or an already observed native turn end makes oldTurnEnded true.
 // A successful replacement restores only this guard's temporary pause.
 func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSucceeded bool) error {
+	return r.finish(func() (Snapshot, bool, error) {
+		resumeQueue := r.resumeQueue && (!oldTurnEnded || restartSucceeded)
+		return r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
+	})
+}
+
+// FinishInputRecovery preserves current turn state and releases only the
+// recovery's own pause. An unspecified failure reason means success.
+func (r *PlannedRestart) FinishInputRecovery(ctx context.Context, oldProcessEnded bool, failureReason leapmuxv1.AgentInputQueuePauseReason) error {
+	if r == nil {
+		return nil
+	}
+	if r.recovery == nil {
+		return fmt.Errorf("%w: this restart does not own input recovery", ErrConflict)
+	}
+	return r.finish(func() (Snapshot, bool, error) {
+		return r.manager.store.finishInputRecovery(ctx, r.agentID, *r.recovery, oldProcessEnded, failureReason)
+	})
+}
+
+func (r *PlannedRestart) finish(mutate func() (Snapshot, bool, error)) error {
 	if r == nil {
 		return nil
 	}
@@ -1034,13 +1097,11 @@ func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSuccee
 	r.once.Do(func() {
 		r.coordinator.mu.Lock()
 		r.coordinator.plannedRestarts--
-		// Only the last restart in flight resumes. An overlapping restart keeps
-		// its own process stop ahead of the queue.
-		last := r.coordinator.plannedRestarts == 0
-		resumeQueue := last && r.resumeQueue && (!oldTurnEnded || restartSucceeded)
+		// A failed transaction can leave the durable marker behind. The guard
+		// still ended; explicit resume or a new recovery can repair that marker.
 		var changed bool
 		var err error
-		snapshot, changed, err = r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
+		snapshot, changed, err = mutate()
 		if err == nil && changed {
 			r.manager.enqueueSnapshotLocked(r.coordinator, snapshot)
 		}

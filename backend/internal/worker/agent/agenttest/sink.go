@@ -99,11 +99,12 @@ type Sink struct {
 	// goalClearSnapshots records the snapshot flag of every ClearGoal, in order.
 	// The count alone cannot tell a restatement from a real removal, and that is
 	// the whole distinction the flag exists to carry.
-	goalClearSnapshots      []bool
-	goalCapabilityPublishes int
-	autoSchedules           []agent.AutoRetrySchedule
-	autoCancels             []leapmuxv1.AgentInputKind
-	planModeToolUses        sync.Map
+	goalClearSnapshots         []bool
+	goalCapabilityPublishes    int
+	inputProcessStatePublishes int
+	autoSchedules              []agent.AutoRetrySchedule
+	autoCancels                []leapmuxv1.AgentInputKind
+	planModeToolUses           sync.Map
 	// childSinkMu + children let Sink serve ChildSink as a per-child Sink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -996,6 +997,20 @@ func (s *Sink) GoalCapabilityPublishes() int {
 	return s.goalCapabilityPublishes
 }
 
+// PublishInputProcessState records a process-readiness publication.
+func (s *Sink) PublishInputProcessState() {
+	s.mu.Lock()
+	s.inputProcessStatePublishes++
+	s.mu.Unlock()
+}
+
+// InputProcessStatePublishes counts process-readiness publications.
+func (s *Sink) InputProcessStatePublishes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inputProcessStatePublishes
+}
+
 // Goals returns the goal reports in arrival order.
 func (s *Sink) Goals() []agent.GoalUpdate {
 	s.mu.Lock()
@@ -1866,6 +1881,7 @@ func (nop) NotifyPermissionModeChanged(string, string)        {}
 func (nop) PersistSettingsRefresh(optionmap.Map)              {}
 func (nop) BroadcastStatusActive(string)                      {}
 func (nop) BroadcastSessionInfo(map[string]interface{})       {}
+func (nop) PublishInputProcessState()                         {}
 func (nop) PersistLeapMuxNotification(map[string]interface{}) {}
 func (nop) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
 	payload, err := write.NotificationPayload()

@@ -554,6 +554,26 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	return commitSnapshot(ctx, tx, agentID, s.now())
 }
 
+// resumeWithNoRestart clears the pause and any marker a failed finish left.
+// The manager holds its coordinator lock and has no active restart guard.
+// Failed and uncertain inputs keep their outcomes until an explicit retry.
+func (s *Store) resumeWithNoRestart(ctx context.Context, agentID string) (Snapshot, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
+SET pause_reason = NULL, pause_owner = NULL, restarting = 0, revision = revision + 1, updated_at = ?
+WHERE agent_id = ?`, nowText(), agentID); err != nil {
+		return Snapshot{}, err
+	}
+	return commitSnapshot(ctx, tx, agentID, s.now())
+}
+
 // PauseForArchive stops the active turn and records an archive-created pause.
 // The Boolean reports whether the durable state changed.
 func (s *Store) PauseForArchive(ctx context.Context, agentID string) (Snapshot, bool, error) {
@@ -608,6 +628,84 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 	}
 	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
 	return snapshot, changed == 1, err
+}
+
+type inputRecoveryPause struct {
+	reason leapmuxv1.AgentInputQueuePauseReason
+	owner  pauseOwner
+}
+
+// pauseForInputRecovery runs with the manager's exclusive restart guard.
+// A stored marker then belongs to an already completed guard. Adopt eligible
+// process pauses, and retain previous authority for a refused approval.
+func (s *Store) pauseForInputRecovery(ctx context.Context, agentID string) (Snapshot, inputRecoveryPause, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, inputRecoveryPause{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, inputRecoveryPause{}, err
+	}
+	var reason *leapmuxv1.AgentInputQueuePauseReason
+	var owner *leapmuxv1.AgentInputQueuePauseOwner
+	if err := tx.QueryRowContext(ctx, `SELECT pause_reason, pause_owner FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&reason, &owner); err != nil {
+		return Snapshot{}, inputRecoveryPause{}, err
+	}
+	previous := inputRecoveryPause{reason: workerdb.StorageEnumValue(reason), owner: pauseOwner(workerdb.StorageEnumValue(owner))}
+	if previous.owner == pauseOwnerPlannedRestart {
+		previous.owner = pauseOwnerAgentStopped
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
+SET pause_reason = ?, pause_owner = ?
+WHERE agent_id = ? AND (pause_reason IS NULL OR (pause_owner IN (?, ?) AND pause_reason IN (?, ?)))`,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY, pauseOwnerPlannedRestart, agentID,
+		pauseOwnerAgentStopped, pauseOwnerPlannedRestart, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+		return Snapshot{}, inputRecoveryPause{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 1, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+		return Snapshot{}, inputRecoveryPause{}, err
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	return snapshot, previous, err
+}
+
+// finishInputRecovery releases only the pause this recovery still owns. The
+// old exit already ended its turn; preserve the replacement's published turn.
+// An unspecified failure reason means the replacement prepared successfully.
+func (s *Store) finishInputRecovery(ctx context.Context, agentID string, previous inputRecoveryPause, oldProcessEnded bool, failureReason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	reason, owner := previous.reason, previous.owner
+	if oldProcessEnded {
+		reason = failureReason
+		owner = pauseOwnerAgentStopped
+		if failureReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
+			owner = pauseOwnerNone
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET pause_reason = ?, pause_owner = ? WHERE agent_id = ? AND pause_owner = ?`,
+		workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), agentID, pauseOwnerPlannedRestart); err != nil {
+		return Snapshot{}, false, err
+	}
+	if oldProcessEnded && failureReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET error = '', updated_at = ? WHERE agent_id = ? AND state = ? AND error <> ''`,
+			nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED); err != nil {
+			return Snapshot{}, false, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	return snapshot, true, err
 }
 
 func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTurnEnded, resumeQueue bool) (Snapshot, bool, error) {
@@ -700,6 +798,7 @@ func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string, rowAt
 // destroyed the running turn and the drain then refused the item in silence, leaving
 // the reader with neither the turn nor the message.
 type dispatchGate struct {
+	PauseReason   leapmuxv1.AgentInputQueuePauseReason
 	Paused        bool
 	Restarting    bool
 	ActiveTurn    bool
@@ -829,9 +928,9 @@ func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now ti
 	gate := dispatchGate{Now: now, ApprovalsComplete: true}
 	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, restarting, active_turn, active_turn_steerable,
 		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state = ?),
-		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1)
+		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1), COALESCE(pause_reason, 0)
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID, agentID).
-		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.AwaitingEcho, &gate.Closed); err != nil {
+		Scan(&gate.Paused, &gate.Restarting, &gate.ActiveTurn, &gate.TurnSteerable, &gate.AwaitingEcho, &gate.Closed, &gate.PauseReason); err != nil {
 		return dispatchGate{}, err
 	}
 	if !headFound {
@@ -894,6 +993,9 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 	// Automatic question delivery uses the current transaction's pause and turn state.
 	requireActive := mode == dispatchSteering || mode == dispatchAutomatic && gate.ActiveTurn && gate.TurnSteerable &&
 		automaticSteeringKind(item.Kind)
+	if mode == dispatchAutomatic && requireActive && gate.PauseReason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY {
+		allowPaused = true
+	}
 	// ErrNotHead is about the CALLER's identity, not about the guard, so it stays here
 	// and the gate never sees expectedInputID.
 	if expectedInputID != "" && (!gate.HeadFound || item.ID != expectedInputID) {
@@ -1074,7 +1176,32 @@ func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, di
 	if changed != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped); err != nil {
+	// Release this dispatch's provisional turn, but keep any turn the provider
+	// published independently. A refusal of input does not end native work.
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state
+SET active_turn = CASE WHEN active_input_id = ? THEN 0 ELSE active_turn END,
+    active_turn_steerable = CASE WHEN active_input_id = ? THEN 0 ELSE active_turn_steerable END,
+    active_input_id = CASE WHEN active_input_id = ? THEN '' ELSE active_input_id END,
+    pause_reason = CASE WHEN pause_reason IS NOT NULL THEN pause_reason ELSE ? END,
+    pause_owner = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_owner END,
+    revision = revision + 1, updated_at = ?
+WHERE agent_id = ?`, inputID, inputID, inputID, reason, pauseOwnerPlannedRestart, pauseOwnerAgentStopped, nowText(), agentID); err != nil {
+		return Snapshot{}, err
+	}
+	return commitSnapshot(ctx, tx, agentID, s.now())
+}
+
+// RefreshSnapshot publishes metadata that changed outside the queue store.
+func (s *Store) RefreshSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, err
+	}
+	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID, s.now())
@@ -1629,8 +1756,8 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 }
 
 // pauseAndEndTurn pauses the queue and ends the active turn in one statement.
-// It keeps the reason and the owner that an earlier pause recorded, so a
-// resume by THIS cause cannot lift a pause the user or a crash created.
+// It keeps an earlier pause's reason and owner, except when a planned restart
+// owns that pause. A later failure then supplies its own reason and owner.
 //
 // One case takes ownership from an existing pause: a pause that a planned
 // restart owns. That pause is temporary by definition -- the restart lifts it
@@ -1643,11 +1770,11 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '',
-			pause_reason = CASE WHEN pause_reason IS NOT NULL THEN pause_reason ELSE ? END,
+			pause_reason = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_reason END,
 			pause_owner = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_owner END,
 			revision = revision + 1, updated_at = ?
 		WHERE agent_id = ? AND (active_turn = 1 OR pause_reason IS NULL OR pause_owner = ?)`,
-		reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart)
+		pauseOwnerPlannedRestart, reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart)
 }
 
 // resumeOwnedPause lifts a pause only when the given cause still owns it.

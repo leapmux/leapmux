@@ -221,7 +221,7 @@ func (m *Manager) ExitHandlerForTest() ExitHandler {
 func (m *Manager) PutAgentForTest(agentID string, a Agent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.agents[agentID] = &agentRegistration{provider: a}
+	m.agents[agentID] = newAgentRegistration(a, nil)
 }
 
 // WaitTurnRetriesForTest waits until every turn retry that RetryTurn accepted
@@ -418,7 +418,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	// not registered until this process's onExit (which clears control_requests by agent id)
 	// has run, and so cannot have its own requests wiped by it.
 	done := make(chan struct{})
-	entry := &agentRegistration{provider: provider, done: done}
+	entry := newAgentRegistration(provider, done)
 
 	m.mu.Lock()
 	if m.closed {
@@ -437,12 +437,6 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel), registration: entry}
 	}
 	m.mu.Unlock()
-
-	// The first moment SupportedGoalActions can answer for this process: it
-	// type-asserts the agent this map now holds, and every earlier publication
-	// ran while the lookup still missed. See ProviderServices.PublishGoalCapabilities
-	// for why an early answer is worse than a late one here.
-	sink.PublishGoalCapabilities()
 
 	// Wait for the agent to exit in the background, then clean up.
 	go func() {
@@ -509,6 +503,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 		}
 		m.mu.Unlock()
 	}()
+	// Both callbacks can synchronously wait for process exit. Start the exit
+	// goroutine first, and publish only after registration makes current state
+	// readable. Startup output can have reported health before registration.
+	sink.PublishGoalCapabilities()
+	sink.PublishInputProcessState()
 
 	return confirmedOptions, nil
 }
@@ -520,9 +519,10 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 // under the lifecycle lock so input that arrives during this interval reaches
 // the new process.
 //
-// The lock covers only provider resolution. A blocked provider write must not
-// block a restart or explicit steering. A restart can still start between the
-// resolution and the write, but the interval is only the provider call setup.
+// The lock covers only provider resolution. Preparation and provider writes run
+// after it releases, so neither can prevent a restart or explicit steering.
+// Delivery prepares and retains that instance, and the provider checks native
+// admission if its process or session changes before the write.
 // A text-route provider observes the goal command after a successful delivery.
 //
 // Never call this from a caller that already holds the lifecycle lock
@@ -545,6 +545,9 @@ func SendInputToSession(provider Agent, sessionID, content string, attachments [
 }
 
 func deliverProviderInput(p Agent, expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
+	}
 	var err error
 	if expected == nil {
 		err = p.SendInput(content, attachments)
@@ -565,6 +568,37 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 		observeGoalCommand(p, GoalDeliverySend, content)
 	}
 	return err
+}
+
+// Prepare the retained delivery target. A readiness check in the service may
+// precede a lifecycle replacement, so its result cannot authorize this instance.
+func prepareProviderProcessForInput(p Agent) error {
+	if preparer, ok := p.(InputProcessPreparer); ok {
+		return preparer.PrepareInputProcess()
+	}
+	return nil
+}
+
+// InputProcessRecoveryState reads health and identity from the same physical
+// process registration. It performs no native I/O and takes no lifecycle lock.
+// A replacement during the provider read invalidates the complete result.
+func (m *Manager) InputProcessRecoveryState(agentID string) (required bool, instanceID string) {
+	m.mu.RLock()
+	entry := m.agents[agentID]
+	available := entry != nil && !entry.exiting
+	provider := entry.providerOrNil()
+	m.mu.RUnlock()
+	preparer, supports := provider.(InputProcessPreparer)
+	if !available || !supports {
+		return false, ""
+	}
+	required = preparer.InputProcessRecoveryRequired()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.agents[agentID] != entry || entry.exiting {
+		return false, ""
+	}
+	return required, entry.instanceID
 }
 
 // observeGoalCommand tells a text-route provider what LeapMux just delivered.
@@ -589,6 +623,9 @@ func (m *Manager) CompactContext(agentID string) error {
 	if !ok {
 		return ErrCompactionUnsupported
 	}
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
+	}
 	return compactor.CompactContext()
 }
 
@@ -606,6 +643,9 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	steerer, ok := p.(InputSteerer)
 	if !ok {
 		return ErrSteeringUnsupported
+	}
+	if err := prepareProviderProcessForInput(p); err != nil {
+		return err
 	}
 	err = steerer.SteerInput(content, attachments)
 	if err == nil {

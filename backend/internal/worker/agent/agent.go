@@ -339,6 +339,10 @@ type SessionServices interface {
 	PersistSettingsRefresh(refresh optionmap.Map)
 	BroadcastStatusActive(sessionID string)
 	BroadcastSessionInfo(info map[string]interface{})
+	// PublishInputProcessState reports a change in the feeding process's input
+	// readiness. It changes no turn or input. Release provider state locks
+	// before this call because publication reads current process state again.
+	PublishInputProcessState()
 	PersistLeapMuxNotification(content map[string]interface{})
 	// PersistSubagentReport stores one report in this transcript exactly once.
 	PersistSubagentReport(write SubagentReportWrite) (stored bool, err error)
@@ -947,6 +951,32 @@ type NativeTurnRestarter interface {
 	NativeTurnRestartRequired() bool
 }
 
+// InputProcessPreparer reports whether a running process can accept input, and
+// prepares it when it can. The Worker calls it before it delivers any native
+// input, after it confirms that a process exists. A provider that does not
+// implement this interface keeps its current behavior: a running process
+// receives input with no preparation step.
+//
+// The method returns nil when the process is ready. Any error means the
+// provider did NOT accept input: the Worker delivers nothing and retains the
+// input for a later attempt. ErrInputProcessRestartRequired states the stronger
+// fact that no preparation can make this process ready -- the authentication
+// state it holds cannot recover -- and asks the Worker to request recovery
+// approval. Approval must identify this process and its current conversation.
+// The provider must state a restart ONLY from state a fresh process cannot
+// inherit: the flag belongs to the physical process, and a replacement starts
+// clean.
+//
+// The call can wait for a native response, so the Worker releases its
+// lifecycle lock first. A close or a shutdown that stops the process during
+// the wait must surface as the method's own error, never as a stuck lock.
+type InputProcessPreparer interface {
+	PrepareInputProcess() error
+	// InputProcessRecoveryRequired reads process health without native I/O.
+	// The flag describes this physical process and does not authorize its stop.
+	InputProcessRecoveryRequired() bool
+}
+
 // InputSteerer adds input to an active turn. The queue calls it only for an
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
@@ -1006,6 +1036,15 @@ var (
 	// that it states is empty or is no longer the provider's current session. The
 	// provider sends nothing in that case.
 	ErrInputSessionChanged = errors.New("the input belongs to a different provider session")
+
+	// ErrInputProcessRestartRequired is what InputProcessPreparer returns when
+	// the running process can no longer accept new input, so the Worker must
+	// request approval to replace it before delivery. Validated answers may
+	// still reach existing questions. The provider accepted no new input, so a
+	// replacement cannot duplicate delivery. Codex's expired or
+	// replaced ChatGPT login is the case: the process keeps its cached account
+	// after an external login, and no account refresh adopts another account.
+	ErrInputProcessRestartRequired = errors.New("the agent process must be replaced before it can accept input")
 )
 
 // AgentBusyError adds the provider's current turn classification to an

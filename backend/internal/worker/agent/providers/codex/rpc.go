@@ -49,6 +49,9 @@ func (a *Agent) checkCodexInputLocked(expected *string) error {
 	if a.StoppedLocked() {
 		return fmt.Errorf("agent is stopped")
 	}
+	if a.authenticationRecoveryRequired {
+		return errCodexInputRecoveryRequired()
+	}
 	if a.retry != nil || a.pendingStart != nil {
 		return fmt.Errorf("%w: input delivery is pending", agent.ErrAgentBusy)
 	}
@@ -59,6 +62,13 @@ func (a *Agent) checkCodexInputLocked(expected *string) error {
 		return fmt.Errorf("codex agent has no active thread")
 	}
 	return nil
+}
+
+// errCodexInputRecoveryRequired is the one wording of the recovery refusal, so
+// every admission site states the same fact.
+func errCodexInputRecoveryRequired() error {
+	return fmt.Errorf("%w: the Codex login that this process holds cannot accept further input",
+		agent.ErrInputProcessRestartRequired)
 }
 
 // dispatchInputForSession captures settings and sends the request under one dispatch lock.
@@ -107,6 +117,10 @@ func (a *Agent) beginCodexTurnStart(threadID string, input []map[string]interfac
 			return nil, errCodexTurnRetryCancelled
 		}
 		return nil, agent.ErrInputSessionChanged
+	}
+	if a.authenticationRecoveryRequired {
+		a.Mu.Unlock()
+		return nil, errCodexInputRecoveryRequired()
 	}
 	if a.pendingStart != nil || a.retry != nil && a.retry != retry {
 		a.Mu.Unlock()
@@ -158,6 +172,12 @@ func (a *Agent) handleCodexTurnStartResponse(pending *codexPendingTurnStart, res
 		return
 	}
 	err := classifyCodexTurnStartRequestError("turn/start", responseErr)
+	// A retired request cannot settle its successor, but its authentication
+	// rejection still describes this physical process's cached login.
+	if codexAuthenticationRejection(responseErr) {
+		a.markAuthenticationRecoveryRequired()
+		err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
+	}
 	processEnded := false
 	select {
 	case <-a.ProcessDone():
@@ -220,7 +240,10 @@ const codexSteerClientIDPrefix = "leapmux-steer-"
 
 // sendTurnSteer serializes its write with context replacement, then waits without the lock.
 // A caller that owns its row itself passes trackEcho false, and the steer joins no ledger.
-func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho bool) (ticket providerkit.SteerTicket, err error) {
+// sessionValidated marks a steer whose session the Worker already validated --
+// a recorded question's answer -- which stays deliverable while input recovery
+// is required, so the turn that asked the question can finish.
+func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho, sessionValidated bool) (ticket providerkit.SteerTicket, err error) {
 	defer func() {
 		if err != nil {
 			a.outputMu.Lock()
@@ -240,6 +263,11 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		a.Mu.Unlock()
 		a.turnDispatchMu.Unlock()
 		return 0, agent.ErrNoActiveTurn
+	}
+	if a.authenticationRecoveryRequired && !sessionValidated {
+		a.Mu.Unlock()
+		a.turnDispatchMu.Unlock()
+		return 0, errCodexInputRecoveryRequired()
 	}
 	if err := a.validateCodexAudioInputLocked(input, a.mainTurn.model); err != nil {
 		a.Mu.Unlock()

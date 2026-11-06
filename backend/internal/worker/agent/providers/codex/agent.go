@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"golang.org/x/sync/singleflight"
 )
 
 // How long a `turn/start` waits for its `turn/started` ack before it reports
@@ -59,10 +60,18 @@ type Agent struct {
 	resumingThread atomic.Bool
 
 	// Codex-specific state.
-	threadID           string // from thread/start response
+	threadID           string // from thread/start or thread/resume
 	turnRetrySupported bool   // Confirmed durable paginated start with raw events.
 	mainTurn           codexMainTurn
-	steerLedger        providerkit.SteerLedger
+	// authenticationRecoveryRequired retains a confirmed authentication
+	// failure (session.go) on THIS physical process: no later input may reach
+	// it, and the Worker must replace it. Guarded by Mu.
+	authenticationRecoveryRequired bool
+	// inputAuthenticationChecked records the one account/read that this
+	// process's first input paid (session.go). Guarded by Mu.
+	inputAuthenticationChecked bool
+	inputAuthenticationChecks  singleflight.Group
+	steerLedger                providerkit.SteerLedger
 	// Mu protects the requests and the held native turn end.
 	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
 	pendingSteerTurnEnd json.RawMessage
@@ -594,6 +603,10 @@ func (a *Agent) CompactContext() error {
 		a.Mu.Unlock()
 		return fmt.Errorf("codex agent has no active thread")
 	}
+	if a.authenticationRecoveryRequired {
+		a.Mu.Unlock()
+		return errCodexInputRecoveryRequired()
+	}
 	if a.compactionStartAck != nil {
 		a.Mu.Unlock()
 		return fmt.Errorf("context compaction request is already pending")
@@ -615,7 +628,13 @@ func (a *Agent) CompactContext() error {
 	}
 	response := make(chan error, 1)
 	go func() {
-		_, requestErr := a.SendRequest("thread/compact/start", params, 0)
+		// An acknowledgment can end the caller's wait before the RPC reply.
+		// The reply observer retains a later authentication rejection.
+		_, requestErr := a.SendRequestObserved("thread/compact/start", params, 0, func(_ json.RawMessage, replyErr error) {
+			if codexAuthenticationRejection(replyErr) {
+				a.markAuthenticationRecoveryRequired()
+			}
+		})
 		response <- requestErr
 	}()
 	timer := a.Clock().NewTimer(turnStartAckTimeout, codexCompactionAckTimerTag)
@@ -636,6 +655,9 @@ func (a *Agent) CompactContext() error {
 }
 
 func classifyCodexCompactionRequestError(err error) error {
+	if codexAuthenticationRejection(err) {
+		err = fmt.Errorf("%w: %w", agent.ErrInputProcessRestartRequired, err)
+	}
 	return providerkit.ClassifyJSONRPCDeliveryError("thread/compact/start", err)
 }
 
@@ -672,6 +694,14 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
+	// A steer with no validated session is a NEW prompt, so input recovery
+	// refuses it: it must not reach a process whose login cannot accept input.
+	// A session-validated answer (SteerInputForSession) passes, so the turn
+	// that asked the question can still finish on this process.
+	if a.authenticationRecoveryRequired && expected == nil {
+		a.Mu.Unlock()
+		return errCodexInputRecoveryRequired()
+	}
 	if a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil {
 		a.Mu.Unlock()
 		// Pending input or turn completion keeps the queue active. This refusal must not report an idle turn.
@@ -687,7 +717,7 @@ func (a *Agent) steerInput(expected *string, content string, attachments []*leap
 	input, err := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
 	var ticket providerkit.SteerTicket
 	if err == nil {
-		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho)
+		ticket, err = a.sendTurnSteer(threadID, turnID, input, trackEcho, expected != nil)
 	}
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()

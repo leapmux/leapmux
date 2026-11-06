@@ -1507,7 +1507,7 @@ func (svc *Service) replayAgentCatchUp(
 		broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 			AgentId: agentID,
 			Event: &leapmuxv1.AgentEvent_InputQueueChanged{
-				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: queueSnapshotProto(queueSnapshot)},
+				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: svc.queueSnapshotProto(queueSnapshot)},
 			},
 		})
 	}
@@ -2870,18 +2870,10 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 	if currentStop != nil && !currentStop() {
 		return "", errStopTargetChanged
 	}
-	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
-	if err != nil {
-		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
-		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: messages.pauseFailedNotice + err.Error(),
-		})
-		return "", err
-	}
+	var queueRestart *inputqueue.PlannedRestart
 	queueRestartFinished := false
 	defer func() {
-		if !queueRestartFinished {
+		if queueRestart != nil && !queueRestartFinished {
 			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
 				slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
 			}
@@ -2916,6 +2908,14 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 			rowReadFailed = !rowUnavailable
 			return nil, false, readErr
 		}
+		// An escalation can become obsolete while it waits for lifecycle
+		// ownership. Admit the queue guard only after revalidating that turn,
+		// before minting or stopping its process.
+		var pauseErr error
+		queueRestart, pauseErr = svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
+		if pauseErr != nil {
+			return nil, false, pauseErr
+		}
 		// Hold the startup before the stop, and announce the outcome after the
 		// entry is back. The hold ends before the lifecycle lock does.
 		defer svc.holdRelaunch(agentID, current.AgentProvider).settle()
@@ -2944,10 +2944,15 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		return confirmed, launched, nil
 	}()
 	if errors.Is(err, errStopTargetChanged) {
-		if finishErr := queueRestart.Finish(bgCtx(), false, false); finishErr != nil {
-			slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
-		}
-		queueRestartFinished = true
+		return "", err
+	}
+	if queueRestart == nil && !rowUnavailable && !rowReadFailed {
+		// Guard admission failed before any native lifecycle operation.
+		slog.Error(messages.pauseFailedLog, "agent_id", agentID, "error", err)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: messages.pauseFailedNotice + err.Error(),
+		})
 		return "", err
 	}
 	if rowUnavailable || rowReadFailed {
@@ -2967,10 +2972,18 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 			slog.Error("failed to pause input after native restart failure", "agent_id", agentID, "error", pauseErr)
 		}
 	}
-	if finishErr := queueRestart.Finish(bgCtx(), launched || turnEnd == restartTurnEndObserved, err == nil); finishErr != nil {
-		slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
+	if queueRestart != nil {
+		if finishErr := queueRestart.Finish(bgCtx(), launched || turnEnd == restartTurnEndObserved, err == nil); finishErr != nil {
+			slog.Error(messages.finishFailedLog, "agent_id", agentID, "error", finishErr)
+		}
+		queueRestartFinished = true
+	} else if turnEnd == restartTurnEndObserved {
+		// A failed row read never admitted a guard, but the native turn already
+		// ended. Keep the read-failure pause and retire that turn explicitly.
+		if _, endErr := svc.InputQueue.TurnEnded(bgCtx(), agentID); endErr != nil {
+			slog.Error("failed to end the queue turn after restart row read failed", "agent_id", agentID, "error", endErr)
+		}
 	}
-	queueRestartFinished = true
 	if err != nil {
 		if errors.Is(err, errAgentClosedDuringLaunch) || errors.Is(err, errAgentArchivedDuringLaunch) {
 			return "", err
@@ -2978,8 +2991,9 @@ func (svc *Service) restartAgentPreservingSession(dbAgent db.Agent, optionsFor f
 		slog.Error(messages.restartFailedLog, "agent_id", agentID, "error", err)
 		// A failed mint or prelaunch read leaves the old process running. A
 		// postlaunch read fault stops the replacement, but cannot prove that
-		// the native session is stale. Preserve the saved ID in both cases.
-		if launched && !rowReadFailed {
+		// the native session is stale. A control cleanup refusal also proves
+		// that no provider start ran. Preserve the saved ID in these cases.
+		if launched && !rowReadFailed && !errors.Is(err, errAgentProcessStartBlocked) {
 			svc.clearAgentSessionID(agentID)
 		}
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
@@ -3780,7 +3794,6 @@ func (svc *Service) ensureAgentRunning(agentID string, resume resumePolicy, prio
 	if svc.agentStartupFailed(&dbAgent) {
 		return errAgentStartupFailed
 	}
-
 	// From the row read above, under the lock and after the join: a session ID
 	// that a caller resolved earlier can predate a startup that moved it.
 	resumeSessionID := resume.sessionID(svc, dbAgent)

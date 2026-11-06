@@ -62,6 +62,8 @@ type seedEntry[T any] struct {
 // so deleting the row leaves a live subagent permanently unmessageable and
 // uninterruptible. Retention costs one small row per transcript, and the row
 // cascades away with the root agent exactly when the transcript does.
+// A working row also survives so display eviction cannot discard ownership of
+// unfinished work. A status change can make an unlinked row reclaimable.
 //
 // The two halves are ONE field because neither works alone. Keeping a row that
 // nothing can read back makes it unreachable, which is the bug retention exists
@@ -100,6 +102,9 @@ type registryOps[T any, K comparable] struct {
 	// newest first, projecting each into a stored item plus its persisted seq.
 	// `bucket` is 0 for a single-pool registry (bucketOf nil).
 	listRows func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[T], error)
+	// listWorkingKeys rebuilds hidden working rows during seeding. Optional:
+	// nil means no working rows survive outside the display list.
+	listWorkingKeys func(ctx context.Context, q *db.Queries, ownerID string) ([]K, error)
 	// reclaimFinishedBelowSeq deletes the pool's FINISHED rows older than `seq` --
 	// the surplus a seed window leaves behind. Optional: nil skips the pass.
 	reclaimFinishedBelowSeq func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error
@@ -172,8 +177,8 @@ func (c *registryCache[T, K]) on(q *db.Queries, ownerID string) registryView[T, 
 //
 // Half of that pairing used to be the caller's: capture a mirror, open the
 // transaction, restore on error. Only a comment said which callers owed the
-// mirror, and a caller that forgot it left a rolled-back write in memory -- a list
-// nothing can rebuild until the next cold seed, which for a live agent is never.
+// mirror, and a caller that forgot it left a rolled-back write in memory -- a list that
+// differs from storage until a later seed rebuilds it.
 // The two halves are one call now, so neither can be forgotten and the mirror
 // cannot go stale.
 //
@@ -278,14 +283,34 @@ func (v registryView[T, K]) ensureSeededLocked(ctx context.Context) error {
 	// reversed per pool: the pools interleave in seq, so concatenating their
 	// reversed windows would not be ordered overall.
 	slices.SortFunc(loaded, func(a, b seedEntry[T]) int { return cmp.Compare(a.seq, b.seq) })
-	c.Rows = make([]T, len(loaded))
+	rows := make([]T, len(loaded))
+	displayed := make(map[K]struct{}, len(loaded))
 	var maxSeq int64
 	for i, e := range loaded {
-		c.Rows[i] = e.item
+		rows[i] = e.item
+		displayed[c.ops.keyOf(e.item)] = struct{}{}
 		if e.seq > maxSeq {
 			maxSeq = e.seq
 		}
 	}
+	var hidden map[K]struct{}
+	if c.ops.listWorkingKeys != nil {
+		working, err := c.ops.listWorkingKeys(ctx, q, ownerID)
+		if err != nil {
+			return err
+		}
+		for _, key := range working {
+			if _, visible := displayed[key]; visible {
+				continue
+			}
+			if hidden == nil {
+				hidden = make(map[K]struct{})
+			}
+			hidden[key] = struct{}{}
+		}
+	}
+	c.Rows = rows
+	c.evictedActive = hidden
 	// Eviction physically deletes the oldest finished row, leaving the remaining
 	// seqs sparse. A len(rows)+1 start would collide with the highest surviving
 	// seq on the next insert, so derive from the actual max.
@@ -334,7 +359,7 @@ func (c *registryCache[T, K]) indexOf(key K) int {
 // The read and the re-admission are SEPARATE because a mutation decides between
 // them. Most appliers guard first and write second, and a guard that stops the
 // write must leave the display list alone: admitting there evicts a displayed
-// row -- and deletes an unlinked one from the table -- to make space for a write
+// row -- and can delete a finished unlinked one -- to make space for a write
 // that never happens, and the applier then reports changed=false, so no
 // broadcast tells the client its list moved.
 func (v registryView[T, K]) findRowLocked(ctx context.Context, key K) (T, int, bool, error) {
@@ -417,8 +442,10 @@ func (v registryView[T, K]) deleteRowLocked(ctx context.Context, key K, supersed
 	if err := v.dropStoredRowLocked(ctx, row, superseded); err != nil {
 		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
 	}
-	// Gone from the registry, so it is nobody's running work now.
 	c.forgetEvictedActiveLocked(key)
+	if !superseded {
+		c.rememberEvictedActiveLocked(row)
+	}
 	if idx < 0 {
 		return false, nil
 	}
@@ -501,13 +528,19 @@ func (v registryView[T, K]) evictAtLocked(ctx context.Context, evictIdx int) (T,
 	// Remember an ACTIVE row that survives in the store. It is still running, and
 	// the display list can no longer say so. A row retention did NOT keep is gone
 	// from the table too, so nothing can report it and nothing should try.
-	if c.ops.isWorking(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
+	c.rememberEvictedActiveLocked(evicted)
+	return evicted, true, nil
+}
+
+// rememberEvictedActiveLocked records working rows retained outside the display.
+// Caller must hold c.Mu.
+func (c *registryCache[T, K]) rememberEvictedActiveLocked(row T) {
+	if c.ops.isWorking(row) && c.ops.retention != nil && c.ops.retention.keep(row) {
 		if c.evictedActive == nil {
 			c.evictedActive = make(map[K]struct{}, 1)
 		}
-		c.evictedActive[c.ops.keyOf(evicted)] = struct{}{}
+		c.evictedActive[c.ops.keyOf(row)] = struct{}{}
 	}
-	return evicted, true, nil
 }
 
 // registryMirror is the mutable display state of one cache, captured whole.
@@ -515,7 +548,7 @@ func (v registryView[T, K]) evictAtLocked(ctx context.Context, evictIdx int) (T,
 // A caller that groups several writes into a transaction mutates this mirror as it
 // goes, because each write reads the state the one before it left. A rollback must
 // therefore put the mirror back: the table is the truth, and a mirror that kept the
-// rolled-back rows would state a list nothing can rebuild until the next cold seed.
+// rolled-back rows would state a list that differs from storage until a later seed.
 type registryMirror[T any, K comparable] struct {
 	seeded        bool
 	rows          []T

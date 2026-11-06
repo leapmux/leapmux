@@ -7,7 +7,7 @@ import type { PermissionPresetController, ProviderSettingChangeHandler } from '.
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
-import type { AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentInputProcessRecovery, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { PromptSuggestion } from '~/stores/chatPromptSuggestion'
 import type { TurnRetryOffer } from '~/stores/chatTurnRetryOffer'
@@ -114,6 +114,7 @@ export interface AgentEditorPanelProps {
   onSteerQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
   onPreemptQueueItem?: (agentId: string, item: QueuedAgentInput) => Promise<void>
   onSetQueuePaused?: (paused: boolean) => Promise<void>
+  onRecoverInputProcess?: (recovery: AgentInputProcessRecovery) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
   /** Whether the reader opened this agent's non-blocking questions. */
@@ -213,8 +214,15 @@ const AgentInputQueuePauseButton: Component<{
   paused: boolean
   busy: boolean
   onToggle: () => void
+  recoveryRequired?: boolean
 }> = (props) => {
-  const label = () => (props.paused ? 'Resume Queue' : 'Pause Queue')
+  const label = () => {
+    if (props.recoveryRequired)
+      return 'Recover login'
+    if (!props.paused)
+      return 'Pause Queue'
+    return 'Resume Queue'
+  }
   return (
     <Tooltip text={label()} ariaLabel>
       <button
@@ -225,7 +233,12 @@ const AgentInputQueuePauseButton: Component<{
         onClick={() => props.onToggle()}
         data-testid="queue-pause-button"
       >
-        <Icon icon={props.paused ? Play : Pause} size="sm" />
+        <Icon
+          icon={props.paused || props.recoveryRequired
+            ? Play
+            : Pause}
+          size="sm"
+        />
         <span class={hideInNarrowComposer}>{label()}</span>
       </button>
     </Tooltip>
@@ -320,6 +333,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // The retry confirmation belongs to the dialog below, not to the queue-edit
   // session: it holds the input the user asked to retry, and no edit is open.
   const [uncertainRetry, setUncertainRetry] = createSignal<{ agentId: string, item: QueuedAgentInput }>()
+  const canOpenInputRecovery = () => !!props.inputQueue?.processRecovery && !!props.onRecoverInputProcess
+  const openInputRecovery = () => {
+    const recovery = props.inputQueue?.processRecovery
+    if (recovery)
+      props.onRecoverInputProcess?.(recovery)
+  }
+  const toggleInputQueuePause = () => {
+    if (canOpenInputRecovery())
+      openInputRecovery()
+    else
+      setQueuePaused(!queuePaused())
+  }
   // The queue-edit session owns the open edit and everything it holds. The
   // panel creates it BEFORE `useChatAttachments`, because `attachmentDraftKey`
   // is that hook's input, and calls `bindAttachments` below with that hook's
@@ -828,6 +853,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           : ''}
       >
         <AgentInputQueuePauseBanner
+          {...(canOpenInputRecovery()
+            ? { onRecover: openInputRecovery }
+            : {})}
           paused={queuePaused() && queueControlsShown()}
           busy={pauseInFlight()}
           reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
@@ -883,6 +911,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(props.agentId, item))}
           onPreempt={item => fireQueueRpc(props.onPreemptQueueItem?.(props.agentId, item))}
+          {...(canOpenInputRecovery()
+            ? { onRecover: openInputRecovery }
+            : {})}
         />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
@@ -1103,40 +1134,45 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               ? {
                   layout: 'fullWidth' as const,
                   node: () => (
-                    <ControlRequestActions
-                      request={request}
-                      answerState={answerState}
-                      onRespond={ctrl.respondTo(request)}
-                      onRecordResponse={() => ctrl.recordResponse(request)}
-                      hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
-                      onTriggerSend={() => { void triggerSend?.() }}
-                      editorContentRef={() => editorContentRef}
-                      {...(props.messageContext !== undefined
-                        ? { messageContext: props.messageContext }
-                        : {})}
-                      {...(() => {
-                        const agentProvider = ctrl.activeControlProvider()
-                        return agentProvider !== undefined
-                          ? { agentProvider }
-                          : {}
-                      })()}
-                      controlSurface={ctrl.activeControlSurface()}
-                      {...(props.agentSessionInfo?.contextUsage !== undefined
-                        ? { contextUsage: props.agentSessionInfo.contextUsage }
-                        : {})}
-                      {...(() => {
-                        const presets = permissionPresets()
-                        return presets !== undefined
-                          ? { presets }
-                          : {}
-                      })()}
-                      {...(() => {
-                        const ctxWindow = modelContextWindow()
-                        return ctxWindow !== undefined
-                          ? { modelContextWindow: ctxWindow }
-                          : {}
-                      })()}
-                    />
+                    <div class={styles.controlActionCluster}>
+                      <Show when={queueControlsShown() && canOpenInputRecovery()}>
+                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} recoveryRequired onToggle={openInputRecovery} />
+                      </Show>
+                      <ControlRequestActions
+                        request={request}
+                        answerState={answerState}
+                        onRespond={ctrl.respondTo(request)}
+                        onRecordResponse={() => ctrl.recordResponse(request)}
+                        hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
+                        onTriggerSend={() => { void triggerSend?.() }}
+                        editorContentRef={() => editorContentRef}
+                        {...(props.messageContext !== undefined
+                          ? { messageContext: props.messageContext }
+                          : {})}
+                        {...(() => {
+                          const agentProvider = ctrl.activeControlProvider()
+                          return agentProvider !== undefined
+                            ? { agentProvider }
+                            : {}
+                        })()}
+                        controlSurface={ctrl.activeControlSurface()}
+                        {...(props.agentSessionInfo?.contextUsage !== undefined
+                          ? { contextUsage: props.agentSessionInfo.contextUsage }
+                          : {})}
+                        {...(() => {
+                          const presets = permissionPresets()
+                          return presets !== undefined
+                            ? { presets }
+                            : {}
+                        })()}
+                        {...(() => {
+                          const ctxWindow = modelContextWindow()
+                          return ctxWindow !== undefined
+                            ? { modelContextWindow: ctxWindow }
+                            : {}
+                        })()}
+                      />
+                    </div>
                   ),
                 }
               : {
@@ -1144,7 +1180,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   node: () => (
                     <div class={styles.actionCluster} data-testid="composer-actions">
                       <Show when={queueControlsShown()}>
-                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
+                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} recoveryRequired={canOpenInputRecovery()} onToggle={toggleInputQueuePause} />
                       </Show>
                       <Show when={ctrl.showInterrupt()}>
                         {/*

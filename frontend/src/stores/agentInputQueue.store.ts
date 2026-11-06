@@ -24,7 +24,11 @@ export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boo
       const current = state.byAgent[agentId]
       if (current && current.revision > snapshot.revision)
         return false
-      setState('byAgent', agentId, snapshot)
+      // Solid merges object values passed to a path setter. Replace the node
+      // through a producer so omitted optional fields clear earlier values.
+      setState('byAgent', produce((queues) => {
+        queues[agentId] = snapshot
+      }))
       return true
     },
 

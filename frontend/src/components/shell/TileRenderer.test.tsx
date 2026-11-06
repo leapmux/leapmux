@@ -1,12 +1,13 @@
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { create } from '@bufbuild/protobuf'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
-import { createRoot } from 'solid-js'
+import { createRoot, createSignal, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
-import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputProcessRecoverySchema, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -22,6 +23,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
+import { deferred } from '~/test-support/async'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { makeMessage, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
@@ -66,6 +68,8 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
 const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
 const renameTerminal = vi.hoisted(() => vi.fn(async () => ({})))
 const enqueueAgentInput = vi.hoisted(() => vi.fn(async () => ({ snapshot: undefined })))
+const listAgentInputRecoveries = vi.hoisted(() => vi.fn())
+const recoverAgentInputProcess = vi.hoisted(() => vi.fn())
 vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
   return {
@@ -81,6 +85,8 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
     workerAgentInput: {
       ...actual.workerAgentInput,
       enqueueAgentInput,
+      listAgentInputRecoveries,
+      recoverAgentInputProcess,
     },
   }
 })
@@ -104,13 +110,14 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
    */
   addTerminal: (id: string, tileId: string, title?: string) => Tab
   /** Same, for an AGENT tab -- the pane whose identity the tests below assert on. */
-  addAgent: (id: string, tileId: string, title?: string) => Tab
+  addAgent: (id: string, tileId: string, title?: string, workerId?: string) => Tab
   /** Same, for a FILE tab. */
   addFile: (id: string, tileId: string) => Tab
 }
 
 interface RenderRendererOptions {
   chatStore?: ReturnType<typeof createChatStore>
+  agentInputQueueStore?: ReturnType<typeof createAgentInputQueueStore>
   /** The control store the renderer reads, so a test can seed its requests. */
   controlStore?: ReturnType<typeof createControlStore>
   /** The renderer object itself, for tests that read its shell helpers. */
@@ -124,6 +131,8 @@ interface RenderRendererOptions {
    * that drives a send has to ask for it.
    */
   withComposer?: boolean
+  /** Simulate a responsive layout replacing only its editor subtree. */
+  composerShown?: () => boolean
   /** The agent operation that records an approval of a denied auto-review. */
   handleApproveAutoReviewDenial?: (agentId: string, messageId: string, reviewId: string) => Promise<void>
 }
@@ -148,7 +157,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         metadata: s.metadata,
         selection: s.selection,
         chatStore: options.chatStore ?? createChatStore(),
-        agentInputQueueStore: createAgentInputQueueStore(),
+        agentInputQueueStore: options.agentInputQueueStore ?? createAgentInputQueueStore(),
         controlStore: options.controlStore ?? createControlStore(),
         agentActivityStore: createAgentActivityStore(),
         layoutStore: s.layoutStore,
@@ -240,9 +249,14 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       <>
         {r.renderTile(focusedTileId)}
         {options.withComposer
-          ? <r.FocusedAgentEditorPanel containerHeight={600} />
+          ? (
+              <Show when={options.composerShown?.() ?? true}>
+                <r.FocusedAgentEditorPanel containerHeight={600} />
+              </Show>
+            )
           : null}
         {r.CloseDialogs()}
+        <r.RecoveryDialog />
       </>
     )
   }, {
@@ -286,14 +300,14 @@ function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): Re
         stores.selection.setActiveById(TabType.TERMINAL, id)
         return stores.view.getById(TabType.TERMINAL, id)!
       },
-      addAgent(id, tileId, title = 'Agent') {
+      addAgent(id, tileId, title = 'Agent', workerId = 'worker-1') {
         nextPosition += 1
         emitAddTab({
           type: TabType.AGENT,
           id,
           tileId,
           position: `p${nextPosition}`,
-          workerId: 'worker-1',
+          workerId,
         })
         stores.metadata.patch(id, { title, workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
         stores.selection.setActiveById(TabType.AGENT, id)
@@ -683,6 +697,84 @@ describe('TileRenderer close-tile flow', () => {
  * enqueue handler owns this, and it must scroll BEFORE the RPC: a slow or a
  * failed enqueue must still land the reader on the tail.
  */
+describe('createTileRenderer recovery dialog', () => {
+  it('keeps the confirmation and mixed results across responsive editor remounts', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId, 'First tab')
+    s.addAgent('a2', tileId, 'Second tab', 'worker-2')
+    for (const id of ['a1', 'a2'])
+      s.metadata.patch(id, { agentProvider: AgentProvider.CODEX })
+    s.selection.setActiveById(TabType.AGENT, 'a1')
+    const firstRecovery = create(AgentInputProcessRecoverySchema, {
+      outputGeneration: 4n,
+      agentSessionId: 'session-4',
+      agentProvider: AgentProvider.CODEX,
+      processInstanceId: 'process-4',
+    })
+    const secondRecovery = create(AgentInputProcessRecoverySchema, {
+      outputGeneration: 7n,
+      agentSessionId: 'session-7',
+      agentProvider: AgentProvider.CODEX,
+      processInstanceId: 'process-7',
+    })
+    const queues = createAgentInputQueueStore()
+    queues.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 1n, processRecovery: firstRecovery }))
+    queues.apply('a2', create(AgentInputQueueSnapshotSchema, { revision: 1n, processRecovery: secondRecovery }))
+    listAgentInputRecoveries.mockReset().mockImplementation(async (workerId: string) => ({
+      targets: [
+        create(AgentInputRecoveryTargetSchema, workerId === 'worker-1'
+          ? { agentId: 'a1', title: 'First tab', recovery: firstRecovery }
+          : { agentId: 'a2', title: 'Second tab', recovery: secondRecovery }),
+      ],
+    }))
+    const finish = deferred<void>()
+    recoverAgentInputProcess.mockReset().mockImplementation(async (workerId: string) => {
+      await finish.promise
+      if (workerId === 'worker-2')
+        throw new Error('The second worker disconnected.')
+      return {
+        snapshot: create(AgentInputQueueSnapshotSchema, { revision: 2n }),
+      }
+    })
+    const [composerShown, setComposerShown] = createSignal(true)
+    renderRenderer(s, tileId, { withComposer: true, composerShown, agentInputQueueStore: queues })
+    await fireEvent.click(screen.getByTestId('queue-pause-button'))
+    await waitFor(() => expect(screen.getByTestId('input-recovery-summary')).toHaveTextContent('1 Codex tab on 1 worker'))
+    const dialog = screen.getByTestId('input-recovery-dialog')
+
+    // The shell replaces only the editor when the responsive layout changes.
+    setComposerShown(false)
+    expect(screen.queryByTestId('agent-editor-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('input-recovery-dialog')).toBe(dialog)
+    setComposerShown(true)
+    await fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Recover all Codex tabs with login issues' }))
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Recover login' }))
+    expect(recoverAgentInputProcess).toHaveBeenCalledTimes(2)
+    expect(recoverAgentInputProcess).toHaveBeenCalledWith('worker-1', { agentId: 'a1', recovery: firstRecovery })
+    expect(recoverAgentInputProcess).toHaveBeenCalledWith('worker-2', { agentId: 'a2', recovery: secondRecovery })
+
+    setComposerShown(false)
+    s.selection.setActiveById(TabType.AGENT, 'a2')
+    setComposerShown(true)
+    expect(screen.getByTestId('agent-editor-panel')).toHaveAttribute('data-agent-id', 'a2')
+    // A second editor cannot replace an approval whose requests are running.
+    await fireEvent.click(screen.getByTestId('queue-pause-button'))
+    expect(screen.getByTestId('input-recovery-dialog')).toBe(dialog)
+    expect(listAgentInputRecoveries).toHaveBeenCalledTimes(2)
+    expect(within(dialog).getByRole('button', { name: 'Recover login' })).toBeDisabled()
+
+    finish.resolve()
+    await waitFor(() => expect(within(dialog).getByTestId('input-recovery-result-summary')).toHaveTextContent('Recovered 1 of 2 Codex tabs.'))
+    expect(within(dialog).getByTestId('input-recovery-results')).toHaveTextContent('The second worker disconnected.')
+    expect(queues.get('a1')?.processRecovery).toBeUndefined()
+    expect(queues.get('a2')?.processRecovery?.processInstanceId).toBe('process-7')
+    expect(recoverAgentInputProcess).toHaveBeenCalledTimes(2)
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+    expect(screen.queryByTestId('input-recovery-dialog')).not.toBeInTheDocument()
+  })
+})
+
 describe('TileRenderer composer send', () => {
   it('scrolls the transcript to the live tail on a composer send', async () => {
     const s = createSetup()

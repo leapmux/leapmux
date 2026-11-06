@@ -297,8 +297,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_state.pause_reason",
-			check:        "CHECK (pause_reason BETWEEN 1 AND 6)",
-			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT),
+			check:        "CHECK (pause_reason BETWEEN 1 AND 7)",
+			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_PROCESS_RECOVERY),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputQueuePauseReason_name),
 		},
 		{

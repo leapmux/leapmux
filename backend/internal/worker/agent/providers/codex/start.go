@@ -251,11 +251,20 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	return a, nil
 }
 
+// codexBaseArgs launches one independently owned app-server process per
+// top-level Codex tab. The explicit `--listen stdio://` states the stdio
+// transport that the launch pipes require, rather than relying on Codex's
+// default: the default is the same today, but a Codex release that changed it
+// would hand LeapMux a socket or a daemon instead of the piped process its
+// reader and lifecycle own. No daemon or proxy lifecycle command belongs here
+// -- those serve Codex's own shared-daemon mode, which keeps a process that no
+// tab owns.
 func codexBaseArgs() []string {
 	return []string{
 		"--enable", codexMultiAgentV2Feature,
 		"--enable", codexMemoriesFeature,
 		"--enable", codexCodeModeInterruptFeature,
 		"app-server",
+		"--listen", "stdio://",
 	}
 }

@@ -2365,7 +2365,7 @@ func pauseAgentAndEndTurn(t *testing.T, database *sql.DB, reason leapmuxv1.Agent
 // TestPauseAndEndTurnKeepsTheEarlierPause pins the contract in the doc above
 // pauseAndEndTurn, which now reads the pause from pause_reason alone: an
 // existing pause keeps its reason and its owner, except that a pause a
-// planned restart owns passes to the new cause and keeps its reason.
+// planned restart owns passes to the new cause with that cause's reason.
 func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 	t.Parallel()
 
@@ -2407,8 +2407,8 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerArchive)
 		assert.Equal(t, int64(1), changed)
 		after := readQueuePauseState(t, database)
-		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, after.reason,
-			"the takeover keeps the reason the restart recorded")
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, after.reason,
+			"the new owner records its own cause instead of the temporary restart reason")
 		assert.Equal(t, pauseOwnerArchive, after.owner)
 
 		// The restart no longer owns the pause, so its end cannot lift it.
@@ -2417,6 +2417,6 @@ func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
 		assert.True(t, snapshot.Paused, "the archive's pause survives the end of the restart")
 		final := readQueuePauseState(t, database)
 		assert.Equal(t, pauseOwnerArchive, final.owner)
-		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, final.reason)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, final.reason)
 	})
 }

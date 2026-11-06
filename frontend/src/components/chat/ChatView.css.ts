@@ -298,9 +298,9 @@ globalStyle(`${inputArea}[data-no-status-bar]`, {
 })
 
 /**
- * The composer's action cluster: the queue pause toggle, Interrupt and Send in
- * the corner layout, and the pause toggle alone in the full-width
- * control-request layout.
+ * The composer's action cluster holds the queue toggle, Interrupt and Send in
+ * the corner layout. The full-width layout holds control-request actions and
+ * the recovery action when a process needs login recovery.
  *
  * Rendered in the box's top-right (collapsed) or bottom-right (expanded)
  * overlay slot, so it is a plain flex row with a small gap; the positioning
@@ -321,6 +321,13 @@ export const actionCluster = style({
   minWidth: 0,
   gap: 'var(--space-1)',
 })
+
+export const controlActionCluster = style([
+  actionCluster,
+  {
+    flex: 1,
+  },
+])
 
 export const scrollToBottomButton = style({
   'position': 'absolute',

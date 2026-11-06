@@ -1,9 +1,28 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createAgentInputQueueStore } from './agentInputQueue.store'
 
 describe('agent input queue store', () => {
+  it.each([1n, 2n, 3n])('clears omitted recovery metadata only for an accepted revision (%s)', (revision) => {
+    const store = createAgentInputQueueStore()
+    const recovery = create(AgentInputProcessRecoverySchema, {
+      outputGeneration: 4n,
+      agentSessionId: 'session-4',
+      agentProvider: AgentProvider.CODEX,
+      processInstanceId: 'process-4',
+    })
+    store.apply('a1', create(AgentInputQueueSnapshotSchema, { revision: 2n, processRecovery: recovery }))
+    const cleared = create(AgentInputQueueSnapshotSchema, { revision })
+    const accepted = revision >= 2n
+    expect(store.apply('a1', cleared)).toBe(accepted)
+    if (accepted)
+      expect(store.get('a1')?.processRecovery).toBeUndefined()
+    else
+      expect(store.get('a1')?.processRecovery).toStrictEqual(recovery)
+    expect(store.get('a1')?.revision).toBe(accepted ? revision : 2n)
+  })
+
   it('ignores an older authoritative snapshot', () => {
     const store = createAgentInputQueueStore()
     const newer = create(AgentInputQueueSnapshotSchema, { revision: 5n, pauseReason: AgentInputQueuePauseReason.MANUAL })
@@ -78,9 +97,8 @@ describe('agent input queue store maturity', () => {
       { id: 'future', reorderSegment: 2 },
       { id: 'now', reorderSegment: 1 },
     ]
-    // A fresh decode per event, exactly as a Worker push arrives: the store
-    // keeps one stored node per agent, so re-applying one instance would read
-    // the store's own merged fields back.
+    // Use a fresh decoded message per event, as a Worker push does. Each
+    // snapshot states the complete authoritative order.
     expect(store.apply('a1', create(AgentInputQueueSnapshotSchema, {
       revision: 4n,
       items: preDeadlineItems(),

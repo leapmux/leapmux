@@ -11,11 +11,12 @@ import type { useTerminalOperations } from './useTerminalOperations'
 import type { AgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import type { AgentLifecycleProps, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
-import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInputProcessRecovery, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { UntrustedLinkConfirm } from '~/lib/untrustedLinks'
+import type { InputRecoveryTarget } from '~/models/agentInputRecovery'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -33,9 +34,11 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import type { WorkerOnlineStore } from '~/stores/workerOnline.store'
-import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, mapArray, onCleanup, Show } from 'solid-js'
+import { Portal } from 'solid-js/web'
 import { workerAgent } from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
+import { AgentInputRecoveryDialog } from '~/components/chat/AgentInputRecoveryDialog'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
@@ -44,6 +47,7 @@ import { pluginFor } from '~/components/chat/providers/registry'
 import { readWorkerImage } from '~/components/chat/readWorkerImage'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
@@ -62,6 +66,7 @@ import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
+import { createAgentInputRecoveryOperations } from './agentInputRecoveryOperations'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
@@ -1307,6 +1312,24 @@ export function createTileRenderer(opts: TileRendererOpts) {
     focusedAgentId,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
   })
+  const inputRecoveryOps = createAgentInputRecoveryOperations({
+    view,
+    store: agentInputQueueStore,
+    workerName: workerId => workerInfoStore.getName(workerId),
+  })
+  // The shell keeps this confirmation across responsive editor remounts and
+  // focus changes, including while the approved requests are still running.
+  const [inputRecoveryTarget, setInputRecoveryTarget] = createSignal<InputRecoveryTarget>()
+  const requestInputRecovery = (agentId: string, recovery: AgentInputProcessRecovery) => {
+    if (inputRecoveryTarget())
+      return
+    try {
+      setInputRecoveryTarget(inputRecoveryOps.captureTarget(agentId, recovery))
+    }
+    catch (error) {
+      showWarnToast('Could not open login recovery', error)
+    }
+  }
 
   // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
   const addFilesRef = createImperativeRef<(files: FileList | File[]) => Promise<number>>()
@@ -1414,6 +1437,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onSteerQueueItem={queueOps.steerQueueItem}
         onPreemptQueueItem={queueOps.preemptQueueItem}
         onSetQueuePaused={queueOps.setQueuePaused}
+        onRecoverInputProcess={recovery => requestInputRecovery(agentId(), recovery)}
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
@@ -1521,6 +1545,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // rather than rebuilt, so a shortcut and a button cannot take two different
     // paths to one worker call.
     queueOps,
+    // Reinserting a native modal removes it from the browser's top layer.
+    // Keep its DOM outside responsive shell updates while retaining shell state.
+    RecoveryDialog: () => (
+      <Portal>
+        <Show when={inputRecoveryTarget()} keyed>
+          {target => <AgentInputRecoveryDialog current={target} actions={inputRecoveryOps} onClose={() => setInputRecoveryTarget()} />}
+        </Show>
+      </Portal>
+    ),
     renderTile,
     handleFileDrop,
     fileDropDisabled: () => {

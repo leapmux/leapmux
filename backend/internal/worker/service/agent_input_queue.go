@@ -190,10 +190,7 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 	}
 
 	ensureRunning := func() error {
-		if svc.Agents.AgentAlive(item.AgentID) {
-			return nil
-		}
-		if svc.Agents.HasAgent(item.AgentID) {
+		if !svc.Agents.AgentAlive(item.AgentID) && svc.Agents.HasAgent(item.AgentID) {
 			// The process exited and its exit callback still runs. The slot
 			// stays registered until that callback pauses the queue, and
 			// ensureAgentRunning returns at once for a registered slot, so a
@@ -201,11 +198,13 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
+		// Readiness also checks a running process. A process that requires
+		// recovery holds the input for approval before native delivery.
 		// ensureAgentRunning resolves the resumed session itself, from the row
 		// that it reads after the join. dbAgent was read before the join and
 		// before a plan context replaced the session, so a session resolved
 		// from it can be one that the provider already moved away from.
-		return svc.ensureAgentRunning(item.AgentID, resumeIfConversation, queuedStart)
+		return svc.ensureAgentReadyForInput(item.AgentID)
 	}
 
 	switch item.Kind {
@@ -298,6 +297,9 @@ func classifyQueueDeliveryError(err error) error {
 		// DispatchFailed for every cause it does not know.
 		return err
 	}
+	if !errors.Is(err, agent.ErrDeliveryUncertain) && errors.Is(err, agent.ErrInputProcessRestartRequired) {
+		return processRecoveryRequired(err)
+	}
 	deliveryErr := &inputqueue.DeliveryError{Err: err, Outcome: queueDispatchOutcome(err)}
 	var busyErr *agent.AgentBusyError
 	if errors.As(err, &busyErr) {
@@ -314,6 +316,8 @@ func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
 		return inputqueue.DispatchNotReady
 	case errors.Is(err, agent.ErrDeliveryUncertain):
 		return inputqueue.DispatchUncertain
+	case errors.Is(err, agent.ErrInputProcessRestartRequired):
+		return inputqueue.DispatchNotReady
 	default:
 		return inputqueue.DispatchFailed
 	}
@@ -353,8 +357,18 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 		}
 		err = a.svc.Agents.SteerChildInput(row.OwnerAgentID, row.RowKey, text, attachments)
 	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		// A validated answer steers into an existing turn, so it must keep
+		// reaching the process whose question asked it, even while new prompts
+		// wait for recovery approval. An
+		// idle question ends its steer and returns through Dispatch readiness.
 		err = a.svc.steerResolvedInput(item.AgentID, resolvedInput, attachments)
 	} else {
+		// A new prompt steered at the root is subject to the same readiness as
+		// a dispatched one: a process that requires recovery holds the prompt
+		// for approval before the steer reaches it.
+		if err := a.svc.ensureAgentReadyForInput(item.AgentID); err != nil {
+			return inputqueue.DispatchResult{}, err
+		}
 		err = a.svc.Agents.SteerInput(item.AgentID, text, attachments)
 	}
 	return inputqueue.DispatchResult{
@@ -484,7 +498,7 @@ func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
 	a.svc.Watchers.BroadcastAgentEvent(snapshot.AgentID, &leapmuxv1.AgentEvent{
 		AgentId: snapshot.AgentID,
 		Event: &leapmuxv1.AgentEvent_InputQueueChanged{
-			InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: queueSnapshotProto(snapshot)},
+			InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: a.svc.queueSnapshotProto(snapshot)},
 		},
 	})
 }
@@ -549,6 +563,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 }
 
 func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
+	registerAgentInputRecoveryHandlers(d, svc)
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.EnqueueAgentInputRequest, sender channel.ResponseWriter) {
 			if r.GetKind() == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
@@ -569,7 +584,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.EnqueueAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceListAgentInputQueueProcedure, dispatchPlain,
@@ -578,7 +593,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.ListAgentInputQueueResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceBeginQueuedAgentInputEditProcedure, dispatchPlain,
@@ -588,7 +603,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 				return
 			}
 			sendProtoResponse(sender, &leapmuxv1.BeginQueuedAgentInputEditResponse{
-				Snapshot: queueSnapshotProto(snapshot), Attachments: providerAttachments(attachments), Text: fullText,
+				Snapshot: svc.queueSnapshotProto(snapshot), Attachments: providerAttachments(attachments), Text: fullText,
 			})
 		})
 
@@ -615,7 +630,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.UpdateQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.UpdateQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceCancelQueuedAgentInputEditProcedure, dispatchPlain,
@@ -624,7 +639,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.CancelQueuedAgentInputEditResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.CancelQueuedAgentInputEditResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceDeleteQueuedAgentInputProcedure, dispatchPlain,
@@ -633,7 +648,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.DeleteQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.DeleteQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceMoveQueuedAgentInputProcedure, dispatchPlain,
@@ -642,7 +657,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.MoveQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.MoveQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceSetAgentInputQueuePausedProcedure, dispatchPlain,
@@ -651,7 +666,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.SetAgentInputQueuePausedResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.SetAgentInputQueuePausedResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceSteerQueuedAgentInputProcedure, dispatchPlain,
@@ -660,7 +675,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.SteerQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServicePreemptQueuedAgentInputProcedure, dispatchPlain,
@@ -669,7 +684,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.PreemptQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 
 	registerAgentGuardedByID(d, leapmuxv1connect.WorkerAgentInputServiceRetryQueuedAgentInputProcedure, dispatchPlain,
@@ -678,7 +693,7 @@ func registerAgentInputQueueHandlers(d ownerOnlyRegistrar, svc *Service) {
 			if sendQueueError(sender, err) {
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.RetryQueuedAgentInputResponse{Snapshot: queueSnapshotProto(snapshot)})
+			sendProtoResponse(sender, &leapmuxv1.RetryQueuedAgentInputResponse{Snapshot: svc.queueSnapshotProto(snapshot)})
 		})
 }
 
@@ -690,6 +705,7 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 	case errors.Is(err, inputqueue.ErrNotFound), errors.Is(err, sql.ErrNoRows):
 		sendNotFoundError(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrConflict), errors.Is(err, inputqueue.ErrEditOwned),
+		errors.Is(err, agent.ErrInputProcessRestartRequired),
 		errors.Is(err, inputqueue.ErrEditOwnerMismatch), errors.Is(err, inputqueue.ErrVersionConflict),
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),

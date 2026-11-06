@@ -9,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
-import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AttachmentSchema, AvailableOptionGroupSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputProcessRecoverySchema, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AttachmentSchema, AvailableOptionGroupSchema, QueueHeadDispatch } from '~/generated/proto/leapmux/v1/agent_pb'
 import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { formatResetTimestamp } from '~/lib/rateLimitUtils'
@@ -112,6 +112,8 @@ interface RenderPanelOptions {
   agentActivity?: AgentActivityState
   optionGroups?: AgentInfo['optionGroups']
   inputQueue?: AgentEditorPanelProps['inputQueue']
+  onRecoverInputProcess?: AgentEditorPanelProps['onRecoverInputProcess']
+  onSetQueuePaused?: AgentEditorPanelProps['onSetQueuePaused']
   turnRetryOffer?: AgentEditorPanelProps['turnRetryOffer']
   promptSuggestion?: AgentEditorPanelProps['promptSuggestion']
   onDismissPromptSuggestion?: AgentEditorPanelProps['onDismissPromptSuggestion']
@@ -171,6 +173,12 @@ function renderPanel(options: RenderPanelOptions = {}) {
           : {})}
         {...(options.inputQueue !== undefined
           ? { inputQueue: options.inputQueue }
+          : {})}
+        {...(options.onRecoverInputProcess !== undefined
+          ? { onRecoverInputProcess: options.onRecoverInputProcess }
+          : {})}
+        {...(options.onSetQueuePaused !== undefined
+          ? { onSetQueuePaused: options.onSetQueuePaused }
           : {})}
         {...(options.onRetryPendingSend !== undefined
           ? { onRetryPendingSend: options.onRetryPendingSend }
@@ -1280,6 +1288,42 @@ describe('agent editor panel composer emptiness', () => {
 })
 
 describe('agent editor panel', () => {
+  it.each([false, true])('requests recovery for an empty unpaused queue without answering a control (blocking control=%s)', async (blockingControl) => {
+    const recovery = create(AgentInputProcessRecoverySchema, {
+      outputGeneration: 4n,
+      agentSessionId: 'session-4',
+      agentProvider: AgentProvider.CODEX,
+      processInstanceId: 'process-4',
+    })
+    const onRecoverInputProcess = vi.fn()
+    const onSetQueuePaused = vi.fn(async () => {})
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn(async () => {})
+    if (blockingControl) {
+      addControlRequest(controlStore, {
+        requestId: 'pending-permission',
+        payload: {
+          method: 'item/commandExecution/requestApproval',
+          params: { command: 'pwd', cwd: '/tmp' },
+        },
+      })
+    }
+    renderPanel({
+      controlStore,
+      onControlResponse,
+      agentProvider: AgentProvider.CODEX,
+      inputQueue: create(AgentInputQueueSnapshotSchema, { processRecovery: recovery }),
+      onRecoverInputProcess,
+      onSetQueuePaused,
+    })
+    expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', 'Recover login')
+    await fireEvent.click(screen.getByTestId('queue-pause-button'))
+    expect(onRecoverInputProcess).toHaveBeenCalledExactlyOnceWith(recovery)
+    expect(onSetQueuePaused).not.toHaveBeenCalled()
+    expect(onControlResponse).not.toHaveBeenCalled()
+    expect(controlStore.getRequests('a1')).toHaveLength(blockingControl ? 1 : 0)
+  })
+
   it('shows the queue pause control without a control request', () => {
     renderPanel()
     expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')

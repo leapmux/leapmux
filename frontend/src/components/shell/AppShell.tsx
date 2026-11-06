@@ -1907,6 +1907,7 @@ export const AppShell: Component = () => {
           visible and usable on top of the splash.
         */}
         <tileRenderer.CloseDialogs />
+        <tileRenderer.RecoveryDialog />
 
         <Show when={cliPathInfo()}>
           {info => (
