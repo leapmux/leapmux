@@ -166,7 +166,7 @@ Download the archive for your platform, extract it, and run the `leapmux` execut
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
 cd leapmux_<version>_linux_amd64
-./leapmux hub          # or: solo, worker, dev
+./leapmux hub run          # or: solo, worker, dev
 ```
 
 The macOS package is signed with a Developer ID and notarized.

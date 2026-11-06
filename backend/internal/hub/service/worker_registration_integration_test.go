@@ -2,6 +2,9 @@ package service_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -18,8 +21,10 @@ import (
 	mysqlstore "github.com/leapmux/leapmux/internal/hub/store/mysql"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
@@ -49,8 +54,11 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			register := func(key string, done chan<- result) {
 				requestCtx, info := connect.NewClientContext(ctx)
 				info.RequestHeader().Set("Authorization", "Bearer "+key)
+				var attempt [16]byte
+				_, _ = rand.Read(attempt[:])
 				response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{
-					Keys: workerkeystest.Keys(0x31),
+					Keys:      workerkeystest.Keys(0x31),
+					AttemptId: hex.EncodeToString(attempt[:]),
 				})
 				done <- result{response: response, err: err}
 			}
@@ -189,4 +197,217 @@ func (s registrationOverlapWorkers) Create(ctx context.Context, p store.CreateWo
 		}
 	}
 	return nil
+}
+
+// registerAttempt carries everything one durable registration attempt
+// needs: the attempt identity, the key set, and the key material that
+// signs the recovery challenge.
+type registerAttempt struct {
+	attemptID string
+	keys      *leapmuxv1.WorkerPublicKeys
+	composite *noise.CompositeKeypair
+}
+
+func newRegisterAttempt(t *testing.T, fill byte) registerAttempt {
+	t.Helper()
+	var attempt [16]byte
+	_, err := rand.Read(attempt[:])
+	require.NoError(t, err)
+	composite, err := noise.GenerateCompositeKeypair()
+	require.NoError(t, err)
+	keys, err := workerkeys.Of(composite)
+	require.NoError(t, err)
+	return registerAttempt{
+		attemptID: hex.EncodeToString(attempt[:]),
+		keys:      keys,
+		composite: composite,
+	}
+}
+
+// registerCall performs one Register over the real service. loseResponse
+// drops the reply after the handler has fully committed, reproducing the
+// lost-response failure the recovery protocol exists for.
+func (env *regKeyEnv) registerCall(t *testing.T, ctx context.Context, key string, attempt registerAttempt, loseResponse bool) (*leapmuxv1.RegisterResponse, error) {
+	t.Helper()
+	requestCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+key)
+	response, err := env.connectorClient.Register(requestCtx, &leapmuxv1.RegisterRequest{
+		Keys:      attempt.keys,
+		AttemptId: attempt.attemptID,
+	})
+	if err != nil || !loseResponse {
+		return response, err
+	}
+	// The response arrived; the caller wants the attempt to look LOST.
+	// The transaction has committed either way -- the register above was
+	// real -- so dropping here reproduces "the hub consumed the key and
+	// the client never saw the credentials".
+	return nil, connect.NewError(connect.CodeUnavailable, "simulated lost response")
+}
+
+// TestRegisterRecoversAfterLostCommittedResponse runs the REAL
+// registration service, loses the first response only after the
+// transaction commits, and recovers the same worker and token through
+// the challenge protocol with exactly one row.
+func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
+	env := newRegKeyEnv(t, testConfig(), nil, nil)
+	ctx := context.Background()
+	admin := userid.MustNew(env.adminID(t))
+	key := id.Generate()
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+	}))
+
+	attempt := newRegisterAttempt(t, 0x41)
+
+	_, err := env.registerCall(t, ctx, key, attempt, true)
+	require.Error(t, err, "the first response was lost after commit")
+
+	// Exactly one row exists, pinned to this attempt with the digest.
+	worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)
+	require.NoError(t, rowErr, "the committed attempt must be findable")
+
+	// A plain retry of Register is AlreadyExists, not a second worker.
+	_, err = env.registerCall(t, ctx, key, attempt, false)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+
+	// The recovery: fresh challenge, signature over the exact bytes,
+	// credentials back.
+	recovered := recoverThroughChallenge(t, ctx, env, key, attempt)
+	assert.Equal(t, worker.ID, recovered.GetWorkerId(), "the same worker comes back")
+	assert.Equal(t, worker.AuthToken, recovered.GetAuthToken(), "the original token comes back, not a new one")
+
+	page, listErr := env.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		RegisteredBy: admin, PageParams: store.PageParams{Limit: 10},
+	})
+	require.NoError(t, listErr)
+	require.Len(t, page.Rows, 1, "recovery mints no second worker")
+}
+
+// recoveryMessageBytes builds the recovery signature's byte sequence
+// INDEPENDENTLY of the service, so this file pins the protocol format:
+// the prefix, both decoded identities, the nonce, and the key digest.
+func recoveryMessageBytes(attemptID, challengeID string, nonce []byte, key string) []byte {
+	digest := sha256.Sum256([]byte(key))
+	message := append([]byte{}, "leapmux.worker.registration.recovery.v1\x00"...)
+	attemptRaw, _ := hex.DecodeString(attemptID)
+	challengeRaw, _ := hex.DecodeString(challengeID)
+	message = append(message, attemptRaw...)
+	message = append(message, challengeRaw...)
+	message = append(message, nonce...)
+	return append(message, digest[:]...)
+}
+
+// recoverThroughChallenge drives the two recovery RPCs and returns the
+// recovered credentials.
+func recoverThroughChallenge(t *testing.T, ctx context.Context, env *regKeyEnv, key string, attempt registerAttempt) *leapmuxv1.RegisterResponse {
+	t.Helper()
+	challengeCtx, challengeInfo := connect.NewClientContext(ctx)
+	challengeInfo.RequestHeader().Set("Authorization", "Bearer "+key)
+	challenge, err := env.connectorClient.GetRegistrationChallenge(challengeCtx,
+		&leapmuxv1.GetRegistrationChallengeRequest{AttemptId: attempt.attemptID})
+	require.NoError(t, err)
+
+	message := recoveryMessageBytes(attempt.attemptID, challenge.GetChallengeId(), challenge.GetNonce(), key)
+	signature, err := attempt.composite.SlhdsaPrivateKey.Sign(rand.Reader, message, nil)
+	require.NoError(t, err)
+
+	recoverCtx, recoverInfo := connect.NewClientContext(ctx)
+	recoverInfo.RequestHeader().Set("Authorization", "Bearer "+key)
+	recovered, err := env.connectorClient.RecoverRegistration(recoverCtx, &leapmuxv1.RecoverRegistrationRequest{
+		AttemptId:   attempt.attemptID,
+		ChallengeId: challenge.GetChallengeId(),
+		Signature:   signature,
+	})
+	require.NoError(t, err)
+	return recovered
+}
+
+// TestRegistrationRecoveryAcrossClientAndHubRestart restarts the client
+// from its pending data (a fresh process state) and the Hub (an empty
+// challenge store): a fresh challenge recovers the committed identity.
+func TestRegistrationRecoveryAcrossClientAndHubRestart(t *testing.T) {
+	env := newRegKeyEnv(t, testConfig(), nil, nil)
+	ctx := context.Background()
+	admin := userid.MustNew(env.adminID(t))
+	key := id.Generate()
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	attempt := newRegisterAttempt(t, 0x42)
+
+	_, err := env.registerCall(t, ctx, key, attempt, true)
+	require.Error(t, err)
+
+	// A Hub restart empties the in-memory challenge store; the service
+	// under test gets a fresh one, as a new process would.
+	env.connector.ResetChallengeStore()
+
+	// The "restarted client" reuses the SAME attempt identity and key
+	// material, which is what its durable pending record holds.
+	recovered := recoverThroughChallenge(t, ctx, env, key, attempt)
+	worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)
+	require.NoError(t, rowErr)
+	assert.Equal(t, worker.ID, recovered.GetWorkerId())
+	assert.Equal(t, worker.AuthToken, recovered.GetAuthToken())
+}
+
+// TestRecoveryRechecksWorkerAndOwner deletes the owner or the worker
+// after the challenge is issued but before the recovery arrives: every
+// case refuses credentials.
+func TestRecoveryRechecksWorkerAndOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(t *testing.T, ctx context.Context, env *regKeyEnv, workerID string)
+	}{
+		{"the worker is deleted", func(t *testing.T, ctx context.Context, env *regKeyEnv, workerID string) {
+			require.NoError(t, env.store.Workers().MarkDeleted(ctx, workerID))
+		}},
+		{"the worker is deregistering", func(t *testing.T, ctx context.Context, env *regKeyEnv, workerID string) {
+			_, err := env.store.Workers().ForceDeregister(ctx, workerID)
+			require.NoError(t, err)
+		}},
+		{"the owner is deleted", func(t *testing.T, ctx context.Context, env *regKeyEnv, workerID string) {
+			worker, err := env.store.Workers().GetByIDIncludeDeleted(ctx, workerID)
+			require.NoError(t, err)
+			require.NoError(t, env.store.Users().Delete(ctx, worker.RegisteredBy))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRegKeyEnv(t, testConfig(), nil, nil)
+			ctx := context.Background()
+			admin := userid.MustNew(env.adminID(t))
+			key := id.Generate()
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+				ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			attempt := newRegisterAttempt(t, 0x43)
+			_, err := env.registerCall(t, ctx, key, attempt, true)
+			require.Error(t, err)
+			worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)
+			require.NoError(t, rowErr)
+
+			// The challenge is issued BEFORE the damage lands, so the
+			// recovery must catch it at its own recheck.
+			challengeCtx, challengeInfo := connect.NewClientContext(ctx)
+			challengeInfo.RequestHeader().Set("Authorization", "Bearer "+key)
+			challenge, chErr := env.connectorClient.GetRegistrationChallenge(challengeCtx,
+				&leapmuxv1.GetRegistrationChallengeRequest{AttemptId: attempt.attemptID})
+			require.NoError(t, chErr)
+			tc.damage(t, ctx, env, worker.ID)
+
+			message := recoveryMessageBytes(attempt.attemptID, challenge.GetChallengeId(), challenge.GetNonce(), key)
+			signature, signErr := attempt.composite.SlhdsaPrivateKey.Sign(rand.Reader, message, nil)
+			require.NoError(t, signErr)
+			recoverCtx, recoverInfo := connect.NewClientContext(ctx)
+			recoverInfo.RequestHeader().Set("Authorization", "Bearer "+key)
+			_, recoverErr := env.connectorClient.RecoverRegistration(recoverCtx, &leapmuxv1.RecoverRegistrationRequest{
+				AttemptId:   attempt.attemptID,
+				ChallengeId: challenge.GetChallengeId(),
+				Signature:   signature,
+			})
+			require.Error(t, recoverErr, "a damaged worker or owner cannot recover credentials")
+		})
+	}
 }

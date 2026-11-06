@@ -61,7 +61,7 @@ If you change `-listen` to a non-loopback address before setup, the first TCP ca
 {{< /callout >}}
 
 {{< callout >}}
-`leapmux solo` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
+`leapmux solo run` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
 {{< /callout >}}
 
 ## The walkthrough

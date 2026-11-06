@@ -22,6 +22,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -101,9 +102,14 @@ func (trace *deregisterTrace) runConfig(t *testing.T, logs *testutil.LogBuffer, 
 	t.Helper()
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
+	canonical, err := lifecycle.CanonicalDir(t.TempDir())
+	require.NoError(t, err)
+	lease, leaseErr := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+	require.NoError(t, leaseErr)
 	return worker.RunConfig{
 		HubURL:         hubURL,
-		DataDir:        t.TempDir(),
+		Directory:      lease,
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
@@ -223,7 +229,7 @@ func TestRunStopsWhenTheHubDeletedAWorkerWithNoHook(t *testing.T) {
 
 	require.NoError(t, worker.Run(t.Context(), worker.RunConfig{
 		HubURL:         hubURL,
-		DataDir:        t.TempDir(),
+		Directory:      workerLeaseForTest(t),
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
@@ -249,7 +255,7 @@ func TestRunUsesTheHubEndpointItIsGiven(t *testing.T) {
 
 	require.NoError(t, worker.Run(t.Context(), worker.RunConfig{
 		HubEndpoint:    endpoint,
-		DataDir:        t.TempDir(),
+		Directory:      workerLeaseForTest(t),
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
@@ -266,7 +272,7 @@ func TestRunRefusesAnInvalidHubURLWithoutAnEndpoint(t *testing.T) {
 
 	err = worker.Run(t.Context(), worker.RunConfig{
 		HubURL:         "not a url",
-		DataDir:        t.TempDir(),
+		Directory:      workerLeaseForTest(t),
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
@@ -317,7 +323,7 @@ func TestRunEndsWhatItStartedWhenTheHubRefusesItsKeys(t *testing.T) {
 
 	err = worker.Run(ctx, worker.RunConfig{
 		HubURL:         hubURL,
-		DataDir:        t.TempDir(),
+		Directory:      workerLeaseForTest(t),
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",

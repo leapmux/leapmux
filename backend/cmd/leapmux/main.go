@@ -79,6 +79,7 @@ type cliRunners struct {
 	runHub     func([]string) error
 	runWorker  func([]string) error
 	runSolo    func([]string, bool) error
+	runMode    func(mode string, args []string) error
 	runRecover func([]string) error
 	runControl func([]string) error
 	version    func() string
@@ -96,6 +97,7 @@ func main() {
 		runHub:     runHub,
 		runWorker:  runWorker,
 		runSolo:    runSolo,
+		runMode:    runModeCommand,
 		runRecover: runRecover,
 		runControl: runControl,
 		version:    version.Format,
@@ -124,7 +126,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	// Reject anything that looks like a flag — it can't be a command name.
 	if len(args[0]) > 0 && args[0][0] == '-' {
 		_, _ = fmt.Fprintf(stderr, "error: %s is not a top-level flag\n", args[0])
-		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo %s\" to pass solo-mode flags\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo run %s\" to pass solo-mode flags\n", args[0])
 		printUsage(stderr)
 		return 1
 	}
@@ -145,24 +147,16 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	}
 
 	switch matched {
-	case "solo":
-		if err := runners.runSolo(args[1:], true); err != nil {
-			return handleRunError(stderr, err)
+	case "solo", "hub", "worker", "dev":
+		// The group walk validates and prints help; only a resolved
+		// leaf reaches the runner, so help never starts a process.
+		if code, handled := walkModeArgs(lifecycleCommands(matched), matched, args[1:], stdout, stderr); handled {
+			return code
 		}
-		return 0
-	case "hub":
-		if err := runners.runHub(args[1:]); err != nil {
-			return handleRunError(stderr, err)
-		}
-		return 0
-	case "worker":
-		if err := runners.runWorker(args[1:]); err != nil {
-			return handleRunError(stderr, err)
-		}
-		return 0
-	case "dev":
-		if err := runners.runSolo(args[1:], false); err != nil {
-			return handleRunError(stderr, err)
+		if err := runners.runMode(matched, args[1:]); err != nil {
+			// The status exit codes ride their own marker; everything
+			// else is a failure or invalid use.
+			return modeExitCode(stderr, err)
 		}
 		return 0
 	case "recover":

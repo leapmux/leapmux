@@ -14,13 +14,11 @@ import (
 )
 
 func TestDestCannotReplace_Directory(t *testing.T) {
-	t.Parallel()
 	assert.True(t, destCannotReplace(t.TempDir()),
 		"a directory at the destination can never succeed, so it must not be retried")
 }
 
 func TestDestCannotReplace_ReadOnlyFile(t *testing.T) {
-	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "creds.json")
 	require.NoError(t, os.WriteFile(path, []byte("one"), 0o600))
@@ -32,7 +30,6 @@ func TestDestCannotReplace_ReadOnlyFile(t *testing.T) {
 }
 
 func TestDestCannotReplace_WritableFile(t *testing.T) {
-	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "creds.json")
 	require.NoError(t, os.WriteFile(path, []byte("one"), 0o600))
@@ -41,13 +38,11 @@ func TestDestCannotReplace_WritableFile(t *testing.T) {
 }
 
 func TestDestCannotReplace_MissingPath(t *testing.T) {
-	t.Parallel()
 	assert.False(t, destCannotReplace(filepath.Join(t.TempDir(), "absent")),
 		"a missing destination is not a permanent refusal")
 }
 
 func TestIsSharingConflict_RecognizesTheWindowsReplaceErrors(t *testing.T) {
-	t.Parallel()
 
 	assert.True(t, isSharingConflict(&os.LinkError{Err: windows.ERROR_ACCESS_DENIED}))
 	assert.True(t, isSharingConflict(&os.LinkError{Err: windows.ERROR_SHARING_VIOLATION}))
@@ -61,7 +56,6 @@ func TestIsSharingConflict_RecognizesTheWindowsReplaceErrors(t *testing.T) {
 }
 
 func TestWriteFile_DirectoryReadOnlyDoesNotBlockCreate(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
@@ -77,7 +71,6 @@ func TestWriteFile_DirectoryReadOnlyDoesNotBlockCreate(t *testing.T) {
 }
 
 func TestWriteFile_ExclusiveHandleBlocksReplaceUntilClosed(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")

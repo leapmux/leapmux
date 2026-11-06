@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,11 +25,45 @@ import (
 type mockConnectorClient struct {
 	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
 
-	registerFn func(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error)
+	registerFn   func(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error)
+	challengeFn  func(ctx context.Context, req *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error)
+	recoverFn    func(ctx context.Context, req *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error)
+	deregisterFn func(ctx context.Context, req *leapmuxv1.DeregisterSelfRequest) (*leapmuxv1.DeregisterSelfResponse, error)
 }
 
 func (m *mockConnectorClient) Register(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 	return m.registerFn(ctx, req)
+}
+
+func (m *mockConnectorClient) GetRegistrationChallenge(ctx context.Context, req *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+	if m.challengeFn == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, "no challenge in this test")
+	}
+	return m.challengeFn(ctx, req)
+}
+
+func (m *mockConnectorClient) RecoverRegistration(ctx context.Context, req *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+	if m.recoverFn == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, "no recovery in this test")
+	}
+	return m.recoverFn(ctx, req)
+}
+
+func (m *mockConnectorClient) DeregisterSelf(ctx context.Context, req *leapmuxv1.DeregisterSelfRequest) (*leapmuxv1.DeregisterSelfResponse, error) {
+	if m.deregisterFn == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, "no deregistration in this test")
+	}
+	return m.deregisterFn(ctx, req)
+}
+
+// testRegistrationOptions states one valid attempt the tests reuse. The
+// signer is optional: only a test that drives AlreadyExists reaches it.
+func testRegistrationOptions(key string) RegistrationOptions {
+	return RegistrationOptions{
+		AttemptID:       "a9a0425886d148f68a8f94716ed47a78",
+		RegistrationKey: key,
+		Keys:            workerkeystest.Keys(workerkeystest.SeededWorkerFill),
+	}
 }
 
 // Connect satisfies the client interface but is never exercised by the
@@ -80,7 +115,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
+		result, err := registerWithClient(t.Context(), mock, "key123", fastRegisterRetry(clock), testRegistrationOptions("key123"))
 		done <- outcome{result: result, err: err}
 	}()
 	for range failCount {
@@ -110,8 +145,9 @@ func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "", fastRegisterRetry(clock), testRegistrationOptions(""))
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRegistrationRefused, "a missing key is a permanent refusal")
 	_, running := clock.Peek()
 	assert.False(t, running, "a missing key is permanent, so it must arm no retry")
 }
@@ -134,7 +170,7 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(ctx, mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
+		_, err := registerWithClient(ctx, mock, "k", fastRegisterRetry(clock), testRegistrationOptions("k"))
 		errCh <- err
 	}()
 
@@ -169,8 +205,9 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
-	_, err := registerWithClient(t.Context(), mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), fastRegisterRetry(clock))
+	_, err := registerWithClient(t.Context(), mock, "k", fastRegisterRetry(clock), testRegistrationOptions("k"))
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRegistrationRefused, "an invalid or consumed key is permanent")
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
 	_, running := clock.Peek()
 	assert.False(t, running, "a permanent rejection must arm no retry timer")
@@ -210,7 +247,7 @@ func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := registerWithClient(t.Context(), mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
+		_, err := registerWithClient(t.Context(), mock, "k", retry, testRegistrationOptions("k"))
 		errCh <- err
 	}()
 	want := []time.Duration{
@@ -282,7 +319,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := registerWithClient(t.Context(), mock, "key123", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
+		result, err := registerWithClient(t.Context(), mock, "key123", retry, testRegistrationOptions("key123"))
 		done <- outcome{result: result, err: err}
 	}()
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
@@ -318,7 +355,7 @@ func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
 		attemptTimeout: time.Minute,
 		clock:          clock,
 	}
-	_, err := registerWithClient(ctx, mock, "k", workerkeystest.Keys(workerkeystest.SeededWorkerFill), retry)
+	_, err := registerWithClient(ctx, mock, "k", retry, testRegistrationOptions("k"))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	_, running := clock.Peek()
@@ -338,9 +375,104 @@ func TestRegisterWithClient_SendsTheKeys(t *testing.T) {
 		},
 	}
 
-	result, err := registerWithClient(t.Context(), mock, "k", keys, fastRegisterRetry(testutil.NewQuartzMock(t)))
+	opts := testRegistrationOptions("k")
+	opts.Keys = keys
+	result, err := registerWithClient(t.Context(), mock, "k", fastRegisterRetry(testutil.NewQuartzMock(t)), opts)
 	require.NoError(t, err)
 	require.NotNil(t, seen, "the request must carry a key set")
 	assert.True(t, workerkeys.Equal(keys, seen))
 	assert.Equal(t, "worker-1", result.WorkerID)
+}
+
+// The worker maximum is a permanent refusal: every retry burns the same
+// key against the same answer and keeps the machine from telling the
+// user their plan is full. The base treated CodeResourceExhausted as
+// transient and armed another attempt, which this regression records.
+func TestRegisterWithClient_RejectsWorkerLimit(t *testing.T) {
+	var attempts atomic.Int32
+	mock := &mockConnectorClient{
+		registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+			attempts.Add(1)
+			return nil, connect.Errorf(connect.CodeResourceExhausted, "worker limit reached for this account")
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, _ := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
+
+	// The watcher catches an armed retry timer without parking the test on
+	// it: on the corrected behavior no timer is ever armed, and a plain
+	// WaitForTimer would sit out the whole deadline before failing. The
+	// call stays unreleased until the cleanup frees it, so the loop the
+	// base wrongly entered parks inside its backoff rather than firing a
+	// second attempt.
+	armed := make(chan struct{}, 1)
+	freeArmed := make(chan struct{})
+	var watcher sync.WaitGroup
+	watcher.Add(1)
+	go func() {
+		defer watcher.Done()
+		call, err := newTimer.Wait(testCtx)
+		if err != nil {
+			// The trap closed or the deadline expired: nothing was armed.
+			return
+		}
+		armed <- struct{}{}
+		<-freeArmed
+		call.MustRelease(testCtx)
+	}()
+	t.Cleanup(func() {
+		close(freeArmed)
+		watcher.Wait()
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := registerWithClient(ctx, mock, "k", fastRegisterRetry(clock), testRegistrationOptions("k"))
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err, "the worker limit must surface as an error, not a retry")
+		assert.NotErrorIs(t, err, context.Canceled)
+	case <-armed:
+		t.Fatal("the worker-limit refusal must not schedule another registration attempt")
+	}
+
+	assert.Equal(t, int32(1), attempts.Load(), "a permanent refusal must see exactly one attempt")
+	_, running := clock.Peek()
+	assert.False(t, running, "a permanent refusal must arm no retry timer")
+}
+
+// A successful response with no worker ID or no token is not a
+// registration: the worker would save credentials it can never present.
+// The base accepted all three shapes, which this regression records.
+func TestRegisterWithClient_RejectsIncompleteCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		resp *leapmuxv1.RegisterResponse
+	}{
+		{"no worker id", &leapmuxv1.RegisterResponse{WorkerId: "", AuthToken: "tok"}},
+		{"no auth token", &leapmuxv1.RegisterResponse{WorkerId: "w-1", AuthToken: ""}},
+		{"neither", &leapmuxv1.RegisterResponse{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockConnectorClient{
+				registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+					return tc.resp, nil
+				},
+			}
+			clock := testutil.NewQuartzMock(t)
+			result, err := registerWithClient(t.Context(), mock, "k", fastRegisterRetry(clock), testRegistrationOptions("k"))
+			require.Error(t, err, "an incomplete success response must not report a registration")
+			assert.Nil(t, result)
+			_, running := clock.Peek()
+			assert.False(t, running, "an incomplete response must arm no retry timer")
+		})
+	}
 }

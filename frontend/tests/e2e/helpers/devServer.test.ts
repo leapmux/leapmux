@@ -104,7 +104,7 @@ describe('startUnseededDevServer', () => {
 
     const server = await startUnseededDevServer()
 
-    expect(state.args.slice(0, 3)).toEqual(['dev', '-listen', '127.0.0.1:0'])
+    expect(state.args.slice(0, 4)).toEqual(['dev', 'run', '-listen', '127.0.0.1:0'])
     expect(server.hubUrl).toBe('http://localhost:49123')
     expect(state.waitedURL).toBe(server.hubUrl)
   })
@@ -114,7 +114,7 @@ describe('startUnseededDevServer', () => {
 
     const server = await startSoloServer({ listenHost: '0.0.0.0' })
 
-    expect(state.args.slice(0, 3)).toEqual(['solo', '-listen', '0.0.0.0:0'])
+    expect(state.args.slice(0, 4)).toEqual(['solo', 'run', '-listen', '0.0.0.0:0'])
     expect(server.listen).toBe('0.0.0.0:49123')
     expect(server.hubUrl).toBe('http://127.0.0.1:49123')
     expect(state.waitedURL).toBe(server.hubUrl)

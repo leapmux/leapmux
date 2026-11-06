@@ -73,6 +73,122 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Equal(t, keys, page.Rows[0].PublicKeys, "the admin listing returns the pinned keys")
 	})
 
+	t.Run("create stores the registration attempt atomically with the worker", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "attempt-owner")
+		attemptID := "a9a0425886d148f68a8f94716ed47a78"
+		digest := make([]byte, 32)
+		for i := range digest {
+			digest[i] = byte(i)
+		}
+		workerID := id.Generate()
+		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
+			ID:                    workerID,
+			AuthToken:             id.Generate(),
+			RegisteredBy:          userid.MustNew(user.ID),
+			PublicKeys:            WorkerKeys(0x41),
+			RegistrationAttemptID: attemptID,
+			RegistrationKeyHash:   digest,
+		}))
+
+		found, err := st.Workers().GetByRegistrationAttemptID(ctx, attemptID)
+		require.NoError(t, err)
+		assert.Equal(t, workerID, found.ID)
+		assert.Equal(t, attemptID, found.RegistrationAttemptID)
+		assert.Equal(t, digest, found.RegistrationKeyHash)
+
+		// The lookup reaches a DELETED row too, so recovery can tell a
+		// completed-then-deleted attempt from an unknown one.
+		require.NoError(t, st.Workers().MarkDeleted(ctx, workerID))
+		found, err = st.Workers().GetByRegistrationAttemptID(ctx, attemptID)
+		require.NoError(t, err)
+		require.NotNil(t, found.DeletedAt)
+		assert.Equal(t, workerID, found.ID)
+	})
+
+	t.Run("create refuses half-present or malformed registration metadata", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "bad-attempt-owner")
+		digest := make([]byte, 32)
+		for i := range digest {
+			digest[i] = byte(i)
+		}
+		base := func() store.CreateWorkerParams {
+			return store.CreateWorkerParams{
+				ID:           id.Generate(),
+				AuthToken:    id.Generate(),
+				RegisteredBy: userid.MustNew(user.ID),
+				PublicKeys:   WorkerKeys(0x42),
+			}
+		}
+
+		idOnly := base()
+		idOnly.RegistrationAttemptID = "a9a0425886d148f68a8f94716ed47a78"
+		hashOnly := base()
+		hashOnly.RegistrationKeyHash = digest
+		shortID := base()
+		shortID.RegistrationAttemptID = "a9a0425886d148f68a8f94716ed47a7"
+		shortID.RegistrationKeyHash = digest
+		upperID := base()
+		upperID.RegistrationAttemptID = "A9A0425886D148F68A8F94716ED47A78"
+		upperID.RegistrationKeyHash = digest
+		shortHash := base()
+		shortHash.RegistrationAttemptID = "a9a0425886d148f68a8f94716ed47a78"
+		shortHash.RegistrationKeyHash = digest[:31]
+		bundled := base()
+		bundled.AutoRegistered = true
+		bundled.RegistrationAttemptID = "a9a0425886d148f68a8f94716ed47a78"
+		bundled.RegistrationKeyHash = digest
+
+		for name, params := range map[string]store.CreateWorkerParams{
+			"an attempt without its digest":  idOnly,
+			"a digest without its attempt":   hashOnly,
+			"a 31-character attempt":         shortID,
+			"an uppercase attempt":           upperID,
+			"a 31-byte digest":               shortHash,
+			"an auto-registered attempt row": bundled,
+		} {
+			t.Run("refuses "+name, func(t *testing.T) {
+				require.Error(t, st.Workers().Create(ctx, params),
+					"the store layer refuses what the schema CHECKs would reject")
+			})
+		}
+
+		// The null metadata the bundled path writes stays legal.
+		plain := base()
+		plain.AutoRegistered = true
+		require.NoError(t, st.Workers().Create(ctx, plain))
+	})
+
+	t.Run("duplicate registration metadata is refused consistently", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "dup-attempt-owner")
+		attemptID := "b9a0425886d148f68a8f94716ed47a78"
+		digest := make([]byte, 32)
+		for i := range digest {
+			digest[i] = byte(255 - i)
+		}
+		mk := func() store.CreateWorkerParams {
+			return store.CreateWorkerParams{
+				ID:                    id.Generate(),
+				AuthToken:             id.Generate(),
+				RegisteredBy:          userid.MustNew(user.ID),
+				PublicKeys:            WorkerKeys(0x43),
+				RegistrationAttemptID: attemptID,
+				RegistrationKeyHash:   digest,
+			}
+		}
+		require.NoError(t, st.Workers().Create(ctx, mk()))
+		err := st.Workers().Create(ctx, mk())
+		require.Error(t, err, "one attempt identity names one worker")
+
+		// A second row reusing the digest alone is refused the same way.
+		other := mk()
+		other.RegistrationAttemptID = "c9a0425886d148f68a8f94716ed47a78"
+		err = st.Workers().Create(ctx, other)
+		require.Error(t, err, "one key digest names one attempt")
+	})
+
 	t.Run("create refuses an incomplete key set", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "incomplete-keys-owner")

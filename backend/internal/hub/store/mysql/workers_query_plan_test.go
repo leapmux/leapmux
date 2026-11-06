@@ -246,7 +246,8 @@ ORDER BY ORDINAL_POSITION`)
 	assert.Equal(t, []string{
 		"id", "auth_token", "registered_by",
 		"x25519_public_key", "mlkem_public_key", "slhdsa_public_key",
-		"created_at", "last_seen_at", "deregistering_at", "auto_registered", "deleted_at",
+		"created_at", "last_seen_at", "deregistering_at", "auto_registered",
+		"registration_attempt_id", "registration_key_hash", "deleted_at",
 	}, columns, "state indexes must not add visible worker columns")
 }
 

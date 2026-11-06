@@ -12,20 +12,36 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
 
 func runWorker(args []string) error {
-	// Pre-dispatch the subcommands of the worker so the daemon parser
-	// does not see flags meant for them. Today the only such subcommand is
-	// `cross-worker-pins`, which manages the worker-local TOFU pin store
-	// without spinning up a worker process.
-	if len(args) > 0 && args[0] == "cross-worker-pins" {
-		return runWorkerCrossWorkerPins(args[1:])
+	// Pre-dispatch the subcommands of the worker so the runtime parser
+	// does not see flags meant for them. `register` owns registration and
+	// pending recovery; `deregister` completes the remote removal before
+	// the local one; `cross-worker-pins` manages the worker-local TOFU
+	// pin store.
+	if len(args) > 0 {
+		switch args[0] {
+		case "register":
+			return runWorkerRegister(args[1:])
+		case "deregister":
+			return runWorkerDeregister(args[1:])
+		case "cross-worker-pins":
+			return runWorkerCrossWorkerPins(args[1:])
+		}
 	}
+	return runWorkerProcess(args)
+}
+
+// runWorkerProcess runs the worker runtime. It never registers: a
+// complete saved registration is required before anything starts, and a
+// registration key or a missing registration is a refusal that names
+// the command that owns registration.
+func runWorkerProcess(args []string) error {
 	// A long-lived daemon: a lost stderr (a dead tee, a closed terminal) must
 	// return EPIPE from its log writes, not kill the process before the
 	// goodbye reaches the Hub. The provider helper dispatch stays before this
@@ -53,74 +69,58 @@ func runWorker(args []string) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
+	// The worker's data lease: acquired before the credentials are read,
+	// so the storage directory is owned and validated for this process.
+	// worker.Run takes its ownership and releases it after the database
+	// closes.
+	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	directory, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+	if err != nil {
+		return fmt.Errorf("acquire the worker data directory: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Check if we already have credentials from a previous registration.
+	// The saved registration is the only credential source. Nothing
+	// here generates keys, burns a registration key, or redirects the
+	// credentials to another Hub: the state's endpoint is the endpoint
+	// this process dials.
 	state, err := cfg.LoadState()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
-
-	if state == nil {
-		state = &config.State{}
+	if state == nil || state.AuthToken == "" || state.WorkerID == "" {
+		return unregisteredError(cfg)
 	}
-
-	// Ensure the worker has a composite keypair for E2EE channels. It is
-	// generated before registration so its public keys are what the Hub pins.
-	compositeKey, generated, err := state.EnsureCompositeKeypair()
+	if cfg.RegistrationKey != "" {
+		// A key on a runtime command would burn against a machine
+		// that is already configured, so refuse it and name the
+		// command that owns keys.
+		return alreadyRegisteredError(cfg.StatePath())
+	}
+	if state.HubURL == "" {
+		return fmt.Errorf("the saved registration names no hub; register again with `leapmux worker register`")
+	}
+	compositeKey, err := state.CompositeKeypair()
 	if err != nil {
-		return reregistrationAdvice(err, cfg.StatePath())
-	}
-	if generated {
-		if err := cfg.SaveState(state); err != nil {
-			return fmt.Errorf("save state with keypair: %w", err)
-		}
-	}
-	// The public keys the Hub pins at registration and compares on every
-	// connect.
-	keys, err := workerkeys.Of(compositeKey)
-	if err != nil {
-		return fmt.Errorf("derive the worker's public keys: %w", err)
+		return reregistrationAdvice(fmt.Errorf("%w: %w", config.ErrUnusableRegisteredKeypair, err), cfg.StatePath())
 	}
 
-	// ONE endpoint for the whole process: registration, the worker's own
+	// ONE endpoint for the whole process, from the registration: the
 	// Connect stream and every hub call a spawned agent makes share one
 	// connection pool per protocol and one h2c verdict.
-	hubEndpoint, err := hubtransport.New(cfg.HubURL)
+	hubEndpoint, err := hubtransport.New(state.HubURL)
 	if err != nil {
-		return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
-	}
-
-	if state.AuthToken == "" {
-		// Registration requires a key minted in advance by an authenticated
-		// user via the hub UI; bare workers cannot self-register.
-		if cfg.RegistrationKey == "" {
-			return fmt.Errorf("worker is unregistered: pass --registration-key <key> from the hub UI")
-		}
-		result, regErr := hub.Register(ctx, hubEndpoint, cfg.RegistrationKey, keys)
-		if regErr != nil {
-			return fmt.Errorf("registration: %w", regErr)
-		}
-
-		state.WorkerID = result.WorkerID
-		state.AuthToken = result.AuthToken
-
-		if err := cfg.SaveState(state); err != nil {
-			return fmt.Errorf("save state: %w", err)
-		}
-		slog.Info("credentials saved", "path", cfg.StatePath())
-	} else if cfg.RegistrationKey != "" {
-		// The worker is already registered. Refusing to consume the key
-		// here protects the user from accidentally burning it on a
-		// machine that's already configured (a fresh `leapmux worker`
-		// command in the wrong terminal, etc.).
-		return alreadyRegisteredError(cfg.StatePath())
+		return fmt.Errorf("saved hub URL %q: %w", state.HubURL, err)
 	}
 
 	slog.Info("starting worker",
 		"worker_id", state.WorkerID,
-		"hub", cfg.HubURL,
+		"hub", state.HubURL,
 		"key_fingerprint", compositeKey.Fingerprint(),
 		"encryption_mode", cfg.EncryptionMode,
 	)
@@ -145,7 +145,7 @@ func runWorker(args []string) error {
 	// authority for it.
 	return reregistrationAdvice(worker.Run(ctx, worker.RunConfig{
 		HubEndpoint:             hubEndpoint,
-		DataDir:                 cfg.DataDir,
+		Directory:               directory,
 		AuthToken:               state.AuthToken,
 		CompositeKey:            compositeKey,
 		WorkerID:                state.WorkerID,
@@ -173,10 +173,15 @@ func runWorker(args []string) error {
 	}), cfg.StatePath())
 }
 
+// unregisteredError names the command that owns registration.
+func unregisteredError(cfg *config.Config) error {
+	return fmt.Errorf("worker is unregistered: run `leapmux worker register --hub <url> --registration-key <key>` first")
+}
+
 // reregistrationSteps states the one remedy for a Worker whose keys cannot be
 // used any more.
 func reregistrationSteps(statePath string) string {
-	return fmt.Sprintf("deregister the worker, delete %s, and register it again", statePath)
+	return fmt.Sprintf("deregister the worker with `leapmux worker deregister`, delete %s, and register it again", statePath)
 }
 
 // reregistrationAdvice adds the re-registration steps to an error that no
@@ -201,9 +206,10 @@ func alreadyRegisteredError(statePath string) error {
 }
 
 // clearDeletedWorkerState removes the state file of a Worker the Hub says is
-// gone. An absent file is already the desired end state.
+// gone, with every interrupted copy beside it. An absent file is already the
+// desired end state, which RemoveSensitiveRecord reports as success.
 func clearDeletedWorkerState(cfg *config.Config) error {
-	if err := cfg.ClearState(); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := cfg.ClearState(); err != nil {
 		return fmt.Errorf("clear the worker state at %s: %w", cfg.StatePath(), err)
 	}
 	return nil

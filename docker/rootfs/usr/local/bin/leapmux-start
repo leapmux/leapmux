@@ -22,4 +22,4 @@ if [ ! -f "$config" ]; then
 	printf 'error: configuration path is not a regular file: %s\n' "$config" >&2
 	exit 1
 fi
-exec "$bin" "$mode" -config "$config"
+exec "$bin" "$mode" run -config "$config"

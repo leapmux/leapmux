@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
@@ -21,13 +22,15 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 		return err
 	}
 	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
-		ID:              p.ID,
-		AuthToken:       p.AuthToken,
-		RegisteredBy:    p.RegisteredBy.String(),
-		AutoRegistered:  ptrconv.BoolToInt64(p.AutoRegistered),
-		X25519PublicKey: p.PublicKeys.X25519,
-		MlkemPublicKey:  p.PublicKeys.Mlkem,
-		SlhdsaPublicKey: p.PublicKeys.Slhdsa,
+		ID:                    p.ID,
+		AuthToken:             p.AuthToken,
+		RegisteredBy:          p.RegisteredBy.String(),
+		AutoRegistered:        ptrconv.BoolToInt64(p.AutoRegistered),
+		X25519PublicKey:       p.PublicKeys.X25519,
+		MlkemPublicKey:        p.PublicKeys.Mlkem,
+		SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
+		RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
+		RegistrationKeyHash:   p.RegistrationKeyHash,
 	}))
 }
 
@@ -58,6 +61,14 @@ func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWit
 
 func (s *workerStore) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByAuthTokenIncludeDeleted(ctx, token)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return fromDBWorker(row), nil
+}
+
+func (s *workerStore) GetByRegistrationAttemptID(ctx context.Context, attemptID string) (*store.Worker, error) {
+	row, err := s.conn.q.GetWorkerByRegistrationAttemptID(ctx, stringToNull(attemptID))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -195,7 +206,19 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 		AutoRegistered:  ptrconv.Int64ToBool(w.AutoRegistered),
 		DeregisteringAt: w.DeregisteringAt.Ptr(),
 		DeletedAt:       w.DeletedAt.Ptr(),
+
+		RegistrationAttemptID: w.RegistrationAttemptID.String,
+		RegistrationKeyHash:   w.RegistrationKeyHash,
 	}
+}
+
+// stringToNull binds an empty attempt identity as SQL NULL, the shape
+// the schema CHECKs pair with a NULL digest.
+func stringToNull(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
 }
 
 // workerWithOwner is the shared body of the eight admin-worker Row mappers. The

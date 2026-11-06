@@ -65,6 +65,16 @@ beforeEach(() => {
     }
   })
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
+    // The registration command is a silent, untracked child: it exits
+    // on its own before the worker it registers for is spawned.
+    if (args[0] === 'worker' && args[1] === 'register') {
+      const registerStub = createProcessStub({ pid: 900 + children.length })
+      queueMicrotask(() => {
+        registerStub.emitter.exitCode = 0
+        registerStub.emitter.emit('exit', 0, null)
+      })
+      return registerStub.proc
+    }
     const stub = createProcessStub({ pid: 100 + children.length })
     const io = {
       stdout: new PassThrough(),
@@ -180,15 +190,16 @@ describe('multi-worker lifetime', () => {
   it('names each worker through its environment and starts it in post-quantum mode', async () => {
     const harness = await startMultiWorkerHarness(1)
     try {
-      const [, worker] = vi.mocked(spawnTestProcess).mock.calls
-      expect(worker?.[1]).toEqual(expect.arrayContaining([
-        '--hub',
-        harness.hubUrl,
+      // The register call is tracked too; the RUN call is the one the
+      // worker's own flags reach.
+      const runCall = vi.mocked(spawnTestProcess).mock.calls.find(([, args]) => args[0] === 'worker' && args[1] === 'run')
+      expect(runCall?.[1]).toEqual(expect.arrayContaining([
         '--encryption-mode',
         'post-quantum',
       ]))
-      expect(worker?.[1]).not.toContain('--name')
-      expect(worker?.[2]).toEqual(expect.objectContaining({
+      expect(runCall?.[1]).not.toContain('--name')
+      expect(runCall?.[1]).not.toContain('--hub') // the run process reads the saved registration endpoint
+      expect(runCall?.[2]).toEqual(expect.objectContaining({
         env: { LEAPMUX_WORKER_NAME: 'worker-A' },
       }))
     }
@@ -298,13 +309,15 @@ describe('multi-worker port ownership', () => {
       expect(findFreePort).not.toHaveBeenCalled()
       expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'leapmux', [
         'hub',
+        'run',
         '-listen',
         '127.0.0.1:0',
         '-data-dir',
         harness.hubDataDir,
       ], expect.any(Object))
       expect(waitForHubStart).toHaveBeenCalledWith(join(harness.hubDataDir, 'state.json'), harness.hubProc)
-      expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'leapmux', expect.arrayContaining(['--hub', harness.hubUrl]), expect.any(Object))
+      expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'leapmux', expect.arrayContaining(['register', '--hub', harness.hubUrl]), expect.any(Object))
+      expect(spawnTestProcess).toHaveBeenNthCalledWith(3, 'leapmux', expect.arrayContaining(['run']), expect.any(Object))
     }
     finally {
       await harness.stop()

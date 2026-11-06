@@ -151,9 +151,10 @@ func (r Renderer) VerificationEmail(to, storedCode string, ttl time.Duration) Me
 func (r Renderer) RegistrationInstructions(to, command string) Message {
 	body := fmt.Sprintf(
 		"Here's the worker registration command you asked LeapMux to send.\n\n"+
-			"Run it on the machine where the worker should run:\n\n    %s\n\n"+
+			"Register on the machine where the worker should run:\n\n    %s\n\n"+
+			"After registration succeeds, start the worker:\n\n    leapmux worker start\n\n"+
 			"The registration key only works while the dialog stays open in your browser, "+
-			"so keep that tab open until the command finishes.\n\n%s",
+			"so keep that tab open until registration completes.\n\n%s",
 		command,
 		r.footer(),
 	)

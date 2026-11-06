@@ -1,0 +1,125 @@
+package servicelaunch
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/leapmux/leapmux/lifecycle"
+)
+
+// NativeStatus is what a platform's native manager states about one
+// definition.
+type NativeStatus struct {
+	// Installed reports whether the native definition exists.
+	Installed bool
+	// Running reports whether the native mechanism currently runs it.
+	Running bool
+	// State is the native state string, for diagnostics.
+	State string
+	// DefinitionMatches reports whether the INSTALLED definition
+	// matches the saved specification. A changed or missing definition
+	// with a saved specification is drift, not a complete
+	// configuration.
+	DefinitionMatches bool
+	// PID is the running instance's process identifier, or zero.
+	PID int
+}
+
+// Manager is the native mechanism one platform supplies: inspect,
+// install, start, stop, remove, and diagnose ONE definition.
+//
+// Install CONFIGURES without starting: `enable` writes and enables the
+// definition; `start` loads or starts it. Stop ends the running
+// instance while PRESERVING the definition for the next login or boot.
+// All arguments run through native APIs or direct commands; none is a
+// shell string.
+type Manager interface {
+	// Inspect states what the native mechanism holds for the instance.
+	Inspect(ctx context.Context, spec LaunchSpec) (NativeStatus, error)
+	// Install writes and enables the definition without starting it.
+	Install(ctx context.Context, spec LaunchSpec) error
+	// Start loads or starts the installed definition.
+	Start(ctx context.Context, spec LaunchSpec) error
+	// Stop ends the running instance, preserving the definition.
+	Stop(ctx context.Context, spec LaunchSpec) error
+	// Remove uninstalls the definition.
+	Remove(ctx context.Context, spec LaunchSpec) error
+	// Diagnose explains a definition that never started: native
+	// manager errors, missing prerequisites, authorization refusals.
+	Diagnose(ctx context.Context, spec LaunchSpec) ([]string, error)
+}
+
+// ConfigurationChange is the preview a controller shows before it
+// touches anything: what will be configured, and what authorization it
+// needs.
+type ConfigurationChange struct {
+	// Spec is the specification the change would save.
+	Spec lifecycle.ServiceSpec
+	// NativeSummary states what the platform adapter will do, in the
+	// platform's own terms ("launchd user agent", "system service").
+	NativeSummary string
+	// RequiresElevation states whether applying needs administrator
+	// authorization, and Why names the exact reason when it does.
+	RequiresElevation bool
+	ElevationReason   string
+	// Changes lists the human-readable differences from the current
+	// state, one entry each.
+	Changes []string
+}
+
+// Elevation describes one authorization a platform needs. The native
+// caller performs the elevation itself -- sudo, UAC, or another broker
+// -- after the controller has explained this reason to the user.
+type Elevation struct {
+	// Required states whether this change needs administrator rights.
+	Required bool
+	// Reason states WHY, in the terms the platform's own tools report.
+	Reason string
+	// Mechanism names the authorization mechanism ("sudo", "UAC").
+	Mechanism string
+}
+
+// DescribeElevation states the authorization a startup kind needs on a
+// platform, before any native tool runs.
+func DescribeElevation(startup lifecycle.StartupKind, platform string) Elevation {
+	switch startup {
+	case lifecycle.StartupBoot:
+		return Elevation{
+			Required:  true,
+			Reason:    fmt.Sprintf("%s startup writes a system-level definition owned by the selected account", startup),
+			Mechanism: elevationMechanismOf(platform),
+		}
+	default:
+		return Elevation{Required: false, Reason: "login startup runs as this account and needs no administrator rights"}
+	}
+}
+
+// elevationMechanismOf names the platform's authorization tool.
+func elevationMechanismOf(platform string) string {
+	switch platform {
+	case "darwin":
+		return "sudo"
+	case "windows":
+		return "UAC"
+	case "linux":
+		return "sudo"
+	default:
+		return "administrator authorization"
+	}
+}
+
+// NewPlatformManager builds this platform's native adapter. The
+// platform files implement it; a platform without an adapter gets the
+// UnsupportedManager.
+//
+// The indirection keeps cmd/leapmux free of platform build tags: the
+// adapter selection compiles once, here.
+func NewPlatformManager() Manager {
+	return newPlatformManager()
+}
+
+// NewNativeMechanismName states the platform's own name for what a
+// native configuration writes.
+func NewNativeMechanismName() string {
+	return nativeMechanismLabel()
+}

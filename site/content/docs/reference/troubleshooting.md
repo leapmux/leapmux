@@ -13,7 +13,7 @@ Most "nothing works" problems trace back to one of three things: the Worker isn'
 
 ## Workers won't connect or stay offline
 
-A Worker (`leapmux worker`) dials *out* to the Hub and holds a single bidirectional stream open. Its online/offline state is computed live from whether that stream is currently connected — there is no separate "approval" queue. For the full Worker lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
+A Worker (`leapmux worker run`) dials *out* to the Hub and holds a single bidirectional stream open. Its online/offline state is computed live from whether that stream is currently connected — there is no separate "approval" queue. For the full Worker lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
 
 ### A Worker exits at once and reports that it is unregistered
 
@@ -27,7 +27,7 @@ The Worker has no saved credentials (its `state.json` holds no Worker ID or auth
 Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** (Register worker) button, and copy the generated command. It already includes the right Hub URL and key:
 
 ```bash
-leapmux worker --hub https://hub.example.com --registration-key <key>
+leapmux worker register --hub https://hub.example.com -registration-key <key>
 ```
 
 The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/admin/managing-workers/) for minting keys via the UI or email, and for listing or revoking keys from the CLI.
@@ -52,7 +52,7 @@ The Worker prints an error and exits. The error says that the Worker is already 
 This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you do not waste a fresh key on a machine that's already configured.
 
 **Fix**
-Just run `leapmux worker --hub <url>` with **no** `--registration-key` — it reconnects with its saved credentials. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux control admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
+Just run `leapmux worker run` — it reconnects with the credentials its `worker register` saved. Registration keys belong to `leapmux worker register`, never to the runtime command. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux control admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
 
 ### Worker process runs but never appears online
 
@@ -196,10 +196,10 @@ Either stop the conflicting process or change the listen address with `--listen`
 
 ```bash
 # Bind a different port
-leapmux hub --listen :4400
+leapmux hub run --listen :4400
 
 # Solo on a different loopback port
-leapmux solo --listen 127.0.0.1:4400
+leapmux solo run --listen 127.0.0.1:4400
 ```
 
 In Docker, the container always listens on `4327` internally; remap the host side of the port publish instead:
@@ -221,7 +221,7 @@ Solo mode binds **`127.0.0.1:4327`** by default, so another machine cannot reach
 **Fix**
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
-  - Run `leapmux hub` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
+  - Run `leapmux hub run` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
   - To expose solo mode, set the `solo` password first and add the address in **Preferences → Administration → Network access**. Every TCP address then asks for that password. Restrict access with a firewall, VPN, or SSH tunnel. Solo mode warns on a non-loopback address because another machine can win first-password setup before the password exists. See [Security & Threat Model](/docs/admin/security/).
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for binding and listen-address options.
@@ -487,7 +487,7 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 **Fix**
 - Read the error text shown in the pane — it comes straight from the Worker and usually identifies the cause.
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
-- If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
+- If startup is legitimately slow, raise the timeout: `leapmux worker run --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
 ### The Cline agent does not start

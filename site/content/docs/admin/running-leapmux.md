@@ -7,7 +7,7 @@ weight: 1
 
 Use the `leapmux` command to run a personal workspace, a shared Hub, or a Worker that connects to a Hub. This guide covers choosing a mode, starting it, keeping its data, and making it accessible through Docker or a reverse proxy.
 
-If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
+If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo run` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
 
 ## Run modes at a glance
 
@@ -36,7 +36,7 @@ Set the `solo` account's password and add the address in **Preferences → Admin
 
 Session settings apply to solo mode when you sign in over the network. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
 
-A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead.
+A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub run` (with separate Workers) or `leapmux dev run` instead.
 
 ## Solo mode
 
@@ -65,10 +65,10 @@ The desktop app runs solo mode without opening a network port by default. See [I
 
 ## Hub mode
 
-`leapmux hub` runs only the Hub: authentication, workspace management, Worker registration, and the encrypted relay between Frontends and Workers. It does **not** run a Worker — Workers connect separately (see [Running Workers](#running-workers)). The Hub binds `:4327` on all interfaces by default and requires real authentication.
+`leapmux hub run` runs only the Hub: authentication, workspace management, Worker registration, and the encrypted relay between Frontends and Workers. It does **not** run a Worker — Workers connect separately (see [Running Workers](#running-workers)). The Hub binds `:4327` on all interfaces by default and requires real authentication.
 
 ```bash
-leapmux hub -listen :4327
+leapmux hub run -listen :4327
 ```
 
 A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and every path shows the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator.
@@ -103,7 +103,8 @@ Run a Worker on each machine where you want to run agents and terminals. Workers
 On first run, point the Worker at the Hub and supply a registration key:
 
 ```bash
-leapmux worker -hub https://hub.example.com -registration-key YOUR_REGISTRATION_KEY
+leapmux worker register --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
+leapmux worker run
 ```
 
 After a successful registration, the Worker saves its credentials and keypair to `<data_dir>/state.json` and reconnects automatically on every subsequent start — you do **not** pass `-registration-key` again.
@@ -125,10 +126,10 @@ For creating registration keys, approving Workers, verifying their identities, a
 
 ## Dev mode
 
-Use `leapmux dev` to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
+Use `leapmux dev run` to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
 
 ```bash
-leapmux dev -listen :4327
+leapmux dev run -listen :4327
 ```
 
 Open the Hub in your browser and complete `/setup` to create the first administrator. The bundled Worker becomes available after setup.

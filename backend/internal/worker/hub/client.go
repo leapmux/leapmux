@@ -46,6 +46,14 @@ type Client struct {
 	// should clear its state and shut down gracefully.
 	OnDeregister func()
 
+	// OnConnectionState reports the Hub connection's transitions: true
+	// with no error when a stream was admitted (the Hub accepted this
+	// worker's identity), false with the cause when the stream ended or
+	// a connection attempt failed. Wired by the launcher-facing runtime
+	// so "registered and ready" stays distinguishable from "registered
+	// and connected".
+	OnConnectionState func(connected bool, err error)
+
 	// OnReconcileNudge is called when the Hub asks this worker to run its
 	// orphan reconciler now, because a CRDT batch tombstoned a tab this worker
 	// hosts. Unsolicited, like the heartbeat.
@@ -591,6 +599,11 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	case *leapmuxv1.ConnectResponse_WorkerIdentity:
 		if c.OnWorkerIdentity == nil || c.OnWorkerIdentity(payload.WorkerIdentity) {
 			c.identityReceived.Store(true)
+			// The accepted identity is the connection transition: the
+			// Hub admitted this worker's hello, keys and all.
+			if c.OnConnectionState != nil {
+				c.OnConnectionState(true, nil)
+			}
 		}
 
 	default:
@@ -782,6 +795,13 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		err := connectToHub(ctx, authToken)
 		if ctx.Err() != nil {
 			return nil
+		}
+
+		// The stream ended, whatever the cause: report the
+		// disconnection with it. The connection transition reports from
+		// the identity greeting, the moment the Hub admits the worker.
+		if c.OnConnectionState != nil {
+			c.OnConnectionState(false, err)
 		}
 
 		// Only a refusal whose detail says reconnecting cannot help stops the
