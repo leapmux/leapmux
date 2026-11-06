@@ -29,7 +29,7 @@ type Agent struct {
 
 	// nextReqID mints the monotonic request ids the correlator keys on.
 	nextReqID atomic.Int64
-	// dispatchMu serializes dispatchZCodeEvent across the read loop and a replaying
+	// dispatchMu serializes dispatchZCodeEventLocked across the read loop and a replaying
 	// re-subscribe. See that function for why the whole body needs it.
 	dispatchMu sync.Mutex
 	// Control requests can arrive concurrently while the server repeats an unanswered request.
@@ -184,7 +184,7 @@ type Agent struct {
 	compactionLive         bool
 	// turns holds the owner record of every turn the session runs, keyed by the
 	// turn id the event envelope carries. A turn the wire identifies by no id is
-	// keyed by a synthetic one (see startZCodeTurnLocked). Each record owns its
+	// keyed by a synthetic one (see createZCodeTurnLocked). Each record owns its
 	// turn's generation content, its tool calls and its cleanup; several records
 	// coexist while a background turn runs beside the user's. Guarded by a.Mu.
 	turns map[string]*zcodeTurnState
@@ -247,7 +247,7 @@ type Agent struct {
 	// Partial setter/read snapshots cannot expand a complete account catalog.
 	liveCatalogComplete bool
 
-	// toolCalls holds everything a.Mu knows about each tool call, keyed by its id.
+	// toolInvocations holds each tool invocation, keyed by its internal span ID.
 	toolInvocations map[string]*zcodeToolInvocation
 	nextToolOrder   uint64
 
@@ -287,9 +287,9 @@ type Agent struct {
 //
 // Every started turn gets one, keyed by the id the event envelope carries --
 // several coexist while a background turn runs beside the user's. The record
-// outlives its settlement while any of its tool calls remain open, so a late
-// result still routes to the turn that opened the call; it is dropped only
-// after settlement AND its last tool result. Guarded by a.Mu.
+// keeps native output and late tool results attached to their owner. Local
+// settlement does not finalize native output. Finalization and complete tool
+// results are required before removal. Guarded by a.Mu.
 type zcodeTurnState struct {
 	// id is the key in Agent.turns: the envelope turn id, or a synthetic key
 	// for a turn the wire identified by none.
@@ -316,7 +316,7 @@ type zcodeTurnState struct {
 	settlementWriting bool
 	// recovery belongs to this stable owner, including while its native ID changes.
 	recovery *zcodeTurnRecoveryState
-	// canonicalRequired freezes batchable appends until raw messages restore this turn.
+	// canonicalRequired defers streamed and completed text until native messages restore order.
 	canonicalRequired bool
 	// pendingNative retains a received native end while its canonical output is read.
 	pendingNative *zcodePendingNativeSettlement
@@ -336,8 +336,12 @@ type zcodeTurnState struct {
 	// later reconciliation.
 	contentByScope            map[string]*zcodeScopeContent
 	currentAssistantMessageID string
-	acceptedResponses         []zcodeAcceptedModelResponse
-	// toolCallIDs holds the tool-call ids belonging to this turn. Openness is
+	acceptedResponses         []zcodeModelResponseText
+	deferredResponses         []*zcodeDeferredModelResponse
+	nextDeferredResponseID    uint64
+	// outputSource retains publication after deferred response rows are accepted.
+	outputSource agent.MessageContent
+	// toolInvocationIDs holds the tool-call ids belonging to this turn. Openness is
 	// read from the tool-call records themselves (see dropZCodeTurnLocked).
 	toolInvocationIDs     map[string]struct{}
 	invocationsByNativeID map[string]map[string]*zcodeToolInvocation
@@ -348,6 +352,16 @@ type zcodeTurnState struct {
 type zcodeScopeContent struct {
 	observed  []byte
 	submitted int
+	response  *zcodeDeferredModelResponse
+}
+
+// zcodeDeferredModelResponse keeps native bytes and publication until reconciliation or teardown.
+// Only canonical matching establishes nativeMessageID.
+type zcodeDeferredModelResponse struct {
+	content         agent.MessageContent
+	text            string
+	nativeMessageID string
+	fallbackScopeID string
 }
 
 func (content *zcodeScopeContent) text() string {
@@ -357,7 +371,7 @@ func (content *zcodeScopeContent) text() string {
 	return string(content.observed)
 }
 
-type zcodeAcceptedModelResponse struct {
+type zcodeModelResponseText struct {
 	messageID string
 	text      string
 }

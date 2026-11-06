@@ -81,6 +81,26 @@ func (b *GenerationBuffer) ScopeIDs() []string {
 	return scopeIDs
 }
 
+// OrderOpenScopeIDs selects supplied open scopes in first-seen order without scanning other scopes.
+func (b *GenerationBuffer) OrderOpenScopeIDs(scopeIDs []string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entries := make([]orderedSegment, 0, len(scopeIDs))
+	seen := make(map[string]bool, len(scopeIDs))
+	for _, scopeID := range scopeIDs {
+		if segment := b.segments[scopeID]; segment != nil && !seen[scopeID] {
+			entries = append(entries, orderedSegment{scopeID: scopeID, segment: segment})
+			seen[scopeID] = true
+		}
+	}
+	sort.Slice(entries, func(left, right int) bool { return entries[left].segment.order < entries[right].segment.order })
+	ordered := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ordered = append(ordered, entry.scopeID)
+	}
+	return ordered
+}
+
 // orderedSegmentsLocked returns the segments that match, in first-seen order.
 // The caller holds b.mu.
 func (b *GenerationBuffer) orderedSegmentsLocked(matches func(*generationSegment) bool) []orderedSegment {

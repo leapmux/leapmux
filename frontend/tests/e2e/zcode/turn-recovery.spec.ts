@@ -17,18 +17,20 @@ import { waitForNativeInputQueueIdle } from '../helpers/nativeInputQueueIdle'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { nativeErrorMarker } from '../helpers/nativeModelError'
 import { nativeStartupShellEnvironment } from '../helpers/nativeStartupWorker'
+import { runNativeToolSteps } from '../helpers/nativeToolExecution'
 import { withNativeWorker } from '../helpers/nativeWorker'
+import { bashToolCall } from '../helpers/providerToolCalls'
 import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { hubSpawnEnv } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { currentTestDeadline } from '../helpers/testDeadline'
-import { assistantBubbles, openWorkspace, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, bandRows, expectRowsInOrder, openWorkspace, sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 import { zcodeScriptCandidatePaths } from '../zcode-install'
 import { writeZcodeRecoveryRelay } from './recoveryRelay'
-import { nativeContext, ZCODE_AGENT } from './scenarios'
+import { bypassToolRequests, nativeContext, ZCODE_AGENT } from './scenarios'
 
 interface RelayEvidence { direction: 'worker' | 'native', raw: string, forwarded: string | null, fragment: boolean }
 function readEvidence(path: string): RelayEvidence[] {
@@ -84,6 +86,61 @@ async function withRecoveryWorker(server: ServerInfo, marker: string, use: (work
   }, worker => use(worker, evidencePath))
 }
 
+zcodeTest('keeps two recovered older reasoning responses before the separate final answer after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
+  const marker = uniqueMarker('REASONINGORDER')
+  const workingDir = newProviderWorkingDir(ZCODE_AGENT, 'zcode-reasoning-order-')
+  await withRecoveryWorker(leapmuxServer, marker, async (worker, evidencePath) => {
+    await openAgentViaAPI(worker.server, authenticatedEmptyWorkspace.workspaceId, workingDir, { agentProvider: AgentProvider.ZCODE })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({
+      page,
+      leapmuxServer: worker.server,
+      modelScript,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await bypassToolRequests(context)
+    const first = `Old reasoning one ${marker}. I inspect the first result.`
+    const second = `Old reasoning two ${marker}. I inspect the second result.`
+    const answer = `Final answer ${marker}. Both results are ready.`
+    try {
+      await runNativeToolSteps(context, {
+        prompt: `Complete both tool steps for ${marker}.`,
+        steps: [
+          {
+            reasoning: first,
+            toolCalls: [
+              bashToolCall(AgentProvider.ZCODE, 'first-result', 'printf first-result'),
+            ],
+          },
+          {
+            reasoning: second,
+            toolCalls: [
+              bashToolCall(AgentProvider.ZCODE, 'second-result', 'printf second-result'),
+            ],
+          },
+        ],
+        answer,
+        permissions: 'none',
+      })
+      await expectRowsInOrder(bandRows(page), [first, second, answer])
+      await page.reload()
+      await expectRowsInOrder(bandRows(page), [first, second, answer])
+      const omitted = readEvidence(evidencePath).filter(record => record.direction === 'native' && record.forwarded === null)
+      expect(omitted).toHaveLength(1)
+      expect(decodeFrame(omitted[0]!.raw)).toMatchObject({
+        method: 'session/event',
+        params: {
+          type: ZCODE_EVENT.ModelStreaming,
+          payload: { kind: 'reasoning_delta' },
+        },
+      })
+    }
+    finally {
+      await testInfo.attach('zcode-native-reasoning-order-relay', { path: evidencePath, contentType: 'application/x-ndjson' })
+    }
+  }, 'reasoning-gap')
+})
+
 for (const mode of ['stream-gap', 'empty-response'] as const) {
   zcodeTest(`preserves the full final assistant message after ${mode}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
     const marker = uniqueMarker('STREAMGAP')
@@ -92,8 +149,10 @@ for (const mode of ['stream-gap', 'empty-response'] as const) {
       await openAgentViaAPI(worker.server, authenticatedEmptyWorkspace.workspaceId, workingDir, { agentProvider: AgentProvider.ZCODE })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       const answer = `First text ${marker}. ${'Preserve the final assistant message. '.repeat(10)}Last text ${marker}.`
+      const reasoning = `Older reasoning ${uniqueMarker('OLDTHOUGHT')}. ${'Check the result before answering. '.repeat(8)}`.trimEnd()
       const step = await modelScript.queue({
         text: answer,
+        reasoning,
         stream: { chunkChars: 48, delayMs: 0 },
       })
       await sendMessage(page, modelScript.prompt(`Reply completely for ${marker}.`))
@@ -101,6 +160,7 @@ for (const mode of ['stream-gap', 'empty-response'] as const) {
       await waitForAgentIdle(page)
       await testInfo.attach('zcode-native-final-response-relay', { path: evidencePath, contentType: 'application/x-ndjson' })
       await expect(assistantBubbles(page).filter({ hasText: marker })).toHaveText([answer])
+      await expectRowsInOrder(bandRows(page), [reasoning, answer])
       if (mode === 'stream-gap') {
         const omitted = readEvidence(evidencePath).filter(record => record.direction === 'native' && record.forwarded === null)
         expect(omitted).toHaveLength(1)
@@ -125,6 +185,7 @@ for (const mode of ['stream-gap', 'empty-response'] as const) {
       }
       await page.reload()
       await expect(assistantBubbles(page).filter({ hasText: marker })).toHaveText([answer])
+      await expectRowsInOrder(bandRows(page), [reasoning, answer])
     }, mode)
   })
 }

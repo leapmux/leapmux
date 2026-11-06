@@ -71,8 +71,8 @@ func (a *Agent) zcodeProgressSinkForTurn(owner *zcodeTurnState) zcodeProgressSin
 	for scope := range owner.contentByScope {
 		scopes = append(scopes, scope)
 	}
-	source := agent.MessageContent{}
-	if owner.pendingNative != nil {
+	source := owner.outputSource
+	if source.Publication == nil && owner.pendingNative != nil {
 		source = owner.pendingNative.source
 	}
 	a.Mu.Unlock()

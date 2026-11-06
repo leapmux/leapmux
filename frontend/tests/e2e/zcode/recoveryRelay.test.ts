@@ -1,9 +1,13 @@
 import type { RecoveryDirection, RecoveryMode } from './recoveryRelay'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { PassThrough, Readable, Writable } from 'node:stream'
+import { finished } from 'node:stream/promises'
+import { runInNewContext } from 'node:vm'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { stopProcess } from '../helpers/process'
 import { createZcodeRecoveryTransformer, writeZcodeRecoveryRelay } from './recoveryRelay'
@@ -42,6 +46,94 @@ function end(seq = 5, sessionId = 's', turnId = 't') {
 }
 
 describe('createZcodeRecoveryTransformer', () => {
+  it.each(['empty-response', 'stream-gap', 'reasoning-gap'] as const)('preserves %s eligibility after unrelated or incomplete events', (mode) => {
+    const { native } = fixture(mode)
+    const event = {
+      sessionId: 's',
+      turnId: 't',
+      seq: 3,
+      type: mode === 'empty-response'
+        ? 'session.updated'
+        : 'model.streaming',
+      payload: mode === 'empty-response'
+        ? { content: 'Answer.', querySource: 'main_turn', stopReason: 'stop' }
+        : {
+            kind: mode === 'reasoning-gap'
+              ? 'reasoning_delta'
+              : 'text_delta',
+            delta: 'Answer.',
+          },
+    }
+    for (const unrelated of [
+      { ...event, sessionId: 'foreign' },
+      { ...event, turnId: 'foreign' },
+      { ...event, payload: null },
+      { ...event, payload: [] },
+      { ...event, payload: {} },
+    ]) {
+      const frame = { method: 'session/event', params: unrelated }
+      expect(JSON.parse(native(frame)!)).toEqual(frame)
+    }
+    const frame = { method: 'session/event', params: event }
+    expect(native(frame)).not.toBe(`${JSON.stringify(frame)}\n`)
+    expect(JSON.parse(native(frame)!)).toEqual(frame)
+  })
+
+  it.each([false, true])('preserves the event envelope when nested is %s', (nested) => {
+    const { native } = fixture('empty-response')
+    const event = {
+      sessionId: 's',
+      turnId: 't',
+      seq: 3,
+      eventId: 'response',
+      future: 7,
+      type: 'session.updated',
+      payload: {
+        content: 'Answer.',
+        querySource: 'main_turn',
+        stopReason: 'stop',
+        usage: { inputTokens: 1 },
+      },
+    }
+    const params = nested
+      ? { sessionId: 's', outer: 'retained', event }
+      : event
+    const changed = {
+      ...event,
+      payload: { ...event.payload, content: '' },
+    }
+    expect(JSON.parse(native({ method: 'session/event', frameMetadata: 'retained', params })!)).toEqual({
+      method: 'session/event',
+      frameMetadata: 'retained',
+      params: nested
+        ? { ...params, event: changed }
+        : changed,
+    })
+  })
+
+  it.each([false, true])('preserves projected event metadata when nested is %s', (nested) => {
+    const { native } = fixture()
+    native({
+      method: 'session/event',
+      params: end(),
+    })
+    const event = {
+      ...end(6, 's', 'next'),
+      future: 'retained',
+    }
+    const params = nested
+      ? { sessionId: 's', outer: 'retained', event }
+      : event
+    const changed = { ...event, seq: 5 }
+    expect(JSON.parse(native({ method: 'session/event', frameMetadata: 'retained', params })!)).toEqual({
+      method: 'session/event',
+      frameMetadata: 'retained',
+      params: nested
+        ? { ...params, event: changed }
+        : changed,
+    })
+  })
+
   it('replaces only one selected completion with an empty response and preserves its native identity', () => {
     const { native } = fixture('empty-response')
     const response = {
@@ -76,14 +168,17 @@ describe('createZcodeRecoveryTransformer', () => {
     })
   })
 
-  it('drops one selected live text delta without changing replay or sequence numbers', () => {
-    const { worker, native } = fixture('stream-gap')
+  it.each([
+    ['stream-gap', 'text_delta'],
+    ['reasoning-gap', 'reasoning_delta'],
+  ] as const)('drops one selected live %s delta without changing replay or sequence numbers', (mode, kind) => {
+    const { worker, native } = fixture(mode)
     const delta = {
       sessionId: 's',
       turnId: 't',
       seq: 3,
       type: 'model.streaming',
-      payload: { kind: 'text_delta', delta: 'first' },
+      payload: { kind, delta: 'first' },
     }
     const foreign = { ...delta, sessionId: 'other' }
     expect(JSON.parse(native({ method: 'session/event', params: foreign })!)).toEqual({ method: 'session/event', params: foreign })
@@ -91,7 +186,7 @@ describe('createZcodeRecoveryTransformer', () => {
     const next = {
       ...delta,
       seq: 4,
-      payload: { kind: 'text_delta', delta: 'second' },
+      payload: { kind, delta: 'second' },
     }
     expect(JSON.parse(native({ method: 'session/event', params: next })!)).toEqual({ method: 'session/event', params: next })
     const request = {
@@ -363,7 +458,7 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true })
 })
 
-async function runFixture(source: string, input: Buffer, argv = ['app-server', '--stdio']) {
+async function runFixture(source: string, input: Buffer, argv = ['app-server', '--stdio'], mode: RecoveryMode = 'turn-end') {
   const native = join(directory, 'native child.cjs')
   writeFileSync(native, source)
   const evidencePath = join(directory, 'evidence.jsonl')
@@ -375,6 +470,7 @@ async function runFixture(source: string, input: Buffer, argv = ['app-server', '
     },
     marker: 'marker',
     evidencePath,
+    mode,
   })
   const child = spawn(process.execPath, [relay.scriptPath, ...argv], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -403,6 +499,151 @@ async function runFixture(source: string, input: Buffer, argv = ['app-server', '
 }
 
 describe('writeZcodeRecoveryRelay', () => {
+  it('runs nested response replacement from the serialized transformer', async () => {
+    const start = {
+      method: 'session/event',
+      params: {
+        sessionId: 's',
+        turnId: 't',
+        seq: 1,
+        type: 'turn.started',
+        payload: { inputId: 'i' },
+      },
+    }
+    const event = {
+      sessionId: 's',
+      turnId: 't',
+      seq: 2,
+      type: 'session.updated',
+      payload: { content: 'Answer.', querySource: 'main_turn', stopReason: 'stop' },
+    }
+    const response = {
+      method: 'session/event',
+      metadata: 'retained',
+      params: { sessionId: 's', outer: 'retained', event },
+    }
+    const source = `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(`${JSON.stringify(start)}\n${JSON.stringify(response)}\n`)}));`
+    const result = await runFixture(source, Buffer.from('{"id":1,"method":"session/send","params":{"sessionId":"s","inputId":"i","content":"marker"}}\n'), undefined, 'empty-response')
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.output.toString().trim().split('\n').map(line => JSON.parse(line))).toEqual([
+      start,
+      {
+        ...response,
+        params: {
+          ...response.params,
+          event: {
+            ...event,
+            payload: { ...event.payload, content: '' },
+          },
+        },
+      },
+    ])
+  })
+
+  it('copies fragmented frames and final fragments in linear space', async () => {
+    const relay = writeZcodeRecoveryRelay(directory, {
+      launch: { binaryName: 'zcode', executable: process.execPath },
+      marker: 'marker',
+      evidencePath: join(directory, 'copy-evidence.jsonl'),
+    })
+    const chunks = Array.from({ length: 128 }, () => Buffer.alloc(64 * 1024, 120))
+    chunks.push(Buffer.from('\n{"next":true}\nfinal fragment'))
+    const expected = Buffer.concat(chunks)
+    let copied = 0
+    const countedBuffer = new Proxy(Buffer, {
+      get(target, property) {
+        if (property === 'concat') {
+          return (parts: readonly Uint8Array[], length?: number) => {
+            copied += length ?? parts.reduce((sum, part) => sum + part.byteLength, 0)
+            return Buffer.concat(parts, length)
+          }
+        }
+        if (property === 'from') {
+          return (value: string | Uint8Array, encoding?: BufferEncoding) => {
+            if (typeof value !== 'string') {
+              copied += value.byteLength
+              return Buffer.from(value)
+            }
+            return Buffer.from(value, encoding)
+          }
+        }
+        return Reflect.get(target, property)
+      },
+    })
+    const forwarded: Buffer[] = []
+    const evidence: string[] = []
+    const childInput = new Writable({
+      write(chunk, _encoding, done) {
+        forwarded.push(chunk)
+        done()
+      },
+    })
+    const child = Object.assign(new EventEmitter(), {
+      stdin: childInput,
+      stdout: Readable.from([]),
+      stderr: new PassThrough(),
+      kill() { throw new Error('The relay must not kill the fixture child.') },
+      exitCode: null,
+      signalCode: null,
+    })
+    const fixtureProcess = Object.assign(new EventEmitter(), {
+      argv: [
+        'node',
+        relay.scriptPath,
+        'app-server',
+        '--stdio',
+      ],
+      stdin: Readable.from(chunks),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    })
+    const modules: Record<string, unknown> = {
+      'node:buffer': { Buffer: countedBuffer },
+      'node:child_process': {
+        spawn: () => child,
+      },
+      'node:fs': {
+        appendFileSync: (_path: string, value: string) => evidence.push(value),
+      },
+    }
+    const done = finished(childInput)
+    runInNewContext(readFileSync(relay.scriptPath, 'utf8'), {
+      require: (name: string) => {
+        if (!(name in modules))
+          throw new Error(`Unexpected relay module: ${name}`)
+        return modules[name]
+      },
+      process: fixtureProcess,
+    })
+    await done
+    expect(Buffer.concat(forwarded).equals(expected)).toBe(true)
+    expect(evidence.map(line => JSON.parse(line) as { raw: string, forwarded: string | null, fragment: boolean })).toEqual([
+      {
+        direction: 'worker',
+        raw: Buffer.concat(chunks.slice(0, 128).concat([
+          Buffer.from('\n'),
+        ])).toString('base64'),
+        forwarded: Buffer.concat(chunks.slice(0, 128).concat([
+          Buffer.from('\n'),
+        ])).toString('base64'),
+        fragment: false,
+      },
+      {
+        direction: 'worker',
+        raw: Buffer.from('{"next":true}\n').toString('base64'),
+        forwarded: Buffer.from('{"next":true}\n').toString('base64'),
+        fragment: false,
+      },
+      {
+        direction: 'worker',
+        raw: Buffer.from('final fragment').toString('base64'),
+        forwarded: Buffer.from('final fragment').toString('base64'),
+        fragment: true,
+      },
+    ])
+    expect(copied).toBeLessThanOrEqual(expected.length * 2)
+  })
+
   it('preserves split Unicode and final fragments in both directions', async () => {
     const input = Buffer.from(' {"text":"생각 🧪"}\r\nfragment 🧪')
     const result = await runFixture(`process.stdin.on('data', chunk => { for (const byte of chunk) process.stdout.write(Buffer.from([byte])); });`, input)
