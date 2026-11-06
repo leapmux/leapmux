@@ -320,7 +320,7 @@ runs:
         {
           echo "gocache=$gocache"
           echo "lint-cache=$lint_cache"
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-go --hash '${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}' --week "$CACHE_WEEK")"
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-go --hash '${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum', 'tools/*/go.mod', 'tools/*/go.sum') }}' --week "$CACHE_WEEK")"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 

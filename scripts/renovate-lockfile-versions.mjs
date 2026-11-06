@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { posix, resolve } from 'node:path'
 import process from 'node:process'
+import { GO_TOOL_MODULES } from './go-tools.mjs'
 import { ECOSYSTEMS } from './renovate-ecosystems.mjs'
 import { renovateModule, requireRenovate } from './renovate-engine.mjs'
 import { runGoOutsideModules } from './renovate-go-command.mjs'
@@ -27,6 +28,7 @@ export const DEPENDENCY_LOCKFILES = Object.freeze([
   lockfile('backend/go.mod', 'go'),
   lockfile('desktop/go/go.mod', 'go'),
   lockfile('site/go.mod', 'go'),
+  ...GO_TOOL_MODULES.map(file => lockfile(file, 'go')),
 ])
 
 /**

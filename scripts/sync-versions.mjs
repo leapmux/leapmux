@@ -26,6 +26,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { GO_TOOL_MODULES } from './go-tools.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const VERSIONS_ENV = join(ROOT, 'versions.env')
@@ -69,7 +70,7 @@ const ARM64_SUFFIX = `\${{ matrix.arch == 'arm64' && '-arm' || '' }}`
  *             `assertRoundTrips`.
  *
  * A `go` directive is a language floor rather than a toolchain pin, but this
- * repo has always moved the two together (all four modules track GOLANG_VERSION
+ * repo has always moved the two together (all modules track GOLANG_VERSION
  * exactly), so they are claims like any other. Splitting them would mean a
  * second source of truth for the same number.
  */
@@ -99,6 +100,7 @@ export const CLAIMS = [
     'backend/go.mod',
     'desktop/go/go.mod',
     'site/go.mod',
+    ...GO_TOOL_MODULES,
   ].map(file => ({
     file,
     key: 'GOLANG_VERSION',

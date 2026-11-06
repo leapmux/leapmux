@@ -5,6 +5,7 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { postUpgrade } from './renovate-post-upgrade.mjs'
+import { runGoTool } from './run-go-tool.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const fixtures = []
@@ -71,29 +72,37 @@ function proxyFixture(modules) {
     resolve(fixture, 'proxy'),
     JSON.stringify(modules),
   ])
-  return { fixture, execute }
+  return { fixture, execute, env }
 }
 
 describe('postUpgrade with real Go metadata and a local module proxy', () => {
-  it('downloads moved transitive checksums before the updated tool prepares absent generated packages', async () => {
+  it('isolates generator dependencies and tidies new runtime imports after generation', async () => {
+    const generatedSource = 'package generated\nimport runtime "example.com/runtime"\nconst Value = runtime.Value\n'
     const modules = {
       'example.com/tools/sqlc@v1.1.0': {
         'go.mod': 'module example.com/tools/sqlc\ngo 1.27.1\nrequire example.com/moved/v2 v2.0.0\n',
-        'cmd/sqlc/main.go': 'package main\nimport ("os"; moved "example.com/moved/v2")\nfunc main() { if moved.Value != 2 { panic("wrong transitive module") }; if err:=os.MkdirAll("generated",0755);err!=nil {panic(err)}; if err:=os.WriteFile("generated/generated.go",[]byte("package generated\\nconst Value = 2\\n"),0644);err!=nil {panic(err)} }\n',
+        'cmd/sqlc/main.go': `package main\nimport ("os"; moved "example.com/moved/v2")\nfunc main() { if moved.Value != 2 { panic("wrong transitive module") }; if err:=os.MkdirAll("generated",0755);err!=nil {panic(err)}; if err:=os.WriteFile("generated/generated.go",[]byte(${JSON.stringify(generatedSource)}),0644);err!=nil {panic(err)} }\n`,
       },
+      'example.com/runtime@v1.0.0': { 'go.mod': 'module example.com/runtime\ngo 1.27.1\n', 'runtime.go': 'package runtime\nconst Value=2\n' },
       'example.com/moved/v2@v2.0.0': { 'go.mod': 'module example.com/moved/v2\ngo 1.27.1\n', 'moved.go': 'package moved\nconst Value=2\n' },
     }
-    const { fixture, execute } = proxyFixture(modules)
-    const replace = '\nreplace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260420184626-e10c466a9529\n'
-    write(fixture, 'backend/go.mod', `module github.com/leapmux/leapmux\ngo 1.27.1\ntool example.com/tools/sqlc/cmd/sqlc\nrequire example.com/tools/sqlc v1.1.0\n${replace}`)
+    const { fixture, execute, env } = proxyFixture(modules)
+    write(fixture, 'backend/go.mod', 'module github.com/leapmux/leapmux\ngo 1.27.1\n')
+    write(fixture, 'tools/sqlc/go.mod', 'module example.com/sqlc\ngo 1.27.1\ntool example.com/tools/sqlc/cmd/sqlc\nrequire example.com/tools/sqlc v1.1.0\n')
     write(fixture, 'backend/main.go', 'package backend\nimport ("github.com/leapmux/leapmux/generated"; "github.com/leapmux/leapmux/internal/hub/generated/frontend")\nvar Value = generated.Value\nvar Assets = frontend.Assets\n')
     write(fixture, 'backend/main_test.go', 'package backend\nimport ("testing"; "strings")\nfunc TestEmbeddedAssets(t *testing.T) { data,err:=Assets.ReadFile("public/index.html"); if err!=nil || !strings.Contains(string(data),"fixture application") { t.Fatalf("embedded assets are missing: %v %s",err,data) } }\n')
-    write(fixture, 'desktop/go/go.mod', `module example.com/desktop\ngo 1.27.1\nrequire github.com/leapmux/leapmux v0.0.0\nreplace github.com/leapmux/leapmux => ../../backend\n${replace}`)
+    write(fixture, 'desktop/go/go.mod', `module example.com/desktop\ngo 1.27.1\nrequire github.com/leapmux/leapmux v0.0.0\nreplace github.com/leapmux/leapmux => ../../backend\n`)
     write(fixture, 'desktop/go/main.go', 'package desktop\nimport backend "github.com/leapmux/leapmux"\nvar Value = backend.Value\n')
     write(fixture, 'go.work', 'go 1.27.1\nuse (\n ./backend\n ./desktop/go\n)\n')
     execute('git', ['init', '--initial-branch=main'])
     for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false' })) execute('git', ['config', key, value])
-    execute('git', ['add', 'backend', 'desktop', 'go.work'])
+    execute('git', [
+      'add',
+      'backend',
+      'desktop',
+      'tools',
+      'go.work',
+    ])
     let generated = false
     const run = (command, args, options = {}) => {
       if (options.cwd === 'site')
@@ -102,10 +111,14 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
         if (args[0] === 'prepare-backend') {
           expect(existsSync(resolve(fixture, 'backend/generated'))).toBe(false)
           expect(existsSync(resolve(fixture, 'backend/internal/hub/generated/frontend/public'))).toBe(false)
-          const sum = readFileSync(resolve(fixture, 'backend/go.sum'), 'utf8')
+          const sum = readFileSync(resolve(fixture, 'tools/sqlc/go.sum'), 'utf8')
           expect(sum).toContain('example.com/tools/sqlc v1.1.0 h1:')
           expect(sum).toContain('example.com/moved/v2 v2.0.0 h1:')
-          execute('go', ['tool', 'sqlc'], { cwd: 'backend' })
+          expect(runGoTool('sqlc', [], {
+            checkout: fixture,
+            cwd: resolve(fixture, 'backend'),
+            env,
+          })).toBe(0)
           write(fixture, 'backend/internal/hub/generated/frontend/embed.go', 'package frontend\nimport "embed"\n//go:embed public/*\nvar Assets embed.FS\n')
           write(fixture, 'backend/internal/hub/generated/frontend/public/index.html', '<!doctype html><p>fixture application</p>')
           generated = true
@@ -120,7 +133,7 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
           },
         })
       }
-      if (command === 'go' && args[1] === 'tidy')
+      if (command === 'go' && args[1] === 'tidy' && options.cwd !== 'tools/sqlc')
         expect(generated).toBe(true)
       if (command === 'git')
         return 'backend/go.mod\0'
@@ -129,7 +142,7 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
     await postUpgrade([
       {
         manager: 'gomod',
-        packageFile: 'backend/go.mod',
+        packageFile: 'tools/sqlc/go.mod',
         depName: 'example.com/tools/sqlc',
         depType: 'require',
         newValue: 'v1.1.0',
@@ -140,7 +153,10 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
       run,
       reconcile: async () => {},
     })
-    expect(readFileSync(resolve(fixture, 'backend/generated/generated.go'), 'utf8')).toContain('const Value = 2')
+    expect(readFileSync(resolve(fixture, 'backend/generated/generated.go'), 'utf8')).toContain('const Value = runtime.Value')
+    expect(readFileSync(resolve(fixture, 'backend/go.mod'), 'utf8')).toContain('example.com/runtime v1.0.0')
+    expect(readFileSync(resolve(fixture, 'backend/go.mod'), 'utf8')).not.toContain('example.com/tools/sqlc')
+    expect(readFileSync(resolve(fixture, 'tools/sqlc/go.mod'), 'utf8')).not.toContain('example.com/runtime')
     expect(readFileSync(resolve(fixture, 'desktop/go/go.mod'), 'utf8')).toContain('replace github.com/leapmux/leapmux => ../../backend')
     execute('go', ['test', './...'], { cwd: 'backend' })
   })

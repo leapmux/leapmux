@@ -65,12 +65,15 @@ describe('isDependencyInput', () => {
   it('limits non-action managers to the approved metadata files', () => {
     expect(isDependencyInput('gomod', 'backend/go.mod')).toBe(true)
     expect(isDependencyInput('gomod', 'site/go.mod')).toBe(true)
+    for (const name of ['golangci-lint', 'sqlc', 'gotestsum'])
+      expect(isDependencyInput('gomod', `tools/${name}/go.mod`)).toBe(true)
     expect(isDependencyInput('bun', '.github/renovate/package.json')).toBe(true)
     expect(isDependencyInput('bun', 'site/package.json')).toBe(true)
     expect(isDependencyInput('cargo', 'desktop/rust/Cargo.toml')).toBe(true)
     for (const [manager, path] of [
       ['unknown', 'versions.env'],
       ['gomod', '../go.mod'],
+      ['gomod', 'tools/unknown/go.mod'],
       ['bun', 'other/package.json'],
     ])
       expect(isDependencyInput(manager, path)).toBe(false)

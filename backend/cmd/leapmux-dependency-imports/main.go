@@ -308,8 +308,39 @@ func planModuleRewrites(changes []moduleChange, directories []string, roots map[
 	return pending, nil
 }
 
-func run(input io.Reader) error {
+func moduleDirectories() ([]string, error) {
 	directories := []string{"backend", "desktop/go", "site"}
+	entries, err := os.ReadDir("tools")
+	if errors.Is(err, os.ErrNotExist) {
+		return directories, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read tool directories: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		directory := "tools/" + entry.Name()
+		info, err := os.Lstat(filepath.Join(directory, "go.mod"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect tool module in %s: %w", directory, err)
+		}
+		if info.Mode().IsRegular() {
+			directories = append(directories, directory)
+		}
+	}
+	return directories, nil
+}
+
+func run(input io.Reader) error {
+	directories, err := moduleDirectories()
+	if err != nil {
+		return err
+	}
 	changes, err := readModuleChanges(input, directories)
 	if err != nil {
 		return err
@@ -322,7 +353,8 @@ func run(input io.Reader) error {
 		return slices.Contains(change.Directories, "backend") || slices.Contains(change.Directories, "desktop/go")
 	})
 	for _, directory := range directories {
-		if (directory != "site" && workspace) || slices.ContainsFunc(changes, func(change moduleChange) bool { return slices.Contains(change.Directories, directory) }) {
+		isWorkspace := directory == "backend" || directory == "desktop/go"
+		if (isWorkspace && workspace) || slices.ContainsFunc(changes, func(change moduleChange) bool { return slices.Contains(change.Directories, directory) }) {
 			affected = append(affected, directory)
 		}
 	}

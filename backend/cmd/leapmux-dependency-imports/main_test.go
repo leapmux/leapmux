@@ -251,6 +251,32 @@ func TestEmptyModuleChangesNeedNoRepository(t *testing.T) {
 	require.NoError(t, run(strings.NewReader("[]")))
 }
 
+func TestModuleDirectories(t *testing.T) {
+	t.Run("missing tools directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		directories, err := moduleDirectories()
+		require.NoError(t, err)
+		require.Equal(t, []string{"backend", "desktop/go", "site"}, directories)
+	})
+	t.Run("only directories with module files", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		require.NoError(t, os.MkdirAll("tools/empty", 0o755))
+		require.NoError(t, os.MkdirAll("tools/sqlc", 0o755))
+		require.NoError(t, os.WriteFile("tools/not-a-directory", nil, 0o644))
+		require.NoError(t, os.WriteFile("tools/sqlc/go.mod", []byte("module example.com/tool\n"), 0o644))
+		directories, err := moduleDirectories()
+		require.NoError(t, err)
+		require.Equal(t, []string{"backend", "desktop/go", "site", "tools/sqlc"}, directories)
+	})
+	t.Run("invalid tools directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		require.NoError(t, os.WriteFile("tools", nil, 0o644))
+		directories, err := moduleDirectories()
+		require.ErrorContains(t, err, "read tool directories")
+		require.Nil(t, directories)
+	})
+}
+
 func TestSiteMigrationIgnoresUnrelatedWorkspaceMetadata(t *testing.T) {
 	root := testutil.NewGitRepo(t)
 	t.Chdir(root)
@@ -264,4 +290,41 @@ func TestSiteMigrationIgnoresUnrelatedWorkspaceMetadata(t *testing.T) {
 	module, err := os.ReadFile("site/go.mod")
 	require.NoError(t, err)
 	require.Contains(t, string(module), "example.com/theme/v2 v2.0.0")
+}
+
+func TestToolMigrationIgnoresUnrelatedModules(t *testing.T) {
+	root := testutil.NewGitRepo(t)
+	t.Chdir(root)
+	for _, directory := range []string{"backend", "site", "tools/sqlc", "tools/golangci-lint"} {
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "go.mod"), []byte("invalid unrelated module"), 0o644))
+	}
+	require.NoError(t, os.WriteFile("tools/sqlc/go.mod", []byte("module example.com/sqlc\ngo 1.27.1\nrequire example.com/tool/v7 v7.0.0\ntool example.com/tool/v7/cmd/sqlc\n"), 0o644))
+	output, err := exec.Command("git", "add", ".").CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.NoError(t, run(strings.NewReader(`[{"old":"example.com/tool/v7","new":"example.com/tool/v8","version":"v8.0.0","directories":["tools/sqlc"]}]`)))
+	source, err := os.ReadFile("tools/sqlc/go.mod")
+	require.NoError(t, err)
+	require.Contains(t, string(source), "example.com/tool/v8 v8.0.0")
+	require.Contains(t, string(source), "tool example.com/tool/v8/cmd/sqlc")
+	for _, directory := range []string{"backend", "site", "tools/golangci-lint"} {
+		source, err := os.ReadFile(filepath.Join(directory, "go.mod"))
+		require.NoError(t, err)
+		require.Equal(t, "invalid unrelated module", string(source))
+	}
+}
+
+func TestWorkspaceMigrationIgnoresToolMetadata(t *testing.T) {
+	root := testutil.NewGitRepo(t)
+	t.Chdir(root)
+	require.NoError(t, os.MkdirAll("backend", 0o755))
+	require.NoError(t, os.MkdirAll("tools/sqlc", 0o755))
+	require.NoError(t, os.WriteFile("backend/go.mod", []byte("module example.com/backend\ngo 1.27.1\nrequire example.com/lib/v7 v7.0.0\n"), 0o644))
+	require.NoError(t, os.WriteFile("tools/sqlc/go.mod", []byte("invalid unrelated module"), 0o644))
+	output, err := exec.Command("git", "add", ".").CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.NoError(t, run(strings.NewReader(`[{"old":"example.com/lib/v7","new":"example.com/lib/v8","version":"v8.0.0","directories":["backend"]}]`)))
+	source, err := os.ReadFile("backend/go.mod")
+	require.NoError(t, err)
+	require.Contains(t, string(source), "example.com/lib/v8 v8.0.0")
 }

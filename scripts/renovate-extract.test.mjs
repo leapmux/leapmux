@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { dirname, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
+import { GO_TOOL_MODULES } from './go-tools.mjs'
 import { extractRenovateInventory, selectExtractionFiles } from './renovate-extract.mjs'
 import { gitRepository, scratchDirectories } from './test-support.mjs'
 
@@ -20,7 +21,12 @@ function fixture() {
   const directory = scratch.create('extraction-test')
   write(directory, '.gitignore', '.tmp/\n')
   write(directory, 'versions.env', readFileSync(resolve(root, 'versions.env')))
-  for (const file of ['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod'])
+  for (const file of [
+    'backend/go.mod',
+    'desktop/go/go.mod',
+    'site/go.mod',
+    ...GO_TOOL_MODULES,
+  ])
     write(directory, file, `module example.com/${file.replaceAll('/', '-')}\ngo 1.27.1\nrequire example.com/dependency v1.0.0\n`)
   for (const file of ['frontend/package.json', '.github/renovate/package.json', 'site/package.json']) {
     write(directory, file, '{"dependencies":{"fixture":"1.0.0"}}')
@@ -35,7 +41,12 @@ function fixture() {
 }
 function extracted(extra = [], removed = true) {
   return {
-    'gomod': ['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod'].map(packageFile => ({ packageFile })),
+    'gomod': [
+      'backend/go.mod',
+      'desktop/go/go.mod',
+      'site/go.mod',
+      ...GO_TOOL_MODULES,
+    ].map(packageFile => ({ packageFile })),
     'bun': ['frontend/package.json', '.github/renovate/package.json', 'site/package.json'].map(packageFile => ({ packageFile })),
     'cargo': [
       { packageFile: 'desktop/rust/Cargo.toml' },

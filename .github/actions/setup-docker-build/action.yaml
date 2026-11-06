@@ -124,7 +124,7 @@ runs:
         if [ "$SAVE_CACHES" = "true" ] && [ "$VARIANT" = "alpine" ]; then
           writes_shared=true
         fi
-        hash='${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}'
+        hash='${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum', 'tools/*/go.mod', 'tools/*/go.sum') }}'
         week="$(date -u +%G-W%V)"
         # The partition prefix and the runtime cache path come from the
         # policy registry, so the workflows cannot disagree with the

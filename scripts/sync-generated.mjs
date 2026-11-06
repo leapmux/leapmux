@@ -13,7 +13,7 @@
 //
 // Flags:
 //   --base DIR      Create staging below DIR. The default is the project's .tmp directory.
-//                   SQL generation uses backend/ because go tool resolves sqlc inside its module.
+//                   SQL generation uses backend/ to keep staging beside its published output.
 //                   The staging directory starts with a dot, so Go and Git ignore it.
 //   --cwd-staging   Run the generator with its working directory set to the
 //                   staging dir (sqlc reads sqlc.yaml from cwd and writes its

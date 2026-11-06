@@ -557,7 +557,7 @@ function parseGoListJson(raw) {
  *
  * Tool-only deps (declared via `tool` directives in go.mod and
  * reachable only from tool main packages) are deliberately excluded —
- * their binaries are built and run separately via `go tool <name>`
+ * their binaries are built and run separately via `scripts/run-go-tool.mjs`
  * and are never linked into a shipped LeapMux binary.
  */
 function collectGoRuntimeModuleKeys() {
