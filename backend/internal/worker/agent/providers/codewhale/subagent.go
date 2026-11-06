@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -78,14 +79,16 @@ func newCodewhaleChildren(ctx context.Context) *codewhaleChildren {
 }
 
 // codewhaleChild represents one subagent.
-// The watcher goroutine owns every field below nudge.
+// The watcher goroutine owns every field below nudge until settlement joins it.
 // Startup sets the earlier fields once before starting the watcher.
 type codewhaleChild struct {
-	agentID   string
-	childID   string
-	spawnSpan string
-	title     string
-	path      string
+	agentID     string
+	childID     string
+	spawnSpan   string
+	title       string
+	path        string
+	watchCancel context.CancelFunc
+	watchDone   chan struct{}
 	// nudge wakes the watcher before its next tick.
 	nudge chan struct{}
 
@@ -109,7 +112,9 @@ func (c *codewhaleChildren) stopAll() {
 	if c == nil {
 		return
 	}
+	c.mu.Lock()
 	c.cancel()
+	c.mu.Unlock()
 	c.wg.Wait()
 }
 
@@ -140,11 +145,16 @@ func (c *codewhaleChildren) start(child *codewhaleChild, watch func(context.Cont
 	if _, exists := c.byID[child.agentID]; exists {
 		return false
 	}
+	ctx, cancel := context.WithCancel(c.ctx)
+	child.watchCancel = cancel
+	child.watchDone = make(chan struct{})
 	c.byID[child.agentID] = child
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		watch(c.ctx, child)
+		defer close(child.watchDone)
+		defer cancel()
+		watch(ctx, child)
 	}()
 	return true
 }
@@ -159,6 +169,16 @@ func (c *codewhaleChildren) claim(agentID string) *codewhaleChild {
 	return child
 }
 
+// restoreClaim retains a child whose completion could not enter the output
+// queue. A repeated parent result can retry it, and shutdown still finds it.
+func (c *codewhaleChildren) restoreClaim(child *codewhaleChild) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byID[child.agentID] == nil {
+		c.byID[child.agentID] = child
+	}
+}
+
 // settle finalizes a child from outside its watcher. It reports false for a
 // child that is not watched or that another finalizer already claimed.
 func (c *codewhaleChildren) settle(agentID string, finalize func(*codewhaleChild)) bool {
@@ -171,6 +191,8 @@ func (c *codewhaleChildren) settle(agentID string, finalize func(*codewhaleChild
 	if child == nil {
 		return false
 	}
+	child.watchCancel()
+	<-child.watchDone
 	finalize(child)
 	return true
 }
@@ -364,9 +386,9 @@ func agentRunStatus(word string) (status bgtask.Status, final bool) {
 }
 
 // watchChild reads one child's transcript until its run answers, or until ctx
-// ends. The tail claims the child before closing it, so a settle that the
-// parent's wait result claimed first leaves the tail nothing to close and the
-// watcher exits on its next read.
+// ends. The tail claims the child before closing it. External settlement
+// removes that claim, cancels this watcher, and joins it before taking
+// ownership of the child's transcript state.
 func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	sink := a.sink.ChildSink(child.childID)
 	for {
@@ -388,18 +410,58 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	}
 }
 
-// finishChild closes the child's registry row and writes its summary in the parent transcript.
-// It then releases the child's transcript state.
+// finishChild retains the child's report, registry close, and cleanup in output
+// order. A failed write stays queued with its original transcript destination.
+// The close runs only after the report persists, and cleanup runs only after
+// the close succeeds. A crash between those writes leaves an open row whose
+// report can be found, rather than a closed row with a lost report.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
 	closeChildTools(sink, child)
-	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(child.agentID, status))
+	batch, err := agent.ReserveCapturedTranscriptBatch(a.sink)
+	if err != nil {
+		a.retainChildCompletion(child, err)
+		return
+	}
+	var operations []agent.CapturedTranscriptOperation
 	if strings.TrimSpace(summary) != "" {
-		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
+		report, present, captureErr := agent.CaptureSubagentReport(a.sink, agent.SubagentReportWrite{
 			ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
 			Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
 		})
+		if captureErr != nil {
+			batch.Discard()
+			a.retainChildCompletion(child, captureErr)
+			return
+		}
+		if present {
+			operations = append(operations, report.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX))
+		}
 	}
-	a.sink.CleanupChildAgent(child.childID)
+	err = batch.Prepare(func() []agent.CapturedTranscriptOperation { return operations })
+	if !agent.OutputRetained(err) {
+		a.retainChildCompletion(child, err)
+		return
+	}
+	parent, rowKey, childID := a.sink, child.agentID, child.childID
+	queue := agent.OutputQueueFor(parent)
+	queue.Append(agent.OutputWrite{Label: "close Codewhale child " + rowKey, Run: func() error {
+		if err := parent.CloseBackgroundTask(rowKey, status); err != nil {
+			return err
+		}
+		parent.CleanupChildAgent(childID)
+		return nil
+	}})
+	if err == nil {
+		err = agent.FlushPendingOutput(parent)
+	}
+	if err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Warn("codewhale child completion remains queued", "agent_id", a.AgentID(), "child", rowKey, "error", err)
+	}
+}
+
+func (a *Agent) retainChildCompletion(child *codewhaleChild, err error) {
+	a.children.restoreClaim(child)
+	slog.Warn("codewhale could not queue child completion", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
 }
 
 // closeOpenChildren closes the rows of the children a process exit cut off.

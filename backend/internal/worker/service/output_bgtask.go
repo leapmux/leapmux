@@ -964,7 +964,7 @@ func (s *agentOutputSink) rawChildSinkLocked(childAgentID string) (*agentOutputS
 	if current {
 		restoreErr = child.restoreMessageSession()
 	}
-	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
+	child.progress = newGenerationProgressPublisher(&s.h.progressPublishers, func(info map[string]interface{}) {
 		s.h.broadcastAgentSessionInfo(childAgentID, info)
 	}, child.currentMessageSessionID)
 	if !current {

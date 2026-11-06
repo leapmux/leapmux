@@ -237,6 +237,9 @@ type authInterceptor struct {
 	// delegation tokens that authenticate dozens of concurrent inner-
 	// RPCs over a fresh Noise session.
 	bearerFlight singleflight.Group
+	// servingCtx is the hub's lifetime, canceled just before the store
+	// closes; see InterceptorOptions.ServingCtx.
+	servingCtx context.Context
 	// soloGate decides whether a solo caller may skip credentials; see SoloGate.
 	soloGate *SoloGate
 }
@@ -269,6 +272,12 @@ type InterceptorOptions struct {
 	// it -- only the latch does, and a hub shares one gate with
 	// AuthenticateHTTP so both ladders read the same latch.
 	SoloGate *SoloGate
+	// ServingCtx is the hub's own lifetime, canceled only when the shutdown
+	// has joined every drain and is about to close the store. Work detached
+	// from its request's context -- the bearer-validation flight, whose result
+	// the followers share, so that a leader's disconnect must not fail them --
+	// runs on it, so it cannot read a closed store. Required.
+	ServingCtx context.Context
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -279,6 +288,9 @@ type InterceptorOptions struct {
 // in-memory touch throttle (e.g. on logout). Call AuthContextRegistry.Stop to terminate
 // the background sweep goroutine.
 func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthContextRegistry) {
+	if opts.ServingCtx == nil {
+		panic("auth interceptor requires the Hub's serving context")
+	}
 	st := opts.Store
 	state := &authState{}
 	soloGate := opts.SoloGate
@@ -294,6 +306,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthCo
 		tokenValidator: opts.TokenValidator,
 		state:          state,
 		soloGate:       soloGate,
+		servingCtx:     opts.ServingCtx,
 	}
 	sweepCtx, cancel := context.WithCancel(context.Background())
 	sc := &AuthContextRegistry{
@@ -1115,7 +1128,11 @@ func (a *authInterceptor) tryAuthenticateBearer(ctx context.Context, authHeader 
 	// ValidateBearer call. The follower goroutines wait on the leader
 	// and get the same (info, err); only one DB round-trip fires.
 	resultCh := a.bearerFlight.DoChan(cacheKey.flightKey(), func() (any, error) {
-		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCacheTTL)
+		// servingCtx, not the request's context: the flight must outlive a
+		// client disconnect, because its followers share its result, but not
+		// the hub's own teardown, because a store that closes under a running
+		// flight is the failure servingCtx ends.
+		workCtx, cancel := context.WithTimeout(a.servingCtx, sessionCacheTTL)
 		defer cancel()
 		for {
 			// Re-check the cache inside the flight: a concurrent caller

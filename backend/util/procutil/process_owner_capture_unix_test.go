@@ -21,6 +21,12 @@ func TestProcessOwnerCaptureRejectsAnAbsentContextWithoutPanic(t *testing.T) {
 	fixture.requirePong(t)
 }
 
+func TestProcessOwnerCaptureBeforeStopAcceptsAnAbsentOrUnstartedOwner(t *testing.T) {
+	var absentOwner *ProcessOwner
+	require.NoError(t, absentOwner.CaptureBeforeStop())
+	require.NoError(t, (&ProcessOwner{}).CaptureBeforeStop())
+}
+
 type unidentifiedProcessCommand struct {
 	child     *os.Process
 	waitCount int

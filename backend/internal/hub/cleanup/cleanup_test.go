@@ -2,6 +2,8 @@ package cleanup
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -439,3 +441,89 @@ func TestRun_DrainsStaleDeregistrationsWithTheGracePeriodCutoff(t *testing.T) {
 		assert.Len(t, spy.cutoffs, maxStaleDeregistrationBatches)
 	})
 }
+
+// stopBetweenStepsSpy cancels the loop's context inside the FIRST step and
+// counts the second, so a run that walks on after the cancel is observable in
+// both the step count and the log.
+type stopBetweenStepsSpy struct {
+	store.CleanupStore
+	cancel      context.CancelFunc
+	stepsRan    int
+	firstCalled bool
+}
+
+func (s *stopBetweenStepsSpy) HardDeleteExpiredSessions(_ context.Context, _ time.Time) (int64, error) {
+	s.firstCalled = true
+	s.cancel()
+	return 0, nil
+}
+
+func (s *stopBetweenStepsSpy) HardDeleteWorkspacesBefore(_ context.Context, _ time.Time) (int64, error) {
+	s.stepsRan++
+	return 0, nil
+}
+
+func (s *stopBetweenStepsSpy) HardDeleteUsersBefore(_ context.Context, _ time.Time) (int64, error) {
+	s.stepsRan++
+	return 0, nil
+}
+
+// A context that ends mid-pass must skip every later step, quietly: a store
+// that closes under the shutdown would turn each remaining step into an
+// Error line and a failed read.
+func TestRunStopsBetweenStepsAfterCancel(t *testing.T) {
+	st := setupTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	spy := &stopBetweenStepsSpy{CleanupStore: st.Cleanup(), cancel: cancel}
+
+	previousLogger := slog.Default()
+	var errors int
+	slog.SetDefault(slog.New(&errorCountingHandler{count: &errors}))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	run(ctx, cleanupSpyStore{Store: st, cleanup: spy})
+
+	require.True(t, spy.firstCalled, "the first step must run")
+	assert.Zero(t, spy.stepsRan, "no later step may run after the context ended")
+	assert.Zero(t, errors, "the skipped steps must log nothing")
+}
+
+// StartLoop's returned channel closes when the loop stopped, so a shutdown can
+// join a pass in flight.
+func TestStartLoopChannelClosesAfterCancel(t *testing.T) {
+	st := setupTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	stopped := StartLoop(ctx, st)
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cleanup loop's channel never closed after the cancel")
+	}
+}
+
+// errorCountingHandler counts Error records, so a test can assert a quiet log.
+type errorCountingHandler struct {
+	count *int
+	mu    sync.Mutex
+}
+
+func (h *errorCountingHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelError
+}
+
+func (h *errorCountingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r.Level == slog.LevelError {
+		*h.count++
+	}
+	return nil
+}
+
+func (h *errorCountingHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *errorCountingHandler) WithGroup(name string) slog.Handler       { return h }

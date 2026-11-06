@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,12 +28,25 @@ type heldStopCall struct {
 type heldStopAgent struct {
 	agenttest.IdleAgent
 	calls chan heldStopCall
+	ctx   context.Context
 }
 
 func (a *heldStopAgent) holdStop(input []byte, stop agent.StopContext) error {
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
 	call := heldStopCall{input: append([]byte(nil), input...), reply: make(chan error, 1), stop: stop}
-	a.calls <- call
-	return <-call.reply
+	select {
+	case a.calls <- call:
+	case <-a.ctx.Done():
+		return a.ctx.Err()
+	}
+	select {
+	case result := <-call.reply:
+		return result
+	case <-a.ctx.Done():
+		return a.ctx.Err()
+	}
 }
 
 func (a *heldStopAgent) Interrupt(stop agent.StopContext) error { return a.holdStop(nil, stop) }
@@ -48,14 +61,14 @@ func (a heldChildStopAgent) InterruptChild(childKey string, stop agent.StopConte
 	return a.holdStop([]byte(childKey), stop)
 }
 
-func stopOwnershipFixture(t *testing.T) (*Service, *channel.Dispatcher, agent.ProviderServices, *heldStopAgent) {
+func stopOwnershipFixture(t *testing.T) (*Service, testRPCDispatcher, agent.ProviderServices, *heldStopAgent) {
 	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	provider := &heldStopAgent{calls: make(chan heldStopCall, 2)}
+	provider := newHeldStopAgent(t.Context(), 2)
 	svc.Agents.PutAgentForTest("agent-1", provider)
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
@@ -84,9 +97,11 @@ func finishHeldStop(t *testing.T, call heldStopCall, done <-chan struct{}, resul
 	}
 }
 
-func dispatchHeldStop(dispatcher *channel.Dispatcher, raw bool) (*testResponseWriter, <-chan struct{}) {
+func dispatchHeldStop(t *testing.T, dispatcher testRPCDispatcher, raw bool) (*testResponseWriter, <-chan struct{}) {
+	t.Helper()
 	writer := newTestWriter()
 	done := make(chan struct{})
+	joinHeldStopAtCleanup(t, done)
 	go func() {
 		defer close(done)
 		if raw {
@@ -115,7 +130,7 @@ func TestInterruptAgentKeepsTheReplacementTurnControl(t *testing.T) {
 				t.Parallel()
 				svc, dispatcher, sink, provider := stopOwnershipFixture(t)
 				publishStopControl(t, sink, "old-control")
-				writer, done := dispatchHeldStop(dispatcher, raw)
+				writer, done := dispatchHeldStop(t, dispatcher, raw)
 				call := receiveHeldStop(t, provider)
 				if raw {
 					assert.Equal(t, `{"type":"control_request","request_id":"stop-1","request":{"subtype":"interrupt"}}`, string(call.input))
@@ -143,9 +158,9 @@ func TestInterruptAgentKeepsTheReplacementTurnControl(t *testing.T) {
 func TestInterruptAgentFailureKeepsAnotherPendingStop(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, _, provider := stopOwnershipFixture(t)
-	firstWriter, firstDone := dispatchHeldStop(dispatcher, false)
+	firstWriter, firstDone := dispatchHeldStop(t, dispatcher, false)
 	first := receiveHeldStop(t, provider)
-	secondWriter, secondDone := dispatchHeldStop(dispatcher, false)
+	secondWriter, secondDone := dispatchHeldStop(t, dispatcher, false)
 	second := receiveHeldStop(t, provider)
 	finishHeldStop(t, first, firstDone, errors.New("the first stop did not reach the provider"))
 	require.NotEmpty(t, firstWriter.rejections())
@@ -160,7 +175,7 @@ func TestRawStopReportsTheDeliveryFailure(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, sink, provider := stopOwnershipFixture(t)
 	publishStopControl(t, sink, "waiting-control")
-	writer, done := dispatchHeldStop(dispatcher, true)
+	writer, done := dispatchHeldStop(t, dispatcher, true)
 	call := receiveHeldStop(t, provider)
 	finishHeldStop(t, call, done, errors.New("the native stop was refused"))
 	require.NotEmpty(t, writer.rejections(), "a rejected raw stop must not return RPC success")
@@ -191,9 +206,9 @@ func TestControlPublicationRenewsTheClaimForANewTurn(t *testing.T) {
 func TestInterruptAgentFailureKeepsAnotherAcceptedStop(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, _, provider := stopOwnershipFixture(t)
-	_, firstDone := dispatchHeldStop(dispatcher, false)
+	_, firstDone := dispatchHeldStop(t, dispatcher, false)
 	first := receiveHeldStop(t, provider)
-	writer, secondDone := dispatchHeldStop(dispatcher, false)
+	writer, secondDone := dispatchHeldStop(t, dispatcher, false)
 	second := receiveHeldStop(t, provider)
 	finishHeldStop(t, second, secondDone, nil)
 	require.Empty(t, writer.rejections())
@@ -211,7 +226,7 @@ func TestIgnoredInterruptSuccessRetainsTheStillLiveControl(t *testing.T) {
 	publishStopControl(t, sink, "still-live-control")
 	before, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "still-live-control"})
 	require.NoError(t, err)
-	writer, done := dispatchHeldStop(dispatcher, false)
+	writer, done := dispatchHeldStop(t, dispatcher, false)
 	call := receiveHeldStop(t, provider)
 	call.stop.ReportIgnored()
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
@@ -231,10 +246,10 @@ func TestInterruptAgentResultKeepsTheReplacementProcessControl(t *testing.T) {
 			t.Parallel()
 			svc, dispatcher, sink, provider := stopOwnershipFixture(t)
 			publishStopControl(t, sink, "old-control")
-			writer, done := dispatchHeldStop(dispatcher, false)
+			writer, done := dispatchHeldStop(t, dispatcher, false)
 			call := receiveHeldStop(t, provider)
 			svc.Output.ClearPendingControlRequests("agent-1")
-			replacement := &heldStopAgent{calls: make(chan heldStopCall, 1)}
+			replacement := newHeldStopAgent(t.Context(), 1)
 			svc.Agents.PutAgentForTest("agent-1", replacement)
 			newSink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			svc.Output.NoteAgentProcessStarted("agent-1")
@@ -264,7 +279,7 @@ func TestInterruptAgentResultKeepsTheReplacementProcessControl(t *testing.T) {
 func TestInterruptChildKeepsTheReplacementTurnControl(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, childID, rootID := setupChildAgentTest(t)
-	provider := &heldStopAgent{calls: make(chan heldStopCall, 1)}
+	provider := newHeldStopAgent(t.Context(), 1)
 	svc.Agents.PutAgentForTest(rootID, heldChildStopAgent{provider})
 	rootSink := svc.Output.sinkForAgent(rootID)
 	require.NotNil(t, rootSink)
@@ -274,6 +289,7 @@ func TestInterruptChildKeepsTheReplacementTurnControl(t *testing.T) {
 	publishStopControl(t, childSink, "old-child-control")
 	writer := newTestWriter()
 	done := make(chan struct{})
+	joinHeldStopAtCleanup(t, done)
 	go func() {
 		defer close(done)
 		dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceInterruptAgentProcedure, &leapmuxv1.InterruptAgentRequest{AgentId: childID}, writer)
@@ -296,7 +312,7 @@ func TestEscalationDoesNotShareAnOldTurnResultWithANewTurn(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
-	svc.Agents.PutAgentForTest("agent-1", &heldStopAgent{calls: make(chan heldStopCall, 1)})
+	svc.Agents.PutAgentForTest("agent-1", newHeldStopAgent(t.Context(), 1))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	svc.Output.NoteAgentProcessStarted("agent-1")
 	sink.SetTurnState(agent.TurnState{Active: true}, 1)
@@ -350,7 +366,7 @@ func TestInterruptAgentPreservesProviderFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, dispatcher, _, provider := stopOwnershipFixture(t)
-			writer, done := dispatchHeldStop(dispatcher, false)
+			writer, done := dispatchHeldStop(t, dispatcher, false)
 			call := receiveHeldStop(t, provider)
 			finishHeldStop(t, call, done, fmt.Errorf("provider stop: %w", tc.failure))
 			failures := writer.rejections()
@@ -360,4 +376,76 @@ func TestInterruptAgentPreservesProviderFailure(t *testing.T) {
 			assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
 		})
 	}
+}
+
+func newHeldStopAgent(ctx context.Context, capacity int) *heldStopAgent {
+	return &heldStopAgent{ctx: ctx, calls: make(chan heldStopCall, capacity)}
+}
+
+func TestHeldStopCancellationReleasesBlockedCalls(t *testing.T) {
+	for _, phase := range []string{"publish", "reply"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				provider := newHeldStopAgent(ctx, 2)
+				if phase == "publish" {
+					for range cap(provider.calls) {
+						provider.calls <- heldStopCall{reply: make(chan error, 1)}
+					}
+				}
+				result := make(chan error, 1)
+				finished := make(chan struct{})
+				var held heldStopCall
+				defer func() {
+					cancel()
+					if held.reply != nil {
+						select {
+						case held.reply <- context.Canceled:
+						default:
+						}
+					}
+					for {
+						select {
+						case <-finished:
+							return
+						case call := <-provider.calls:
+							if call.reply != nil {
+								select {
+								case call.reply <- context.Canceled:
+								default:
+								}
+							}
+						}
+					}
+				}()
+				go func() { defer close(finished); result <- provider.Interrupt(agent.StopContext{}) }()
+				if phase == "reply" {
+					held = receiveHeldStop(t, provider)
+				}
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+				assert.ErrorIs(t, provider.ctx.Err(), context.Canceled)
+				select {
+				case err := <-result:
+					assert.ErrorIs(t, err, context.Canceled)
+				default:
+					t.Error("cancellation left a fake stop blocked")
+				}
+			})
+		})
+	}
+}
+
+// Testing cancels each provider's context before running these cleanup joins.
+func joinHeldStopAtCleanup(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("the held stop request did not finish during cleanup")
+		}
+	})
 }

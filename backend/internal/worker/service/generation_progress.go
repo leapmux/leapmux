@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/util/drain"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -80,7 +82,10 @@ type generationProgressPublisher struct {
 	sessionID func() string
 }
 
-func newGenerationProgressPublisher(publish func(map[string]interface{}), sessionID func() string) *generationProgressPublisher {
+func newGenerationProgressPublisher(lifetimes *drain.Counter, publish func(map[string]interface{}), sessionID func() string) *generationProgressPublisher {
+	if lifetimes == nil {
+		panic("generation progress publisher requires its lifetime owner")
+	}
 	publisher := &generationProgressPublisher{
 		publish:      publish,
 		sessionID:    sessionID,
@@ -88,7 +93,8 @@ func newGenerationProgressPublisher(publish func(map[string]interface{}), sessio
 		wake:         make(chan struct{}, 1),
 		done:         make(chan struct{}),
 	}
-	go publisher.run()
+	lifetimes.Add()
+	go func() { defer lifetimes.Done(); publisher.run() }()
 	return publisher
 }
 

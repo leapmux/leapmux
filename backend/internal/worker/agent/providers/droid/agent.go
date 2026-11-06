@@ -92,6 +92,11 @@ type Agent struct {
 
 	sendMu  sync.Mutex
 	stopped bool
+	// compactionOperations counts accepted compactions from request setup
+	// through their final output write. Admission increments it under a.Mu
+	// beside the stopped check, so Wait joins setup and every result watcher
+	// before finalizing output.
+	compactionOperations sync.WaitGroup
 }
 
 // droidLaunch keeps the resolved program and its shutdown duration together.
@@ -410,6 +415,12 @@ func (a *Agent) Wait() error {
 	a.cancelControls(retired)
 	a.stopChildConnections()
 	a.stopChildTails()
+	// With stopped set above, no new watcher can be counted, so this join
+	// covers exactly the watchers in flight. No lock is held here:
+	// endAbortedCompaction, which each watcher ends in, takes dispatchMu --
+	// the same mutex finishOutput below takes -- so the ended record persists
+	// before the output finalizes.
+	a.compactionOperations.Wait()
 	a.finishOutput(a.ProcessExitCompletion())
 	a.cleanupRuntimeSettings()
 	return err

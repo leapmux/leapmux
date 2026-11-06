@@ -105,6 +105,29 @@ type Wiring struct {
 	// holds the Client it passed in, and a second handle here would only invite
 	// a caller to reach past Shutdown.
 	client *hub.Client
+	// dispatcher is retained solely so Shutdown can close its admission and
+	// WaitHandlers can join its handlers. Run holds no dispatcher of its own.
+	dispatcher *channel.Dispatcher
+}
+
+// handlerDrainTimeout limits the join of all admitted handlers, including watches.
+const handlerDrainTimeout = 5 * time.Second
+
+// WaitHandlers joins the dispatcher's handlers within one shutdown budget.
+//
+// It lives on Wiring because worker.Run holds no dispatcher. The deferred call
+// in Run orders it after client.Stop, so the goodbye still travels on the live
+// stream before the handlers that write to it are joined.
+func (w *Wiring) WaitHandlers() {
+	if w == nil || w.dispatcher == nil {
+		// A caller that returns before Wire succeeded has nothing to join.
+		return
+	}
+	// Each wait logs its own expiry (drain.Counter), so the wrapper adds none:
+	// one expired wait is one Warn, not two.
+	if w.dispatcher.WaitHandlers(handlerDrainTimeout) {
+		slog.Info("worker handlers joined")
+	}
 }
 
 // Shutdown drains the worker and then flushes everything that drain wrote to
@@ -118,6 +141,10 @@ type Wiring struct {
 // sendq.Writer.Close discards the queue and logs nothing, so the browser's
 // terminal simply stops. FlushSends limits the teardown behind the drain.
 func (w *Wiring) Shutdown() {
+	// Close the dispatcher's admission before anything drains: a handler
+	// admitted after the drain started is one the WaitHandlers in worker.Run
+	// would miss, and its writes would race the database close.
+	w.dispatcher.CloseAdmission()
 	w.Service.Shutdown()
 	if w.client == nil {
 		return
@@ -260,7 +287,7 @@ func Wire(p Params) *Wiring {
 	// warning and the empty-owner refusal are shared by every worker.
 	resumer := startBackgroundLoops(p, svc)
 
-	return &Wiring{Service: svc, Resumer: resumer, client: p.Client}
+	return &Wiring{Service: svc, Resumer: resumer, client: p.Client, dispatcher: dispatcher}
 }
 
 // newControlIPCFactory builds the per-agent local-IPC factory backing the

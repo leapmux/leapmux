@@ -122,8 +122,14 @@ type Config struct {
 	EncryptionKeyPath  string        `koanf:"encryption_key_path"`
 	Storage            StorageConfig `koanf:"storage"`
 	SoloMode           bool
-	DevMode            bool              // Dev mode: non-solo but with auto-bootstrapped admin
-	Extras             map[string]string // Extra flag values not in the hub Config struct
+	// RuntimeLeaseWait is how long AcquireLease retries while another Hub
+	// holds the singleton runtime lease. Zero means one attempt. It carries no
+	// koanf tag on purpose: no flag or file sets it -- solo.Start fills it
+	// from its own predecessor wait, and `leapmux hub` leaves it at zero,
+	// because on a shared database a second Hub is a real misconfiguration.
+	RuntimeLeaseWait time.Duration
+	DevMode          bool              // Dev mode: non-solo but with auto-bootstrapped admin
+	Extras           map[string]string // Extra flag values not in the hub Config struct
 }
 
 // StorageType identifies a storage backend.

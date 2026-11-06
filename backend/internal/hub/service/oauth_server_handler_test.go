@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
@@ -85,7 +87,7 @@ func TestNewOAuthServerHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {
-		service.NewOAuthServerHandler(service.OAuthServerDeps{HubURL: func() string { return "" }})
+		newOAuthServerHandler(service.OAuthServerDeps{HubURL: func() string { return "" }})
 	})
 }
 
@@ -170,7 +172,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
-	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{
 		Store:     st,
 		Validator: tv,
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer),
@@ -479,16 +481,8 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 	// EXACTLY ONE credential row was ever created from the one code, counted
 	// with revoked rows included.
 	//
-	// Whether it SURVIVES depends on the interleaving, and both outcomes are
-	// correct. If the loser reaches the endpoint before the winner commits, it
-	// finds the code still active and its own consume matches no row: a plain
-	// refusal. If it arrives after, the code is gone and RFC 6749 section 4.1.2
-	// applies -- a code used twice means it leaked, so the credential the first
-	// exchange minted is revoked. Asserting a LIVE token here made the test
-	// depend on which of the two happened.
-	//
-	// TestAPIAuth_LocalRedirect_RejectsCodeReplay covers the sequential replay,
-	// where the revocation is the whole subject and is deterministic.
+	// Sequential and concurrent valid reuse both revoke the winning credential.
+	// The total includes revoked rows and therefore still proves single issuance.
 	after, err := env.store.OAuthClients().CountTokens(context.Background(), oauthapp.ControlCLIClientID)
 	require.NoError(t, err)
 	assert.Equal(t, before+1, after, "one code mints one credential, whoever wins the race")
@@ -797,6 +791,59 @@ func TestAPIAuth_Activate_RejectsUnknownCode(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, r.StatusCode)
 }
 
+// The refresh flight outlives its request, because the leader rotates a
+// single-use token for every waiter. It must not outlive the Hub, and a flight
+// that the end of the Hub stopped must leave the token usable for the next Hub.
+func TestAPIAuth_Refresh_FlightFollowsTheHubsLifetime(t *testing.T) {
+	t.Parallel()
+
+	env := setupAPIAuth(t)
+	tokenID, currentRefresh := seedRefreshableToken(t, env)
+	servingCtx, endHub := context.WithCancel(context.Background())
+	endHub()
+	mux := http.NewServeMux()
+	newOAuthServerHandler(service.OAuthServerDeps{
+		Store:      env.store,
+		Validator:  env.validator,
+		Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
+		HubURL:     func() string { return env.server.URL },
+		ServingCtx: servingCtx,
+	}).RegisterRoutes(mux)
+	form := url.Values{
+		"grant_type":    {service.GrantTypeRefreshToken},
+		"client_id":     {oauthapp.ControlCLIClientID},
+		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	require.NotEqual(t, http.StatusOK, rec.Code, "a flight on an ended hub must not rotate the token")
+	resp, err := http.PostForm(env.server.URL+"/oauth/token", form)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the stopped flight must leave the refresh token valid")
+}
+
+// Without these two, detached work reads a closed store and a notice is lost at
+// an exit, and nothing fails until a shutdown. So the constructor refuses at once.
+func TestNewOAuthServerHandlerRequiresItsShutdownDependencies(t *testing.T) {
+	t.Parallel()
+	lifecycle := auth.NewCredentialLifecycleEffects(nil, nil, nil)
+
+	assert.PanicsWithValue(t, "OAuth server requires the Hub's serving context", func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
+	})
+	assert.PanicsWithValue(t, "OAuth server requires credential notices", func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background()})
+	})
+	assert.NotPanics(t, func() {
+		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background(), Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
+	})
+}
+
 func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 	t.Parallel()
 
@@ -804,17 +851,7 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 
 	// Mint an api_token directly so we don't have to traverse the full
 	// consent flow for every refresh test.
-	tokenID := id.Generate()
-	currentRefresh := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
-		RefreshHash:      env.validator.HashSecret(currentRefresh),
-	}))
+	tokenID, currentRefresh := seedRefreshableToken(t, env)
 
 	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -860,20 +897,10 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	currentRefresh := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
-		RefreshHash:      env.validator.HashSecret(currentRefresh),
-	}))
+	tokenID, currentRefresh := seedRefreshableToken(t, env)
 
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
 		"client_id":     {oauthapp.ControlCLIClientID},
@@ -1013,7 +1040,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	t.Cleanup(otherServer.Close)
 	otherValidator, err := auth.NewTokenValidator(env.store, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
 
 	retry, err := http.PostForm(otherServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1034,17 +1061,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	currentRefresh := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(auth.MintAccessSecret()),
-		RefreshHash:      env.validator.HashSecret(currentRefresh),
-	}))
+	tokenID, currentRefresh := seedRefreshableToken(t, env)
 	wrapped := apiTokenOverrideStore{
 		Store: env.store,
 		api: apiRotateTokens{
@@ -1057,7 +1074,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1097,7 +1114,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1145,7 +1162,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1216,17 +1233,7 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(secret),
-	}))
-	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	bearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
 	// Warm the bearer cache by validating once.
 	_, err := env.validator.ValidateBearer(context.Background(), bearer)
 	require.NoError(t, err)
@@ -1399,7 +1406,7 @@ func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
@@ -1434,7 +1441,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		users: getByIDFailUsers{UserStore: env.store.Users()},
 	}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50}})
 	require.NoError(t, err)
@@ -1478,7 +1485,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 
 	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1520,7 +1527,7 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1546,7 +1553,7 @@ func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1577,7 +1584,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1624,7 +1631,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1722,7 +1729,7 @@ func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {
 		auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()),
@@ -1741,17 +1748,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(secret),
-	}))
-	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	bearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -1760,7 +1757,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 		Store: env.store,
 		api:   apiRevokeFailTokens{APITokenStore: env.store.APITokens()},
 	}
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{
 		"token":     {bearer},
@@ -1783,17 +1780,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(secret),
-	}))
-	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	bearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
 
 	wrapped := apiTokenOverrideStore{
 		Store: env.store,
@@ -1808,7 +1795,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
@@ -1900,17 +1887,7 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 	env := setupAPIAuth(t)
 
 	// Real api_token row with a known good secret.
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(secret),
-	}))
-	goodBearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	goodBearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
 	// Warm the cache so we can later assert that nothing evicted it.
 	_, err := env.validator.ValidateBearer(context.Background(), goodBearer)
 	require.NoError(t, err)
@@ -2054,17 +2031,7 @@ func TestAPIAuth_Revoke_AlreadyRevokedIsIdempotent(t *testing.T) {
 
 	env := setupAPIAuth(t)
 
-	tokenID := id.Generate()
-	secret := auth.MintAccessSecret()
-	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
-		ID:               tokenID,
-		UserID:           userid.MustNew(env.userID),
-		ClientID:         oauthapp.ControlCLIClientID,
-		InstallationName: "test",
-		GrantedScopes:    authscope.NonAdminGrant().String(),
-		SecretHash:       env.validator.HashSecret(secret),
-	}))
-	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	bearer, _ := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
 
 	// First revoke: 200, row becomes revoked.
 	resp, err := http.PostForm(env.server.URL+"/oauth/revoke", url.Values{
@@ -2235,7 +2202,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	closer := &recordingBearerCloser{}
-	service.NewOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
+	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
 		RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
@@ -2285,7 +2252,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{
 		Store:     wrapped,
 		Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2379,7 +2346,7 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 				},
 			}
 			mux := http.NewServeMux()
-			h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{
 				Store:     wrapped,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2634,7 +2601,7 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	limiter := ratelimit.NewManager(set)
 
 	mux := http.NewServeMux()
-	service.NewOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{
 		Store: env.store, Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
 		HubURL:    func() string { return env.server.URL },
@@ -2660,4 +2627,308 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(second.Body).Decode(&body))
 	assert.Equal(t, "slow_down", body["error"])
+}
+
+// markMintedSpyStore observes the context of the transactional replay-link write.
+type markMintedSpyStore struct {
+	store.Store
+	contextErrs chan error
+}
+
+func (s markMintedSpyStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return markMintedSpyCodes{OAuthAuthorizationCodeStore: s.Store.OAuthAuthorizationCodes(), contextErrs: s.contextErrs}
+}
+
+func (s markMintedSpyStore) RunInUserAuthTransaction(ctx context.Context, uid userid.UserID, fn func(store.Store) error) error {
+	return s.Store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		return fn(markMintedSpyStore{Store: tx, contextErrs: s.contextErrs})
+	})
+}
+
+type markMintedSpyCodes struct {
+	store.OAuthAuthorizationCodeStore
+	contextErrs chan error
+}
+
+func (c markMintedSpyCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+	c.contextErrs <- ctx.Err()
+	return c.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+}
+
+// issueLocalRedirectCode runs the consent that yields a one-shot code for the
+// control CLI's local redirect.
+func issueLocalRedirectCode(t *testing.T, env *apiAuthEnv) (code, verifier string) {
+	t.Helper()
+	cookie := env.elevatedAdminCookie(t)
+	verifier, challenge := pkceVerifierAndChallenge()
+	authClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	form := url.Values{
+		"client_id":             {oauthapp.ControlCLIClientID},
+		"response_type":         {"code"},
+		"code_challenge_method": {"S256"},
+		"redirect_uri":          {"http://127.0.0.1:54321/callback"},
+		"state":                 {id.Generate()},
+		"code_challenge":        {challenge},
+		"decision":              {"allow"},
+	}
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := authClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	code = loc.Query().Get("code")
+	require.NotEmpty(t, code)
+	return code, verifier
+}
+
+// The replay link shares the request and the transaction with issuance. A Hub
+// lifetime context cannot make a committed token visible before its replay link.
+func TestAPIAuth_CodeExchange_MarkMintedSharesTheIssuanceTransaction(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		hubEnded bool
+		want     error
+	}{
+		{name: "a live hub lets the link land"},
+		{name: "an ended hub does not replace the request context", hubEnded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := setupAPIAuth(t)
+			code, verifier := issueLocalRedirectCode(t, env)
+			servingCtx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			if tc.hubEnded {
+				cancel()
+			}
+			contextErrs := make(chan error, 4)
+			mux := http.NewServeMux()
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			newOAuthServerHandler(service.OAuthServerDeps{
+				Store:      markMintedSpyStore{Store: env.store, contextErrs: contextErrs},
+				Validator:  env.validator,
+				Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
+				HubURL:     func() string { return env.server.URL },
+				ServingCtx: servingCtx,
+			}).RegisterRoutes(mux)
+
+			resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
+				"grant_type":    {"authorization_code"},
+				"client_id":     {oauthapp.ControlCLIClientID},
+				"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+				"code":          {code},
+				"code_verifier": {verifier},
+			})
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			require.Equal(t, http.StatusOK, resp.StatusCode, "the mint itself runs on the request's context")
+
+			// Every transaction callback uses the same live request context.
+			assert.ErrorIs(t, <-contextErrs, tc.want)
+		})
+	}
+}
+
+func seedRefreshableToken(t *testing.T, env *apiAuthEnv) (tokenID, refreshSecret string) {
+	t.Helper()
+	tokenID = id.Generate()
+	refreshSecret = auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(t.Context(), store.CreateAPITokenParams{
+		ID: tokenID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		InstallationName: "test", GrantedScopes: authscope.NonAdminGrant().String(),
+		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(refreshSecret),
+	}))
+	return tokenID, refreshSecret
+}
+
+// authorizationTransactionStore keeps hooks outside the real transaction and
+// rebinds code-store faults to every transaction callback, including DoubleRunStore.
+type authorizationTransactionStore struct {
+	store.Store
+	before     func()
+	linkErr    error
+	beforeLink func()
+}
+
+func (s authorizationTransactionStore) RunInUserAuthTransaction(ctx context.Context, uid userid.UserID, fn func(store.Store) error) error {
+	if s.before != nil {
+		s.before()
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		return fn(authorizationTransactionStore{Store: tx, linkErr: s.linkErr, beforeLink: s.beforeLink})
+	})
+}
+
+func (s authorizationTransactionStore) OAuthAuthorizationCodes() store.OAuthAuthorizationCodeStore {
+	return authorizationLinkCodes{OAuthAuthorizationCodeStore: s.Store.OAuthAuthorizationCodes(), linkErr: s.linkErr, beforeLink: s.beforeLink}
+}
+
+type authorizationLinkCodes struct {
+	store.OAuthAuthorizationCodeStore
+	linkErr    error
+	beforeLink func()
+}
+
+func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code, tokenID string) error {
+	if s.beforeLink != nil {
+		s.beforeLink()
+	}
+	if s.linkErr != nil {
+		return s.linkErr
+	}
+	return s.OAuthAuthorizationCodeStore.MarkMinted(ctx, code, tokenID)
+}
+
+func codeExchangeServer(t *testing.T, env *apiAuthEnv, st store.Store) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	newOAuthServerHandler(service.OAuthServerDeps{
+		Store: st, Validator: env.validator,
+		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
+		HubURL:    func() string { return env.server.URL },
+	}).RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func exchangeAuthorizationCode(serverURL, code, verifier string) (*http.Response, error) {
+	return http.PostForm(serverURL+"/oauth/token", url.Values{
+		"grant_type": {service.GrantTypeAuthorizationCode}, "client_id": {oauthapp.ControlCLIClientID},
+		"redirect_uri": {"http://127.0.0.1:54321/callback"}, "code": {code}, "code_verifier": {verifier},
+	})
+}
+
+func TestAPIAuth_CodeLinkFailureRollsBackIssuance(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	code, verifier := issueLocalRedirectCode(t, env)
+	before, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
+	require.NoError(t, err)
+	srv := codeExchangeServer(t, env, authorizationTransactionStore{Store: env.store, linkErr: errors.New("injected link failure")})
+	resp, err := exchangeAuthorizationCode(srv.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	after, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "failed linking must not leave a credential")
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), code, time.Now())
+	require.NoError(t, err, "failed linking must leave the code redeemable")
+	retry, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = retry.Body.Close() }()
+	require.Equal(t, http.StatusOK, retry.StatusCode)
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(retry.Body).Decode(&token))
+	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
+	require.NoError(t, err)
+	assert.Equal(t, token.TokenID, row.MintedTokenID)
+}
+
+func TestAPIAuth_ConcurrentValidatedReuseRevokesTheWinner(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	code, verifier := issueLocalRedirectCode(t, env)
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	var parked atomic.Bool
+	srv := codeExchangeServer(t, env, authorizationTransactionStore{Store: env.store, before: func() {
+		if parked.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}})
+	type exchangeResult struct {
+		resp *http.Response
+		err  error
+	}
+	loser := make(chan exchangeResult, 1)
+	go func() {
+		resp, err := exchangeAuthorizationCode(srv.URL, code, verifier)
+		loser <- exchangeResult{resp, err}
+	}()
+	completed := false
+	defer func() {
+		releaseOnce()
+		if completed {
+			return
+		}
+		select {
+		case result := <-loser:
+			if result.resp != nil {
+				_ = result.resp.Body.Close()
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("parked code exchange did not finish")
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("exchange did not reach transaction admission")
+	}
+	winner, err := exchangeAuthorizationCode(srv.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = winner.Body.Close() }()
+	require.Equal(t, http.StatusOK, winner.StatusCode)
+	var token struct {
+		TokenID string `json:"token_id"`
+	}
+	require.NoError(t, json.NewDecoder(winner.Body).Decode(&token))
+	row, err := env.store.OAuthAuthorizationCodes().Get(t.Context(), code)
+	require.NoError(t, err)
+	require.Equal(t, token.TokenID, row.MintedTokenID)
+	releaseOnce()
+	result := <-loser
+	completed = true
+	require.NoError(t, result.err)
+	defer func() { _ = result.resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, result.resp.StatusCode)
+	stored, err := env.store.APITokens().GetByID(t.Context(), token.TokenID)
+	require.NoError(t, err)
+	assert.NotNil(t, stored.RevokedAt, "validated concurrent reuse must revoke the winner")
+	assert.True(t, env.closer.closed(token.TokenID))
+}
+
+func TestAPIAuth_RequestCancellationDuringLinkRollsBackIssuance(t *testing.T) {
+	t.Parallel()
+	env := setupAPIAuth(t)
+	code, verifier := issueLocalRedirectCode(t, env)
+	before, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	newOAuthServerHandler(service.OAuthServerDeps{
+		Store: authorizationTransactionStore{Store: env.store, beforeLink: cancel}, Validator: env.validator,
+		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil), HubURL: func() string { return env.server.URL },
+	}).RegisterRoutes(mux)
+	form := url.Values{"grant_type": {service.GrantTypeAuthorizationCode}, "client_id": {oauthapp.ControlCLIClientID}, "redirect_uri": {"http://127.0.0.1:54321/callback"}, "code": {code}, "code_verifier": {verifier}}
+	request := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode())).WithContext(ctx)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	assert.Equal(t, http.StatusInternalServerError, response.Code)
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+	after, err := env.store.OAuthClients().CountTokens(t.Context(), oauthapp.ControlCLIClientID)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	_, err = env.store.OAuthAuthorizationCodes().GetActive(t.Context(), code, time.Now())
+	require.NoError(t, err, "request cancellation must roll back consumption")
+	retry, err := exchangeAuthorizationCode(env.server.URL, code, verifier)
+	require.NoError(t, err)
+	defer func() { _ = retry.Body.Close() }()
+	assert.Equal(t, http.StatusOK, retry.StatusCode)
 }

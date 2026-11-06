@@ -18,7 +18,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -78,7 +77,7 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 	assert.Equal(t, []byte(`{"type":"assistant","text":"The answer contains HALIBUT."}`), rows[1].Content)
 }
 
-func transcriptResumeService(t *testing.T) (*Service, *channel.Dispatcher) {
+func transcriptResumeService(t *testing.T) (*Service, testRPCDispatcher) {
 	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
 	t.Cleanup(func() { drainAllInFlight(svc) })
@@ -103,7 +102,7 @@ func seedTranscriptSource(t *testing.T, svc *Service, id, workingDir, sessionID 
 	}
 }
 
-func openTranscriptResumeAgent(t *testing.T, dispatcher *channel.Dispatcher, workingDir, sessionID string, provider leapmuxv1.AgentProvider) string {
+func openTranscriptResumeAgent(t *testing.T, dispatcher testRPCDispatcher, workingDir, sessionID string, provider leapmuxv1.AgentProvider) string {
 	t.Helper()
 	writer := newTestWriter()
 	dispatch(dispatcher, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{

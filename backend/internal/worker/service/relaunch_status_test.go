@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -26,7 +25,7 @@ import (
 type processChangeRig struct {
 	t        *testing.T
 	svc      *Service
-	d        *channel.Dispatcher
+	d        testRPCDispatcher
 	id       string
 	provider leapmuxv1.AgentProvider
 	// failLaunch makes the launch return an error after it reads the status.

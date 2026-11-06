@@ -134,8 +134,11 @@ func (a *Agent) Wait() error {
 
 // awaitEventStream waits for the stream goroutine to return, so that no event
 // reaches a handler after finishOutput. The goroutine returns as soon as its
-// connection closes, and the wait is limited all the same. An agent whose start
-// failed before the stream opened has no goroutine to wait for.
+// connection closes; the limited window logs the straggler, and the join then
+// continues with no limit: an event dispatched after this method gave up would
+// write past the finishOutput below and past the caller's teardown. StopAll's
+// own deadline is what limits the whole shutdown. An agent whose start failed
+// before the stream opened has no goroutine to wait for.
 func (a *Agent) awaitEventStream() {
 	if a.streamCancel == nil {
 		return
@@ -144,9 +147,12 @@ func (a *Agent) awaitEventStream() {
 	defer timer.Stop(mimoStreamStopTimerTag)
 	select {
 	case <-a.streamDone:
+		return
 	case <-timer.C:
-		slog.Warn("mimo event stream did not end", "agent_id", a.AgentID())
+		slog.Warn("mimo event stream did not end; joining it anyway",
+			"agent_id", a.AgentID())
 	}
+	<-a.streamDone
 }
 
 // finishOutput persists unfinished native output with completion:

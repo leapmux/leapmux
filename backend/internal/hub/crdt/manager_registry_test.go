@@ -2,10 +2,14 @@ package crdt_test
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -292,4 +296,258 @@ func TestRegistry_BroadcastWorkersChanged_ReachesEveryWorkerReaderOfTheUser(t *t
 	assert.Equal(t, 1, workersChangedCount(oneWorkspace.snapshot()))
 	assert.Zero(t, workersChangedCount(nonReader.snapshot()), "a subscriber that cannot read workers hears nothing")
 	assert.Zero(t, workersChangedCount(otherUser.snapshot()), "another user's subscriber hears nothing")
+}
+
+// --- Shutdown: concurrent, limited by a deadline, and refused after the latch ---
+
+// registryUserID gives the fixture's user IDs.
+func registryUserID(n int) userid.UserID { return userid.MustNew(fmt.Sprintf("user-%d", n)) }
+
+// stopped reports whether a manager's goroutine has ended -- the answer of a
+// manager whose Stop ran, which is what "stopped before the deadline" means
+// here. A live manager answers a batch before its context expires; a stopped
+// one leaves the context to run out.
+func stopped(t *testing.T, m *crdt.Manager) bool {
+	t.Helper()
+	submitCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := m.Submit(submitCtx, crdt.SubmitInput{})
+	return err == context.DeadlineExceeded
+}
+
+// One stalled manager must not leave the others running past the deadline:
+// the stops run one goroutine per manager, so every healthy manager is
+// stopped when Shutdown returns even though the stalled one held the budget.
+//
+// "Stopped" is read through Submit: a live manager answers a batch before its
+// context expires; a stopped one leaves the context to run out.
+// stallManager parks m's goroutine inside a test seed until the test ends, so
+// Stop on m waits no matter when the sweep of Shutdown reaches it. It returns
+// only once the goroutine is parked: a Shutdown that overtook the seed would
+// stop a healthy manager, and the test would prove nothing.
+func stallManager(t *testing.T, m *crdt.Manager) {
+	t.Helper()
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) {
+		close(entered)
+		<-gate
+	})
+	t.Cleanup(func() { close(gate) })
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the manager goroutine never ran the seed")
+	}
+}
+
+func TestRegistryShutdownStopsManagersConcurrently(t *testing.T) {
+	journal := newFakeJournal()
+	var managers sync.Map
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(userID, journal, allowAll{}, nil, time.Now)
+		managers.Store(userID.String(), mgr)
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(5 * time.Second) })
+
+	const healthy = 16
+	handles := make([]*crdt.Manager, 0, healthy+1)
+	for i := range healthy {
+		m, err := registry.Get(context.Background(), registryUserID(i).String())
+		require.NoError(t, err)
+		handles = append(handles, m)
+	}
+
+	stalled, err := registry.Get(context.Background(), registryUserID(healthy).String())
+	require.NoError(t, err)
+	handles = append(handles, stalled)
+	stallManager(t, stalled)
+
+	registry.Shutdown(2 * time.Second)
+
+	for i, m := range handles[:healthy] {
+		require.True(t, stopped(t, m),
+			"healthy manager %d must be stopped when Shutdown returned", i)
+	}
+}
+
+// A manager the janitor is stopping -- parked inside its own goroutine, and
+// evicted by a sweep for being idle -- must not spend Shutdown's whole budget
+// in the janitor wait AND the stops: the janitor wait has a limit, and
+// Shutdown returns at the deadline.
+func TestRegistryShutdownHonoursItsDeadlineForTheJanitor(t *testing.T) {
+	registry := crdt.NewRegistryWithWedgedJanitorForTest(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+
+	done := make(chan struct{})
+	go func() {
+		registry.Shutdown(200 * time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return at its deadline")
+	}
+}
+
+// The janitor's wait shares the budget with the manager stops, so the stops
+// must not queue behind it: a wedged janitor would spend the whole budget, and
+// every manager would still be running when the caller closes the store.
+func TestRegistryShutdownStopsManagersWhileTheJanitorIsWedged(t *testing.T) {
+	registry := crdt.NewRegistryWithWedgedJanitorForTest(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	m, err := registry.Get(context.Background(), registryUserID(1).String())
+	require.NoError(t, err)
+
+	registry.Shutdown(500 * time.Millisecond)
+
+	require.True(t, stopped(t, m), "a healthy manager must stop while the janitor is wedged")
+}
+
+// A manager that outlives the deadline runs past the caller's store close, so
+// the shutdown must report how many did.
+func TestRegistryShutdownWarnsOfManagersStillRunning(t *testing.T) {
+	logs := &testutil.LogBuffer{}
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, slog.New(slog.NewTextHandler(logs, nil)))
+
+	stalled, err := registry.Get(context.Background(), registryUserID(1).String())
+	require.NoError(t, err)
+	stallManager(t, stalled)
+
+	registry.Shutdown(100 * time.Millisecond)
+
+	assert.Contains(t, logs.String(), "running=1", "the stalled manager must be counted")
+}
+
+func TestRegistryGetRefusedAfterShutdown(t *testing.T) {
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		return crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now), nil
+	}, nil)
+	registry.Shutdown(time.Second)
+
+	_, err := registry.Get(context.Background(), registryUserID(1).String())
+
+	assert.ErrorIs(t, err, crdt.ErrRegistryClosed,
+		"a Get after Shutdown must be refused, not lazily create a manager nothing stops")
+}
+
+// A Get whose factory raced Shutdown must discard the manager it built, not
+// store it: the sweep already snapshotted, so a stored manager would run past
+// the store close with nothing stopping it.
+func TestRegistryGetDuringShutdownDiscardsTheManager(t *testing.T) {
+	release := make(chan struct{})
+	releaseFactory := sync.OnceFunc(func() { close(release) })
+	entered := make(chan *crdt.Manager, 1)
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now, crdt.WithPresenceClearGrace(time.Hour))
+		m.PreparePendingPresenceClearForTest()
+		entered <- m
+		<-release
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
+	var getErr error
+	getDone := make(chan struct{})
+	go func() {
+		defer close(getDone)
+		_, getErr = registry.Get(t.Context(), registryUserID(99).String())
+	}()
+	var created *crdt.Manager
+	t.Cleanup(func() {
+		releaseFactory()
+		<-getDone
+		registry.Shutdown(time.Second)
+		if created != nil {
+			created.Discard()
+		}
+	})
+	select {
+	case created = <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Get never entered its factory")
+	}
+	require.Equal(t, 1, created.PendingPresenceClearsForTest())
+	registry.Shutdown(time.Second)
+	releaseFactory()
+	<-getDone
+	assert.ErrorIs(t, getErr, crdt.ErrRegistryClosed, "Get must not install a manager after shutdown")
+	require.Eventually(t, func() bool { return created.PendingPresenceClearsForTest() == 0 }, 30*time.Second, time.Millisecond,
+		"the rejected manager must complete its own presence teardown")
+}
+
+// Concurrent factories build distinct managers for one user. Every Get returns
+// the winner, and each unstarted loser must discard its pending presence timer.
+func TestRegistryGetRaceDiscardsTheDuplicate(t *testing.T) {
+	const n = 8
+	release := make(chan struct{})
+	releaseFactories := sync.OnceFunc(func() { close(release) })
+	entered := make(chan *crdt.Manager, n)
+	registry := crdt.NewRegistry(func(_ context.Context, userID userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(userID, newFakeJournal(), allowAll{}, nil, time.Now, crdt.WithPresenceClearGrace(time.Hour))
+		m.PreparePendingPresenceClearForTest()
+		entered <- m
+		<-release
+		return m, nil
+	}, nil, crdt.WithManagerIdleTTL(0))
+	type result struct {
+		manager *crdt.Manager
+		err     error
+	}
+	results := make(chan result, n)
+	var racers sync.WaitGroup
+	for range n {
+		racers.Go(func() {
+			m, err := registry.Get(t.Context(), registryUserID(7).String())
+			results <- result{m, err}
+		})
+	}
+	created := make([]*crdt.Manager, 0, n)
+	t.Cleanup(func() {
+		releaseFactories()
+		racers.Wait()
+		registry.Shutdown(5 * time.Second)
+		for _, m := range created {
+			m.Discard()
+		}
+	})
+	for range n {
+		select {
+		case m := <-entered:
+			require.Equal(t, 1, m.PendingPresenceClearsForTest())
+			created = append(created, m)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the concurrent Gets did not all enter distinct factories")
+		}
+	}
+	releaseFactories()
+	var winner *crdt.Manager
+	for range n {
+		select {
+		case got := <-results:
+			require.NoError(t, got.err)
+			require.NotNil(t, got.manager)
+			if winner == nil {
+				winner = got.manager
+			}
+			assert.Same(t, winner, got.manager)
+		case <-time.After(30 * time.Second):
+			t.Fatal("Get did not return after its factory was released")
+		}
+	}
+	racers.Wait()
+	losers := 0
+	for _, m := range created {
+		if m == winner {
+			continue
+		}
+		losers++
+		require.Eventually(t, func() bool { return m.PendingPresenceClearsForTest() == 0 }, 30*time.Second, time.Millisecond,
+			"each unstarted loser must complete its own presence teardown")
+	}
+	assert.Equal(t, n-1, losers)
 }

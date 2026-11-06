@@ -690,13 +690,12 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			h := service.NewOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{
 				Store:     env.store,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
 				HubURL:    func() string { return srv.URL },
-				Mail:      sender,
-				Renderer:  mail.Renderer{BaseURL: func() string { return srv.URL }},
+				Notices:   service.NewCredentialNotices(sender, mail.Renderer{BaseURL: func() string { return srv.URL }}),
 			})
 			h.RegisterRoutes(mux)
 

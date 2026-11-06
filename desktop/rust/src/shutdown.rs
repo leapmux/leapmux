@@ -3,14 +3,23 @@ use std::time::Duration;
 
 use crate::proto;
 
-const SHUTDOWN_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// The one sidecar shutdown limit of the shell, for a quit and for a dev
+/// reclaim alike.
+///
+/// A slow but orderly quit needs the full sidecar budget -- an agent stop can
+/// spend seconds on capture, grace and write timeouts -- so five seconds used
+/// to give up on every quit route while the sidecar was still draining. An
+/// overrun is safe now: the sidecar survives the shell's exit and finishes
+/// releasing the lease on its own, so waiting longer costs a visible window,
+/// not a lost lease.
+pub(crate) const SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_PAUSE: Duration = Duration::from_millis(250);
 
 // request_cleanup waits for the sidecar's cooperative shutdown request.
 pub(crate) async fn request_cleanup(
     request: impl Future<Output = Result<proto::Response, String>>,
 ) -> Result<(), String> {
-    let result = match tokio::time::timeout(SHUTDOWN_REPLY_TIMEOUT, request).await {
+    let result = match tokio::time::timeout(SIDECAR_SHUTDOWN_TIMEOUT, request).await {
         Ok(Ok(response)) => crate::lifecycle_from_response(response).and_then(|(_, cleanup_errors)| {
             if cleanup_errors.is_empty() {
                 Ok(())
@@ -22,10 +31,10 @@ pub(crate) async fn request_cleanup(
             }
         }),
         Ok(Err(error)) => Err(format!("The desktop shutdown request failed: {error}")),
-        Err(_) => Err(
-            "The desktop shutdown reply timed out after five seconds. Native cleanup completion is unknown."
-                .to_string(),
-        ),
+        Err(_) => Err(format!(
+            "The desktop shutdown reply timed out after {} seconds. Native cleanup completion is unknown.",
+            SIDECAR_SHUTDOWN_TIMEOUT.as_secs()
+        )),
     };
     tokio::time::sleep(SHUTDOWN_PAUSE).await;
     result
@@ -126,6 +135,6 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.contains("timed out"));
         assert!(error.contains("completion is unknown"));
-        assert_eq!(started.elapsed(), SHUTDOWN_REPLY_TIMEOUT + SHUTDOWN_PAUSE);
+        assert_eq!(started.elapsed(), SIDECAR_SHUTDOWN_TIMEOUT + SHUTDOWN_PAUSE);
     }
 }

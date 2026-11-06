@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -46,16 +48,95 @@ var workerSetupPollInterval = 2 * time.Second
 // to finish draining before it stops holding the Hub open for it. See
 // Instance.shutdown for why the Worker goes first at all.
 //
-// Sized against the drain it is waiting on: the Worker's own outbound flush is
-// bounded by hub.ShutdownFlushTimeout (5s), and everything before it --
-// broadcasting the terminal goodbye, stopping the background loops, draining
-// in-flight starts -- is fast on an idle machine and unbounded on a busy one.
-// So this is not a promise the drain fits; it is the point at which a Hub that
-// is trying to exit stops waiting for a Worker that is not coming.
+// Sized against the drain it is waiting on: the Worker's own stops sum to
+// about 8s of agent Stop, 7s of terminal hang-up, 6s of control-IPC retire
+// and 5s of ShutdownFlushTimeout -- 26s with no stalled writer -- so 30s is
+// that sum plus a margin. Everything before the flush is fast on an idle
+// machine and has no limit on a busy one. So this is not a promise the drain
+// fits; it is the point at which a Hub that is trying to exit stops waiting
+// for a Worker that is not coming.
 //
 // A var so tests can shorten it, matching operationDrainTimeout and
 // relayDrainTimeout in the desktop sidecar.
-var workerDrainTimeout = 5 * time.Second
+var workerDrainTimeout = 30 * time.Second
+
+// previousHubWait is how long a solo launch waits out a predecessor's runtime
+// lease: the lease's own duration plus a margin for the release that lands
+// after it. A relaunch during that window would otherwise fail with
+// "another Hub is already running" on a lease whose holder is already gone.
+var previousHubWait = revocationwatcher.DefaultLeaseDuration + 5*time.Second
+
+// previousHubProbeTimeout limits ONE dial of the predecessor probe: only a
+// limited dial can time out, and a busy Windows named pipe retries the
+// connect until its context ends, so an unlimited dial would block past the
+// probe's whole deadline.
+const previousHubProbeTimeout = 100 * time.Millisecond
+
+// addressHeld makes ONE dial and answers whether a Hub still holds the
+// address:
+//   - A successful dial means a live listener.
+//   - A dial that times out means a predecessor holds the address but cannot
+//     answer while it drains.
+//   - Any other failure means the address is free.
+func addressHeld(ctx context.Context, dial func(context.Context) (net.Conn, error)) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, previousHubProbeTimeout)
+	defer cancel()
+	conn, err := dial(probeCtx)
+	if err == nil {
+		_ = conn.Close()
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// waitForPreviousHub dials every local URL of the previous hub, every 250ms,
+// until none of them answers or the deadline passes. At the deadline it
+// returns nil -- NewServer then reports the existing error, which is the one
+// verdict this probe is allowed to leave to anyone else. It checks ctx after
+// each pass, because addressHeld reads a cancelled dial as free, and returns
+// that error on cancel.
+func waitForPreviousHub(ctx context.Context, urls []string, deadline time.Time) error {
+	dials := make([]func(context.Context) (net.Conn, error), 0, len(urls))
+	for _, url := range urls {
+		dial, err := locallisten.Dialer(url)
+		if err != nil {
+			return fmt.Errorf("dial %s: %w", url, err)
+		}
+		dials = append(dials, dial)
+	}
+	loggedWaiting := false
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		held := false
+		for _, dial := range dials {
+			if addressHeld(ctx, dial) {
+				held = true
+				break
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !held {
+			return nil
+		}
+		if !loggedWaiting {
+			loggedWaiting = true
+			slog.Info("waiting for the previous hub to release its address and lease",
+				"deadline", deadline.Format(time.RFC3339))
+		}
+		if !time.Now().Add(250 * time.Millisecond).Before(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			timer.Reset(250 * time.Millisecond)
+		}
+	}
+}
 
 // deps supplies startup and Worker lifecycle collaborators. They are PER-CALL
 // rather than package vars so a test's substitute cannot outlive its
@@ -74,9 +155,6 @@ var workerDrainTimeout = 5 * time.Second
 //     Hub died while serving" case and the gate that stops a startup failure being
 //     reported twice had no coverage, and two tests aimed at them were passing on
 //     a NewServer failure instead.
-//   - waitReady: a socket connection can succeed before the Serve goroutine
-//     publishes its exit. A controlled probe orders readiness after that exit
-//     when a test exercises the startup failure verdict.
 //   - bringUpWorker: every real way to fail bring-up -- no admin user yet, an
 //     unreadable state file, a store error -- fails AT ONCE, at the first
 //     statement that touches the database or the disk, so nothing can hold Start
@@ -92,7 +170,6 @@ var workerDrainTimeout = 5 * time.Second
 // the gate is exercised against the Worker goroutine production actually launches.
 type deps struct {
 	serveHub      func(ctx context.Context, s *hub.Server) error
-	waitReady     func(ctx context.Context, listenURL string) error
 	bringUpWorker func(ctx context.Context, p workerBringUp) error
 	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
 }
@@ -100,7 +177,6 @@ type deps struct {
 func defaultDeps() deps {
 	return deps{
 		serveHub:      func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) },
-		waitReady:     locallisten.WaitReady,
 		bringUpWorker: bringUpLocalWorker,
 		runWorker:     worker.Run,
 	}
@@ -509,6 +585,36 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
+	// Resolved BEFORE NewServer, so its failure paths cannot leak the server:
+	// a LocalListenURLs error used to return after the bind, stranding both
+	// listeners.
+	localURLs, err := hubCfg.LocalListenURLs()
+	if err != nil {
+		return nil, fmt.Errorf("resolve local listen URL: %w", err)
+	}
+	if len(localURLs) == 0 {
+		// Unreachable: ListenEntries guarantees a local IPC address. The
+		// scalar below needs a list to take it from, and a panic in Start
+		// would hide the configuration at fault.
+		return nil, errors.New("hub bind set holds no local IPC address")
+	}
+	listenURL := localURLs[0]
+
+	// Wait out a predecessor's lease and sockets BEFORE NewServer binds: a
+	// relaunch during a predecessor's drain would otherwise fail at Listen
+	// with "already in use", and one right after a crash would fail with
+	// "another Hub is already running" for the whole lease TTL. Each dial is
+	// limited by previousHubProbeTimeout, because only a limited dial can time
+	// out -- a busy Windows named pipe retries the connect until its context
+	// ends -- and an unlimited one would block past the deadline. At the
+	// deadline this returns nil, and NewServer then reports the existing
+	// error; waitForPreviousHub never invents a verdict of its own.
+	probeDeadline := time.Now().Add(previousHubWait)
+	if err := waitForPreviousHub(ctx, localURLs, probeDeadline); err != nil {
+		return nil, fmt.Errorf("wait for the previous hub: %w", err)
+	}
+	hubCfg.RuntimeLeaseWait = time.Until(probeDeadline)
+
 	server, err := hub.NewServer(hubCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create hub server: %w", err)
@@ -536,22 +642,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		// hub.Server.PrintBannerURL.
 		server.PrintBannerURL()
 	}
-
-	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
-	// Instance.shutdown stays the only place either cancel is ever reached.
-	// Several local listeners may be bound; the first is the one the embedded
-	// worker dials and Instance.LocalListenURL reports. The rest still answer.
-	localURLs, err := hubCfg.LocalListenURLs()
-	if err != nil {
-		return nil, fmt.Errorf("resolve local listen URL: %w", err)
-	}
-	if len(localURLs) == 0 {
-		// Unreachable: ListenEntries guarantees a local IPC address. The
-		// scalar below needs a list to take it from, and a panic in Start
-		// would hide the configuration at fault.
-		return nil, errors.New("hub bind set holds no local IPC address")
-	}
-	listenURL := localURLs[0]
 
 	// Two sibling contexts, both DETACHED from ctx (values kept, cancellation
 	// not), so cancellation reaches the Hub and the Worker in the order
@@ -609,41 +699,22 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		inst.shutdown()
 	}()
 
-	// Wait for Hub's local listener (unix socket or named pipe). The hubDone case
-	// is what keeps a Hub that failed instantly from paying out WaitReady's whole
-	// 5s budget: hub.NewServer has already bound both listeners, so the probe
-	// CONNECTS to a Hub whose Serve has returned and the wait would otherwise
-	// succeed on a corpse.
-	//
-	// The select is a pure wait -- the same division waitSolo draws: both cases
-	// choose WHEN to stop, never WHAT to report. That matters because both can be
-	// ready at once for exactly the reason above, and Go picks between ready cases
-	// arbitrarily; putting the verdict AFTER the select is what makes the pick
-	// irrelevant. readyCh is buffered so the abandoned probe cannot leak on its
-	// send, whichever way it ends: usually at once and on its own, because the
-	// listeners are bound and the dial succeeds for the reason above; otherwise
-	// when cancelHub inside join reaches it, or when WaitReady's own 5s budget
-	// expires.
-	//
-	// The verdict is startupFailure alone, with no "unless hubErr is
-	// context.Canceled" carve-out. That guard dated from when hubCtx was a child of
-	// ctx and a parent cancel hit Serve instantly; hubCtx is detached now, so hubErr
-	// can only be context.Canceled in a microsecond window -- and when the guard did
-	// fire it returned a nil Instance, making hubErr permanently unreachable and
-	// discarding any non-ctx cause joined into it.
-	readyCh := make(chan error, 1)
-	go func() { readyCh <- d.waitReady(hubCtx, listenURL) }()
-	var readyErr error
+	// Wait for the Hub's readiness: the lease held. WaitReady was a bare
+	// connect to a pre-bound socket -- hub.NewServer binds both listeners
+	// before Serve runs, so it could succeed on a corpse -- and it proved
+	// nothing about Serve, which seeds the lease AFTER the bind. LeaseHeld
+	// closes directly after a successful acquire, before Serve accepts, so a
+	// Worker dial that lands in the gap still connects through the socket
+	// backlog. The hubDone case is the pure wait's other case, exactly as
+	// waitSolo draws it: both cases choose WHEN to stop, never WHAT to report.
+	// The verdict below is startupFailure alone.
 	select {
-	case readyErr = <-readyCh:
+	case <-server.LeaseHeld():
 	case <-inst.hubDone:
 		// No error of its own: startupFailure is total once hubDone is closed.
 	}
-	if startErr := inst.startupFailure(ctx, "before the listener became ready"); startErr != nil {
+	if startErr := inst.startupFailure(ctx, "before the Hub held its lease"); startErr != nil {
 		return nil, inst.failStartup(startErr)
-	}
-	if readyErr != nil {
-		return nil, inst.failStartup(fmt.Errorf("wait for hub local listener: %w", readyErr))
 	}
 
 	// In dev mode the first admin may not exist yet; defer worker bringup

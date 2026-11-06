@@ -13,7 +13,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -33,7 +32,7 @@ func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.Mar
 	return seq
 }
 
-func listMarks(t *testing.T, d *channel.Dispatcher, agentID string) *leapmuxv1.ListMessageMarksResponse {
+func listMarks(t *testing.T, d testRPCDispatcher, agentID string) *leapmuxv1.ListMessageMarksResponse {
 	t.Helper()
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceListMessageMarksProcedure, &leapmuxv1.ListMessageMarksRequest{AgentId: agentID}, w)
@@ -154,7 +153,7 @@ func TestListMessageMarks_ClosedAgent_ReturnsEmptyWithPresentRange(t *testing.T)
 }
 
 // TestListMessageMarks_UnknownAgent_Errors asserts an inaccessible/unknown agent id
-// produces an error, not a success response, via requireAccessibleAgent.
+// produces an error, not a success response, via requireAgent.
 func TestListMessageMarks_UnknownAgent_Errors(t *testing.T) {
 	t.Parallel()
 

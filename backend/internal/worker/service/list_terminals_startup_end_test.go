@@ -16,7 +16,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
@@ -30,7 +29,7 @@ import (
 // is built. A state that the call read before git is older than every event that
 // the Worker broadcast during git, and a browser that applied such an event then
 // takes the older reply over it.
-func listTerminalsDuringGit(t *testing.T, d *channel.Dispatcher, terminalID string, change func()) *leapmuxv1.TerminalInfo {
+func listTerminalsDuringGit(t *testing.T, d testRPCDispatcher, terminalID string, change func()) *leapmuxv1.TerminalInfo {
 	t.Helper()
 	gitStarted, gitRelease := installBlockingGit(t)
 	w := newTestWriter()

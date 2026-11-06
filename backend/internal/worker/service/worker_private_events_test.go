@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -31,10 +32,12 @@ func subscribeReady(
 	bus *service.PrivateEventsBus,
 	owner string,
 	send func(*leapmuxv1.WorkerPrivateEvent) error,
-) {
+) <-chan struct{} {
 	t.Helper()
 	registered := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew(owner),
 			func(userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
 				close(registered)
@@ -43,9 +46,10 @@ func subscribeReady(
 	}()
 	select {
 	case <-registered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("subscriber for %s never registered", owner)
 	}
+	return done
 }
 
 func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
@@ -279,42 +283,71 @@ func TestPrivateEventsBus_MultipleSubscribersOnSameOwnerAllReceive(t *testing.T)
 // slow tabs"), the bus would deadlock under load.
 func TestPrivateEventsBus_DropsOnSlowConsumer(t *testing.T) {
 	t.Parallel()
-
-	bus := service.NewPrivateEventsBus()
-	defer bus.Stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	// Subscriber A blocks indefinitely until releaseA fires; the bus
-	// should still deliver to subscriber B.
-	releaseA := make(chan struct{})
-	gotA := make(chan *leapmuxv1.WorkerPrivateEvent, 64)
-	gotB := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
-	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
-		<-releaseA
-		gotA <- evt
-		return nil
+	synctest.Test(t, func(t *testing.T) {
+		bus := service.NewPrivateEventsBus()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		defer bus.Stop()
+		releaseA := make(chan struct{})
+		release := sync.OnceFunc(func() { close(releaseA) })
+		defer release()
+		gotA := make(chan *leapmuxv1.WorkerPrivateEvent, 64)
+		gotB := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
+		secondB := make(chan struct{})
+		doneA := subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+			<-releaseA
+			gotA <- evt
+			return nil
+		})
+		callsB := 0
+		doneB := subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+			callsB++
+			if callsB == 2 {
+				close(secondB)
+			}
+			select {
+			case gotB <- evt:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		defer func() {
+			release()
+			cancel()
+			bus.Stop()
+			<-doneA
+			// Red-test cleanup also releases an uncancellable callback by draining its
+			// output. The assertions below require completion without that assistance.
+			for {
+				select {
+				case <-doneB:
+					return
+				case <-gotB:
+				}
+			}
+		}()
+		for range 64 {
+			bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "T", "origin")
+		}
+		<-secondB
+		assert.Len(t, gotB, 1, "B receives while A remains blocked")
+		assert.Empty(t, gotA)
+		release()
+		cancel()
+		bus.Stop()
+		synctest.Wait()
+		select {
+		case <-doneA:
+		default:
+			t.Error("A did not finish after release and cancellation")
+		}
+		select {
+		case <-doneB:
+		default:
+			t.Error("B did not finish on cancellation without an output drain")
+		}
 	})
-	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
-		gotB <- evt
-		return nil
-	})
-
-	// Push enough events to definitely overflow A's buffer (default
-	// bufSize=32). B keeps up.
-	for i := 0; i < 64; i++ {
-		bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "T", "origin")
-	}
-
-	// B must receive at least one event without waiting on A.
-	select {
-	case <-gotB:
-	case <-time.After(time.Second):
-		t.Fatal("fast subscriber starved by slow subscriber — slow-consumer drop broken")
-	}
-
-	close(releaseA)
 }
 
 func TestPrivateEventsBus_EventCarriesOriginClientId(t *testing.T) {

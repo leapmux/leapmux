@@ -10,12 +10,11 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func goalCacheReplay(t *testing.T, dispatcher *channel.Dispatcher) []*leapmuxv1.AgentEvent {
+func goalCacheReplay(t *testing.T, dispatcher testRPCDispatcher) []*leapmuxv1.AgentEvent {
 	t.Helper()
 	writer := &replayIdentityWriter{testResponseWriter: &testResponseWriter{channelID: "goal-cache-replay"}}
 	openReplayIdentityWatch(t, dispatcher, &leapmuxv1.WatchEventsRequest{

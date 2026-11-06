@@ -27,7 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
-func tunnelTestSetup(t *testing.T) (*Service, *channel.Dispatcher, *testResponseWriter) {
+func tunnelTestSetup(t *testing.T) (*Service, testRPCDispatcher, *testResponseWriter) {
 	t.Helper()
 	// setupTestService already registers the worker to "user-1", the identity its
 	// test channel is opened with.
@@ -1068,10 +1068,10 @@ func TestTunnelManagerCancelSweepsStaleMarker(t *testing.T) {
 		"the stale marker is swept at its expiry")
 }
 
-// openTestTunnelConn opens a conn to a fresh echo server and returns its conn_id,
-// so a test that needs a LIVE conn (the size gate now lives past the conn lookup,
+// openTestTunnelConn opens connID to a fresh echo server. A test that needs a
+// live connection (the size check lives past the connection lookup,
 // inside the write gate) does not restate the open.
-func openTestTunnelConn(t *testing.T, d *channel.Dispatcher, connID string) {
+func openTestTunnelConn(t *testing.T, d testRPCDispatcher, connID string) {
 	t.Helper()
 	echoAddr := testutil.StartEchoServer(t)
 	host, port := testutil.ParseAddr(echoAddr)
@@ -1295,22 +1295,27 @@ func TestTunnelManagerGrantReadCredit_UnknownConnAcks(t *testing.T) {
 	assert.Len(t, w.responses, 1)
 }
 
-// ...and a frame at exactly the bound is accepted: the check must not be off by one
-// against the size a correct client actually emits.
+// A maximum-size frame must reach the target. A missing connection would
+// return before validation and could conceal an off-by-one size rejection.
 func TestSendTunnelData_AcceptsFrameAtChunkBound(t *testing.T) {
-	_, d, w := tunnelTestSetup(t)
-
-	dispatch(d, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{
-		ConnId: "conn-missing",
-		Seq:    0,
-		Data:   make([]byte, tunnelflow.MaxChunkBytes),
-	}, w)
-
-	// The conn does not exist, so this gets NOT_FOUND -- proving it passed the size
-	// gate rather than being rejected by it.
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codeNotFound, w.errors[0].code,
-		"a frame at exactly the bound must reach the conn lookup, not be size-refused")
+	echoAddr := testutil.StartEchoServer(t)
+	host, port := testutil.ParseAddr(echoAddr)
+	_, dispatcher, stream := tunnelTestSetup(t)
+	const connectionID = "maximum-frame"
+	dispatch(dispatcher, leapmuxv1connect.WorkerTunnelServiceOpenTunnelConnProcedure, &leapmuxv1.OpenTunnelConnRequest{ConnId: connectionID, TargetAddr: host, TargetPort: port}, stream)
+	requireTunnelOpened(t, stream)
+	payload := make([]byte, tunnelflow.MaxChunkBytes)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	reply := newTestWriter()
+	dispatch(dispatcher, leapmuxv1connect.WorkerTunnelServiceSendTunnelDataProcedure, &leapmuxv1.SendTunnelDataRequest{ConnId: connectionID, Seq: 0, Data: payload}, reply)
+	require.Empty(t, reply.errors)
+	require.Len(t, reply.responses, 1)
+	reader := tunnelEchoReader{dispatcher: dispatcher, connectionID: connectionID, stream: stream}
+	var received []byte
+	testutil.AssertEventually(t, func() bool { received = reader.read(t); return len(received) >= len(payload) }, "the target must receive and echo the complete maximum-size frame")
+	assert.Equal(t, payload, received)
 }
 
 // A cancel marker must be expirable only by its OWN deadline. A conn_id that is
@@ -1496,6 +1501,35 @@ func requireTunnelOpened(t *testing.T, w *testResponseWriter) {
 	require.NotNil(t, event.GetOpened(), "the first frame must be the opened event, got %v", &event)
 }
 
+type tunnelEchoReader struct {
+	dispatcher   testRPCDispatcher
+	connectionID string
+	stream       *testResponseWriter
+	granted      int
+}
+
+func (reader *tunnelEchoReader) read(t *testing.T) []byte {
+	t.Helper()
+	frames := reader.stream.streamsSnapshot()
+	dataFrames := 0
+	for _, frame := range frames {
+		require.Nil(t, frame.GetError())
+		var event leapmuxv1.TunnelConnEvent
+		require.NoError(t, proto.Unmarshal(frame.GetPayload(), &event))
+		if _, isData := event.GetEvent().(*leapmuxv1.TunnelConnEvent_Data); isData {
+			dataFrames++
+		}
+	}
+	if dataFrames > reader.granted {
+		reply := newTestWriter()
+		dispatch(reader.dispatcher, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, &leapmuxv1.GrantTunnelReadCreditRequest{ConnId: reader.connectionID, Credit: uint64(dataFrames - reader.granted)}, reply)
+		require.Empty(t, reply.errors)
+		reader.granted = dataFrames
+	}
+	data, _ := collectTunnelEvents(frames)
+	return data
+}
+
 // collectTunnelEvents decodes stream payloads and returns the concatenated
 // data bytes plus whether any event signalled EOF.
 func collectTunnelEvents(streams []*leapmuxv1.InnerStreamMessage) (data []byte, hasEOF bool) {
@@ -1659,28 +1693,11 @@ func TestTunnelLargeDataTransfer(t *testing.T) {
 		seq++
 	}
 
-	// Wait for the full echo to come back via stream, replenishing read credit
-	// as frames arrive so the worker's read window (tunnelflow.InitialReadWindow) never
-	// stalls this multi-frame transfer -- modelling a client that grants credit
-	// as it consumes (what Conn.Read does automatically).
-	granted := 0
-	totalReceived := func() int {
-		frames := w.streamsSnapshot()
-		if len(frames) > granted {
-			gw := newTestWriter()
-			dispatch(d, leapmuxv1connect.WorkerTunnelServiceGrantTunnelReadCreditProcedure, &leapmuxv1.GrantTunnelReadCreditRequest{
-				ConnId: connID,
-				Credit: uint64(len(frames) - granted),
-			}, gw)
-			granted = len(frames)
-		}
-		echoed, _ := collectTunnelEvents(frames)
-		return len(echoed)
-	}
-	testutil.AssertEventually(t, func() bool {
-		return totalReceived() >= totalSize
-	}, "expected all echoed data via stream")
-	assert.Equal(t, totalSize, totalReceived(), "expected all data echoed back")
+	// Read and replenish actual data-frame credit until the full echo arrives.
+	reader := tunnelEchoReader{dispatcher: d, connectionID: connID, stream: w}
+	var received []byte
+	testutil.AssertEventually(t, func() bool { received = reader.read(t); return len(received) >= totalSize }, "expected all echoed data via stream")
+	assert.Equal(t, totalSize, len(received), "expected all data echoed back")
 
 	w3 := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTunnelServiceCloseTunnelConnProcedure, &leapmuxv1.CloseTunnelConnRequest{ConnId: connID}, w3)
@@ -2257,4 +2274,29 @@ func TestWriteDataDoesNotTouchWriteDeadline(t *testing.T) {
 	calls := rc.writeDeadlines
 	rc.mu.Unlock()
 	assert.Empty(t, calls, "the write path must not touch SetWriteDeadline")
+}
+
+func TestTunnelContextWatcherPublishesItsStopBeforeClosing(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		t.Run(fmt.Sprint(managed), func(t *testing.T) {
+			for range 32 {
+				var manager *tunnelManager
+				if managed {
+					manager = newTunnelManager()
+				}
+				left, right := net.Pipe()
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				connection := newTunnelConn(manager, "canceled-construction", left, newTestWriter(), ctx)
+				// Sequence 1 waits for sequence 0 or close. Gate closure follows
+				// the callback's stop-function read and supplies an exact join point.
+				assert.Equal(t, writeTurnClosed, connection.writeGate.waitTurn(1))
+				if manager != nil {
+					require.True(t, manager.contextClosers.Wait(30*time.Second, ""))
+					manager.Stop()
+				}
+				require.NoError(t, right.Close())
+			}
+		})
+	}
 }

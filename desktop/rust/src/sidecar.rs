@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 
 use crate::frame::{read_frame, write_frame};
 use crate::proto;
+use crate::shutdown::SIDECAR_SHUTDOWN_TIMEOUT;
 use crate::sidecar_ipc::{
     cleanup_dev_sidecar_artifacts, connect_sidecar_endpoint, dev_sidecar_endpoint,
     dev_sidecar_metadata_path, endpoint_holder_pid, is_sidecar_gone, private_dev_sidecar_endpoint,
@@ -30,8 +31,8 @@ use crate::sidecar_ipc::{
 #[cfg(unix)]
 use crate::sidecar_ipc::{finalize_sidecar_streams, SidecarReader, SidecarWriter};
 use crate::{
-    SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, DEV_SIDECAR_SHUTDOWN_TIMEOUT, ENV_AGENT_HELPER,
-    ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
+    SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, ENV_AGENT_HELPER, ENV_BINARY_HASH,
+    ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
 };
 // `get_sidecar_info_request` / `check_response` / `sidecar_info_from_response`
 // back the unix `fetch_sidecar_info` handshake; the Windows twin lives in
@@ -282,7 +283,7 @@ fn request_sidecar_shutdown(endpoint: &str) -> bool {
         let _ = read_frame(&mut reader);
     }
 
-    let deadline = Instant::now() + DEV_SIDECAR_SHUTDOWN_TIMEOUT;
+    let deadline = Instant::now() + SIDECAR_SHUTDOWN_TIMEOUT;
     while Instant::now() < deadline {
         if is_sidecar_gone(endpoint) {
             return true;

@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -59,6 +60,27 @@ func (m *mailSenderDouble) last() *mail.Message {
 	}
 	out := m.msgs[len(m.msgs)-1]
 	return &out
+}
+
+// newOAuthServerHandler builds the handler for a test. Both dependencies are
+// required, and a test with no Hub has nothing to end or join them, so an absent
+// one takes a value that never ends and a disabled notice owner.
+func newOAuthServerHandler(deps service.OAuthServerDeps) *service.OAuthServerHandler {
+	if deps.ServingCtx == nil {
+		deps.ServingCtx = context.Background()
+	}
+	if deps.Notices == nil {
+		deps.Notices = service.NewCredentialNotices(nil, mail.Renderer{})
+	}
+	return service.NewOAuthServerHandler(deps)
+}
+
+// newAdminUserService does the same for the administrator surface.
+func newAdminUserService(deps service.AdminUserServiceDeps) *service.AdminUserService {
+	if deps.Notices == nil {
+		deps.Notices = service.NewCredentialNotices(nil, mail.Renderer{})
+	}
+	return service.NewAdminUserService(deps)
 }
 
 // probeStream is the unused ServerStream of a probe call: the handler under

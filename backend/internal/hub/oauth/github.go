@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,8 +44,9 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, scopes []stri
 
 // AuthURL builds the GitHub authorization URL.
 //
-// GitHub does not support PKCE, so the state alone carries the CSRF
-// protection (the hub adds a browser-bound nonce cookie on top).
+// Proof Key for Code Exchange (PKCE) binds the authorization code to this flow
+// through an S256 challenge.
+// State and the hub's browser-bound nonce cookie prevent request forgery.
 //
 // ForceReauthentication emits prompt=select_account, which is the strongest
 // signal GitHub's authorize endpoint accepts. GitHub has NO equivalent of
@@ -52,26 +54,23 @@ func NewGitHubProvider(clientID, clientSecret, redirectURL string, scopes []stri
 // signed-in user. So a step-up through GitHub proves that the browser can
 // still reach a GitHub session for the linked account and that a human
 // clicked through the chooser -- not that they re-entered a credential.
-// operating/security.md states this limit; an operator who needs a real
-// second factor should require a password or a passkey on the account.
-func (p *GitHubProvider) AuthURL(state, codeChallenge string, opts AuthURLOptions) string {
+// site/content/docs/admin/security.md states this limit. An operator who needs
+// a real second factor should require a password or a passkey on the account.
+func (p *GitHubProvider) AuthURL(state, codeVerifier string, opts AuthURLOptions) string {
+	options := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(codeVerifier)}
 	if opts.ForceReauthentication {
-		return p.oauth2Config.AuthCodeURL(state, oauth2.SetAuthURLParam("prompt", "select_account"))
+		options = append(options, oauth2.SetAuthURLParam("prompt", "select_account"))
 	}
-	return p.oauth2Config.AuthCodeURL(state)
+	return p.oauth2Config.AuthCodeURL(state, options...)
 }
 
-func (p *GitHubProvider) Exchange(ctx context.Context, code, _ string) (*TokenSet, *UserClaims, error) {
-	return p.exchangeWithBaseURL(ctx, code, p.baseURL)
-}
-
-func (p *GitHubProvider) exchangeWithBaseURL(ctx context.Context, code string, baseURL string) (*TokenSet, *UserClaims, error) {
-	token, err := p.oauth2Config.Exchange(ctx, code)
+func (p *GitHubProvider) Exchange(ctx context.Context, code, codeVerifier string) (*TokenSet, *UserClaims, error) {
+	token, err := p.oauth2Config.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return nil, nil, fmt.Errorf("github exchange: %w", err)
 	}
 
-	claims, err := fetchGitHubUser(ctx, token.AccessToken, baseURL)
+	claims, err := fetchGitHubUser(ctx, token.AccessToken, p.baseURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -80,7 +79,13 @@ func (p *GitHubProvider) exchangeWithBaseURL(ctx context.Context, code string, b
 }
 
 func (p *GitHubProvider) Refresh(ctx context.Context, refreshToken string) (*TokenSet, error) {
-	return refreshWithConfig(ctx, p.oauth2Config, refreshToken, "github")
+	tokens, err := refreshWithConfig(ctx, p.oauth2Config, refreshToken, "github")
+	var refusal *oauth2.RetrieveError
+	if errors.As(err, &refusal) && refusal != nil && refusal.Response != nil && refusal.ErrorCode == "bad_refresh_token" &&
+		(refusal.Response.StatusCode == http.StatusOK || refusal.Response.StatusCode == http.StatusBadRequest) {
+		return nil, fmt.Errorf("%w: %w", ErrRefreshTokenRejected, err)
+	}
+	return tokens, err
 }
 
 // fetchGitHubUser retrieves user info from the GitHub API (or a custom base URL for testing).

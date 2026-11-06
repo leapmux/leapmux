@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -17,8 +18,14 @@ import (
 // test that built one leaked a sweeper for the rest of the run. Routing through
 // this helper makes the cleanup a property of asking for an interceptor rather
 // than a line each caller has to remember.
+//
+// ServingCtx is required, and a test that does not exercise the Hub's lifetime
+// has no Hub to end it, so an absent one becomes context.Background.
 func NewAuthInterceptor(t *testing.T, opts auth.InterceptorOptions) (connect.ServerInterceptor, *auth.AuthContextRegistry) {
 	t.Helper()
+	if opts.ServingCtx == nil {
+		opts.ServingCtx = context.Background()
+	}
 	interceptor, registry := auth.NewInterceptor(opts)
 	t.Cleanup(registry.Stop)
 	return interceptor, registry

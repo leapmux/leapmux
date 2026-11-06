@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,7 +23,9 @@ import (
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	sqlitest "github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
@@ -371,8 +378,8 @@ func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
 const soloTestTimeout = 60 * time.Second
 
 // serveFailsImmediately stubs serveHub with a failure after releasing the Hub's
-// resources through Serve with an already-cancelled context. The readiness probe
-// waits until the watcher observes the Hub's exit and cancels its context.
+// resources through Serve with an already-cancelled context. That Serve never
+// holds the lease, so only the Hub's exit can end Start's readiness wait.
 //
 // Returning without calling Serve at all is the obvious spelling and the wrong
 // one: hub.NewServer has already bound both listeners, opened the store and
@@ -388,12 +395,6 @@ func serveFailsImmediately(t *testing.T, d *testDeps, serveErr error) {
 		_ = s.Serve(dead)
 		return serveErr
 	})
-	// A successful connect can race Hub exit. Release readiness after the exit
-	// is published so the startup verdict must detect it independently.
-	d.waitReady = func(ctx context.Context, _ string) error {
-		<-ctx.Done()
-		return nil
-	}
 }
 
 // testDeps accumulates the seam substitutions for one test. It is passed to
@@ -571,7 +572,7 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 }
 
 // A Hub that dies WHILE SERVING is surfaced by Start with the "hub serve:"
-// attribution, rather than as the generic WaitReady timeout.
+// attribution, rather than as a generic readiness failure.
 //
 // The seam is what makes this reachable: hub.NewServer binds both listeners, so
 // the pre-existing version of this test pointed at an unwritable socket path,
@@ -799,9 +800,9 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 // already shutting down, every bit of it discarded. A Hub known to be gone must
 // stop the launch where it is discovered.
 //
-// With the caller context live, the fixture's probe waits for Hub cancellation.
-// The watcher cancels that context after observing hubDone, so the readiness
-// verdict sees a published Hub exit.
+// The fixture's Serve never holds the lease, so with the caller context live
+// only hubDone can end the readiness wait, and the verdict sees a published Hub
+// exit.
 func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testing.T) {
 	cfg := startFailureEnv(t)
 	d := newTestDeps()
@@ -826,11 +827,13 @@ func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testin
 		"a Hub already known to be gone must not have a Worker brought up against it")
 }
 
+// A Hub that exits without its lease is the readiness failure. The launch must
+// stop before Worker bring-up, and only after the Hub finished its cleanup.
 func TestSoloStart_ReadinessFailureStopsBeforeWorkerBringUp(t *testing.T) {
 	cfg := startFailureEnv(t)
 	d := newTestDeps()
-	wantErr := errors.New("local listener readiness failed")
-	d.waitReady = func(context.Context, string) error { return wantErr }
+	wantErr := errors.New("the Hub never held its lease")
+	serveFailsImmediately(t, d, wantErr)
 
 	stopped := make(chan struct{})
 	serve := d.serveHub
@@ -1479,4 +1482,263 @@ func TestSoloStart_TheLocalWorkerDialsTheIPCSocket(t *testing.T) {
 		"the bundled Worker must dial the local IPC socket, not a TCP address: %q", url)
 	assert.Equal(t, inst.LocalListenURL(), url,
 		"and it must be the same socket the Hub reports, not a second one")
+}
+
+// startAcceptingPredecessor uses the platform transport and joins its accept loop.
+func startAcceptingPredecessor(t *testing.T, url string) (func(), <-chan struct{}) {
+	t.Helper()
+	ln, err := locallisten.Listen(url)
+	require.NoError(t, err)
+	accepted := make(chan struct{})
+	announce := sync.OnceFunc(func() { close(accepted) })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+			announce()
+		}
+	}()
+	closeListener := sync.OnceFunc(func() { _ = ln.Close(); <-done })
+	t.Cleanup(closeListener)
+	return closeListener, accepted
+}
+
+type logMessageObserver struct {
+	slog.Handler
+	message  string
+	observed func()
+}
+
+func (h logMessageObserver) Handle(ctx context.Context, r slog.Record) error {
+	err := h.Handler.Handle(ctx, r)
+	if r.Message == h.message {
+		h.observed()
+	}
+	return err
+}
+
+func (h logMessageObserver) WithAttrs(attrs []slog.Attr) slog.Handler {
+	h.Handler = h.Handler.WithAttrs(attrs)
+	return h
+}
+
+func (h logMessageObserver) WithGroup(group string) slog.Handler {
+	h.Handler = h.Handler.WithGroup(group)
+	return h
+}
+
+func observeLogMessage(message string) (<-chan struct{}, func()) {
+	previous := slog.Default()
+	observed := make(chan struct{})
+	slog.SetDefault(slog.New(logMessageObserver{Handler: previous.Handler(), message: message,
+		observed: sync.OnceFunc(func() { close(observed) })}))
+	return observed, func() { slog.SetDefault(previous) }
+}
+
+func startPreviousHubWait(t *testing.T, urls []string, deadline time.Time) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	done := make(chan struct{})
+	go func() { defer close(done); result <- waitForPreviousHub(ctx, urls, deadline) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return cancel, result
+}
+
+func requirePreviousHubWaiting(t *testing.T, observed <-chan struct{}, result <-chan error) {
+	t.Helper()
+	select {
+	case <-observed:
+	case err := <-result:
+		t.Fatalf("the predecessor wait ended before observing a held address: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the predecessor probe never observed a held address")
+	}
+}
+
+func TestWaitForPreviousHub(t *testing.T) {
+	t.Run("no socket returns at once", func(t *testing.T) {
+		_, done := startPreviousHubWait(t, nil, time.Now().Add(5*time.Second))
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("a free address must return at once")
+		}
+	})
+	t.Run("a live listener returns once it closes", func(t *testing.T) {
+		url := locallistentest.UniqueListenURL(t, "prev-live")
+		closeListener, accepted := startAcceptingPredecessor(t, url)
+		observed, restore := observeLogMessage("waiting for the previous hub to release its address and lease")
+		t.Cleanup(restore)
+		_, done := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
+		requirePreviousHubWaiting(t, observed, done)
+		<-accepted
+		closeListener()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the predecessor wait did not return after the listener closed")
+		}
+	})
+	t.Run("a live listener at the deadline returns nil", func(t *testing.T) {
+		url := locallistentest.UniqueListenURL(t, "prev-held")
+		_, accepted := startAcceptingPredecessor(t, url)
+		_, done := startPreviousHubWait(t, []string{url}, time.Now())
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the predecessor wait did not stop at its deadline")
+		}
+		<-accepted
+	})
+	t.Run("a cancel before the dial returns the context error", func(t *testing.T) {
+		url := locallistentest.UniqueListenURL(t, "prev-cancelled-dial")
+		startAcceptingPredecessor(t, url)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, waitForPreviousHub(ctx, []string{url}, time.Now().Add(time.Minute)), context.Canceled)
+	})
+	t.Run("a cancel returns the context error", func(t *testing.T) {
+		url := locallistentest.UniqueListenURL(t, "prev-cancel")
+		startAcceptingPredecessor(t, url)
+		observed, restore := observeLogMessage("waiting for the previous hub to release its address and lease")
+		t.Cleanup(restore)
+		cancel, done := startPreviousHubWait(t, []string{url}, time.Now().Add(time.Minute))
+		requirePreviousHubWaiting(t, observed, done)
+		cancel()
+		select {
+		case err := <-done:
+			require.ErrorIs(t, err, context.Canceled)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the predecessor wait did not return after cancellation")
+		}
+	})
+}
+
+// addressHeld classifies one dial. The timeout case uses a controlled dial;
+// the successful connection uses the platform's local transport.
+func TestAddressHeld(t *testing.T) {
+	url := locallistentest.UniqueListenURL(t, "address-held")
+	startAcceptingPredecessor(t, url)
+	dial, err := locallisten.Dialer(url)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name string
+		dial func(context.Context) (net.Conn, error)
+		want bool
+	}{
+		{"a connection reports held", dial, true},
+		{"a timed-out dial reports held", func(ctx context.Context) (net.Conn, error) { <-ctx.Done(); return nil, ctx.Err() }, true},
+		{"a refused dial reports free", func(context.Context) (net.Conn, error) { return nil, syscall.ECONNREFUSED }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assert.Equal(t, tc.want, addressHeld(t.Context(), tc.dial)) })
+	}
+}
+
+// A launch whose predecessor left a live lease row fails once the shortened
+// wait runs out, with the store's own answer, and releases its listeners.
+func TestSoloStart_FailsWhenTheLeaseStaysHeld(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-socket-specific reproduction")
+	}
+	orig := previousHubWait
+	previousHubWait = 300 * time.Millisecond
+	t.Cleanup(func() { previousHubWait = orig })
+
+	cfg, listen, hubStore := heldLeaseFixture(t, "leapmux-hub-held")
+	require.NoError(t, hubStore.Close())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, startErr := Start(ctx, cfg)
+
+	require.Error(t, startErr)
+	assert.ErrorIs(t, startErr, store.ErrHubAlreadyRunning,
+		"a held lease must surface the store's own answer")
+	// The listeners are released: a second launch can bind what this one
+	// failed on.
+	_, err := os.Stat(strings.TrimPrefix(listen, "unix:"))
+	assert.ErrorIs(t, err, os.ErrNotExist,
+		"the failed launch must release its socket")
+}
+
+// A caller cancel during the lease wait ends promptly, and the rival row
+// keeps its holder: nobody took the lease from underneath.
+func TestSoloStart_CancelDuringTheLeaseWaitEndsPromptly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-socket-specific reproduction")
+	}
+	cfg, _, hubStore := heldLeaseFixture(t, "leapmux-hub-cancel")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	leaseRefused := make(chan struct{})
+	announceRefusal := sync.OnceFunc(func() { close(leaseRefused) })
+	d := defaultDeps()
+	d.serveHub = func(ctx context.Context, srv *hub.Server) error {
+		current := slog.Default()
+		slog.SetDefault(slog.New(logMessageObserver{Handler: current.Handler(),
+			message: "another Hub holds the runtime lease; waiting for it to release", observed: announceRefusal}))
+		defer slog.SetDefault(current)
+		return srv.Serve(ctx)
+	}
+	startErr := make(chan error, 1)
+	startDone := make(chan struct{})
+	go func() { defer close(startDone); _, err := start(ctx, cfg, d); startErr <- err }()
+	t.Cleanup(func() { cancel(); <-startDone })
+	// Cancel only after the actual runtime-lease acquisition was refused.
+	select {
+	case <-leaseRefused:
+	case err := <-startErr:
+		t.Fatalf("the launch ended before its lease was refused: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the launch never attempted to acquire the held runtime lease")
+	}
+	cancel()
+
+	select {
+	case err := <-startErr:
+		require.ErrorIs(t, err, context.Canceled,
+			"the cancelled wait must end with the context error")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the cancelled launch never returned")
+	}
+	// The rival row keeps its holder: a third party's acquire is still
+	// refused, so the cancelled launch took nothing.
+	_, acquireErr := hubStore.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
+		HolderID: "third-party", LeaseDuration: time.Hour,
+	})
+	require.ErrorIs(t, acquireErr, store.ErrHubAlreadyRunning,
+		"the rival must keep its hold")
+	require.NoError(t, hubStore.Close())
+}
+
+func heldLeaseFixture(t *testing.T, socketPrefix string) (Config, string, store.Store) {
+	t.Helper()
+	sandbox := locallistentest.SandboxHome(t)
+	listen := locallistentest.UniqueListenURL(t, socketPrefix)
+	dataDir := filepath.Join(sandbox, "data")
+	cfg := Config{SkipBanner: true, NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
+	hubDB := filepath.Join(dataDir, "hub", "hub.db")
+	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
+	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, sqlitest.MigrateDB(sqlDB))
+	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = hubStore.Close() })
+	require.NoError(t, sqlDB.Close())
+	_, err = hubStore.RevocationEvents().AcquireHubRuntimeLease(t.Context(), store.AcquireHubRuntimeLeaseParams{HolderID: "rival-holder", LeaseDuration: time.Hour})
+	require.NoError(t, err)
+	return cfg, listen, hubStore
 }

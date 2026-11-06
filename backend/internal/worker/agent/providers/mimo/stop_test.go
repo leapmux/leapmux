@@ -655,16 +655,22 @@ func TestExitPersistsTheTurnsOwnFailure(t *testing.T) {
 	assert.Empty(t, sink.Messages(), "no turn end follows the exit")
 }
 
-// Stop waits for the stream goroutine, so no event reaches a handler after the
-// finish. A goroutine that does not end holds Stop only up to the wait's limit,
-// and Stop then finishes the turn all the same.
-func TestStopWaitsForTheStreamOnlyUpToItsLimit(t *testing.T) {
+// Stop waits for the stream goroutine, so no event reaches a handler after
+// the finish. The wait's limit is a WARNING threshold, not an abandonment:
+// a goroutine that does not end holds Stop past the limit -- and logs -- and
+// Stop joins it before finishing the turn, because a stream event dispatched
+// after Stop's finish would write past the caller's teardown. Release is what
+// ends the join here.
+func TestStopJoinsTheStreamPastItsLimit(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
-	a, sink, _ := newSinkTestAgent(t)
+	a, sink, server := newSinkTestAgent(t)
 	clock := useMockClock(t, a)
+	// The stream opens while the process is still "live"; the simulate-exit
+	// below then stops everything but the stream, whose cancel is a no-op,
+	// so its reader stays parked on the server until the test drops it.
+	startTestStream(t, a, server)
 	a.SimulateExitForTest()
-	// A stream goroutine that its cancel does not end.
 	a.streamCancel = func() {}
 	feed(a,
 		statusEvent(t, contracts.MiMoStatusTypeBusy),
@@ -689,11 +695,16 @@ func TestStopWaitsForTheStreamOnlyUpToItsLimit(t *testing.T) {
 	}
 	assert.Empty(t, sink.Messages(), "nothing is finished while the stream can still dispatch")
 
+	// Past the limit the join continues; ending the stream is what ends it,
+	// and only then does Stop finish the turn. The stream's reader ends when
+	// the server drops its streams, which streamCancel cannot reach (it is a
+	// no-op), so the test drops them itself.
+	server.dropStreams <- struct{}{}
 	clock.Advance(time.Nanosecond).MustWait(ctx)
 	select {
 	case <-stopped:
 	case <-ctx.Done():
-		t.Fatal("Stop did not return at the wait's limit")
+		t.Fatal("Stop did not return once the stream ended")
 	}
 	messages := sink.Messages()
 	require.Len(t, messages, 1)

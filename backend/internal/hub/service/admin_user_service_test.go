@@ -197,8 +197,8 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, revocations, nil)
 	sender := &mailSenderDouble{}
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
-	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, service.NewAdminUserService(service.AdminUserServiceDeps{
-		Store: st, Validator: tv, Lifecycle: lifecycle, Mail: sender,
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, newAdminUserService(service.AdminUserServiceDeps{
+		Store: st, Validator: tv, Lifecycle: lifecycle, Notices: service.NewCredentialNotices(sender, mail.Renderer{}),
 	}))
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
@@ -251,6 +251,17 @@ func setupAdminUserTestWithSettings(t *testing.T) *adminUserEnv {
 func (e *adminUserEnv) elevateAdminSession(t *testing.T) {
 	t.Helper()
 	hubtestutil.ElevateSession(t, e.st, e.token, e.adminID)
+}
+
+func TestNewAdminUserServiceRequiresCredentialNotices(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "admin user service requires credential notices", func() {
+		service.NewAdminUserService(service.AdminUserServiceDeps{})
+	})
+	assert.NotPanics(t, func() {
+		service.NewAdminUserService(service.AdminUserServiceDeps{Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
+	})
 }
 
 func TestAdminUserService_GetUser_Selector(t *testing.T) {
@@ -545,7 +556,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
-	adminSvc := service.NewAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
+	adminSvc := newAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))

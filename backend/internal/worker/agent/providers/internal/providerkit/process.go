@@ -354,11 +354,9 @@ func (p *Process) Stop() {
 	p.Mu.Unlock()
 	defer close(done)
 
-	ctx, cancelCapture := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := p.owner.Capture(ctx); err != nil {
+	if err := p.owner.CaptureBeforeStop(); err != nil {
 		slog.Warn("capture agent process ownership", "agent_id", p.agentID, "error", err)
 	}
-	cancelCapture()
 	p.sendStopSignal()
 	p.closeStdin()
 

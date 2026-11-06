@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/util/clockjump"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -39,6 +40,10 @@ func main() {
 }
 
 func run() (exitCode int) {
+	// Before anything can log: a lost stderr must return EPIPE from that
+	// first log write, not kill the process before the drain finishes. See
+	// procutil.KeepRunningOnBrokenPipe.
+	procutil.KeepRunningOnBrokenPipe()
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
 	app := NewApp(os.Getenv(envBinaryHash))

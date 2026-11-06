@@ -17,16 +17,42 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-func newChildSessionAgent(t *testing.T) (*Agent, *agenttest.Sink, *agenttest.Stdin) {
+// childSessionStdin wakes the test reader after a recorded write. Coalescing
+// notifications is safe because awaitRequest checks the complete buffer first.
+type childSessionStdin struct {
+	agenttest.Stdin
+	written chan struct{}
+}
+
+func (s *childSessionStdin) Write(data []byte) (int, error) {
+	n, err := s.Stdin.Write(data)
+	if n > 0 {
+		select {
+		case s.written <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
+}
+
+func newChildSessionAgent(t *testing.T) (*Agent, *agenttest.Sink, *childSessionStdin) {
 	t.Helper()
-	stdin := &agenttest.Stdin{}
+	stdin := &childSessionStdin{written: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
 	a := &Agent{}
 	a.AttachPeerForTest(ctx, cancel, stdin, "test-agent", "session-1")
 	sink := &agenttest.Sink{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	*a.HooksForTest() = FamilyHooks(&a.FamilyBase)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-a.ProcessDone():
+		default:
+			a.SimulateExitForTest()
+		}
+		a.Stop()
+	})
 	return a, sink, stdin
 }
 
@@ -58,7 +84,7 @@ type writtenRequest struct {
 	Params json.RawMessage `json:"params"`
 }
 
-func writtenRequests(stdin *agenttest.Stdin, method string) []writtenRequest {
+func writtenRequests(stdin *childSessionStdin, method string) []writtenRequest {
 	var requests []writtenRequest
 	for _, line := range strings.Split(strings.TrimSpace(stdin.String()), "\n") {
 		var request writtenRequest
@@ -71,15 +97,26 @@ func writtenRequests(stdin *agenttest.Stdin, method string) []writtenRequest {
 
 // awaitRequest waits for the request of method that the agent writes next, and
 // returns it.
-func awaitRequest(t *testing.T, stdin *agenttest.Stdin, method string, count int) writtenRequest {
+func awaitRequest(t *testing.T, stdin *childSessionStdin, method string, count int) writtenRequest {
 	t.Helper()
-	testutil.RequireEventually(t, func() bool { return len(writtenRequests(stdin, method)) >= count }, method)
-	return writtenRequests(stdin, method)[count-1]
+	require.Positive(t, count)
+	ctx := testutil.DeadlineContext(t)
+	for {
+		requests := writtenRequests(stdin, method)
+		if len(requests) >= count {
+			return requests[count-1]
+		}
+		select {
+		case <-stdin.written:
+		case <-ctx.Done():
+			t.Fatalf("the agent did not write request %d of %s: %v", count, method, ctx.Err())
+		}
+	}
 }
 
 // followRunningChild opens the row of the task call call-1, states its child
 // session, and answers the agent's load of that session.
-func followRunningChild(t *testing.T, a *Agent, stdin *agenttest.Stdin) {
+func followRunningChild(t *testing.T, a *Agent, stdin *childSessionStdin) {
 	t.Helper()
 	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count slowly to one hundred."))
 	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
@@ -89,7 +126,7 @@ func followRunningChild(t *testing.T, a *Agent, stdin *agenttest.Stdin) {
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable }, "the load marks the child session steerable")
 }
 
-func clearChildSessionContext(t *testing.T, a *Agent, stdin *agenttest.Stdin) {
+func clearChildSessionContext(t *testing.T, a *Agent, stdin *childSessionStdin) {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {

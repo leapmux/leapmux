@@ -224,9 +224,9 @@ func terminalOf(t *testing.T, m *Manager, id string) *Terminal {
 	t.Helper()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	term, ok := m.terminals[id]
+	registration, ok := m.current[id]
 	require.True(t, ok, "terminal %s should be installed", id)
-	return term
+	return registration.terminal
 }
 
 // TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups pins the OS fact the

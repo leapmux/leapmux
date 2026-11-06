@@ -3,6 +3,7 @@ package solo_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +16,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/hub/store"
+	sqlitest "github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/stretchr/testify/assert"
@@ -239,7 +243,7 @@ func TestSoloStart_InvalidListenEntryErrors(t *testing.T) {
 
 // A local-listen URL whose parent directory does not exist fails at BIND time,
 // inside hub.NewServer, and solo.Start must surface that immediately rather than
-// blocking out the 5-second WaitReady timeout.
+// wait for a Hub that never started.
 //
 // Scoped to the bind failure on purpose. This used to assert `Contains("hub
 // serve")` and claim to cover the Serve-time arm, which it never reached --
@@ -255,16 +259,12 @@ func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 	// net.Listen("unix", ...) fails with ENOENT.
 	t.Setenv("LEAPMUX_HUB_LISTEN", "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
 
-	// Use a short deadline: if the fix regresses, we'd fall back to the
-	// 5s WaitReady timeout and this test would flake-fail, making the
-	// regression obvious.
+	// Use a short deadline, so a regression that waits for the Hub fails here.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// "Serve's failure short-circuits WaitReady" is proven by the ERROR TEXT --
-	// a run that waited the timeout out reports the WaitReady deadline, not
-	// "hub serve". The elapsed bound was a second, weaker witness for the same
-	// thing, so the completion guard here only has to catch a hang.
+	// The ERROR TEXT proves that the bind failure stopped the launch, so the
+	// completion guard here only has to catch a hang.
 	type startResult struct{ err error }
 	done := make(chan startResult, 1)
 	go func() {
@@ -278,9 +278,7 @@ func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 	case got := <-done:
 		require.Error(t, got.err, "solo.Start should surface the bind failure")
 		assert.Contains(t, got.err.Error(), "create hub server",
-			"error should attribute the failure to server construction, not the WaitReady timeout")
-		assert.NotContains(t, got.err.Error(), "not ready after",
-			"the bind failure must short-circuit WaitReady")
+			"error should attribute the failure to server construction")
 	case <-time.After(60 * time.Second):
 		t.Fatal("solo.Start hung instead of surfacing the bind failure")
 	}
@@ -429,4 +427,39 @@ func requireRegisteredFingerprint(t *testing.T, out string) string {
 	}
 	t.Fatalf("no \"solo worker registered\" line in the captured stderr:\n%s", out)
 	return ""
+}
+
+// A launch whose predecessor CRASHED leaves a lease row behind: its holder is
+// dead, so the row expires after its TTL and the launch must wait it out and
+// start. Before the lease wait, Start failed with "another Hub is already
+// running" and the user had to retry by hand.
+func TestSoloStart_WaitsOutAnOrphanedLease(t *testing.T) {
+	locallistentest.SandboxHome(t)
+	listen := locallistentest.UniqueListenURL(t, "leapmux-hub-orphan")
+	dataDir := t.TempDir()
+
+	// The orphaned row: a holder that is gone, with a 1-second TTL.
+	hubDB := filepath.Join(dataDir, "hub", "hub.db")
+	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
+	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, sqlitest.MigrateDB(sqlDB))
+	hubStore, err := sqlitest.Open(hubDB, sqlitedb.Config{})
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+	_, err = hubStore.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
+		HolderID: "dead-predecessor", LeaseDuration: time.Second,
+	})
+	require.NoError(t, err)
+	require.NoError(t, hubStore.Close())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	inst, err := solo.Start(ctx, solo.Config{
+		SkipBanner: true,
+		NoTCP:      true,
+		Args:       []string{"--listen=" + listen, "--data-dir=" + dataDir},
+	})
+	require.NoError(t, err, "the launch must wait out the orphaned lease and start")
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 }

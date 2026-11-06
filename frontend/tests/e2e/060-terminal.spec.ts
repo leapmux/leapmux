@@ -124,11 +124,13 @@ test.describe('Terminal', () => {
     await openTerminalViaUI(page)
     await saved
 
-    // Toggle alt-screen, paint a sentinel, then push ~150 KB of
-    // filler. `yes ... | head -c N` is portable across macOS and Linux
-    // and emits printable bytes (no null pollution in xterm).
-    await typeInTerminal(page, 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_FILLING\\n\'')
-    await waitForTerminalText(page, 'DONE_FILLING')
+    // Enter alt-screen and push enough printable output to wrap the retained
+    // ring. The printed marker must differ from the echoed command text.
+    const completionMarker = 'DONE_FILLING'
+    const command = 'printf \'\\033[?1049h\'; yes leapmux-altscreen-filler | head -c 150000; printf \'DONE_%s\\n\' FILLING'
+    expect(command).not.toContain(completionMarker)
+    await typeInTerminal(page, command)
+    await waitForTerminalText(page, completionMarker)
 
     const getBufferType = () =>
       page.evaluate(() => (window as any).__getActiveTerminalBufferType?.() ?? 'normal')
@@ -142,11 +144,10 @@ test.describe('Terminal', () => {
     await expect(terminalTabs(page)).toBeVisible()
     await terminalTabs(page).click()
     await expect(activeXterm(page)).toBeVisible()
+    await waitForTerminalText(page, completionMarker)
 
-    // The sentinel itself is gone — it fell out of the ring along with
-    // the alt-screen toggle. What we CAN verify is the buffer type:
-    // the tracker's snapshotPrefix must have set xterm back into
-    // alt-screen mode before replay.
+    // The filler evicted the alt-screen toggle. The tracker's snapshot prefix
+    // must restore that mode before xterm consumes the retained output.
     await expect(async () => {
       expect(await getBufferType()).toBe('alternate')
     }).toPass()
@@ -258,6 +259,44 @@ test.describe('Terminal', () => {
 
     // Poll until row count increases (ResizeObserver + fit needs time)
     await expect.poll(() => getTerminalRows(page)).toBeGreaterThan(initialRows)
+  })
+
+  test('keeps native dimensions consistent while resizing the viewport', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    test.skip(process.platform === 'win32', 'stty requires a POSIX terminal')
+    void authenticatedWorkspace
+    await page.setViewportSize({ width: 900, height: 600 })
+    const terminalId = await openTerminalViaUI(page)
+    await waitForTerminalReady(page)
+    await expect.poll(() => getTerminalRows(page)).toBeGreaterThan(0)
+    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+    const viewports = [
+      { width: 1600, height: 1000 },
+      { width: 1000, height: 700 },
+      { width: 1400, height: 900 },
+    ]
+    for (const [index, viewport] of viewports.entries()) {
+      const previousRows = await getTerminalRows(page)
+      await page.setViewportSize(viewport)
+      await expect.poll(() => getTerminalRows(page)).not.toBe(previousRows)
+      const terminal = await retryUntilPass(async () => {
+        const response = await channel.callWorker(
+          leapmuxServer.workerId,
+          WorkerTerminalService.method.listTerminals,
+          {
+            tabIds: [terminalId],
+          },
+        )
+        const current = response.terminals.find(entry => entry.terminalId === terminalId)
+        if (!current)
+          throw new Error('The worker did not return the open terminal.')
+        expect(current.rows).toBe(await getTerminalRows(page))
+        expect(current.cols).toBeGreaterThan(0)
+        return current
+      })
+      // Input echo holds %s, so only executed output can contain the complete marker.
+      await typeInTerminal(page, `printf 'LMX_SIZE_%s=' '${index}'; stty size`)
+      await waitForTerminalText(page, `LMX_SIZE_${index}=${terminal.rows} ${terminal.cols}`)
+    }
   })
 
   test('switching back into a hidden terminal keeps prior content without a blank frame', async ({ page, authenticatedWorkspace }) => {

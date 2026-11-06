@@ -764,17 +764,7 @@ const suspendedLeaseDuration = 25 * time.Millisecond
 // kills a desktop app that only went to sleep.
 func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	// The suspend. The durable row lapses; the local deadline (a full
@@ -814,17 +804,7 @@ func TestWatcher_ReacquiresLeaseLapsedDuringSuspend(t *testing.T) {
 func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 
 	require.Contains(t, logs.String(), "acquired the Hub runtime lease",
 		"the holder ID must be anchored before it can appear in a fatal error")
@@ -853,17 +833,7 @@ func TestWatcher_LogsTheLeaseLifecycleAndTheSuspendSignature(t *testing.T) {
 // from also papering over a genuine takeover.
 func TestWatcher_LeaseTakenDuringSuspendIsFatal(t *testing.T) {
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env)
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	time.Sleep(4 * suspendedLeaseDuration)
@@ -906,18 +876,7 @@ func TestWatcher_CompactedGapAfterLapseIsFatal(t *testing.T) {
 	// either way.
 	const localLease = time.Second
 	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store: env.st,
-		events: suspendedLeaseRevocationEvents{
-			RevocationEventStore: env.st.RevocationEvents(),
-			durableLease:         suspendedLeaseDuration,
-		},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithInterval(time.Hour),
-		revocationwatcher.WithLeaseDuration(localLease),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	w := newSuspendedLeaseWatcher(t, env, revocationwatcher.WithLeaseDuration(localLease))
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 
 	time.Sleep(localLease * 3 / 5)
@@ -1233,4 +1192,139 @@ func TestWatcher_CloseRemovesDurableConsumer(t *testing.T) {
 	require.Zero(t, compact(), "unacknowledged event must remain while the Hub lease is live")
 	require.NoError(t, env.watcher.Close(context.Background()))
 	require.Equal(t, int64(1), compact(), "graceful close must release the Hub cursor")
+}
+
+// --- AcquireLease: the retrying entry point a launch races a predecessor with ---
+
+// acquireRivalRow takes the singleton lease for a rival holder, so a test can
+// hold it against the watcher under test.
+func acquireRivalRow(t *testing.T, st store.Store, duration time.Duration) {
+	t.Helper()
+	_, err := st.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
+		HolderID:      "rival-holder",
+		LeaseDuration: duration,
+	})
+	require.NoError(t, err)
+}
+
+// A predecessor that releases while the wait runs must hand the lease over:
+// AcquireLease acquires once the rival row is gone.
+func TestAcquireLeaseGetsTheLeaseWhenTheRivalReleases(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Minute)
+	release := func() { _, _ = env.st.RevocationEvents().ReleaseHubRuntimeLease(context.Background(), "rival-holder") }
+	timer := time.AfterFunc(200*time.Millisecond, release)
+	t.Cleanup(func() { timer.Stop(); release() })
+
+	err := env.watcher.AcquireLease(context.Background(), 5*time.Second)
+
+	require.NoError(t, err, "the released rival must hand the lease over")
+}
+
+// A predecessor's row that merely EXPIRES is not a holder any more: the
+// acquisition succeeds once its TTL passes.
+func TestAcquireLeaseGetsAnExpiredLease(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, 300*time.Millisecond)
+
+	err := env.watcher.AcquireLease(context.Background(), 5*time.Second)
+
+	require.NoError(t, err, "the expired rival must hand the lease over")
+}
+
+// Zero and negative waits make ONE attempt: `leapmux hub`'s contract is to
+// fail at once on a held lease, not to wait it out.
+func TestAcquireLeaseWithNoWaitRefusesAtOnce(t *testing.T) {
+	for _, wait := range []time.Duration{0, -time.Second} {
+		env := setupUnseeded(t)
+		acquireRivalRow(t, env.st, time.Minute)
+
+		started := time.Now()
+		err := env.watcher.AcquireLease(context.Background(), wait)
+
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+		assert.Less(t, time.Since(started), time.Second,
+			"a wait of %v must make one attempt, not retry", wait)
+	}
+}
+
+// The wait budget is the give-up point: a rival that never releases ends in
+// ErrHubAlreadyRunning.
+func TestAcquireLeaseGivesUpAtTheDeadline(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Hour)
+
+	err := env.watcher.AcquireLease(context.Background(), 300*time.Millisecond)
+
+	require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+}
+
+// A caller that cancels the acquisition ends with the context error, and the
+// rival row keeps its holder: nobody took it from underneath.
+func TestAcquireLeaseEndsOnCancel(t *testing.T) {
+	env := setupUnseeded(t)
+	acquireRivalRow(t, env.st, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := env.watcher.AcquireLease(ctx, time.Hour)
+
+	require.ErrorIs(t, err, ctx.Err(),
+		"the cancelled acquisition must carry the context's own error")
+	assert.Equal(t, "held", readLeaseHeld(t, env.st), "the rival must keep its hold")
+}
+
+// A store failure that is not a held lease is returned after one attempt: a
+// retry cannot heal a broken store, and a retry storm would only bury the
+// cause.
+func TestAcquireLeaseDoesNotRetryAStoreFailure(t *testing.T) {
+	env := setupUnseeded(t)
+	env.st = failingAcquireStore{Store: env.st}
+	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(nil, &fakeCloser{}, nil),
+		revocationwatcher.WithInterval(50*time.Millisecond))
+
+	err := w.AcquireLease(context.Background(), time.Minute)
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, store.ErrHubAlreadyRunning,
+		"a store failure must surface as itself, not as a held lease")
+}
+
+// readLeaseHeld answers whether the singleton lease row is held: a second
+// watcher either takes it (no row, or an expired one) or is refused by the
+// live holder.
+func readLeaseHeld(t *testing.T, st store.Store) string {
+	t.Helper()
+	rival := revocationwatcher.New(st, auth.NewCredentialLifecycleEffects(nil, &fakeCloser{}, nil))
+	if err := rival.SeedCursor(context.Background()); err != nil {
+		return "held"
+	}
+	_, _ = st.RevocationEvents().ReleaseHubRuntimeLease(context.Background(), rival.HolderIDForTest())
+	return "free"
+}
+
+// failingAcquireStore fails every lease acquisition with a non-running error.
+type failingAcquireStore struct {
+	store.Store
+}
+
+func (s failingAcquireStore) RevocationEvents() store.RevocationEventStore {
+	return failingAcquireEvents{RevocationEventStore: s.Store.RevocationEvents()}
+}
+
+type failingAcquireEvents struct {
+	store.RevocationEventStore
+}
+
+func (s failingAcquireEvents) AcquireHubRuntimeLease(_ context.Context, _ store.AcquireHubRuntimeLeaseParams) (int64, error) {
+	return 0, errors.New("the store is broken")
+}
+
+func newSuspendedLeaseWatcher(t *testing.T, env *envT, opts ...revocationwatcher.Option) *revocationwatcher.Watcher {
+	t.Helper()
+	injected := injectedRevocationStore{Store: env.st, events: suspendedLeaseRevocationEvents{RevocationEventStore: env.st.RevocationEvents(), durableLease: suspendedLeaseDuration}}
+	opts = append([]revocationwatcher.Option{revocationwatcher.WithInterval(time.Hour)}, opts...)
+	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil), opts...)
+	require.NoError(t, w.SeedCursor(t.Context()))
+	return w
 }

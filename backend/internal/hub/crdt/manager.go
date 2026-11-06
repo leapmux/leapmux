@@ -1004,6 +1004,15 @@ func (m *Manager) Stop() {
 	m.auditWG.Wait()
 }
 
+// Discard closes a manager that the registry will never store. A duplicate that
+// lost a race in Get never reached Start, so nothing closes m.done, and Stop
+// would wait on it for ever. Closing the stop channel and shutting the presence
+// controller is the whole teardown that such a manager needs.
+func (m *Manager) Discard() {
+	m.stopOnce.Do(func() { close(m.stop) })
+	m.presenceCtl.Shutdown()
+}
+
 // Submit is the client-callable entrypoint. Routed through the
 // goroutine.
 func (m *Manager) Submit(ctx context.Context, input SubmitInput) ([]*leapmuxv1.BatchResult, error) {

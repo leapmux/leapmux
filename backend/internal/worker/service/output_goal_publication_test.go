@@ -21,7 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +51,7 @@ func (process *goalCapabilityObserver) observeNext(observe func()) {
 	process.mu.Unlock()
 }
 
-func goalPublicationFixture(t *testing.T) (*Service, *channel.Dispatcher, *turnAdmissionWatchingWriter, agent.ProviderServices, *goalCapabilityObserver) {
+func goalPublicationFixture(t *testing.T) (*Service, testRPCDispatcher, *turnAdmissionWatchingWriter, agent.ProviderServices, *goalCapabilityObserver) {
 	t.Helper()
 	svc, dispatcher, base := setupTestService(t)
 	const agentID = "goal-publication-owner"

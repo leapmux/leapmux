@@ -91,6 +91,11 @@ func StartFamily[T any](
 // FamilyHooks binds the shared protocol hooks to one member's runtime state.
 func FamilyHooks(f *FamilyBase) acp.Hooks {
 	return acp.Hooks{
+		// Joins the question bridge: its run loop defers cancelAll, which
+		// writes through CancelControlRequest, and Base.Wait and Base.stopAndWait
+		// call this hook after they admit their final cleanup. Without it the
+		// bridge's last writes ran unjoined past the caller's teardown.
+		AfterWaitCleanup:         f.Questions.wait,
 		SegmentText:              f.segmentText,
 		CaptureTurnOutputCleanup: f.captureDaemonCleanup,
 		PromptPrepared:           f.resetDaemonGeneration,

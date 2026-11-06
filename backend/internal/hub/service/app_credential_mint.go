@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/leapmux/leapmux/util/drain"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -273,7 +274,7 @@ type credentialNotice struct {
 	IssuedByAdmin bool
 }
 
-// notifyCredentialIssued emails the account owner that an app credential was
+// CredentialNotices emails the account owner that an app credential was
 // minted. It is how somebody learns that a credential they did not create
 // exists -- the one signal that does not depend on them opening Preferences.
 //
@@ -290,9 +291,9 @@ type credentialNotice struct {
 // the only mail send in the hub that does. Every other one IS the request the
 // caller made -- an account-recovery link, a verification code -- so the caller
 // waits for it and reads its error. This one is incidental to a token the
-// caller is blocked on, and an SMTP exchange is capped at sendTimeout, so
-// leaving it on the response path added up to that long to an authorization a
-// human waits for. context.WithoutCancel for the same reason handleTokenRefresh
+// caller is blocked on. An SMTP exchange is capped at CredentialNoticeTimeout,
+// so leaving it on the response path added up to that long to an authorization
+// a human waits for. context.WithoutCancel for the same reason handleTokenRefresh
 // uses it: the notice must not die because the client disconnected.
 //
 // Silent when the address is unverified: the hub does not know that an
@@ -304,13 +305,31 @@ type credentialNotice struct {
 // Refresh sends nothing. A rotation is the same credential continuing, and a
 // notice per rotation would train the recipient to ignore the one that
 // matters.
-func notifyCredentialIssued(
-	ctx context.Context,
-	sender mail.Sender,
-	renderer mail.Renderer,
-	user *store.User,
-	notice credentialNotice,
-) {
+//
+// The owner counts each send, and the Hub joins it up to a limit at
+// shutdown: a Hub exit inside CredentialNoticeTimeout would otherwise lose
+// the notice email.
+type CredentialNotices struct {
+	sender   mail.Sender
+	renderer mail.Renderer
+	inFlight drain.Counter
+}
+
+// NewCredentialNotices creates the shared owner for both credential mint surfaces.
+// A nil sender disables notices. The renderer's zero value is valid.
+func NewCredentialNotices(sender mail.Sender, renderer mail.Renderer) *CredentialNotices {
+	return &CredentialNotices{sender: sender, renderer: renderer}
+}
+
+// Wait joins admitted sends within the caller's shutdown budget.
+func (n *CredentialNotices) Wait(timeout time.Duration, warnMsg string) bool {
+	return n.inFlight.Wait(timeout, warnMsg)
+}
+
+// Notify sends a best-effort issuance notice independently of request cancellation.
+func (n *CredentialNotices) Notify(ctx context.Context, user *store.User, notice credentialNotice) {
+	sender, renderer := n.sender, n.renderer
+
 	if sender == nil || user == nil || user.Email == "" || !user.EmailVerified {
 		return
 	}
@@ -318,8 +337,10 @@ func notifyCredentialIssued(
 		user.Email, notice.AppName, notice.InstallationName, notice.Scopes, notice.IssuedByAdmin)
 	userID := user.ID
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), CredentialNoticeTimeout)
+	n.inFlight.Add()
 	go func() {
 		defer cancel()
+		defer n.inFlight.Done()
 		if err := sender.Send(sendCtx, msg); err != nil {
 			if errors.Is(err, mail.ErrEmailDisabled) {
 				return

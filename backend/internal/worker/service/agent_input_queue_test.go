@@ -28,7 +28,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -81,7 +80,7 @@ func decodeQueueResponse[T proto.Message](t *testing.T, writer *testResponseWrit
 }
 
 // setupInputQueueRPCService creates the Codex agent used by queue RPC tests.
-func setupInputQueueRPCService(t *testing.T) (*Service, *channel.Dispatcher) {
+func setupInputQueueRPCService(t *testing.T) (*Service, testRPCDispatcher) {
 	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
@@ -1709,7 +1708,7 @@ func TestDispatchRefusesAnAgentThatFailedToStartInMemory(t *testing.T) {
 	startEchoAgent(t, svc, failedAgentID)
 	startEchoAgent(t, svc, healthyAgentID)
 
-	handle := svc.AgentStartup.begin(failedAgentID, func() {})
+	handle := beginForTest(t, &svc.AgentStartup.startupCore, failedAgentID)
 	require.NotNil(t, handle)
 	svc.AgentStartup.fail(handle, "claude: command not found")
 	status, _, _, tracked := svc.AgentStartup.status(failedAgentID)

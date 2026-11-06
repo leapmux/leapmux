@@ -36,6 +36,7 @@ func (a *Agent) CompactContext() error {
 	pending := &droidCompaction{requestID: id, sessionID: sessionID, done: make(chan struct{})}
 	if sessionID != "" && !active && !compacting && !stopped {
 		a.compaction = pending
+		a.compactionOperations.Add(1)
 	}
 	a.Mu.Unlock()
 	if stopped {
@@ -49,6 +50,7 @@ func (a *Agent) CompactContext() error {
 	}
 	if err := a.writeRequest(id, droidMethodCompactSession, map[string]string{"sessionId": sessionID}); err != nil {
 		a.finishCompaction(pending, false)
+		a.compactionOperations.Done()
 		return err
 	}
 	a.dispatchMu.Lock()
@@ -62,7 +64,20 @@ func (a *Agent) CompactContext() error {
 		target.state.compactionLive = true
 	}
 	a.dispatchMu.Unlock()
-	go a.awaitCompactionResult(pending)
+	// Setup remains counted until it hands its operation to the watcher.
+	// A stop during setup ends the published compaction here instead.
+	a.Mu.Lock()
+	stoppedNow := a.stopped
+	a.Mu.Unlock()
+	if stoppedNow {
+		a.endAbortedCompaction(pending)
+		a.compactionOperations.Done()
+		return nil
+	}
+	go func() {
+		defer a.compactionOperations.Done()
+		a.awaitCompactionResult(pending)
+	}()
 	return nil
 }
 

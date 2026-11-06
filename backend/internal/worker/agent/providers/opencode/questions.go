@@ -485,6 +485,15 @@ type openCodeQuestions struct {
 	// needs the second. baseURL is written once, by the discovery goroutine.
 	mu      sync.Mutex
 	pending map[string]string
+
+	// stopped closes when the goroutine that Begin or beginAt started has
+	// fully returned -- past the run loop and past its deferred cancelAll,
+	// which writes through CancelControlRequest. wait receives from it, so the
+	// family's AfterWaitCleanup joins the bridge instead of leaving its last
+	// writes racing the caller's teardown. nil until one of the two begin
+	// methods starts the goroutine, and nil for ever when a Begin found no
+	// sink.
+	stopped chan struct{}
 }
 
 // Configure records the sink. It runs before the process starts, so it opens no
@@ -517,7 +526,12 @@ func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agent
 		return
 	}
 	q.agentID = agentID
+	q.mu.Lock()
+	q.stopped = make(chan struct{})
+	stopped := q.stopped
+	q.mu.Unlock()
 	go func() {
+		defer close(stopped)
 		baseURL, err := q.discover(ctx, clock, int32(pid))
 		if err != nil {
 			slog.Warn("No OpenCode question server; questions stay unanswerable",
@@ -530,6 +544,17 @@ func (q *openCodeQuestions) Begin(ctx context.Context, clock quartz.Clock, agent
 		q.announceReady(ctx)
 		q.run(ctx, clock)
 	}()
+}
+
+// wait blocks until the bridge's goroutine has fully returned. It returns at
+// once when no bridge ever started -- no sink, or Begin never ran.
+func (q *openCodeQuestions) wait() {
+	q.mu.Lock()
+	stopped := q.stopped
+	q.mu.Unlock()
+	if stopped != nil {
+		<-stopped
+	}
 }
 
 // announceReady tells the owner that the daemon address is known.
@@ -548,9 +573,14 @@ func (q *openCodeQuestions) beginAt(ctx context.Context, clock quartz.Clock, age
 	q.agentID = agentID
 	q.mu.Lock()
 	q.baseURL = baseURL
+	q.stopped = make(chan struct{})
+	stopped := q.stopped
 	q.mu.Unlock()
 	q.announceReady(ctx)
-	go q.run(ctx, clock)
+	go func() {
+		defer close(stopped)
+		q.run(ctx, clock)
+	}()
 }
 
 func (q *openCodeQuestions) run(ctx context.Context, clock quartz.Clock) {

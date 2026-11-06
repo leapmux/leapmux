@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
@@ -774,4 +775,38 @@ func TestShutdown_StopsTheInputQueue(t *testing.T) {
 
 	_, err := svc.InputQueue.Snapshot(context.Background(), "agent-1")
 	assert.ErrorIs(t, err, inputqueue.ErrManagerStopped)
+}
+
+func TestConcurrentShutdownCallersJoinOneCleanup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, dispatcher, _ := setupTestService(t)
+		dispatcher.CloseAdmission()
+		entered, release := make(chan struct{}), make(chan struct{})
+		announce := sync.OnceFunc(func() { close(entered) })
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		var calls atomic.Int32
+		svc.SetStopBackgroundLoops(func() { calls.Add(1); announce(); <-release })
+		first, second := make(chan struct{}), make(chan struct{})
+		go func() { defer close(first); svc.Shutdown() }()
+		<-entered
+		go func() { defer close(second); svc.Shutdown() }()
+		synctest.Wait()
+		assert.Equal(t, int32(1), calls.Load(), "concurrent shutdown must execute resource cleanup once")
+		select {
+		case <-first:
+			t.Error("cleanup owner returned before release")
+		default:
+		}
+		select {
+		case <-second:
+			t.Error("second shutdown returned before cleanup completed")
+		default:
+		}
+		finish()
+		<-first
+		<-second
+		svc.Shutdown()
+		assert.Equal(t, int32(1), calls.Load(), "later shutdown must join the completed cleanup")
+	})
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -25,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -750,3 +754,128 @@ func TestWire_SweepsTheAgentDirectoriesOfEndedWorkers(t *testing.T) {
 		return errors.Is(err, fs.ErrNotExist)
 	}, 30*time.Second, 10*time.Millisecond, "the sweep removed the directory, although no agent started")
 }
+
+// --- shutdown admission and the handler join ---
+
+// wiringStubWriter is the smallest ResponseWriter the admission tests need.
+type wiringStubWriter struct{}
+
+func (*wiringStubWriter) SendResponse(*leapmuxv1.InnerRpcResponse) error { return nil }
+func (*wiringStubWriter) SendError(int32, string) error                  { return nil }
+func (*wiringStubWriter) SendStream(*leapmuxv1.InnerStreamMessage) error { return nil }
+func (*wiringStubWriter) ChannelID() string                              { return "" }
+func (*wiringStubWriter) MaxPayloadBudget() int                          { return 0 }
+func (*wiringStubWriter) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}
+
+// A dispatcher admission that is still open after Shutdown returned would let
+// a handler write into the closed database.
+func TestWiringShutdownClosesDispatchAdmission(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	w.Shutdown()
+
+	ran := false
+	w.dispatcher.Handle("leapmux.v1.WorkerAgentService/Mutate", channel.Registration{}, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+		ran = true
+	})
+	w.dispatcher.DispatchWith(context.Background(), channel.LocalAgentCaller(userid.MustNew("u")),
+		&leapmuxv1.InnerRpcRequest{Method: "leapmux.v1.WorkerAgentService/Mutate"}, &wiringStubWriter{})
+
+	assert.False(t, ran, "a handler dispatched after Shutdown must not run")
+}
+
+// WaitHandlers joins an untracked handler: the dispatch the old Cleanup.Wait
+// never covered is exactly the one this join exists for.
+func TestWiringWaitHandlersJoinsAnUntrackedHandler(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		w.dispatcher.Handle("plain", channel.Registration{}, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+			close(entered)
+			<-release
+		})
+
+		w.dispatcher.DispatchAsync(context.Background(), channel.LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "plain"}, &wiringStubWriter{})
+
+		waited := make(chan struct{}, 1)
+		go func() {
+			w.WaitHandlers()
+			close(waited)
+		}()
+		<-entered
+		synctest.Wait()
+		select {
+		case <-waited:
+			t.Fatal("WaitHandlers returned while an untracked handler was parked")
+		default:
+		}
+
+		close(release)
+		select {
+		case <-waited:
+		case <-time.After(time.Second):
+			t.Fatal("WaitHandlers did not return after the release")
+		}
+	})
+}
+
+// A handler that never returns is abandoned at the handler budget, with one
+// Warn that reports it.
+func TestWiringWaitHandlersWarnsAtTheDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		entered := make(chan struct{})
+		w.dispatcher.Handle("stuck", channel.Registration{}, func(context.Context, channel.Caller, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+			close(entered)
+			<-release
+		})
+		w.dispatcher.DispatchAsync(context.Background(), channel.LocalAgentCaller(userid.MustNew("u")),
+			&leapmuxv1.InnerRpcRequest{Method: "stuck"}, &wiringStubWriter{})
+		<-entered
+
+		previousLogger := slog.Default()
+		var warns atomic.Int32
+		slog.SetDefault(slog.New(warnCountingHandler{next: slog.NewTextHandler(io.Discard, nil), warns: &warns}))
+		t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+		done := make(chan struct{})
+		go func() {
+			w.WaitHandlers()
+			close(done)
+		}()
+
+		// The budget is fake time in the bubble, so the deadline arrives
+		// without spending real seconds.
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("WaitHandlers did not return at the deadline")
+		}
+		assert.Equal(t, int32(1), warns.Load(), "the expiry must surface as exactly one Warn")
+	})
+}
+
+// warnCountingHandler counts Warn records, so a test can assert the expiry
+// logged once.
+type warnCountingHandler struct {
+	next  slog.Handler
+	warns *atomic.Int32
+}
+
+func (h warnCountingHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn
+}
+func (h warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		h.warns.Add(1)
+	}
+	return nil
+}
+func (h warnCountingHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h warnCountingHandler) WithGroup(name string) slog.Handler       { return h }

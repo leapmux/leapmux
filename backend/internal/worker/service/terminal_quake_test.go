@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,6 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -29,7 +29,7 @@ import (
 
 // openQuakeTerminal runs OpenTerminal with quake set and returns the terminal
 // id and the stored title.
-func openQuakeTerminal(t *testing.T, svc *Service, d *channel.Dispatcher, workingDir string) (string, string) {
+func openQuakeTerminal(t *testing.T, svc *Service, d testRPCDispatcher, workingDir string) (string, string) {
 	t.Helper()
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
@@ -1083,4 +1083,98 @@ func TestPayloadTabWorkingDir_RefusesAnUnmintableOwner(t *testing.T) {
 		"the owner that holds the row reads it")
 	assert.Empty(t, svc.payloadTabWorkingDir("", "file-1"),
 		"a blank owner must match nothing, not every blank-owner row")
+}
+
+// The quake close runs on a counted goroutine: the service cleanup join must
+// return only after it finished, so the caller's next read sees the row
+// closed without polling.
+func TestQuakeCloseIsJoinedByServiceCleanup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+
+	svc.closeQuakeTerminalOnShellExit(terminalID)
+	svc.Output.SetShuttingDown()
+	svc.Cleanup.Wait()
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid,
+		"the joined close must have closed the row before the service cleanup join returned")
+}
+
+// A shutdown that already began admits no close: the row stays open, and the
+// boot sweep closes it.
+func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	defer drainAllInFlight(svc)
+	dir := t.TempDir()
+	createAgentForPath(t, svc, "agent-1", dir)
+	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	// The latch goes down first, so the shell's own exit -- which is what
+	// would normally close the row -- is refused, and the row survives with a
+	// dead shell: the state a restart inherits.
+	svc.lifecycleMu.Lock()
+	svc.shuttingDown.Store(true)
+	svc.lifecycleMu.Unlock()
+	svc.Output.SetShuttingDown()
+	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
+	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "shell exit")
+	svc.Terminals.WaitForExit(terminalID)
+	svc.Cleanup.Wait()
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "a refused close leaves the row open")
+
+	svc.CloseOrphanedQuakeTerminals(ctx)
+	row, err = svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "the boot sweep closes what the shutdown refused")
+}
+
+func TestQuakeCleanupAdmissionAndShutdownJoin(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, _, _ := setupTestService(t)
+		const terminalID = "held-quake-cleanup"
+		require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+			ID: terminalID, WorkingDir: t.TempDir(), Cols: 80, Rows: 24, Screen: []byte{}, IsQuake: true,
+		}))
+		entered, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		svc.terminalCleanups.register(terminalID, func() { close(entered); <-release })
+		svc.closeQuakeTerminalOnShellExit(terminalID)
+		<-entered
+		done := make(chan struct{})
+		go func() { svc.Shutdown(); close(done) }()
+		synctest.Wait()
+		admitted := svc.beginCleanup()
+		if admitted {
+			svc.Cleanup.Done()
+		}
+		assert.False(t, admitted, "shutdown must refuse later cleanup admission")
+		select {
+		case <-done:
+			t.Fatal("shutdown returned before admitted cleanup finished")
+		default:
+		}
+		_, err := svc.Queries.GetTerminal(t.Context(), terminalID)
+		require.NoError(t, err, "database must remain open during cleanup")
+		finish()
+		<-done
+		row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
+		require.NoError(t, err)
+		assert.True(t, row.ClosedAt.Valid)
+	})
 }

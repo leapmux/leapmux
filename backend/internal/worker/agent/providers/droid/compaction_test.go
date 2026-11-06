@@ -2,7 +2,9 @@ package droid
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,49 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
+
+func TestWaitJoinsCompactionSetup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		processDone := make(chan struct{})
+		a, sink, stdin := newSteerAgentWithProcessDone(t, processDone)
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
+		defer a.Process.Stop()
+		defer releaseWrite()
+		stdin.respond = func(request droidEnvelope) {
+			if request.Method == droidMethodCompactSession {
+				close(entered)
+				<-release
+			}
+		}
+		compacted := make(chan error, 1)
+		go func() { compacted <- a.CompactContext() }()
+		<-entered
+		close(processDone)
+		waited := make(chan error, 1)
+		go func() { waited <- a.Wait() }()
+		synctest.Wait()
+		var waitErr error
+		returnedEarly := false
+		select {
+		case waitErr = <-waited:
+			returnedEarly = true
+		default:
+		}
+		releaseWrite()
+		require.NoError(t, <-compacted)
+		if !returnedEarly {
+			waitErr = <-waited
+		}
+		require.NoError(t, waitErr)
+		assert.False(t, returnedEarly, "Wait must join admitted compaction setup before finalizing output")
+		notifications := sink.LeapMuxNotifications()
+		require.Len(t, notifications, 1)
+		assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
+	})
+}
 
 func TestCompactContextReportsNativeRefusalAndReleasesTurn(t *testing.T) {
 	t.Parallel()
@@ -375,4 +420,125 @@ func TestCompactEndDuringTheWriteDoesNotPublishALateStart(t *testing.T) {
 		assert.Nil(t, value)
 	}
 	require.Len(t, sink.PersistedNotifications(), 1)
+}
+
+// Wait joins the compaction watchers: the ended record a watcher persists must
+// land before finishOutput runs, and this is the join that orders it.
+func TestWaitJoinsTheCompactionWatchers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan struct{})
+		a, _, _ := newSteerAgentWithProcessDone(t, done)
+		defer a.Process.Stop()
+		// The process gate is open, so the park below is the watcher join and not
+		// Process.Wait.
+		close(done)
+		a.compactionOperations.Add(1)
+		retire := sync.OnceFunc(a.compactionOperations.Done)
+		defer retire()
+
+		waited := make(chan struct{})
+		go func() {
+			defer close(waited)
+			_ = a.Wait()
+		}()
+
+		synctest.Wait()
+		select {
+		case <-waited:
+			t.Fatal("Wait returned while a compaction watcher was still counted")
+		default:
+		}
+
+		retire()
+		select {
+		case <-waited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Wait did not return after the watcher ended")
+		}
+
+	})
+}
+
+// A compaction whose watcher observed the process exit leaves its ended record
+// persisted by the time Wait returns: the join orders the record inside the
+// output finalization, so the read below polls nothing.
+func TestWaitLeavesTheCompactionEndedRecordPersisted(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	a, sink, _ := newSteerAgentWithProcessDone(t, done)
+	require.NoError(t, a.CompactContext())
+	close(done)
+	require.NoError(t, a.Wait())
+
+	notifications := sink.LeapMuxNotifications()
+	require.Len(t, notifications, 1, "the ended record must be persisted before Wait returns")
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
+}
+
+// CompactContext counts its watcher while the agent runs, so the join in Wait
+// has something to wait for.
+func TestCompactContextCountsItsWatcher(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		done := make(chan struct{})
+		endProcess := sync.OnceFunc(func() { close(done) })
+		a, _, _ := newSteerAgentWithProcessDone(t, done)
+		defer func() { endProcess(); a.Process.Stop() }()
+		require.NoError(t, a.CompactContext())
+
+		zero := make(chan struct{})
+		go func() {
+			a.compactionOperations.Wait()
+			close(zero)
+		}()
+
+		// A crossing now would mean CompactContext counted no watcher.
+		synctest.Wait()
+		select {
+		case <-zero:
+			t.Fatal("the watcher count reached zero before the process exited")
+		default:
+		}
+
+		endProcess()
+		select {
+		case <-zero:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the count never reached zero after the process exited")
+		}
+
+	})
+}
+
+// Stop can land while the compaction request is still being written, before
+// any watcher exists. The compaction published its start, so this call ends it
+// itself: the ended record is persisted with nothing left live.
+func TestStopDuringCompactionWriteEndsTheCompaction(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	a, sink, stdin := newSteerAgentWithProcessDone(t, done)
+	stdin.mu.Lock()
+	stdin.respond = func(request droidEnvelope) {
+		if request.Method == droidMethodCompactSession {
+			// The stopped-set half of Stop, landing while CompactContext is
+			// inside writeRequest. A full Stop would close stdin and refuse
+			// the write, which is the ordinary error path and not the
+			// published-start scenario under test.
+			a.Mu.Lock()
+			a.stopped = true
+			a.Mu.Unlock()
+		}
+	}
+	stdin.mu.Unlock()
+
+	err := a.CompactContext()
+
+	require.NoError(t, err)
+	notifications := sink.LeapMuxNotifications()
+	require.Len(t, notifications, 1, "the ended record must exist with no watcher left to write it")
+	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
+	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value, "compactionLive must be cleared")
 }

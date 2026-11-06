@@ -20,7 +20,7 @@ func TestGenerationProgressPublisherCoalescesGrowthAndClearsImmediately(t *testi
 	t.Parallel()
 
 	updates := make(chan map[string]interface{}, 2)
-	publisher := newGenerationProgressPublisher(func(info map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
 		updates <- info
 	}, func() string { return "session" })
 	t.Cleanup(publisher.close)
@@ -47,7 +47,7 @@ func TestGenerationProgressPublisherCoalescesGrowthAndClearsImmediately(t *testi
 func TestGenerationProgressPublisherReplaysOnlyActiveValues(t *testing.T) {
 	t.Parallel()
 
-	publisher := newGenerationProgressPublisher(func(map[string]interface{}) {}, func() string { return "session" })
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return "session" })
 	t.Cleanup(publisher.close)
 	publisher.report(agent.OutputTotalProgress("tool", 2048, true))
 
@@ -69,7 +69,7 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 	var positiveOnce sync.Once
 	var zeroOnce sync.Once
 	updates := make(chan int64, 2)
-	publisher := newGenerationProgressPublisher(func(info map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
 		value := info[contracts.SessionInfoKeyThinkingTokens].(int64)
 		if value > 0 {
 			positiveOnce.Do(func() { close(positiveStarted) })
@@ -222,7 +222,7 @@ func TestGenerationProgressPublisherKeepsTailQueueSnapshotsSeparateFromLaterRepo
 func TestGenerationProgressPublisherIgnoresReportsAfterClose(t *testing.T) {
 	t.Parallel()
 
-	publisher := newGenerationProgressPublisher(func(map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {
 		t.Fatal("a closed publisher must not send")
 	}, func() string { return "session" })
 	publisher.close()
@@ -241,7 +241,7 @@ func TestGenerationProgressPublisherBroadcastsOneOutputTailPerSpan(t *testing.T)
 	t.Parallel()
 
 	updates := make(chan map[string]interface{}, 4)
-	publisher := newGenerationProgressPublisher(func(info map[string]interface{}) {
+	publisher := newTestProgressPublisher(t, func(info map[string]interface{}) {
 		updates <- info
 	}, func() string { return "session-1" })
 	publisher.tailInterval = time.Millisecond
@@ -280,14 +280,12 @@ func TestGenerationProgressPublisherBroadcastsOneOutputTailPerSpan(t *testing.T)
 func TestGenerationProgressPublisherForgetsATailWhenItsCallEnds(t *testing.T) {
 	t.Parallel()
 
-	publisher := newGenerationProgressPublisher(func(map[string]interface{}) {}, func() string { return "session-1" })
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return "session-1" })
 	t.Cleanup(publisher.close)
 
 	publisher.report(agent.OutputTailProgress("call-a", "partial", false))
 	publisher.report(agent.OutputTailProgress("call-b", "other", false))
-	publisher.mu.Lock()
-	require.Len(t, publisher.tails, 2)
-	publisher.mu.Unlock()
+	requirePublisherTailCount(t, publisher, 2)
 
 	// The completion of one call leaves the other call's tail alone.
 	publisher.report(agent.CompleteOutputProgress("call-a"))
@@ -321,7 +319,7 @@ func TestGenerationProgressPublisherKeepsATailAcrossEveryOperationThatDoesNotEnd
 		// A tail for a DIFFERENT call ends nothing at all.
 		agent.OutputTailProgress("call-b", "other", false),
 	} {
-		publisher := newGenerationProgressPublisher(func(map[string]interface{}) {}, func() string { return "session-1" })
+		publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return "session-1" })
 		publisher.report(agent.OutputTailProgress("call-a", "partial", false))
 		publisher.report(update)
 		publisher.mu.Lock()
@@ -349,4 +347,26 @@ func TestClipOutputTailKeepsTheEndAtARuneBoundary(t *testing.T) {
 	assert.LessOrEqual(t, len(text), runningToolTailBytes)
 	assert.True(t, utf8.ValidString(text), "the cut must land on a rune boundary")
 	assert.True(t, strings.HasSuffix(long, text), "the cap keeps the end, never the start")
+}
+
+func requirePublisherTailCount(t require.TestingT, publisher *generationProgressPublisher, expected int) {
+	publisher.mu.Lock()
+	count := len(publisher.tails)
+	publisher.mu.Unlock()
+	require.Equal(t, expected, count)
+}
+
+func TestPublisherTailAssertionReleasesItsLockOnFailure(t *testing.T) {
+	publisher := newTestProgressPublisher(t, func(map[string]interface{}) {}, func() string { return "session" })
+	recorder := &fatalAssertionRecorder{}
+	done := make(chan struct{})
+	returned := false
+	go func() { defer close(done); requirePublisherTailCount(recorder, publisher, 1); returned = true }()
+	<-done
+	acquired := publisher.mu.TryLock()
+	// Reclaim the lock even when the old assertion abandoned it.
+	publisher.mu.Unlock()
+	assert.True(t, acquired, "a fatal assertion must release the publisher mutex before cleanup")
+	assert.False(t, returned)
+	require.NotEmpty(t, recorder.messages)
 }

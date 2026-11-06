@@ -81,24 +81,17 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		// How LONG Stop takes is a real assertion, not teardown hygiene: the
-		// Hub's HTTP drain gives itself 10s and waits on the connection each
-		// worker's Connect stream is riding, so a shutdown path that leaves
-		// that stream to the worker to close spends the whole budget and then
-		// reports the deadline as an error.
-		//
-		// Stated as a COMPLETION against soloStopBudget rather than an elapsed
-		// compare after the fact. Identical discrimination -- the failing path
-		// takes the full 10s drain, the passing one milliseconds -- but this
-		// form fails AT the budget with a message naming the drain, instead of
-		// blocking for the whole 10s and then reporting a number.
+		// The budget detects a full Hub HTTP drain when an idle worker leaves
+		// Connect open. Worker work can also exceed it. Report the delay, then
+		// join Stop before later cleanup removes the data directory.
 		stopped := make(chan error, 1)
 		go func() { stopped <- inst.Stop() }()
 		select {
 		case err := <-stopped:
 			require.NoError(t, err)
 		case <-time.After(soloStopBudget):
-			t.Fatal("solo shutdown waited out the hub's drain budget instead of closing the worker's Connect stream")
+			t.Errorf("solo shutdown exceeded its %s budget", soloStopBudget)
+			require.NoError(t, <-stopped, "the timed-out shutdown must still finish before fixture cleanup returns")
 		}
 	})
 
@@ -178,7 +171,7 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -209,7 +202,8 @@ func TestChannelLifetimeCanOutliveHandshakeContext(t *testing.T) {
 	}
 
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
-	operationCtx, cancelOperation := context.WithCancel(context.Background())
+	operationCtx, cancelOperation := context.WithCancel(channelOpenContext(t))
+	t.Cleanup(cancelOperation)
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
 	t.Cleanup(cancelLifetime)
 
@@ -247,7 +241,7 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -340,7 +334,7 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -562,7 +556,7 @@ func TestChannelMultipleRPCs(t *testing.T) {
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -589,7 +583,7 @@ func TestChannelConcurrentRPCs(t *testing.T) {
 
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -638,7 +632,7 @@ func TestChannelLargeRPCDoesNotStallTunnelTraffic(t *testing.T) {
 	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+	ch, err := tunnel.OpenChannel(channelOpenContext(t), hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext:     ctx,
 		HTTPClient:          httpClient,
 		WebSocketHTTPClient: httpClient,
@@ -684,4 +678,14 @@ func TestChannelLargeRPCDoesNotStallTunnelTraffic(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("large CallRPC did not complete")
 	}
+}
+
+// channelOpenContext uses the public budget for each real handshake. A background
+// context would select the Hub's shorter generic send timeout instead.
+// Each caller keeps the established channel's lifetime context separate.
+func channelOpenContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), tunnel.DefaultChannelOpenTimeout)
+	t.Cleanup(cancel)
+	return ctx
 }

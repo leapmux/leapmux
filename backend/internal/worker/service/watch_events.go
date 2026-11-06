@@ -152,21 +152,22 @@ func (s *replaySink) alive() bool {
 // that rides an InnerStreamRequest on the SAME stream. Catch-up replay runs
 // only for entities that transition into WATCH_MODE_FULL.
 //
-// Dispatcher ctx is intentionally not threaded: the live stream outlives the
-// handler via watchSession.
+// The session derives from the dispatcher context and runs inside its handler.
+// Dispatcher shutdown therefore joins replay, final frames, and stream release.
 //
 // registerOwnerGuarded decodes the opening request and refuses an undecodable
 // one with a stream error frame before this handler runs.
 func handleWatchEvents(svc *Service) func(context.Context, channel.Caller, *leapmuxv1.WatchEventsRequest, channel.ResponseWriter) {
-	return func(_ context.Context, caller channel.Caller, r *leapmuxv1.WatchEventsRequest, sender channel.ResponseWriter) {
-		s := newWatchSession(svc, caller, sender)
+	return func(ctx context.Context, caller channel.Caller, r *leapmuxv1.WatchEventsRequest, sender channel.ResponseWriter) {
+		s := newWatchSession(ctx, svc, caller, sender)
+		defer s.cancel()
 		// Queue the opening request before BindStream can replay newer client frames.
 		s.submit(r)
 		release, ok := sender.BindStream(s)
 		if !ok {
 			// BindStream refused — the transport has no revise/cancel path for
 			// this stream. newWatchSession already claimed channel ownership
-			// (BeginSession) and minted a bgCtx child, but run() never starts so
+			// (BeginSession) and derived a request context, but run() never starts so
 			// its deferred cleanup never fires — retire both explicitly so we do
 			// not orphan ownership or leak the ctx (the agent.go handler cancels
 			// its own ctrl here for the same reason).
@@ -175,7 +176,7 @@ func handleWatchEvents(svc *Service) func(context.Context, channel.Caller, *leap
 			sendFailedPrecondition(sender, "stream binding unavailable")
 			return
 		}
-		go s.run(release)
+		s.run(release)
 	}
 }
 

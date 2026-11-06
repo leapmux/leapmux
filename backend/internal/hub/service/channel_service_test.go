@@ -215,8 +215,7 @@ func (e *channelTestEnv) createWorkerWithKeys(t *testing.T, token string, fill b
 func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, hello *leapmuxv1.WorkerHello) {
 	t.Helper()
 	conn := workermgrtest.NewConnWithHello(t, workerID, hello, func(*leapmuxv1.ConnectResponse) error { return nil })
-	_, err := env.workerMgr.Register(conn)
-	require.NoError(t, err)
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
 }
 
 func TestGetWorkerHandshakeParams(t *testing.T) {
@@ -700,44 +699,69 @@ func TestOpenChannel_EmptyFields(t *testing.T) {
 
 func TestOpenChannel_WithMockWorker(t *testing.T) {
 	t.Parallel()
-
 	env := setupChannelTestServer(t)
-	ctx := context.Background()
 	token := env.adminToken(t)
-
 	workerID := env.createWorker(t, token)
+	sent, capture := captureChannelOpenFrames()
+	conn := workermgrtest.NewConnWithWrite(t, workerID, capture)
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
+	sentMsg := env.openChannelUntilForwarded(t, token, &leapmuxv1.OpenChannelRequest{
+		WorkerId: workerID, HandshakePayload: []byte("handshake-msg-1"),
+	}, sent)
+	assert.Equal(t, uint64(contracts.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
+		"hub must announce its resolved max_message_size on ChannelOpenRequest")
+}
 
-	// Simulate worker online by registering a mock connection.
-	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		sentCh <- msg
+func captureChannelOpenFrames() (<-chan *leapmuxv1.ConnectResponse, func(*leapmuxv1.ConnectResponse) error) {
+	captured := make(chan *leapmuxv1.ConnectResponse, 1)
+	return captured, func(frame *leapmuxv1.ConnectResponse) error {
+		if frame.GetChannelOpen() != nil {
+			select {
+			case captured <- frame:
+			default:
+			}
+		}
 		return nil
-
-	})
-
-	_, _ = env.workerMgr.Register(conn)
-
-	// OpenChannel should fail with timeout because mock worker doesn't respond.
-	// Use a short timeout context.
-	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
-	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         workerID,
-			HandshakePayload: []byte("handshake-msg-1"),
-		}, token))
-	require.Error(t, err)
-	// The sent message should have been a ChannelOpenRequest.
-	select {
-	case sentMsg := <-sentCh:
-		assert.NotNil(t, sentMsg.GetChannelOpen())
-		assert.Equal(t, []byte("handshake-msg-1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-		assert.Equal(t, uint64(contracts.MaxMessageSize), sentMsg.GetChannelOpen().GetMaxMessageSize(),
-			"hub must announce its resolved max_message_size on ChannelOpenRequest")
-	case <-time.After(time.Second):
-		require.Fail(t, "expected a message to be sent to worker")
 	}
+}
+
+func requireWorkerConnectionRegistration(t *testing.T, manager *workermgr.Manager, conn *workermgr.Conn) {
+	t.Helper()
+	_, err := manager.Register(conn)
+	require.NoError(t, err)
+}
+
+func (e *channelTestEnv) openChannelUntilForwarded(t *testing.T, token string, request *leapmuxv1.OpenChannelRequest, forwarded <-chan *leapmuxv1.ConnectResponse) *leapmuxv1.ConnectResponse {
+	t.Helper()
+	deadline := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(deadline)
+	result := make(chan error, 1)
+	rpcDone := make(chan struct{})
+	go func() {
+		defer close(rpcDone)
+		_, err := e.channelClient.OpenChannel(authedReq(ctx, request, token))
+		result <- err
+	}()
+	defer func() { cancel(); <-rpcDone }()
+	var frame *leapmuxv1.ConnectResponse
+	select {
+	case frame = <-forwarded:
+	case err := <-result:
+		t.Fatalf("OpenChannel finished before forwarding to the worker: %v", err)
+	case <-deadline.Done():
+		t.Fatalf("the worker did not receive ChannelOpen: %v", deadline.Err())
+	}
+	require.NotNil(t, frame.GetChannelOpen())
+	assert.Equal(t, request.GetHandshakePayload(), frame.GetChannelOpen().GetHandshakePayload())
+	cancel()
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeCanceled, connect.CodeOf(err), "the unacknowledged request must end through explicit cancellation")
+	case <-deadline.Done():
+		t.Fatal("OpenChannel did not return after cancellation")
+	}
+	return frame
 }
 
 type freshnessAfterNCalls struct {
@@ -817,8 +841,8 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 	// race the whole file runs against -- at 100ms, a `-race` run of the package
 	// crossed it often enough to fail an assertion with CodeUnavailable, blaming
 	// the error-code mapping for a timeout. Matches workermgr's own pending
-	// tests. A test that WANTS the deadline should build its own env with a
-	// short one, the way TestOpenChannel_WithMockWorker bounds its context.
+	// tests. Handshake forwarding tests cancel explicitly after observing the
+	// worker receive ChannelOpen, so a short setup deadline cannot hide admission.
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	sent := make(chan *leapmuxv1.ConnectResponse, 1)
 	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
@@ -826,7 +850,7 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 		return nil
 
 	})
-	_, _ = wMgr.Register(conn)
+	requireWorkerConnectionRegistration(t, wMgr, conn)
 	return &directOpenChannelEnv{
 		store:       st,
 		user:        user,
@@ -886,7 +910,7 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	checker := &freshnessAfterNCalls{staleAfter: 3}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
@@ -934,7 +958,7 @@ func TestOpenChannel_ClosesLocalChannelWhenOpenWriteFails(t *testing.T) {
 		}
 		return nil
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID: userid.MustNew(env.user.ID), Username: env.user.Username,
@@ -1012,7 +1036,7 @@ func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
 				return nil
 
 			})
-			_, _ = env.worker.Register(conn)
+			requireWorkerConnectionRegistration(t, env.worker, conn)
 
 			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1053,7 +1077,7 @@ func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1093,7 +1117,7 @@ func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1132,7 +1156,7 @@ func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1171,7 +1195,7 @@ func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1218,7 +1242,7 @@ func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
 				return nil
 
 			})
-			_, _ = env.worker.Register(conn)
+			requireWorkerConnectionRegistration(t, env.worker, conn)
 
 			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1266,7 +1290,7 @@ func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1332,7 +1356,7 @@ func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1375,7 +1399,7 @@ func TestOpenChannel_PropagatesAuthenticatedUserId(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
@@ -1414,7 +1438,7 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
 	// The deadline has to clear the OpenChannel round trip below (a worker
@@ -1467,7 +1491,7 @@ func TestCloseChannelsByBearer_DoesNotBlockOnWorkerSend(t *testing.T) {
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 	t.Cleanup(func() { close(blocked) })
 
 	env.channels.RegisterWithAuthInfo("blocked-close", env.workerID, env.user.ID, channelmgr.AuthInfo{
@@ -1507,7 +1531,7 @@ func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t
 		return nil
 
 	})
-	_, _ = env.worker.Register(conn)
+	requireWorkerConnectionRegistration(t, env.worker, conn)
 	t.Cleanup(func() { close(blocked) })
 
 	healthyWorkerID := id.Generate()
@@ -1517,7 +1541,7 @@ func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t
 		return nil
 
 	})
-	_, _ = env.worker.Register(healthyConn)
+	requireWorkerConnectionRegistration(t, env.worker, healthyConn)
 
 	for i := 0; i < 8; i++ {
 		env.channels.RegisterWithAuthInfo(id.Generate(), env.workerID, env.user.ID, channelmgr.AuthInfo{}, nil)
@@ -1558,7 +1582,7 @@ func TestCloseChannelsByUserRevocation_DoesNotBlockOnParkedWorkerWrites(t *testi
 			<-blocked
 			return nil
 		})
-		_, _ = env.worker.Register(conn)
+		requireWorkerConnectionRegistration(t, env.worker, conn)
 		env.channels.RegisterWithAuthInfo(id.Generate(), workerID, env.user.ID, channelmgr.AuthInfo{}, nil)
 	}
 	t.Cleanup(func() { close(blocked) })
@@ -1688,83 +1712,28 @@ func TestGetWorkerHandshakeParams_Classic(t *testing.T) {
 
 func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 	t.Parallel()
-
 	env := setupChannelTestServer(t)
-	ctx := context.Background()
 	token := env.adminToken(t)
-
 	workerID := env.createWorker(t, token)
-
-	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithHello(t, workerID, postQuantumHello(0x7c), func(msg *leapmuxv1.ConnectResponse) error {
-		sentCh <- msg
-		return nil
-	})
-
-	_, _ = env.workerMgr.Register(conn)
-
-	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
-	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         workerID,
-			HandshakePayload: []byte("pq-handshake-msg1"),
-		}, token))
-	// Times out because mock worker doesn't respond.
-	require.Error(t, err)
-
-	// A WAIT, not a non-blocking read: the send to the worker happens on the
-	// handler goroutine, and the RPC above returns on its own 100ms deadline
-	// without waiting for it. A read that gives up at once therefore races the
-	// send and fails under load, although the claim here -- that the hub handed
-	// the ChannelOpen to the worker -- says nothing about which happens first.
-	// The limit is a deadlock guard, matching the sibling case above.
-	select {
-	case sentMsg := <-sentCh:
-		assert.NotNil(t, sentMsg.GetChannelOpen())
-		assert.Equal(t, []byte("pq-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-	case <-time.After(time.Second):
-		require.Fail(t, "expected a message to be sent to worker")
-	}
+	sent, capture := captureChannelOpenFrames()
+	conn := workermgrtest.NewConnWithHello(t, workerID, postQuantumHello(0x7c), capture)
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
+	env.openChannelUntilForwarded(t, token, &leapmuxv1.OpenChannelRequest{
+		WorkerId: workerID, HandshakePayload: []byte("pq-handshake-msg1"),
+	}, sent)
 }
 
 func TestOpenChannel_ClassicHandshake(t *testing.T) {
 	t.Parallel()
-
 	env := setupChannelTestServer(t)
-	ctx := context.Background()
 	token := env.adminToken(t)
-
 	workerID := env.createWorker(t, token)
-
-	sentCh := make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithHello(t, workerID, classicHello(0x7b), func(msg *leapmuxv1.ConnectResponse) error {
-		sentCh <- msg
-		return nil
-	})
-
-	_, _ = env.workerMgr.Register(conn)
-
-	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
-	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
-		&leapmuxv1.OpenChannelRequest{
-			WorkerId:         workerID,
-			HandshakePayload: []byte("classic-handshake-msg1"),
-		}, token))
-	require.Error(t, err)
-
-	// A WAIT rather than a non-blocking read, for the reason given in
-	// TestOpenChannel_PostQuantumHandshake.
-	select {
-	case sentMsg := <-sentCh:
-		assert.NotNil(t, sentMsg.GetChannelOpen())
-		assert.Equal(t, []byte("classic-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-	case <-time.After(time.Second):
-		require.Fail(t, "expected a message to be sent to worker")
-	}
+	sent, capture := captureChannelOpenFrames()
+	conn := workermgrtest.NewConnWithHello(t, workerID, classicHello(0x7b), capture)
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
+	env.openChannelUntilForwarded(t, token, &leapmuxv1.OpenChannelRequest{
+		WorkerId: workerID, HandshakePayload: []byte("classic-handshake-msg1"),
+	}, sent)
 }
 
 func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
@@ -1772,15 +1741,16 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	ctx := context.Background()
 
 	userID = id.Generate()
-	hash, _ := password.Hash("testpass2")
-	_ = e.store.Users().Create(ctx, store.CreateUserParams{
+	hash, err := password.Hash("testpass2")
+	require.NoError(t, err)
+	require.NoError(t, e.store.Users().Create(ctx, store.CreateUserParams{
 		ID:                    userID,
 		Username:              "user2",
 		PasswordHash:          hash,
 		DisplayName:           "User 2",
 		FirstCredentialExempt: true,
 		IsAdmin:               false,
-	})
+	}))
 	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr)
 	return

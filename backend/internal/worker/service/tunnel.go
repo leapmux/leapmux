@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/util/drain"
+
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -110,22 +112,36 @@ func newTunnelConn(mgr *tunnelManager, connID string, conn net.Conn, sender chan
 	// another path already evicted the conn. A nil mgr (focused unit tests) falls
 	// back to a bare close.
 	if ctx != nil {
-		tc.stopCtxWatch = context.AfterFunc(ctx, func() {
-			if mgr != nil {
-				mgr.closeAndRemove(connID, tc)
-			} else {
-				tc.close()
+		// AfterFunc can run before it returns its stop function. Publish that function
+		// before the callback can close the connection and read stopCtxWatch.
+		ready := make(chan struct{})
+		if mgr != nil {
+			mgr.contextClosers.Add()
+			finished := sync.OnceFunc(mgr.contextClosers.Done)
+			stop := context.AfterFunc(ctx, func() { defer finished(); <-ready; mgr.closeAndRemove(connID, tc) })
+			tc.stopCtxWatch = func() bool {
+				if stop() {
+					finished()
+					return true
+				}
+				return false
 			}
-		})
+		} else {
+			tc.stopCtxWatch = context.AfterFunc(ctx, func() { <-ready; tc.close() })
+		}
+		close(ready)
 	}
+
 	return tc
 }
 
 // tunnelManager tracks active tunnel connections for a worker.
 type tunnelManager struct {
-	mu      sync.Mutex
-	conns   sync.Map                      // conn_id -> *tunnelConn (lock-free: read by the target read loop)
-	opening map[string]context.CancelFunc // conn_id -> dial cancel (aborts the in-flight dial); mu-owned
+	readLoops      drain.Counter
+	contextClosers drain.Counter
+	mu             sync.Mutex
+	conns          sync.Map                      // conn_id -> *tunnelConn (lock-free: read by the target read loop)
+	opening        map[string]context.CancelFunc // conn_id -> dial cancel (aborts the in-flight dial); mu-owned
 	// canceled fences a close that arrived before (or during) its open, so a racing
 	// beginOpen/store drops the conn the client already gave up on. mu-owned; see
 	// cancelMarkers for its expiry rule.
@@ -647,7 +663,8 @@ func (m *tunnelManager) openConn(ctx context.Context, caller channel.Caller, r *
 	}
 
 	// Start reading from the target in a goroutine and stream data back.
-	go tunnelReadLoop(m, connID, tc)
+	m.readLoops.Add()
+	go func() { defer m.readLoops.Done(); tunnelReadLoop(m, connID, tc) }()
 }
 
 // sendData writes data to the target connection.

@@ -1,11 +1,57 @@
 import { expect } from '@playwright/test'
+import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
+import { listOnlineWorkerIDsViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
-import { getTerminalRows, getTerminalText, sendActiveTerminalInput, waitForTerminalText } from './helpers/terminal'
-import { openTerminalViaUI, terminalTabs } from './helpers/ui'
-import { ensureWorkerOnline, restartHub, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
+import { getTerminalRows, getTerminalText, sendActiveTerminalInput, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
+import { openTerminalViaUI, terminalTabs, waitForLayoutSave } from './helpers/ui'
+import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
+  test('restores terminal output and one disconnect notice after a Worker restart', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await withCleanup(async () => {
+      const saved = waitForLayoutSave(page)
+      await openTerminalViaUI(page)
+      await saved
+      await terminalTabs(page).click()
+      await waitForTerminalReady(page)
+      const marker = 'SHUTDOWN_RESTORE_MARKER'
+      expect(await sendActiveTerminalInput(page, `echo ${marker.slice(0, 9)}""${marker.slice(9)}\r`)).toBe(true)
+      await waitForTerminalText(page, marker)
+
+      await stopWorker(separateHubWorker)
+      await waitForWorkerOffline(separateHubWorker)
+      await waitForTerminalText(page, 'Worker disconnected - Press Enter to restart')
+      await restartWorker(separateHubWorker)
+      await page.reload()
+      await expect(terminalTabs(page)).toBeVisible()
+      await terminalTabs(page).click()
+      await expect(terminalTabs(page)).toHaveAttribute('data-terminal-status', String(TerminalStatus.EXITED))
+      await waitForTerminalText(page, marker)
+      const text = await getTerminalText(page)
+      expect((text.match(/Worker disconnected - Press Enter to restart/g) ?? []).length).toBe(1)
+
+      expect(await sendActiveTerminalInput(page, '\r')).toBe(true)
+      await waitForTerminalReady(page)
+      expect(await getTerminalText(page)).toContain(marker)
+    }, () => ensureWorkerOnline(separateHubWorker))
+  })
+
+  test('reports a native shell exit while the Worker remains online', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
+    test.skip(process.platform === 'win32', 'POSIX process signals are unavailable on Windows')
+    void authenticatedWorkspace
+    await openTerminalViaUI(page)
+    await terminalTabs(page).click()
+    await waitForTerminalReady(page)
+    // SIGKILL cannot become a shell-defined exit code through a signal handler.
+    expect(await sendActiveTerminalInput(page, 'kill -KILL $$\r')).toBe(true)
+    await waitForTerminalText(page, 'Terminal process exited (-1) - Press Enter to restart')
+    await expect(terminalTabs(page)).toHaveAttribute('data-terminal-status', String(TerminalStatus.EXITED))
+    expect(await getTerminalText(page)).not.toContain('Worker disconnected')
+    expect(await listOnlineWorkerIDsViaAPI(separateHubWorker.hubUrl, separateHubWorker.adminToken)).toContain(separateHubWorker.workerId)
+  })
+
   test('should mark terminal as disconnected when worker stops', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     // The test stops the worker-scoped Worker and leaves it stopped. The cleanup

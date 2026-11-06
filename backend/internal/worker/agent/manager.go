@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // ErrAgentNotFound is returned when an agent process does not exist.
@@ -56,10 +58,23 @@ type Manager struct {
 	// read from the configuration. SetStartupConcurrency replaces it.
 	startupSlots chan struct{}
 
-	// turnRetries counts the goroutines that run accepted turn retries. Only
-	// WaitTurnRetriesForTest reads it: no production caller waits for a retry.
+	// turnRetries counts the goroutines that run accepted turn retries. StopAll
+	// joins it, and WaitTurnRetriesForTest waits on it in a test. RetryTurn
+	// holds m.mu across its closed check and its Add, so no Add can land once
+	// StopAll's join has started, and no retry that StopAll must join can be
+	// missed.
 	turnRetries sync.WaitGroup
+
+	// closed refuses every later start and turn retry. StopAll sets it once
+	// and nothing clears it: a manager that is shutting down admits no new
+	// process, because nothing would stop a process started after the sweep
+	// snapshot it was closed against.
+	closed bool
 }
+
+// ErrManagerClosed is returned when a start or a turn retry arrives after
+// StopAll began closing the manager.
+var ErrManagerClosed = errors.New("agent manager is closed")
 
 // lifecycleEntry is a per-agent mutex whose refcount is guarded by Manager.mu.
 // Entries are evicted when no caller holds or is waiting for the lock.
@@ -339,6 +354,10 @@ func (m *Manager) Registry() *Registry {
 
 func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink ProviderServices, start StartFunc, background bool) (map[string]string, error) {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrManagerClosed
+	}
 	if _, exists := m.agents[opts.AgentID]; exists {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("agent already running for agent %s", opts.AgentID)
@@ -402,6 +421,17 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink Provide
 	entry := &agentRegistration{provider: provider, done: done}
 
 	m.mu.Lock()
+	if m.closed {
+		// StopAll ran while this start was inside its provider handshake. The
+		// sweep snapshotted before this provider existed, so its goroutines
+		// know nothing about it: stop it here and wait it out, or its exit
+		// handler would run unjoined against a closed database.
+		m.mu.Unlock()
+		provider.Stop()
+		_ = provider.Wait()
+		retainFailedStartBackgroundTasks(opts.AgentID, sink)
+		return nil, ErrManagerClosed
+	}
 	m.agents[opts.AgentID] = entry
 	if len(groups) > 0 {
 		m.cachedOptionGroups[opts.AgentID] = cachedCatalog{groups: groups, model: optionids.CurrentValue(groups, OptionIDModel), registration: entry}
@@ -887,7 +917,17 @@ func (m *Manager) RetryTurn(agentID, turnID, model string) error {
 	if err != nil {
 		return err
 	}
+	// One critical section across the closed check and the Add: a StopAll
+	// that sets closed cannot run between them, so no retry is counted after
+	// StopAll's join started, and none that StopAll must join is missed.
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		retry.Abandon(ErrManagerClosed)
+		return ErrManagerClosed
+	}
 	m.turnRetries.Add(1)
+	m.mu.Unlock()
 	go func() {
 		defer m.turnRetries.Done()
 		m.runTurnRetry(agentID, entry, retry)
@@ -1123,18 +1163,68 @@ func (m *Manager) ListAgentIDs() []string {
 	return ids
 }
 
-// StopAll stops all running agents.
-func (m *Manager) StopAll() {
+// StopAll closes admission for new processes, then stops every running agent
+// and joins the exit goroutine of each one, limited by timeout. It returns the
+// IDs still registered at the deadline, or nil when every one finished.
+//
+// It must join, not merely stop: worker.Run closes the database once
+// Service.Shutdown returns, and an exit goroutine still parked in its onExit --
+// which clears pending control requests -- would write into it. That join is
+// the fix for the shutdown log lines of the shape
+// "clear pending control requests: delete rows ... sql: database is closed".
+//
+// Each provider stops on its own goroutine, because a provider whose Stop
+// waits out a stalled writer would otherwise cost its whole timeout once per
+// agent in sequence. The same fan-out shape runs in
+// service.workspace_archive's archive path. No lock is held across Stop or
+// the receive, because the exit goroutine takes m.mu for its own cleanup.
+//
+// A nil done means the entry came from PutAgentForTest, or its exit goroutine
+// already finished; there is nothing to join.
+func (m *Manager) StopAll(timeout time.Duration) []string {
 	m.mu.Lock()
-	providers := make([]Agent, 0, len(m.agents))
-	for _, p := range m.agents {
-		providers = append(providers, p.provider)
+	m.closed = true
+	type stoppage struct {
+		id       string
+		provider Agent
+		done     chan struct{}
+	}
+	stoppages := make([]stoppage, 0, len(m.agents))
+	for id, entry := range m.agents {
+		stoppages = append(stoppages, stoppage{id: id, provider: entry.provider, done: entry.done})
 	}
 	m.mu.Unlock()
 
-	for _, p := range providers {
-		p.Stop()
+	var drain drain.Counter
+	for _, s := range stoppages {
+		drain.Add()
+		go func(s stoppage) {
+			defer drain.Done()
+			s.provider.Stop()
+			if s.done != nil {
+				<-s.done
+			}
+		}(s)
 	}
+	// Join the accepted turn retries through the same counter, so one budget
+	// covers both waits: a retry parked in Replace is a goroutine whose writes
+	// must land before the database closes, exactly like an exit handler.
+	drain.Add()
+	go func() {
+		defer drain.Done()
+		m.turnRetries.Wait()
+	}()
+
+	if drain.Wait(timeout, "") {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.agents))
+	for id := range m.agents {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // ExitHandler is called when an agent process exits.

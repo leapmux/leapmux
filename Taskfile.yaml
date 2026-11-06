@@ -1509,6 +1509,8 @@ tasks:
       - cd desktop/go && GOOS=windows go vet ./...
       - cd desktop/go && GOOS=linux go vet ./...
       - cd desktop/go && GOOS=darwin go vet ./...
+      # rustfmt follows every module regardless of its cfg, so one OS covers all.
+      - cd desktop/rust && cargo fmt --check
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
       - *record_artifacts
 
@@ -1529,14 +1531,18 @@ tasks:
     desc: Auto-fix backend lint violations
     cmds:
       - task: prepare-backend
-      - cd backend && go tool golangci-lint run --fix ./...
+      - cd backend && go tool golangci-lint run --fix --allow-serial-runners ./...
 
   lint-fix-desktop:
     desc: Auto-fix desktop lint violations
     cmds:
       - task: prepare-desktop
-      - cd desktop/go && go tool golangci-lint run --fix ./...
-      - cd desktop/rust && cargo clippy --fix --all-targets
+      # Tauri's build script fails without the sidecar its bundle resources point at.
+      - task: build-desktop-sidecar
+      - cd desktop/go && go tool golangci-lint run --fix --allow-serial-runners ./...
+      # A fix runs on work in progress, so a tree with changes is the normal case.
+      - cd desktop/rust && cargo clippy --fix --allow-dirty --all-targets
+      - cd desktop/rust && cargo fmt
 
   # --- Development ---
 

@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -143,4 +145,35 @@ func TestCloseReleasesLeaseEvenWhenSweepHoldsRunMu(t *testing.T) {
 		"Close must release the lease even while a sweep holds runMu")
 	require.NoError(t, releaseCtxErr,
 		"lease release must not inherit the exhausted caller context")
+}
+
+// sessionRecordingCloser records the sessions whose channels close. It embeds
+// the interface (nil) so any other method call panics, as the fakes here do.
+type sessionRecordingCloser struct {
+	auth.CredentialChannelCloser
+	closed []string
+}
+
+func (c *sessionRecordingCloser) CloseChannelsBySession(sessionID string) int {
+	c.closed = append(c.closed, sessionID)
+	return 1
+}
+
+// A pass that outruns its processing cap keeps sweeping while the shutdown that
+// timed it out closes the Hub's state, so the sweep must stop at the next event
+// once Close began.
+func TestApplyEventStopsOnceCloseBegan(t *testing.T) {
+	closer := &sessionRecordingCloser{}
+	w := &Watcher{lifecycle: auth.NewCredentialLifecycleEffects(nil, closer, nil)}
+	event := store.PublishedRevocationEvent{Seq: 1, Event: store.RevocationEvent{
+		Kind:      store.RevocationEventKindSession,
+		SubjectID: "session-1",
+	}}
+
+	w.applyEvent(event)
+	require.Equal(t, []string{"session-1"}, closer.closed, "a live watcher applies the event")
+
+	w.closed.Store(true)
+	w.applyEvent(event)
+	assert.Len(t, closer.closed, 1, "a closing watcher must apply nothing more")
 }

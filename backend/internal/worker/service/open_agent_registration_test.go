@@ -13,7 +13,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -34,7 +33,7 @@ type startupRegistrationFacts struct {
 // probeStartupRegistration reads the new agent the way a reader reads it: through
 // the startup registry, and through a ListAgents call. The caller runs it at the
 // instant that the row becomes visible.
-func probeStartupRegistration(t *testing.T, svc *Service, d *channel.Dispatcher, agentID string) startupRegistrationFacts {
+func probeStartupRegistration(t *testing.T, svc *Service, d testRPCDispatcher, agentID string) startupRegistrationFacts {
 	t.Helper()
 	var facts startupRegistrationFacts
 	_, err := svc.Queries.GetAgentByID(context.Background(), agentID)

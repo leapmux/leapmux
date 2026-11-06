@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -155,4 +159,108 @@ func TestAuthorityKindClassifiesEveryActor(t *testing.T) {
 	require.Equal(t, sessionActorAuthority, mintedByActor(&sessionCred).kind())
 	bearer := auth.UserInfo{Credential: auth.APICredential("t2")}
 	require.Equal(t, bearerActorAuthority, mintedByActor(&bearer).kind())
+}
+
+// parkedSender holds a send open until the test releases it.
+type parkedSender struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newParkedSender() parkedSender {
+	return parkedSender{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s parkedSender) Send(context.Context, mail.Message) error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
+func (s parkedSender) awaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the notice never reached the sender")
+	}
+}
+
+func noticeRecipient() *store.User {
+	return &store.User{
+		ID:            "6PwpqVF2YPRs9izaHencG20nazPAhW0aXNAKLBdAnBui",
+		Email:         "owner@example.com",
+		EmailVerified: true,
+	}
+}
+
+// The Hub's shutdown joins a notice through this counter, so a send must stay
+// counted until it ends. Otherwise an exit during the send loses the email.
+func TestNotifyCredentialIssuedCountsTheSendUntilItEnds(t *testing.T) {
+	t.Parallel()
+	sender := newParkedSender()
+	release := sync.OnceFunc(func() { close(sender.release) })
+	defer release()
+	notices := NewCredentialNotices(sender, mail.Renderer{})
+
+	notices.Notify(context.Background(), noticeRecipient(), credentialNotice{AppName: "app"})
+
+	sender.awaitEntered(t)
+	assert.False(t, notices.Wait(0, ""), "a running send must be counted")
+	release()
+	assert.True(t, notices.Wait(30*time.Second, ""), "an ended send must leave the count")
+}
+
+// A notice that never starts must leave nothing for the shutdown to wait for.
+func TestNotifyCredentialIssuedCountsNothingWhenItSendsNothing(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"nil sender", "nil user", "empty address", "unverified address"} {
+		t.Run(mode, func(t *testing.T) {
+			sender := newParkedSender()
+			user := noticeRecipient()
+			var delivery mail.Sender = sender
+			switch mode {
+			case "nil sender":
+				delivery = nil
+			case "nil user":
+				user = nil
+			case "empty address":
+				user.Email = ""
+			case "unverified address":
+				user.EmailVerified = false
+			}
+			notices := NewCredentialNotices(delivery, mail.Renderer{})
+			notices.Notify(context.Background(), user, credentialNotice{AppName: "app"})
+			assert.True(t, notices.Wait(0, ""))
+			select {
+			case <-sender.entered:
+				t.Fatal("ineligible recipient received a notice")
+			default:
+			}
+		})
+	}
+}
+
+type credentialNoticeSenderFunc func(context.Context, mail.Message) error
+
+func (f credentialNoticeSenderFunc) Send(ctx context.Context, msg mail.Message) error {
+	return f(ctx, msg)
+}
+
+func TestCredentialNoticesDetachAndCompleteFailedSends(t *testing.T) {
+	t.Parallel()
+	for _, sendErr := range []error{nil, mail.ErrEmailDisabled, errors.New("delivery failed")} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		observed := make(chan error, 1)
+		notices := NewCredentialNotices(credentialNoticeSenderFunc(func(sendCtx context.Context, _ mail.Message) error {
+			observed <- sendCtx.Err()
+			_, hasDeadline := sendCtx.Deadline()
+			assert.True(t, hasDeadline, "detached delivery requires a deadline")
+			return sendErr
+		}), mail.Renderer{})
+		notices.Notify(ctx, noticeRecipient(), credentialNotice{AppName: "app"})
+		assert.True(t, notices.Wait(30*time.Second, ""))
+		assert.NoError(t, <-observed, "request cancellation must not cancel the notice")
+	}
 }

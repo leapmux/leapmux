@@ -206,7 +206,12 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 
 	ticks := make(chan time.Time)
 	dropped := make(chan struct{})
+	handlerDone := make(chan struct{})
+	fixtureCtx, cancelFixture := context.WithCancel(t.Context())
+	handlerStarted := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		close(handlerStarted)
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -214,8 +219,13 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 		defer func() { _ = conn.CloseNow() }()
 
 		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
+		stopFixtureCancel := context.AfterFunc(fixtureCtx, cancel)
+		defer stopFixtureCancel()
+		readDone := make(chan struct{})
+		defer func() { cancel(); _ = conn.CloseNow(); <-readDone }()
 		go func() {
+			defer close(readDone)
+			defer cancel()
 			for {
 				if _, _, err := conn.Read(ctx); err != nil {
 					return
@@ -227,7 +237,15 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 		<-ctx.Done()
 		close(dropped)
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		cancelFixture()
+		srv.Close()
+		select {
+		case <-handlerStarted:
+			<-handlerDone
+		default:
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -235,8 +253,11 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.CloseNow() })
 
-	// A healthy peer: it reads, so the library answers each ping for it.
+	// A healthy peer reads so the library can answer each ping.
+	clientReadDone := make(chan struct{})
+	t.Cleanup(func() { cancel(); _ = conn.CloseNow(); <-clientReadDone })
 	go func() {
+		defer close(clientReadDone)
 		for {
 			if _, _, err := conn.Read(ctx); err != nil {
 				return
@@ -257,4 +278,11 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 		}
 	}
 	assert.NoError(t, ctx.Err())
+	require.NoError(t, conn.CloseNow())
+	select {
+	case <-dropped:
+	case <-ctx.Done():
+		t.Fatal("the server handler did not retire after its peer closed")
+	}
+	<-handlerDone
 }

@@ -19,12 +19,12 @@ import (
 // dispatchScoped is dispatchAs with an explicit GRANT, so a probe can hold
 // exactly one permission and nothing else. dispatchAs wraps its caller in
 // LocalAgentCaller, which is unscoped by design and therefore cannot refuse.
-func dispatchScoped(d *channel.Dispatcher, scopes authscope.ScopeSet, method string, req proto.Message, w *testResponseWriter) {
+func dispatchScoped(d testRPCDispatcher, scopes authscope.ScopeSet, method string, req proto.Message, w *testResponseWriter) {
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith(context.Background(), channel.NewCaller(userid.MustNew("user-1"), scopes), &leapmuxv1.InnerRpcRequest{
+	dispatchTestRequest(d, context.Background(), channel.NewCaller(userid.MustNew("user-1"), scopes), &leapmuxv1.InnerRpcRequest{
 		Method:  method,
 		Payload: payload,
 	}, w)

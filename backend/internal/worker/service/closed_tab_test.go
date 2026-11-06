@@ -3,13 +3,21 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"database/sql"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/quartz"
@@ -25,6 +33,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -34,6 +43,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // testChannelGrant is the grant a channel-open fixture announces.
@@ -285,9 +295,21 @@ func (r rewritingDBTX) QueryRowContext(ctx context.Context, query string, args .
 	return r.inner.QueryRowContext(ctx, r.rewrite(query), args...)
 }
 
+// newClassicalServiceTestKeys creates fresh identity keys for fixtures that
+// explicitly use CLASSIC channels. Those paths never read the hybrid fields.
+func newClassicalServiceTestKeys(t *testing.T) *noiseutil.CompositeKeypair {
+	t.Helper()
+	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	return &noiseutil.CompositeKeypair{
+		X25519Public:  privateKey.PublicKey().Bytes(),
+		X25519Private: privateKey.Bytes(),
+	}
+}
+
 // setupTestService creates a minimal service.Service with an in-memory DB
 // and a channel manager configured per the supplied options.
-func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dispatcher, *testResponseWriter) {
+func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testServiceDispatcher, *testResponseWriter) {
 	t.Helper()
 
 	var cfg setupConfig
@@ -305,8 +327,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	// Classical encryption keeps setupTestService cheap under -race: these
 	// tests exercise service/dispatcher behaviour, not the PQ handshake, and
 	// SLH-DSA under the race detector otherwise dominates the package runtime.
-	ck, err := noiseutil.GenerateCompositeKeypair()
-	require.NoError(t, err)
+	ck := newClassicalServiceTestKeys(t)
 	chmgr := channel.NewManager(ck, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(*leapmuxv1.ConnectRequest) error { return nil }, nil, 0, 0)
 	t.Cleanup(chmgr.CloseAll)
 
@@ -384,7 +405,9 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	// a torn-down watcher. A case that DRIVES the window calls holdSettles again
 	// for the handle.
 	holdSettles(t, svc.Output)
-	return svc, d, newTestWriter()
+	owned := &testServiceDispatcher{Dispatcher: d}
+	t.Cleanup(func() { owned.closeFixture(t, svc) })
+	return svc, owned, newTestWriter()
 }
 
 // startTestTerminal spawns a live PTY via svc.Terminals, persists a
@@ -418,10 +441,9 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 // before this helper runs, so LIFO cleanup stops the shell first. Without
 // that order, Windows unlinkat on the temp dir fails with "used by
 // another process" because the live cmd.exe still has the directory open
-// as its CWD. Shutdown deliberately leaves PTYs running (it only
-// broadcasts the disconnect notice), so relying on svc.Shutdown alone
-// does not release the handle.
-func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workingDir string) string {
+// as its CWD. Cleanup also releases the shell when a test fails before
+// it reaches Shutdown.
+func openTerminalViaRPC(t *testing.T, svc *Service, d testRPCDispatcher, w *testResponseWriter, workingDir string) string {
 	t.Helper()
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
@@ -452,7 +474,7 @@ func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *te
 // input queue (e.g. `\r` processed ahead of trailing digits), so cmd
 // sees `exit` instead of `exit 7`. On Unix the line goes through as a
 // single write.
-func sendShellLine(t *testing.T, d *channel.Dispatcher, terminalID string, line []byte) {
+func sendShellLine(t *testing.T, d testRPCDispatcher, terminalID string, line []byte) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		for i := 0; i < len(line); i++ {
@@ -482,13 +504,13 @@ func sendShellLine(t *testing.T, d *channel.Dispatcher, terminalID string, line 
 // PTY's stdin buffer until the shell finishes its init scripts and
 // reads it — no prompt-ready handshake is required because the parsed
 // exit code does not depend on the shell having drained `$?`.
-func exitTerminalAndWait(t *testing.T, svc *Service, d *channel.Dispatcher, terminalID, exitArg string) *testResponseWriter {
+func exitTerminalAndWait(t *testing.T, svc *Service, d testRPCDispatcher, terminalID, exitArg string) *testResponseWriter {
 	t.Helper()
 	if exitArg == "" {
 		exitArg = " 0"
 	}
 	sendShellLine(t, d, terminalID, []byte("exit"+exitArg+testutil.TestShellEnter()))
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "exit")
+	waitForTerminalExit(t, svc.Terminals, terminalID)
 	return newTestWriter()
 }
 
@@ -518,7 +540,7 @@ func drainAllInFlight(svc *Service) {
 
 // dispatch is a helper that marshals a request proto and dispatches it as the
 // worker's own owner ("user-1", the identity setupTestService seeds).
-func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testResponseWriter) {
+func dispatch(d testRPCDispatcher, method string, req proto.Message, w *testResponseWriter) {
 	dispatchAs(d, userid.MustNew("user-1"), method, req, w)
 }
 
@@ -528,7 +550,7 @@ func dispatch(d *channel.Dispatcher, method string, req proto.Message, w *testRe
 // It panics, and so fails the calling test, when the dispatcher holds no
 // handler for the method: the dispatcher would answer Unimplemented, and a test
 // asserting a refusal would then pass for the wrong reason.
-func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
+func dispatchAs(d testRPCDispatcher, caller userid.UserID, method string, req proto.Message, w *testResponseWriter) {
 	if !slices.Contains(d.Methods(), method) {
 		panic("dispatch: no handler is registered for " + method)
 	}
@@ -536,10 +558,7 @@ func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req 
 	if err != nil {
 		panic(err)
 	}
-	d.DispatchWith(context.Background(), channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{
-		Method:  method,
-		Payload: payload,
-	}, w)
+	dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(caller), &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, w)
 }
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
@@ -833,9 +852,10 @@ func TestShutdown_StopsRunningAgents(t *testing.T) {
 
 	svc.Shutdown()
 
-	testutil.AssertEventually(t, func() bool {
-		return !svc.Agents.HasAgent("agent-1")
-	}, "Shutdown must StopAll agents; Setsid children do not die with the worker process group")
+	// StopAll joins every exit goroutine before it returns, so the slot is
+	// gone at the return and no poll is needed.
+	assert.False(t, svc.Agents.HasAgent("agent-1"),
+		"Shutdown must StopAll agents; Setsid children do not die with the worker process group")
 }
 
 // TestShutdown_BroadcastsDisconnectNoticeBeforeDraining pins the ORDER, which
@@ -1273,8 +1293,8 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 // The second pass exists for terminals that were still starting during the
 // drains. Its guard used to be `bytes.HasSuffix(screen,
 // terminalExitedNoticeSuffix)`, which only holds while the screen STOPS at the
-// notice -- and Shutdown does not stop the PTYs, so a terminal running a build
-// or a `tail -f` appends more output between the passes. The suffix check then
+// notice. Shutdown hangs up the PTYs after its drains, so a running build
+// can append more output between the passes. The suffix check then
 // failed and the user got the notice twice, with live output sandwiched
 // between, both in the browser and in the restored scrollback.
 func TestShutdown_LiveOutputBetweenPassesDoesNotDoubleTheNotice(t *testing.T) {
@@ -1361,4 +1381,694 @@ func TestShutdown_RefusesNewTabs(t *testing.T) {
 
 	// Nothing was registered, so the drains have nothing new to wait on.
 	assert.False(t, svc.Terminals.HasTerminal("any"))
+}
+
+// StopAll must JOIN the exit handler of every agent before it returns, so the
+// handler's pending-control-request delete lands while the database is open.
+// This is the regression for the shutdown log lines of the shape
+// "clear pending control requests: delete rows ... sql: database is closed".
+func TestShutdown_ClearsPendingControlRequestsBeforeItReturns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "req-1",
+		Payload: []byte(`{"type":"control_request","request_id":"req-1","request":{"tool_name":"EnterPlanMode","tool_use_id":"toolu-enter"}}`),
+	})
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
+		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir(),
+	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), claudetest.StartEcho)
+	require.NoError(t, err)
+
+	// The production wiring (bootstrap.Wire) installs HandleAgentProcessExit
+	// on the manager; the test service starts bare, so wire it the same way.
+	svc.Agents.SetOnExit(svc.HandleAgentProcessExit)
+	// The installed handler parks until Shutdown returned, with a short
+	// fallback that releases it: a fix whose StopAll does not join lets
+	// Shutdown return while the handler is parked, and the row survives the
+	// read below; the fallback then lets the parked handler finish without
+	// wedging the test.
+	inner := svc.Agents.ExitHandlerForTest()
+	require.NotNil(t, inner, "the service-aware exit handler must be installed")
+	shutdownReturned := make(chan struct{})
+	svc.Agents.SetOnExit(func(exit agent.ProcessExit) {
+		select {
+		case <-shutdownReturned:
+		case <-time.After(2 * time.Second):
+		}
+		inner(exit)
+	})
+	t.Cleanup(func() { close(shutdownReturned) })
+
+	svc.Shutdown()
+
+	_, err = svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "req-1"})
+	require.ErrorIs(t, err, sql.ErrNoRows,
+		"the handler must have cleared the pending row before Shutdown returned")
+}
+
+// A crash exit that lands after the input queue stopped must not log its
+// refused pause as a warning: the sibling call in abandonUnownedTurn filters
+// the same error, and a shutdown's own exit flood made the log read like a
+// failure.
+func TestHandleAgentProcessExit_StoppedQueueLogsNoWarning(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	handler := svc.HandleAgentProcessExit
+
+	logs := testutil.CaptureDefaultLogger(t)
+
+	svc.InputQueue.Stop()
+	handler(agent.ProcessExit{AgentID: "agent-1", Stopped: false})
+	svc.Output.WaitActivityRefreshes()
+
+	assert.NotContains(t, logs.String(), "pause agent input queue after process exit failed", "a pause the stopped queue refused is not a warning")
+}
+
+func TestLogShutdownStragglers(t *testing.T) {
+	previousLogger := slog.Default()
+	var errors []string
+	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
+		if record.Level == slog.LevelError {
+			errors = append(errors, record.Message)
+		}
+	}}))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	logShutdownStragglers("agent", []string{"agent-9", "agent-7"})
+	require.Len(t, errors, 1, "the ids must surface as one Error line")
+
+	logShutdownStragglers("terminal", nil)
+	logShutdownStragglers("agent", []string{})
+	assert.Len(t, errors, 1, "an empty list must log nothing")
+}
+
+// closeClaims must close the admission latch BEFORE the drain waits, so a
+// claim that a slow handler races cannot add to the WaitGroup the drain is
+// already inside.
+func TestShutdown_ClosesStartupClaimsBeforeItsDrain(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	// An agent startup that never finishes on its own: Shutdown's drain parks
+	// on it.
+	release := make(chan struct{})
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		<-release
+		return nil, nil
+	}
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, w)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		svc.Shutdown()
+		close(shutdownDone)
+	}()
+	// Unblock the startup no matter how this test exits, so Shutdown can
+	// return and the deferred cleanups are not left waiting on it. The Once
+	// lets the body and the failure paths share one close.
+	var releaseOnce sync.Once
+	releaseStartup := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseStartup()
+
+	// The claim latch must close while the drain is still parked on the
+	// startup above. Every claim the poll wins before the latch is abandoned,
+	// so the drain keeps a limited count.
+	testutil.RequireEventually(t, func() bool {
+		claim := svc.AgentStartup.begin("late", nil)
+		if claim != nil {
+			svc.AgentStartup.abandon(claim)
+			return false
+		}
+		return true
+	}, "the agent claim latch must close during the drain")
+
+	releaseStartup()
+	<-shutdownDone
+
+	assert.Nil(t, svc.TerminalStartup.begin("late", nil),
+		"the terminal claim latch must be closed after Shutdown returned")
+}
+
+func TestSendStartupRefused(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+
+	// The latch unset: the caller's own message states the race that holds the
+	// id.
+	w := newTestWriter()
+	svc.sendStartupRefused(w, "a startup for this agent is already in progress")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+	assert.Equal(t, "a startup for this agent is already in progress", w.errors[0].message)
+
+	// The latch set: the shutdown is the answer, whatever raced the claim.
+	svc.shuttingDown.Store(true)
+	w = newTestWriter()
+	svc.sendStartupRefused(w, "a startup for this agent is already in progress")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+	assert.Contains(t, w.errors[0].message, "worker is shutting down")
+}
+
+// Shutdown must hang up the PTYs: a terminal that survived it left a live
+// shell running under a worker that is exiting, and its late exit persisted a
+// row into a closed database.
+func TestShutdown_HangsUpTerminals(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	require.False(t, svc.Terminals.IsExited(terminalID))
+
+	svc.Shutdown()
+
+	assert.True(t, svc.Terminals.IsExited(terminalID),
+		"the shell must be ended by the time Shutdown returns")
+}
+
+type shutdownWaitAgent struct {
+	agenttest.IdleAgent
+	id      string
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (a *shutdownWaitAgent) AgentID() string { return a.id }
+
+func (a *shutdownWaitAgent) Stop() { a.once.Do(func() { close(a.stopped) }) }
+
+func (a *shutdownWaitAgent) Wait() error { <-a.stopped; return nil }
+
+func (a *shutdownWaitAgent) IsStopped() bool {
+	select {
+	case <-a.stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestShutdownStopsAgentsAndTerminalsConcurrently(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	agentExited := make(chan struct{})
+	agentRelease := make(chan struct{})
+	release := sync.OnceFunc(func() { close(agentRelease) })
+	shutdownDone := make(chan struct{})
+	shutdownStarted := false
+	defer func() {
+		release()
+		if shutdownStarted {
+			<-shutdownDone
+		}
+	}()
+	svc.Agents.SetOnExit(func(agent.ProcessExit) {
+		close(agentExited)
+		<-agentRelease
+	})
+	provider := &shutdownWaitAgent{id: "shutdown-agent", stopped: make(chan struct{})}
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
+		AgentID: provider.id, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, WorkingDir: t.TempDir(),
+	}, agenttest.Nop(), func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+		return provider, nil
+	})
+	require.NoError(t, err)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	terminalExited := make(chan struct{})
+	go func() {
+		svc.Terminals.WaitForExit(terminalID)
+		close(terminalExited)
+	}()
+	shutdownStarted = true
+	go func() {
+		defer close(shutdownDone)
+		svc.Shutdown()
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-agentExited:
+	case <-ctx.Done():
+		t.Fatal("the agent never entered its exit handler")
+	}
+	select {
+	case <-terminalExited:
+	case <-ctx.Done():
+		t.Fatal("the agent exit handler delayed terminal teardown")
+	}
+	select {
+	case <-shutdownDone:
+		t.Error("shutdown returned before the agent exit handler finished")
+	default:
+	}
+	release()
+	select {
+	case <-shutdownDone:
+	case <-ctx.Done():
+		t.Fatal("shutdown did not join the released agent exit handler")
+	}
+}
+
+func TestShutdownRetainsOutputWrittenAfterDisconnectNotice(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	const marker = "OUTPUT_AFTER_DISCONNECT_NOTICE"
+	svc.stopBackgroundLoops = func() {
+		require.True(t, svc.Terminals.AppendOutput(terminalID, []byte(marker)))
+	}
+
+	svc.Shutdown()
+
+	row, err := svc.Queries.GetTerminal(t.Context(), terminalID)
+	require.NoError(t, err)
+	assert.Contains(t, string(row.Screen), marker, "shutdown must persist the screen after its reader drains")
+	assert.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	assert.Equal(t, 1, bytes.Count(row.Screen, []byte("Press Enter to restart")))
+}
+
+func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
+	t.Parallel()
+	svc, d, _ := setupTestService(t)
+	const terminalID = "natural-during-shutdown"
+	workingDir := t.TempDir()
+	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+		ID: terminalID, WorkingDir: workingDir, Cols: 200, Rows: 24, Screen: []byte{},
+	}))
+	exitEntered := make(chan struct{})
+	exitRelease := make(chan struct{})
+	resumeShutdown := make(chan struct{})
+	shutdownPaused := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	releaseExit := sync.OnceFunc(func() { close(exitRelease) })
+	releaseShutdown := sync.OnceFunc(func() { close(resumeShutdown) })
+	exitFn := svc.makeTerminalExitFn()
+	require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
+		ID: terminalID, Shell: testutil.TestShell(), WorkingDir: workingDir, Cols: 200, Rows: 24,
+	}, func([]byte, int64, []terminal.Signal) {}, func(id string, exitCode int) {
+		close(exitEntered)
+		<-exitRelease
+		exitFn(id, exitCode)
+	}))
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
+	shutdownStarted := false
+	t.Cleanup(func() {
+		releaseExit()
+		releaseShutdown()
+		if shutdownStarted {
+			<-shutdownDone
+		}
+	})
+	svc.stopBackgroundLoops = func() {
+		close(shutdownPaused)
+		<-resumeShutdown
+	}
+	shutdownStarted = true
+	go func() {
+		defer close(shutdownDone)
+		svc.Shutdown()
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-shutdownPaused:
+	case <-ctx.Done():
+		t.Fatal("shutdown never reached the first disconnect snapshot")
+	}
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	require.Equal(t, int64(exitCodeUnknown), row.ExitCode)
+	wantCode, command := int64(42), "exit 42"
+	if runtime.GOOS == "windows" {
+		wantCode, command = 0, "exit"
+	}
+	sendShellLine(t, d, terminalID, []byte(command+testutil.TestShellEnter()))
+	select {
+	case <-exitEntered:
+	case <-ctx.Done():
+		t.Fatal("the shell never completed its natural exit")
+	}
+	require.True(t, svc.Terminals.IsExited(terminalID))
+	releaseShutdown()
+	require.Eventually(t, func() bool { return svc.shutdownNotifiedTerminals.Load() != nil }, 30*time.Second, 10*time.Millisecond)
+	releaseExit()
+	select {
+	case <-shutdownDone:
+	case <-ctx.Done():
+		t.Fatal("shutdown did not join the released natural exit")
+	}
+	row, err = svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, wantCode, row.ExitCode, "a shutdown notice must not replace an observed natural exit code")
+}
+
+// A hung-up terminal whose shell answers the hang-up signal with its own exit
+// must keep the disconnect row the sweep stamped: the shell's trap exit code
+// is the shell's answer to the shutdown, not a terminal the user watched end,
+// so the row keeps the sentinel, the screen keeps exactly one notice, and no
+// TerminalClosed reaches a watcher that is watching a worker go away.
+func TestShutdown_KeepsTheDisconnectRowOfAHungUpTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not deliver SIGHUP to a shell trap")
+	}
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	// The trap turns the hang-up into exit 7: without the stamped-set guard,
+	// the exit handler would persist that code over the sweep's sentinel and
+	// publish TerminalClosed.
+	const marker = "LMX_EXIT_TRAP_READY"
+	emit, err := testutil.TestShellOutputCommand(marker)
+	require.NoError(t, err)
+	sendShellLine(t, d, terminalID, []byte("trap 'exit 7' HUP; "+emit+testutil.TestShellEnter()))
+	require.Eventually(t, func() bool {
+		screen, ok := svc.Terminals.SnapshotTerminal(terminalID)
+		return ok && bytes.Contains(screen.Screen, []byte(marker))
+	}, 30*time.Second, 10*time.Millisecond, "the shell did not install its exit trap")
+
+	wWatch := newTestWriter()
+	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
+
+	svc.Shutdown()
+
+	assert.Eventually(t, func() bool {
+		row, err := svc.Queries.GetTerminal(ctx, terminalID)
+		return err == nil && row.ExitCode == exitCodeUnknown
+	}, 5*time.Second, 10*time.Millisecond,
+		"the sweep's sentinel must stay the row's exit code")
+	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
+	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
+		"the sweep's notice must stay the only one on the screen")
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		assert.Nil(t, resp.GetTerminalEvent().GetClosed(),
+			"no TerminalClosed may reach a watcher during a shutdown")
+	}
+}
+
+// The stamped set decides, not the fact of an exit: a terminal the sweep
+// skipped keeps its ordinary exit path, with the real code and the notice.
+func TestTerminalExitPersistsARowThatTheSweepSkipped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+	// An empty set: this terminal is not in it, so the exit handler takes the
+	// ordinary path. A stand-down for every exit would leave this row
+	// unchanged.
+	svc.shutdownNotifiedTerminals.Store(&map[string]struct{}{})
+
+	svc.makeTerminalExitFn()(terminalID, 7)
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), row.ExitCode,
+		"an exit the sweep skipped must persist its real exit code")
+	screen, _ := svc.Terminals.SnapshotTerminal(terminalID)
+	assert.Equal(t, 1, bytes.Count(screen.Screen, []byte("Press Enter to restart")),
+		"an exit the sweep skipped must persist its own notice")
+}
+
+// Shutdown must retire the control IPC servers of every tab: after a
+// SwitchMode the old server still answers its socket, the next spawn of that
+// tab comes up with no LEAPMUX_CONTROL_*, and the delegation is never
+// released.
+func TestShutdown_RetiresControlIPCCleanups(t *testing.T) {
+	t.Parallel()
+
+	var agentRuns, terminalRuns atomic.Int32
+	svc, _, _ := setupTestService(t)
+	require.True(t, svc.agentCleanups.register("agent-1", func() { agentRuns.Add(1) }))
+	require.True(t, svc.terminalCleanups.register("term-1", func() { terminalRuns.Add(1) }))
+
+	svc.Shutdown()
+
+	assert.Equal(t, int32(1), agentRuns.Load(), "the agent cleanup must run exactly once")
+	assert.Equal(t, int32(1), terminalRuns.Load(), "the terminal cleanup must run exactly once")
+}
+
+func TestCleanupRegistry_RetireAllWithNoEntries(t *testing.T) {
+	t.Parallel()
+
+	var r cleanupRegistry
+	var wait drain.Counter
+
+	done := make(chan struct{})
+	go func() {
+		r.retireAll(&wait)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retireAll with no entries must return at once")
+	}
+}
+
+// A cleanup that parks must not hold the shutdown: the retire deadline
+// abandons it, and the socket frees when the process exits.
+func TestShutdown_DoesNotWaitPastTheRetireDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseFn)
+		svc, _, _ := setupTestService(t)
+		svc.agentCleanups.register("agent-1", func() { <-release })
+
+		shutdownDone := make(chan struct{})
+		go func() {
+			svc.Shutdown()
+			close(shutdownDone)
+		}()
+
+		// The drain budget is fake time here, so Shutdown reaches its deadline
+		// without spending it in real seconds.
+		select {
+		case <-shutdownDone:
+		case <-time.After(30 * time.Second):
+			t.Fatal("Shutdown did not return past the retire deadline")
+		}
+
+		releaseFn()
+		synctest.Wait()
+	})
+}
+
+func TestTerminalRPCsRejectDimensionOverflow(t *testing.T) {
+	for _, operation := range []string{"open", "restart"} {
+		for _, dims := range []struct{ cols, rows uint32 }{{65536, 24}, {80, 65536}, {math.MaxUint32, math.MaxUint32}} {
+			t.Run(fmt.Sprintf("%s/%d/%d", operation, dims.cols, dims.rows), func(t *testing.T) {
+				t.Parallel()
+				svc, d, w := setupTestService(t)
+				probe := &noIdentityRemoteIPC{failFrom: 1}
+				svc.ControlIPC = probe
+				workingDir := t.TempDir()
+				t.Cleanup(func() {
+					svc.TerminalStartup.WaitForInFlight()
+					for _, terminalID := range svc.Terminals.ListTerminalIDs() {
+						svc.Terminals.StopTerminal(terminalID)
+						svc.Terminals.WaitForExit(terminalID)
+					}
+				})
+				const id = "oversized-terminal"
+				if operation == "restart" {
+					require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+						ID: id, WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte("retained"),
+					}))
+				}
+				before, err := svc.Queries.ListAllTerminalIDs(t.Context())
+				require.NoError(t, err)
+				if operation == "open" {
+					dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
+						WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: dims.cols, Rows: dims.rows,
+					}, w)
+				} else {
+					dispatch(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure, &leapmuxv1.RestartTerminalRequest{
+						TerminalId: id, Cols: dims.cols, Rows: dims.rows,
+					}, w)
+				}
+				svc.TerminalStartup.WaitForInFlight()
+				require.Len(t, w.errors, 1, "oversized dimensions must fail on the RPC path")
+				assert.Equal(t, int32(codes.InvalidArgument), w.errors[0].code)
+				assert.Empty(t, w.responses)
+				assert.Zero(t, probe.calls, "invalid dimensions must not reach control-IPC setup or native startup")
+				after, err := svc.Queries.ListAllTerminalIDs(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, before, after, "an invalid open must not create a terminal row")
+				if operation == "restart" {
+					row, err := svc.Queries.GetTerminal(t.Context(), id)
+					require.NoError(t, err)
+					assert.Empty(t, row.StartupError, "an invalid restart must not change persisted startup state")
+					assert.Equal(t, []byte("retained"), row.Screen)
+				}
+			})
+		}
+	}
+}
+
+func TestResizeTerminalRejectsInvalidDimensionsWithoutReplacingPendingResize(t *testing.T) {
+	for _, dims := range []struct{ cols, rows uint32 }{{0, 24}, {80, 0}, {65536, 24}, {80, 65536}, {math.MaxUint32, math.MaxUint32}} {
+		t.Run(fmt.Sprintf("%d/%d", dims.cols, dims.rows), func(t *testing.T) {
+			t.Parallel()
+			svc, d, w := setupTestService(t)
+			const id = "pending-dimensions"
+			require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+				ID: id, WorkingDir: t.TempDir(), Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+			}))
+			h := svc.TerminalStartup.begin(id, func() {})
+			require.NotNil(t, h)
+			defer svc.TerminalStartup.abandon(h)
+			require.True(t, svc.TerminalStartup.setPendingResize(h, 100, 30))
+			dispatch(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
+				TerminalId: id, Cols: dims.cols, Rows: dims.rows,
+			}, w)
+			require.Len(t, w.errors, 1)
+			assert.Equal(t, int32(codes.InvalidArgument), w.errors[0].code)
+			assert.Empty(t, w.responses)
+			assert.Equal(t, 1, len(h.resizeSignal), "rejected dimensions must retain the pending wake-up")
+			cols, rows, pending := svc.TerminalStartup.takePendingResize(h)
+			require.True(t, pending)
+			assert.Equal(t, uint16(100), cols)
+			assert.Equal(t, uint16(30), rows)
+		})
+	}
+}
+
+func TestResizeTerminalAcceptsMaximumRepresentableDimensions(t *testing.T) {
+	svc, d, w := setupTestService(t)
+	const id = "maximum-dimensions"
+	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+		ID: id, WorkingDir: t.TempDir(), Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	h := svc.TerminalStartup.begin(id, func() {})
+	require.NotNil(t, h)
+	defer svc.TerminalStartup.abandon(h)
+	dispatch(d, leapmuxv1connect.WorkerTerminalServiceResizeTerminalProcedure, &leapmuxv1.ResizeTerminalRequest{
+		TerminalId: id, Cols: math.MaxUint16, Rows: math.MaxUint16,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	cols, rows, pending := svc.TerminalStartup.takePendingResize(h)
+	require.True(t, pending)
+	assert.Equal(t, uint16(math.MaxUint16), cols)
+	assert.Equal(t, uint16(math.MaxUint16), rows)
+}
+
+func TestRestartTerminalRefusesUntilPriorExitHandlerFinishes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, d, _ := setupTestService(t)
+		const id = "restart-exit-owner"
+		workingDir := t.TempDir()
+		require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+			ID: id, WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+		}))
+		entered, released := make(chan struct{}), make(chan struct{})
+		release := sync.OnceFunc(func() { close(released) })
+		exitFn := svc.makeTerminalExitFn()
+		require.NoError(t, svc.Terminals.StartTerminal(t.Context(), terminal.Options{
+			ID: id, WorkingDir: workingDir, Shell: testutil.TestShell(), Cols: 80, Rows: 24,
+		}, func([]byte, int64, []terminal.Signal) {}, func(terminalID string, code int) {
+			close(entered)
+			<-released
+			exitFn(terminalID, code)
+		}))
+		defer func() {
+			release()
+			svc.Terminals.StopTerminal(id)
+			svc.Terminals.WaitForExit(id)
+			svc.TerminalStartup.WaitForInFlight()
+			svc.Shutdown()
+		}()
+		require.NoError(t, svc.Terminals.SendInput(id, []byte("exit"+testutil.TestShellEnter())))
+		<-entered
+		require.True(t, svc.Terminals.WaitForReadDrained(id))
+		probe := &noIdentityRemoteIPC{failFrom: 1}
+		svc.ControlIPC = probe
+		before, err := svc.Queries.GetTerminal(t.Context(), id)
+		require.NoError(t, err)
+		rejected := newTestWriter()
+		dispatchRestart(d, id, rejected)
+		synctest.Wait()
+		require.Len(t, rejected.errors, 1)
+		assert.Equal(t, int32(codes.FailedPrecondition), rejected.errors[0].code)
+		assert.Contains(t, rejected.errors[0].message, "exit cleanup")
+		assert.Empty(t, rejected.responses)
+		assert.Zero(t, probe.calls, "refusal must precede IPC setup")
+		_, _, _, registered := svc.TerminalStartup.status(id)
+		assert.False(t, registered, "the unlaunched claim must be abandoned")
+		after, err := svc.Queries.GetTerminal(t.Context(), id)
+		require.NoError(t, err)
+		assert.Equal(t, before.StartupError, after.StartupError)
+		assert.Equal(t, before.Screen, after.Screen)
+		svc.TerminalStartup.WaitForInFlight()
+		release()
+		svc.Terminals.WaitForExit(id)
+		accepted := newTestWriter()
+		dispatchRestart(d, id, accepted)
+		svc.TerminalStartup.WaitForInFlight()
+		require.Empty(t, accepted.errors)
+		require.Len(t, accepted.responses, 1)
+		assert.Equal(t, 1, probe.calls, "restart must proceed once the prior callback has finished")
+	})
+}
+
+func TestSuccessfulTerminalExitHelperJoinsItsCallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, dispatcher, _ := setupTestService(t)
+		const id = "helper-exit-callback"
+		dir := t.TempDir()
+		require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{ID: id, WorkingDir: dir, Cols: 80, Rows: 24, Screen: []byte{}}))
+		entered, release := make(chan struct{}), make(chan struct{})
+		finish := sync.OnceFunc(func() { close(release) })
+		defer finish()
+		require.NoError(t, svc.Terminals.StartTerminal(context.Background(), terminal.Options{ID: id, Shell: testutil.TestShell(), WorkingDir: dir, Cols: 80, Rows: 24}, func([]byte, int64, []terminal.Signal) {}, func(string, int) { close(entered); <-release }))
+		testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
+		sendShellLine(t, dispatcher, id, []byte("exit 0"+testutil.TestShellEnter()))
+		<-entered
+		require.True(t, svc.Terminals.WaitForReadDrained(id))
+		done := make(chan struct{})
+		go func() { defer close(done); waitForTerminalExit(t, svc.Terminals, id) }()
+		defer func() { finish(); <-done; svc.Terminals.WaitForExit(id) }()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Error("the successful-exit helper returned before exit cleanup completed")
+		default:
+		}
+		finish()
+		<-done
+	})
+}
+
+func waitForTerminalExit(t *testing.T, manager *terminal.Manager, id string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return manager.IsExited(id) }, 30*time.Second, 10*time.Millisecond, "terminal process must exit before joining its handler")
+	manager.WaitForExit(id)
 }

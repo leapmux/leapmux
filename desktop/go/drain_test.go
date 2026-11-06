@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // TestDrainDoesNotLeakWaiterOnAbandonedStraggler is the operationGate side of
@@ -21,8 +23,8 @@ import (
 // waitGroupDone symbol -- so the assertion stays meaningful after the fix
 // deletes that helper.
 func TestDrainDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
-	var g operationGate
-	done, ok := g.begin()
+	var g drain.Gate
+	done, ok := g.Begin(nil)
 	require.True(t, ok)
 	release := make(chan struct{})
 	t.Cleanup(func() {
@@ -35,7 +37,7 @@ func TestDrainDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
 
 	const drains = 8
 	for range drains {
-		g.drain(time.Millisecond, "")
+		g.Drain(time.Millisecond, "")
 	}
 
 	deadline := time.Now().Add(2 * time.Second)

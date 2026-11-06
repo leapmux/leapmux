@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // ResponseWriter sends inner RPC responses back through the transport layer.
@@ -112,6 +114,13 @@ type Dispatcher struct {
 	// (typically the worker service.Service) Wait on it from Shutdown
 	// so destructive mutations finish before DB / data-dir teardown.
 	cleanup *sync.WaitGroup
+	// gate admits handlers while the worker is live and joins them, up to a
+	// limit, at shutdown. Every handler -- tracked or not -- counts: an untracked
+	// handler such as UpdateAgentSettings or SendControlResponse can reach
+	// the closed database, and Cleanup.Wait ran once, so a later tracked Add
+	// was neither joined nor safe. CloseAdmission flips the gate, and the
+	// refusal of a closed gate states the shutdown instead of racing it.
+	gate drain.Gate
 }
 
 // NewDispatcher creates a new inner RPC Dispatcher.
@@ -217,10 +226,12 @@ func (d *Dispatcher) DispatchWith(ctx context.Context, caller Caller, req *leapm
 		_ = w.SendError(int32(codes.Unimplemented), "unknown method: "+req.GetMethod())
 		return
 	}
-	if h.tracked && d.cleanup != nil {
-		d.cleanup.Add(1)
-		defer d.cleanup.Done()
+	done, admitted := d.beginInvocation(h)
+	if !admitted {
+		queueRefusal(w, h.streaming, codes.FailedPrecondition, workerShuttingDownRefusal)
+		return
 	}
+	defer done()
 	d.invoke(ctx, caller, req, w, h)
 }
 
@@ -266,18 +277,66 @@ func (d *Dispatcher) DispatchAsync(ctx context.Context, caller Caller, req *leap
 			}
 		}
 	}
-	if h.tracked && d.cleanup != nil {
-		d.cleanup.Add(1)
+	done, admitted := d.beginInvocation(h)
+	if !admitted {
+		// The stream above is unbound: release it before the refusal, so a
+		// closed gate cannot strand a prepared stream registration.
+		if releaseUnbound != nil {
+			releaseUnbound()
+		}
+		queueRefusal(w, h.streaming, codes.FailedPrecondition, workerShuttingDownRefusal)
+		return
 	}
 	go func() {
 		if releaseUnbound != nil {
 			defer releaseUnbound()
 		}
-		if h.tracked && d.cleanup != nil {
-			defer d.cleanup.Done()
-		}
+		defer done()
 		d.invoke(ctx, caller, req, w, h)
 	}()
+}
+
+// beginInvocation admits and counts a handler before either dispatch path runs it.
+func (d *Dispatcher) beginInvocation(h registered) (func(), bool) {
+	tracked := h.tracked && d.cleanup != nil
+	finish, admitted := d.gate.Begin(func() {
+		if tracked {
+			d.cleanup.Add(1)
+		}
+	})
+	if !admitted {
+		return nil, false
+	}
+	return func() {
+		// A joined invocation must also have left the service cleanup counter.
+		if tracked {
+			d.cleanup.Done()
+		}
+		finish()
+	}, true
+}
+
+// workerShuttingDownRefusal is the closed-gate refusal's message. The wording
+// matches refuseIfShuttingDown in the worker service, whose latch is set
+// after CloseAdmission runs, so a client sees one answer whichever guard
+// refused it.
+const workerShuttingDownRefusal = "worker is shutting down"
+
+// CloseAdmission refuses every later dispatch. Wiring.Shutdown calls it
+// before the drains, so WaitHandlers joins exactly the handlers that were in
+// flight when the gate closed. A refused dispatch answers FailedPrecondition
+// with the shutdown, in the reply shape of its method.
+func (d *Dispatcher) CloseAdmission() {
+	d.gate.Close(nil)
+}
+
+// WaitHandlers joins every admitted handler, limited by timeout, and reports
+// whether they all finished. A streaming handler ends only when its session
+// context ends, so the caller must close the channels first (channel.Manager
+// CloseAll). WatchEvents remains in its invocation until replay, final frames,
+// and stream release finish.
+func (d *Dispatcher) WaitHandlers(timeout time.Duration) bool {
+	return d.gate.Drain(timeout, "worker: handler drain timed out during shutdown; abandoning in-flight handlers")
 }
 
 // invoke runs a resolved handler with panic recovery. Centralised so

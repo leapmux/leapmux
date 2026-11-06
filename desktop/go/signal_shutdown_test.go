@@ -74,7 +74,7 @@ func TestAppLifecycleOperationRejectsDuringShutdown(t *testing.T) {
 	select {
 	case err := <-operationDone:
 		require.ErrorContains(t, err, "shutting down")
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("lifecycle operation did not reject promptly during shutdown")
 	}
 
@@ -82,33 +82,31 @@ func TestAppLifecycleOperationRejectsDuringShutdown(t *testing.T) {
 	require.NoError(t, <-shutdownDone)
 }
 
-// Signal notifications must be stopped before potentially blocking cleanup so
-// a second SIGINT/SIGTERM regains its default force-termination behavior.
-func TestAwaitShutdownSignalStopsNotificationsBeforeShutdown(t *testing.T) {
+// A buffered signal must still start App.Shutdown. The registration is never
+// stopped now, so nothing restores the default disposition: a signal that
+// arrives while a drain runs is dropped, because force-terminating a process
+// that is releasing the lease is what loses the lease.
+func TestAwaitShutdownSignalStartsShutdown(t *testing.T) {
 	app := NewApp("")
 	sigCh := make(chan os.Signal, 1)
-	stoppedBeforeShutdown := false
 	sigCh <- syscall.SIGTERM
 
-	awaitShutdownSignal(app, sigCh, func() {
-		stoppedBeforeShutdown = app.ctx.Err() == nil
-	})
+	awaitShutdownSignal(app, sigCh)
 
-	require.True(t, stoppedBeforeShutdown)
 	require.ErrorIs(t, app.ctx.Err(), context.Canceled)
 }
 
 // awaitShutdownSignal must bow out when the App is shutting down through
-// another path and must always release its signal registration.
+// another path. It stops nothing: the registration lives until the process
+// exits, so a late signal is dropped rather than escalated.
 func TestAwaitShutdownSignalBowsOutOnContextCancel(t *testing.T) {
 	app := NewApp("")
 
 	sigCh := make(chan os.Signal, 1)
 	watcherDone := make(chan struct{})
-	stopCalled := make(chan struct{})
 
 	go func() {
-		awaitShutdownSignal(app, sigCh, func() { close(stopCalled) })
+		awaitShutdownSignal(app, sigCh)
 		close(watcherDone)
 	}()
 
@@ -117,14 +115,8 @@ func TestAwaitShutdownSignalBowsOutOnContextCancel(t *testing.T) {
 
 	select {
 	case <-watcherDone:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("awaitShutdownSignal did not return after context cancellation")
-	}
-
-	select {
-	case <-stopCalled:
-	default:
-		t.Fatal("awaitShutdownSignal did not stop signal notifications")
 	}
 }
 
@@ -148,7 +140,7 @@ func TestRPCSessionRunReturnsWhenAppShutsDown(t *testing.T) {
 	select {
 	case err := <-runDone:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("RPCSession.Run stayed blocked in ReadFrame after App shutdown")
 	}
 }

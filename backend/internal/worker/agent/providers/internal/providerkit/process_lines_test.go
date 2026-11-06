@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -232,4 +234,60 @@ func TestProcessClockIsTheStatedClockOrTheRealOne(t *testing.T) {
 	clock := testutil.NewQuartzMock(t)
 	stated := NewProcessFrom(ProcessConfig{Clock: clock})
 	assert.Same(t, clock, stated.Clock())
+}
+
+// Wait and every stop path block on processDone, and the teardown after them
+// reads what a line handler writes. So processDone must close only after the
+// last handler returned, which spares each provider a join of its own reader.
+func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(process *Process)
+	}{
+		{name: "Wait", end: func(process *Process) { _ = process.Wait() }},
+		{name: "Stop", end: func(process *Process) { process.Stop() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				announce := sync.OnceFunc(func() { close(entered) })
+				gate := make(chan struct{})
+				release := sync.OnceFunc(func() { close(gate) })
+				process := startLineServer(t, "", func([]byte) {
+					announce()
+					<-gate
+				})
+				// Runs before the cleanup of startLineServer, whose Stop waits for
+				// the same handler.
+				t.Cleanup(release)
+				select {
+				case <-entered:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the handler never received a line")
+				}
+
+				_ = process.owner.Wait()
+				<-process.stderrDone
+
+				ended := make(chan struct{})
+				go func() {
+					defer close(ended)
+					tc.end(process)
+				}()
+				synctest.Wait()
+				select {
+				case <-ended:
+					t.Fatal("the process completed while a handler still ran")
+				default:
+				}
+
+				release()
+				select {
+				case <-ended:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the process never completed after the handler returned")
+				}
+			})
+		})
+	}
 }

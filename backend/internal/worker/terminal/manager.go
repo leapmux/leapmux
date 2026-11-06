@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -70,7 +72,7 @@ func (m *Manager) DescendantProcesses(ctx context.Context, terminalIDs []string)
 			continue
 		}
 		seen[id] = struct{}{}
-		if t, ok := m.terminals[id]; ok && !t.IsExited() {
+		if t, ok := m.currentTerminalLocked(id); ok && !t.IsExited() {
 			targets = append(targets, target{id: id, t: t})
 		}
 	}
@@ -107,6 +109,10 @@ func (m *Manager) DescendantProcesses(ctx context.Context, terminalIDs []string)
 // e.g. the ResizeTerminal handler stashes dims for a terminal whose PTY
 // is still being spawned in the background startup goroutine.
 var ErrTerminalNotFound = errors.New("terminal not found")
+
+// ErrTerminalInstanceChanged reports a resize whose original terminal was
+// removed or replaced before its metadata could commit.
+var ErrTerminalInstanceChanged = errors.New("terminal closed or restarted during resize")
 
 // ErrTerminalStillRunning is returned by RestartTerminal when its target
 // has not exited. Both the service handler (synchronous reject for better
@@ -146,15 +152,23 @@ type TerminalSnapshot struct {
 // flush, which happens between the two.
 const defaultReadDrainGrace = 2 * time.Second
 
-// Manager tracks active terminal sessions.
+// terminalRegistration owns one physical incarnation and its metadata. It stays
+// in draining until its exit handler returns, even after removal or replacement.
+type terminalRegistration struct {
+	id       string
+	terminal *Terminal
+	meta     TerminalMeta
+	done     chan struct{}
+}
+
+// Manager tracks current terminals and every unfinished exit handler.
 type Manager struct {
-	mu        sync.RWMutex
-	terminals map[string]*Terminal     // terminalID -> Terminal
-	meta      map[string]TerminalMeta  // terminalID -> metadata
-	exitDone  map[string]chan struct{} // terminalID -> closed once the exit-handler goroutine returned
+	mu       sync.RWMutex
+	current  map[string]*terminalRegistration
+	draining map[*terminalRegistration]struct{}
 	// clock is the one this Manager stamps on every Terminal it spawns, which
 	// makes "an installed terminal runs on the Manager's clock" hold by
-	// construction. The exit goroutine's two drain timers are armed from it, so
+	// construction. The exit goroutine's two drain timers use it, so
 	// a test drives the give-up path on this clock and spends no real time.
 	// NewManager installs the real clock; WithClock replaces it.
 	clock quartz.Clock
@@ -176,15 +190,24 @@ func WithClock(clock quartz.Clock) ManagerOption {
 // NewManager creates a new terminal Manager.
 func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
-		terminals: make(map[string]*Terminal),
-		meta:      make(map[string]TerminalMeta),
-		exitDone:  make(map[string]chan struct{}),
-		clock:     quartz.NewReal(),
+		current:  make(map[string]*terminalRegistration),
+		draining: make(map[*terminalRegistration]struct{}),
+		clock:    quartz.NewReal(),
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
 	return m
+}
+
+// currentTerminalLocked resolves the physical terminal of a current registration.
+// The caller holds m.mu for reading or writing.
+func (m *Manager) currentTerminalLocked(id string) (*Terminal, bool) {
+	registration, ok := m.current[id]
+	if !ok {
+		return nil, false
+	}
+	return registration.terminal, true
 }
 
 // ExitHandler is called when a terminal process exits.
@@ -198,7 +221,7 @@ type ExitHandler func(terminalID string, exitCode int)
 // runTerminalStartup tears the nascent child down instead of leaking it.
 func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn OutputHandler, exitFn ExitHandler) error {
 	m.mu.Lock()
-	if _, exists := m.terminals[opts.ID]; exists {
+	if _, exists := m.current[opts.ID]; exists {
 		m.mu.Unlock()
 		return fmt.Errorf("terminal already exists: %s", opts.ID)
 	}
@@ -232,17 +255,18 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 //
 // Notify when the terminal exits but keep it in the map so that
 // ScreenSnapshot and ListTerminals still work. The entry is removed by
-// RemoveTerminal (explicit close). The freshly-allocated exitDone chan
+// RemoveTerminal (explicit close). The freshly allocated registration.done channel
 // is closed once the exit handler returned, so WaitForExit callers
 // observe a definitive "the exit goroutine is done" signal.
 func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, composeMeta func(prev TerminalMeta) TerminalMeta) {
-	done := make(chan struct{})
-
 	m.mu.Lock()
-	meta := composeMeta(m.meta[id])
-	m.terminals[id] = t
-	m.meta[id] = meta
-	m.exitDone[id] = done
+	var previous TerminalMeta
+	if current := m.current[id]; current != nil {
+		previous = current.meta
+	}
+	registration := &terminalRegistration{id: id, terminal: t, meta: composeMeta(previous), done: make(chan struct{})}
+	m.current[id] = registration
+	m.draining[registration] = struct{}{}
 	m.mu.Unlock()
 
 	go func() {
@@ -274,14 +298,17 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 		if exitFn != nil {
 			exitFn(id, exitCode)
 		}
-		close(done)
+		close(registration.done)
+		m.mu.Lock()
+		delete(m.draining, registration)
+		m.mu.Unlock()
 	}()
 }
 
 // SendInput routes input to a terminal.
 func (m *Manager) SendInput(terminalID string, data []byte) error {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
@@ -297,36 +324,43 @@ func (m *Manager) SendInput(terminalID string, data []byte) error {
 // Resize changes a terminal's dimensions.
 func (m *Manager) Resize(terminalID string, cols, rows uint16) error {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
-	meta := m.meta[terminalID]
+	registration, ok := m.current[terminalID]
 	m.mu.RUnlock()
-
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrTerminalNotFound, terminalID)
+	}
+	t := registration.terminal
+	// Keep physical size and metadata in one per-instance operation. Read the
+	// dimensions after admission so a queued duplicate sees the preceding commit.
+	t.managedResizeMu.Lock()
+	defer t.managedResizeMu.Unlock()
+	m.mu.RLock()
+	current := m.current[terminalID]
+	meta := registration.meta
+	m.mu.RUnlock()
+	if current != registration {
+		return fmt.Errorf("%w: %s", ErrTerminalInstanceChanged, terminalID)
 	}
 	if t.IsExited() {
 		return fmt.Errorf("terminal exited: %s", terminalID)
 	}
-
-	// Skip if dimensions haven't changed to avoid a spurious SIGWINCH
+	// Skip if dimensions have not changed to avoid a spurious SIGWINCH
 	// that causes shells (e.g. zsh with starship) to redraw the prompt,
 	// leaving the old prompt visible on screen.
 	if meta.Cols == uint32(cols) && meta.Rows == uint32(rows) {
 		return nil
 	}
-
-	if err := t.Resize(cols, rows); err != nil {
-		return err
-	}
-
+	resizeErr := t.Resize(cols, rows)
 	m.mu.Lock()
-	if meta, exists := m.meta[terminalID]; exists {
-		meta.Cols = uint32(cols)
-		meta.Rows = uint32(rows)
-		m.meta[terminalID] = meta
+	defer m.mu.Unlock()
+	if m.current[terminalID] != registration {
+		return fmt.Errorf("%w: %s", ErrTerminalInstanceChanged, terminalID)
 	}
-	m.mu.Unlock()
-
+	if resizeErr != nil {
+		return resizeErr
+	}
+	registration.meta.Cols = uint32(cols)
+	registration.meta.Rows = uint32(rows)
 	return nil
 }
 
@@ -355,7 +389,7 @@ func (m *Manager) RestartTerminal(
 	exitFn ExitHandler,
 ) error {
 	m.mu.Lock()
-	prev, hasPrev := m.terminals[opts.ID]
+	prev, hasPrev := m.currentTerminalLocked(opts.ID)
 	m.mu.Unlock()
 
 	var (
@@ -401,7 +435,7 @@ func (m *Manager) RestartTerminal(
 // StopTerminal stops a specific terminal's process without removing it.
 func (m *Manager) StopTerminal(terminalID string) {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if ok {
@@ -412,16 +446,11 @@ func (m *Manager) StopTerminal(terminalID string) {
 // RemoveTerminal stops and removes a terminal from the manager.
 func (m *Manager) RemoveTerminal(terminalID string) {
 	m.mu.Lock()
-	t, ok := m.terminals[terminalID]
-	if ok {
-		delete(m.terminals, terminalID)
-		delete(m.meta, terminalID)
-		delete(m.exitDone, terminalID)
-	}
+	registration, ok := m.current[terminalID]
+	delete(m.current, terminalID)
 	m.mu.Unlock()
-
 	if ok {
-		t.Stop()
+		registration.terminal.Stop()
 	}
 }
 
@@ -429,7 +458,7 @@ func (m *Manager) RemoveTerminal(terminalID string) {
 func (m *Manager) HasTerminal(terminalID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	_, ok := m.terminals[terminalID]
+	_, ok := m.current[terminalID]
 	return ok
 }
 
@@ -440,7 +469,7 @@ func (m *Manager) HasTerminal(terminalID string) bool {
 func (m *Manager) IsRunning(terminalID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	return ok && !t.IsExited()
 }
 
@@ -452,24 +481,49 @@ func (m *Manager) IsRunning(terminalID string) bool {
 // callers' assertions racy.
 func (m *Manager) WaitForExit(terminalID string) {
 	m.mu.RLock()
-	done, ok := m.exitDone[terminalID]
+	registration, ok := m.current[terminalID]
+	m.mu.RUnlock()
+	if ok {
+		<-registration.done
+	}
+}
+
+// ExitHandlerFinished reports completion of the current instance's reader drain
+// and exit handler. An absent registration has no handler to wait for.
+func (m *Manager) ExitHandlerFinished(terminalID string) bool {
+	m.mu.RLock()
+	registration, ok := m.current[terminalID]
 	m.mu.RUnlock()
 	if !ok {
-		return
+		return true
 	}
-	<-done
+	select {
+	case <-registration.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsExited returns true if the terminal exists and has exited.
 func (m *Manager) IsExited(terminalID string) bool {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
 		return false
 	}
 	return t.IsExited()
+}
+
+// HangUpRequested reports whether the current terminal received a hang-up
+// request before its exit was observed.
+func (m *Manager) HangUpRequested(terminalID string) bool {
+	m.mu.RLock()
+	t, ok := m.currentTerminalLocked(terminalID)
+	m.mu.RUnlock()
+	return ok && t.HangUpRequested()
 }
 
 // WaitForReadDrained blocks until the terminal's read goroutine drained (see
@@ -480,7 +534,7 @@ func (m *Manager) IsExited(terminalID string) bool {
 // Production waits through installTerminal, which passes defaultReadDrainGrace.
 func (m *Manager) WaitForReadDrained(terminalID string) bool {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
@@ -511,12 +565,11 @@ func (m *Manager) UpdateTitle(terminalID, title string) bool {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	meta, ok := m.meta[terminalID]
+	registration, ok := m.current[terminalID]
 	if !ok {
 		return false
 	}
-	meta.Title = clean
-	m.meta[terminalID] = meta
+	registration.meta.Title = clean
 	return true
 }
 
@@ -527,7 +580,7 @@ func (m *Manager) UpdateTitle(terminalID, title string) bool {
 // isSnapshot contract.
 func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
@@ -540,7 +593,7 @@ func (m *Manager) ScreenSnapshotSince(terminalID string, afterOffset int64) (dat
 // ends with needle. Returns false if the terminal is unknown.
 func (m *Manager) ScreenHasSuffix(terminalID string, needle []byte) bool {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 	if !ok {
 		return false
@@ -552,7 +605,7 @@ func (m *Manager) ScreenHasSuffix(terminalID string, needle []byte) bool {
 // buffer and output stream.
 func (m *Manager) AppendOutput(terminalID string, data []byte) bool {
 	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
+	t, ok := m.currentTerminalLocked(terminalID)
 	m.mu.RUnlock()
 
 	if !ok {
@@ -568,39 +621,34 @@ func (m *Manager) AppendOutput(terminalID string, data []byte) bool {
 func (m *Manager) SnapshotTerminal(terminalID string) (snap TerminalSnapshot, ok bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	t, exists := m.terminals[terminalID]
+	registration, exists := m.current[terminalID]
 	if !exists {
 		return TerminalSnapshot{}, false
 	}
-	screen, _ := t.ScreenSnapshot()
+	screen, _ := registration.terminal.ScreenSnapshot()
 	if len(screen) == 0 {
 		return TerminalSnapshot{}, false
 	}
-	meta, hasMeta := m.meta[terminalID]
-	if !hasMeta {
-		return TerminalSnapshot{}, false
-	}
-	return TerminalSnapshot{
-		TerminalMeta: meta,
-		Screen:       screen,
-	}, true
+	return TerminalSnapshot{TerminalMeta: registration.meta, Screen: screen}, true
 }
 
-// GetMeta returns the metadata for a terminal, or ok=false if not found.
-func (m *Manager) GetMeta(terminalID string) (meta TerminalMeta, ok bool) {
+// GetMeta returns the current registration's metadata, or false when absent.
+func (m *Manager) GetMeta(terminalID string) (TerminalMeta, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	meta, ok = m.meta[terminalID]
-	return
+	registration, ok := m.current[terminalID]
+	if !ok {
+		return TerminalMeta{}, false
+	}
+	return registration.meta, true
 }
 
 // ListTerminalIDs returns the IDs of all currently tracked terminals.
 func (m *Manager) ListTerminalIDs() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ids := make([]string, 0, len(m.terminals))
-	for id := range m.terminals {
+	ids := make([]string, 0, len(m.current))
+	for id := range m.current {
 		ids = append(ids, id)
 	}
 	return ids
@@ -624,49 +672,131 @@ type TerminalEntry struct {
 	Exited          bool
 }
 
-// buildEntryLocked assembles a TerminalEntry for id, attaching the live
-// screen snapshot and offset when a PTY is present. Caller must hold
-// m.mu (read or write).
-func (m *Manager) buildEntryLocked(id string, meta TerminalMeta) TerminalEntry {
-	entry := TerminalEntry{ID: id, Meta: meta}
-	if t, ok := m.terminals[id]; ok {
-		entry.Screen, entry.ScreenEndOffset = t.ScreenSnapshot()
-		entry.Exited = t.IsExited()
-	} else {
-		entry.Exited = true
-	}
-	return entry
+// buildEntryLocked snapshots one coherent current registration. The caller
+// holds m.mu for reading or writing.
+func (m *Manager) buildEntryLocked(registration *terminalRegistration) TerminalEntry {
+	screen, offset := registration.terminal.ScreenSnapshot()
+	return TerminalEntry{ID: registration.id, Meta: registration.meta, Screen: screen,
+		ScreenEndOffset: offset, Exited: registration.terminal.IsExited()}
 }
 
 // ListByIDs returns terminals matching the given IDs.
 func (m *Manager) ListByIDs(ids []string) []TerminalEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
 	var result []TerminalEntry
 	for _, id := range ids {
-		meta, ok := m.meta[id]
-		if !ok {
-			continue
+		if registration, ok := m.current[id]; ok {
+			result = append(result, m.buildEntryLocked(registration))
 		}
-		result = append(result, m.buildEntryLocked(id, meta))
 	}
 	return result
 }
 
-// StopAll stops all terminals and clears the map.
-func (m *Manager) StopAll() {
-	m.mu.Lock()
-	terminals := make([]*Terminal, 0, len(m.terminals))
-	for _, t := range m.terminals {
-		terminals = append(terminals, t)
-	}
-	m.terminals = make(map[string]*Terminal)
-	m.meta = make(map[string]TerminalMeta)
-	m.exitDone = make(map[string]chan struct{})
-	m.mu.Unlock()
+// hangUpJoinGrace is the extra budget the whole HangUpAll set gets on top of
+// the per-shell grace, so the joins of the exit goroutines can outlast it.
+const hangUpJoinGrace = 5 * time.Second
 
-	for _, t := range terminals {
-		t.Stop()
+// HangUpAll hangs up every terminal, escalates to Stop for one that is still
+// alive after grace, and joins every exit goroutine before it returns.
+//
+// It is the orderly-shutdown sweep for the terminals that outlive
+// Service.Shutdown. The join is what makes it a shutdown primitive rather
+// than a stop: an exit goroutine whose handler persists the screen would
+// otherwise run past the caller's database close. The current registration
+// cannot serve that join: removal and restart replace it. The draining set retains each old
+// registration until its own handler finishes.
+//
+// The sweep snapshots both maps under the read lock and keeps them: a
+// terminal row survives the sweep. Service.Shutdown records early notices,
+// and the exit handler combines that record with the actual hang-up request
+// to preserve natural exits and the final screen.
+//
+// A grace of zero or less escalates at once. The escalation follows t.exitCh,
+// the shell's own exit, and never registration.done: that completion also waits for the
+// reader, which can spend defaultReadDrainGrace twice, so a wait on it could
+// reach Stop for a shell that already exited, and Stop kills the nohup jobs
+// the hang-up leaves alive.
+//
+// It returns the ids whose join gave up at the deadline, or nil.
+func (m *Manager) HangUpAll(grace time.Duration) []string {
+	m.mu.RLock()
+	terminals := make([]*Terminal, 0, len(m.current))
+	for _, registration := range m.current {
+		terminals = append(terminals, registration.terminal)
 	}
+	exits := make([]*terminalRegistration, 0, len(m.draining))
+	for registration := range m.draining {
+		exits = append(exits, registration)
+	}
+	m.mu.RUnlock()
+
+	// pending counts, per id, the goroutines whose completion the join is
+	// waiting for: one for the shell sweep, one per exit goroutine. A count
+	// above zero at the deadline is an id the sweep abandoned.
+	var pendingMu sync.Mutex
+	pending := make(map[string]int, len(terminals)+len(exits))
+
+	var drain drain.Counter
+	beginPending := func(id string) func() {
+		pendingMu.Lock()
+		pending[id]++
+		pendingMu.Unlock()
+		drain.Add()
+		return func() {
+			pendingMu.Lock()
+			pending[id]--
+			pendingMu.Unlock()
+			drain.Done()
+		}
+	}
+	for _, t := range terminals {
+		finish := beginPending(t.ID())
+		go func(t *Terminal) {
+			defer finish()
+			// The grace starts before any PTY close can block. A mock clock
+			// must advance it before a stubborn shell can reach escalation.
+			timer := m.clock.NewTimer(max(grace, 0), terminalHangUpTimerTag)
+			defer timer.Stop(terminalHangUpTimerTag)
+			hungUp := t.beginHangUp()
+			if grace <= 0 {
+				t.Stop()
+				<-hungUp
+				return
+			}
+			select {
+			case <-t.exitCh:
+			case <-timer.C:
+				if !t.IsExited() {
+					t.Stop()
+				}
+			}
+			<-hungUp
+		}(t)
+	}
+	for _, exit := range exits {
+		finish := beginPending(exit.id)
+		go func(done chan struct{}) {
+			defer finish()
+			<-done
+		}(exit.done)
+	}
+
+	// Keep the join allowance for immediate escalation, and cap the sum at
+	// the largest duration so a very large grace cannot overflow it.
+	const maxDuration = time.Duration(1<<63 - 1)
+	joinTimeout := min(max(grace, 0), maxDuration-hangUpJoinGrace) + hangUpJoinGrace
+	if drain.Wait(joinTimeout, "") {
+		return nil
+	}
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	ids := make([]string, 0, len(pending))
+	for id, count := range pending {
+		if count > 0 {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }

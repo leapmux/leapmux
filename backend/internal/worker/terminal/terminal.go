@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
@@ -26,6 +27,7 @@ const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
 const (
 	terminalChildCloseTimerTag = "terminal-child-close"
 	terminalReadDrainTimerTag  = "terminal-read-drain"
+	terminalHangUpTimerTag     = "terminal-hang-up-grace"
 )
 
 // ScreenBuffer is a thread-safe ring buffer that stores recent PTY output.
@@ -327,9 +329,15 @@ type Terminal struct {
 	outputFn  func(data []byte)
 	screenBuf *ScreenBuffer
 	mu        sync.Mutex
-	stopped   bool
-	exitCode  int
-	exitCh    chan struct{}
+	// managedResizeMu serializes the manager's dimension comparison, native
+	// resize, and metadata commit for this instance. Other terminals stay independent.
+	managedResizeMu sync.Mutex
+	stopped         bool
+	// hangUpRequested records a request that preceded the observed exit.
+	// mu protects this field and the close of exitCh.
+	hangUpRequested bool
+	exitCode        int
+	exitCh          chan struct{}
 	// readDoneCh is closed when readOutput returns. exitCh tracks
 	// owner.Wait() in a separate goroutine, so a closed exitCh does NOT
 	// imply screenBuf writes have stopped — wait on this instead.
@@ -350,6 +358,9 @@ type Terminal struct {
 	// Stop reach it, and on Windows it must run exactly once — see the Windows
 	// implementation for what a second call closes.
 	childSideOnce sync.Once
+	// workerSideOnce guards closePTYWorkerSide, because Stop and HangUp both
+	// reach it, and the worker side closes once, as the child side does.
+	workerSideOnce sync.Once
 	// ptyMu serializes a pty TEARDOWN against a pty CALL. Resize and SendInput
 	// take it for reading; closeChildSide and closeWorkerSide take it for
 	// writing.
@@ -559,9 +570,8 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 }
 
 // Stop terminates the terminal session and every process spawned beneath
-// the shell. Closing the PTY triggers the kernel's normal hang-up
-// flow; Terminate then reaps anything still alive in the shell's kill
-// group (JobObject on Windows, process-group SIGHUP+SIGKILL on Unix).
+// the shell before closing the PTY. A blocked input write or console flush
+// must not prevent verified process termination.
 //
 // Both pty ends close here, child side first. A forced stop discards whatever
 // the child wrote and nobody read yet, which is the point: the caller wants the
@@ -582,25 +592,83 @@ func (t *Terminal) Stop() {
 	t.stopped = true
 	t.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	if err := t.owner.Capture(ctx); err != nil {
+	if err := t.owner.CaptureBeforeStop(); err != nil {
 		slog.Warn("capture terminal process ownership", "terminal_id", t.id, "error", err)
 	}
-	cancel()
-	t.closeChildSide()
-	t.closeWorkerSide()
 	if err := t.owner.Terminate(); err != nil {
 		slog.Warn("terminate owned terminal processes",
 			"terminal_id", t.id,
 			"error", err,
 		)
 	}
+	t.closePTY()
 }
 
 // Wait blocks until the terminal process exits.
 func (t *Terminal) Wait() int {
 	<-t.exitCh
 	return t.exitCode
+}
+
+// HangUp delivers the hang-up that a process exit delivers and closes both
+// pty sides, and nothing more.
+//
+// It is the orderly-shutdown stop for a terminal whose jobs may outlive the
+// worker. The SIGNAL is the point, not the close: on macOS creack/pty opens a
+// blocking master, so os.File.Close defers the real close while readOutput is
+// parked in read(2), and the kernel delivers no hang-up -- a close alone hangs
+// up nothing and every shell reaches the caller's escalation, which kills the
+// nohup jobs that a hang-up leaves alive. The signal reaches the shell's
+// process group, the close then ends the reader, and a shell that ignores the
+// hang-up still runs when this returns so the caller can escalate through
+// Stop after its grace.
+//
+// It runs neither Capture nor Terminate, and it claims no `stopped`, so a
+// later Stop still escalates. A signal the platform refuses -- Windows
+// delivers no graceful signals; its ConPTY close ends the console's processes
+// -- logs at Debug, because the close below is that platform's hang-up.
+func (t *Terminal) HangUp() {
+	<-t.beginHangUp()
+}
+
+// beginHangUp sends the signal before starting PTY teardown and returns its
+// completion channel. The shutdown sweep can escalate while a close waits
+// behind input or a console flush, then join that close before returning.
+func (t *Terminal) beginHangUp() <-chan struct{} {
+	t.mu.Lock()
+	live := !t.IsExited()
+	if live {
+		t.hangUpRequested = true
+	}
+	t.mu.Unlock()
+	if live {
+		if err := t.owner.SignalGroup(syscall.SIGHUP); err != nil {
+			slog.Debug("signal terminal process group",
+				"terminal_id", t.id,
+				"error", err,
+			)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t.closePTY()
+	}()
+	return done
+}
+
+// HangUpRequested reports whether a hang-up request preceded the observed exit.
+func (t *Terminal) HangUpRequested() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hangUpRequested
+}
+
+// closePTY closes the child side before the worker side. Both closes retain
+// their own once guard and serialization with input and resize calls.
+func (t *Terminal) closePTY() {
+	t.closeChildSide()
+	t.closeWorkerSide()
 }
 
 // waitForReadDone blocks with no limit until readOutput returns, after which
@@ -719,8 +787,8 @@ func (t *Terminal) closeChildSide() {
 	t.childSideOnce.Do(func() { closePTYChildSide(t.ptmx) })
 }
 
-// closeWorkerSide closes the ends this process reads and writes through. Only
-// Stop calls it: a terminal that exited on its own keeps them open so
+// closeWorkerSide closes the ends this process reads and writes through.
+// Stop and HangUp call it; a terminal that exited on its own keeps them open so
 // ScreenSnapshot and a later restart still work off the same instance.
 func (t *Terminal) closeWorkerSide() {
 	if t.ptmx == nil {
@@ -728,7 +796,7 @@ func (t *Terminal) closeWorkerSide() {
 	}
 	t.ptyMu.Lock()
 	defer t.ptyMu.Unlock()
-	closePTYWorkerSide(t.ptmx)
+	t.workerSideOnce.Do(func() { closePTYWorkerSide(t.ptmx) })
 }
 
 // IsExited returns true if the terminal process has exited.
@@ -768,9 +836,9 @@ func (t *Terminal) ScreenSnapshot() ([]byte, int64) {
 // *Terminal; the caller (Manager.RestartTerminal) is responsible for
 // swapping this terminal out of the manager's map.
 //
-// Caller must guarantee t has exited (IsExited == true) so the prior PTY
-// is no longer writing to t.screenBuf. Manager.RestartTerminal enforces
-// this under m.mu; external callers must do their own ordering.
+// The caller must stop the old terminal after it exits before sharing its
+// screen buffer with Respawn. Manager.RestartTerminal checks IsExited and calls
+// Stop before Respawn. Other callers must enforce that ordering.
 func (t *Terminal) Respawn(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
 	return startWithScreenBuffer(ctx, opts, t.clock, t.screenBuf, outputFn)
 }
@@ -843,7 +911,9 @@ func (t *Terminal) waitForExit() {
 			"error", closeErr,
 		)
 	}
+	t.mu.Lock()
 	close(t.exitCh)
+	t.mu.Unlock()
 
 	// End the reader after the owner cleans up the verified process tree. Nothing
 	// else will: the pty stays open for a terminal that exited on its own --

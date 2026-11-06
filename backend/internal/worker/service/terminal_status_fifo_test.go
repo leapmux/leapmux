@@ -78,16 +78,31 @@ func (w *statusHookWriter) SendStream(frame *leapmuxv1.InnerStreamMessage) error
 // fails every send, as a connection that ended does.
 type stallingWriter struct {
 	*testResponseWriter
-	claimed atomic.Bool
-	parked  chan struct{}
-	release chan struct{}
-	sendErr error
+	claimed     atomic.Bool
+	parked      chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+	sendErr     error
 }
 
-func newStallingWriter(channelID string) *stallingWriter {
+func newStallingWriter(t *testing.T, svc *Service, channelID string) *stallingWriter {
+	t.Helper()
 	base := newTestWriter()
 	base.channelID = channelID
-	return &stallingWriter{testResponseWriter: base, parked: make(chan struct{}), release: make(chan struct{})}
+	writer := &stallingWriter{testResponseWriter: base, parked: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		writer.releaseSend()
+		testutil.AssertEventually(t, func() bool { return terminalStatusQueues(svc) == 0 }, "the stalled writer must finish its status drain")
+	})
+	return writer
+}
+
+func runStalledTestWork(t *testing.T, writer *stallingWriter, work func()) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() { writer.releaseSend(); <-done })
+	go func() { defer close(done); work() }()
+	return done
 }
 
 func (w *stallingWriter) SendStream(frame *leapmuxv1.InnerStreamMessage) error {
@@ -103,13 +118,13 @@ func (w *stallingWriter) SendStream(frame *leapmuxv1.InnerStreamMessage) error {
 
 // openTerminalWatch subscribes writer to a terminal through the real WatchEvents
 // handler, which registers it for live events and then runs the replay.
-func openTerminalWatch(t *testing.T, d *channel.Dispatcher, terminalID string, writer channel.ResponseWriter, base *testResponseWriter) {
+func openTerminalWatch(t *testing.T, d testRPCDispatcher, terminalID string, writer channel.ResponseWriter, base *testResponseWriter) {
 	t.Helper()
 	payload, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	})
 	require.NoError(t, err)
-	d.DispatchWith(t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+	dispatchTestRequest(d, t.Context(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
 		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: payload,
 	}, writer)
 	t.Cleanup(func() { base.deliverStreamRequest(nil, true); waitStreamEnded(t, base) })
@@ -167,6 +182,7 @@ func TestTerminalReplayStatusReachesTheWireBeforeARestartThatFollowsIt(t *testin
 	w.before = func() {
 		runOnAnotherGoroutine(func() {
 			_, handle := svc.beginTerminalStartup(id, shell)
+			trackStartupForTest(t, &svc.TerminalStartup.startupCore, handle)
 			assert.NotNil(t, handle)
 			svc.announceTerminalStarting(id, shell)
 		})
@@ -188,7 +204,7 @@ func TestTerminalReplayStatusSendsNoStaleStartingAfterAFailedStartup(t *testing.
 	const id = "term-failed"
 	svc, d, _ := setupTestService(t)
 	seedTerminal(t, svc, id)
-	handle := svc.TerminalStartup.begin(id, func() {})
+	handle := beginForTest(t, &svc.TerminalStartup.startupCore, id)
 	require.NotNil(t, handle)
 	svc.TerminalStartup.setMessage(id, "Starting sh…")
 	w := &statusHookWriter{testResponseWriter: newTestWriter()}
@@ -213,16 +229,15 @@ func TestTerminalStatusOfOneTerminalPassesAStalledSenderOfAnother(t *testing.T) 
 
 	testCtx := testutil.DeadlineContext(t)
 	svc, _, _ := setupTestService(t)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	watchTerminal(svc, "term-stalled", stalled)
 	healthy := newTestWriter()
 	healthy.channelID = "healthy-channel"
 	watchTerminal(svc, "term-healthy", healthy)
 
-	var emitter sync.WaitGroup
-	emitter.Go(func() { publishTerminalReady(svc, "term-stalled") })
-	t.Cleanup(emitter.Wait)
-	t.Cleanup(func() { close(stalled.release) })
+	emitter := runStalledTestWork(t, stalled, func() { publishTerminalReady(svc, "term-stalled") })
+	t.Cleanup(func() { <-emitter })
+	t.Cleanup(func() { stalled.releaseSend() })
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
@@ -244,33 +259,30 @@ func TestTerminalStatusEmitterDoesNotWaitForAnotherDrainer(t *testing.T) {
 	const id = "term-stalled"
 	testCtx := testutil.DeadlineContext(t)
 	svc, _, _ := setupTestService(t)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	watchTerminal(svc, id, stalled)
 
-	var first sync.WaitGroup
-	first.Go(func() { svc.broadcastTerminalStarting(id, "Starting sh…", nil) })
+	first := runStalledTestWork(t, stalled, func() { svc.broadcastTerminalStarting(id, "Starting sh…", nil) })
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
 		require.FailNow(t, "the first status never reached the stalled sender")
 	}
 
-	emitted := make(chan struct{})
-	go func() {
-		defer close(emitted)
+	emitted := runStalledTestWork(t, stalled, func() {
 		publishTerminalReady(svc, id)
 		svc.broadcastTerminalFailed(id, "spawn failed")
-	}()
+	})
 	select {
 	case <-emitted:
 	case <-testCtx.Done():
-		close(stalled.release)
+		stalled.releaseSend()
 		require.FailNow(t, "an emitter blocked on the stalled sender")
 	}
 	assert.Empty(t, wireTerminalStatuses(stalled.testResponseWriter), "the sender is still stalled")
 
-	close(stalled.release)
-	first.Wait()
+	stalled.releaseSend()
+	<-first
 
 	assert.Equal(t, []leapmuxv1.TerminalStatus{
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
@@ -292,11 +304,10 @@ func TestTerminalReplayNeverBlocksOnAStalledSender(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, id)
 	seedTerminal(t, svc, other)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	watchTerminal(svc, id, stalled)
 
-	var first sync.WaitGroup
-	first.Go(func() { publishTerminalReady(svc, id) })
+	first := runStalledTestWork(t, stalled, func() { publishTerminalReady(svc, id) })
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
@@ -306,26 +317,24 @@ func TestTerminalReplayNeverBlocksOnAStalledSender(t *testing.T) {
 	replaying := newTestWriter()
 	replaying.channelID = "replaying-channel"
 	sink := newReplaySink(replaying, 0, nil)
-	replayed := make(chan struct{})
-	go func() {
-		defer close(replayed)
+	replayed := runStalledTestWork(t, stalled, func() {
 		for _, terminalID := range []string{id, other} {
 			row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
 			assert.NoError(t, err)
 			svc.replayTerminalCatchUp(sink, terminalID, 0, row)
 		}
-	}()
+	})
 	select {
 	case <-replayed:
 	case <-testCtx.Done():
-		close(stalled.release)
+		stalled.releaseSend()
 		require.FailNow(t, "a replay blocked on the stalled sender")
 	}
 	assert.Equal(t, []leapmuxv1.TerminalStatus{leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED},
 		waitForWireTerminalStatuses(t, replaying, 1), "the other terminal's replay must not wait for the stall")
 
-	close(stalled.release)
-	first.Wait()
+	stalled.releaseSend()
+	<-first
 
 	assert.Equal(t, []leapmuxv1.TerminalStatus{
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED,
@@ -350,11 +359,9 @@ func replayIntoStalledDrain(t *testing.T, svc *Service, id string, stalled *stal
 	replaying := &statusHookWriter{testResponseWriter: newTestWriter()}
 	replaying.before = func() { runOnAnotherGoroutine(func() { publishTerminalReady(svc, id) }) }
 
-	replayed := make(chan struct{})
-	go func() {
-		defer close(replayed)
+	replayed := runStalledTestWork(t, stalled, func() {
 		svc.replayTerminalCatchUp(newReplaySink(replaying, 0, nil), id, 0, row)
-	}()
+	})
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
@@ -376,8 +383,8 @@ func TestTerminalReplayReturnsWhileAnotherWatcherStalls(t *testing.T) {
 
 	const id = "term-shared"
 	svc, _, _ := setupTestService(t)
-	stalled := newStallingWriter("stalled-channel")
-	t.Cleanup(func() { close(stalled.release) })
+	stalled := newStallingWriter(t, svc, "stalled-channel")
+	t.Cleanup(func() { stalled.releaseSend() })
 
 	replaying := replayIntoStalledDrain(t, svc, id, stalled)
 
@@ -393,13 +400,13 @@ func TestTerminalReplayDrainEndsWhenTheStalledConnectionEnds(t *testing.T) {
 
 	const id = "term-shared"
 	svc, _, _ := setupTestService(t)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	stalled.sendErr = channel.ErrTransportGone
 
 	replayIntoStalledDrain(t, svc, id, stalled)
 	require.Equal(t, 1, terminalStatusQueues(svc), "precondition: the drain holds the queue")
 
-	close(stalled.release)
+	stalled.releaseSend()
 
 	require.Eventually(t, func() bool { return terminalStatusQueues(svc) == 0 }, 30*time.Second, time.Millisecond,
 		"the drain must end with the connection")
@@ -486,32 +493,29 @@ func TestTerminalStatusQueueIsReleasedWhenTheTerminalEnds(t *testing.T) {
 	testCtx := testutil.DeadlineContext(t)
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, id)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	watchTerminal(svc, id, stalled)
 
-	var first sync.WaitGroup
-	first.Go(func() { publishTerminalReady(svc, id) })
+	first := runStalledTestWork(t, stalled, func() { publishTerminalReady(svc, id) })
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
 		require.FailNow(t, "the first status never reached the stalled sender")
 	}
 
-	exited := make(chan struct{})
-	go func() {
-		defer close(exited)
+	exited := runStalledTestWork(t, stalled, func() {
 		svc.makeTerminalExitFn()(id, 0)
-	}()
+	})
 	select {
 	case <-exited:
 	case <-testCtx.Done():
-		close(stalled.release)
+		stalled.releaseSend()
 		require.FailNow(t, "the exit handler blocked on the stalled sender")
 	}
 	assert.Equal(t, 1, terminalStatusQueues(svc), "the closed event waits in the queue during the stall")
 
-	close(stalled.release)
-	first.Wait()
+	stalled.releaseSend()
+	<-first
 
 	assert.Equal(t, []leapmuxv1.TerminalStatus{leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY},
 		wireTerminalStatuses(stalled.testResponseWriter))
@@ -583,11 +587,10 @@ func TestTerminalReplayStatusOfARetiredSinkIsDropped(t *testing.T) {
 	const id = "term-retired"
 	testCtx := testutil.DeadlineContext(t)
 	svc, _, _ := setupTestService(t)
-	stalled := newStallingWriter("stalled-channel")
+	stalled := newStallingWriter(t, svc, "stalled-channel")
 	watchTerminal(svc, id, stalled)
 
-	var first sync.WaitGroup
-	first.Go(func() { publishTerminalReady(svc, id) })
+	first := runStalledTestWork(t, stalled, func() { publishTerminalReady(svc, id) })
 	select {
 	case <-stalled.parked:
 	case <-testCtx.Done():
@@ -601,8 +604,8 @@ func TestTerminalReplayStatusOfARetiredSinkIsDropped(t *testing.T) {
 	})
 	sink.retire(channel.ErrTransportGone)
 
-	close(stalled.release)
-	first.Wait()
+	stalled.releaseSend()
+	<-first
 
 	assert.Empty(t, subscriber.streamsSnapshot(), "a retired sink sends nothing")
 	assert.Zero(t, terminalStatusQueues(svc))
@@ -739,7 +742,7 @@ func TestTerminalReplayedStartingEndsInExitedWhenTheShellExitedFirst(t *testing.
 	ctx := testutil.DeadlineContext(t)
 	svc, d, _ := setupTestService(t)
 	seedTerminal(t, svc, id)
-	handle := svc.TerminalStartup.begin(id, func() {})
+	handle := beginForTest(t, &svc.TerminalStartup.startupCore, id)
 	require.NotNil(t, handle)
 	svc.TerminalStartup.setMessage(id, "Starting sh…")
 	startShell(ctx, t, svc, id)
@@ -774,6 +777,7 @@ func TestBroadcastTerminalStatusAfterStartupStatesTheRestartThatClaimedTheTermin
 	svc.Terminals.StopTerminal(id)
 	svc.Terminals.WaitForExit(id)
 	_, handle := svc.beginTerminalStartup(id, testutil.TestShell())
+	trackStartupForTest(t, &svc.TerminalStartup.startupCore, handle)
 	require.NotNil(t, handle)
 
 	svc.broadcastTerminalStatusAfterStartup(id)
@@ -878,4 +882,38 @@ func TestPublishDerivedTerminalStatusKeepsReadyAheadOfARacingExit(t *testing.T) 
 		closedCameFirst := !firstIsStatus
 		require.False(t, closedCameFirst && frameStatesReady(frames[1]), "READY must never follow closed")
 	}
+}
+
+func (w *stallingWriter) releaseSend() { w.releaseOnce.Do(func() { close(w.release) }) }
+
+func TestStalledPublicationIsJoinedWhenItsSubtestEnds(t *testing.T) {
+	var svc *Service
+	var stalled *stallingWriter
+	var finished <-chan struct{}
+	defer func() {
+		if stalled != nil {
+			stalled.releaseSend()
+		}
+		if finished != nil {
+			<-finished
+		}
+		if svc != nil {
+			testutil.AssertEventually(t, func() bool { return terminalStatusQueues(svc) == 0 }, "failure cleanup must drain the queued status")
+		}
+	}()
+	t.Run("owned publication", func(t *testing.T) {
+		svc, _, _ = setupTestService(t)
+		const id = "owned-stalled-publication"
+		seedTerminal(t, svc, id)
+		stalled = newStallingWriter(t, svc, "owned-stalled-channel")
+		watchTerminal(svc, id, stalled)
+		finished = runStalledTestWork(t, stalled, func() { publishTerminalReady(svc, id) })
+		<-stalled.parked
+	})
+	select {
+	case <-finished:
+	default:
+		t.Error("the subtest returned before its emitter finished")
+	}
+	assert.Zero(t, terminalStatusQueues(svc), "the subtest must join its stalled drainer")
 }

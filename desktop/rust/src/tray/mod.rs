@@ -755,7 +755,6 @@ impl TrayState {
         icon.set_visible(true)
             .map_err(|err| format!("show the tray icon: {err}"))
     }
-
 }
 
 // --- The icon ---
@@ -778,12 +777,10 @@ fn build_tray(app: &AppHandle) -> Result<TrayIcon<tauri::Wry>, String> {
     // error the user reads instead of an abort.
     #[cfg(target_os = "linux")]
     if !appindicator_linux::available() {
-        return Err(
-            "LeapMux could not create a tray icon on this desktop. \
+        return Err("LeapMux could not create a tray icon on this desktop. \
              Install libayatana-appindicator3 (or an equivalent status-icon \
              library) and turn the tray icon on again."
-                .to_string(),
-        );
+            .to_string());
     }
 
     let show = MenuItem::with_id(app, TRAY_SHOW_MENU_ID, "Show LeapMux", true, None::<&str>)
@@ -966,7 +963,11 @@ pub(crate) fn install(
         crate::shell_log!("{err}");
     }
 
-    let visibility = launch_visibility(autostart_launch, behavior.start_minimized, state.is_enabled());
+    let visibility = launch_visibility(
+        autostart_launch,
+        behavior.start_minimized,
+        state.is_enabled(),
+    );
     if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW_LABEL) {
         install_minimize_hook(&window, state.clone());
     }
@@ -980,8 +981,7 @@ pub(crate) fn install(
 /// How long the shell waits for the webview to show the window before it does
 /// so itself. The deadline runs from the START of `setup`, so it limits the
 /// blocking calls inside it as well as the frontend.
-pub(crate) const STARTUP_REVEAL_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(5);
+pub(crate) const STARTUP_REVEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Show the main window if nothing else did within `STARTUP_REVEAL_DEADLINE`.
 ///
@@ -1056,7 +1056,11 @@ fn install_minimize_hook(window: &tauri::WebviewWindow, state: Arc<TrayState>) {
 mod tests {
     use super::*;
 
-    fn actions(tray: bool, on_close: TrayOnClose, on_minimize: TrayOnMinimize) -> (WindowAction, WindowAction) {
+    fn actions(
+        tray: bool,
+        on_close: TrayOnClose,
+        on_minimize: TrayOnMinimize,
+    ) -> (WindowAction, WindowAction) {
         (
             window_action(tray, on_close, on_minimize, WindowIntent::CloseRequested),
             window_action(tray, on_close, on_minimize, WindowIntent::Minimized),
@@ -1385,7 +1389,11 @@ mod tests {
     #[test]
     fn the_live_policy_round_trips_every_stored_variant() {
         let state = TrayState::new();
-        assert_eq!(state.on_close(), TrayOnClose::Tray, "a fresh state is the default");
+        assert_eq!(
+            state.on_close(),
+            TrayOnClose::Tray,
+            "a fresh state is the default"
+        );
         assert_eq!(state.on_minimize(), TrayOnMinimize::Taskbar);
 
         for on_close in [TrayOnClose::Tray, TrayOnClose::Quit] {

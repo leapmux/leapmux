@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -22,6 +22,11 @@ func runHub(args []string) error {
 		fmt.Println(version.Format())
 		return nil
 	}
+
+	// A long-lived daemon: a lost stderr (a dead tee, a closed terminal) must
+	// return EPIPE from its log writes, not kill the process before the lease
+	// is released.
+	procutil.KeepRunningOnBrokenPipe()
 
 	level, err := logging.ParseLevel(cfg.LogLevel)
 	if err != nil {
@@ -40,7 +45,7 @@ func runHub(args []string) error {
 	// one startup surface that shows the operator the canonical address.
 	server.PrintBannerURL()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), procutil.ShutdownSignals()...)
 	defer stop()
 
 	return server.Serve(ctx)

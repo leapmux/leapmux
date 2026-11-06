@@ -33,7 +33,7 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 	dbAgent := db.Agent{ID: "agent-1"}
 
 	// 1. Runtime ACTIVE: isRunning=true wins over everything.
-	agentHandle := svc.AgentStartup.begin("agent-1", func() {})
+	agentHandle := beginForTest(t, &svc.AgentStartup.startupCore, "agent-1")
 	require.NotNil(t, agentHandle)
 	dbAgent.StartupError = "stale error"
 	status, errStr, _ := deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", true))
@@ -78,7 +78,7 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	term := db.Terminal{ID: "term-1"}
 
 	// 1. Registry STARTING.
-	terminalHandle := svc.TerminalStartup.begin("term-1", func() {})
+	terminalHandle := beginForTest(t, &svc.TerminalStartup.startupCore, "term-1")
 	require.NotNil(t, terminalHandle)
 	status, errStr, _ := svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, status)

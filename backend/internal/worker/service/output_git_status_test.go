@@ -189,3 +189,34 @@ func TestPersistMessage_DoesNotBroadcastGitStatus(t *testing.T) {
 	sc := mock.lastStatus()
 	assert.Nil(t, sc, "PersistMessage must not auto-broadcast git status")
 }
+
+// The turn-end broadcast runs on a counted goroutine: WaitActivityRefreshes
+// must return only after it finished, so the caller's next read sees the event
+// without polling.
+func TestTurnEndGitBroadcastIsJoinedByWaitActivityRefreshes(t *testing.T) {
+	t.Parallel()
+
+	sink, mock := newGitStatusFixture(t)
+
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{}))
+	sink.h.SetShuttingDown()
+	sink.h.WaitActivityRefreshes()
+
+	require.NotNil(t, mock.lastStatus(),
+		"the joined broadcast must have published before WaitActivityRefreshes returned")
+}
+
+// A shutdown that already began admits no broadcast: the refused turn end
+// starts no goroutine, so no status event exists after the drain.
+func TestTurnEndStartsNoGitBroadcastAfterShutdownBegins(t *testing.T) {
+	t.Parallel()
+
+	sink, mock := newGitStatusFixture(t)
+	sink.h.SetShuttingDown()
+
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"result","subtype":"success"}`)}, agent.SpanInfo{}))
+	sink.h.WaitActivityRefreshes()
+
+	assert.Nil(t, mock.lastStatus(),
+		"a refused broadcast must not reach the watcher, in flight or otherwise")
+}

@@ -389,8 +389,8 @@ mod tests {
     use objc2::{msg_send, sel, ClassType};
 
     use super::{
-        add_override, defines_miniaturize, is_hooked_window, window_class, MinimizeHook, WeakWindow,
-        HOOK,
+        add_override, defines_miniaturize, is_hooked_window, window_class, MinimizeHook,
+        WeakWindow, HOOK,
     };
 
     /// The prefix that Key-Value Observing gives to the class it generates.
@@ -523,7 +523,11 @@ mod tests {
 
         observe(&window, &observer, &key);
         assert!(
-            window.class().name().to_bytes().starts_with(KVO_CLASS_PREFIX),
+            window
+                .class()
+                .name()
+                .to_bytes()
+                .starts_with(KVO_CLASS_PREFIX),
             "the first observer must leave a generated class on the window"
         );
 
@@ -564,7 +568,10 @@ mod tests {
             .expect("the stand-in class must register");
         // SAFETY: `-class` takes no argument and answers a class.
         unsafe {
-            builder.add_method(sel!(class), unrelated_class as extern "C-unwind" fn(_, _) -> _);
+            builder.add_method(
+                sel!(class),
+                unrelated_class as extern "C-unwind" fn(_, _) -> _,
+            );
         }
         let class = builder.register();
         // SAFETY: `class` descends from `NSObject`, which answers `new`.
@@ -666,7 +673,11 @@ mod tests {
         // "Hide to the menu bar": the window must never reach `super`, or it
         // enters the miniaturized state that this module exists to prevent.
         HOOK_HIDES.store(true, Ordering::SeqCst);
-        assert_eq!(minimize(&window), 1, "super must not run when the answer hides");
+        assert_eq!(
+            minimize(&window),
+            1,
+            "super must not run when the answer hides"
+        );
 
         // Another window on the same class carries no policy, so it minimizes
         // even while the answer hides the main window.
