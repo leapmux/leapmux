@@ -158,9 +158,8 @@ func TestConstructionServerErrorsPreserveListenerCloseFailures(t *testing.T) {
 	require.ErrorContains(t, err, "local listener")
 }
 
-// A hijacked WebSocket handler must be joined before the store closes: Serve's
-// drain waits for it, so a handler that reads the store after Serve returned
-// still finds it open.
+// Serve must join a hijacked WebSocket handler before closing the store, so
+// the handler can still read the store after shutdown starts.
 func TestServeWaitsForARunningWebSocketHandler(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv := newShutdownTestServer(t)
@@ -235,8 +234,8 @@ func TestJoinLoopsWaitsUnderOneDeadline(t *testing.T) {
 	})
 }
 
-// The join must precede the store close: a loop that reads the store after
-// Serve returned must still find it open.
+// Serve must join each background loop before closing the store, so a loop
+// can still read the store after shutdown starts.
 func TestServeWaitsForABackgroundLoopBeforeClosingTheStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv := newShutdownTestServer(t)
@@ -415,9 +414,91 @@ func TestServeJoinsACredentialNoticeBeforeItEndsServingCtx(t *testing.T) {
 
 func newShutdownTestServer(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
+	// Real listeners can retain I/O goroutines outside a synctest bubble.
+	// These tests need only an accept that shutdown releases by closing it.
+	opts = append(opts, func(options *serverOptions) {
+		options.listenLocal = func(string) (net.Listener, error) {
+			return &shutdownTestListener{closed: make(chan struct{})}, nil
+		}
+	})
 	srv, err := NewServer(&config.Config{DataDir: t.TempDir(), Listen: []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")}, Storage: config.StorageConfig{Type: config.StorageTypeSQLite}}, opts...)
 	require.NoError(t, err)
 	return srv
+}
+
+type shutdownTestListener struct {
+	closed   chan struct{}
+	closeErr error
+	once     sync.Once
+}
+
+func (l *shutdownTestListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *shutdownTestListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return l.closeErr
+}
+
+func (*shutdownTestListener) Addr() net.Addr {
+	return &net.UnixAddr{Net: "unix", Name: "shutdown-test"}
+}
+
+func TestNewServerClosesLocalListenersAfterBindFailure(t *testing.T) {
+	bindErr := errors.New("local bind failed")
+	closeErr := errors.New("local close failed")
+	for _, tc := range []struct {
+		name      string
+		failAfter int
+		closeErr  error
+	}{
+		{name: "first listener"},
+		{name: "second listener", failAfter: 1},
+		{name: "second listener with a cleanup error", failAfter: 1, closeErr: closeErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := []string{
+				locallistentest.UniqueListenURL(t, "first"),
+				locallistentest.UniqueListenURL(t, "second"),
+			}
+			listener := &shutdownTestListener{closed: make(chan struct{}), closeErr: tc.closeErr}
+			var calls []string
+			srv, err := NewServer(&config.Config{
+				DataDir: t.TempDir(), Listen: entries,
+				Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
+			}, func(options *serverOptions) {
+				options.listenLocal = func(entry string) (net.Listener, error) {
+					calls = append(calls, entry)
+					if len(calls) > tc.failAfter {
+						return nil, bindErr
+					}
+					return listener, nil
+				}
+			})
+			if srv != nil {
+				t.Cleanup(func() {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					_ = srv.Serve(ctx)
+				})
+			}
+			require.ErrorIs(t, err, bindErr)
+			assert.Nil(t, srv)
+			assert.Equal(t, entries[:tc.failAfter+1], calls)
+			if tc.failAfter > 0 {
+				select {
+				case <-listener.closed:
+				default:
+					t.Error("construction did not close the acquired listener")
+				}
+			}
+			if tc.closeErr != nil {
+				assert.ErrorIs(t, err, tc.closeErr)
+			}
+		})
+	}
 }
 
 func serveForShutdownTest(t *testing.T, srv *Server) (context.CancelFunc, <-chan error) {

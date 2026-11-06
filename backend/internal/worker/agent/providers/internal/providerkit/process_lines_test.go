@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -121,8 +122,7 @@ func TestReadLines(t *testing.T) {
 	})
 }
 
-// TestHelperServerLines is the child process of TestReadLines. It prints what a
-// local agent server prints, then exits.
+// TestHelperServerLines prints the lines of a local agent server, then exits.
 func TestHelperServerLines(t *testing.T) {
 	if os.Getenv(serverLinesEnv) != "1" {
 		return
@@ -134,8 +134,35 @@ func TestHelperServerLines(t *testing.T) {
 	fmt.Println("mimocode server listening on http://127.0.0.1:4096")
 	fmt.Println("")
 	fmt.Println("{not json either")
-	_ = os.Stdout.Sync()
+	// Stdout is an unbuffered *os.File. Sync on a Windows pipe waits for
+	// the reader, which a lifecycle test can deliberately block.
 	os.Exit(0)
+}
+
+func TestHelperServerLinesExitsBeforeStdoutIsRead(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestHelperServerLines$")
+	procutil.DetachFromTerminal(cmd)
+	cmd.Env = append(os.Environ(), serverLinesEnv+"=1", "LEAPMUX_TEST_PREAMBLE=")
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reader.Close() })
+	t.Cleanup(func() { _ = writer.Close() })
+	// Own the reader independently: StdoutPipe would close it in cmd.Wait
+	// before this test can verify the output retained after the child exits.
+	cmd.Stdout = writer
+	require.NoError(t, cmd.Start())
+	require.NoError(t, writer.Close())
+	err = cmd.Wait()
+	require.NoError(t, ctx.Err(), "the child must exit without cancellation")
+	require.NoError(t, err, "the child must exit while its stdout remains unread")
+	output, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, "starting the server\nmimocode server listening on http://127.0.0.1:4096\n\n{not json either\n", string(output))
 }
 
 // Work that a provider binds to the process context -- an event stream, a
@@ -248,6 +275,11 @@ func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
 		{name: "Stop", end: func(process *Process) { process.Stop() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A syscall inside synctest prevents its fake clock from advancing.
+			// Keep the failure deadline outside the bubble so a stuck child
+			// fails this test instead of reaching the package timeout.
+			deadline := time.NewTimer(30 * time.Second)
+			defer deadline.Stop()
 			synctest.Test(t, func(t *testing.T) {
 				entered := make(chan struct{})
 				announce := sync.OnceFunc(func() { close(entered) })
@@ -262,12 +294,23 @@ func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
 				t.Cleanup(release)
 				select {
 				case <-entered:
-				case <-time.After(30 * time.Second):
+				case <-deadline.C:
 					t.Fatal("the handler never received a line")
 				}
 
-				_ = process.owner.Wait()
-				<-process.stderrDone
+				exited := make(chan error, 1)
+				go func() { exited <- process.owner.Wait() }()
+				select {
+				case err := <-exited:
+					require.NoError(t, err)
+				case <-deadline.C:
+					t.Fatal("the child never exited while its output handler was blocked")
+				}
+				select {
+				case <-process.stderrDone:
+				case <-deadline.C:
+					t.Fatal("the stderr reader never finished after the child exited")
+				}
 
 				ended := make(chan struct{})
 				go func() {
@@ -284,7 +327,7 @@ func TestProcessCompletionFollowsTheLastHandledLine(t *testing.T) {
 				release()
 				select {
 				case <-ended:
-				case <-time.After(30 * time.Second):
+				case <-deadline.C:
 					t.Fatal("the process never completed after the handler returned")
 				}
 			})

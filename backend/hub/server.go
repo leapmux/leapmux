@@ -193,6 +193,10 @@ type ServerOption func(*serverOptions)
 
 type serverOptions struct {
 	frontendHandler http.Handler
+	// listenLocal lets shutdown tests use in-memory listeners. Windows pipe
+	// completions use a process-wide goroutine, which cannot send across
+	// synctest bubble boundaries.
+	listenLocal func(string) (net.Listener, error)
 	// revocationLease, when set, replaces the watcher's default lease, so a
 	// test can observe renewal inside a drain without a real 30-second lease.
 	revocationLease time.Duration
@@ -283,7 +287,7 @@ type Server struct {
 // (to fail fast on conflicts), opens the database, runs migrations,
 // bootstraps defaults, and wires all services. Call Serve() to start listening.
 func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
-	var so serverOptions
+	so := serverOptions{listenLocal: locallisten.Listen}
 	for _, opt := range opts {
 		opt(&so)
 	}
@@ -334,13 +338,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		acquired.tcpLns = append(acquired.tcpLns, ln)
 		resolvedByEntry[e] = resolvePort(parsed, ln).DialAddr()
 	}
-	// The local IPC URLs come from the same list, bound through locallisten so
-	// each one gets the platform socket (and the 0600 mode on Unix). ListenEntries
-	// guarantees at least one; see its INVARIANT.
+	// The local IPC URLs come from the same list. The default factory uses
+	// locallisten so each gets the platform socket (and the 0600 mode on Unix).
+	// ListenEntries guarantees at least one; see its INVARIANT.
 	var localLns []net.Listener
 	var localListenURLs []string
 	for _, e := range localEntries {
-		ln, listenErr := locallisten.Listen(e)
+		ln, listenErr := so.listenLocal(e)
 		if listenErr != nil {
 			return nil, acquired.close(
 				fmt.Errorf("listen local %q: %w", e, listenErr))
@@ -927,7 +931,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// of bug where a mux route doing unlimited I/O parks the drain. net/http
 	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
 	// sc.baseCtx comes from the same chain.
-	// localIPC is EXACTLY the set of listeners locallisten.Listen created.
+	// localIPC is exactly the set of listeners the local-listener factory created.
 	// BaseContext marks a request local-IPC only when its listener is in this
 	// set -- never from the peer's address -- so a TCP listener can never grant
 	// the credential-free path SoloGate opens for local IPC. A listener added
@@ -965,7 +969,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// network name that a third-party package owns, so a rename there
 		// would silently turn every desktop request into a remote one -- while
 		// this pointer is the listener the hub itself created. The set is the
-		// locallisten.Listen results ONLY; see localIPC above.
+		// local-listener factory's results only; see localIPC above.
 		BaseContext: func(ln net.Listener) context.Context {
 			if _, isLocal := localIPC[ln]; isLocal {
 				return peer.WithLocalIPC(handlerCtx)
