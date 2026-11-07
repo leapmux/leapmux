@@ -2,6 +2,8 @@ package servicelaunch
 
 import (
 	"encoding/xml"
+	"fmt"
+	"io"
 	"path"
 	"slices"
 	"strings"
@@ -98,6 +100,21 @@ func taskDefinitionXML(spec LaunchSpec, arguments string) ([]byte, error) {
 		Actions: windowsTaskActions{Context: "LeapMux", Items: []windowsTaskAction{{XMLName: xml.Name{Local: "Exec"}, Command: spec.Executable, Arguments: arguments, WorkingDirectory: spec.WorkingDirectory}}},
 	}
 	return xml.Marshal(definition)
+}
+
+// parseWindowsTaskDefinition reads the decoded text returned by Task Scheduler.
+func parseWindowsTaskDefinition(document string) (definition windowsTaskDefinition, err error) {
+	decoder := xml.NewDecoder(strings.NewReader(document))
+	decoder.CharsetReader = func(encoding string, input io.Reader) (io.Reader, error) {
+		// go-ole already decoded the COM BSTR into this Go string. Transcoding its
+		// UTF-8 bytes as UTF-16 would corrupt the task's Unicode paths.
+		if strings.EqualFold(encoding, "UTF-16") {
+			return input, nil
+		}
+		return nil, fmt.Errorf("the Windows task XML declares an unsupported encoding %q", encoding)
+	}
+	err = decoder.Decode(&definition)
+	return definition, err
 }
 
 func taskSetting(value *bool, defaultValue bool) bool {

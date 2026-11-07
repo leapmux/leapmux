@@ -105,3 +105,38 @@ func TestTaskDefinitionMatchesEquivalentNamespacePrefix(t *testing.T) {
 	require.NoError(t, xml.Unmarshal([]byte(prefixed), &definition))
 	assert.True(t, definition.matches(spec, windowsTaskIdentity{Arguments: spec.RunArguments(), PrincipalSID: spec.AccountID, TriggerSID: spec.AccountID}))
 }
+
+func TestTaskDefinitionParsesDecodedCOMUnicodeText(t *testing.T) {
+	spec, err := LaunchSpecFromService(testSpec())
+	require.NoError(t, err)
+	spec.AccountID = "S-1-5-21-1001"
+	spec.Executable = `C:\工具 & Scripts\leapmux.exe`
+	spec.WorkingDirectory = `C:\Users\例子`
+	data, err := taskDefinitionXML(spec, strings.Join(spec.RunArguments(), " "))
+	require.NoError(t, err)
+	for _, encoding := range []string{"", "UTF-8", "UTF-16", "utf-16"} {
+		name := encoding
+		if name == "" {
+			name = "no declaration"
+		}
+		t.Run(name, func(t *testing.T) {
+			document := string(data)
+			if encoding != "" {
+				document = `<?xml version="1.0" encoding="` + encoding + `"?>` + document
+			}
+			definition, err := parseWindowsTaskDefinition(document)
+			require.NoError(t, err)
+			require.Len(t, definition.Actions.Items, 1)
+			assert.Equal(t, spec.Executable, definition.Actions.Items[0].Command)
+			assert.Equal(t, spec.WorkingDirectory, definition.Actions.Items[0].WorkingDirectory)
+			assert.True(t, definition.matches(spec, windowsTaskIdentity{Arguments: spec.RunArguments(), PrincipalSID: spec.AccountID, TriggerSID: spec.AccountID}))
+		})
+	}
+}
+
+func TestTaskDefinitionRejectsInvalidDecodedText(t *testing.T) {
+	for _, document := range []string{"", `<Task>`, `<Other/>`, `<?xml version="1.0" encoding="windows-1252"?><Task/>`, `<Task>&unknown;</Task>`} {
+		_, err := parseWindowsTaskDefinition(document)
+		require.Error(t, err)
+	}
+}

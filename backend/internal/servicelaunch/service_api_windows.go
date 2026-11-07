@@ -20,25 +20,6 @@ import (
 
 const accountServiceAccess = windows.SERVICE_QUERY_CONFIG | windows.SERVICE_QUERY_STATUS | windows.SERVICE_START | windows.SERVICE_STOP | windows.SERVICE_INTERROGATE | windows.READ_CONTROL
 
-func resolveWindowsAccount(name string) (string, error) {
-	sid, _, _, err := windows.LookupSID("", name)
-	if err != nil {
-		return "", fmt.Errorf("resolve the selected Windows account: %w", err)
-	}
-	return sid.String(), nil
-}
-
-func verifyWindowsAccount(spec LaunchSpec) error {
-	sid, _, kind, err := windows.LookupSID("", spec.AccountName)
-	if err != nil {
-		return err
-	}
-	if kind != windows.SidTypeUser || sid.String() != spec.AccountID {
-		return fmt.Errorf("the account name does not match its saved security identifier")
-	}
-	return nil
-}
-
 func withWindowsService(spec LaunchSpec, access uint32, use func(*mgr.Service) error) (result error) {
 	manager, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {

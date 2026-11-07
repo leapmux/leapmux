@@ -4,12 +4,10 @@ package servicelaunch
 
 import (
 	"context"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/fs"
 	"runtime"
-	"strings"
 
 	ole "github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -117,17 +115,6 @@ func taskNumber(object *ole.IDispatch, name string) (int64, error) {
 	}
 }
 
-func taskAccountSID(account string) (string, error) {
-	if strings.HasPrefix(account, "S-") {
-		sid, err := windows.StringToSid(account)
-		if err != nil {
-			return "", err
-		}
-		return sid.String(), nil
-	}
-	return resolveWindowsAccount(account)
-}
-
 func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result error) {
 	raw, err := taskScalar(task, "Xml")
 	if err != nil {
@@ -137,7 +124,8 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 	if !ok {
 		return snapshot, fmt.Errorf("the Windows call returned no task XML")
 	}
-	if err := xml.Unmarshal([]byte(definition), &snapshot.Definition); err != nil {
+	snapshot.Definition, err = parseWindowsTaskDefinition(definition)
+	if err != nil {
 		return snapshot, fmt.Errorf("the Windows call returned invalid task XML")
 	}
 	enabled, err := taskScalar(task, "Enabled")
@@ -184,13 +172,13 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 	}
 	snapshot.Instances = int32(count)
 	if len(snapshot.Definition.Principals.Items) == 1 {
-		snapshot.Identity.PrincipalSID, err = taskAccountSID(snapshot.Definition.Principals.Items[0].UserID)
+		snapshot.Identity.PrincipalSID, err = resolveWindowsAccount(snapshot.Definition.Principals.Items[0].UserID)
 		if err != nil {
 			return snapshot, err
 		}
 	}
 	if len(snapshot.Definition.Triggers.Items) == 1 && snapshot.Definition.Triggers.Items[0].XMLName.Local == "LogonTrigger" {
-		snapshot.Identity.TriggerSID, err = taskAccountSID(snapshot.Definition.Triggers.Items[0].UserID)
+		snapshot.Identity.TriggerSID, err = resolveWindowsAccount(snapshot.Definition.Triggers.Items[0].UserID)
 		if err != nil {
 			return snapshot, err
 		}

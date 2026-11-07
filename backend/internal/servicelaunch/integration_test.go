@@ -214,5 +214,12 @@ func testBinaryPath(t *testing.T) string {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.True(t, info.Mode().IsRegular())
-	return path
+	return filepath.Clean(path)
+}
+
+func TestServiceFixtureBinaryPathUsesNativeSeparators(t *testing.T) {
+	binary, err := os.Executable()
+	require.NoError(t, err)
+	t.Setenv("LEAPMUX_SERVICE_TEST_BINARY", filepath.ToSlash(binary))
+	assert.Equal(t, filepath.Clean(binary), testBinaryPath(t))
 }
