@@ -30,7 +30,7 @@ func (s *userRecentBatchIDStore) Get(ctx context.Context, userID userid.UserID, 
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.UserRecentBatchIDRow{
 		UserID:              row.UserID,
@@ -46,7 +46,7 @@ func (s *userRecentBatchIDStore) Get(ctx context.Context, userID userid.UserID, 
 }
 
 func (s *userRecentBatchIDStore) Insert(ctx context.Context, p store.InsertUserRecentBatchIDParams) error {
-	return mapErr(s.conn.q.InsertRecentBatchID(ctx, gendb.InsertRecentBatchIDParams{
+	return s.conn.queryError(s.conn.q.InsertRecentBatchID(ctx, gendb.InsertRecentBatchIDParams{
 		UserID:              p.UserID.String(),
 		BatchID:             p.BatchID,
 		BodyHash:            p.BodyHash,
@@ -64,7 +64,7 @@ func (s *userRecentBatchIDStore) DeleteExpired(ctx context.Context, userID useri
 	if !ok {
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, gendb.DeleteExpiredRecentBatchIDsParams{
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, gendb.DeleteExpiredRecentBatchIDsParams{
 		UserID:              owner,
 		Before:              sqltime.NewSQLiteTime(before),
 		OldestAcceptedEpoch: oldestAcceptedEpoch,

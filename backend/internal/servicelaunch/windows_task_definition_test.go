@@ -25,7 +25,8 @@ func TestTaskDefinitionUsesPasswordAndOneAccount(t *testing.T) {
 	require.NoError(t, xml.Unmarshal(data, &definition))
 	require.Len(t, definition.Principals.Items, 1)
 	assert.Equal(t, "Password", definition.Principals.Items[0].LogonType)
-	assert.Equal(t, "LeastPrivilege", definition.Principals.Items[0].RunLevel)
+	require.NotNil(t, definition.Principals.Items[0].RunLevel)
+	assert.Equal(t, "LeastPrivilege", *definition.Principals.Items[0].RunLevel)
 	require.Len(t, definition.Triggers.Items, 1)
 	assert.Equal(t, spec.AccountID, definition.Triggers.Items[0].UserID)
 	assert.True(t, definition.matches(spec, windowsTaskIdentity{Arguments: spec.RunArguments(), PrincipalSID: spec.AccountID, TriggerSID: spec.AccountID}))
@@ -53,7 +54,7 @@ func TestTaskDefinitionDetectsEffectiveLaunchDrift(t *testing.T) {
 			value.Principals.Items[0].LogonType = "S4U"
 		},
 		"elevated": func(value *windowsTaskDefinition, _ *windowsTaskIdentity) {
-			value.Principals.Items[0].RunLevel = "HighestAvailable"
+			value.Principals.Items[0].RunLevel = new("HighestAvailable")
 		},
 		"disabled":        func(value *windowsTaskDefinition, _ *windowsTaskIdentity) { value.Settings.Enabled = new(false) },
 		"battery":         func(value *windowsTaskDefinition, _ *windowsTaskIdentity) { value.Settings.StopOnBattery = new(true) },
@@ -138,5 +139,36 @@ func TestTaskDefinitionRejectsInvalidDecodedText(t *testing.T) {
 	for _, document := range []string{"", `<Task>`, `<Other/>`, `<?xml version="1.0" encoding="windows-1252"?><Task/>`, `<Task>&unknown;</Task>`} {
 		_, err := parseWindowsTaskDefinition(document)
 		require.Error(t, err)
+	}
+}
+
+func TestTaskDefinitionMatchesNativeOmittedDefaults(t *testing.T) {
+	spec, err := LaunchSpecFromService(testSpec())
+	require.NoError(t, err)
+	spec.AccountID = "S-1-5-21-1001"
+	data, err := taskDefinitionXML(spec, strings.Join(spec.RunArguments(), " "))
+	require.NoError(t, err)
+	document := string(data)
+	for _, element := range []string{
+		"<RunLevel>LeastPrivilege</RunLevel>",
+		"<Enabled>true</Enabled>",
+		"<StartWhenAvailable>false</StartWhenAvailable>",
+		"<RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>",
+		"<RunOnlyIfIdle>false</RunOnlyIfIdle>",
+		"<AllowStartOnDemand>true</AllowStartOnDemand>",
+		"<Hidden>false</Hidden>",
+	} {
+		require.Contains(t, document, element)
+		document = strings.ReplaceAll(document, element, "")
+	}
+	definition, err := parseWindowsTaskDefinition(`<?xml version="1.0" encoding="UTF-16"?>` + document)
+	require.NoError(t, err)
+	identity := windowsTaskIdentity{Arguments: spec.RunArguments(), PrincipalSID: spec.AccountID, TriggerSID: spec.AccountID}
+	assert.True(t, definition.matches(spec, identity), "native omission of effective defaults preserves the installed policy")
+	for _, invalid := range []string{"", "HighestAvailable", "Unknown", " LeastPrivilege "} {
+		changed := strings.Replace(string(data), "<RunLevel>LeastPrivilege</RunLevel>", "<RunLevel>"+invalid+"</RunLevel>", 1)
+		parsed, err := parseWindowsTaskDefinition(changed)
+		require.NoError(t, err)
+		assert.False(t, parsed.matches(spec, identity), "an explicit invalid or elevated run level stays a mismatch")
 	}
 }

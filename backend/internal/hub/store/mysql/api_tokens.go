@@ -64,7 +64,8 @@ func fromDBAPIToken(t gendb.ApiToken, c joinedClient) store.APIToken {
 
 func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams) error {
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
-		return mapErr(tx.(*mysqlStore).conn.q.CreateAPIToken(ctx, gendb.CreateAPITokenParams{
+		conn := tx.(*mysqlStore).conn
+		return conn.queryError(conn.q.CreateAPIToken(ctx, gendb.CreateAPITokenParams{
 			ID:               p.ID,
 			UserID:           p.UserID.String(),
 			ClientID:         p.ClientID,
@@ -81,7 +82,7 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 func (s *apiTokenStore) GetByID(ctx context.Context, id string) (*store.APIToken, error) {
 	t, err := s.conn.q.GetAPITokenByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBAPIToken(t.ApiToken, joinedClientOf(t.ClientName, t.ClientScopes, t.ClientElevationAllowed, t.ClientRevokedAt))
 	return &out, nil
@@ -96,7 +97,7 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.APIToken]{}, nil
 	}
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListAPITokensByUserParams, error) {
 			return listAPITokensByUserParams(owner, p.ClientID, p.Cursor, p.Limit)
 		},
@@ -110,7 +111,7 @@ func (s *apiTokenStore) ListByUser(ctx context.Context, p store.ListAPITokensByU
 			out.ClientVerifiedAt = r.ClientVerifiedAt.Ptr()
 			out.ClientRegistrationSource = r.ClientRegistrationSource
 			return out
-		})
+		}, s.conn.queryError)
 }
 
 // apiTokenWithOwner assembles the JOINed listing row shared by the ListAll and
@@ -131,51 +132,51 @@ func (s *apiTokenStore) ListAll(ctx context.Context, p store.ListAllAPITokensPar
 	// have no matching index -- see api_tokens.sql.
 	switch {
 	case p.UserID != nil && p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensByUserIncludingRevokedParams, error) {
 				return listAllAPITokensByUserIncludingRevokedParams(*p.UserID, p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensByUserIncludingRevoked,
 			func(r gendb.ListAllAPITokensByUserIncludingRevokedRow) store.APITokenWithOwner {
 				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	case p.UserID != nil:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensByUserParams, error) {
 				return listAllAPITokensByUserParams(*p.UserID, p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensByUser,
 			func(r gendb.ListAllAPITokensByUserRow) store.APITokenWithOwner {
 				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	case p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensIncludingRevokedParams, error) {
 				return listAllAPITokensIncludingRevokedParams(p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokensIncludingRevoked,
 			func(r gendb.ListAllAPITokensIncludingRevokedRow) store.APITokenWithOwner {
 				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	default:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllAPITokensParams, error) {
 				return listAllAPITokensParams(p.ClientID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllAPITokens,
 			func(r gendb.ListAllAPITokensRow) store.APITokenWithOwner {
 				return apiTokenWithOwner(r.ApiToken, joinedClientOf(r.ClientName, r.ClientScopes, r.ClientElevationAllowed, r.ClientRevokedAt), r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	}
 }
 
 func (s *apiTokenStore) Touch(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.TouchAPIToken(ctx, id))
+	return s.conn.queryError(s.conn.q.TouchAPIToken(ctx, id))
 }
 
 func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPITokenRefreshParams) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		n, err := rowsAffected(conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
+		n, err := conn.rowsAffected(conn.q.RotateAPITokenRefresh(ctx, gendb.RotateAPITokenRefreshParams{
 			ID:                   p.ID,
 			NewGrantedScopes:     p.NewGrantedScopes,
 			NewSecretHash:        p.NewSecretHash,
@@ -193,7 +194,7 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		}
 		row, err := conn.q.GetAPITokenByID(ctx, p.ID)
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
 		return &store.CredentialEvent{Kind: store.RevocationEventKindAPITokenRotation, SubjectID: row.ApiToken.ID, UserID: row.ApiToken.UserID}, nil
 	}, emitCredentialEvent)
@@ -206,13 +207,13 @@ func (s *apiTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 			return nil, nil
 		}
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
 		revokedAt, err := mysqlRevocationNow(ctx, conn)
 		if err != nil {
 			return nil, err
 		}
-		n, err := rowsAffected(conn.q.RevokeAPITokenAt(ctx, gendb.RevokeAPITokenAtParams{
+		n, err := conn.rowsAffected(conn.q.RevokeAPITokenAt(ctx, gendb.RevokeAPITokenAtParams{
 			ID:        row.ID,
 			RevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
 		}))
@@ -243,13 +244,13 @@ func (s *apiTokenStore) RevokeOwned(ctx context.Context, p store.RevokeOwnedAPIT
 			return nil, nil
 		}
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
 		revokedAt, err := mysqlRevocationNow(ctx, conn)
 		if err != nil {
 			return nil, err
 		}
-		n, err := rowsAffected(conn.q.RevokeOwnedAPITokenAt(ctx, gendb.RevokeOwnedAPITokenAtParams{
+		n, err := conn.rowsAffected(conn.q.RevokeOwnedAPITokenAt(ctx, gendb.RevokeOwnedAPITokenAtParams{
 			ID:        row.ID,
 			UserID:    owner,
 			RevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
@@ -280,7 +281,7 @@ func (s *apiTokenStore) RevokeOthers(ctx context.Context, p store.RevokeOtherAPI
 		// it changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.RevokeOtherUserAPITokens(ctx, gendb.RevokeOtherUserAPITokensParams{
+	return s.conn.rowsAffected(s.conn.q.RevokeOtherUserAPITokens(ctx, gendb.RevokeOtherUserAPITokensParams{
 		UserID: owner,
 		KeepID: p.KeepID,
 	}))
@@ -297,7 +298,7 @@ func (s *apiTokenStore) RefreshAuthGeneration(ctx context.Context, p store.Refre
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.RefreshUserAPITokenAuthGeneration(ctx, gendb.RefreshUserAPITokenAuthGenerationParams{
+	return s.conn.rowsAffected(s.conn.q.RefreshUserAPITokenAuthGeneration(ctx, gendb.RefreshUserAPITokenAuthGenerationParams{
 		TokenID: p.TokenID,
 		UserID:  owner,
 	}))
@@ -316,7 +317,7 @@ func (s *apiTokenStore) Elevate(ctx context.Context, p store.ElevateAPITokenPara
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		n, err := rowsAffected(conn.q.ElevateAPIToken(ctx, gendb.ElevateAPITokenParams{
+		n, err := conn.rowsAffected(conn.q.ElevateAPIToken(ctx, gendb.ElevateAPITokenParams{
 			ElevationProvenAt:  sqltime.MySQLNullTimeOf(p.ElevationProvenAt),
 			ElevationExpiresAt: sqltime.MySQLNullTimeOf(p.ClampedExpiresAt()),
 			ID:                 p.TokenID,
@@ -335,7 +336,7 @@ func (s *apiTokenStore) SlideElevation(ctx context.Context, p store.SlideAPIToke
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.SlideAPITokenElevation(ctx, gendb.SlideAPITokenElevationParams{
+	return s.conn.rowsAffected(s.conn.q.SlideAPITokenElevation(ctx, gendb.SlideAPITokenElevationParams{
 		WindowDeadline: sqltime.MySQLNullTimeOf(p.WindowDeadline),
 		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.TokenID,
@@ -350,7 +351,7 @@ func (s *apiTokenStore) DropElevation(ctx context.Context, p store.DropAPITokenE
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		n, err := rowsAffected(conn.q.DropAPITokenElevation(ctx, gendb.DropAPITokenElevationParams{
+		n, err := conn.rowsAffected(conn.q.DropAPITokenElevation(ctx, gendb.DropAPITokenElevationParams{
 			ID:     p.TokenID,
 			UserID: owner,
 		}))

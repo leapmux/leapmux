@@ -16,78 +16,78 @@ type cleanupStore struct {
 var _ store.CleanupStore = (*cleanupStore)(nil)
 
 func (s *cleanupStore) HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredUserSessions(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteWorkspacesBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.HardDeleteWorkspacesBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 // CompleteStaleDeregistrations deletes the workers deregistering since before
 // cutoff; see the query's doc for what it recovers.
 func (s *cleanupStore) CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.CompleteStaleDeregistrations(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.CompleteStaleDeregistrations(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, sqltime.NewSQLiteTime(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, sqltime.NewSQLiteTime(cutoff)))
 }
 
 func (s *cleanupStore) ClearStalePendingEmails(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, gendb.ClearStalePendingEmailsParams{
+	return s.conn.rowsAffected(s.conn.q.ClearStalePendingEmails(ctx, gendb.ClearStalePendingEmailsParams{
 		Cutoff:         sqltime.SQLiteNullTimeOf(cutoff),
 		CodelessCutoff: sqltime.NewSQLiteTime(cutoff),
 	}))
 }
 
 func (s *cleanupStore) HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.HardDeleteUsersBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) DeleteExpiredOAuthStates(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredOAuthStates(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredPendingOAuthSignups(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredPendingOAuthSignups(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredWebAuthnSessions(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredWebAuthnSessions(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredDeviceAuthorizations(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredDeviceAuthorizations(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredOAuthAuthorizationCodes(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredOAuthAuthorizationCodes(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredOAuthAuthorizationCodes(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.DeleteRevokedAPITokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+	return s.conn.rowsAffected(s.conn.q.DeleteRevokedDelegationTokensBefore(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 }
 
 func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, sqltime.NewSQLiteTime(now)))
+	return s.conn.rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, sqltime.NewSQLiteTime(now)))
 }
 
 func (s *cleanupStore) DeleteExpiredAltchaSalts(ctx context.Context) (int64, error) {
 	rows, err := s.conn.q.DeleteExpiredAltchaSalts(ctx, sqltime.NewSQLiteTime(time.Now().UTC()))
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return rows, nil
 }
@@ -104,5 +104,5 @@ func (s *cleanupStore) CompactPublishedRevocationEvents(
 // cannot drain a dormant account, and why the cutoff is an HLC physical rather
 // than a wall-clock time.
 func (s *cleanupStore) DeleteUserOpBatchesBeforePhysical(ctx context.Context, cutoffPhysicalMs int64) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteUserOpBatchesBeforePhysical(ctx, cutoffPhysicalMs))
+	return s.conn.rowsAffected(s.conn.q.DeleteUserOpBatchesBeforePhysical(ctx, cutoffPhysicalMs))
 }

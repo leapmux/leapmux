@@ -50,7 +50,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
+	return s.conn.queryError(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
 		ID:                    p.ID,
 		Username:              store.NormalizeUsername(p.Username),
 		PasswordHash:          p.PasswordHash,
@@ -66,7 +66,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -75,7 +75,7 @@ func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error)
 func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByIDIncludeDeleted(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -84,7 +84,7 @@ func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*stor
 func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -93,7 +93,7 @@ func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.
 func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -102,7 +102,7 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 func (s *userStore) GetFirstAdmin(ctx context.Context) (*store.User, error) {
 	u, err := s.conn.q.GetFirstAdmin(ctx)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -111,7 +111,7 @@ func (s *userStore) GetFirstAdmin(ctx context.Context) (*store.User, error) {
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
 	v, err := s.conn.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return v, nil
 }
@@ -122,7 +122,7 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 		ExcludeUserID: excludeUserID,
 	})
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return v, nil
 }
@@ -134,7 +134,7 @@ func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, n
 		MaxAttempts: maxAttempts,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -142,7 +142,7 @@ func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, n
 
 func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	prefs, err := s.conn.q.GetUserPrefs(ctx, id)
-	return prefs, mapErr(err)
+	return prefs, s.conn.queryError(err)
 }
 
 // See store.ErrLockingReadOutsideTransaction for the rule and its reason.
@@ -151,32 +151,32 @@ func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, e
 		return "", store.ErrLockingReadOutsideTransaction
 	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
-	return prefs, mapErr(err)
+	return prefs, s.conn.queryError(err)
 }
 
 func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 	n, err := s.conn.q.HasAnyUser(ctx)
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return n, nil
 }
 
 func (s *userStore) Count(ctx context.Context) (int64, error) {
 	n, err := s.conn.q.CountUsers(ctx)
-	return n, mapErr(err)
+	return n, s.conn.queryError(err)
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.User], error) {
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
-		s.conn.q.ListAllUsers, fromDBUser)
+		s.conn.q.ListAllUsers, fromDBUser, s.conn.queryError)
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.User], error) {
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.SearchUsersParams, error) { return searchUsersParams(p.Query, p.Cursor, p.Limit) },
-		s.conn.q.SearchUsers, fromDBUser)
+		s.conn.q.SearchUsers, fromDBUser, s.conn.queryError)
 }
 
 // loadUserInfoCacheFields reads the current cached-UserInfo projection for id.
@@ -188,7 +188,7 @@ func loadUserInfoCacheFields(ctx context.Context, conn *sqliteConn, id string) (
 		return store.UserInfoCacheFields{}, false, nil
 	}
 	if err != nil {
-		return store.UserInfoCacheFields{}, false, mapErr(err)
+		return store.UserInfoCacheFields{}, false, conn.queryError(err)
 	}
 	return store.UserInfoCacheFieldsOf(fromDBUser(u)), true, nil
 }
@@ -223,7 +223,7 @@ func (s *userStore) runCachedUserMutation(
 	lockThenTx := func(ctx context.Context, fn func(*sqliteConn) error) error {
 		return s.conn.withTransaction(ctx, func(conn *sqliteConn) error {
 			if err := conn.q.LockUserRow(ctx, id); err != nil {
-				return mapErr(err)
+				return conn.queryError(err)
 			}
 			return fn(conn)
 		})
@@ -247,7 +247,7 @@ func (s *userStore) runCachedUserMutation(
 func fenceUserTokensLocked(ctx context.Context, conn *sqliteConn, id string) error {
 	row, err := conn.q.BumpUserAuthGeneration(ctx, id)
 	if err != nil {
-		return mapErr(err)
+		return conn.queryError(err)
 	}
 	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, row.AuthGeneration)
 }
@@ -258,12 +258,12 @@ func fenceUserTokensLocked(ctx context.Context, conn *sqliteConn, id string) err
 // error propagates mapped, and a live row yields changed=true. Shared by every
 // cached-field Update* mutate closure so the not-found handling lives in one
 // place instead of five identical tails.
-func updatedUserResult(id string, err error) (string, bool, error) {
+func (c *sqliteConn) updatedUserResult(id string, err error) (string, bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, mapErr(err)
+		return "", false, c.queryError(err)
 	}
 	return id, true, nil
 }
@@ -283,12 +283,12 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 			DisplayNameFolded: store.FoldSearchText(p.DisplayName),
 			ID:                p.ID,
 		})
-		return updatedUserResult(id, err)
+		return conn.updatedUserResult(id, err)
 	})
 }
 
 func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswordParams) error {
-	return mapErr(s.conn.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
+	return s.conn.queryError(s.conn.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
 		PasswordHash: p.PasswordHash,
 		ID:           p.ID,
 	}))
@@ -309,7 +309,7 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(id, err)
+		return conn.updatedUserResult(id, err)
 	})
 }
 
@@ -323,7 +323,7 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(id, err)
+		return conn.updatedUserResult(id, err)
 	})
 }
 
@@ -337,12 +337,12 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 			IsAdmin: ptrconv.BoolToInt64(p.IsAdmin),
 			ID:      p.ID,
 		})
-		return updatedUserResult(id, err)
+		return conn.updatedUserResult(id, err)
 	})
 }
 
 func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsParams) error {
-	return mapErr(s.conn.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
+	return s.conn.queryError(s.conn.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
 		Prefs: p.Prefs,
 		ID:    p.ID,
 	}))
@@ -352,7 +352,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	if err := store.ValidatePendingUnblockedAt(p.PendingEmailUnblockedAt); err != nil {
 		return false, err
 	}
-	n, err := rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+	n, err := s.conn.rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:            store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:       p.PendingEmailToken,
 		PendingEmailExpiresAt:   sqltime.NewSQLiteNullTime(p.PendingEmailExpiresAt),
@@ -369,7 +369,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 // ClearPendingEmailCode drops an undelivered code and keeps the pending
 // address; see the query comment for the blocked-until semantics.
 func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPendingEmailCodeParams) error {
-	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, gendb.ClearPendingEmailCodeParams{
+	return s.conn.queryError(s.conn.q.ClearPendingEmailCode(ctx, gendb.ClearPendingEmailCodeParams{
 		UnblockedAt: sqltime.NewSQLiteNullTime(store.UnblockedAtPtr(p.UnblockedAt)),
 		ID:          p.ID,
 	}))
@@ -384,30 +384,30 @@ func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPend
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
 		id, err := conn.q.PromotePendingEmail(ctx, id)
-		return updatedUserResult(id, err)
+		return conn.updatedUserResult(id, err)
 	})
 }
 
 func (s *userStore) ClearPendingEmail(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.ClearPendingEmail(ctx, id))
+	return s.conn.queryError(s.conn.q.ClearPendingEmail(ctx, id))
 }
 
 func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.ClearCompetingPendingEmailsParams) error {
-	return mapErr(s.conn.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
+	return s.conn.queryError(s.conn.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
 		PendingEmail: store.NormalizeEmail(p.PendingEmail),
 		ID:           p.ExcludeID,
 	}))
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.DeleteUser(ctx, id))
+	return s.conn.queryError(s.conn.q.DeleteUser(ctx, id))
 }
 
 func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
 	if err := store.ValidatePendingUnblockedAt(p.PendingRecoveryUnblockedAt); err != nil {
 		return false, err
 	}
-	n, err := rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
+	n, err := s.conn.rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
 		PendingRecoveryToken:       p.PendingRecoveryToken,
 		PendingRecoveryExpiresAt:   sqltime.SQLiteNullTimeOf(p.PendingRecoveryExpiresAt),
 		PendingRecoveryUnblockedAt: sqltime.SQLiteNullTimeOf(p.PendingRecoveryUnblockedAt),
@@ -421,7 +421,7 @@ func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRe
 }
 
 func (s *userStore) ClearPendingRecovery(ctx context.Context, p store.ClearPendingRecoveryParams) error {
-	return mapErr(s.conn.q.ClearPendingRecovery(ctx, gendb.ClearPendingRecoveryParams{
+	return s.conn.queryError(s.conn.q.ClearPendingRecovery(ctx, gendb.ClearPendingRecoveryParams{
 		UnblockedAt: sqltime.NewSQLiteNullTime(store.UnblockedAtPtr(p.UnblockedAt)),
 		ID:          p.ID,
 	}))
@@ -434,7 +434,7 @@ func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash
 		MaxAttempts: maxAttempts,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -446,7 +446,7 @@ func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string
 		Now:   sqltime.SQLiteNullTimeOf(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -463,7 +463,7 @@ func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecove
 		return nil, store.ErrNotFound
 	}
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.RecoveryRevocation{AuthGeneration: row.AuthGeneration}, nil
 }
@@ -482,7 +482,7 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 			return nil, nil
 		}
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
 		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, UserAuthGeneration: row.AuthGeneration}, nil
 	}, emitCredentialEvent)

@@ -49,7 +49,8 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
-		return mapErr(tx.(*mysqlStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
+		conn := tx.(*mysqlStore).conn
+		return conn.queryError(conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
 			ID:        p.ID,
 			UserID:    p.UserID.String(),
 			ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
@@ -65,7 +66,7 @@ func (s *sessionStore) GetByID(ctx context.Context, id string, now time.Time) (*
 		Now: sqltime.NewMySQLTime(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBSession(sess)
 	return &out, nil
@@ -78,7 +79,7 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, no
 		ID:           p.ID,
 		LastActiveAt: sqltime.NewMySQLTime(p.LastActiveAt),
 	})
-	return n, mapErr(err)
+	return n, s.conn.queryError(err)
 }
 
 func (s *sessionStore) Delete(ctx context.Context, id string) (int64, error) {
@@ -99,9 +100,9 @@ func (s *sessionStore) deleteEmitting(ctx context.Context, id string, kind leapm
 			return nil, nil
 		}
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
-		n, err := rowsAffected(conn.q.DeleteUserSession(ctx, id))
+		n, err := conn.rowsAffected(conn.q.DeleteUserSession(ctx, id))
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +121,7 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, userID userid.UserID) e
 		// it changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
+	return s.conn.queryError(s.conn.q.DeleteUserSessionsByUser(ctx, owner))
 }
 
 func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSessionsParams) error {
@@ -133,7 +134,7 @@ func (s *sessionStore) DeleteOthers(ctx context.Context, p store.DeleteOtherSess
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
+	return s.conn.queryError(s.conn.q.DeleteOtherUserSessions(ctx, gendb.DeleteOtherUserSessionsParams{
 		UserID: owner,
 		ID:     p.KeepID,
 	}))
@@ -154,7 +155,7 @@ func (s *sessionStore) RefreshAuthGeneration(ctx context.Context, p store.Refres
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.RefreshUserSessionAuthGeneration(ctx, gendb.RefreshUserSessionAuthGenerationParams{
+	return s.conn.rowsAffected(s.conn.q.RefreshUserSessionAuthGeneration(ctx, gendb.RefreshUserSessionAuthGenerationParams{
 		SessionID: p.SessionID,
 		UserID:    owner,
 	}))
@@ -167,19 +168,19 @@ func (s *sessionStore) ListByUserID(ctx context.Context, p store.ListUserSession
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.UserSession]{}, nil
 	}
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListUserSessionsByUserIDParams, error) {
 			return listUserSessionsParams(owner, p.Cursor, p.Limit, now)
 		},
-		s.conn.q.ListUserSessionsByUserID, fromDBSession)
+		s.conn.q.ListUserSessionsByUserID, fromDBSession, s.conn.queryError)
 }
 
 func (s *sessionStore) ListAllActive(ctx context.Context, p store.ListAllActiveSessionsParams, now time.Time) (store.Page[store.ActiveSession], error) {
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListAllActiveSessionsParams, error) {
 			return listAllActiveSessionsParams(p.Cursor, p.Limit, now)
 		},
-		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow)
+		s.conn.q.ListAllActiveSessions, fromDBActiveSessionRow, s.conn.queryError)
 }
 
 func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time.Time) (*store.SessionWithUser, error) {
@@ -188,7 +189,7 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time
 		Now: sqltime.NewMySQLTime(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.SessionWithUser{
 		UserID:             row.ID,
@@ -216,7 +217,7 @@ func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		n, err := rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
+		n, err := conn.rowsAffected(conn.q.ElevateUserSession(ctx, gendb.ElevateUserSessionParams{
 			ElevationProvenAt:  sqltime.MySQLNullTimeOf(p.ElevationProvenAt),
 			ElevationExpiresAt: sqltime.MySQLNullTimeOf(p.ClampedExpiresAt()),
 			ID:                 p.SessionID,
@@ -238,7 +239,7 @@ func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionE
 	// The statement adds the cap in microseconds because DATETIME(3) keeps
 	// millisecond precision; a whole-second interval would quantize the
 	// ceiling.
-	return rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
+	return s.conn.rowsAffected(s.conn.q.SlideUserSessionElevation(ctx, gendb.SlideUserSessionElevationParams{
 		WindowDeadline: sqltime.MySQLNullTimeOf(p.WindowDeadline),
 		MaxTotalMicros: store.ElevationMaxTotal.Microseconds(),
 		ID:             p.SessionID,
@@ -253,7 +254,7 @@ func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionEle
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		n, err := rowsAffected(conn.q.DropUserSessionElevation(ctx, gendb.DropUserSessionElevationParams{
+		n, err := conn.rowsAffected(conn.q.DropUserSessionElevation(ctx, gendb.DropUserSessionElevationParams{
 			ID:     p.SessionID,
 			UserID: owner,
 		}))

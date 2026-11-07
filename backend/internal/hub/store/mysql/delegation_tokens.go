@@ -36,7 +36,8 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 
 func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegationTokenParams) error {
 	return (&mysqlStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
-		return mapErr(tx.(*mysqlStore).conn.q.CreateDelegationToken(ctx, gendb.CreateDelegationTokenParams{
+		conn := tx.(*mysqlStore).conn
+		return conn.queryError(conn.q.CreateDelegationToken(ctx, gendb.CreateDelegationTokenParams{
 			ID:               p.ID,
 			UserID:           p.UserID.String(),
 			WorkerID:         p.WorkerID,
@@ -52,7 +53,7 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 func (s *delegationTokenStore) GetByID(ctx context.Context, id string) (*store.DelegationToken, error) {
 	t, err := s.conn.q.GetDelegationTokenByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBDelegationToken(t)
 	return &out, nil
@@ -77,41 +78,41 @@ func (s *delegationTokenStore) ListAll(ctx context.Context, p store.ListAllDeleg
 	// have no matching index -- see delegation_tokens.sql.
 	switch {
 	case p.UserID != nil && p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensByUserIncludingRevokedParams, error) {
 				return listAllDelegationTokensByUserIncludingRevokedParams(*p.UserID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensByUserIncludingRevoked,
 			func(r gendb.ListAllDelegationTokensByUserIncludingRevokedRow) store.DelegationTokenWithOwner {
 				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	case p.UserID != nil:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensByUserParams, error) {
 				return listAllDelegationTokensByUserParams(*p.UserID, p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensByUser,
 			func(r gendb.ListAllDelegationTokensByUserRow) store.DelegationTokenWithOwner {
 				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	case p.IncludeRevoked:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensIncludingRevokedParams, error) {
 				return listAllDelegationTokensIncludingRevokedParams(p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokensIncludingRevoked,
 			func(r gendb.ListAllDelegationTokensIncludingRevokedRow) store.DelegationTokenWithOwner {
 				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	default:
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListAllDelegationTokensParams, error) {
 				return listAllDelegationTokensParams(p.Cursor, p.Limit)
 			},
 			s.conn.q.ListAllDelegationTokens,
 			func(r gendb.ListAllDelegationTokensRow) store.DelegationTokenWithOwner {
 				return delegationTokenWithOwner(r.DelegationToken, r.OwnerUsername, r.OwnerDeleted)
-			})
+			}, s.conn.queryError)
 	}
 }
 
@@ -127,13 +128,13 @@ func (s *delegationTokenStore) ListActiveByUser(ctx context.Context, userID user
 		Now:    sqltime.NewMySQLTime(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, fromDBDelegationToken), nil
 }
 
 func (s *delegationTokenStore) Touch(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.TouchDelegationToken(ctx, id))
+	return s.conn.queryError(s.conn.q.TouchDelegationToken(ctx, id))
 }
 
 func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
@@ -143,13 +144,13 @@ func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, er
 			return nil, nil
 		}
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, conn.queryError(err)
 		}
 		revokedAt, err := mysqlRevocationNow(ctx, conn)
 		if err != nil {
 			return nil, err
 		}
-		n, err := rowsAffected(conn.q.RevokeDelegationTokenAt(ctx, gendb.RevokeDelegationTokenAtParams{
+		n, err := conn.rowsAffected(conn.q.RevokeDelegationTokenAt(ctx, gendb.RevokeDelegationTokenAtParams{
 			ID:        row.ID,
 			RevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
 		}))
@@ -171,5 +172,5 @@ func (s *delegationTokenStore) RevokeByUser(ctx context.Context, userID userid.U
 		// having changed nothing. See userid.OwnerFilter.
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.RevokeDelegationTokensByUserFast(ctx, owner))
+	return s.conn.rowsAffected(s.conn.q.RevokeDelegationTokensByUserFast(ctx, owner))
 }

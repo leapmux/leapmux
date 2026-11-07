@@ -40,10 +40,10 @@ type windowsTaskPrincipals struct {
 	Items []windowsTaskPrincipal `xml:"Principal"`
 }
 type windowsTaskPrincipal struct {
-	ID        string `xml:"id,attr"`
-	UserID    string `xml:"UserId"`
-	LogonType string `xml:"LogonType"`
-	RunLevel  string `xml:"RunLevel"`
+	ID        string  `xml:"id,attr"`
+	UserID    string  `xml:"UserId"`
+	LogonType string  `xml:"LogonType"`
+	RunLevel  *string `xml:"RunLevel"`
 }
 type windowsTaskSettings struct {
 	MultipleInstances  string              `xml:"MultipleInstancesPolicy"`
@@ -91,7 +91,7 @@ func taskDefinitionXML(spec LaunchSpec, arguments string) ([]byte, error) {
 		Namespace: windowsTaskNamespace, Version: "1.2",
 		Registration: windowsTaskRegistration{Description: windowsTaskDescription(spec)},
 		Triggers:     windowsTaskTriggers{Items: []windowsTaskTrigger{{XMLName: xml.Name{Local: "LogonTrigger"}, Enabled: new(true), UserID: spec.AccountID}}},
-		Principals:   windowsTaskPrincipals{Items: []windowsTaskPrincipal{{ID: "LeapMux", UserID: spec.AccountID, LogonType: "Password", RunLevel: "LeastPrivilege"}}},
+		Principals:   windowsTaskPrincipals{Items: []windowsTaskPrincipal{{ID: "LeapMux", UserID: spec.AccountID, LogonType: "Password", RunLevel: new("LeastPrivilege")}}},
 		Settings: windowsTaskSettings{
 			MultipleInstances: "IgnoreNew", DisallowBattery: new(false), StopOnBattery: new(false), AllowHardTerminate: new(false),
 			StartWhenAvailable: new(false), RequireNetwork: new(false), RequireIdle: new(false), AllowDemandStart: new(true),
@@ -117,7 +117,7 @@ func parseWindowsTaskDefinition(document string) (definition windowsTaskDefiniti
 	return definition, err
 }
 
-func taskSetting(value *bool, defaultValue bool) bool {
+func taskSetting[T any](value *T, defaultValue T) T {
 	if value == nil {
 		return defaultValue
 	}
@@ -144,7 +144,7 @@ func (definition windowsTaskDefinition) matches(spec LaunchSpec, identity window
 		trigger.StartBoundary != "" || trigger.EndBoundary != "" || trigger.Delay != "" && trigger.Delay != "PT0S" {
 		return false
 	}
-	if identity.PrincipalSID != spec.AccountID || principal.LogonType != "Password" || principal.RunLevel != "LeastPrivilege" {
+	if identity.PrincipalSID != spec.AccountID || principal.LogonType != "Password" || taskSetting(principal.RunLevel, "LeastPrivilege") != "LeastPrivilege" {
 		return false
 	}
 	if definition.Actions.Context != "" && definition.Actions.Context != principal.ID {

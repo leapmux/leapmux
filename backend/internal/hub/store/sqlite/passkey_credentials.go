@@ -43,7 +43,7 @@ func (s *passkeyCredentialStore) Create(ctx context.Context, p store.CreatePassk
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.CreatePasskeyCredential(ctx, gendb.CreatePasskeyCredentialParams{
+	return s.conn.queryError(s.conn.q.CreatePasskeyCredential(ctx, gendb.CreatePasskeyCredentialParams{
 		ID:             p.ID,
 		UserID:         owner.String(),
 		CredentialID:   p.CredentialID,
@@ -63,7 +63,7 @@ func (s *passkeyCredentialStore) Create(ctx context.Context, p store.CreatePassk
 func (s *passkeyCredentialStore) GetByID(ctx context.Context, id string) (*store.PasskeyCredential, error) {
 	row, err := s.conn.q.GetPasskeyCredentialByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBPasskeyCredential(row)
 	return &out, nil
@@ -72,7 +72,7 @@ func (s *passkeyCredentialStore) GetByID(ctx context.Context, id string) (*store
 func (s *passkeyCredentialStore) GetByCredentialID(ctx context.Context, credentialID []byte) (*store.PasskeyCredential, error) {
 	row, err := s.conn.q.GetPasskeyCredentialByCredentialID(ctx, credentialID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBPasskeyCredential(row)
 	return &out, nil
@@ -85,7 +85,7 @@ func (s *passkeyCredentialStore) ListByUser(ctx context.Context, userID string) 
 	}
 	rows, err := s.conn.q.ListPasskeyCredentialsByUser(ctx, owner.String())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBPasskeyCredentials(rows), nil
 }
@@ -97,7 +97,7 @@ func (s *passkeyCredentialStore) CountByUser(ctx context.Context, userID string)
 	}
 	count, err := s.conn.q.CountPasskeyCredentialsByUser(ctx, owner.String())
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return count, nil
 }
@@ -107,7 +107,7 @@ func (s *passkeyCredentialStore) UpdateSignCount(ctx context.Context, p store.Up
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	n, err := rowsAffected(s.conn.q.UpdatePasskeySignCount(ctx, gendb.UpdatePasskeySignCountParams{
+	n, err := s.conn.rowsAffected(s.conn.q.UpdatePasskeySignCount(ctx, gendb.UpdatePasskeySignCountParams{
 		SignCount:    p.SignCount,
 		LastUsedAt:   sqltime.SQLiteNullTimeOf(p.LastUsedAt),
 		CredentialID: p.CredentialID,
@@ -127,7 +127,7 @@ func (s *passkeyCredentialStore) UpdateFriendlyName(ctx context.Context, id, use
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.UpdatePasskeyFriendlyName(ctx, gendb.UpdatePasskeyFriendlyNameParams{
+	return s.conn.queryError(s.conn.q.UpdatePasskeyFriendlyName(ctx, gendb.UpdatePasskeyFriendlyNameParams{
 		FriendlyName: friendlyName,
 		ID:           id,
 		UserID:       owner.String(),
@@ -139,7 +139,7 @@ func (s *passkeyCredentialStore) UpdatePublicKey(ctx context.Context, p store.Up
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.UpdatePasskeyPublicKey(ctx, gendb.UpdatePasskeyPublicKeyParams{
+	return s.conn.queryError(s.conn.q.UpdatePasskeyPublicKey(ctx, gendb.UpdatePasskeyPublicKeyParams{
 		PublicKey:  p.PublicKey,
 		KeyVersion: p.KeyVersion,
 		ID:         p.ID,
@@ -152,7 +152,7 @@ func (s *passkeyCredentialStore) Delete(ctx context.Context, id, userID string) 
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeletePasskeyCredential(ctx, gendb.DeletePasskeyCredentialParams{
+	return s.conn.queryError(s.conn.q.DeletePasskeyCredential(ctx, gendb.DeletePasskeyCredentialParams{
 		ID:     id,
 		UserID: owner.String(),
 	}))
@@ -163,13 +163,13 @@ func (s *passkeyCredentialStore) DeleteAllByUser(ctx context.Context, userID str
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteAllPasskeyCredentialsByUser(ctx, owner.String()))
+	return s.conn.queryError(s.conn.q.DeleteAllPasskeyCredentialsByUser(ctx, owner.String()))
 }
 
 func (s *passkeyCredentialStore) ListByKeyVersion(ctx context.Context, keyVersion int64) ([]store.PasskeyCredential, error) {
 	rows, err := s.conn.q.ListPasskeyCredentialsByKeyVersion(ctx, keyVersion)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBPasskeyCredentials(rows), nil
 }
@@ -177,7 +177,7 @@ func (s *passkeyCredentialStore) ListByKeyVersion(ctx context.Context, keyVersio
 func (s *passkeyCredentialStore) CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error) {
 	count, err := s.conn.q.CountPasskeyCredentialsByKeyVersion(ctx, keyVersion)
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return count, nil
 }

@@ -21,7 +21,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return mapErr(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
+	return s.conn.queryError(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:                    p.ID,
 		AuthToken:             p.AuthToken,
 		RegisteredBy:          p.RegisteredBy.String(),
@@ -37,7 +37,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorker(row), nil
 }
@@ -45,7 +45,7 @@ func (s *workerStore) GetByID(ctx context.Context, id string) (*store.Worker, er
 func (s *workerStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByIDIncludeDeleted(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorker(row), nil
 }
@@ -53,7 +53,7 @@ func (s *workerStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*st
 func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWithOwner, error) {
 	row, err := s.conn.q.GetWorkerAdmin(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := workerWithOwner(row.Worker, row.OwnerUsername, row.OwnerDeleted)
 	return &out, nil
@@ -62,7 +62,7 @@ func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWit
 func (s *workerStore) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByAuthTokenIncludeDeleted(ctx, token)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorker(row), nil
 }
@@ -70,7 +70,7 @@ func (s *workerStore) GetByAuthTokenIncludeDeleted(ctx context.Context, token st
 func (s *workerStore) GetByRegistrationAttemptID(ctx context.Context, attemptID string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByRegistrationAttemptID(ctx, stringToNull(attemptID))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorker(row), nil
 }
@@ -86,12 +86,12 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return store.Page[store.Worker]{}, nil
 	}
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListWorkersByUserIDParams, error) {
 			return listWorkersByUserIDParams(owner, p.Cursor, p.Limit)
 		},
 		s.conn.q.ListWorkersByUserID,
-		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) })
+		func(r gendb.Worker) store.Worker { return *fromDBWorker(r) }, s.conn.queryError)
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {
@@ -102,61 +102,61 @@ func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminPar
 	switch status {
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
 		if p.UserID != nil {
-			return queryPage(ctx, p.Limit,
+			return store.QueryPage(ctx, p.Limit,
 				func() (gendb.ListWorkersAdminLiveByUserParams, error) {
 					return listWorkersAdminLiveByUserParams(*p.UserID, p.Cursor, p.Limit)
 				},
-				s.conn.q.ListWorkersAdminLiveByUser, fromDBListWorkersAdminLiveByUserRow)
+				s.conn.q.ListWorkersAdminLiveByUser, fromDBListWorkersAdminLiveByUserRow, s.conn.queryError)
 		}
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminLiveParams, error) { return listWorkersAdminLiveParams(p.Cursor, p.Limit) },
-			s.conn.q.ListWorkersAdminLive, fromDBListWorkersAdminLiveRow)
+			s.conn.q.ListWorkersAdminLive, fromDBListWorkersAdminLiveRow, s.conn.queryError)
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
 		if p.UserID != nil {
-			return queryPage(ctx, p.Limit,
+			return store.QueryPage(ctx, p.Limit,
 				func() (gendb.ListWorkersAdminActiveByUserParams, error) {
 					return listWorkersAdminActiveByUserParams(*p.UserID, p.Cursor, p.Limit)
 				},
-				s.conn.q.ListWorkersAdminActiveByUser, fromDBListWorkersAdminActiveByUserRow)
+				s.conn.q.ListWorkersAdminActiveByUser, fromDBListWorkersAdminActiveByUserRow, s.conn.queryError)
 		}
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminActiveParams, error) {
 				return listWorkersAdminActiveParams(p.Cursor, p.Limit)
 			},
-			s.conn.q.ListWorkersAdminActive, fromDBListWorkersAdminActiveRow)
+			s.conn.q.ListWorkersAdminActive, fromDBListWorkersAdminActiveRow, s.conn.queryError)
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
 		if p.UserID != nil {
-			return queryPage(ctx, p.Limit,
+			return store.QueryPage(ctx, p.Limit,
 				func() (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
 					return listWorkersAdminDeregisteringByUserParams(*p.UserID, p.Cursor, p.Limit)
 				},
-				s.conn.q.ListWorkersAdminDeregisteringByUser, fromDBListWorkersAdminDeregisteringByUserRow)
+				s.conn.q.ListWorkersAdminDeregisteringByUser, fromDBListWorkersAdminDeregisteringByUserRow, s.conn.queryError)
 		}
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminDeregisteringParams, error) {
 				return listWorkersAdminDeregisteringParams(p.Cursor, p.Limit)
 			},
-			s.conn.q.ListWorkersAdminDeregistering, fromDBListWorkersAdminDeregisteringRow)
+			s.conn.q.ListWorkersAdminDeregistering, fromDBListWorkersAdminDeregisteringRow, s.conn.queryError)
 	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
 		if p.UserID != nil {
-			return queryPage(ctx, p.Limit,
+			return store.QueryPage(ctx, p.Limit,
 				func() (gendb.ListWorkersAdminDeletedByUserParams, error) {
 					return listWorkersAdminDeletedByUserParams(*p.UserID, p.Cursor, p.Limit)
 				},
-				s.conn.q.ListWorkersAdminDeletedByUser, fromDBListWorkersAdminDeletedByUserRow)
+				s.conn.q.ListWorkersAdminDeletedByUser, fromDBListWorkersAdminDeletedByUserRow, s.conn.queryError)
 		}
-		return queryPage(ctx, p.Limit,
+		return store.QueryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminDeletedParams, error) {
 				return listWorkersAdminDeletedParams(p.Cursor, p.Limit)
 			},
-			s.conn.q.ListWorkersAdminDeleted, fromDBListWorkersAdminDeletedRow)
+			s.conn.q.ListWorkersAdminDeleted, fromDBListWorkersAdminDeletedRow, s.conn.queryError)
 	default:
 		return store.Page[store.WorkerWithOwner]{}, store.ErrInvalidArgument
 	}
 }
 
 func (s *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.UpdateWorkerLastSeen(ctx, id))
+	return s.conn.queryError(s.conn.q.UpdateWorkerLastSeen(ctx, id))
 }
 
 func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerParams) (int64, error) {
@@ -166,18 +166,18 @@ func (s *workerStore) Deregister(ctx context.Context, p store.DeregisterWorkerPa
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
+	return s.conn.rowsAffected(s.conn.q.DeregisterWorker(ctx, gendb.DeregisterWorkerParams{
 		ID:           p.ID,
 		RegisteredBy: owner,
 	}))
 }
 
 func (s *workerStore) ForceDeregister(ctx context.Context, id string) (int64, error) {
-	return rowsAffected(s.conn.q.ForceDeregisterWorker(ctx, id))
+	return s.conn.rowsAffected(s.conn.q.ForceDeregisterWorker(ctx, id))
 }
 
 func (s *workerStore) MarkDeleted(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.MarkWorkerDeleted(ctx, id))
+	return s.conn.queryError(s.conn.q.MarkWorkerDeleted(ctx, id))
 }
 
 func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy userid.UserID) error {
@@ -187,7 +187,7 @@ func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy use
 		// deletion; reporting success having deleted nothing is no better.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.MarkAllWorkersDeletedByUser(ctx, owner))
+	return s.conn.queryError(s.conn.q.MarkAllWorkersDeletedByUser(ctx, owner))
 }
 
 func fromDBWorker(w gendb.Worker) *store.Worker {

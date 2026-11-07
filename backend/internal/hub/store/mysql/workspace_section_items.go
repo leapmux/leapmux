@@ -17,7 +17,7 @@ type workspaceSectionItemStore struct {
 var _ store.WorkspaceSectionItemStore = (*workspaceSectionItemStore)(nil)
 
 func (s *workspaceSectionItemStore) Set(ctx context.Context, p store.SetWorkspaceSectionItemParams) error {
-	return mapErr(s.conn.q.SetWorkspaceSectionItem(ctx, gendb.SetWorkspaceSectionItemParams{
+	return s.conn.queryError(s.conn.q.SetWorkspaceSectionItem(ctx, gendb.SetWorkspaceSectionItemParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
 		SectionID:   p.SectionID,
@@ -37,7 +37,7 @@ func (s *workspaceSectionItemStore) Get(ctx context.Context, p store.GetWorkspac
 		WorkspaceID: p.WorkspaceID,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.WorkspaceSectionItem{
 		UserID:      item.UserID,
@@ -56,7 +56,7 @@ func (s *workspaceSectionItemStore) ListByUser(ctx context.Context, userID useri
 	}
 	rows, err := s.conn.q.ListWorkspaceSectionItemsByUser(ctx, owner)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	result := make([]store.WorkspaceSectionItem, len(rows))
 	for i, item := range rows {
@@ -80,19 +80,19 @@ func (s *workspaceSectionItemStore) Delete(ctx context.Context, p store.DeleteWo
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteWorkspaceSectionItem(ctx, gendb.DeleteWorkspaceSectionItemParams{
+	return s.conn.queryError(s.conn.q.DeleteWorkspaceSectionItem(ctx, gendb.DeleteWorkspaceSectionItemParams{
 		UserID:      owner,
 		WorkspaceID: p.WorkspaceID,
 	}))
 }
 
 func (s *workspaceSectionItemStore) DeleteBySection(ctx context.Context, sectionID string) error {
-	return mapErr(s.conn.q.DeleteWorkspaceSectionItemsBySection(ctx, sectionID))
+	return s.conn.queryError(s.conn.q.DeleteWorkspaceSectionItemsBySection(ctx, sectionID))
 }
 
 func (s *workspaceSectionItemStore) HasItemsBySection(ctx context.Context, sectionID string) (bool, error) {
 	ok, err := s.conn.q.HasWorkspaceSectionItemsBySection(ctx, sectionID)
-	return ok, mapErr(err)
+	return ok, s.conn.queryError(err)
 }
 
 func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p store.IsWorkspaceInArchivedSectionParams) (bool, error) {
@@ -110,5 +110,5 @@ func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p s
 		// sections count as archived.
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
 	})
-	return ok, mapErr(err)
+	return ok, s.conn.queryError(err)
 }

@@ -34,7 +34,7 @@ func fromDBPendingOAuthSignup(p gendb.PendingOauthSignup) *store.PendingOAuthSig
 }
 
 func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePendingOAuthSignupParams) error {
-	return mapErr(s.conn.q.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
+	return s.conn.queryError(s.conn.q.CreatePendingOAuthSignup(ctx, gendb.CreatePendingOAuthSignupParams{
 		Token:           p.Token,
 		ProviderID:      p.ProviderID,
 		NonceHash:       p.NonceHash,
@@ -54,11 +54,11 @@ func (s *pendingOAuthSignupStore) Create(ctx context.Context, p store.CreatePend
 func (s *pendingOAuthSignupStore) Get(ctx context.Context, token string) (*store.PendingOAuthSignup, error) {
 	row, err := s.conn.q.GetPendingOAuthSignup(ctx, token)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBPendingOAuthSignup(row), nil
 }
 
 func (s *pendingOAuthSignupStore) Delete(ctx context.Context, token string) error {
-	return mapErr(s.conn.q.DeletePendingOAuthSignup(ctx, token))
+	return s.conn.queryError(s.conn.q.DeletePendingOAuthSignup(ctx, token))
 }

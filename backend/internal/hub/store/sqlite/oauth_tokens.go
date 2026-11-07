@@ -34,7 +34,7 @@ func fromDBOAuthTokens(rows []gendb.OauthToken) []store.OAuthToken {
 }
 
 func (s *oauthTokenStore) Upsert(ctx context.Context, p store.UpsertOAuthTokensParams) error {
-	return mapErr(s.conn.q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
+	return s.conn.queryError(s.conn.q.UpsertOAuthTokens(ctx, gendb.UpsertOAuthTokensParams{
 		UserID:       p.UserID.String(),
 		ProviderID:   p.ProviderID,
 		AccessToken:  p.AccessToken,
@@ -57,7 +57,7 @@ func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams)
 		ProviderID: p.ProviderID,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBOAuthToken(t)
 	return &out, nil
@@ -66,7 +66,7 @@ func (s *oauthTokenStore) Get(ctx context.Context, p store.GetOAuthTokensParams)
 func (s *oauthTokenStore) ListExpiring(ctx context.Context, refreshDueAt time.Time) ([]store.OAuthToken, error) {
 	rows, err := s.conn.q.ListExpiringOAuthTokens(ctx, sqltime.NewSQLiteTime(refreshDueAt))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthTokens(rows), nil
 }
@@ -74,7 +74,7 @@ func (s *oauthTokenStore) ListExpiring(ctx context.Context, refreshDueAt time.Ti
 func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64) ([]store.OAuthToken, error) {
 	rows, err := s.conn.q.ListOAuthTokensByKeyVersion(ctx, keyVersion)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthTokens(rows), nil
 }
@@ -82,13 +82,13 @@ func (s *oauthTokenStore) ListByKeyVersion(ctx context.Context, keyVersion int64
 func (s *oauthTokenStore) CountByKeyVersion(ctx context.Context, keyVersion int64) (int64, error) {
 	count, err := s.conn.q.CountOAuthTokensByKeyVersion(ctx, keyVersion)
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return count, nil
 }
 
 func (s *oauthTokenStore) DeleteByProvider(ctx context.Context, providerID string) error {
-	return mapErr(s.conn.q.DeleteOAuthTokensByProvider(ctx, providerID))
+	return s.conn.queryError(s.conn.q.DeleteOAuthTokensByProvider(ctx, providerID))
 }
 
 func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID userid.UserID) error {
@@ -99,7 +99,7 @@ func (s *oauthTokenStore) DeleteByUser(ctx context.Context, userID userid.UserID
 		// having changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteOAuthTokensByUser(ctx, owner))
+	return s.conn.queryError(s.conn.q.DeleteOAuthTokensByUser(ctx, owner))
 }
 
 func (s *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.DeleteOAuthTokensByUserAndProviderParams) error {
@@ -112,7 +112,7 @@ func (s *oauthTokenStore) DeleteByUserAndProvider(ctx context.Context, p store.D
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
+	return s.conn.queryError(s.conn.q.DeleteOAuthTokensByUserAndProvider(ctx, gendb.DeleteOAuthTokensByUserAndProviderParams{
 		UserID:     owner,
 		ProviderID: p.ProviderID,
 	}))

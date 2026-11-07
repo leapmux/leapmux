@@ -47,7 +47,7 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 	// MySQL has no INSERT ... RETURNING, so the stored row comes from the
 	// follow-up read this dialect's established idiom uses (see users.sql's
 	// Create). One extra indexed round trip on a rare elevated verb.
-	if err := mapErr(s.conn.q.CreateOAuthClient(ctx, gendb.CreateOAuthClientParams{
+	if err := s.conn.queryError(s.conn.q.CreateOAuthClient(ctx, gendb.CreateOAuthClientParams{
 		ClientID: p.ClientID,
 		// An EMPTY owner is SQL NULL, which is what makes the app hub-wide.
 		// Binding "" instead would create a row nobody owns and nobody sees,
@@ -74,7 +74,7 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAuthClient, error) {
 	row, err := s.conn.q.GetOAuthClient(ctx, clientID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromGetOAuthClientRow(row)
 	return &out, nil
@@ -83,7 +83,7 @@ func (s *oauthClientStore) Get(ctx context.Context, clientID string) (*store.OAu
 func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store.OAuthClientIcon, error) {
 	row, err := s.conn.q.GetOAuthClientIcon(ctx, clientID)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.OAuthClientIcon{
 		IconBlob:           row.IconBlob,
@@ -95,7 +95,7 @@ func (s *oauthClientStore) GetIcon(ctx context.Context, clientID string) (*store
 }
 
 func (s *oauthClientStore) UpsertBuiltIn(ctx context.Context, p store.UpsertBuiltInClientParams) error {
-	return mapErr(s.conn.q.UpsertBuiltInOAuthClient(ctx, gendb.UpsertBuiltInOAuthClientParams{
+	return s.conn.queryError(s.conn.q.UpsertBuiltInOAuthClient(ctx, gendb.UpsertBuiltInOAuthClientParams{
 		ClientID:           p.ClientID,
 		ClientName:         p.ClientName,
 		ClientUri:          p.ClientURI,
@@ -117,11 +117,11 @@ func (s *oauthClientStore) List(ctx context.Context, p store.ListOAuthClientsPar
 		// "what may THIS user see", and there is no such user.
 		return store.Page[store.OAuthClient]{}, nil
 	}
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListOAuthClientsParams, error) {
 			return listOAuthClientsParams(owner, p)
 		},
-		s.conn.q.ListOAuthClients, fromListRow)
+		s.conn.q.ListOAuthClients, fromListRow, s.conn.queryError)
 }
 
 func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClientParams) (int64, error) {
@@ -134,7 +134,7 @@ func (s *oauthClientStore) Update(ctx context.Context, p store.UpdateOAuthClient
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
+	return s.conn.rowsAffected(s.conn.q.UpdateOAuthClient(ctx, gendb.UpdateOAuthClientParams{
 		BuiltinSource:    store.OAuthClientSourceBuiltin,
 		ClientID:         p.ClientID,
 		ClientName:       p.ClientName,
@@ -162,7 +162,7 @@ func (s *oauthClientStore) SetElevationAllowed(ctx context.Context, p store.SetO
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.SetOAuthClientElevationAllowed(ctx, gendb.SetOAuthClientElevationAllowedParams{
+	return s.conn.rowsAffected(s.conn.q.SetOAuthClientElevationAllowed(ctx, gendb.SetOAuthClientElevationAllowedParams{
 		ClientID:         p.ClientID,
 		ElevationAllowed: p.ElevationAllowed,
 		CallerIsAdmin:    p.CallerIsAdmin,
@@ -180,7 +180,7 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.SetOAuthClientIcon(ctx, gendb.SetOAuthClientIconParams{
+	return s.conn.rowsAffected(s.conn.q.SetOAuthClientIcon(ctx, gendb.SetOAuthClientIconParams{
 		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
 		IconBlob:      p.IconBlob,
@@ -191,7 +191,7 @@ func (s *oauthClientStore) SetIcon(ctx context.Context, p store.SetOAuthClientIc
 }
 
 func (s *oauthClientStore) SetVerified(ctx context.Context, p store.SetOAuthClientVerifiedParams) (int64, error) {
-	return rowsAffected(s.conn.q.SetOAuthClientVerified(ctx, gendb.SetOAuthClientVerifiedParams{
+	return s.conn.rowsAffected(s.conn.q.SetOAuthClientVerified(ctx, gendb.SetOAuthClientVerifiedParams{
 		ClientID:         p.ClientID,
 		VerifiedAt:       sqltime.NewMySQLNullTime(p.VerifiedAt),
 		VerifiedByUserID: sqlutil.NullNonEmpty(p.VerifiedBy),
@@ -209,7 +209,7 @@ func (s *oauthClientStore) Revoke(ctx context.Context, p store.OAuthClientOwners
 	if !ok {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.RevokeOAuthClient(ctx, gendb.RevokeOAuthClientParams{
+	return s.conn.rowsAffected(s.conn.q.RevokeOAuthClient(ctx, gendb.RevokeOAuthClientParams{
 		BuiltinSource: store.OAuthClientSourceBuiltin,
 		ClientID:      p.ClientID,
 		CallerIsAdmin: p.CallerIsAdmin,
@@ -243,7 +243,8 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 	var deleted int64
 	err := (&mysqlStore{conn: s.conn}).RunInTransaction(ctx, func(tx store.Store) error {
 		deleted = 0
-		q := tx.(*mysqlStore).conn.q
+		conn := tx.(*mysqlStore).conn
+		q := conn.q
 		params := gendb.DeleteOAuthClientParams{
 			BuiltinSource: store.OAuthClientSourceBuiltin,
 			ClientID:      p.ClientID,
@@ -251,18 +252,18 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 			CallerUserID:  sql.NullString{String: owner, Valid: true},
 		}
 		if _, err := q.LockDeletableOAuthClient(ctx, gendb.LockDeletableOAuthClientParams(params)); err != nil {
-			if errors.Is(mapErr(err), store.ErrNotFound) {
+			if errors.Is(conn.queryError(err), store.ErrNotFound) {
 				return nil
 			}
-			return err
+			return conn.queryError(err)
 		}
 		if _, err := q.DeleteEphemeralGrantsForOAuthClient(ctx, p.ClientID); err != nil {
-			return err
+			return conn.queryError(err)
 		}
 		if _, err := q.DeleteAuthorizationCodesForOAuthClient(ctx, p.ClientID); err != nil {
-			return err
+			return conn.queryError(err)
 		}
-		n, err := rowsAffected(q.DeleteOAuthClient(ctx, params))
+		n, err := conn.rowsAffected(q.DeleteOAuthClient(ctx, params))
 		deleted = n
 		return err
 	})
@@ -273,14 +274,14 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 }
 
 func (s *oauthClientStore) ListTokenRefs(ctx context.Context, clientID string) ([]store.APITokenRef, error) {
-	return tokenRefsOf(s.conn.q.ListAPITokenIDsForOAuthClient(ctx, clientID))
+	return s.conn.tokenRefsOf(s.conn.q.ListAPITokenIDsForOAuthClient(ctx, clientID))
 }
 
 func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID string, user userid.UserID) ([]store.APITokenRef, error) {
 	if user.IsZero() {
 		return nil, store.ErrInvalidArgument
 	}
-	return userTokenRefsOf(s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
+	return s.conn.userTokenRefsOf(s.conn.q.ListUserAPITokenIDsForOAuthClient(ctx, gendb.ListUserAPITokenIDsForOAuthClientParams{
 		ClientID: clientID,
 		UserID:   user.String(),
 	}))
@@ -288,9 +289,9 @@ func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID strin
 
 // userTokenRefsOf maps the per-user query rows. Individual generated token
 // rows support explicit conversion, but their slice types do not.
-func userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
+func (c *mysqlConn) userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, c.queryError(err)
 	}
 	out := make([]store.APITokenRef, 0, len(rows))
 	for _, r := range rows {
@@ -300,14 +301,14 @@ func userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err erro
 }
 
 func (s *oauthClientStore) RevokeTokens(ctx context.Context, clientID string) (int64, error) {
-	return rowsAffected(s.conn.q.RevokeAPITokensForOAuthClient(ctx, clientID))
+	return s.conn.rowsAffected(s.conn.q.RevokeAPITokensForOAuthClient(ctx, clientID))
 }
 
 func (s *oauthClientStore) RevokeUserTokens(ctx context.Context, clientID string, user userid.UserID) (int64, error) {
 	if user.IsZero() {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.RevokeUserAPITokensForOAuthClient(ctx, gendb.RevokeUserAPITokensForOAuthClientParams{
+	return s.conn.rowsAffected(s.conn.q.RevokeUserAPITokensForOAuthClient(ctx, gendb.RevokeUserAPITokensForOAuthClientParams{
 		ClientID: clientID,
 		UserID:   user.String(),
 	}))
@@ -315,9 +316,9 @@ func (s *oauthClientStore) RevokeUserTokens(ctx context.Context, clientID string
 
 // tokenRefsOf maps the listing statements' rows onto the store shape both
 // cascades' callers read.
-func tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
+func (c *mysqlConn) tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, c.queryError(err)
 	}
 	out := make([]store.APITokenRef, 0, len(rows))
 	for _, r := range rows {
@@ -331,7 +332,7 @@ func tokenRefsOf(rows []gendb.ListAPITokenIDsForOAuthClientRow, err error) ([]st
 func (s *oauthClientStore) CountTokens(ctx context.Context, clientID string) (int64, error) {
 	n, err := s.conn.q.CountAPITokensForOAuthClient(ctx, clientID)
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return n, nil
 }
@@ -339,7 +340,7 @@ func (s *oauthClientStore) CountTokens(ctx context.Context, clientID string) (in
 func (s *oauthClientStore) CountLiveTokens(ctx context.Context, clientID string) (int64, error) {
 	n, err := s.conn.q.CountLiveAPITokensForOAuthClient(ctx, clientID)
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return n, nil
 }
@@ -347,7 +348,7 @@ func (s *oauthClientStore) CountLiveTokens(ctx context.Context, clientID string)
 func (s *oauthClientStore) CountLiveTokensByClients(ctx context.Context, clientIDs []string) (map[string]int64, error) {
 	rows, err := s.conn.q.CountLiveAPITokensForOAuthClients(ctx, clientIDs)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := make(map[string]int64, len(rows))
 	for _, r := range rows {

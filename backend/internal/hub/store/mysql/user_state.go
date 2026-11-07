@@ -28,7 +28,7 @@ func (s *userStateStore) Get(ctx context.Context, userID userid.UserID) (*store.
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return &store.UserStateRow{
 		UserID:       row.UserID,
@@ -41,7 +41,7 @@ func (s *userStateStore) Upsert(ctx context.Context, p store.UpsertUserStatePara
 	if !ok {
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.UpsertUserState(ctx, gendb.UpsertUserStateParams{
+	return s.conn.queryError(s.conn.q.UpsertUserState(ctx, gendb.UpsertUserStateParams{
 		UserID:               owner,
 		StatePayload:         p.StatePayload(),
 		CompactionPhysicalMs: p.CompactionPhysicalMs(),

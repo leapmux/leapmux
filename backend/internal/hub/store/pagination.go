@@ -147,13 +147,10 @@ func NewPage[T PageCursorer](rows []T, limit int64) Page[T] {
 	return Page[T]{Rows: rows, NextCursor: EncodeCursor(t, id)}
 }
 
-// QueryPage runs one keyset-paginated listing: build the dialect's sqlc
-// params, execute the generated query, wrap any query error via the dialect's
-// mapErr, and assemble the page. Every dialect's thin queryPage forwarder
-// binds its package-level mapErr here, so the build -> query -> NewPage
-// skeleton shared by all listings lives at this ONE site -- an edit to the
-// error wrapping or the probe-row accounting cannot silently reach only some
-// dialects or only some listings.
+// QueryPage builds one listing, executes its query, maps the query error and
+// assembles the page. The caller supplies the mapper belonging to its dialect
+// or active transaction connection. Parameter and projection errors remain
+// independent of query cancellation provenance.
 func QueryPage[P any, R any, I PageCursorer](
 	ctx context.Context,
 	limit int64,

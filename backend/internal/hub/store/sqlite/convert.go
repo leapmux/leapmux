@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -74,20 +73,6 @@ func withCursor[T any](cursor string, limit int64, fill func(cursorTime sqltime.
 		return zero, err
 	}
 	return fill(cursorTime, cursorID, store.FetchLimit(limit)), nil
-}
-
-// queryPage forwards to store.QueryPage with this dialect's mapErr bound:
-// every listing in the package routes through it, so the shared
-// build -> query -> NewPage skeleton (and its error wrapping and probe-row
-// accounting) lives once in store instead of drifting per dialect.
-func queryPage[P any, R any, I store.PageCursorer](
-	ctx context.Context,
-	limit int64,
-	build func() (P, error),
-	query func(context.Context, P) ([]R, error),
-	mapRow func(R) I,
-) (store.Page[I], error) {
-	return store.QueryPage(ctx, limit, build, query, mapRow, mapErr)
 }
 
 func listAllUsersParams(cursor string, limit int64) (gendb.ListAllUsersParams, error) {
@@ -253,12 +238,21 @@ func listRegistrationKeysAdminParams(cursor string, limit int64, now sqltime.SQL
 	})
 }
 
-func rowsAffected(result sql.Result, err error) (int64, error) {
-	return sqlutil.RowsAffected(result, err, mapErr)
+func (c *sqliteConn) rowsAffected(result sql.Result, err error) (int64, error) {
+	return sqlutil.RowsAffected(result, err, c.queryError)
 }
 
 func listOAuthClientsParams(userID string, p store.ListOAuthClientsParams) (gendb.ListOAuthClientsParams, error) {
 	return withCursor(p.Cursor, p.Limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListOAuthClientsParams {
 		return gendb.ListOAuthClientsParams{UserID: sql.NullString{String: userID, Valid: true}, IncludeRevoked: p.IncludeRevoked, IncludeHubWide: p.IncludeHubWide, HubWideOnly: p.HubWideOnly, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
+}
+
+// queryError maps a result from this connection's concrete SQL operation.
+// Only transaction-scoped connections carry the BEGIN cancellation context.
+func (c *sqliteConn) queryError(err error) error {
+	if c.transactionContext != nil {
+		err = sqlutil.WithTransactionCancellation(c.transactionContext, err)
+	}
+	return mapErr(err)
 }

@@ -29,7 +29,7 @@ func fromDBWorkspaceSection(s gendb.WorkspaceSection) *store.WorkspaceSection {
 }
 
 func (s *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorkspaceSectionParams) error {
-	return mapErr(s.conn.q.CreateWorkspaceSection(ctx, gendb.CreateWorkspaceSectionParams{
+	return s.conn.queryError(s.conn.q.CreateWorkspaceSection(ctx, gendb.CreateWorkspaceSectionParams{
 		ID:          p.ID,
 		UserID:      p.UserID.String(),
 		Name:        p.Name,
@@ -42,7 +42,7 @@ func (s *workspaceSectionStore) Create(ctx context.Context, p store.CreateWorksp
 func (s *workspaceSectionStore) GetByID(ctx context.Context, id string) (*store.WorkspaceSection, error) {
 	sec, err := s.conn.q.GetWorkspaceSectionByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorkspaceSection(sec), nil
 }
@@ -56,7 +56,7 @@ func (s *workspaceSectionStore) ListByUserID(ctx context.Context, userID userid.
 	}
 	rows, err := s.conn.q.ListWorkspaceSectionsByUserID(ctx, owner)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, func(sec gendb.WorkspaceSection) store.WorkspaceSection { return *fromDBWorkspaceSection(sec) }), nil
 }
@@ -68,7 +68,7 @@ func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorksp
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.RenameWorkspaceSection(ctx, gendb.RenameWorkspaceSectionParams{
+	return s.conn.rowsAffected(s.conn.q.RenameWorkspaceSection(ctx, gendb.RenameWorkspaceSectionParams{
 		Name:   p.Name,
 		ID:     p.ID,
 		UserID: owner,
@@ -90,7 +90,7 @@ func (s *workspaceSectionStore) UpdatePosition(ctx context.Context, p store.Upda
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.UpdateWorkspaceSectionPosition(ctx, gendb.UpdateWorkspaceSectionPositionParams{
+	return s.conn.queryError(s.conn.q.UpdateWorkspaceSectionPosition(ctx, gendb.UpdateWorkspaceSectionPositionParams{
 		Position: p.Position,
 		ID:       p.ID,
 		UserID:   owner,
@@ -107,7 +107,7 @@ func (s *workspaceSectionStore) UpdateSidebarPosition(ctx context.Context, p sto
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.UpdateWorkspaceSectionSidebarPosition(ctx, gendb.UpdateWorkspaceSectionSidebarPositionParams{
+	return s.conn.queryError(s.conn.q.UpdateWorkspaceSectionSidebarPosition(ctx, gendb.UpdateWorkspaceSectionSidebarPositionParams{
 		Sidebar:  p.Sidebar,
 		Position: p.Position,
 		ID:       p.ID,
@@ -122,7 +122,7 @@ func (s *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorksp
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.DeleteWorkspaceSection(ctx, gendb.DeleteWorkspaceSectionParams{
+	return s.conn.rowsAffected(s.conn.q.DeleteWorkspaceSection(ctx, gendb.DeleteWorkspaceSectionParams{
 		ID:     p.ID,
 		UserID: owner,
 		// Custom sections only, bound from the enum. This is the dangerous one:
@@ -145,5 +145,5 @@ func (s *workspaceSectionStore) HasDefaultForUser(ctx context.Context, userID us
 		// Bound from the enum for the same reason as the two above.
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 	})
-	return exists, mapErr(err)
+	return exists, s.conn.queryError(err)
 }
