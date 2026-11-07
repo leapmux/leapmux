@@ -309,21 +309,20 @@ func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorker(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			// The state file lives in the canonical directory the lease
-			// derives. Making that directory unwritable right after the
-			// registration is the persistence failure this test injects.
+			// Obstruct the lease-derived destination after registration, so
+			// the publisher fails on every platform and privilege level.
 			stateDir, stateDirErr := lifecycle.CanonicalDir(dir)
 			require.NoError(t, stateDirErr)
 			reg := &fakeRegistrar{
 				adminID:    "admin-1",
 				newWorker:  hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok"},
 				retireErr:  retireErr,
-				onRegister: func() { require.NoError(t, os.Chmod(stateDir, 0o500)) },
+				onRegister: func() { require.NoError(t, os.Mkdir(filepath.Join(stateDir, "state.json"), 0o700)) },
 			}
-			t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) })
 
 			_, _, err := loadWithLease(t, reg, dir)
 			require.Error(t, err, "a failed write must fail the launch")
+			require.ErrorContains(t, err, filepath.Join(stateDir, "state.json"))
 			assert.Equal(t, []string{"w-new"}, reg.retiredIDs, "the row whose keys were lost must be retired")
 			if retireErr != nil {
 				assert.ErrorIs(t, err, retireErr, "the retire failure must be reported too")
@@ -348,16 +347,15 @@ func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorkerAfterACancel(t *
 		adminID:   "admin-1",
 		newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok"},
 		onRegister: func() {
-			// The publisher failure: the lease-derived directory
-			// refuses the write from here on.
-			require.NoError(t, os.Chmod(blocked, 0o500))
+			// The destination becomes a directory only after registration.
+			require.NoError(t, os.Mkdir(filepath.Join(blocked, "state.json"), 0o700))
 			cancel()
 		},
 	}
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
 
 	_, _, err := loadOrCreateWorkerStateCancelled(ctx, t, reg, blocked)
 	require.Error(t, err, "a failed write must fail the launch")
+	require.ErrorContains(t, err, filepath.Join(blocked, "state.json"))
 	require.Equal(t, []string{"w-new"}, reg.retiredIDs, "the row whose keys were lost must be retired")
 	assert.NoError(t, reg.retireCtxErrs[0], "the compensating retire must not inherit the launch's cancellation")
 }

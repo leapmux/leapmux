@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
@@ -24,7 +21,7 @@ import (
 // own flags.
 
 // runHubForeground runs the Hub under the started runtime.
-func runHubForeground(runtime *lifecycle.Runtime, args []string) error {
+func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, args []string) error {
 	cfg, _, err := hubconfig.Load(args)
 	if err != nil {
 		return err
@@ -42,28 +39,28 @@ func runHubForeground(runtime *lifecycle.Runtime, args []string) error {
 	}
 	server.PrintBannerURL()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-runtime.StopSignal():
-			stop()
-		}
-	}()
 	// Ready closes INSIDE Serve; watch it concurrently and report the
 	// runtime's readiness as the Hub's initialization completes.
+	readyCtx, cancelReady := context.WithCancel(ctx)
+	readyDone := make(chan struct{})
 	go func() {
-		<-server.Ready()
-		runtime.SetReadiness(lifecycle.ReadinessReady)
+		defer close(readyDone)
+		select {
+		case <-server.Ready():
+			runtime.SetReadiness(lifecycle.ReadinessReady)
+		case <-readyCtx.Done():
+		}
 	}()
-	return server.Serve(ctx)
+	err = server.Serve(ctx)
+	cancelReady()
+	<-readyDone
+	return err
 }
 
 // runWorkerForeground runs the worker under the started runtime. The
 // saved registration is the only credential source; registration lives
 // in `leapmux worker register`.
-func runWorkerForeground(runtime *lifecycle.Runtime, args []string) error {
+func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args []string) error {
 	cfg, _, err := workerconfig.Load(args)
 	if err != nil {
 		return err
@@ -77,11 +74,19 @@ func runWorkerForeground(runtime *lifecycle.Runtime, args []string) error {
 	// The runtime's root lease transfers into worker.Run, which
 	// releases it after the database closes.
 	lease := runtime.TakeLease()
+	defer func() { _ = lease.Close() }()
 	if lease.Mode() != lifecycle.RoleWorker {
 		// The runtime acquired the directory under the worker role by
 		// construction; this guards a future mode mix-up.
 		_ = lease.Close()
 		return errors.New("the runtime's lease is not the worker component's")
+	}
+	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	if canonical != lease.Path() {
+		return fmt.Errorf("the worker configuration does not match its held data directory")
 	}
 
 	state, err := cfg.UsableRegistration()
@@ -95,25 +100,10 @@ func runWorkerForeground(runtime *lifecycle.Runtime, args []string) error {
 
 	runtime.SetRegistration(lifecycle.RegistrationStatus{
 		State:    lifecycle.RegistrationRegistered,
-		WorkerID: state.WorkerID,
-		HubURL:   state.HubURL,
+		WorkerID: new(state.WorkerID),
+		HubURL:   new(state.HubURL),
 	})
 	runtime.SetReadiness(lifecycle.ReadinessStarting)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		select {
-		case <-ctx.Done():
-			// A signal ends the context; name it for the log the way
-			// the standalone command always did.
-			if ctx.Err() != nil {
-				log.Printf("shutdown signal received")
-			}
-		case <-runtime.StopSignal():
-			stop()
-		}
-	}()
 
 	err = worker.Run(ctx, worker.RunConfig{
 		HubURL:    state.HubURL,
@@ -123,11 +113,11 @@ func runWorkerForeground(runtime *lifecycle.Runtime, args []string) error {
 		},
 		OnConnectionState: func(state worker.ConnectionState) {
 			kind := lifecycle.ConnectionConnected
-			lastErr := ""
+			var lastErr *string
 			if !state.Connected {
 				kind = lifecycle.ConnectionDisconnected
 				if state.Err != nil {
-					lastErr = state.Err.Error()
+					lastErr = new(state.Err.Error())
 				}
 			}
 			runtime.SetConnection(lifecycle.ConnectionStatus{State: kind, LastError: lastErr})
@@ -153,15 +143,12 @@ func runWorkerForeground(runtime *lifecycle.Runtime, args []string) error {
 			}
 		},
 	})
-	if err != nil {
-		runtime.SetProcessState(lifecycle.ProcessFailed)
-	}
 	return reregistrationAdvice(err, cfg.StatePath())
 }
 
 // runSoloForeground runs the combined instance under the started
 // runtime: the prepared entry receives the runtime's root lease.
-func runSoloForeground(devMode bool, runtime *lifecycle.Runtime, args []string) error {
+func runSoloForeground(ctx context.Context, devMode bool, runtime *lifecycle.Runtime, args []string) error {
 	mode := lifecycle.RoleSolo
 	if devMode {
 		mode = lifecycle.RoleDev
@@ -183,25 +170,38 @@ func runSoloForeground(devMode bool, runtime *lifecycle.Runtime, args []string) 
 		return fmt.Errorf("the runtime's lease does not match the prepared %s launch", mode)
 	}
 
-	inst, err := solo.StartPrepared(context.Background(), prepared, root)
+	runtime.SetRegistration(lifecycle.RegistrationStatus{State: lifecycle.RegistrationPending})
+	runtime.SetConnection(lifecycle.ConnectionStatus{State: lifecycle.ConnectionConnecting})
+	inst, err := solo.StartPrepared(ctx, prepared, root)
 	if err != nil {
 		return err
 	}
-	go func() {
+	for {
+		snapshot, changed := inst.ObserveStartup()
+		reportCombinedStartup(runtime, snapshot)
 		select {
-		case <-runtime.StopSignal():
-			_ = inst.Stop()
+		case <-changed:
 		case <-inst.WaitDone():
+			return inst.Stop()
 		}
-	}()
-	snap := inst.Startup()
-	if snap.WorkerPendingSetup {
+	}
+}
+
+func reportCombinedStartup(runtime *lifecycle.Runtime, snapshot solo.StartupSnapshot) {
+	switch {
+	case snapshot.Failure != nil:
+		runtime.SetReadiness(lifecycle.ReadinessFailed)
+	case snapshot.WorkerPendingSetup:
 		runtime.SetReadiness(lifecycle.ReadinessReadyForSetup)
-	} else if snap.WorkerReady {
+	case snapshot.WorkerReady:
 		runtime.SetReadiness(lifecycle.ReadinessReady)
+	default:
+		runtime.SetReadiness(lifecycle.ReadinessStarting)
 	}
-	if err := inst.Wait(); err != nil {
-		return err
+	if snapshot.Registration.State != "" {
+		runtime.SetRegistration(snapshot.Registration)
 	}
-	return inst.Stop()
+	if snapshot.Connection.State != "" {
+		runtime.SetConnection(snapshot.Connection)
+	}
 }

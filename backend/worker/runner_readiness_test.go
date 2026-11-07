@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,6 +115,13 @@ func TestRunConsumesDirectoryLease(t *testing.T) {
 		err := worker.Run(context.Background(), runCfg(nil))
 		require.ErrorContains(t, err, "Directory")
 	})
+	t.Run("empty lease", func(t *testing.T) {
+		lease := new(lifecycle.DirectoryLease)
+		require.NotPanics(t, func() {
+			require.Error(t, worker.Run(context.Background(), runCfg(lease)))
+		})
+		require.True(t, lease.Closed())
+	})
 
 	t.Run("closed lease", func(t *testing.T) {
 		lease := workerLeaseForTest(t)
@@ -128,6 +137,10 @@ func TestRunConsumesDirectoryLease(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = lease.Close() }()
 		require.ErrorContains(t, worker.Run(context.Background(), runCfg(lease)), "worker component")
+		require.True(t, lease.Closed(), "Run consumes every non-nil supplied lease, including rejection")
+		replacement, err := lifecycle.AcquireDirectory(lease.Owner(), lease.Mode(), lease.Path())
+		require.NoError(t, err)
+		require.NoError(t, replacement.Close())
 	})
 
 	t.Run("an ended run releases the lease", func(t *testing.T) {
@@ -153,5 +166,15 @@ func TestRunConsumesDirectoryLease(t *testing.T) {
 			t.Fatal("the run did not end after the cancellation")
 		}
 		require.True(t, lease.Closed(), "the lease releases when the run ends")
+	})
+	t.Run("database failure never reports readiness and releases the lease", func(t *testing.T) {
+		lease := workerLeaseForTest(t)
+		require.NoError(t, os.Mkdir(filepath.Join(lease.Path(), "worker.db"), 0o700))
+		cfg := runCfg(lease)
+		var ready atomic.Bool
+		cfg.OnReady = func() { ready.Store(true) }
+		require.ErrorContains(t, worker.Run(context.Background(), cfg), "open worker db")
+		require.False(t, ready.Load())
+		require.True(t, lease.Closed())
 	})
 }

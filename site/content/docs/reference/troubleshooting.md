@@ -11,6 +11,14 @@ This chapter is a problem-to-fix reference. Each entry gives the **symptom** you
 Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or nobody completed first-run setup. Start there.
 {{< /callout >}}
 
+## Background startup fails or times out
+
+Run `leapmux <mode> status` with the same `--config` or `--data-dir`. Status reports process readiness separately from registration and Hub connectivity. It prints recent failed-attempt logs and their full path. Native diagnostics explain failures that happen before the application opens its control interface. A missing or changed native definition requires `enable` to repair it.
+
+A startup timeout does not stop a service that is still starting. A stop timeout does not release the instance's locks prematurely. Inspect status before retrying. If Windows reports invalid native credentials after a password change, stop the instance and rerun `enable`; Windows requests the new account credentials. See [Running LeapMux](/docs/admin/running-leapmux/#lifecycle-and-native-startup).
+
+If registration lost its response, preserve `pending-registration.json` and rerun the original `worker register` command with the same Hub, key, and data directory. It recovers the committed identity rather than consuming a new key. Permanent key, account, and worker-limit refusals require correcting their stated cause.
+
 ## Workers won't connect or stay offline
 
 A Worker (`leapmux worker run`) dials *out* to the Hub and holds a single bidirectional stream open. Its online/offline state is computed live from whether that stream is currently connected — there is no separate "approval" queue. For the full Worker lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
@@ -18,16 +26,16 @@ A Worker (`leapmux worker run`) dials *out* to the Hub and holds a single bidire
 ### A Worker exits at once and reports that it is unregistered
 
 **Symptom**
-The Worker process prints an error and exits. The error says that the Worker is unregistered, and it tells you to pass a registration key from the hub UI.
+The Worker process prints an error and exits. The error says that the Worker is unregistered, and it recommends `leapmux worker register`.
 
 **Cause**
-The Worker has no saved credentials (its `state.json` holds no Worker ID or auth token, because the Worker saves only its keypair before it registers) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and controlled entirely by possessing a valid key.
+The Worker has no usable registered credentials. Runtime commands never register implicitly. Run `worker register` before `run`, `start`, or `restart`.
 
 **Fix**
 Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** (Register worker) button, and copy the generated command. It already includes the right Hub URL and key:
 
 ```bash
-leapmux worker register --hub https://hub.example.com -registration-key <key>
+leapmux worker register --hub https://hub.example.com --registration-key <key>
 ```
 
 The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/admin/managing-workers/) for minting keys via the UI or email, and for listing or revoking keys from the CLI.
@@ -41,18 +49,18 @@ The Worker prints an error and exits. The error says that the Hub rejected the r
 Registration keys are **consumed atomically** on first use and live only 5 minutes. This error means the key was already used by another Worker, was revoked, or expired. These are permanent errors — the Worker does **not** retry them (unlike a transient network failure, which it does retry with backoff).
 
 **Fix**
-Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Control CLI](/docs/using/control-cli/)).
+Mint a brand-new key from the **Register worker** dialog and run `worker register` with it. If a pending attempt conflicts with that key, first resolve or explicitly abandon the old attempt as described in [Managing Workers](/docs/admin/managing-workers/#why-a-registration-might-be-rejected). Preserve uncertain recovery material until you confirm its Hub outcome. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Control CLI](/docs/using/control-cli/)).
 
 ### The Worker refuses `--registration-key` because it is already registered
 
 **Symptom**
-The Worker prints an error and exits. The error says that the Worker is already registered, and it tells you to remove `--registration-key`, or to deregister the Worker, delete its `state.json`, and register it again.
+The Worker prints an error and exits. The register command refuses a duplicate healthy registration. Runtime commands refuse `--registration-key` and `--hub`.
 
 **Cause**
 This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you do not waste a fresh key on a machine that's already configured.
 
 **Fix**
-Just run `leapmux worker run` — it reconnects with the credentials its `worker register` saved. Registration keys belong to `leapmux worker register`, never to the runtime command. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux control admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
+Run `leapmux worker run` or `leapmux worker start` with the saved credentials. For a new registration, first stop the Worker, run `leapmux worker deregister`, and register again with a fresh key. Do not delete a pending recovery record after an uncertain registration response.
 
 ### Worker process runs but never appears online
 
@@ -63,10 +71,10 @@ The Worker process is alive and logging reconnection attempts, but it never show
 
 | Cause | How to confirm | Fix |
 |---|---|---|
-| Wrong Hub URL | Worker logs show repeated dial failures to the wrong host/port | Set `--hub` to the Hub's reachable URL. Default is `http://127.0.0.1:4327`; behind a reverse proxy use the public `https://` URL. The Worker accepts `http[s]://...`, `unix:<socket-path>` (Unix only), or `npipe:<pipe-name>` (Windows only). |
+| Wrong Hub URL | Worker logs show repeated dial failures to the wrong host/port | Check the endpoint saved by `worker register`. To change it, stop and deregister the Worker, then register against the correct Hub. Default is `http://127.0.0.1:4327`; behind a reverse proxy use the public `https://` URL. The Worker accepts `http[s]://...`, `unix:<socket-path>` (Unix only), or `npipe:<pipe-name>` (Windows only). |
 | Hub not actually listening on a reachable address | `curl http://hub-host:4327/` from the Worker machine | Make sure the Hub binds an interface the Worker can reach. The Hub default is `:4327` (all interfaces); solo mode defaults to `127.0.0.1:4327` (loopback only — unreachable from another machine). See [Running LeapMux](/docs/admin/running-leapmux/). |
 | Firewall / NAT between Worker and Hub | Network tools on the Worker host | The Worker connects **outbound** (NAT-friendly), so the Worker needs outbound access to the Hub's port, not an inbound port. Open egress to the Hub. |
-| Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. If the Worker's `--hub` points at another Hub, set `--hub` back to the Hub that registered the Worker. The Worker keeps its identity, because a Hub that does not know its token makes the Worker retry instead of deleting its state. If the Worker was registered with another Hub or by another user, deregister it there, delete its `state.json`, and register it with a key that the right user minted on the right Hub. |
+| Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. Runtime commands use the Hub endpoint saved during registration. Check that endpoint and its proxy. The Worker keeps its identity, because a Hub that does not know its token makes the Worker retry instead of deleting its state. If the Worker was registered with another Hub or by another user, deregister it there, delete its `state.json`, and register it with a key that the right user minted on the right Hub. |
 | Worker was deregistered or deleted | The Worker logs that it received a deregistration notification, or that the Hub reports it was deleted. A standalone Worker then exits, and an auto-registered Worker stops reconnecting. | A standalone Worker also clears its local state. Register it again with a fresh registration key from the UI. The launcher of an auto-registered Worker registers a fresh Worker at the next launch. |
 
 {{< callout type="info" >}}
@@ -85,16 +93,16 @@ The Worker never comes online, and each reconnection attempt logs an `unauthenti
 - The Worker registered after the backup that a restored Hub database came from.
 - A proxy in front of the Hub answers 401 or 403 by itself.
 
-The Worker keeps its `state.json` for these errors, because a wrong `--hub` or a proxy must not destroy its identity.
+The Worker keeps its `state.json` for these errors, because a wrong saved endpoint or a proxy must not destroy its identity.
 
 After five `unauthenticated` refusals in a row, the Worker logs one error that states the remedy, and it keeps retrying:
 
 ```text
-the hub does not know this worker's token. Check --hub and any proxy in front of the hub. If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.
+the hub does not know this worker's token. Check the saved Hub endpoint and any proxy in front of the Hub. If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.
 ```
 
 **Fix**
-Check `--hub` and the proxy. If neither is wrong, stop the Worker, delete its `state.json`, and register it again.
+Check the saved Hub endpoint and the proxy. If neither is wrong, stop the Worker, delete its `state.json`, and register it again.
 
 ### A Worker stops because the Hub refused its public keys
 
@@ -539,25 +547,7 @@ Use `LEAPMUX_MODE=dev` (not `solo`) for an all-in-one container reachable from y
 
 ### A Worker container can't connect
 
-**Symptom**
-A `LEAPMUX_MODE=worker` container fails because the Worker is unregistered, or it never connects.
-
-**Cause**
-The container's supervisor starts the Worker with no `--hub` or `--registration-key` flags, so a Worker container must get its Hub URL and (first-run) key from config or env vars. See [Running LeapMux](/docs/admin/running-leapmux/) for how the container supervisor launches each mode.
-
-**Fix**
-Supply them via `LEAPMUX_WORKER_*` env vars or the Worker YAML:
-
-```bash
-docker run \
-  -e LEAPMUX_MODE=worker \
-  -e LEAPMUX_WORKER_HUB=https://hub.example.com \
-  -e LEAPMUX_WORKER_REGISTRATION_KEY=<key> \
-  -v leapmux-worker-data:/data \
-  ghcr.io/leapmux/leapmux:latest
-```
-
-The registration key is consumed on first run. Remove `LEAPMUX_WORKER_REGISTRATION_KEY` after that run: a registered Worker refuses to start while it is set, and its error states the remedy. See [Managing Workers](/docs/admin/managing-workers/).
+The container supervisor runs `worker run`. It never performs registration. First run the one-shot `worker register` container from [Running LeapMux](/docs/admin/running-leapmux/#running-a-worker-container). Mount the same volume and use `/data/worker` for both operations. Do not put a registration key in the runtime container. Check `worker status` for registration and connection separately.
 
 ### Non-SQLite storage configured via env vars is ignored
 

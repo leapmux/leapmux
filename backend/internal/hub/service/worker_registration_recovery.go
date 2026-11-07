@@ -193,7 +193,7 @@ func (s *WorkerConnectorService) RecoverRegistration(
 	// expired identity refuses without touching the pinned keys.
 	nonce, usable := s.challenges.Consume(challengeID, attemptID)
 	if !usable {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
+		return nil, connect.NewError(connect.CodeAborted,
 			"the challenge is unknown, expired, or already used; request a fresh one")
 	}
 	message := recoverySignedMessage(attemptID, challengeID, nonce, registrationKeyDigest(regKey))

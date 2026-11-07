@@ -165,8 +165,8 @@ CREATE TABLE workers (
     -- durable attempt identity (32 lowercase hex chars, validated at
     -- the application boundary); key_hash is the SHA-256 digest of the
     -- registration key. Both are NULL together on every row a
-    -- registration attempt did not create; UNIQUE admits one NULL, so
-    -- two rows cannot share an attempt or a key digest.
+    -- registration attempt did not create. Each UNIQUE index admits
+    -- multiple NULLs and rejects duplicate non-NULL values.
     registration_attempt_id TEXT DEFAULT NULL UNIQUE,
     registration_key_hash BLOB DEFAULT NULL UNIQUE,
     deleted_at    DATETIME,

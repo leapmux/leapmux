@@ -129,18 +129,22 @@ func (r Renderer) VerificationEmail(to, storedCode string, ttl time.Duration) Me
 // dialog (frontend → WorkerManagementService.EmailRegistrationInstructions).
 //
 // Inputs: `to` is the user's verified email address; `command` is the
-// full `leapmux worker --hub … --registration-key …` shell command.
+// full `leapmux worker register --hub … --registration-key …` shell command.
 //
 // Rendered body:
 //
 //	Here's the worker registration command you asked LeapMux to send.
 //
-//	Run it on the machine where the worker should run:
+//	Register on the machine where the worker should run:
 //
 //	    {command}
 //
+//	After registration succeeds, start the worker:
+//
+//	    leapmux worker start
+//
 //	The registration key only works while the dialog stays open in
-//	your browser, so keep that tab open until the command finishes.
+//	your browser, so keep that tab open until registration completes.
 //
 //	-- ␠
 //	This is an automated message from your LeapMux hub at {hubURL}.

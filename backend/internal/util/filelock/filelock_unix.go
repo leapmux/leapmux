@@ -28,11 +28,18 @@ func Open(path string, exclusive bool) (*os.File, error) {
 	if exclusive {
 		flags |= os.O_EXCL
 	}
+	return openRegular(path, flags)
+}
+
+// OpenExisting opens a regular lock file without creating a missing path.
+func OpenExisting(path string) (*os.File, error) {
+	return openRegular(path, os.O_RDWR|unix.O_NOFOLLOW|unix.O_NONBLOCK)
+}
+
+func openRegular(path string, flags int) (*os.File, error) {
 	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
-		// O_NOFOLLOW reports ELOOP; map it to the fs.ErrNotExist the
-		// callers of a fresh creation path already handle, and give
-		// everyone else a recognizable refusal.
+		// O_NOFOLLOW reports ELOOP for a link. Preserve the native cause.
 		return nil, err
 	}
 	if err := requireRegular(f, path); err != nil {

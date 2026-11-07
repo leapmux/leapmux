@@ -11,6 +11,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStartupRejectsUnsafeExistingRecordsBeforeReplacement(t *testing.T) {
+	runtimeEnv(t)
+	for _, recordName := range []string{ownershipRecordName, controlTokenName, runtimeRecordName, serviceSpecName} {
+		t.Run(recordName, func(t *testing.T) {
+			root := mustCanonical(t, t.TempDir())
+			initial := startTestRuntime(t, RoleHub, root)
+			require.NoError(t, initial.Shutdown())
+			path := filepath.Join(pathsFor(root).Dir, recordName)
+			if recordName == serviceSpecName {
+				require.NoError(t, os.WriteFile(path, []byte("mode: hub\n"), 0o600))
+			}
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.NoError(t, os.Chmod(path, 0o644))
+			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+			candidate, err := StartRuntime(RuntimeConfig{Mode: RoleHub, DataDir: root, Execution: ExecutionForeground})
+			if candidate != nil {
+				t.Cleanup(func() { _ = candidate.Shutdown() })
+			}
+			assert.Error(t, err, "startup must refuse the unsafe record before using or replacing it")
+			after, readErr := os.ReadFile(path)
+			require.NoError(t, readErr)
+			assert.Equal(t, before, after)
+			info, statErr := os.Stat(path)
+			require.NoError(t, statErr)
+			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+		})
+	}
+}
+
 // Existing lifecycle resources that another account owns, or that are
 // wider than the account, refuse startup BEFORE anything is modified.
 // A test process cannot become another uid, so the foreign-account case

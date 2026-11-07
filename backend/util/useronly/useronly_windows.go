@@ -61,9 +61,13 @@ func OwnedByCurrentUser(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read the owner of %s: %w", path, err)
 	}
+	return descriptorOwnedByCurrentUser(sd)
+}
+
+func descriptorOwnedByCurrentUser(sd *windows.SECURITY_DESCRIPTOR) (bool, error) {
 	owner, _, err := sd.Owner()
 	if err != nil {
-		return false, fmt.Errorf("read the owner of %s: %w", path, err)
+		return false, fmt.Errorf("read the resource owner: %w", err)
 	}
 	if owner == nil {
 		return false, nil

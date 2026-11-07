@@ -1187,7 +1187,7 @@ tasks:
       LEAPMUX_SERVICE_TEST_BINARY:
         sh: echo "{{.ROOT_DIR}}/leapmux{{if eq OS "windows"}}.exe{{end}}"
       LEAPMUX_SERVICE_TEST_ACCOUNT_FILE:
-        sh: realpath "{{.SERVICE_ACCOUNT_FILE}}"
+        '{{.SERVICE_ACCOUNT_FILE}}'
     cmds:
       - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags=serviceintegration ./internal/servicelaunch/...
 
@@ -1195,21 +1195,7 @@ tasks:
     internal: true
     desc: Verify the private native-account fixture is an absolute existing path
     cmds:
-      - |
-        if [ -z "{{.SERVICE_ACCOUNT_FILE}}" ]; then
-          echo "SERVICE_ACCOUNT_FILE is required: the absolute path of the private native-account fixture" >&2
-          exit 1
-        fi
-      - |
-        case "{{.SERVICE_ACCOUNT_FILE}}" in
-          /*) ;;
-          *) echo "SERVICE_ACCOUNT_FILE must be an ABSOLUTE path, got {{.SERVICE_ACCOUNT_FILE}}" >&2; exit 1 ;;
-        esac
-      - |
-        if [ ! -f "{{.SERVICE_ACCOUNT_FILE}}" ]; then
-          echo "SERVICE_ACCOUNT_FILE does not exist: {{.SERVICE_ACCOUNT_FILE}}" >&2
-          exit 1
-        fi
+      - bun scripts/assert-service-account-file.mjs {{.SERVICE_ACCOUNT_FILE | default "" | shellQuote}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)

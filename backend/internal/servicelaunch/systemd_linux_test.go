@@ -36,6 +36,9 @@ func newStubbedSystemd() *stubbedSystemd {
 				recorded = append([]string{"SUDO"}, recorded...)
 			}
 			s.commands = append(s.commands, recorded)
+			if args[0] == "show" {
+				return []byte("LoadState=loaded\nActiveState=active\nUnitFileState=enabled\nMainPID=0\nNeedDaemonReload=no\n"), nil
+			}
 			return []byte("active\n"), nil
 		},
 		readFile: func(path string) ([]byte, error) {
@@ -46,13 +49,13 @@ func newStubbedSystemd() *stubbedSystemd {
 			}
 			return nil, os.ErrNotExist
 		},
-		writeFile: func(path string, data []byte, mode os.FileMode) error {
+		writeFile: func(_ context.Context, _ LaunchSpec, path string, data []byte) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			s.files[path] = data
 			return nil
 		},
-		remove: func(path string) error {
+		remove: func(_ context.Context, _ LaunchSpec, path string) error {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			delete(s.files, path)
@@ -82,11 +85,15 @@ func TestSystemdDefinitionArguments(t *testing.T) {
 	spec, err := LaunchSpecFromService(testSpec())
 	require.NoError(t, err)
 	spec.ConfigFile = "/home/trustin/My Config/worker.yaml"
+	spec.DataDirectory = "/home/trustin/My Data/worker"
 	spec.RuntimeArguments = []string{"--name", "a worker's laptop"}
 
 	unit := string(newStubbedSystemd().definitionUnit(spec))
-	assert.Contains(t, unit, `ExecStart=/opt/homebrew/bin/leapmux worker run --config "/home/trustin/My Config/worker.yaml" --name "a worker's laptop"`)
-	assert.Contains(t, unit, "PartOf=graphical-session.target", "login mode follows the graphical session")
+	assert.Contains(t, unit, `ExecStart=/opt/homebrew/bin/leapmux worker run --data-dir "/home/trustin/My Data/worker"`)
+	assert.Contains(t, unit, `--service-spec "/home/trustin/My Data/worker/.lifecycle/service.yaml"`)
+	assert.NotContains(t, unit, "a worker's laptop")
+	assert.Contains(t, unit, "After=graphical-session.target", "login mode starts with the graphical session")
+	assert.NotContains(t, unit, "PartOf=", "the account-wide supervisor decides final logout")
 	assert.Contains(t, unit, "WantedBy=graphical-session.target")
 	assert.NotContains(t, unit, "\nstart\n", "the unit never invokes start")
 	assert.NotContains(t, unit, "Restart=always", "no automatic restart policy")
@@ -98,6 +105,56 @@ func TestSystemdDefinitionArguments(t *testing.T) {
 	assert.Contains(t, bootUnit, "User=trustin\n", "the system unit runs as the selected account")
 	assert.Contains(t, bootUnit, "Group=staff\n")
 	assert.Contains(t, bootUnit, "WantedBy=multi-user.target")
+}
+
+func TestSystemdDefinitionDoesNotExposeEnvironment(t *testing.T) {
+	spec, err := LaunchSpecFromService(testSpec())
+	require.NoError(t, err)
+	spec.RuntimeEnvironment = map[string]string{"API_TOKEN": "private-secret-value"}
+	path := "/private/runtime.yaml"
+	spec.EnvironmentFile = &path
+	definition := string(newStubbedSystemd().definitionUnit(spec))
+	assert.NotContains(t, definition, "private-secret-value")
+	assert.NotContains(t, definition, "EnvironmentFile=")
+	assert.Contains(t, definition, "--service-spec")
+}
+
+func TestSystemdInspectionReconcilesNativeProcessWithoutDefinitionFile(t *testing.T) {
+	for _, scenario := range []string{"failed", "missing file", "missing everywhere"} {
+		t.Run(scenario, func(t *testing.T) {
+			manager := newStubbedSystemd()
+			spec, err := LaunchSpecFromService(testSpec())
+			require.NoError(t, err)
+			definition, err := manager.definitionPath(spec)
+			require.NoError(t, err)
+			if scenario == "failed" {
+				manager.files[definition] = manager.definitionUnit(spec)
+			}
+			manager.runSystemctl = func(_ context.Context, args []string, user, elevated bool) ([]byte, error) {
+				assert.False(t, elevated, "native inspection must not request authorization")
+				assert.Contains(t, args, "--property=Result")
+				assert.Contains(t, args, "--property=ExecMainStatus")
+				switch scenario {
+				case "failed":
+					return []byte("LoadState=loaded\nActiveState=failed\nUnitFileState=enabled\nMainPID=0\nFragmentPath=" + definition + "\nNeedDaemonReload=no\nResult=exit-code\nExecMainCode=1\nExecMainStatus=203\n"), nil
+				case "missing file":
+					return []byte("LoadState=loaded\nActiveState=active\nUnitFileState=enabled\nMainPID=2357\nFragmentPath=" + definition + "\nNeedDaemonReload=no\nResult=success\n"), nil
+				default:
+					return []byte("LoadState=not-found\nActiveState=inactive\nUnitFileState=\nMainPID=0\n"), nil
+				}
+			}
+			status, err := manager.Inspect(t.Context(), spec)
+			require.NoError(t, err)
+			assert.Equal(t, scenario == "failed", status.Installed)
+			assert.Equal(t, scenario == "failed", status.DefinitionMatches)
+			assert.Equal(t, scenario == "missing file", status.Running)
+			if scenario == "failed" {
+				assert.Contains(t, status.Failure, "203")
+			} else {
+				assert.Empty(t, status.Failure)
+			}
+		})
+	}
 }
 
 // Install enables WITHOUT --now; Start starts; Stop preserves the

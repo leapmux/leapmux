@@ -2,7 +2,6 @@ package servicelaunch
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -23,6 +22,9 @@ type NativeStatus struct {
 	DefinitionMatches bool
 	// PID is the running instance's process identifier, or zero.
 	PID int
+	// Failure is the native startup failure when the application did not
+	// reach its own control interface. Empty means no failure was reported.
+	Failure string
 }
 
 // Manager is the native mechanism one platform supplies: inspect,
@@ -49,6 +51,12 @@ type Manager interface {
 	Diagnose(ctx context.Context, spec LaunchSpec) ([]string, error)
 }
 
+// StartAuthorizer completes interactive native authorization before the caller
+// starts its runtime wait budget. Read-only inspection never uses it.
+type StartAuthorizer interface {
+	AuthorizeStart(context.Context, LaunchSpec) error
+}
+
 // ConfigurationChange is the preview a controller shows before it
 // touches anything: what will be configured, and what authorization it
 // needs.
@@ -59,7 +67,7 @@ type ConfigurationChange struct {
 	// platform's own terms ("launchd user agent", "system service").
 	NativeSummary string
 	// RequiresElevation states whether applying needs administrator
-	// authorization, and Why names the exact reason when it does.
+	// authorization. ElevationReason gives the exact reason when it does.
 	RequiresElevation bool
 	ElevationReason   string
 	// Changes lists the human-readable differences from the current
@@ -82,11 +90,17 @@ type Elevation struct {
 // DescribeElevation states the authorization a startup kind needs on a
 // platform, before any native tool runs.
 func DescribeElevation(startup lifecycle.StartupKind, platform string) Elevation {
+	if platform == "windows" {
+		if startup == lifecycle.StartupBoot {
+			return Elevation{Required: true, Mechanism: "UAC", Reason: "Windows requests administrator authorization to create or repair this service and grant the selected account the service logon right if needed."}
+		}
+		return Elevation{Mechanism: "UAC", Reason: "The noninteractive login task requires the account password and the batch logon right. Windows may request administrator authorization to grant that right or repair task permissions."}
+	}
 	switch startup {
 	case lifecycle.StartupBoot:
 		return Elevation{
 			Required:  true,
-			Reason:    fmt.Sprintf("%s startup writes a system-level definition owned by the selected account", startup),
+			Reason:    "Computer startup requires a system-level definition. sudo authorizes that configuration; the application still runs as the selected user account.",
 			Mechanism: elevationMechanismOf(platform),
 		}
 	default:

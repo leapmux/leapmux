@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestControlRejectsInvalidEnvelopesBeforeShutdown(t *testing.T) {
+	const body = `{"instance_id":"instance","attempt_id":"attempt"}`
+	for _, test := range []struct {
+		name, method, path, authorization, body string
+
+		code int
+	}{
+		{"oversized trailing whitespace", http.MethodPost, controlStopPath, "Bearer secret", body + strings.Repeat(" ", controlMaxBody), http.StatusBadRequest},
+		{"second JSON value", http.MethodPost, controlStopPath, "Bearer secret", body + `{}`, http.StatusBadRequest},
+		{"trailing non-JSON data", http.MethodPost, controlStopPath, "Bearer secret", body + "x", http.StatusBadRequest},
+		{"stop GET", http.MethodGet, controlStopPath, "Bearer secret", body, http.StatusMethodNotAllowed},
+		{"status POST", http.MethodPost, controlStatusPath, "Bearer secret", "", http.StatusMethodNotAllowed},
+		{"bare token", http.MethodPost, controlStopPath, "secret", body, http.StatusUnauthorized},
+		{"extra bearer value", http.MethodPost, controlStopPath, "Bearer secret extra", body, http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reporter := &stopCountingReporter{}
+			server := &controlServer{reporter: reporter, token: "secret", liveID: RuntimeRecord{InstanceID: "instance", AttemptID: "attempt"}}
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", test.authorization)
+			response := httptest.NewRecorder()
+			if test.path == controlStopPath {
+				server.handleStop(response, request)
+			} else {
+				server.handleStatus(response, request)
+			}
+			assert.Equal(t, test.code, response.Code, response.Body.String())
+			assert.Zero(t, reporter.stops.Load())
+		})
+	}
+}
+
 // stopCountingReporter counts the shutdown calls a stop request causes;
 // every refusal in this file must leave it at zero.
 type stopCountingReporter struct {
@@ -21,10 +54,20 @@ type stopCountingReporter struct {
 	stops   atomic.Int32
 }
 
-func (s *stopCountingReporter) Status() Status { return s.runtime.Status() }
+func (s *stopCountingReporter) Status() Status {
+	if s.runtime == nil {
+		return Status{}
+	}
+	return s.runtime.Status()
+}
 
 func (s *stopCountingReporter) RequestStop() <-chan struct{} {
 	s.stops.Add(1)
+	if s.runtime == nil {
+		accepted := make(chan struct{})
+		close(accepted)
+		return accepted
+	}
 	return s.runtime.RequestStop()
 }
 
@@ -104,9 +147,9 @@ func TestControlAuthenticationAndGeneration(t *testing.T) {
 	t.Run("status carries the model's shape", func(t *testing.T) {
 		status, err := client.Status(ctx)
 		require.NoError(t, err)
-		assert.Equal(t, record.InstanceID, status.InstanceID)
-		assert.Equal(t, "worker", status.Mode)
-		assert.Equal(t, ExecutionForeground, status.Execution)
+		assert.Equal(t, new(record.InstanceID), status.InstanceID)
+		assert.Equal(t, new("worker"), status.Mode)
+		assert.Equal(t, new(ExecutionForeground), status.Execution)
 		assert.Equal(t, RegistrationNotApplicable, status.Registration.State)
 		assert.Equal(t, ConnectionNotApplicable, status.Connection.State)
 		assert.Empty(t, status.Diagnostics)

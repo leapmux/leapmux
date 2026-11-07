@@ -84,6 +84,22 @@ func TestRecoveryRejectsChangedInputs(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	})
+	t.Run("a corrupted signature from the pinned key is refused", func(t *testing.T) {
+		challenge := issue(t, attempt.attemptID, key)
+		message := recoveryMessageBytes(attempt.attemptID, challenge.GetChallengeId(), challenge.GetNonce(), key)
+		signature, err := attempt.composite.SlhdsaPrivateKey.Sign(rand.Reader, message, nil)
+		require.NoError(t, err)
+		require.NotEmpty(t, signature)
+		signature[0] ^= 0xff
+		requestCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+key)
+		response, err := env.connectorClient.RecoverRegistration(requestCtx, &leapmuxv1.RecoverRegistrationRequest{
+			AttemptId: attempt.attemptID, ChallengeId: challenge.GetChallengeId(), Signature: signature,
+		})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		assert.Nil(t, response, "a rejected proof must not return credentials")
+	})
 
 	t.Run("the honest recovery still works after the refusals", func(t *testing.T) {
 		_, err := env.registerCall(t, ctx, key, attempt, false)
@@ -95,6 +111,14 @@ func TestRecoveryRejectsChangedInputs(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, resp.GetWorkerId())
 		assert.Equal(t, worker.AuthToken, resp.GetAuthToken())
+	})
+	t.Run("a replaced challenge requests a fresh proof", func(t *testing.T) {
+		stale := issue(t, attempt.attemptID, key)
+		_ = issue(t, attempt.attemptID, key)
+		response, err := recoverWith(t, stale, attempt, attempt.attemptID, key)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeAborted, connect.CodeOf(err))
+		assert.Nil(t, response)
 	})
 
 	// No refusal above replaced the token or minted a row.

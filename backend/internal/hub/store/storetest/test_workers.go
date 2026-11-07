@@ -16,6 +16,28 @@ import (
 )
 
 func (s *Suite) testWorkers(t *testing.T) {
+	t.Run("create accepts every empty registration digest", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "empty-digest-owner")
+		for _, bundled := range []bool{false, true} {
+			for _, digest := range [][]byte{nil, {}, make([]byte, 0, 32)} {
+				workerID := id.Generate()
+				require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
+					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+					AutoRegistered: bundled, PublicKeys: WorkerKeys(0x42), RegistrationKeyHash: digest,
+				}))
+				worker, err := st.Workers().GetByID(ctx, workerID)
+				require.NoError(t, err)
+				assert.Empty(t, worker.RegistrationAttemptID)
+				assert.Nil(t, worker.RegistrationKeyHash)
+				assert.Equal(t, bundled, worker.AutoRegistered)
+			}
+		}
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		assert.Len(t, page.Rows, 6, "absent attempt metadata must allow multiple workers")
+	})
+
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "worker-owner")
@@ -336,7 +358,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 
 		gone, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
-		require.NoError(t, err, "the lookup returns every state; each caller refuses a deleted row")
+		require.NoError(t, err, "the lookup returns every state; each caller decides how to handle a deleted row")
 		assert.Equal(t, worker.ID, gone.ID)
 		require.NotNil(t, gone.DeletedAt)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, gone.Status)

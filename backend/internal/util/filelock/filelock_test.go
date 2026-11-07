@@ -2,10 +2,13 @@ package filelock
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,8 +16,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // helperModeEnv and helperLockEnv parameterize the helper process the
@@ -29,101 +30,84 @@ const (
 // outlives it, and exits without releasing, so the parent test can ask
 // whether the child kept a copy.
 func TestHelperProcessFileLock(t *testing.T) {
-	if os.Getenv(helperModeEnv) != "hold-with-child" {
+	switch os.Getenv(helperModeEnv) {
+	case "outlive":
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		fmt.Printf("child %d %s\n", os.Getpid(), listener.Addr())
+		connection, err := listener.Accept()
+		if err == nil {
+			_ = connection.Close()
+		}
+		_ = listener.Close()
+		return
+	case "hold-with-child":
+	default:
 		return
 	}
-	f, err := Open(os.Getenv(helperLockEnv), true)
-	if err != nil {
-		fmt.Printf("failed: open: %v\n", err)
-		os.Exit(1)
-	}
-	held, err := TryLock(f)
-	if err != nil || !held {
-		fmt.Printf("failed: held=%v error=%v\n", held, err)
-		os.Exit(1)
-	}
-
-	// The child is a private executable the holder starts and leaves
-	// behind. Its own marker file says when it runs; no pipe to the
-	// holder keeps it alive.
-	dir, err := os.MkdirTemp("", "filelock-child-*")
-	if err != nil {
-		fmt.Printf("failed: temp: %v\n", err)
-		os.Exit(1)
-	}
-	marker := filepath.Join(dir, "started")
-	script := filepath.Join(dir, "outlive.sh")
-	testutil.WriteExecutable(t, script, "#!/bin/sh\necho started > "+marker+"\nsleep 30\n")
-	cmd := exec.Command(script)
-	require.NoError(t, cmd.Start())
-	waitForFile(t, marker)
-
-	fmt.Printf("ready %d %s\n", cmd.Process.Pid, dir)
-	// Return, not os.Exit: nothing below closes f, so the descriptor --
-	// and the lock, unless a child kept a copy -- ends with the process.
-}
-
-// waitForFile waits until path exists; the child's own write is the
-// signal, never a timed guess.
-func waitForFile(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the child never wrote %s", path)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// TestLockIsNotInherited pins the close-on-exec property across
-// processes: a holder starts a child executable through
-// testutil.WriteExecutable and exits; the child that still runs retains
-// no copy of the lock, so the next opener acquires it at once. The
-// agentdir tests keep their own inheritance coverage; this one belongs
-// to the extracted primitive.
-func TestLockIsNotInherited(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.lock")
-
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcessFileLock$")
-	cmd.Env = append(os.Environ(),
-		helperModeEnv+"=hold-with-child", helperLockEnv+"="+path)
-	stdout, err := cmd.StdoutPipe()
+	file, err := Open(os.Getenv(helperLockEnv), true)
 	require.NoError(t, err)
-	cmd.Stderr = os.Stderr
-	require.NoError(t, cmd.Start())
-
+	held, err := TryLock(file)
+	require.NoError(t, err)
+	require.True(t, held)
+	child := exec.Command(os.Args[0], "-test.run=^TestHelperProcessFileLock$")
+	child.Env = append(os.Environ(), helperModeEnv+"=outlive")
+	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	child.Stderr = os.Stderr
+	require.NoError(t, child.Start())
 	line, err := bufio.NewReader(stdout).ReadString('\n')
-	require.NoError(t, err, "the helper reports before it exits")
-	fields := strings.Fields(strings.TrimSpace(line))
-	require.Len(t, fields, 3, "the helper reports ready, its child's pid, and the child dir: %q", line)
+	if err != nil {
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+	}
+	require.NoError(t, err)
+	fields := strings.Fields(line)
+	require.Len(t, fields, 3)
+	require.Equal(t, "child", fields[0])
+	fmt.Printf("ready %s %s\n", fields[1], fields[2])
+	runtime.KeepAlive(file)
+}
+
+// The holder starts another Go process, observes its readiness, and exits.
+// The surviving child must not retain the holder's native lock handle.
+func TestLockIsNotInherited(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcessFileLock$")
+	command.Env = append(os.Environ(), helperModeEnv+"=hold-with-child", helperLockEnv+"="+path)
+	stdout, err := command.StdoutPipe()
+	require.NoError(t, err)
+	command.Stderr = os.Stderr
+	require.NoError(t, command.Start())
+	t.Cleanup(func() { _ = command.Process.Kill(); _, _ = command.Process.Wait() })
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err)
+	fields := strings.Fields(line)
+	require.Len(t, fields, 3, "the holder reports its surviving child's identity")
 	require.Equal(t, "ready", fields[0])
 	childPID, err := strconv.Atoi(fields[1])
 	require.NoError(t, err)
-	childDir := fields[2]
 	t.Cleanup(func() {
-		proc, findErr := os.FindProcess(childPID)
-		if findErr == nil {
-			_ = proc.Kill()
+		connection, dialErr := net.DialTimeout("tcp", fields[2], 30*time.Second)
+		if dialErr == nil {
+			_ = connection.Close()
 		}
-		_ = os.RemoveAll(childDir)
+		if process, findErr := os.FindProcess(childPID); findErr == nil {
+			_ = process.Kill()
+			_ = process.Release()
+		}
 	})
-
-	require.NoError(t, cmd.Wait(), "the holder exited by itself")
-
-	// The child still runs; the lock must already be free.
+	require.NoError(t, command.Wait())
+	require.NoError(t, ctx.Err())
 	after, err := Open(path, false)
 	require.NoError(t, err)
-	taken, lockErr := TryLock(after)
-	require.NoError(t, lockErr)
-	assert.True(t, taken,
-		"the child that the holder started retains no copy of the lock")
+	t.Cleanup(func() { _ = after.Close() })
+	taken, err := TryLock(after)
+	require.NoError(t, err)
+	assert.True(t, taken, "the surviving child retains no copy of the holder's lock")
 	require.NoError(t, Unlock(after))
-	require.NoError(t, after.Close())
 }
 
 // The lock is exclusive between two opens in one process, and a released

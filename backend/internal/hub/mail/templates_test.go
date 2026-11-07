@@ -113,7 +113,7 @@ func TestRenderer_AccountRecoveryEmail_Bytes(t *testing.T) {
 // TestRenderer_RegistrationInstructions_Bytes pins the worker
 // registration email's body byte-for-byte.
 func TestRenderer_RegistrationInstructions_Bytes(t *testing.T) {
-	const command = "leapmux worker --hub https://hub.example.com --registration-key abc123"
+	const command = "leapmux worker register --hub https://hub.example.com --registration-key abc123"
 	const hubURL = "https://hub.example.com"
 
 	r := mail.Renderer{BaseURL: func() string { return hubURL }}

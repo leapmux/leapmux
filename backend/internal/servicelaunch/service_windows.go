@@ -3,145 +3,120 @@
 package servicelaunch
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"os/exec"
-	"strings"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-// windowsServiceManager maintains the boot-mode definition: a Windows
-// service under the Service Control Manager, running as the selected
-// account. Login mode lives in the scheduled-task adapter.
+// windowsServiceManager owns boot configuration through native SCM calls.
+// Read/start/stop use the selected account's granted service access. Only
+// installation and removal enter the narrow administrator helper.
 type windowsServiceManager struct {
-	runSc func(ctx context.Context, args []string, escalated bool) ([]byte, error)
+	credential     credentialProvider
+	inspectService func(context.Context, LaunchSpec) (NativeStatus, error)
+	elevate        func(context.Context, nativeOperationRequest) error
+	startService   func(context.Context, LaunchSpec) error
+	stopService    func(context.Context, LaunchSpec) error
 }
 
 func newWindowsServiceManager() *windowsServiceManager {
-	return &windowsServiceManager{runSc: runScCommand}
+	return &windowsServiceManager{
+		credential:     readAccountPassword,
+		inspectService: inspectWindowsService,
+		elevate:        runElevatedOperation,
+		startService:   startWindowsService,
+		stopService:    stopWindowsService,
+	}
 }
 
-// runScCommand executes sc.exe directly; boot-mode configuration needs
-// the elevation the controller has already explained.
-func runScCommand(ctx context.Context, args []string, escalated bool) ([]byte, error) {
-	path := "sc.exe"
-	if escalated {
-		path = "powershell"
-		wrapped := append([]string{"-NoProfile", "-Command", "Start-Process", "-Verb", "RunAs", "-Wait", "-FilePath", "sc.exe"}, argsForStartProcess(args)...)
-		args = wrapped
-	}
-	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("sc %s: %w: %s", strings.Join(args, " "), err, out.String())
-	}
-	return out.Bytes(), nil
-}
-
-// argsForStartProcess renders sc args for the elevated wrapper.
-func argsForStartProcess(args []string) []string {
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		out = append(out, "-ArgumentList", a)
-	}
-	return out
-}
-
-// serviceName derives the service name from the instance identity.
 func serviceName(spec LaunchSpec) string {
-	return "leapmux-" + string(spec.Mode) + "-" + spec.InstanceID
+	return WindowsServiceName(spec.Mode, spec.InstanceID)
+}
+
+func windowsServiceArguments(spec LaunchSpec) []string {
+	return append([]string{WindowsServiceEntryFlag, serviceName(spec)}, spec.RunArguments()...)
+}
+
+func validateWindowsLaunch(ctx context.Context, spec LaunchSpec, startup lifecycle.StartupKind, environment bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	identity := spec
+	if !environment {
+		identity.EnvironmentFile = nil
+	}
+	if err := ValidateLaunchSpec(identity); err != nil {
+		return err
+	}
+	if spec.Startup != startup {
+		return fmt.Errorf("the native mechanism does not match the selected startup mode")
+	}
+	canonical, err := lifecycle.CanonicalDir(spec.DataDirectory)
+	if err != nil {
+		return err
+	}
+	if spec.AccountID != lifecycle.CurrentAccountID() || canonical != spec.DataDirectory || spec.InstanceID != lifecycle.NewInstanceID(spec.AccountID, spec.Mode, canonical).String() {
+		return fmt.Errorf("the native definition does not match this account and data directory")
+	}
+	return verifyWindowsAccount(spec)
 }
 
 func (m *windowsServiceManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeStatus, error) {
-	out, err := m.runSc(ctx, []string{"query", serviceName(spec)}, false)
-	if err != nil {
-		return NativeStatus{State: "not installed"}, nil
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+		return NativeStatus{}, err
 	}
-	status := NativeStatus{Installed: true, State: "installed"}
-	text := string(out)
-	if strings.Contains(text, "RUNNING") {
-		status.Running, status.State = true, "running"
-	}
-	if strings.Contains(text, "START_PENDING") {
-		status.State = "start-pending"
-	}
-	if strings.Contains(text, "STOP_PENDING") {
-		status.State = "stop-pending"
-	}
-	// The definition's shape comes from the qc read.
-	qc, qcErr := m.runSc(ctx, []string{"qc", serviceName(spec)}, false)
-	if qcErr == nil {
-		status.DefinitionMatches = definitionMatchesQc(string(qc), spec)
-	}
-	return status, nil
-}
-
-// definitionMatchesQc compares the configured binary path with the
-// spec's run command, the observable half of the definition.
-func definitionMatchesQc(qc string, spec LaunchSpec) bool {
-	want := strings.Join(append([]string{spec.Executable}, spec.RunArguments()...), " ")
-	return strings.Contains(strings.ToLower(qc), strings.ToLower(want))
+	return m.inspectService(ctx, spec)
 }
 
 func (m *windowsServiceManager) Install(ctx context.Context, spec LaunchSpec) error {
-	binPath := strings.Join(append([]string{spec.Executable}, spec.RunArguments()...), " ")
-	escalated := true
-	args := []string{"create", serviceName(spec), "binPath=", binPath, "start=", "auto", "obj=", accountSpelling(spec)}
-	if _, err := m.runSc(ctx, args, escalated); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, true); err != nil {
 		return err
 	}
-	return nil
-}
-
-// accountSpelling states the account the service runs as.
-func accountSpelling(spec LaunchSpec) string {
-	if strings.HasPrefix(spec.AccountID, "S-") {
-		return spec.AccountID
-	}
-	return spec.AccountName
+	return withAccountPassword(ctx, spec.AccountName, m.credential, func(password []byte) error {
+		return m.elevate(ctx, nativeOperationRequest{Operation: nativeInstallService, Spec: spec, Password: password})
+	})
 }
 
 func (m *windowsServiceManager) Start(ctx context.Context, spec LaunchSpec) error {
-	_, err := m.runSc(ctx, []string{"start", serviceName(spec)}, true)
-	return err
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, true); err != nil {
+		return err
+	}
+	return m.startService(ctx, spec)
 }
 
 func (m *windowsServiceManager) Stop(ctx context.Context, spec LaunchSpec) error {
-	_, err := m.runSc(ctx, []string{"stop", serviceName(spec)}, true)
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+		return err
+	}
+	err := m.stopService(ctx, spec)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return nil
+	}
 	return err
 }
 
 func (m *windowsServiceManager) Remove(ctx context.Context, spec LaunchSpec) error {
-	_, _ = m.runSc(ctx, []string{"stop", serviceName(spec)}, true)
-	_, err := m.runSc(ctx, []string{"delete", serviceName(spec)}, true)
-	return err
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+		return err
+	}
+	return m.elevate(ctx, nativeOperationRequest{Operation: nativeRemoveService, Spec: spec})
 }
 
 func (m *windowsServiceManager) Diagnose(ctx context.Context, spec LaunchSpec) ([]string, error) {
-	notes := []string{serviceName(spec)}
-	if out, err := m.runSc(ctx, []string{"qfailure", serviceName(spec)}, false); err == nil {
-		notes = append(notes, firstWindowsLines(string(out), 12)...)
-	} else {
-		notes = append(notes, "sc qfailure failed: "+err.Error())
+	status, err := m.Inspect(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	notes := []string{"Windows service: " + serviceName(spec), "Native state: " + status.State}
+	if status.Failure != "" {
+		notes = append(notes, status.Failure)
+	}
+	if !status.DefinitionMatches {
+		notes = append(notes, "The native definition differs from the saved specification; run enable to repair it.")
 	}
 	return notes, nil
-}
-
-// firstWindowsLines bounds a diagnostic excerpt.
-func firstWindowsLines(text string, n int) []string {
-	lines := strings.Split(strings.TrimSpace(text), "\r\n")
-	if len(lines) > n {
-		lines = lines[:n]
-	}
-	return lines
-}
-
-// startupMatches reports whether a spec's startup kind uses this
-// adapter.
-func startupMatches(spec LaunchSpec) bool {
-	return spec.Startup == lifecycle.StartupBoot
 }

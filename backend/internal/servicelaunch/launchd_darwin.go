@@ -5,10 +5,12 @@ package servicelaunch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/lifecycle"
@@ -23,8 +25,8 @@ type launchdManager struct {
 	// readFile and writeFile stand between the manager and the
 	// definition files; a test substitutes them.
 	readFile  func(path string) ([]byte, error)
-	writeFile func(path string, data []byte, mode os.FileMode) error
-	remove    func(path string) error
+	writeFile func(context.Context, LaunchSpec, string, []byte) error
+	remove    func(context.Context, LaunchSpec, string) error
 }
 
 // newLaunchdManager builds the production manager.
@@ -32,27 +34,45 @@ func newLaunchdManager() *launchdManager {
 	return &launchdManager{
 		runLaunchctl: runLaunchctlCommand,
 		readFile:     os.ReadFile,
-		writeFile:    os.WriteFile,
-		remove:       os.Remove,
+		writeFile:    publishNativeDefinition,
+		remove:       removeNativeDefinition,
 	}
 }
 
 // runLaunchctlCommand executes launchctl directly. No shell string is
 // built anywhere: arguments run as one argv.
 func runLaunchctlCommand(ctx context.Context, args []string, escalated bool) ([]byte, error) {
+	return runLaunchctlCommandWith(ctx, args, escalated, runNativeLaunchctl)
+}
+
+func runLaunchctlCommandWith(ctx context.Context, args []string, escalated bool, run func(context.Context, string, []string) ([]byte, error)) ([]byte, error) {
+	operation := ""
+	if len(args) > 0 {
+		operation = args[0]
+	}
 	path := "launchctl"
 	if escalated {
 		path = "/usr/bin/sudo"
 		args = append([]string{"/bin/launchctl"}, args...)
 	}
+	output, err := run(ctx, path, args)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 113 && (operation == "print" || operation == "bootout") {
+			return output, fmt.Errorf("launchctl: %w", errors.Join(os.ErrNotExist, err))
+		}
+		return output, fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, output)
+	}
+	return output, nil
+}
+
+func runNativeLaunchctl(ctx context.Context, path string, args []string) ([]byte, error) {
 	var out bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, out.String())
-	}
-	return out.Bytes(), nil
+	err := cmd.Run()
+	return out.Bytes(), err
 }
 
 // definitionPath names the plist: ~/Library/LaunchAgents for login
@@ -109,16 +129,6 @@ func (m *launchdManager) definitionPlist(spec LaunchSpec) []byte {
 	writeKey("WorkingDirectory")
 	writeString(spec.WorkingDirectory)
 
-	if len(spec.Environment()) > 0 || spec.EnvironmentFile != nil {
-		writeKey("EnvironmentVariables")
-		b.WriteString("\t<dict>\n")
-		for _, entry := range spec.Environment() {
-			name, value, _ := strings.Cut(entry, "=")
-			fmt.Fprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", xmlEscape(name), xmlEscape(value))
-		}
-		b.WriteString("\t</dict>\n")
-	}
-
 	if spec.Startup == lifecycle.StartupBoot {
 		// The LaunchDaemon runs as the SELECTED account, not as root.
 		writeKey("UserName")
@@ -150,31 +160,57 @@ func (m *launchdManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeSt
 		return NativeStatus{}, err
 	}
 	data, readErr := m.readFile(path)
-	if readErr != nil {
-		if os.IsNotExist(readErr) {
-			return NativeStatus{State: "not installed"}, nil
-		}
+	if readErr != nil && !os.IsNotExist(readErr) {
 		return NativeStatus{}, readErr
 	}
 	status := NativeStatus{
-		Installed:         true,
-		DefinitionMatches: bytes.Equal(data, m.definitionPlist(spec)),
+		Installed:         readErr == nil,
+		DefinitionMatches: readErr == nil && bytes.Equal(data, m.definitionPlist(spec)),
 		State:             "installed",
 	}
-	// A login job's state lives in the account's GUI domain; a daemon's
-	// in the system domain.
-	out, listErr := m.runLaunchctl(ctx, []string{"print", "gui/" + spec.AccountID + "/" + launchdLabel(spec)}, false)
-	if listErr != nil {
-		out, listErr = m.runLaunchctl(ctx, []string{"print", "system/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
+	if !status.Installed {
+		status.State = "not installed"
+	}
+	domain := launchdDomain(spec)
+	disabled, err := m.runLaunchctl(ctx, []string{"print-disabled", domain}, false)
+	if err != nil {
+		return NativeStatus{}, err
+	}
+	if strings.Contains(string(disabled), `"`+launchdLabel(spec)+`" => true`) {
+		status.DefinitionMatches = false
+		status.State = "disabled"
+	}
+	out, listErr := m.runLaunchctl(ctx, []string{"print", domain + "/" + launchdLabel(spec)}, false)
+	if listErr != nil && !errors.Is(listErr, os.ErrNotExist) {
+		return NativeStatus{}, listErr
 	}
 	if listErr == nil {
-		text := string(out)
-		if strings.Contains(text, "state = running") {
-			status.Running = true
-			status.State = "running"
+		for _, line := range strings.Split(string(out), "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), " = ")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "state":
+				status.State = value
+				status.Running = value == "running" || value == "spawn scheduled" || value == "spawning"
+			case "pid":
+				status.PID, err = strconv.Atoi(value)
+				if err != nil || status.PID <= 0 {
+					return NativeStatus{}, fmt.Errorf("launchd returned an invalid process identifier")
+				}
+			case "last exit code", "last terminating signal":
+				if value != "0" && value != "(never exited)" {
+					status.Failure = key + ": " + value
+				}
+			}
 		}
 	}
 	return status, nil
+}
+
+func (*launchdManager) AuthorizeStart(ctx context.Context, spec LaunchSpec) error {
+	return authorizeNativeStart(ctx, spec)
 }
 
 func (m *launchdManager) Install(ctx context.Context, spec LaunchSpec) error {
@@ -182,19 +218,15 @@ func (m *launchdManager) Install(ctx context.Context, spec LaunchSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("servicelaunch: create the definition directory: %w", err)
-	}
 	// The definition is written WITHOUT loading it: `enable` configures
 	// without starting, and launchd loads nothing until `start` says so.
 	// RunAtLoad in the file is inert until the job is loaded.
-	if err := m.writeFile(path, m.definitionPlist(spec), 0o644); err != nil {
+	if err := m.writeFile(ctx, spec, path, m.definitionPlist(spec)); err != nil {
 		return fmt.Errorf("servicelaunch: write the definition: %w", err)
 	}
-	// Explicitly disable any previously-loaded job with this label, so
-	// enable never leaves an earlier definition armed.
-	_, _ = m.runLaunchctl(ctx, []string{"disable", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
-	return nil
+	// Enabling clears a persistent disabled override without loading the job.
+	_, err = m.runLaunchctl(ctx, []string{"enable", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
+	return err
 }
 
 // launchdDomain names the target domain of the job.
@@ -206,20 +238,33 @@ func launchdDomain(spec LaunchSpec) string {
 }
 
 func (m *launchdManager) Start(ctx context.Context, spec LaunchSpec) error {
-	if _, err := m.runLaunchctl(ctx, []string{"bootstrap", launchdDomain(spec), mustDefinitionPath(m, spec)}, spec.Startup == lifecycle.StartupBoot); err != nil {
-		// An already-bootstrapped job takes the kickstart path.
-		if _, kickErr := m.runLaunchctl(ctx, []string{"kickstart", "-k", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot); kickErr != nil {
-			return err
-		}
+	status, err := m.Inspect(ctx, spec)
+	if err != nil {
+		return err
 	}
-	return nil
+	if status.Running {
+		return fmt.Errorf("servicelaunch: the launchd job is already running")
+	}
+	if !status.Installed || !status.DefinitionMatches {
+		return fmt.Errorf("servicelaunch: repair the launchd definition with enable before starting")
+	}
+	// A stopped job can retain the old loaded definition after its file
+	// changes. Unload it before bootstrapping the saved replacement.
+	if err := m.Stop(ctx, spec); err != nil {
+		return err
+	}
+	_, err = m.runLaunchctl(ctx, []string{"bootstrap", launchdDomain(spec), mustDefinitionPath(m, spec)}, spec.Startup == lifecycle.StartupBoot)
+	return err
 }
 
 func (m *launchdManager) Stop(ctx context.Context, spec LaunchSpec) error {
 	// bootout ends the running job while the DEFINITION file stays for
 	// the next login or boot.
-	_, _ = m.runLaunchctl(ctx, []string{"bootout", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
-	return nil
+	_, err := m.runLaunchctl(ctx, []string{"bootout", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (m *launchdManager) Remove(ctx context.Context, spec LaunchSpec) error {
@@ -230,7 +275,7 @@ func (m *launchdManager) Remove(ctx context.Context, spec LaunchSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := m.remove(path); err != nil && !os.IsNotExist(err) {
+	if err := m.remove(ctx, spec, path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("servicelaunch: remove the definition: %w", err)
 	}
 	return nil
@@ -240,7 +285,7 @@ func (m *launchdManager) Diagnose(ctx context.Context, spec LaunchSpec) ([]strin
 	notes := []string{
 		fmt.Sprintf("the definition is %s", mustDefinitionPath(m, spec)),
 	}
-	if out, err := m.runLaunchctl(ctx, []string{"print", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot); err == nil {
+	if out, err := m.runLaunchctl(ctx, []string{"print", launchdDomain(spec) + "/" + launchdLabel(spec)}, false); err == nil {
 		notes = append(notes, firstLines(string(out), 12)...)
 	} else {
 		notes = append(notes, "launchctl print failed: "+err.Error())

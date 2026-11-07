@@ -1,10 +1,13 @@
 package servicelaunch
 
 import (
+	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +59,92 @@ func TestLastSessionControlsShutdown(t *testing.T) {
 		require.False(t, mayStop, "an unreadable session list must not stop a login instance")
 		assert.Contains(t, reason, "never")
 	})
+}
+
+type sessionMonitorFunc func(AccountRef) ([]Session, error)
+
+func (f sessionMonitorFunc) Sessions(account AccountRef) ([]Session, error) { return f(account) }
+
+func TestLoginSupervisorWaitsForLastSession(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	created := clock.Trap().NewTicker(loginSessionPollTag)
+	defer created.Close()
+	observed := make(chan int, 8)
+	var calls atomic.Int32
+	monitor := sessionMonitorFunc(func(account AccountRef) ([]Session, error) {
+		require.Equal(t, AccountRef{ID: "501", Name: "user"}, account)
+		call := int(calls.Add(1))
+		observed <- call
+		switch call {
+		case 1:
+			return []Session{{ID: "first", Kind: SessionInteractive}, {ID: "second", Kind: SessionInteractive}}, nil
+		case 2, 3:
+			return []Session{{ID: "second", Kind: SessionInteractive}}, nil // First logout, then screen lock.
+		case 4:
+			return []Session{{ID: "second", Kind: SessionDisconnected}}, nil
+		case 5:
+			return nil, assert.AnError
+		default:
+			return nil, nil
+		}
+	})
+	reported := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- WatchLoginSessions(ctx, monitor, AccountRef{ID: "501", Name: "user"}, clock, func(err error) { reported <- err })
+	}()
+	created.MustWait(ctx).MustRelease(ctx)
+	for call := 1; call <= 6; call++ {
+		select {
+		case got := <-observed:
+			require.Equal(t, call, got)
+		case <-ctx.Done():
+			t.Fatal("session supervisor did not enumerate")
+		}
+		if call < 6 {
+			select {
+			case err := <-done:
+				t.Fatalf("supervisor ended before final logout: %v", err)
+			default:
+			}
+			clock.Advance(time.Second).MustWait(ctx)
+		}
+	}
+	select {
+	case err := <-reported:
+		require.ErrorIs(t, err, assert.AnError)
+	case <-ctx.Done():
+		t.Fatal("enumeration error was not reported")
+	}
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("final logout did not end supervision")
+	}
+}
+
+func TestLoginSupervisorCancellation(t *testing.T) {
+	waitCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(waitCtx)
+	clock := testutil.NewQuartzMock(t)
+	created := clock.Trap().NewTicker(loginSessionPollTag)
+	defer created.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- WatchLoginSessions(ctx, sessionMonitorFunc(func(AccountRef) ([]Session, error) {
+			return []Session{{Kind: SessionInteractive}}, nil
+		}), AccountRef{}, clock, nil)
+	}()
+	created.MustWait(ctx).MustRelease(ctx)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-waitCtx.Done():
+		t.Fatal("supervisor did not join cancellation")
+	}
 }
 
 // SessionKind.Applicable is exactly the interactive-and-disconnected

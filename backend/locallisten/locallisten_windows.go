@@ -83,21 +83,10 @@ type npipeListener struct {
 // Close stops the listener. It starts another close every retryInterval that
 // the close before it does not return.
 //
-// The retry works around https://github.com/microsoft/go-winio/issues/85, open
-// since 2018 and unfixed in v0.6.2, the newest release. The fix for it,
-// https://github.com/microsoft/go-winio/pull/369, is open and unmerged. Delete
-// this retry once a release carries that fix.
-//
-// The defect leaves a close blocked forever. winio's Close sends ONE token on
-// the listener's private closeCh and then waits for doneCh. The token usually
-// reaches the listener routine's own select, which stops the routine and closes
-// doneCh. An accept that is already in flight takes the token first, in
-// makeConnectedServerPipe, and THAT path rewrites the aborted connect's error to
-// ErrPipeListenerClosed only when the connect returned nil or ErrFileClosed. Any
-// other result -- the ERROR_NO_DATA that a connect-and-close client leaves
-// behind, for example -- goes back to the routine, which computes
-// "closed = err == ErrPipeListenerClosed", reads false, and continues to run.
-// doneCh stays open, and the token that would have stopped the routine is spent.
+// go-winio v0.6.4 fixes the lost-close race tracked by
+// https://github.com/microsoft/go-winio/issues/85. The wrapper still caps the
+// wait for the underlying listener and tracks accepted connections, including
+// listeners supplied by callers and test doubles.
 // See pipe.go lines 440 to 485 of go-winio v0.6.2.
 //
 // A later token stops the routine from either state that it parks in. The

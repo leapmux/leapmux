@@ -75,9 +75,9 @@ func ResolveStartupConcurrency(n int) int {
 type Config struct {
 	HubURL string `koanf:"hub" json:"hub_url"`
 	// RegistrationKey is the bearer credential the worker presents to
-	// WorkerConnectorService.Register. Required on first run. A worker that
-	// already has saved credentials refuses to start while it is set. Not
-	// persisted.
+	// WorkerConnectorService.Register during explicit registration. The private
+	// pending-registration.json record retains it until recovery and durable
+	// credential publication complete. Runtime commands do not register.
 	RegistrationKey      string `koanf:"registration_key" json:"-"`
 	Name                 string `koanf:"name" json:"name"`
 	DataDir              string `koanf:"data_dir" json:"data_dir"`
@@ -254,12 +254,22 @@ func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, err
 	return ck, true, nil
 }
 
+// LoadOptions supplies flags and configuration hooks for a command.
+type LoadOptions struct {
+	ConfigureFlags func(*flag.FlagSet)
+	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
+	AfterFlagsParsed func(*flag.FlagSet) error
+}
+
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.
 // Returns the config, whether -version was requested, and any error.
 func Load(args []string) (*Config, bool, error) {
-	// Pre-scan for -config flag.
-	configPath := internalconfig.ExtractConfigFlag(args, defaultConfigFile)
+	return LoadWithOptions(args, LoadOptions{})
+}
 
+// LoadWithOptions parses mode flags and caller-owned command flags together.
+// Only mode flags enter the configuration values.
+func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Define CLI flags.
 	fs := flag.NewFlagSet("leapmux worker", flag.ContinueOnError)
 	fs.String("config", defaultConfigFile, "path to config file")
@@ -303,6 +313,9 @@ func Load(args []string) (*Config, bool, error) {
 		"db-cache-size":             "SQLite database options",
 		"db-mmap-size":              "SQLite database options",
 	}
+	if opts.ConfigureFlags != nil {
+		opts.ConfigureFlags(fs)
+	}
 	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
 	}
@@ -310,6 +323,12 @@ func Load(args []string) (*Config, bool, error) {
 	if *showVersion {
 		return nil, true, nil
 	}
+	if opts.AfterFlagsParsed != nil {
+		if err := opts.AfterFlagsParsed(fs); err != nil {
+			return nil, false, err
+		}
+	}
+	configPath := fs.Lookup("config").Value.String()
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
@@ -450,13 +469,25 @@ func (c *Config) LoadState() (*State, error) {
 // These operations remove accessible files; they do not promise physical
 // secure erasure.
 func RemoveSensitiveRecord(path string) error {
-	removeErr := os.Remove(path)
+	return removeSensitiveRecord(path, os.Remove, atomicfile.RemoveTempFiles, atomicfile.SyncDirectory)
+}
+
+func removeSensitiveRecord(path string, remove func(string) error, removeCopies func(string) error, syncDirectory func(string) error) error {
+	removeErr := remove(path)
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		removeErr = fmt.Errorf("remove %s: %w", path, removeErr)
 	} else if removeErr != nil {
 		removeErr = nil
 	}
-	return errors.Join(removeErr, atomicfile.RemoveTempFiles(path))
+	copiesErr := removeCopies(path)
+	syncErr := syncDirectory(filepath.Dir(path))
+	if errors.Is(syncErr, os.ErrNotExist) {
+		syncErr = nil
+	}
+	if syncErr != nil {
+		syncErr = fmt.Errorf("confirm removal of %s: %w", path, syncErr)
+	}
+	return errors.Join(removeErr, copiesErr, syncErr)
 }
 
 // ClearState removes the persisted credentials and every interrupted

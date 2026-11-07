@@ -76,11 +76,12 @@ func (s *registrationChallengeStore) Issue(attemptID string) (id string, nonce [
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictExpiredLocked(now)
-	if len(s.byID) >= maxOutstandingRegistrationChallenges {
+	previous := s.byAttempt[attemptID]
+	if previous == nil && len(s.byID) >= maxOutstandingRegistrationChallenges {
 		return "", nil, time.Time{}, errChallengeCapacity
 	}
 	challenge := &registrationChallenge{attemptID: attemptID, id: id, nonce: nonce, expiresAt: expiresAt}
-	if previous, ok := s.byAttempt[attemptID]; ok {
+	if previous != nil {
 		delete(s.byID, previous.id)
 	}
 	s.byAttempt[attemptID] = challenge

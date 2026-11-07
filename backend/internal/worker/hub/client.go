@@ -819,7 +819,7 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 			// so the retries that follow do not repeat this record.
 			if bareUnauthenticated == bareUnauthenticatedRemedyThreshold {
 				slog.Error("the hub does not know this worker's token. "+
-					"Check --hub and any proxy in front of the hub. "+
+					"Check the saved Hub endpoint and any proxy in front of the Hub. "+
 					"If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.",
 					"refusals", bareUnauthenticated, "error", err)
 			}

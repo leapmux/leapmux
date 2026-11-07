@@ -89,7 +89,7 @@ Treat `encryption.key` as a top-grade secret. There is no master-password or HSM
 There is nothing to configure to turn encryption on. Running the Hub once is enough:
 
 ```bash
-leapmux hub
+leapmux hub run
 # On first start, the Hub generates ~/.config/leapmux/hub/encryption.key
 # and logs that it loaded the keystore, with the active version and the
 # number of retained versions.
@@ -287,7 +287,7 @@ For each Worker:
 4. `worker.db` is transient agent/session state. It is not a secret, but back it up if you want to preserve agent transcripts and terminal history across a rebuild.
 
 {{< callout >}}
-A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json`.
+A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json` and any `pending-registration.json`. The pending file holds private key material needed to recover a registration after a lost response. Keep it until registration succeeds.
 {{< /callout >}}
 
 ### Restore

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -158,7 +160,7 @@ func TestConfigurationFailureIsRepairable(t *testing.T) {
 		change, err := c.Preview(context.Background(), spec)
 		require.NoError(t, err)
 		assert.False(t, change.RequiresElevation, "login startup on this account needs no elevation")
-		assert.Contains(t, change.NativeSummary, "launchd user agent")
+		assert.Contains(t, change.NativeSummary, "LaunchAgent")
 		assert.NotEmpty(t, change.Changes)
 
 		spec.Startup = lifecycle.StartupBoot
@@ -178,4 +180,191 @@ func TestConfigurationFailureIsRepairable(t *testing.T) {
 		_, err := c.ReadSpec()
 		assert.ErrorIs(t, err, os.ErrNotExist, "the saved specification is gone")
 	})
+}
+
+func TestConfigurationValidationPrecedesPublication(t *testing.T) {
+	t.Run("invalid preview returns an error without panic", func(t *testing.T) {
+		manager := &recordingManager{}
+		controller, _ := newTestController(t, manager)
+		invalid := testSpec()
+		invalid.Executable = ""
+		require.NotPanics(t, func() {
+			_, err := controller.Preview(t.Context(), invalid)
+			require.Error(t, err)
+		})
+		assert.Empty(t, manager.recorded())
+	})
+	t.Run("invalid saved record is explicit repair input", func(t *testing.T) {
+		manager := &recordingManager{}
+		controller, _ := newTestController(t, manager)
+		invalid := testSpec()
+		invalid.Startup = "invalid"
+		require.NoError(t, controller.SaveSpec(invalid))
+		require.NotPanics(t, func() {
+			change, err := controller.Preview(t.Context(), testSpec())
+			require.NoError(t, err)
+			assert.Contains(t, strings.Join(change.Changes, "\n"), "Repair")
+		})
+		assert.Empty(t, manager.recorded())
+	})
+	t.Run("invalid apply preserves the saved specification", func(t *testing.T) {
+		manager := &recordingManager{}
+		controller, saved := newTestController(t, manager)
+		original := testSpec()
+		require.NoError(t, controller.SaveSpec(original))
+		invalid := original
+		invalid.Executable = "relative"
+		require.Error(t, controller.Apply(t.Context(), invalid))
+		assert.Equal(t, original, *saved)
+		assert.Empty(t, manager.recorded())
+	})
+	t.Run("canceled apply changes nothing", func(t *testing.T) {
+		manager := &recordingManager{}
+		controller, saved := newTestController(t, manager)
+		original := testSpec()
+		require.NoError(t, controller.SaveSpec(original))
+		changed := original
+		changed.Executable = "/another/leapmux"
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, controller.Apply(ctx, changed), context.Canceled)
+		assert.Equal(t, original, *saved)
+		assert.Empty(t, manager.recorded())
+	})
+}
+
+func TestStartupModeChangeIsRecoverable(t *testing.T) {
+	for _, startup := range []lifecycle.StartupKind{lifecycle.StartupLogin, lifecycle.StartupBoot} {
+		for _, failure := range []string{"remove", "save", "install", "running", "none"} {
+			t.Run(string(startup)+"/"+failure, func(t *testing.T) {
+				manager := &recordingManager{}
+				controller, saved := newTestController(t, manager)
+				old := testSpec()
+				old.Startup = startup
+				require.NoError(t, controller.SaveSpec(old))
+				desired := old
+				desired.Startup = lifecycle.StartupBoot
+				if startup == lifecycle.StartupBoot {
+					desired.Startup = lifecycle.StartupLogin
+				}
+				fault := errors.New("configuration fault")
+				switch failure {
+				case "remove":
+					manager.removeErr = fault
+				case "save":
+					controller.SaveSpec = func(lifecycle.ServiceSpec) error { return fault }
+				case "install":
+					manager.installErr = fault
+				case "running":
+					manager.inspectResult = NativeStatus{Installed: true, Running: true}
+				}
+				err := controller.Apply(t.Context(), desired)
+				if failure == "none" {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+				if failure == "remove" || failure == "save" || failure == "running" {
+					assert.Equal(t, old, *saved)
+					assert.NotContains(t, manager.recorded(), "install")
+				} else {
+					assert.Equal(t, desired, *saved)
+					assert.Equal(t, []string{"inspect", "remove", "install"}, manager.recorded())
+				}
+			})
+		}
+	}
+}
+
+func TestRemoveDoesNotRequireRuntimeEnvironmentFile(t *testing.T) {
+	manager := &recordingManager{}
+	controller, _ := newTestController(t, manager)
+	spec := testSpec()
+	missing := filepath.Join(t.TempDir(), "removed-environment.yaml")
+	spec.EnvironmentFile = &missing
+	require.NoError(t, controller.SaveSpec(spec))
+	require.NoError(t, controller.Remove(t.Context()))
+	assert.Equal(t, []string{"inspect", "remove"}, manager.recorded())
+	_, err := controller.ReadSpec()
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRemovePreservesConfigurationWithoutProofNativeProcessStopped(t *testing.T) {
+	for _, scenario := range []string{"starting", "query failure", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			manager := &recordingManager{}
+			controller, saved := newTestController(t, manager)
+			original := testSpec()
+			require.NoError(t, controller.SaveSpec(original))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch scenario {
+			case "starting":
+				manager.inspectResult = NativeStatus{Installed: true, Running: true, State: "start-pending"}
+			case "query failure":
+				manager.inspectErr = assert.AnError
+			case "canceled":
+				cancel()
+			}
+			err := controller.Remove(ctx)
+			require.Error(t, err)
+			if scenario == "starting" {
+				assert.Contains(t, err.Error(), "stop")
+			}
+			if scenario == "query failure" {
+				assert.ErrorIs(t, err, assert.AnError)
+			}
+			if scenario == "canceled" {
+				assert.ErrorIs(t, err, context.Canceled)
+			}
+			assert.NotContains(t, manager.recorded(), "remove")
+			assert.Equal(t, original, *saved)
+		})
+	}
+}
+
+func TestApplyRefusesLiveNativeConfigurationChange(t *testing.T) {
+	manager := &recordingManager{inspectResult: NativeStatus{Installed: true, Running: true}}
+	controller, saved := newTestController(t, manager)
+	original := testSpec()
+	require.NoError(t, controller.SaveSpec(original))
+	desired := original
+	desired.RuntimeArguments = []string{"--log-level", "debug"}
+	require.ErrorContains(t, controller.Apply(t.Context(), desired), "stop")
+	assert.Equal(t, original, *saved)
+	assert.Equal(t, []string{"inspect"}, manager.recorded())
+}
+
+func TestPreviewDescribesSelectedNativeMechanism(t *testing.T) {
+	for _, test := range []struct {
+		platform  string
+		startup   lifecycle.StartupKind
+		mechanism string
+	}{
+		{"darwin", lifecycle.StartupLogin, "LaunchAgent"}, {"darwin", lifecycle.StartupBoot, "LaunchDaemon"},
+		{"linux", lifecycle.StartupLogin, "systemd user service"}, {"linux", lifecycle.StartupBoot, "systemd system service"},
+		{"windows", lifecycle.StartupLogin, "noninteractive scheduled task"}, {"windows", lifecycle.StartupBoot, "Windows service"},
+	} {
+		t.Run(test.platform+"/"+string(test.startup), func(t *testing.T) {
+			controller, _ := newTestController(t, &recordingManager{})
+			controller.Platform = test.platform
+			spec := testSpec()
+			spec.Startup = test.startup
+			change, err := controller.Preview(t.Context(), spec)
+			require.NoError(t, err)
+			assert.Contains(t, change.NativeSummary, test.mechanism)
+			preview := strings.Join(change.Changes, "\n")
+			assert.Contains(t, preview, spec.InstanceID)
+			assert.Contains(t, preview, spec.WorkingDirectory)
+			assert.Contains(t, preview, spec.AccountID)
+			if test.platform == "windows" {
+				assert.Contains(t, preview, "password")
+				if test.startup == lifecycle.StartupLogin {
+					assert.Contains(t, preview, "batch")
+				} else {
+					assert.Contains(t, change.ElevationReason, "service")
+				}
+			}
+		})
+	}
 }

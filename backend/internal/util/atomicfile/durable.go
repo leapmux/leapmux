@@ -2,6 +2,10 @@ package atomicfile
 
 import "os"
 
+// SyncDirectory confirms directory-entry changes on platforms that require a
+// directory barrier. Windows uses its native publication operations instead.
+func SyncDirectory(path string) error { return ops.syncDir(path) }
+
 // WriteFileDurable writes data to path with the same all-or-nothing
 // replacement WriteFile provides, and additionally reports success only
 // after the platform's documented persistence operations complete: the

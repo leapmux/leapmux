@@ -3,68 +3,83 @@
 package servicelaunch
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+	"golang.org/x/term"
 )
 
-// CredentialOutcome states what installing or repairing a service
-// account's credentials produced.
-type CredentialOutcome struct {
-	// Updated reports the credential was accepted.
-	Updated bool
-	// Reason explains a refusal the native API reported, with the
-	// logon-right class named where the system states it.
-	Reason string
+// readAccountPassword uses the console's protected input mode. The native
+// installer receives the value in memory; no process argument carries it.
+func readAccountPassword(ctx context.Context, account string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf("configure startup interactively to enter the password for %s", account)
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "Password for %s (LeapMux does not store it): ", account); err != nil {
+		return nil, err
+	}
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	_, outputErr := fmt.Fprintln(os.Stdout)
+	if err != nil || outputErr != nil || ctx.Err() != nil {
+		clear(password)
+		return nil, errors.Join(err, outputErr, ctx.Err())
+	}
+	return password, nil
 }
 
-// RepairServiceCredential submits the account's current password to the
-// native service or task API. The password reaches the native call
-// only -- never the saved specification, never a log line, never an
-// argument the process table can show.
-func RepairServiceCredential(account, password string) CredentialOutcome {
-	// The schtasks /rp parameter and the service's object credential
-	// both go through the callers; this seam exists so the CLI can
-	// report the native refusal classes by name.
-	if password == "" {
-		return CredentialOutcome{Reason: "the account's password is required for a noninteractive logon task"}
-	}
-	err := validateLogonRight(account)
+var credentialDLL = windows.NewLazySystemDLL("advapi32.dll")
+var readNativeCredential = credentialDLL.NewProc("CredReadW")
+var freeNativeCredential = credentialDLL.NewProc("CredFree")
+
+// nativeCredential follows CREDENTIALW. Generic credential entries used by
+// the native acceptance fixture contain a UTF-16LE password and account name.
+type nativeCredential struct {
+	Flags          uint32
+	Type           uint32
+	TargetName     *uint16
+	Comment        *uint16
+	LastWritten    windows.Filetime
+	BlobSize       uint32
+	Blob           *byte
+	Persist        uint32
+	AttributeCount uint32
+	Attributes     uintptr
+	TargetAlias    *uint16
+	Username       *uint16
+}
+
+func passwordFromCredentialStore(reference, accountID string) ([]byte, error) {
+	target, err := windows.UTF16PtrFromString(reference)
 	if err != nil {
-		return CredentialOutcome{Reason: err.Error()}
+		return nil, err
 	}
-	return CredentialOutcome{Updated: true}
-}
-
-// validateLogonRight checks the batch-logon right the noninteractive
-// task needs, by the error class the native API reports for its
-// absence.
-func validateLogonRight(account string) error {
-	// The right check rides the first native create; the classes the
-	// API reports distinguish a wrong password, a changed one, an
-	// expired one, and a missing right.
-	var err error
-	_ = err
-	if account == "" {
-		return fmt.Errorf("the task's account is required")
+	var credential *nativeCredential
+	success, _, nativeErr := readNativeCredential.Call(uintptr(unsafe.Pointer(target)), 1, 0, uintptr(unsafe.Pointer(&credential)))
+	if success == 0 {
+		return nil, fmt.Errorf("read the Windows credential store: %w", windowsCallFailure(nativeErr))
 	}
-	return nil
-}
-
-// credentialErrorClass names the native failure classes the CLI
-// explains: wrong, changed, or expired password, and the missing
-// batch-logon right. The codes come from the LSA and the scheduler's
-// own reporting.
-func credentialErrorClass(err error) string {
-	var coder interface{ ErrorCode() uintptr }
-	if errors.As(err, &coder) {
-		switch coder.ErrorCode() {
-		case 1326: // ERROR_LOGON_FAILURE
-			return "the password is wrong"
-		case 1907: // ERROR_PASSWORD_EXPIRED
-			return "the password has expired"
-		case 1385: // ERROR_LOGON_TYPE_NOT_GRANTED
-			return "the account lacks the batch logon right the noninteractive task needs"
-		}
+	if credential == nil {
+		return nil, fmt.Errorf("Windows returned no stored credential")
 	}
-	return "the credential was refused"
+	defer func() { _, _, _ = freeNativeCredential.Call(uintptr(unsafe.Pointer(credential))) }()
+	if credential.Type != 1 || credential.Blob == nil || credential.BlobSize == 0 || credential.BlobSize > 2560 || credential.BlobSize%2 != 0 {
+		return nil, fmt.Errorf("the stored credential must contain a UTF-16LE password")
+	}
+	blob := unsafe.Slice(credential.Blob, int(credential.BlobSize))
+	defer clear(blob)
+	sid, _, _, err := windows.LookupSID("", windows.UTF16PtrToString(credential.Username))
+	if err != nil {
+		return nil, fmt.Errorf("resolve the stored credential account: %w", err)
+	}
+	if sid.String() != accountID {
+		return nil, fmt.Errorf("the stored credential belongs to another account")
+	}
+	return decodeStoredPassword(blob)
 }

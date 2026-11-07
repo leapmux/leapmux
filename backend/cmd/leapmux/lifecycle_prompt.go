@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -15,22 +18,30 @@ import (
 // A noninteractive command that needs missing information fails with
 // the exact options it needs instead.
 
-// say writes one prompt line; a failed write surfaces at the read
-// that follows, where the answer cannot arrive either.
-func say(out io.Writer, text string) {
-	_, _ = fmt.Fprint(out, text)
+// writeSetupText requires the complete explanation before setup can proceed.
+func writeSetupText(out io.Writer, text string) error {
+	written, err := io.WriteString(out, text)
+	if err == nil && written < len(text) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return fmt.Errorf("display the startup configuration: %w", err)
+	}
+	return nil
 }
 
 // promptStartupChoice shows the startup choice. Login startup is the
 // default for a new configuration.
 func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, error) {
-	say(out, "\nWhen should LeapMux start automatically?\n\n")
-	say(out, "  1. When you log in\n")
-	say(out, "     Runs as your account.\n")
-	say(out, "     Stops after your last applicable login session ends.\n\n")
-	say(out, "  2. When the computer starts\n")
-	say(out, "     Runs as your account even while you are logged out.\n\n")
-	say(out, "Choose [1]: ")
+	if err := writeSetupText(out, "\nWhen should LeapMux start automatically?\n\n"+
+		"  1. When you log in\n"+
+		"     Runs as your account.\n"+
+		"     Stops after your last applicable login session ends.\n\n"+
+		"  2. When the computer starts\n"+
+		"     Runs as your account even while you are logged out.\n\n"+
+		"Choose [1]: "); err != nil {
+		return "", err
+	}
 
 	line, err := readTrimmedLine(in)
 	if err != nil {
@@ -50,7 +61,9 @@ func promptStartupChoice(out io.Writer, in io.Reader) (lifecycle.StartupKind, er
 
 // promptApply asks for the y/N consent after the preview.
 func promptApply(out io.Writer, in io.Reader) (bool, error) {
-	say(out, "\nApply this configuration? [y/N]: ")
+	if err := writeSetupText(out, "\nApply this configuration? [y/N]: "); err != nil {
+		return false, err
+	}
 	line, err := readTrimmedLine(in)
 	if err != nil {
 		// End of input declines the configuration.
@@ -69,8 +82,16 @@ func promptApply(out io.Writer, in io.Reader) (bool, error) {
 func readTrimmedLine(in io.Reader) (string, error) {
 	reader := bufio.NewReader(in)
 	line, err := reader.ReadString('\n')
-	if err != nil && line == "" {
+	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// requireInteractiveInput refuses missing setup options before reading a pipe.
+func requireInteractiveInput(missingOptions ...string) error {
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil
+	}
+	return fmt.Errorf("noninteractive setup requires %s", strings.Join(missingOptions, " and "))
 }

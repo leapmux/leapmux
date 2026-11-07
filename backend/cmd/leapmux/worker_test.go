@@ -25,7 +25,50 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/lifecycle"
 )
+
+func TestRejectedStandaloneWorkerReleasesDirectory(t *testing.T) {
+	for _, launcher := range []string{"standalone", "foreground"} {
+		for _, scenario := range []string{"missing", "malformed", "missing keys", "invalid keys", "invalid endpoint"} {
+			t.Run(launcher+"/"+scenario, func(t *testing.T) {
+				dataDir := t.TempDir()
+				switch scenario {
+				case "malformed":
+					require.NoError(t, os.WriteFile(filepath.Join(dataDir, "state.json"), []byte("invalid JSON"), 0o600))
+				case "missing keys", "invalid keys", "invalid endpoint":
+					cfg := writeRegisteredStateAgainst(t, "http://127.0.0.1:1")
+					dataDir = cfg.DataDir
+					state, err := cfg.LoadState()
+					require.NoError(t, err)
+					switch scenario {
+					case "missing keys":
+						state.KeyMaterial = config.KeyMaterial{}
+					case "invalid keys":
+						state.X25519PrivateKey = "not-valid-base64!"
+					case "invalid endpoint":
+						state.HubURL = "unsupported:hub"
+					}
+					require.NoError(t, cfg.SaveState(state))
+				}
+				if launcher == "standalone" {
+					require.Error(t, runWorker([]string{"--data-dir", dataDir}))
+				} else {
+					runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: lifecycle.RoleWorker, DataDir: dataDir, Execution: lifecycle.ExecutionForeground})
+					require.NoError(t, err)
+					t.Cleanup(func() { _ = runtime.Finish(nil) })
+					require.Error(t, runWorkerForeground(t.Context(), runtime, []string{"--data-dir", dataDir}))
+					require.NoError(t, runtime.Finish(nil))
+				}
+				canonical, err := lifecycle.CanonicalDir(dataDir)
+				require.NoError(t, err)
+				lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+				require.NoError(t, err, "the launcher must retain cleanup until Run consumes its lease")
+				require.NoError(t, lease.Close())
+			})
+		}
+	}
+}
 
 // fakeConnector answers the Worker's Connect stream with connect.
 type fakeConnector struct {

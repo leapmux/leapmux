@@ -25,13 +25,20 @@ import (
 //     target, so Open can reject a reparse point or any non-regular
 //     object at path before the caller can lock or modify the target.
 func Open(path string, exclusive bool) (*os.File, error) {
-	name, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, err
-	}
 	disposition := uint32(windows.OPEN_ALWAYS)
 	if exclusive {
 		disposition = windows.CREATE_NEW
+	}
+	return openRegular(path, disposition)
+}
+
+// OpenExisting opens a regular lock file without creating a missing path.
+func OpenExisting(path string) (*os.File, error) { return openRegular(path, windows.OPEN_EXISTING) }
+
+func openRegular(path string, disposition uint32) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
 	}
 	handle, err := windows.CreateFile(name,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,

@@ -1,0 +1,93 @@
+package lifecycle
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"syscall"
+	"time"
+)
+
+// ValidateDirectorySelection refuses another account, mode, or containing
+// instance before a command reads or changes that instance's resources.
+func ValidateDirectorySelection(role Role, canonical string) error {
+	if _, err := ParseRole(role.String()); err != nil {
+		return err
+	}
+	owner, err := VerifyOwnership(canonical)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if owner.AccountID != CurrentAccountID() || owner.Mode != role || owner.DataDirectory != canonical || owner.OwnerMode != role || owner.OwnerDataDir != canonical {
+		return &OwnershipConflict{OwningMode: owner.OwnerMode, OwningRoot: owner.OwnerDataDir, Component: owner.Mode, Path: canonical}
+	}
+	return nil
+}
+
+// Stop requests authenticated shutdown and waits for the runtime lock to be
+// released after the complete application join. The result reports whether
+// the command found an active runtime. It never terminates a process by PID.
+func Stop(ctx context.Context, role Role, dataDirectory string) (bool, error) {
+	return stopWithRequester(ctx, role, dataDirectory, RequestStop)
+}
+
+func stopWithRequester(ctx context.Context, role Role, dataDirectory string, request func(context.Context, RuntimeRecord) (StopResponse, error)) (bool, error) {
+	canonical, err := CanonicalDir(dataDirectory)
+	if err != nil {
+		return false, err
+	}
+	if err := ValidateDirectorySelection(role, canonical); err != nil {
+		return false, err
+	}
+	paths := pathsFor(canonical)
+	expected := NewInstanceID(CurrentAccountID(), role, canonical)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var record RuntimeRecord
+	var response StopResponse
+	active := false
+	for {
+		held, err := ProbeRuntimeLock(paths)
+		if err != nil {
+			return active, err
+		}
+		if !held {
+			return active, nil
+		}
+		active = true
+		record, err = ReadRuntimeRecord(paths.RuntimeRecord)
+		if err == nil {
+			if record.InstanceID != expected.String() || record.DataDir != canonical || record.Mode != role {
+				return active, fmt.Errorf("the runtime record belongs to another instance")
+			}
+			response, err = request(ctx, record)
+			if err == nil {
+				break
+			}
+		}
+		if !retryableControlPublication(err) {
+			return active, fmt.Errorf("the instance did not accept the stop request: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return active, fmt.Errorf("the instance did not accept the stop request before its wait ended: %w", errors.Join(ctx.Err(), err))
+		case <-ticker.C:
+		}
+	}
+	if !response.Accepted || response.AttemptID != record.AttemptID {
+		return active, fmt.Errorf("the instance refused the stop request for this attempt")
+	}
+	if _, err := waitForLockRelease(ctx, canonical); err != nil {
+		return active, fmt.Errorf("shutdown could not be confirmed: %w", err)
+	}
+	return active, nil
+}
+
+func retryableControlPublication(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrUnresponsive)
+}

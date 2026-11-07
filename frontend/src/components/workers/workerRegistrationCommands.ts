@@ -38,7 +38,21 @@ function posixQuote(value: string): string {
 
 /** Quote one PowerShell argument, preferring single quotes. */
 function powershellQuote(value: string): string {
-  return `'${value.replaceAll('\'', '\'\'')}'`
+  // PowerShell recognizes these typographic characters as single quotes too.
+  return `'${value.replace(/['\u2018-\u201B]/gu, quote => quote + quote)}'`
+}
+
+/** Quote a native argument for ProcessStartInfo's command-line parser. */
+function windowsArgument(value: string): string {
+  const escaped = value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\+)$/u, '$1$1')
+  return `"${escaped}"`
+}
+
+function powershellRegistration(hubUrl: string, registrationKey: string): string {
+  const argumentsText = `worker register --hub ${windowsArgument(hubUrl)} --registration-key ${windowsArgument(registrationKey)}`
+  // Direct native invocation in Windows PowerShell changes embedded quotes.
+  // ProcessStartInfo bypasses that conversion on both PowerShell runtimes.
+  return `& { $ErrorActionPreference = 'Stop'; $info = New-Object System.Diagnostics.ProcessStartInfo; $info.FileName = (Get-Command 'leapmux' -CommandType Application -ErrorAction Stop).Source; $info.UseShellExecute = $false; $info.Arguments = ${powershellQuote(argumentsText)}; $process = [System.Diagnostics.Process]::Start($info); try { $process.WaitForExit(); $code = $process.ExitCode } finally { $process.Dispose() }; $global:LASTEXITCODE = $code; if ($code -ne 0) { throw "Worker registration failed with exit code $code" } }`
 }
 
 export interface RegistrationCommands {
@@ -69,11 +83,10 @@ export const isUnsafeCharacter = isProhibitedControlCharacter
 export function workerRegistrationCommands({ hubUrl, registrationKey, shell }: CommandInputs): RegistrationCommands | null {
   if (!isSafeArgument(hubUrl) || !isSafeArgument(registrationKey))
     return null
-  const q = shell === 'posix'
-    ? posixQuote
-    : powershellQuote
   return {
-    register: `leapmux worker register --hub ${q(hubUrl)} --registration-key ${q(registrationKey)}`,
+    register: shell === 'powershell'
+      ? powershellRegistration(hubUrl, registrationKey)
+      : `leapmux worker register --hub ${posixQuote(hubUrl)} --registration-key ${posixQuote(registrationKey)}`,
     start: 'leapmux worker start',
   }
 }

@@ -211,7 +211,7 @@ func (e *regKeyEnv) adminID(t *testing.T) string {
 //
 // Connect is a bidi stream, which httptest's HTTP/1 server (e.server) cannot
 // serve, so every test that opens one needs this instead -- and it is also the
-// real transport `leapmux worker --hub unix:...` uses, so a registration test
+// real local transport a registered worker uses, so a registration test
 // gets the desktop/solo path for free. `name` only has to be unique within the
 // process: UniqueListenURL keeps the socket path under AF_UNIX's 104-byte
 // sun_path limit, which t.TempDir() blows past on macOS runners.
@@ -1689,9 +1689,9 @@ func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1
 	return nil, errors.New("the stop instruction was not delivered")
 }
 
-// authReadHookStore runs afterAuthRead once, right after the connector's
-// GetByAuthTokenIncludeDeleted succeeds. That is the window between Connect's authentication
-// read and the registration of the connection.
+// authReadHookStore runs afterAuthRead after each successful
+// GetByAuthTokenIncludeDeleted call. This is the window between Connect's
+// authentication read and connection registration.
 type authReadHookStore struct {
 	store.Store
 	afterAuthRead func(*store.Worker)

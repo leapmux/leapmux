@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +23,7 @@ import (
 const (
 	controlStatusPath = "/v1/status"
 	controlStopPath   = "/v1/stop"
-	// controlMaxBody bounds a stop request; anything larger is a
+	// controlMaxBody limits a stop request; anything larger is a
 	// refusal before the body is parsed.
 	controlMaxBody = 4 << 10
 )
@@ -96,7 +97,7 @@ func serveControl(record RuntimeRecord, token string, reporter Reporter) (*contr
 	return s, nil
 }
 
-// controlReadHeaderTimeout bounds a request whose headers never finish;
+// controlReadHeaderTimeout limits a request whose headers never finish;
 // the endpoint is local, and a stuck header must not hold a handler.
 const controlReadHeaderTimeout = 5 * time.Second
 
@@ -104,6 +105,11 @@ const controlReadHeaderTimeout = 5 * time.Second
 func (s *controlServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(r) {
 		controlRefuse(w, http.StatusUnauthorized, "a valid bearer token is required")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		controlRefuse(w, http.StatusMethodNotAllowed, "status requires GET")
 		return
 	}
 	writeControlJSON(w, http.StatusOK, s.reporter.Status())
@@ -116,15 +122,24 @@ func (s *controlServer) handleStop(w http.ResponseWriter, r *http.Request) {
 		controlRefuse(w, http.StatusUnauthorized, "a valid bearer token is required")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, controlMaxBody)
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		controlRefuse(w, http.StatusMethodNotAllowed, "stop requires POST")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, controlMaxBody+1))
+	if err != nil || len(body) > controlMaxBody {
+		controlRefuse(w, http.StatusBadRequest, "a stop request must contain at most 4096 bytes")
+		return
+	}
 	var req StopRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		controlRefuse(w, http.StatusBadRequest, "a stop request must be a bounded JSON body")
+	if err := json.Unmarshal(body, &req); err != nil {
+		controlRefuse(w, http.StatusBadRequest, "a stop request must contain one JSON object")
 		return
 	}
 	if req.InstanceID != s.liveID.InstanceID || req.AttemptID != s.liveID.AttemptID {
 		controlRefuse(w, http.StatusConflict,
-			"the request names another attempt; the inspected process was replaced")
+			"the request identifies another attempt; the inspected process was replaced")
 		return
 	}
 	accepted := s.reporter.RequestStop()
@@ -140,8 +155,12 @@ func (s *controlServer) handleStop(w http.ResponseWriter, r *http.Request) {
 
 // authorize checks the bearer token in constant time.
 func (s *controlServer) authorize(r *http.Request) bool {
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if got == "" || len(got) != len(s.token) {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return false
+	}
+	got, bearer := strings.CutPrefix(values[0], "Bearer ")
+	if !bearer || got == "" || len(got) != len(s.token) {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1

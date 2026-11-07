@@ -74,7 +74,7 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			name:       "bare command is rejected",
 			args:       nil,
 			wantCode:   1,
-			wantStderr: `hint: use "leapmux solo"`,
+			wantStderr: `hint: use "leapmux solo run"`,
 		},
 		{
 			name:       "top-level solo flag is rejected",

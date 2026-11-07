@@ -2,17 +2,26 @@ package service_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -37,6 +46,103 @@ func registerSelfDeregisterableWorker(t *testing.T, env *regKeyEnv, ctx context.
 	resp, err := env.registerWithKey(t, key)
 	require.NoError(t, err)
 	return key, resp.GetAuthToken()
+}
+
+func TestSelfDeregisterRepairsEffectsAfterCommittedDeletion(t *testing.T) {
+	env := setupRegKeyEnv(t)
+	ctx := context.Background()
+	_, token := registerSelfDeregisterableWorker(t, env, ctx)
+	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	require.NoError(t, err)
+	owner := userid.MustNew(worker.RegisteredBy)
+	// Commit the same deletion as the handler, without running effects. This
+	// represents a Hub exit between the commit and the first effect.
+	require.NoError(t, env.store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
+		return tx.Workers().MarkDeleted(ctx, worker.ID)
+	}))
+	notifications := make(chan string, 2)
+	env.connector.SetDeregisterEffects(service.NewWorkerDeregisterEffects(nil, nil, func(userID string) {
+		notifications <- userID
+	}))
+	for range 2 {
+		require.NoError(t, env.deregisterSelfCall(t, ctx, token))
+		select {
+		case userID := <-notifications:
+			assert.Equal(t, worker.RegisteredBy, userID)
+		default:
+			t.Fatal("a successful deletion retry must complete the post-commit effects")
+		}
+	}
+	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+	require.ErrorIs(t, err, auth.ErrWorkerDeleted)
+}
+
+func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
+	ctx, cancelTest := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancelTest()
+	read := make(chan struct{})
+	release := make(chan struct{})
+	var paused atomic.Bool
+	env := newRegKeyEnv(t, testConfig(), nil, func(st store.Store) store.Store {
+		return authReadHookStore{Store: st, afterAuthRead: func(*store.Worker) {
+			if paused.CompareAndSwap(false, true) {
+				close(read)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			}
+		}}
+	})
+	_, token := registerSelfDeregisterableWorker(t, env, ctx)
+	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	require.NoError(t, err)
+	env.connector.SetDeregisterEffects(service.NewWorkerDeregisterEffects(nil, env.notifier, env.registry.BroadcastWorkersChanged))
+	server := httptest.NewUnstartedServer(env.mux)
+	server.Config.Protocols = &http.Protocols{}
+	server.Config.Protocols.SetHTTP1(true)
+	server.Config.Protocols.SetUnencryptedHTTP2(true)
+	server.Start()
+	t.Cleanup(server.Close)
+	endpoint, err := hubtransport.New(server.URL)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		endpoint.StreamClient(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	streamCtx, info := connect.NewClientContext(streamCtx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	stream, err := client.Connect(streamCtx)
+	require.NoError(t, err)
+	defer func() { _ = stream.CloseSend() }()
+	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
+	select {
+	case <-read:
+	case <-ctx.Done():
+		t.Fatal("Connect did not reach its credential lookup")
+	}
+	assert.False(t, env.wMgr.OnlineForTrustedPath(worker.ID))
+	require.NoError(t, env.deregisterSelfCall(t, ctx, token))
+	deleted, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	require.NoError(t, err)
+	require.NotNil(t, deleted.DeletedAt)
+	close(release)
+	for {
+		frame, err := stream.Receive()
+		require.NoError(t, err, "the delayed connection must receive its deregistration before closing")
+		if frame.GetDeregister() != nil {
+			require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+				RequestId: frame.GetRequestId(), Payload: &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+			}))
+			break
+		}
+	}
+	testutil.AssertEventually(t, func() bool {
+		return !env.wMgr.OnlineForTrustedPath(worker.ID) && !env.wMgr.IsDeregistering(worker.ID)
+	})
+	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+	require.ErrorIs(t, err, auth.ErrWorkerDeleted)
 }
 
 // TestSelfDeregisterRejectsBundledWorkers refuses the removal for both
@@ -125,8 +231,12 @@ func TestSelfDeregisterIsIdentityScopedAndRepeatable(t *testing.T) {
 			"the reply may have been lost; the end state is what the caller needs")
 	})
 
-	t.Run("the deleted worker's token no longer authenticates anything", func(t *testing.T) {
+	t.Run("the retained deleted token still permits a self-deregistration retry", func(t *testing.T) {
 		err := env.deregisterSelfCall(t, ctx, token)
 		require.NoError(t, err, "the retained row keeps accepting the idempotent call")
+	})
+	t.Run("ordinary authentication refuses the deleted worker", func(t *testing.T) {
+		_, err := auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+		require.ErrorIs(t, err, auth.ErrWorkerDeleted)
 	})
 }

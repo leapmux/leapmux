@@ -2,15 +2,60 @@ package solo
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
+	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
+
+func TestStartPreparedPreservesNoTCP(t *testing.T) {
+	locallistentest.SandboxHome(t)
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, occupied.Close()) })
+	local := uniqueTestListenURL(t)
+	prepared, err := Prepare(Config{
+		Args: []string{
+			"--data-dir", t.TempDir(),
+			"--listen", occupied.Addr().String(),
+			"--listen", local,
+		},
+		NoTCP:      true,
+		SkipBanner: true,
+	})
+	require.NoError(t, err)
+	root, err := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(prepared.Role(), prepared.DataDirectory()),
+		prepared.Role(), prepared.DataDirectory())
+	require.NoError(t, err)
+	inst, err := StartPrepared(context.Background(), prepared, root)
+	require.NoError(t, err, "NoTCP must exclude the occupied TCP address before binding")
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
+	assert.Equal(t, local, inst.LocalListenURL())
+}
+
+func TestStartPreparedPreservesSkipBanner(t *testing.T) {
+	locallistentest.SandboxHome(t)
+	output := testutil.CaptureStderr(t, func() {
+		inst, err := Start(context.Background(), Config{
+			Args:       []string{"--listen", uniqueTestListenURL(t), "--data-dir", t.TempDir()},
+			SkipBanner: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, inst.Stop())
+	})
+	assert.NotContains(t, output, "Copyright", "the prepared launch must retain banner suppression")
+}
 
 // Prepare derives the same defaults and flags Start resolves, with no
 // filesystem writes: the canonical root and the containing role of a
@@ -98,11 +143,28 @@ func TestStartPreparedRejectsInvalidRootLease(t *testing.T) {
 			require.NoError(t, err)
 			return prepared, lease
 		}},
+		{"another containing root", func(t *testing.T) (*PreparedConfig, *lifecycle.DirectoryLease) {
+			prepared := freshPrepared(t)
+			lease, err := lifecycle.AcquireDirectory(lifecycle.DirectoryOwner{AccountID: lifecycle.CurrentAccountID(), Mode: prepared.role, Root: mustCanonicalTest(t, t.TempDir())}, prepared.role, prepared.dataDir)
+			require.NoError(t, err)
+			return prepared, lease
+		}},
+		{"another account", func(t *testing.T) (*PreparedConfig, *lifecycle.DirectoryLease) {
+			prepared := freshPrepared(t)
+			lease, err := lifecycle.AcquireDirectory(lifecycle.DirectoryOwner{AccountID: "another-account", Mode: prepared.role, Root: prepared.dataDir}, prepared.role, prepared.dataDir)
+			require.NoError(t, err)
+			return prepared, lease
+		}},
 	} {
 		t.Run("rejects "+tc.name, func(t *testing.T) {
 			prepared, lease := tc.build(t)
 			before := ""
 			if prepared != nil {
+				for _, path := range []string{"hub/hub.db", "worker/worker.db", "worker/state.json"} {
+					destination := filepath.Join(prepared.dataDir, filepath.FromSlash(path))
+					require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0o700))
+					require.NoError(t, os.WriteFile(destination, []byte("preserve "+path), 0o600))
+				}
 				before = snapshotTree(t, prepared.dataDir)
 			}
 
@@ -128,16 +190,31 @@ func TestStartPreparedRejectsInvalidRootLease(t *testing.T) {
 // shape a rejection must leave untouched.
 func snapshotTree(t *testing.T, root string) string {
 	t.Helper()
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		require.ErrorIs(t, err, os.ErrNotExist)
+	if _, err := os.Lstat(root); os.IsNotExist(err) {
 		return "<absent>"
 	}
-	out := ""
-	for _, e := range entries {
-		out += e.Name() + "\n"
-	}
-	return out
+	var out strings.Builder
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&out, "%s %s", relative, entry.Type())
+		if entry.Type().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&out, " %x", data)
+		}
+		out.WriteByte('\n')
+		return nil
+	})
+	require.NoError(t, err)
+	return out.String()
 }
 
 // uniqueTestListenURL names one local IPC endpoint for this test.

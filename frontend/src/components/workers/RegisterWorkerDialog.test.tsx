@@ -107,6 +107,19 @@ function renderDialog(onClose = vi.fn()) {
 // Tests ----------------------------------------------------------------
 
 describe('RegisterWorkerDialog', () => {
+  it('refuses email and clipboard actions when command validation fails', async () => {
+    mockWorkerHubUrl.mockReturnValue('https://hub.test/unsafe\nendpoint')
+    renderDialog()
+    await screen.findByText('The Hub address or registration key cannot form a safe command. Check the Hub configuration or generate a new key.')
+    const email = screen.getByTestId('email-registration-instructions')
+    expect(email).toBeDisabled()
+    fireEvent.click(email)
+    fireEvent.click(screen.getByTestId('copy-registration-command'))
+    fireEvent.click(screen.getByTestId('copy-start-command'))
+    expect(mockEmail).not.toHaveBeenCalled()
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+  })
+
   it('mints a key on mount and renders the full command', async () => {
     renderDialog()
 
@@ -129,6 +142,55 @@ describe('RegisterWorkerDialog', () => {
         'leapmux worker register --hub \'http://hub.test\' --registration-key \'KEY-ABC\'',
       )
     })
+  })
+
+  it('copies startup separately after displaying successful-registration guidance', async () => {
+    renderDialog()
+    await screen.findByTestId('start-command')
+    expect(screen.getByText('2. After registration succeeds, start the worker.')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('copy-start-command'))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('leapmux worker start'))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledOnce()
+  })
+
+  it('copies and emails the selected PowerShell command with literal apostrophes', async () => {
+    mockWorkerHubUrl.mockReturnValue('unix:/tmp/a\'s hub.sock')
+    mockCreate.mockResolvedValue({
+      registrationKey: 'it\'s a key',
+      expiresAt: timestampFromDate(new Date(Date.now() + 300_000)),
+    })
+    renderDialog()
+    await screen.findByTestId('registration-command')
+    fireEvent.click(screen.getByRole('radio', { name: 'PowerShell' }))
+    const command = screen.getByTestId('registration-command').textContent!
+    expect(command).toContain('System.Diagnostics.ProcessStartInfo')
+    expect(command).toContain(`$info.Arguments = 'worker register --hub "unix:/tmp/a''s hub.sock" --registration-key "it''s a key"'`)
+    fireEvent.click(screen.getByTestId('copy-registration-command'))
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(command))
+    fireEvent.click(screen.getByTestId('email-registration-instructions'))
+    await waitFor(() => expect(mockEmail).toHaveBeenCalledWith({ registrationKey: 'it\'s a key', command }))
+  })
+
+  it('reports an empty key response without leaving generation pending', async () => {
+    mockCreate.mockResolvedValue({
+      registrationKey: '',
+      expiresAt: timestampFromDate(new Date()),
+    })
+    renderDialog()
+    expect(await screen.findByText('The Hub did not return a registration key. Close this dialog and try again.')).toBeInTheDocument()
+    expect(screen.queryByText('Generating registration key…')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('copy-registration-command')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('email-registration-instructions')).not.toBeInTheDocument()
+  })
+
+  it('reports key creation failure without displaying an executable command', async () => {
+    mockCreate.mockRejectedValue(new ConnectError('registration disabled', Code.PermissionDenied))
+    renderDialog()
+    expect(await screen.findByText(/Failed to create registration key:.*registration disabled/)).toBeInTheDocument()
+    expect(screen.queryByText('Generating registration key…')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('registration-command')).not.toBeInTheDocument()
+    expect(mockEmail).not.toHaveBeenCalled()
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
   })
 
   it('soft-deletes the key when the dialog unmounts', async () => {

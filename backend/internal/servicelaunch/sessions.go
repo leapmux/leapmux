@@ -1,8 +1,11 @@
 package servicelaunch
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"github.com/coder/quartz"
 )
 
 // SessionKind states what one login session of the account is.
@@ -57,6 +60,33 @@ type SessionMonitor interface {
 	// is NEVER "zero sessions": the caller must not stop an instance on
 	// a failed lookup.
 	Sessions(account AccountRef) ([]Session, error)
+}
+
+// NewSessionMonitor builds this operating system's account-session monitor.
+func NewSessionMonitor() SessionMonitor { return newPlatformSessionMonitor() }
+
+const loginSessionPollTag = "service-login-sessions"
+
+// WatchLoginSessions returns after the account's final desktop session ends.
+// Enumeration failures are reported and retried without ending the instance.
+func WatchLoginSessions(ctx context.Context, monitor SessionMonitor, account AccountRef, clock quartz.Clock, report func(error)) error {
+	ticker := clock.NewTicker(time.Second, loginSessionPollTag)
+	defer ticker.Stop()
+	for {
+		sessions, err := monitor.Sessions(account)
+		if err != nil {
+			if report != nil {
+				report(err)
+			}
+		} else if stop, _ := LastSessionRule(sessions, nil); stop {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // LastSessionRule decides whether a login-mode instance may stop, from
