@@ -546,7 +546,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [toml_edit 0.20.2 (MIT OR Apache-2.0)](#toml_edit-0202-mit-or-apache-20)
 - [toml_edit 0.25.13+spec-1.1.0 (MIT OR Apache-2.0)](#toml_edit-02513spec-110-mit-or-apache-20)
 - [toml_parser 1.1.5+spec-1.1.0 (MIT OR Apache-2.0)](#toml_parser-115spec-110-mit-or-apache-20)
-- [toml_writer 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)](#toml_writer-112spec-110-mit-or-apache-20)
+- [toml_writer 1.2.0+spec-1.1.0 (MIT OR Apache-2.0)](#toml_writer-120spec-110-mit-or-apache-20)
 - [tower 0.5.3 (MIT)](#tower-053-mit)
 - [tower-http 0.6.11 (MIT)](#tower-http-0611-mit)
 - [tower-layer 0.3.3 (MIT)](#tower-layer-033-mit)
@@ -659,7 +659,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 ### JavaScript Dependencies
 
 - [@bufbuild/protobuf 2.16.0 ((Apache-2.0 AND BSD-3-Clause))](#bufbuildprotobuf-2160-apache-20-and-bsd-3-clause)
-- [@cfworker/json-schema 4.1.4 (MIT)](#cfworkerjson-schema-414-mit)
+- [@cfworker/json-schema 4.1.6 (MIT)](#cfworkerjson-schema-416-mit)
 - [@connectrpc/connect 2.3.0 (Apache-2.0)](#connectrpcconnect-230-apache-20)
 - [@connectrpc/connect-web 2.3.0 (Apache-2.0)](#connectrpcconnect-web-230-apache-20)
 - [@knadh/oat 1.1.0 (MIT)](#knadhoat-110-mit)
@@ -679,7 +679,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@shikijs/rehype 4.6.0 (MIT)](#shikijsrehype-460-mit)
 - [@simplewebauthn/browser 14.0.0 (MIT)](#simplewebauthnbrowser-1400-mit)
 - [@solidjs/router 1.0.1 (MIT)](#solidjsrouter-101-mit)
-- [@solidjs/start 2.1.0 (MIT)](#solidjsstart-210-mit)
+- [@solidjs/start 2.2.1 (MIT)](#solidjsstart-221-mit)
 - [@tauri-apps/api 2.12.4 (Apache-2.0 OR MIT)](#tauri-appsapi-2124-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.5.0 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-250-mit-or-apache-20)
 - [@tauri-apps/plugin-notification 2.8.0 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-280-mit-or-apache-20)
@@ -82022,7 +82022,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### toml_writer 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)
+### toml_writer 1.2.0+spec-1.1.0 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -82213,7 +82213,7 @@ SOFTWARE.
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright {yyyy} {name of copyright owner}
+   Copyright Individual contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -98231,7 +98231,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### @cfworker/json-schema 4.1.4 (MIT)
+### @cfworker/json-schema 4.1.6 (MIT)
 
 ```
 MIT License
@@ -99110,7 +99110,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/start 2.1.0 (MIT)
+### @solidjs/start 2.2.1 (MIT)
 
 ```
 MIT License
