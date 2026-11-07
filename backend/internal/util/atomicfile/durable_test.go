@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -27,11 +28,11 @@ func (f *failingOps) maybe(op string) error {
 	return nil
 }
 
-func (f *failingOps) createTemp(dir, pattern string) (*os.File, error) {
+func (f *failingOps) createTemp(dir, pattern string, mode os.FileMode) (*os.File, error) {
 	if err := f.maybe("createTemp"); err != nil {
 		return nil, err
 	}
-	return f.defaultFileOps.createTemp(dir, pattern)
+	return f.defaultFileOps.createTemp(dir, pattern, mode)
 }
 
 func (f *failingOps) chmod(file *os.File, mode os.FileMode) error {
@@ -127,7 +128,11 @@ func lockOpsForTest(t *testing.T) {
 // bytes, after it it holds the new ones whole. A caller that keeps its
 // recovery material until success can always retry safely.
 func TestDurablePublicationFailures(t *testing.T) {
-	for _, stage := range []string{"sync", "rename", "syncDir"} {
+	stages := []string{"sync", "rename"}
+	if runtime.GOOS != "windows" {
+		stages = append(stages, "syncDir")
+	}
+	for _, stage := range stages {
 		t.Run("failure at "+stage, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "creds.json")
@@ -135,6 +140,7 @@ func TestDurablePublicationFailures(t *testing.T) {
 
 			failing := &failingOps{failAt: stage}
 			withOps(t, failing)
+			injectDurableReplacementFailure(t, stage)
 
 			err := WriteFileDurable(path, []byte("new"), 0o600)
 			require.ErrorIs(t, err, os.ErrPermission, "the %s failure must surface", stage)

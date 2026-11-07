@@ -109,6 +109,17 @@ The binary runs in several modes:
 | `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
+Each mode requires a lifecycle subcommand. `run` stays in the foreground. `start` uses the operating system's service mechanism and waits for readiness. Use `stop`, `restart`, or `status` to control either execution mode. `enable` configures automatic startup without starting the process; `disable` removes that configuration after the process stops.
+
+Register a standalone Worker before running it:
+
+```sh
+leapmux worker register --hub https://hub.example.com --registration-key YOUR_KEY
+leapmux worker run
+```
+
+Solo and dev register their embedded Worker automatically. A fresh dev instance reports `ready_for_setup` until an administrator completes `/setup`.
+
 The connections use these protocols:
 
 - Frontend↔Hub uses ConnectRPC.

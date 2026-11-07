@@ -30,7 +30,7 @@ func recordedFlushes(rec *recordingOps) []string {
 // the parent flushes, and only then does the committed record replace
 // the prepared one.
 func TestDurableParentCreation(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	target := filepath.Join(base, "existing", "deep", "leaf")
 	require.NoError(t, os.Mkdir(filepath.Join(base, "existing"), 0o700))
 
@@ -93,7 +93,7 @@ func TestDurableParentCreation(t *testing.T) {
 // pending state or registration exists, and a pre-existing unrelated
 // chain needs no ancestor flush at all.
 func TestRetryPublishesSurvivingAncestor(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	root := filepath.Join(base, "leapmux")
 	target := filepath.Join(root, "worker", "cache")
 

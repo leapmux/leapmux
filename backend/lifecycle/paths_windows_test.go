@@ -9,9 +9,53 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 
 	"github.com/leapmux/leapmux/util/useronly"
 )
+
+func TestControlStartupDoesNotClaimAnotherAccountScratchPath(t *testing.T) {
+	parent := t.TempDir()
+	t.Setenv("TEMP", parent)
+	t.Setenv("TMP", parent)
+	t.Setenv("LEAPMUX_RUNTIME_DIR", "")
+	unrelated := filepath.Join(parent, "leapmux")
+	contents := []byte("an unrelated account resource")
+	require.NoError(t, os.WriteFile(unrelated, contents, 0o600))
+	runtime, err := StartRuntime(RuntimeConfig{Mode: RoleHub, DataDir: t.TempDir(), Execution: ExecutionForeground})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, runtime.Finish(nil)) })
+	directory, err := runtimeDir()
+	require.NoError(t, err)
+	assert.Equal(t, accountRuntimePath(parent, CurrentAccountID()), directory)
+	after, err := os.ReadFile(unrelated)
+	require.NoError(t, err)
+	assert.Equal(t, contents, after)
+}
+
+func TestPrivateResourcesRejectBroadAccessEntries(t *testing.T) {
+	for _, isDirectory := range []bool{true, false} {
+		path := filepath.Join(t.TempDir(), "resource")
+		if isDirectory {
+			require.NoError(t, preparePrivateDir(path))
+		} else {
+			require.NoError(t, os.WriteFile(path, []byte("control-token"), 0o600))
+		}
+		sid, err := useronly.CurrentUserSID()
+		require.NoError(t, err)
+		sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")(A;;FR;;;WD)")
+		require.NoError(t, err)
+		acl, _, err := sd.DACL()
+		require.NoError(t, err)
+		require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
+		if isDirectory {
+			require.Error(t, verifyPrivateDir(path))
+		} else {
+			require.Error(t, verifyPrivateFile(path))
+		}
+	}
+}
 
 // Private resources hold the account-only descriptor, and a directory
 // or file another account owns is rejected or safely restricted before

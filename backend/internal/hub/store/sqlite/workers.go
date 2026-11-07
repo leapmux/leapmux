@@ -30,7 +30,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 		MlkemPublicKey:        p.PublicKeys.Mlkem,
 		SlhdsaPublicKey:       p.PublicKeys.Slhdsa,
 		RegistrationAttemptID: stringToNull(p.RegistrationAttemptID),
-		RegistrationKeyHash:   p.RegistrationKeyHash,
+		RegistrationKeyHash:   p.RegistrationKeyHashOrNil(),
 	}))
 }
 

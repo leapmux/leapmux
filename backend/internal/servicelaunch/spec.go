@@ -74,12 +74,52 @@ func LaunchSpecFromService(spec lifecycle.ServiceSpec) (LaunchSpec, error) {
 	}, nil
 }
 
+// launchSpecForRemoval validates the definition identity without requiring
+// runtime-only environment contents that may need repair or removal.
+func launchSpecForRemoval(spec lifecycle.ServiceSpec) (LaunchSpec, error) {
+	environment := spec.EnvironmentFile
+	spec.EnvironmentFile = nil
+	launch, err := LaunchSpecFromService(spec)
+	launch.EnvironmentFile = environment
+	return launch, err
+}
+
 // ValidateLaunchSpec states what a native definition accepts: absolute
 // paths, the four mode names, the two startup kinds, and no identity
 // variable under an environment override.
 func ValidateLaunchSpec(spec LaunchSpec) error {
 	if spec.InstanceID == "" {
 		return fmt.Errorf("servicelaunch: the specification needs its instance identity")
+	}
+	for _, character := range spec.InstanceID {
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'z' {
+				return fmt.Errorf("servicelaunch: the instance identity must contain only lowercase letters and digits")
+			}
+		}
+	}
+	for index := 0; index < len(spec.RuntimeArguments); index++ {
+		arg := spec.RuntimeArguments[index]
+		if strings.ContainsRune(arg, 0) {
+			return fmt.Errorf("servicelaunch: a runtime argument contains a null character")
+		}
+		if !strings.HasPrefix(arg, "--") {
+			return fmt.Errorf("servicelaunch: saved runtime arguments must use explicit flags")
+		}
+		key, _, inlineValue := strings.Cut(arg[2:], "=")
+		switch key {
+		case "config", "data-dir", "service-spec", "registration-key":
+			return fmt.Errorf("servicelaunch: --%s cannot appear in saved runtime arguments", key)
+		}
+		if !inlineValue {
+			index++
+			if index == len(spec.RuntimeArguments) {
+				return fmt.Errorf("servicelaunch: saved runtime flag --%s has no value", key)
+			}
+			if strings.ContainsRune(spec.RuntimeArguments[index], 0) {
+				return fmt.Errorf("servicelaunch: a runtime argument contains a null character")
+			}
+		}
 	}
 	if _, err := lifecycle.ParseRole(string(spec.Mode)); err != nil {
 		return err
@@ -100,15 +140,8 @@ func ValidateLaunchSpec(spec LaunchSpec) error {
 			return fmt.Errorf("servicelaunch: the %s must be an absolute path, got %q", name, path)
 		}
 	}
-	if spec.EnvironmentFile != nil && *spec.EnvironmentFile == "" {
-		return fmt.Errorf("servicelaunch: the environment file is an absolute path or absent")
-	}
-	for name := range spec.RuntimeEnvironment {
-		if protectedIdentityVariables[name] {
-			return fmt.Errorf("servicelaunch: %s states the service account's identity and cannot come from the runtime environment", name)
-		}
-	}
-	return nil
+	_, err := spec.LoadEnvironment()
+	return err
 }
 
 // windowsAbsolute reports the Windows absolute-path spelling.
@@ -122,13 +155,16 @@ func windowsAbsolute(path string) bool {
 // one the operator chose, and a redirected HOME would move every
 // default the service reads.
 var protectedIdentityVariables = map[string]bool{
-	"HOME":      true,
-	"USER":      true,
-	"LOGNAME":   true,
-	"USERNAME":  true,
-	"UID":       true,
-	"EUID":      true,
-	"SUDO_USER": true,
+	"HOME":        true,
+	"USER":        true,
+	"LOGNAME":     true,
+	"USERNAME":    true,
+	"UID":         true,
+	"EUID":        true,
+	"SUDO_USER":   true,
+	"USERPROFILE": true,
+	"HOMEDRIVE":   true,
+	"HOMEPATH":    true,
 }
 
 // ProtectedIdentityVariables lists the protected names, sorted, for the
@@ -143,12 +179,12 @@ func ProtectedIdentityVariables() []string {
 }
 
 // RunArguments composes the arguments the native definition runs: the
-// mode's `run` command under its configuration file. A native
+// mode's `run` command with its private specification. Runtime overrides
+// stay in that specification, rather than a public native definition. A native
 // definition NEVER invokes `start` -- a managed start that reached back
 // into the controller could recurse.
 func (s LaunchSpec) RunArguments() []string {
-	args := []string{string(s.Mode), "run", "--config", s.ConfigFile}
-	return append(args, s.RuntimeArguments...)
+	return []string{string(s.Mode), "run", "--data-dir", s.DataDirectory, "--service-spec", lifecycle.PathsOf(s.DataDirectory).ServiceSpec}
 }
 
 // Environment composes the runtime environment of the definition:

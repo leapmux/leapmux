@@ -26,7 +26,7 @@ const tempSuffix = ".tmp"
 // The operations are one-to-one with the calls WriteFile already made;
 // introducing the seam changed their order nowhere.
 type fileOps interface {
-	createTemp(dir, pattern string) (*os.File, error)
+	createTemp(dir, pattern string, mode os.FileMode) (*os.File, error)
 	chmod(f *os.File, mode os.FileMode) error
 	write(f *os.File, data []byte) error
 	sync(f *os.File) error
@@ -39,11 +39,11 @@ type fileOps interface {
 	syncDir(path string) error
 }
 
-// defaultFileOps performs each operation through the os package.
+// defaultFileOps performs the production filesystem operations.
 type defaultFileOps struct{}
 
-func (defaultFileOps) createTemp(dir, pattern string) (*os.File, error) {
-	return os.CreateTemp(dir, pattern)
+func (defaultFileOps) createTemp(dir, pattern string, mode os.FileMode) (*os.File, error) {
+	return createTemporaryFile(dir, pattern, mode)
 }
 
 func (defaultFileOps) chmod(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
@@ -99,7 +99,7 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 // the durable one passes its write-through variant. The operations run
 // through the package's seam in one order for both.
 func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) error {
-	f, err := ops.createTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix)
+	f, err := ops.createTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix, mode)
 	if err != nil {
 		return err
 	}
@@ -156,6 +156,22 @@ func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func
 //
 // A missing directory is not a failure: there is nothing to remove.
 func RemoveTempFiles(path string) error {
+	files, err := TempFiles(path)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, file := range files {
+		if err := ops.remove(file); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// TempFiles lists interrupted temporary copies beside path. It uses literal
+// entry prefixes, so path characters never become a glob expression.
+func TempFiles(path string) ([]string, error) {
 	dir, base := filepath.Split(path)
 	if dir == "" {
 		dir = "."
@@ -163,19 +179,17 @@ func RemoveTempFiles(path string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	prefix := base + tempSuffix
-	var errs []error
+	var files []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, err)
-		}
+		files = append(files, filepath.Join(dir, e.Name()))
 	}
-	return errors.Join(errs...)
+	return files, nil
 }

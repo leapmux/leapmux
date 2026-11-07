@@ -66,17 +66,30 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 		assert.True(t, ok)
 	})
 
-	t.Run("the capacity bound refuses new challenges", func(t *testing.T) {
+	t.Run("a full store replaces an existing challenge and refuses a new attempt", func(t *testing.T) {
 		full := newRegistrationChallengeStore(clock)
+		var firstAttempt, firstChallenge string
 		for i := 0; i < maxOutstandingRegistrationChallenges; i++ {
 			var attempt [16]byte
 			_, err := rand.Read(attempt[:])
 			require.NoError(t, err)
-			_, _, _, err = full.Issue(string(hexOf(attempt[:])))
+			attemptID := string(hexOf(attempt[:]))
+			challengeID, _, _, err := full.Issue(attemptID)
 			require.NoError(t, err)
+			if i == 0 {
+				firstAttempt, firstChallenge = attemptID, challengeID
+			}
 		}
 		_, _, _, err := full.Issue("ffffffffffffffffffffffffffffffff")
 		assert.ErrorIs(t, err, errChallengeCapacity)
+		replacement, _, _, err := full.Issue(firstAttempt)
+		require.NoError(t, err, "replacement must not require another capacity slot")
+		assert.NotEqual(t, firstChallenge, replacement)
+		assert.Len(t, full.byID, maxOutstandingRegistrationChallenges)
+		_, ok := full.Consume(firstChallenge, firstAttempt)
+		assert.False(t, ok, "the old challenge must no longer be usable")
+		_, ok = full.Consume(replacement, firstAttempt)
+		assert.True(t, ok)
 	})
 }
 

@@ -133,15 +133,15 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	if cfg.Directory == nil {
 		return errors.New("worker: RunConfig.Directory is required: Run owns the worker data directory's lease")
 	}
+	// Every supplied lease transfers at entry. The database's later close
+	// defer runs first, so even rejection keeps the ownership contract.
+	defer func() { _ = cfg.Directory.Close() }()
 	if cfg.Directory.Mode() != lifecycle.RoleWorker {
 		return fmt.Errorf("worker: RunConfig.Directory must hold the worker component's lease, not %s", cfg.Directory.Mode())
 	}
 	if cfg.Directory.Closed() {
 		return errors.New("worker: RunConfig.Directory is a closed lease: acquire a fresh one for this run")
 	}
-	// Ownership transfers here: whatever this function returns, the
-	// lease releases after the database below closes.
-	defer func() { _ = cfg.Directory.Close() }()
 	dataDir := cfg.Directory.Path()
 
 	// workerkeys.Of refuses a nil keypair too. Checking here, before anything

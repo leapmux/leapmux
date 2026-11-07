@@ -57,6 +57,26 @@ Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are 
 
 > **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/admin/configuration/#duration-values).
 
+## Lifecycle commands
+
+Every mode requires a lifecycle leaf. Bare mode execution fails with help guidance. See [Running LeapMux](/docs/admin/running-leapmux/#lifecycle-and-native-startup) for native setup and authorization.
+
+| Command | Result |
+| --- | --- |
+| `<mode> run` | Foreground execution; no service configuration |
+| `<mode> start` | Native background launch; wait for readiness |
+| `<mode> stop` | Graceful stop of either execution kind; wait for complete cleanup |
+| `<mode> restart` | Stop then native start, sharing one runtime wait budget |
+| `<mode> status [--json]` | Read-only status and relevant failure logs |
+| `<mode> enable` | Configure or repair login/boot startup without starting |
+| `<mode> disable` | Remove the native definition only while stopped |
+| `worker register` | Register or recover registration, persist credentials, then exit |
+| `worker deregister` | Confirm self-deregistration before deleting credentials; requires stopped Worker |
+
+Selectors use the normal mode loader. Pass `--data-dir` or `--config` consistently. Paths become canonical instance identities. Hub and Worker cannot share a data directory. Solo/dev own their separate Hub and Worker subdirectories. Status exits `0` for running, `3` for stopped, and `1` for failure. Unavailable scalar values in `--json` are `null`; diagnostics remain structured JSON, without prose before the JSON object.
+
+`--timeout` accepts a positive duration or bare seconds. Registration defaults to `5m`, start/restart to `60s`, stop/deregister to `30s`, and status to `3s`. A wait timeout returns failure while the process may continue starting or stopping. Configuration prompts and authorization do not consume that runtime wait budget. `--startup=login|boot`, `--yes`, and `--environment-file` apply to enable/start/restart. Use `--environment-file=` to clear a saved file.
+
 ## solo
 
 Run a Hub and a Worker in one process on loopback. Local IPC needs no credential. A TCP browser sets the first `solo` password, then every TCP address asks for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) and [Network access](/docs/admin/configuration/#network-access).
@@ -183,10 +203,10 @@ Consent is `y`/`yes`; empty input declines. Pass `--startup=login|boot` with `--
 
 | Flag | Applies to | Default | Meaning |
 |------|-----------|---------|---------|
-| `--startup` | `enable`, `start` | saved choice, else the prompt | `login` or `boot` |
+| `--startup` | `enable`, `start`, `restart` | saved choice, else the prompt | `login` or `boot` |
 | `--yes` | `enable`, `start`, `restart` | off | Accept the proposed configuration without the prompt |
 | `--timeout` | `start`, `restart`, `stop`, `status`, `register` | start/restart `60s`, stop `30s`, status `3s`, register `5m` | Wait budget; positive, with a unit suffix or bare seconds |
-| `--environment-file` | `enable` | none | YAML map of environment variables for the service (identity variables are refused) |
+| `--environment-file` | `enable`, `start`, `restart` | none | YAML map of environment variables for the service (identity variables are refused) |
 
 `status` exits `0` for a running instance (including a registered-but-disconnected worker or `ready_for_setup`), `3` for a stopped instance, and `1` for failures and invalid use.
 
@@ -194,7 +214,7 @@ Consent is `y`/`yes`; empty input declines. Pass `--startup=login|boot` with `--
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-hub` | `http://127.0.0.1:4327` | Hub URL for `worker register` (`http[s]://...`, `unix:<socket>`, or `npipe:<name>`). The saved registration owns the runtime's endpoint. |
+| `-hub` | required explicitly | Hub URL for `worker register`, including recovery (`http[s]://...`, `unix:<socket>`, or `npipe:<name>`). Configuration and environment defaults do not replace this flag. The saved registration owns the runtime endpoint. |
 | `-registration-key` | empty | Registration key from the Hub UI — `worker register` only; the runtime commands refuse it |
 | `-name` | empty (= hostname) | Worker display name |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory (holds `state.json`, `worker.db`) |
@@ -381,3 +401,43 @@ Each mode reads an optional YAML config file named after the mode. Each mode sto
 | `control` | `~/.config/leapmux/control/<hub-host>.json` (credentials, mode 0600) | — |
 
 In `solo` and `dev`, the data directory is split into `<data-dir>/hub` and `<data-dir>/worker` subdirectories. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for the full layout and resolution rules.
+
+### Lifecycle and registration records
+
+The private `<data-dir>/.lifecycle/` directory contains `directory.yaml` for ownership, `service.yaml` for saved native configuration, `runtime.yaml` for the current or latest attempt, and `control.token` for local control authentication. The `data.lock`, `runtime.lock`, and `operation.lock` files coordinate ownership and commands. Logs live in `logs/<attempt-id>.log`, with up to ten completed attempts plus the current attempt, and three log segments per attempt. Each log file is capped at 4 MiB. Automatic excerpts show at most 40 lines and 32 KiB; the full path remains available.
+
+`service.yaml` contains `instance_id`, `mode`, `startup`, `account_id`, `account_name`, `executable`, `working_directory`, `config_file`, `data_directory`, `runtime_arguments`, `runtime_environment`, and nullable `environment_file`. `runtime.yaml` contains the attempt identity, process identity, execution kind, control endpoint, and latest status. Credentials and private keys never appear in status.
+
+Standalone Worker credentials live in `state.json`. Registration recovery material lives in `pending-registration.json` until registered state is durable. Protect both as credentials. A stopped `worker deregister` removes them after confirmed Hub success and preserves the Worker database. The registration-owned Hub endpoint overrides runtime configuration; only `worker register` accepts the registration endpoint flag.
+
+The `runtime.yaml` fields are:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `instance_id` | string | Account, mode, and canonical data-root identity |
+| `attempt_id` | string | Unique process attempt |
+| `mode` | string | `hub`, `worker`, `solo`, or `dev` |
+| `execution` | string | `foreground` or `service` |
+| `data_dir` | string | Canonical data root |
+| `pid` | integer | Process identifier |
+| `process_start_ms` | integer | Native process creation time used with the PID |
+| `started_at` | timestamp | Attempt start time |
+| `control_url` | string | Private Unix socket or Windows named pipe |
+| `status` | object, optional | Latest application status and completed attempt outcome |
+
+`status --json` has these fields:
+
+| Field | Shape |
+| --- | --- |
+| `instance_id`, `mode`, `execution`, `startup` | String or `null` |
+| `configured` | Boolean; native definition matches the saved specification |
+| `process` | `state` string, nullable `pid` integer, nullable `started_at` timestamp |
+| `readiness` | `starting`, `ready`, `ready_for_setup`, `failed`, or `null` |
+| `registration` | `state` string, nullable `worker_id` and `hub_url` strings |
+| `connection` | `state` string and nullable `last_error` string |
+| `attempt` | Nullable `id`, `started_at`, `ended_at`, `exit_code`, `error`, and `log_path` |
+| `diagnostics` | Array of objects with `kind`, `title`, `body`, and nullable `source` |
+
+Process states are `starting`, `running`, `stopping`, `stopped`, `failed`, and `unresponsive`. A held runtime lock with an unanswered control endpoint is `unresponsive`. Registration states are `not_applicable`, `unregistered`, `pending`, `registered`, and `invalid`. Connection states are `not_applicable`, `pending_setup`, `connecting`, `connected`, and `disconnected`. Attempt timestamps use timestamp strings, and `exit_code` is an integer when available.
+
+`state.json` contains string fields `hub_url`, `worker_id`, `auth_token`, `x25519_private_key`, `mlkem_private_key`, and `slhdsa_private_key`. The three private-key values are base64 strings. `pending-registration.json` contains string fields `attempt_id`, `hub_url`, `registration_key`, and those same three private keys. It does not represent a running process. Neither credential record contains a PID.

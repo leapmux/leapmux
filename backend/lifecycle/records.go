@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 // OwnershipConflict reports a data directory whose ownership record
@@ -51,6 +53,9 @@ type ownershipRecord struct {
 
 // writeOwnershipRecord durably publishes the ownership record at path.
 func writeOwnershipRecord(path string, rec ownershipRecord) error {
+	if err := verifyExistingPrivateFile(path); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(rec)
 	if err != nil {
 		return err
@@ -63,7 +68,7 @@ func writeOwnershipRecord(path string, rec ownershipRecord) error {
 // that belongs to another account is a conflict, not a format error.
 func readOwnershipRecord(path string) (ownershipRecord, error) {
 	var rec ownershipRecord
-	data, err := os.ReadFile(path)
+	data, err := useronly.ReadFile(path)
 	if err != nil {
 		return rec, err
 	}
@@ -121,8 +126,29 @@ type ServiceSpec struct {
 	EnvironmentFile *string `yaml:"environment_file"`
 }
 
+// Equal compares saved launch values. Empty argument lists and environment
+// maps have the same meaning whether YAML decoded them as nil or empty.
+func (s ServiceSpec) Equal(other ServiceSpec) bool {
+	if len(s.RuntimeArguments) == 0 {
+		s.RuntimeArguments = nil
+	}
+	if len(other.RuntimeArguments) == 0 {
+		other.RuntimeArguments = nil
+	}
+	if len(s.RuntimeEnvironment) == 0 {
+		s.RuntimeEnvironment = nil
+	}
+	if len(other.RuntimeEnvironment) == 0 {
+		other.RuntimeEnvironment = nil
+	}
+	return reflect.DeepEqual(s, other)
+}
+
 // WriteServiceSpec durably publishes the service specification.
 func WriteServiceSpec(path string, spec ServiceSpec) error {
+	if err := verifyExistingPrivateFile(path); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(spec)
 	if err != nil {
 		return err
@@ -133,7 +159,7 @@ func WriteServiceSpec(path string, spec ServiceSpec) error {
 // ReadServiceSpec loads the saved specification at path.
 func ReadServiceSpec(path string) (ServiceSpec, error) {
 	var spec ServiceSpec
-	data, err := os.ReadFile(path)
+	data, err := useronly.ReadFile(path)
 	if err != nil {
 		return spec, err
 	}
@@ -167,10 +193,14 @@ type RuntimeRecord struct {
 	ProcessStart int64         `json:"process_start_ms" yaml:"process_start_ms"`
 	StartedAt    time.Time     `json:"started_at" yaml:"started_at"`
 	ControlURL   string        `json:"control_url" yaml:"control_url"`
+	Status       *Status       `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // WriteRuntimeRecord durably publishes the runtime record.
 func WriteRuntimeRecord(path string, rec RuntimeRecord) error {
+	if err := verifyExistingPrivateFile(path); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(rec)
 	if err != nil {
 		return err
@@ -183,7 +213,7 @@ func WriteRuntimeRecord(path string, rec RuntimeRecord) error {
 // instance claims this directory".
 func ReadRuntimeRecord(path string) (RuntimeRecord, error) {
 	var rec RuntimeRecord
-	data, err := os.ReadFile(path)
+	data, err := useronly.ReadFile(path)
 	if err != nil {
 		return rec, err
 	}
@@ -196,7 +226,7 @@ func ReadRuntimeRecord(path string) (RuntimeRecord, error) {
 // ReadControlToken loads the per-run bearer token. A missing token
 // reads as an empty string, which authenticates nothing.
 func ReadControlToken(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := useronly.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
@@ -208,5 +238,8 @@ func ReadControlToken(path string) (string, error) {
 
 // WriteControlToken durably publishes a fresh bearer token.
 func WriteControlToken(path, token string) error {
+	if err := verifyExistingPrivateFile(path); err != nil {
+		return err
+	}
 	return atomicfile.WriteFileDurable(path, []byte(token), 0o600)
 }

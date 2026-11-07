@@ -160,6 +160,9 @@ func registerWithClient(
 			slog.Info("worker registered", "worker_id", result.WorkerID, "attempt_id", opts.AttemptID)
 			return result, nil
 		case outcomePermanentRefusal:
+			if errors.Is(err, ErrRegistrationRefused) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("%w: %w", ErrRegistrationRefused, err)
 		case outcomeTransient:
 			// Fall through to the backoff below.
@@ -190,24 +193,23 @@ func registerProtocolOnce(
 	attemptTimeout time.Duration,
 	opts RegistrationOptions,
 ) (*RegistrationResult, registerOutcome, error) {
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptTimeout)
+	defer cancelAttempt()
 	req := &leapmuxv1.RegisterRequest{Keys: opts.Keys, AttemptId: opts.AttemptID}
 	// The handler authenticates by reading the bearer key from the
 	// Authorization header — this is *not* the long-lived auth_token
 	// flow, that one is bound to a different RPC. The header is request
 	// metadata on the call's CallInfo, so it rides the call context.
-	callCtx, info := connect.NewClientContext(ctx)
+	callCtx, info := connect.NewClientContext(attemptCtx)
 	info.RequestHeader().Set("Authorization", "Bearer "+registrationKey)
 
 	resp, err := registerOnce(callCtx, client, req, attemptTimeout)
 	if err == nil {
-		if resp.GetWorkerId() == "" || resp.GetAuthToken() == "" {
-			// A success response with no identity or no token is not a
-			// registration: the worker would save credentials it can
-			// never present.
-			return nil, outcomePermanentRefusal, fmt.Errorf(
-				"the hub answered success with incomplete credentials (worker_id %q)", resp.GetWorkerId())
+		result, credentialErr := registrationCredentials(resp)
+		if credentialErr != nil {
+			return nil, outcomePermanentRefusal, credentialErr
 		}
-		return &RegistrationResult{WorkerID: resp.GetWorkerId(), AuthToken: resp.GetAuthToken()}, outcomeSuccess, nil
+		return result, outcomeSuccess, nil
 	}
 	if ctx.Err() != nil {
 		return nil, outcomeIncomplete, ctx.Err()
@@ -218,7 +220,7 @@ func registerProtocolOnce(
 			// This attempt already committed and its response was lost.
 			// Recover the original credentials by proving possession of
 			// the private keypair the Hub pinned.
-			result, recoverErr := recoverRegistration(ctx, client, opts)
+			result, recoverErr := recoverRegistration(attemptCtx, client, opts)
 			if recoverErr != nil {
 				if isPermanentRefusal(recoverErr) {
 					return nil, outcomePermanentRefusal, recoverErr
@@ -270,25 +272,37 @@ func recoverRegistration(
 	if err != nil {
 		return nil, fmt.Errorf("recover the committed registration: %w", err)
 	}
-	if resp.GetWorkerId() == "" || resp.GetAuthToken() == "" {
-		return nil, fmt.Errorf("the hub recovered the registration with incomplete credentials")
+	result, err := registrationCredentials(resp)
+	if err != nil {
+		return nil, err
 	}
 	slog.Info("recovered the committed registration", "worker_id", resp.GetWorkerId(), "attempt_id", opts.AttemptID)
-	return &RegistrationResult{WorkerID: resp.GetWorkerId(), AuthToken: resp.GetAuthToken()}, nil
+	return result, nil
+}
+
+// registrationCredentials refuses an unusable success from either protocol path.
+func registrationCredentials(response *leapmuxv1.RegisterResponse) (*RegistrationResult, error) {
+	if response.GetWorkerId() == "" || response.GetAuthToken() == "" {
+		return nil, fmt.Errorf("%w: the hub answered success with incomplete credentials (worker_id %q)",
+			ErrRegistrationRefused, response.GetWorkerId())
+	}
+	return &RegistrationResult{WorkerID: response.GetWorkerId(), AuthToken: response.GetAuthToken()}, nil
 }
 
 // isPermanentRefusal reports a recovery refusal that retrying cannot
 // change: the attempt is unknown or its digest changed, the row is
 // deleted or its owner gone, or the proof itself was rejected.
 func isPermanentRefusal(err error) bool {
+	if errors.Is(err, ErrRegistrationRefused) {
+		return true
+	}
 	connectErr := new(connect.Error)
 	if !errors.As(err, &connectErr) {
 		return false
 	}
 	switch connectErr.Code() {
 	case connect.CodeUnauthenticated, connect.CodeInvalidArgument,
-		connect.CodePermissionDenied, connect.CodeFailedPrecondition,
-		connect.CodeResourceExhausted:
+		connect.CodePermissionDenied, connect.CodeFailedPrecondition:
 		return true
 	default:
 		return false

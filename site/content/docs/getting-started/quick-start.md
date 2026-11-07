@@ -36,7 +36,7 @@ The app remembers your choice and reconnects to Solo on the next launch. To retu
 If you installed the `leapmux` binary (see [Installation](/docs/getting-started/installation/)), start solo mode from a terminal:
 
 ```bash
-leapmux solo
+leapmux solo run
 ```
 
 This runs a Hub and a Worker in one process, listening on loopback only at **`127.0.0.1:4327`**. Open the printed URL in your browser:
@@ -63,6 +63,8 @@ If you change `-listen` to a non-loopback address before setup, the first TCP ca
 {{< callout >}}
 `leapmux solo run` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
 {{< /callout >}}
+
+To keep LeapMux running in the background, stop the foreground process and run `leapmux solo start`. The first start asks when it should start automatically, explains the native configuration, and asks for `y` or `yes`. Use `leapmux solo status` to inspect it and `leapmux solo stop` to stop it.
 
 ## The walkthrough
 

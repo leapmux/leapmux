@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/leapmux/leapmux/lifecycle"
@@ -20,8 +22,8 @@ import (
 type systemdManager struct {
 	runSystemctl func(ctx context.Context, args []string, user bool, escalated bool) ([]byte, error)
 	readFile     func(path string) ([]byte, error)
-	writeFile    func(path string, data []byte, mode os.FileMode) error
-	remove       func(path string) error
+	writeFile    func(context.Context, LaunchSpec, string, []byte) error
+	remove       func(context.Context, LaunchSpec, string) error
 	groupOf      func(accountName string) string
 }
 
@@ -29,8 +31,8 @@ func newSystemdManager() *systemdManager {
 	return &systemdManager{
 		runSystemctl: runSystemctlCommand,
 		readFile:     os.ReadFile,
-		writeFile:    os.WriteFile,
-		remove:       os.Remove,
+		writeFile:    publishNativeDefinition,
+		remove:       removeNativeDefinition,
 		groupOf:      primaryGroupOf,
 	}
 }
@@ -58,13 +60,13 @@ func runSystemctlCommand(ctx context.Context, args []string, user, escalated boo
 }
 
 // primaryGroupOf states the account's primary group for the system
-// unit's Group=; the default mirrors the account name, the common
-// single-user workstation shape.
+// unit's Group=, using the operating system account database.
 func primaryGroupOf(accountName string) string {
-	if accountName == "" {
+	account, err := user.Lookup(accountName)
+	if err != nil {
 		return ""
 	}
-	return accountName
+	return account.Gid
 }
 
 // unitName derives the unit's name from the instance identity.
@@ -100,22 +102,17 @@ func (m *systemdManager) definitionUnit(spec LaunchSpec) []byte {
 	if spec.Startup == lifecycle.StartupLogin {
 		// The login service's lifetime follows the graphical session:
 		// it starts when the desktop does and ends with the last one.
-		fmt.Fprintf(&b, "PartOf=graphical-session.target\n")
 		fmt.Fprintf(&b, "After=graphical-session.target\n")
 	}
 	fmt.Fprintf(&b, "\n[Service]\n")
 	fmt.Fprintf(&b, "Type=simple\n")
-	fmt.Fprintf(&b, "WorkingDirectory=%s\n", spec.WorkingDirectory)
+	fmt.Fprintf(&b, "WorkingDirectory=%s\n", quoteSystemdValue(spec.WorkingDirectory))
+	if spec.Startup == lifecycle.StartupBoot {
+		fmt.Fprintf(&b, "User=%s\n", quoteSystemdValue(spec.AccountName))
+		fmt.Fprintf(&b, "Group=%s\n", quoteSystemdValue(m.groupOf(spec.AccountName)))
+	}
 	args := append([]string{spec.Executable}, spec.RunArguments()...)
 	fmt.Fprintf(&b, "ExecStart=%s\n", quoteSystemdCommand(args))
-	if len(spec.Environment()) > 0 {
-		for _, entry := range spec.Environment() {
-			fmt.Fprintf(&b, "Environment=%s\n", quoteSystemdValue(entry))
-		}
-	}
-	if spec.EnvironmentFile != nil {
-		fmt.Fprintf(&b, "EnvironmentFile=%s\n", *spec.EnvironmentFile)
-	}
 	// No Restart: a local process failure stays visible through status
 	// until the user restarts it, and nothing fights `stop`.
 	fmt.Fprintf(&b, "Restart=no\n")
@@ -124,8 +121,6 @@ func (m *systemdManager) definitionUnit(spec LaunchSpec) []byte {
 		fmt.Fprintf(&b, "WantedBy=graphical-session.target\n")
 	} else {
 		fmt.Fprintf(&b, "WantedBy=multi-user.target\n")
-		fmt.Fprintf(&b, "User=%s\n", spec.AccountName)
-		fmt.Fprintf(&b, "Group=%s\n", m.groupOf(spec.AccountName))
 	}
 	return b.Bytes()
 }
@@ -135,15 +130,16 @@ func (m *systemdManager) definitionUnit(spec LaunchSpec) []byte {
 func quoteSystemdCommand(args []string) string {
 	out := make([]string, 0, len(args))
 	for _, arg := range args {
-		out = append(out, quoteSystemdValue(arg))
+		out = append(out, quoteSystemdValue(strings.ReplaceAll(arg, "$", "$$")))
 	}
 	return strings.Join(out, " ")
 }
 
 // quoteSystemdValue quotes one value the unit file cannot hold bare.
 func quoteSystemdValue(value string) string {
-	if strings.ContainsAny(value, " \t\"'\\") {
-		return `"` + strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), `"`, `\"`) + `"`
+	value = strings.NewReplacer("%", "%%", "\n", `\n`, "\r", `\r`, "\t", `\t`, `\`, `\\`, `"`, `\"`).Replace(value)
+	if value == "" || strings.ContainsAny(value, " \t\"'\\$%") {
+		return `"` + value + `"`
 	}
 	return value
 }
@@ -154,44 +150,69 @@ func (m *systemdManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeSt
 		return NativeStatus{}, err
 	}
 	data, readErr := m.readFile(path)
-	if readErr != nil {
-		if os.IsNotExist(readErr) {
-			return NativeStatus{State: "not installed"}, nil
-		}
+	if readErr != nil && !os.IsNotExist(readErr) {
 		return NativeStatus{}, readErr
 	}
 	status := NativeStatus{
-		Installed:         true,
-		DefinitionMatches: bytes.Equal(data, m.definitionUnit(spec)),
+		Installed:         readErr == nil,
+		DefinitionMatches: readErr == nil && bytes.Equal(data, m.definitionUnit(spec)),
 		State:             "installed",
 	}
 	user := spec.Startup == lifecycle.StartupLogin
-	out, runErr := m.runSystemctl(ctx, []string{"is-active", systemdUnitName(spec)}, user, !user)
-	switch strings.TrimSpace(string(out)) {
-	case "active":
-		status.Running, status.State = true, "active"
-	case "activating":
-		status.State = "activating"
+	out, runErr := m.runSystemctl(ctx, []string{"show", systemdUnitName(spec) + ".service", "--no-pager", "--property=LoadState", "--property=ActiveState", "--property=UnitFileState", "--property=MainPID", "--property=FragmentPath", "--property=NeedDaemonReload", "--property=Result", "--property=ExecMainCode", "--property=ExecMainStatus"}, user, false)
+	if runErr != nil {
+		return NativeStatus{}, runErr
 	}
-	_ = runErr
+	properties := nativeProperties(out)
+	if properties["LoadState"] == "not-found" && properties["ActiveState"] == "inactive" {
+		status.State, status.DefinitionMatches = "not installed", false
+		return status, nil
+	}
+	if properties["LoadState"] == "" || properties["ActiveState"] == "" || properties["UnitFileState"] == "" {
+		return NativeStatus{}, fmt.Errorf("systemd did not return the unit's complete state")
+	}
+	status.State = properties["ActiveState"]
+	status.Running = status.State == "active" || status.State == "activating" || status.State == "deactivating"
+	status.DefinitionMatches = status.DefinitionMatches && properties["LoadState"] == "loaded" && properties["UnitFileState"] == "enabled" && properties["NeedDaemonReload"] == "no" && properties["FragmentPath"] == path
+	if result := properties["Result"]; result != "" && result != "success" {
+		status.Failure = fmt.Sprintf("systemd result: %s; process code: %s; process status: %s", result, properties["ExecMainCode"], properties["ExecMainStatus"])
+	}
+	if pid := properties["MainPID"]; pid != "" {
+		status.PID, err = strconv.Atoi(pid)
+		if err != nil {
+			return NativeStatus{}, fmt.Errorf("systemd returned an invalid process identifier")
+		}
+	}
 	return status, nil
 }
 
+func (*systemdManager) AuthorizeStart(ctx context.Context, spec LaunchSpec) error {
+	return authorizeNativeStart(ctx, spec)
+}
+
 func (m *systemdManager) Install(ctx context.Context, spec LaunchSpec) error {
+	if spec.Startup == lifecycle.StartupLogin {
+		out, err := m.runSystemctl(ctx, []string{"show", "graphical-session.target", "--property=LoadState", "--property=ActiveState"}, true, false)
+		if err != nil {
+			return fmt.Errorf("cannot verify graphical-session support; choose boot startup for headless use: %w", err)
+		}
+		properties := nativeProperties(out)
+		if properties["LoadState"] != "loaded" || properties["ActiveState"] != "active" {
+			return fmt.Errorf("this desktop does not expose an active graphical-session.target; choose boot startup for headless use")
+		}
+	}
 	path, err := m.definitionPath(spec)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("servicelaunch: create the definition directory: %w", err)
+	if spec.Startup == lifecycle.StartupBoot && m.groupOf(spec.AccountName) == "" {
+		return fmt.Errorf("cannot resolve the selected account's primary group")
 	}
-	if err := m.writeFile(path, m.definitionUnit(spec), 0o644); err != nil {
+	if err := m.writeFile(ctx, spec, path, m.definitionUnit(spec)); err != nil {
 		return fmt.Errorf("servicelaunch: write the definition: %w", err)
 	}
 	// enable WITHOUT --now: configuration never starts the service.
-	// The controller's operation lock is NOT held while systemd does
-	// its own; the daemon reload is what a start needs, and `start`
-	// runs it again below.
+	// Reload after publication so the manager sees the complete definition.
 	user := spec.Startup == lifecycle.StartupLogin
 	if _, err := m.runSystemctl(ctx, []string{"daemon-reload"}, user, !user); err != nil {
 		return err
@@ -219,12 +240,14 @@ func (m *systemdManager) Stop(ctx context.Context, spec LaunchSpec) error {
 
 func (m *systemdManager) Remove(ctx context.Context, spec LaunchSpec) error {
 	user := spec.Startup == lifecycle.StartupLogin
-	_, _ = m.runSystemctl(ctx, []string{"disable", systemdUnitName(spec)}, user, !user)
+	if _, err := m.runSystemctl(ctx, []string{"disable", systemdUnitName(spec)}, user, !user); err != nil {
+		return err
+	}
 	path, err := m.definitionPath(spec)
 	if err != nil {
 		return err
 	}
-	if err := m.remove(path); err != nil && !os.IsNotExist(err) {
+	if err := m.remove(ctx, spec, path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("servicelaunch: remove the definition: %w", err)
 	}
 	_, err = m.runSystemctl(ctx, []string{"daemon-reload"}, user, !user)
@@ -234,7 +257,7 @@ func (m *systemdManager) Remove(ctx context.Context, spec LaunchSpec) error {
 func (m *systemdManager) Diagnose(ctx context.Context, spec LaunchSpec) ([]string, error) {
 	user := spec.Startup == lifecycle.StartupLogin
 	notes := []string{systemdUnitName(spec) + ".service"}
-	if out, err := m.runSystemctl(ctx, []string{"status", systemdUnitName(spec), "--no-pager", "-l"}, user, !user); err == nil {
+	if out, err := m.runSystemctl(ctx, []string{"status", systemdUnitName(spec), "--no-pager", "-l"}, user, false); err == nil {
 		notes = append(notes, systemdFirstLines(string(out), 12)...)
 	} else {
 		notes = append(notes, "systemctl status failed: "+err.Error())

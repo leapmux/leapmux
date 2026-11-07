@@ -1,4 +1,4 @@
-// Exercise the shipped entrypoint. Never replace /init in these checks.
+// Exercise the shipped supervisor and the explicit one-shot registration command.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -13,6 +13,7 @@ const root = resolve(import.meta.dirname, '..')
 mkdirSync(join(root, '.tmp'), { recursive: true })
 const directory = mkdtempSync(join(root, '.tmp', 'docker-test-'))
 const containers = []
+const volumes = []
 const failures = []
 const deadlineMs = 30000
 
@@ -47,7 +48,7 @@ function copy(name, source, destination) {
   docker(['cp', source, `${name}:${destination}`])
 }
 
-async function ready(name) {
+async function ready(name, setupRequired = true) {
   const address = docker(['port', name, '4327/tcp'])
   const url = `http://${address}/leapmux.v1.SystemService/GetSystemInfo`
   const deadline = Date.now() + deadlineMs
@@ -69,7 +70,7 @@ async function ready(name) {
         signal: AbortSignal.timeout(2000),
       })
       assert.equal(response.status, 200)
-      assert.equal((await response.json()).setupRequired, true)
+      assert.equal((await response.json()).setupRequired === true, setupRequired)
       return
     }
     catch (error) {
@@ -79,6 +80,57 @@ async function ready(name) {
     await setTimeout(100)
   }
   throw new Error(`Hub did not become ready: ${lastError?.message}\n${docker(['logs', name])}`)
+}
+
+async function readyWorker(name) {
+  const deadline = Date.now() + deadlineMs
+  let lastError
+  while (Date.now() < deadline) {
+    if (docker([
+      'inspect',
+      '--format',
+      '{{.State.Running}}',
+      name,
+    ]) !== 'true') {
+      throw new Error(`Worker exited before readiness:\n${docker(['logs', name])}`)
+    }
+    try {
+      const status = JSON.parse(docker([
+        'exec',
+        name,
+        '/usr/local/bin/leapmux',
+        'worker',
+        'status',
+        '--data-dir',
+        '/data/worker',
+        '--json',
+      ]))
+      if (status.readiness === 'ready' && status.registration.state === 'registered' && status.connection.state === 'connected')
+        return status.registration.worker_id
+    }
+    catch (error) {
+      lastError = error
+    }
+    // The container starts independently of the test's readiness waiter.
+    await setTimeout(100)
+  }
+  throw new Error(`Worker did not become ready: ${lastError?.message}\n${docker(['logs', name])}`)
+}
+
+async function request(hubUrl, method, body, cookie = '') {
+  const response = await fetch(`${hubUrl}/leapmux.v1.${method}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cookie
+        ? { Cookie: cookie }
+        : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(deadlineMs),
+  })
+  assert.equal(response.status, 200, `${method}: ${response.status}`)
+  return response
 }
 
 try {
@@ -110,6 +162,86 @@ try {
   docker(['stop', '--time', '10', hub])
   exited(hub, 0)
   console.log('PASS: Hub startup, graceful stop, restart, and persistent encryption key')
+
+  // Bootstrap only while the Hub is stopped, through the supported recovery CLI.
+  const password = `Container-${randomUUID()}`
+  const bootstrap = create([
+    '--volumes-from',
+    hub,
+    '--entrypoint',
+    '/usr/local/bin/leapmux',
+  ], [
+    'recover',
+    'bootstrap',
+    'create-admin',
+    '--data-dir',
+    '/data/hub',
+    '--username',
+    'container-admin',
+    '--password',
+    password,
+  ])
+  docker(['start', bootstrap])
+  exited(bootstrap, 0)
+  docker(['start', hub])
+  await ready(hub, false)
+  const hubUrl = `http://${docker(['port', hub, '4327/tcp'])}`
+  const login = await request(hubUrl, 'AuthService/Login', { username: 'container-admin', password })
+  const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  assert(cookie, 'Login did not return a session cookie')
+  await login.arrayBuffer()
+  const keyResponse = await request(hubUrl, 'WorkerManagementService/CreateRegistrationKey', {}, cookie)
+  const { registrationKey } = await keyResponse.json()
+  assert.equal(typeof registrationKey, 'string')
+  assert(registrationKey.length > 0)
+  const volume = `leapmux-worker-test-${randomUUID()}`
+  docker(['volume', 'create', volume])
+  volumes.push(volume)
+  const workerOptions = [
+    '--network',
+    `container:${hub}`,
+    '--volume',
+    `${volume}:/data`,
+  ]
+  const registration = create([...workerOptions, '--entrypoint', '/usr/local/bin/leapmux'], [
+    'worker',
+    'register',
+    '--data-dir',
+    '/data/worker',
+    '--hub',
+    'http://127.0.0.1:4327',
+    '--registration-key',
+    registrationKey,
+    '--timeout',
+    '30s',
+  ])
+  docker(['start', registration])
+  exited(registration, 0)
+  const credentials = create([
+    '--volume',
+    `${volume}:/data`,
+    '--entrypoint',
+    '/bin/sh',
+  ], [
+    '-c',
+    'test -f /data/worker/state.json && test ! -e /data/worker/worker.db && test ! -e /data/worker/pending-registration.json',
+  ])
+  docker(['start', credentials])
+  exited(credentials, 0)
+  const worker = create([...workerOptions, '-e', 'LEAPMUX_MODE=worker'])
+  docker(['start', worker])
+  const workerId = await readyWorker(worker)
+  assert.equal(typeof workerId, 'string')
+  assert(workerId.length > 0)
+  docker(['stop', '--time', '10', worker])
+  exited(worker, 0)
+  docker(['start', worker])
+  assert.equal(await readyWorker(worker), workerId)
+  docker(['stop', '--time', '10', worker])
+  exited(worker, 0)
+  docker(['stop', '--time', '10', hub])
+  exited(hub, 0)
+  console.log('PASS: one-shot Worker registration exits, foreground container reuses its volume and identity after restart')
 
   // The probe checks the startup script's arguments, environment, and filesystem effects.
   // Its exit status also verifies that s6 propagates the primary process's result.
@@ -255,6 +387,14 @@ finally {
     }
     try {
       docker(['rm', '--force', '--volumes', name])
+    }
+    catch (error) {
+      failures.push(error)
+    }
+  }
+  for (const volume of volumes) {
+    try {
+      docker(['volume', 'rm', volume])
     }
     catch (error) {
       failures.push(error)

@@ -142,8 +142,9 @@ const (
 	workerIdleTimerTag  = "worker-idle"
 )
 
-// SetMaxWorkersPerUser bounds how many Workers one user may have registered at
-// once; 0 (the zero value) is unlimited. Call once at startup before serving.
+// SetMaxWorkersPerUser limits how many Workers one user may have registered at
+// once; 0 (the zero value) is unlimited. Updates may run concurrently with
+// registration.
 //
 // A setter rather than a tenth positional constructor argument, matching
 // AuthContextRegistry.SetMaxConnectionsPerUser: the services this package builds
@@ -267,16 +268,8 @@ func (s *WorkerConnectorService) Register(
 	// public keys must both agree; a disagreement on either is a
 	// different key or a different worker trying this attempt, and
 	// neither recovers anything.
-	if existing, err := s.store.Workers().GetByRegistrationAttemptID(ctx, attemptID); err == nil {
-		if subtle.ConstantTimeCompare(existing.RegistrationKeyHash, keyDigest) == 1 &&
-			workerkeys.Equal(req.GetKeys(), existing.PublicKeys.Proto()) {
-			return nil, connect.NewError(connect.CodeAlreadyExists,
-				"this registration attempt already created a worker; recover its credentials")
-		}
-		return nil, connect.NewError(connect.CodeUnauthenticated,
-			"registration attempt unknown or already consumed")
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read the registration attempt: %w", err))
+	if err := registeredAttemptRefusal(ctx, s.store.Workers(), req, keyDigest); err != nil {
+		return nil, err
 	}
 
 	workerID := id.Generate()
@@ -288,6 +281,9 @@ func (s *WorkerConnectorService) Register(
 	key, err := s.store.RegistrationKeys().GetByID(ctx, regKey)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			if replayErr := registeredAttemptRefusal(ctx, s.store.Workers(), req, keyDigest); replayErr != nil {
+				return nil, replayErr
+			}
 			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read registration key: %w", err))
@@ -298,6 +294,11 @@ func (s *WorkerConnectorService) Register(
 		return nil, connect.NewError(connect.CodeInternal, "registration key has a blank creator")
 	}
 	err = s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
+		// The owner lock precedes this read. An overlapping request can have
+		// committed after the initial lookup but before this transaction.
+		if err := registeredAttemptRefusal(ctx, tx.Workers(), req, keyDigest); err != nil {
+			return err
+		}
 		// Atomic consume: returns the row only if expires_at > now and
 		// flips it into the soft-deleted state. Any concurrent caller
 		// loses the race and sees ErrNotFound.
@@ -361,6 +362,22 @@ func (s *WorkerConnectorService) Register(
 		WorkerId:  workerID,
 		AuthToken: authToken,
 	}, nil
+}
+
+func registeredAttemptRefusal(ctx context.Context, workers store.WorkerStore, req *leapmuxv1.RegisterRequest, keyDigest []byte) error {
+	existing, err := workers.GetByRegistrationAttemptID(ctx, req.GetAttemptId())
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("read the registration attempt: %w", err))
+	}
+	if subtle.ConstantTimeCompare(existing.RegistrationKeyHash, keyDigest) == 1 &&
+		workerkeys.Equal(req.GetKeys(), existing.PublicKeys.Proto()) {
+		return connect.NewError(connect.CodeAlreadyExists,
+			"this registration attempt already created a worker; recover its credentials")
+	}
+	return connect.NewError(connect.CodeUnauthenticated, "registration attempt unknown or already consumed")
 }
 
 // workerIdentityReadTimeout caps each username read, because each one runs

@@ -243,9 +243,9 @@ type WorkerStore interface {
 	// decides what a deleted row means.
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
 	// GetByAuthTokenIncludeDeleted returns the worker with this token whatever
-	// its state, and the caller refuses a row with DeletedAt set. A
-	// deregistering worker must still be admitted: Connect is how it is told
-	// to stop, and its other calls keep working until then.
+	// its state. Ordinary authentication refuses a row with DeletedAt set;
+	// self-deregistration confirms deletion of the retained row. A deregistering
+	// worker remains admitted until Connect tells it to stop.
 	GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*Worker, error)
 	// GetByRegistrationAttemptID returns the worker a durable registration
 	// attempt created, deleted rows included: recovery must tell a
@@ -689,7 +689,7 @@ type RevocationEventStore interface {
 	//
 	// The read is by subject_id, and idx_revocation_events_session_revoked
 	// serves it in every dialect. sqlite and postgres declare it PARTIAL on
-	// kind = 'session_revoked', so an insert of any OTHER kind -- which is
+	// kind = 2 (RevocationEventKindSessionRevoked), so an insert of any OTHER kind -- which is
 	// every kind but the rarest -- writes no index entry at all. mysql has no
 	// partial index, so it leads with kind instead: the one kind this asks
 	// about occupies a contiguous range, and every event pays one entry.

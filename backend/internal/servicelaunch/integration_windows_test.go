@@ -4,97 +4,70 @@ package servicelaunch
 
 import (
 	"context"
-	"os"
-	"os/user"
-	"path/filepath"
+	"fmt"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
+	"unsafe"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/Microsoft/go-winio"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-// TestNativeServiceLifecycle installs, starts, inspects, stops,
-// repairs, and removes the REAL Windows definitions of the built CLI:
-// the scheduled task for login startup and the service for boot
-// startup, as the disposable account. Only definitions this test
-// created are touched; the cleanup is unconditional.
-func TestNativeServiceLifecycle(t *testing.T) {
-	fixture := readServiceAccountFixture(t)
-	binary := testBinaryPath(t)
-	current, err := user.Current()
-	require.NoError(t, err)
-
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	dataDir := filepath.Join(home, ".config", "leapmux", "integration-test")
-	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
-
-	cases := []struct {
-		startup lifecycle.StartupKind
-		manager Manager
-	}{
-		{lifecycle.StartupLogin, newWindowsTaskManager(func() string { return credentialFromStore(fixture) })},
-		{lifecycle.StartupBoot, newWindowsServiceManager()},
+func nativeIntegrationManager(_ *testing.T, fixture serviceAccountFixture, binary string) Manager {
+	provider := func(context.Context, string) ([]byte, error) {
+		if fixture.CredentialReference == nil {
+			return nil, fmt.Errorf("the Windows fixture requires an OS credential reference")
+		}
+		return passwordFromCredentialStore(*fixture.CredentialReference, fixture.AccountID)
 	}
-	for _, tc := range cases {
-		t.Run(string(tc.startup)+" startup", func(t *testing.T) {
-			spec := LaunchSpec{
-				InstanceID:       "itst0000000000001",
-				Mode:             lifecycle.RoleWorker,
-				Startup:          tc.startup,
-				AccountID:        fixture.AccountID,
-				AccountName:      fixture.AccountName,
-				Executable:       binary,
-				WorkingDirectory: home,
-				ConfigFile:       filepath.Join(dataDir, "worker.yaml"),
-				DataDirectory:    dataDir,
-			}
-			t.Cleanup(func() { _ = tc.manager.Remove(context.Background(), spec) })
-
-			ctx := context.Background()
-
-			require.NoError(t, tc.manager.Install(ctx, spec))
-
-			status, err := tc.manager.Inspect(ctx, spec)
-			require.NoError(t, err)
-			assert.True(t, status.Installed)
-			assert.False(t, status.Running, "installing must not start the instance")
-
-			require.NoError(t, tc.manager.Start(ctx, spec))
-			status, err = tc.manager.Inspect(ctx, spec)
-			require.NoError(t, err)
-			require.True(t, status.Running)
-
-			require.NoError(t, tc.manager.Stop(ctx, spec))
-			status, err = tc.manager.Inspect(ctx, spec)
-			require.NoError(t, err)
-			assert.False(t, status.Running)
-			assert.True(t, status.Installed, "stop preserves the definition")
-
-			require.NoError(t, tc.manager.Install(ctx, spec))
-			status, err = tc.manager.Inspect(ctx, spec)
-			require.NoError(t, err)
-			assert.True(t, status.DefinitionMatches, "the repair restores the definition")
-
-			require.NoError(t, tc.manager.Remove(ctx, spec))
-			status, err = tc.manager.Inspect(ctx, spec)
-			require.NoError(t, err)
-			assert.False(t, status.Installed)
-		})
+	elevate := func(ctx context.Context, request nativeOperationRequest) error {
+		return runElevatedOperationWithHelper(ctx, binary, request)
 	}
-	assert.NotEmpty(t, current.Username)
+	service := newWindowsServiceManager()
+	service.credential = provider
+	service.elevate = elevate
+	task := newWindowsTaskManager(provider)
+	task.elevate = elevate
+	return &windowsAdapter{task: task, service: service}
 }
 
-// credentialFromStore reads the account credential from the OS
-// credential-store entry the fixture names. The value reaches the
-// native call only.
-func credentialFromStore(fixture serviceAccountFixture) string {
-	if fixture.CredentialReference == nil {
-		return ""
+func assertForeignNativeControlDenied(t *testing.T, url string) {
+	t.Helper()
+	name := strings.TrimPrefix(url, "npipe:")
+	if !strings.HasPrefix(name, `\\.\pipe\`) {
+		name = `\\.\pipe\` + name
 	}
-	// The credential-store read goes through the platform seam; the
-	// integration environment provisions the entry before the run.
-	return os.Getenv("LEAPMUX_SERVICE_TEST_CREDENTIAL")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	ownerConnection, err := winio.DialPipeContext(ctx, name)
+	require.NoError(t, err)
+	file, ok := ownerConnection.(interface{ Fd() uintptr })
+	require.True(t, ok)
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(t, err)
+	acl, _, err := descriptor.DACL()
+	require.NoError(t, err)
+	require.NotNil(t, acl)
+	require.Equal(t, uint16(1), acl.AceCount, "the control pipe must grant no other account or group")
+	var ace *windows.ACCESS_ALLOWED_ACE
+	require.NoError(t, windows.GetAce(acl, 0, &ace))
+	require.Equal(t, byte(windows.ACCESS_ALLOWED_ACE_TYPE), ace.Header.AceType)
+	require.Equal(t, lifecycle.CurrentAccountID(), (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String())
+	require.NoError(t, ownerConnection.Close())
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	impersonate := windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateAnonymousToken")
+	success, _, nativeErr := impersonate.Call(uintptr(windows.CurrentThread()))
+	require.NotZero(t, success, "anonymous impersonation: %v", nativeErr)
+	defer func() { require.NoError(t, windows.RevertToSelf()) }()
+	connection, err := winio.DialPipeContext(ctx, name)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	require.ErrorIs(t, err, windows.ERROR_ACCESS_DENIED, "another account must not open the private control pipe")
 }

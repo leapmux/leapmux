@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -72,14 +73,12 @@ func TestDeregisterRetriesAfterLocalCleanupFailure(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cfg.DataDir, 0o700))
 	require.NoError(t, os.WriteFile(cfg.DBPath(), []byte("sqlite"), 0o600))
 
-	// The remote deletion succeeds; the local cleanup cannot, because
-	// the data directory refuses writes for the first attempt. That is
-	// the partial cleanup a full disk or a permission surprise leaves.
-	require.NoError(t, os.Chmod(cfg.DataDir, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(cfg.DataDir, 0o700) })
-
-	err = runWorkerDeregister([]string{"--data-dir", cfg.DataDir})
-	require.Error(t, err, "the local cleanup failure surfaces")
+	// Fail at the local cleanup boundary, after the real remote commit.
+	failure := errors.New("credential destination removal failed")
+	err = runWorkerDeregisterWithFiles(t.Context(), []string{"--data-dir", cfg.DataDir}, func(cfg *config.Config) workerRegistrationFiles {
+		return credentialRemovalRefusal{cfg, failure}
+	})
+	require.ErrorIs(t, err, failure)
 	assert.EqualValues(t, 1, env.deregisterCalls.Load(), "one confirmed remote deletion")
 	require.Equal(t, state.WorkerID, rowIDofDeleted(t, env, state))
 
@@ -92,7 +91,6 @@ func TestDeregisterRetriesAfterLocalCleanupFailure(t *testing.T) {
 	// registration: the retained deleted row accepts the repeat call,
 	// so the credentials the first attempt could not remove are removed
 	// now.
-	require.NoError(t, os.Chmod(cfg.DataDir, 0o700))
 	require.NoError(t, runWorkerDeregister([]string{"--data-dir", cfg.DataDir}))
 	assert.EqualValues(t, 2, env.deregisterCalls.Load(), "the retry repeated the idempotent call")
 	assert.NoFileExists(t, cfg.StatePath())
@@ -109,27 +107,46 @@ func rowIDofDeleted(t *testing.T, env *registerEnv, state *config.State) string 
 	return row.ID
 }
 
-// Deregistering a machine that holds no registration is a success that
-// names its end state and leaves no pending material behind.
+// Deregistering a machine with no registration or pending attempt succeeds.
 func TestDeregisterOfAnUnregisteredWorkerSucceeds(t *testing.T) {
-	env := startRegisterEnv(t)
 	dataDir := t.TempDir()
-
-	// An abandoned pending record is the leftover this path sweeps.
 	cfg := workerConfigOf(t, dataDir)
-	cfg.HubURL = env.url
-	require.NoError(t, cfg.Validate())
-	pending := &config.PendingRegistration{
-		AttemptID: "e9a0425886d148f68a8f94716ed47a78",
-		HubURL:    env.url,
-		RegKey:    "an-abandoned-key",
-	}
-	_, err := pending.GenerateKeypair()
-	require.NoError(t, err)
-	require.NoError(t, cfg.SavePendingRegistration(pending))
-
 	require.NoError(t, runWorkerDeregister([]string{"--data-dir", dataDir}))
 	assert.NoFileExists(t, cfg.StatePath())
-	assert.NoFileExists(t, cfg.PendingPath(), "the sweep removes the abandoned pending record")
-	assert.Zero(t, env.deregisterCalls.Load(), "no remote call is made for a local-only state")
+	assert.NoFileExists(t, cfg.PendingPath())
+}
+
+func TestDeregisterPreservesIncompleteNonemptyCredentials(t *testing.T) {
+	cfg := workerConfigOf(t, t.TempDir())
+	require.NoError(t, cfg.SaveState(&config.State{HubURL: "https://hub.example", WorkerID: "worker-without-token"}))
+	before, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	err = runWorkerDeregister([]string{"--data-dir", cfg.DataDir})
+	require.ErrorContains(t, err, "incomplete")
+	after, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "an unconfirmed remote outcome must preserve all surviving credentials")
+}
+
+func TestDeregisterPreservesUnresolvedCommittedAttempt(t *testing.T) {
+	env, cfg := registerThroughEnv(t)
+	state, err := cfg.LoadState()
+	require.NoError(t, err)
+	row, err := env.store.Workers().GetByID(context.Background(), state.WorkerID)
+	require.NoError(t, err)
+	require.NoError(t, cfg.SavePendingRegistration(&config.PendingRegistration{
+		AttemptID: row.RegistrationAttemptID, HubURL: env.url, RegKey: env.key, KeyMaterial: state.KeyMaterial,
+	}))
+	require.NoError(t, os.Remove(cfg.StatePath()))
+	before, err := os.ReadFile(cfg.PendingPath())
+	require.NoError(t, err)
+	err = runWorkerDeregister([]string{"--data-dir", cfg.DataDir})
+	require.ErrorContains(t, err, "register")
+	after, err := os.ReadFile(cfg.PendingPath())
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "pending recovery material must survive an unconfirmed remote outcome")
+	assert.Zero(t, env.deregisterCalls.Load())
+	current, err := env.store.Workers().GetByID(context.Background(), state.WorkerID)
+	require.NoError(t, err)
+	assert.Nil(t, current.DeletedAt)
 }

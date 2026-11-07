@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/v2"
@@ -133,23 +132,6 @@ func defaultValueString(f *flag.Flag) string {
 		}
 	}
 	return f.DefValue
-}
-
-// ExtractConfigFlag pre-scans args for -config/--config before full flag parsing.
-// Returns the config file path found, or defaultPath if not specified.
-func ExtractConfigFlag(args []string, defaultPath string) string {
-	for i, arg := range args {
-		// Handle -config=value or --config=value
-		if strings.HasPrefix(arg, "-config=") || strings.HasPrefix(arg, "--config=") {
-			_, val, _ := strings.Cut(arg, "=")
-			return val
-		}
-		// Handle -config value or --config value
-		if (arg == "-config" || arg == "--config") && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return defaultPath
 }
 
 // Delim is the koanf path separator. Every koanf instance in this repo takes

@@ -209,9 +209,9 @@ type recordingOps struct {
 	calls []string
 }
 
-func (r *recordingOps) createTemp(dir, pattern string) (*os.File, error) {
+func (r *recordingOps) createTemp(dir, pattern string, mode os.FileMode) (*os.File, error) {
 	r.calls = append(r.calls, "createTemp")
-	return r.defaultFileOps.createTemp(dir, pattern)
+	return r.defaultFileOps.createTemp(dir, pattern, mode)
 }
 
 func (r *recordingOps) chmod(f *os.File, mode os.FileMode) error {
@@ -270,6 +270,7 @@ func TestWriteFilePublicationOrder(t *testing.T) {
 		rec.calls, "the atomic write sequence must keep its order and stop at the rename")
 
 	rec.calls = nil
+	observeDurableReplacement(t, func() { rec.calls = append(rec.calls, "rename") })
 	require.NoError(t, WriteFileDurable(path, []byte("y"), 0o600))
 
 	// The durable contract: the same sequence, then the parent

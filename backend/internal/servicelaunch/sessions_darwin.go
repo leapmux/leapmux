@@ -10,11 +10,8 @@ import (
 )
 
 // darwinSessionMonitor lists the account's login sessions from the
-// system's own session records: `who` names every logged-in console
-// and remote session of every user, filtered to the account. Locking
-// the screen produces no change here, and a disconnected remote
-// desktop session stays listed until it logs out -- exactly the
-// last-session rule's inputs.
+// system's console login records. Shell sessions do not extend a desktop
+// login. A locked desktop retains its console login record.
 type darwinSessionMonitor struct {
 	// runWho runs the who command; a test substitutes it.
 	runWho func() ([]byte, error)
@@ -45,11 +42,10 @@ func (m *darwinSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
 		if len(fields) < 2 {
 			continue
 		}
-		// `who` spells the account by name; the console and the ttys of
-		// one account all list alike. Every entry `who` reports is an
-		// interactive login -- a locked screen stays listed, and a
-		// logged-out session leaves it.
-		if account.Name != "" && fields[0] != account.Name {
+		if account.Name == "" {
+			return nil, fmt.Errorf("the session account name is required")
+		}
+		if fields[0] != account.Name || fields[1] != "console" {
 			continue
 		}
 		sessions = append(sessions, Session{ID: fields[1], Kind: SessionInteractive})

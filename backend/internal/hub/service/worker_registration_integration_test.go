@@ -96,6 +96,111 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 	}
 }
 
+func TestConcurrentRegistrationOfOneAttemptReturnsRecoverableConflict(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres", "mysql"} {
+		t.Run(backend, func(t *testing.T) {
+			key := id.Generate()
+			barrier := &registrationKeyReadBarrier{key: key, arrivals: make(chan struct{}, 2), release: make(chan struct{})}
+			decorate := func(st store.Store) store.Store { return registrationKeyReadStore{Store: st, barrier: barrier} }
+			var env *regKeyEnv
+			if backend == "sqlite" {
+				env = newRegKeyEnv(t, testConfig(), nil, decorate)
+			} else {
+				env = regKeyEnvFromStore(t, registrationStore(t, backend), testConfig(), nil, decorate, nil)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			owner := userid.MustNew(env.adminID(t))
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+				ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			attempt := newRegisterAttempt(t, 0x51)
+			type result struct {
+				response *leapmuxv1.RegisterResponse
+				err      error
+			}
+			results := make(chan result, 2)
+			for range 2 {
+				go func() {
+					response, err := env.registerCall(t, ctx, key, attempt, false)
+					results <- result{response, err}
+				}()
+			}
+			for range 2 {
+				select {
+				case <-barrier.arrivals:
+				case <-ctx.Done():
+					t.Fatal("both registrations must read the key before either transaction starts")
+				}
+			}
+			close(barrier.release)
+			var registered *leapmuxv1.RegisterResponse
+			var conflicts int
+			for range 2 {
+				select {
+				case result := <-results:
+					if result.err == nil {
+						require.Nil(t, registered, "only one request may create the worker")
+						registered = result.response
+					} else {
+						require.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(result.err), result.err)
+						conflicts++
+					}
+				case <-ctx.Done():
+					t.Fatal("the overlapping registrations did not finish")
+				}
+			}
+			require.NotNil(t, registered)
+			assert.Equal(t, 1, conflicts)
+			page, err := env.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+				RegisteredBy: owner, PageParams: store.PageParams{Limit: 10},
+			})
+			require.NoError(t, err)
+			require.Len(t, page.Rows, 1)
+			assert.Equal(t, registered.GetWorkerId(), page.Rows[0].ID)
+			assert.Equal(t, registered.GetAuthToken(), page.Rows[0].AuthToken)
+		})
+	}
+}
+
+type registrationKeyReadBarrier struct {
+	key      string
+	arrivals chan struct{}
+	release  chan struct{}
+}
+
+type registrationKeyReadStore struct {
+	store.Store
+	barrier *registrationKeyReadBarrier
+}
+
+func (s registrationKeyReadStore) RegistrationKeys() store.RegistrationKeyStore {
+	return registrationKeyReads{RegistrationKeyStore: s.Store.RegistrationKeys(), barrier: s.barrier}
+}
+
+type registrationKeyReads struct {
+	store.RegistrationKeyStore
+	barrier *registrationKeyReadBarrier
+}
+
+func (s registrationKeyReads) GetByID(ctx context.Context, key string) (*store.WorkerRegistrationKey, error) {
+	row, err := s.RegistrationKeyStore.GetByID(ctx, key)
+	if err != nil || key != s.barrier.key {
+		return row, err
+	}
+	select {
+	case s.barrier.arrivals <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.barrier.release:
+		return row, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func registrationStore(t *testing.T, backend string) store.TestableStore {
 	t.Helper()
 	var st store.TestableStore

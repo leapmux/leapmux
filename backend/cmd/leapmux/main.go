@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
@@ -26,16 +27,13 @@ type topLevelCommand struct {
 // topLevelCommands holds every `leapmux <command>`, in the order the usage
 // prints them.
 //
-// A command that owns a command tree takes its name and its summary from
-// that tree, so `leapmux --help` and `leapmux <command> --help` cannot
-// disagree — they did, and the top-level row was the stale copy. The other
-// commands are daemons and one built-in; they have no tree to read from, so
-// their summary lives here, which is the only place that prints it.
+// Administrative commands read metadata from their trees. Mode commands
+// share modeSummary with their lifecycle trees, so their summaries cannot drift.
 var topLevelCommands = []topLevelCommand{
-	{Name: "solo", Summary: "Run Hub + Worker locally for single-user use"},
-	{Name: "hub", Summary: "Run the Hub service"},
-	{Name: "worker", Summary: "Run a Worker connected to a Hub"},
-	{Name: "dev", Summary: "Run Hub + Worker for development"},
+	{Name: "solo", Summary: modeSummary("solo")},
+	{Name: "hub", Summary: modeSummary("hub")},
+	{Name: "worker", Summary: modeSummary("worker")},
+	{Name: "dev", Summary: modeSummary("dev")},
 	{Name: recoverTree.Name, Summary: recoverTree.Summary},
 	{Name: controlTree.Name, Summary: controlTree.Summary},
 	{Name: "version", Summary: "Print version and exit"},
@@ -92,6 +90,18 @@ func main() {
 	if code, handled := worker.RunAgentHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
+	if handled, err := servicelaunch.RunNativeHelper(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(handleRunError(os.Stderr, err))
+		}
+		os.Exit(0)
+	}
+	if handled, err := runNativeServiceEntry(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(handleRunError(os.Stderr, err))
+		}
+		os.Exit(0)
+	}
 	logging.Setup()
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, cliRunners{
 		runHub:     runHub,
@@ -107,7 +117,7 @@ func main() {
 func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "error: command is required")
-		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo" to run solo mode`)
+		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo run" to run solo mode`)
 		printUsage(stderr)
 		return 1
 	}

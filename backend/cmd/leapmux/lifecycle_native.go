@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -25,6 +28,9 @@ var newTicker = time.NewTicker
 // They share the directory's operation lock, the saved service
 // specification, the platform's native manager, and the interactive
 // consent flow in lifecycle_prompt.go.
+
+// nativeControllerFactory resolves the native control boundary for one instance.
+type nativeControllerFactory func(mode, dataDirectory string) (*servicelaunch.Controller, error)
 
 // nativeController wires the shared controller for one mode's data
 // directory: the platform manager, the saved specification under the
@@ -60,11 +66,15 @@ func platformManager() servicelaunch.Manager {
 // this executable, this configuration, this account, and the chosen
 // startup kind.
 func desiredSpec(mode string, startup lifecycle.StartupKind, dataDir string, configArgs []string) (lifecycle.ServiceSpec, error) {
-	role := modeRole(mode)
-	canonical, err := lifecycle.CanonicalDir(dataDir)
+	args := append([]string{"--data-dir", dataDir}, configArgs...)
+	configuration, options, err := loadLifecycleCommand(mode, "start", args)
 	if err != nil {
 		return lifecycle.ServiceSpec{}, err
 	}
+	return serviceSpecFromConfiguration(configuration, options, startup)
+}
+
+func serviceSpecFromConfiguration(configuration *lifecycleConfiguration, options lifecycleOptions, startup lifecycle.StartupKind) (lifecycle.ServiceSpec, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return lifecycle.ServiceSpec{}, err
@@ -73,121 +83,118 @@ func desiredSpec(mode string, startup lifecycle.StartupKind, dataDir string, con
 	if err == nil {
 		executable = resolved
 	}
-	home, _ := os.UserHomeDir()
-	configFile := configPathFromArgs(configArgs, defaultDataDirOf(mode), string(role))
-	accountID := lifecycle.CurrentAccountID()
-	accountName := currentAccountName()
-	spec := lifecycle.ServiceSpec{
-		InstanceID:       string(lifecycle.NewInstanceID(accountID, role, canonical)),
-		Mode:             role,
-		Startup:          startup,
-		AccountID:        accountID,
-		AccountName:      accountName,
-		Executable:       executable,
-		WorkingDirectory: home,
-		ConfigFile:       configFile,
-		DataDirectory:    canonical,
-		RuntimeArguments: []string{},
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return lifecycle.ServiceSpec{}, err
 	}
-	if err := servicelaunch.ValidateLaunchSpec(mustConvert(spec)); err != nil {
+	accountID := lifecycle.CurrentAccountID()
+	spec := lifecycle.ServiceSpec{
+		InstanceID:         string(lifecycle.NewInstanceID(accountID, configuration.role, configuration.dataDirectory)),
+		Mode:               configuration.role,
+		Startup:            startup,
+		AccountID:          accountID,
+		AccountName:        currentAccountName(),
+		Executable:         executable,
+		WorkingDirectory:   home,
+		ConfigFile:         configuration.configurationFile,
+		DataDirectory:      configuration.dataDirectory,
+		RuntimeArguments:   configuration.runtimeArguments,
+		RuntimeEnvironment: map[string]string{"PATH": os.Getenv("PATH")},
+	}
+	if options.environmentFile != "" {
+		path, pathErr := filepath.Abs(internalconfig.ExpandHome(options.environmentFile))
+		if pathErr != nil {
+			return lifecycle.ServiceSpec{}, pathErr
+		}
+		spec.EnvironmentFile = &path
+		if err := selectServiceEnvironmentFile(&spec); err != nil {
+			return lifecycle.ServiceSpec{}, err
+		}
+	}
+	if _, err := servicelaunch.LaunchSpecFromService(spec); err != nil {
 		return lifecycle.ServiceSpec{}, err
 	}
 	return spec, nil
 }
 
-// mustConvert validates and converts through the shared rule.
-func mustConvert(spec lifecycle.ServiceSpec) servicelaunch.LaunchSpec {
-	launch, err := servicelaunch.LaunchSpecFromService(spec)
-	if err != nil {
-		return servicelaunch.LaunchSpec{}
-	}
-	return launch
-}
-
-// configPathFromArgs reads --config from the mode's own flags, falling
-// back to the mode's default file.
-func configPathFromArgs(args []string, dataDir, mode string) string {
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--config" || arg == "-config":
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-		case strings.HasPrefix(arg, "--config="):
-			return strings.TrimPrefix(arg, "--config=")
-		}
-	}
-	return dataDir + "/" + mode + ".yaml"
-}
-
-// runModeEnable configures automatic startup WITHOUT starting now. It
+// runModeEnableWithController configures automatic startup WITHOUT starting now. It
 // supports repairing credentials and native definitions of an existing
 // configuration; changing the startup mode, account, executable, or
 // runtime configuration requires a stopped instance.
-func runModeEnable(mode string) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) error {
-		startup, rest, err := parseStartupFlag(args)
+func runModeEnableWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
+	return func(c cmdCtx, args []string) (result error) {
+		configuration, options, err := loadLifecycleCommand(mode, "enable", args)
+		if handleVersionQuery(err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		dataDir, cfgArgs, err := splitLifecycleArgs(rest)
-		if err != nil {
+		if err := validateLifecycleSelection(configuration); err != nil {
 			return err
 		}
-		if dataDir == "" {
-			dataDir = defaultDataDirOf(mode)
-		}
-		canonical, err := lifecycle.CanonicalDir(dataDir)
-		if err != nil {
-			return err
-		}
-		release, err := lifecycle.OperationLock(canonical)
+		release, err := lifecycle.OperationLock(configuration.dataDirectory)
 		if err != nil {
 			return err
 		}
 		defer release()
-
-		controller, err := nativeController(mode, dataDir)
+		controller, err := newController(mode, configuration.dataDirectory)
 		if err != nil {
 			return err
 		}
-
 		existing, readErr := controller.ReadSpec()
-		if readErr == nil {
-			// Repair of an existing configuration: preselect the saved
-			// startup kind unless the flag chose one.
-			if startup == "" {
-				startup = existing.Startup
-			}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+		startup := options.startup
+		if startup == "" && readErr == nil {
+			startup = existing.Startup
 		}
 		if startup == "" {
-			// --yes must not select a startup mode when none is
-			// configured; the interactive prompt defaults to login.
-			if yesPresent(rest) {
+			if options.yes {
 				return fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
 			}
-			choice, err := promptStartupChoice(os.Stdout, os.Stdin)
+			if err := requireInteractiveInput("--startup=login or --startup=boot", "--yes"); err != nil {
+				return err
+			}
+			startup, err = promptStartupChoice(os.Stdout, os.Stdin)
 			if err != nil {
 				return err
 			}
-			startup = choice
 		}
-
-		spec, err := desiredSpec(mode, startup, dataDir, cfgArgs)
+		var saved *lifecycle.ServiceSpec
+		if readErr == nil {
+			saved = &existing
+		}
+		spec, err := commandServiceSpec(configuration, options, startup, saved, true)
 		if err != nil {
 			return err
 		}
-
+		held, err := lifecycle.ProbeRuntimeLock(lifecycle.PathsOf(configuration.dataDirectory))
+		if err != nil {
+			return err
+		}
+		if held && (readErr != nil || !specMatchesSaved(existing, spec)) {
+			return fmt.Errorf("the instance is running or starting; stop it before changing its startup configuration")
+		}
+		if !held {
+			directory, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(configuration.role, configuration.dataDirectory), configuration.role, configuration.dataDirectory)
+			if err != nil {
+				return err
+			}
+			defer func() { result = errors.Join(result, directory.Close()) }()
+		}
 		change, err := controller.Preview(context.Background(), spec)
 		if err != nil {
 			return err
 		}
-		printChangePreview(mode, change)
-		if change.RequiresElevation {
-			fmt.Printf("\nAdministrator authorization is required: %s\n", change.ElevationReason)
+		if err := printChangePreview(os.Stdout, mode, change); err != nil {
+			return err
 		}
-		if !yesPresent(rest) {
+		if !options.yes {
+			if err := requireInteractiveInput("--yes"); err != nil {
+				return err
+			}
 			accepted, err := promptApply(os.Stdout, os.Stdin)
 			if err != nil {
 				return err
@@ -205,45 +212,50 @@ func runModeEnable(mode string) func(cmdCtx, []string) error {
 	}
 }
 
-// runModeDisable removes the native startup configuration. It refuses
+// runModeDisableWithController removes the native startup configuration. It refuses
 // while an instance runs or starts, and preserves the data, the worker
 // credentials, and the logs.
-func runModeDisable(mode string) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) error {
-		_, rest, err := parseTimeoutFlag(args, defaultStatusTimeout)
+func runModeDisableWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
+	return func(c cmdCtx, args []string) (result error) {
+		configuration, _, err := loadLifecycleCommand(mode, "disable", args)
+		if handleVersionQuery(err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		dataDir, _, err := splitLifecycleArgs(rest)
-		if err != nil {
+		if err := validateLifecycleSelection(configuration); err != nil {
 			return err
 		}
-		if dataDir == "" {
-			dataDir = defaultDataDirOf(mode)
-		}
-		canonical, err := lifecycle.CanonicalDir(dataDir)
-		if err != nil {
-			return err
-		}
-		release, err := lifecycle.OperationLock(canonical)
+		release, err := lifecycle.OperationLock(configuration.dataDirectory)
 		if err != nil {
 			return err
 		}
 		defer release()
-
-		paths := lifecycle.PathsOf(canonical)
-		if held, _ := lifecycle.ProbeRuntimeLock(paths); held {
-			return fmt.Errorf("the instance is running or starting; stop it with `leapmux %s stop` before disabling", mode)
-		}
-		controller, err := nativeController(mode, dataDir)
+		held, err := lifecycle.ProbeRuntimeLock(lifecycle.PathsOf(configuration.dataDirectory))
 		if err != nil {
 			return err
 		}
-		if err := controller.Remove(context.Background()); err != nil {
+		if held {
+			return fmt.Errorf("the instance is running or starting; stop it with `leapmux %s stop` before disabling", mode)
+		}
+		controller, err := newController(mode, configuration.dataDirectory)
+		if err != nil {
+			return err
+		}
+		if _, err := controller.ReadSpec(); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				fmt.Println("No startup configuration.")
 				return nil
 			}
+			return err
+		}
+		directory, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(configuration.role, configuration.dataDirectory), configuration.role, configuration.dataDirectory)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, directory.Close()) }()
+		if err := controller.Remove(context.Background()); err != nil {
 			return err
 		}
 		fmt.Println("Startup configuration removed. Application data, worker credentials, and logs are preserved.")
@@ -251,161 +263,253 @@ func runModeDisable(mode string) func(cmdCtx, []string) error {
 	}
 }
 
-// runModeStart starts through the configured native mechanism. Missing
-// or differing configuration goes through the consent flow first; the
-// runtime wait budget starts after consent and authorization complete.
-func runModeStart(mode string) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) error {
-		timeout, rest, err := parseTimeoutFlag(args, defaultStartTimeout)
-		if err != nil {
-			return err
+// acquireNativeStartup checks prerequisites and retains startup ownership.
+func acquireNativeStartup(configuration *lifecycleConfiguration, restart bool) (*lifecycle.DirectoryLease, error) {
+	if err := validateLifecycleSelection(configuration); err != nil {
+		return nil, err
+	}
+	paths := lifecycle.PathsOf(configuration.dataDirectory)
+	held, err := lifecycle.ProbeRuntimeLock(paths)
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		if !restart {
+			return nil, fmt.Errorf("the instance is already running; use `leapmux %s status` or `leapmux %s restart`", configuration.role, configuration.role)
 		}
-		startup, rest, err := parseStartupFlag(rest)
-		if err != nil {
-			return err
-		}
-		dataDir, cfgArgs, err := splitLifecycleArgs(rest)
-		if err != nil {
-			return err
-		}
-		if dataDir == "" {
-			dataDir = defaultDataDirOf(mode)
-		}
-		canonical, err := lifecycle.CanonicalDir(dataDir)
-		if err != nil {
-			return err
-		}
-		release, err := lifecycle.OperationLock(canonical)
-		if err != nil {
-			return err
-		}
-		defer release()
-
-		controller, err := nativeController(mode, dataDir)
-		if err != nil {
-			return err
-		}
-		existing, readErr := controller.ReadSpec()
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return readErr
-		}
-		if readErr == nil && startup == "" {
-			startup = existing.Startup
-		}
-		if startup == "" {
-			if yesPresent(rest) {
-				return fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
+		if configuration.role == lifecycle.RoleWorker {
+			ctx, cancel := context.WithTimeout(context.Background(), defaultStatusTimeout)
+			defer cancel()
+			status, err := lifecycle.Observe(ctx, configuration.dataDirectory)
+			if err != nil {
+				return nil, err
 			}
-			choice, promptErr := promptStartupChoice(os.Stdout, os.Stdin)
+			if status.Registration.State != lifecycle.RegistrationRegistered {
+				return nil, fmt.Errorf("worker is unregistered: run `leapmux worker register` before restarting")
+			}
+		}
+		return nil, nil
+	}
+	directory, err := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(configuration.role, configuration.dataDirectory), configuration.role, configuration.dataDirectory)
+	if err != nil {
+		return nil, err
+	}
+	if err := configuration.checkStartup(directory); err != nil {
+		return nil, errors.Join(err, directory.Close())
+	}
+	return directory, nil
+}
+
+// executeNativeStartWithController starts through the native manager. Restart
+// shares the operation lock and runtime wait budget across stop and start.
+func executeNativeStartWithController(mode, verb string, args []string, newController nativeControllerFactory) (result error) {
+	configuration, options, err := loadLifecycleCommand(mode, verb, args)
+	if handleVersionQuery(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	release, err := lifecycle.OperationLock(configuration.dataDirectory)
+	if err != nil {
+		return err
+	}
+	defer release()
+	directory, err := acquireNativeStartup(configuration, verb == "restart")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if directory != nil {
+			result = errors.Join(result, directory.Close())
+		}
+	}()
+	controller, err := newController(mode, configuration.dataDirectory)
+	if err != nil {
+		return err
+	}
+	existing, readErr := controller.ReadSpec()
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	startup := options.startup
+	if startup == "" && readErr == nil {
+		startup = existing.Startup
+	}
+	if startup == "" {
+		if options.yes {
+			return fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
+		}
+		if err := requireInteractiveInput("--startup=login or --startup=boot", "--yes"); err != nil {
+			return err
+		}
+		startup, err = promptStartupChoice(os.Stdout, os.Stdin)
+		if err != nil {
+			return err
+		}
+	}
+	var saved *lifecycle.ServiceSpec
+	if readErr == nil {
+		saved = &existing
+	}
+	spec, err := commandServiceSpec(configuration, options, startup, saved, false)
+	if err != nil {
+		return err
+	}
+	needsConfiguration := readErr != nil || !specMatchesSaved(existing, spec)
+	if !needsConfiguration {
+		launch, convertErr := servicelaunch.LaunchSpecFromService(spec)
+		if convertErr != nil {
+			return convertErr
+		}
+		native, inspectErr := controller.Manager.Inspect(context.Background(), launch)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		needsConfiguration = !native.Installed || !native.DefinitionMatches
+	}
+	if needsConfiguration {
+		change, previewErr := controller.Preview(context.Background(), spec)
+		if previewErr != nil {
+			return previewErr
+		}
+		if err := printChangePreview(os.Stdout, mode, change); err != nil {
+			return err
+		}
+		if !options.yes {
+			if err := requireInteractiveInput("--yes"); err != nil {
+				return err
+			}
+			accepted, promptErr := promptApply(os.Stdout, os.Stdin)
 			if promptErr != nil {
 				return promptErr
 			}
-			startup = choice
-		}
-
-		spec, err := desiredSpec(mode, startup, dataDir, cfgArgs)
-		if err != nil {
-			return err
-		}
-
-		// Configure first when missing or differing.
-		if readErr != nil || !specMatchesSaved(existing, spec) {
-			change, previewErr := controller.Preview(context.Background(), spec)
-			if previewErr != nil {
-				return previewErr
-			}
-			printChangePreview(mode, change)
-			if change.RequiresElevation {
-				fmt.Printf("\nAdministrator authorization is required: %s\n", change.ElevationReason)
-			}
-			if !yesPresent(rest) {
-				accepted, promptErr := promptApply(os.Stdout, os.Stdin)
-				if promptErr != nil {
-					return promptErr
-				}
-				if !accepted {
-					fmt.Println("Configuration unchanged; nothing started.")
-					return nil
-				}
-			}
-			if applyErr := controller.Apply(context.Background(), spec); applyErr != nil {
-				return applyErr
+			if !accepted {
+				fmt.Println("Configuration unchanged; nothing started.")
+				return nil
 			}
 		}
-
-		// The native start itself; the wait budget covers readiness from
-		// here -- consent and authorization are complete.
-		launch, err := servicelaunch.LaunchSpecFromService(spec)
-		if err != nil {
-			return err
-		}
-		if err := platformManager().Start(context.Background(), launch); err != nil {
-			notes, _ := platformManager().Diagnose(context.Background(), launch)
-			for _, note := range notes {
-				fmt.Println(note)
-			}
-			return err
-		}
-		return waitForReadiness(mode, canonical, timeout)
 	}
-}
-
-// runModeRestart validates prerequisites, stops the current instance,
-// waits for the shutdown, and starts through the native mechanism --
-// one budget for both halves.
-func runModeRestart(mode string) func(cmdCtx, []string) error {
-	return func(c cmdCtx, args []string) error {
-		timeout, rest, err := parseTimeoutFlag(args, defaultStartTimeout)
-		if err != nil {
-			return err
-		}
-		dataDir, _, err := splitLifecycleArgs(rest)
-		if err != nil {
-			return err
-		}
-		if dataDir == "" {
-			dataDir = defaultDataDirOf(mode)
-		}
-		canonical, err := lifecycle.CanonicalDir(dataDir)
-		if err != nil {
-			return err
-		}
-		_ = canonical
-		// Stop first; a restart never launches a replacement while the
-		// old instance owns its runtime lock.
-		if err := runModeStop(mode)(c, append([]string{"--timeout", timeout.String()}, rest...)); err != nil {
-			return err
-		}
-		return runModeStart(mode)(c, args)
+	previous, previousErr := lifecycle.ReadRuntimeRecord(lifecycle.PathsOf(configuration.dataDirectory).RuntimeRecord)
+	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
+		return previousErr
 	}
+	remaining := options.timeout
+	if verb == "restart" {
+		stopStarted := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
+		stopErr := stopLifecycleInstanceWithController(ctx, configuration, newController)
+		cancel()
+		if stopErr != nil {
+			return stopErr
+		}
+		remaining -= time.Since(stopStarted)
+		if remaining <= 0 {
+			return fmt.Errorf("restart shutdown exhausted the wait budget: %w", context.DeadlineExceeded)
+		}
+		if directory == nil {
+			directory, err = acquireNativeStartup(configuration, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	// Consent and native configuration authorization do not consume the runtime wait budget.
+	if needsConfiguration {
+		if err := controller.Apply(context.Background(), spec); err != nil {
+			return err
+		}
+	}
+	launch, err := servicelaunch.LaunchSpecFromService(spec)
+	if err != nil {
+		return err
+	}
+	if authorizer, ok := controller.Manager.(servicelaunch.StartAuthorizer); ok {
+		if err := authorizer.AuthorizeStart(context.Background(), launch); err != nil {
+			return err
+		}
+	}
+	if directory != nil {
+		if err := directory.Close(); err != nil {
+			return err
+		}
+		directory = nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remaining)
+	defer cancel()
+	if err := controller.Manager.Start(ctx, launch); err != nil {
+		notes, diagnosticErr := controller.Manager.Diagnose(ctx, launch)
+		for _, note := range notes {
+			fmt.Println(note)
+		}
+		if diagnosticErr != nil {
+			fmt.Fprintf(os.Stderr, "Cannot fetch native startup diagnostics: %v\n", diagnosticErr)
+		}
+		return err
+	}
+	deadline, _ := ctx.Deadline()
+	remaining = time.Until(deadline)
+	if remaining <= 0 {
+		return fmt.Errorf("native startup exhausted the wait budget: %w", context.DeadlineExceeded)
+	}
+	return waitForReadinessObserved(mode, configuration.dataDirectory, remaining, previous.AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
+		return observeLifecycleModeWithController(ctx, configuration, newController)
+	})
 }
 
 // waitForReadiness polls the control interface for readiness within
 // the budget, distinguishing a startup failure from a wait timeout
 // while startup continues.
 func waitForReadiness(mode, canonical string, timeout waitBudget) error {
+	return waitForReadinessObserved(mode, canonical, timeout, "", lifecycle.ExecutionForeground, func(ctx context.Context) (lifecycle.Status, error) { return lifecycle.Observe(ctx, canonical) })
+}
+
+func waitForReadinessObserved(mode, canonical string, timeout waitBudget, previousAttempt string, expectedExecution lifecycle.ExecutionKind, observe func(context.Context) (lifecycle.Status, error)) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	paths := lifecycle.PathsOf(canonical)
-	tick := newTicker(timeout / 20)
+	tick := newTicker(100 * time.Millisecond)
 	defer tick.Stop()
+	var latest lifecycle.Status
 	for {
-		status, err := lifecycle.Observe(ctx, canonical)
-		if err == nil {
+		status, err := observe(ctx)
+		latest = status
+		for _, diagnostic := range status.Diagnostics {
+			if diagnostic.Title == "Native startup failure" {
+				return reportStartupFailure(mode, paths, status)
+			}
+		}
+		if err == nil && (previousAttempt == "" || status.Attempt.ID != nil && *status.Attempt.ID != previousAttempt) {
 			switch {
-			case status.Readiness == lifecycle.ReadinessReady || status.Readiness == lifecycle.ReadinessReadyForSetup:
+			case status.Process.State == lifecycle.ProcessRunning && (status.Readiness != nil && (*status.Readiness == lifecycle.ReadinessReady || *status.Readiness == lifecycle.ReadinessReadyForSetup)):
+				actualExecution := "unknown"
+				if status.Execution != nil {
+					actualExecution = string(*status.Execution)
+				}
+				if status.Execution == nil || *status.Execution != expectedExecution {
+					return fmt.Errorf("%s became ready with %q execution, but %q execution was requested; inspect it with `leapmux %s status`", mode, actualExecution, expectedExecution, mode)
+				}
 				fmt.Printf("%s started.\n", capitalize(mode))
 				return nil
-			case status.Readiness == lifecycle.ReadinessFailed:
+			case status.Readiness != nil && *status.Readiness == lifecycle.ReadinessFailed:
 				return reportStartupFailure(mode, paths, status)
 			case status.Process.State == lifecycle.ProcessFailed:
 				return reportStartupFailure(mode, paths, status)
+			case status.Process.State == lifecycle.ProcessStopped && status.Attempt.EndedAt != nil:
+				return fmt.Errorf("%s exited before it became ready", mode)
 			}
 		}
 		select {
 		case <-ctx.Done():
-			fmt.Printf("Startup continues; no readiness within %s. See `leapmux %s status`.\n", timeout, mode)
-			return nil
+			fmt.Printf("Startup wait expired after %s; startup may continue. See `leapmux %s status`.\n", timeout, mode)
+			if latest.Attempt.LogPath != nil {
+				if excerpt, excerptErr := lifecycle.ReadExcerpt(*latest.Attempt.LogPath); excerptErr == nil && excerpt != "" {
+					fmt.Printf("\nRecent startup logs:\n%s\n", excerpt)
+				}
+				fmt.Printf("Full log: %s\n", *latest.Attempt.LogPath)
+			}
+			return fmt.Errorf("startup readiness wait ended: %w", ctx.Err())
 		case <-tick.C:
 		}
 	}
@@ -415,18 +519,21 @@ func waitForReadiness(mode, canonical string, timeout waitBudget) error {
 // bounded log excerpt and the complete log location.
 func reportStartupFailure(mode string, paths lifecycle.Paths, status lifecycle.Status) error {
 	fmt.Printf("%s failed to start.\n", capitalize(mode))
-	if status.Attempt.LogPath != "" {
-		excerpt, err := lifecycle.ReadExcerpt(status.Attempt.LogPath)
+	if status.Attempt.LogPath != nil {
+		excerpt, err := lifecycle.ReadExcerpt(*status.Attempt.LogPath)
 		if err == nil && excerpt != "" {
 			fmt.Println("\nRecent startup logs:")
 			for _, line := range strings.Split(strings.TrimSpace(excerpt), "\n") {
 				fmt.Println("  " + line)
 			}
 		}
-		fmt.Printf("\nFull log: %s\n", status.Attempt.LogPath)
+		fmt.Printf("\nFull log: %s\n", *status.Attempt.LogPath)
 	}
 	for _, d := range status.Diagnostics {
 		fmt.Printf("%s: %s\n", d.Title, d.Body)
+	}
+	if status.Attempt.Error != nil {
+		return fmt.Errorf("%s failed to start: %s", mode, *status.Attempt.Error)
 	}
 	return fmt.Errorf("%s failed to start", mode)
 }
@@ -434,10 +541,7 @@ func reportStartupFailure(mode string, paths lifecycle.Paths, status lifecycle.S
 // specMatchesSaved states whether the desired specification and the
 // saved one describe the same launch.
 func specMatchesSaved(saved, desired lifecycle.ServiceSpec) bool {
-	return saved.InstanceID == desired.InstanceID &&
-		saved.Startup == desired.Startup &&
-		saved.Executable == desired.Executable &&
-		saved.ConfigFile == desired.ConfigFile
+	return saved.Equal(desired)
 }
 
 // parseStartupFlag reads --startup=login|boot from the args.
@@ -462,20 +566,15 @@ func parseStartupFlag(args []string) (lifecycle.StartupKind, []string, error) {
 	return chosen, rest, nil
 }
 
-// yesPresent states whether --yes was passed.
-func yesPresent(args []string) bool {
-	for _, arg := range args {
-		if arg == "--yes" || arg == "-yes" || arg == "--yes=true" {
-			return true
-		}
-	}
-	return false
-}
-
 // printChangePreview renders the change the controller proposes.
-func printChangePreview(mode string, change servicelaunch.ConfigurationChange) {
-	fmt.Printf("\nLeapMux will configure %s:\n", mode)
+func printChangePreview(out io.Writer, mode string, change servicelaunch.ConfigurationChange) error {
+	var text strings.Builder
+	fmt.Fprintf(&text, "\nLeapMux will configure %s:\n", mode)
 	for _, line := range change.Changes {
-		fmt.Printf("  %s\n", line)
+		fmt.Fprintf(&text, "  %s\n", line)
 	}
+	if change.RequiresElevation {
+		fmt.Fprintf(&text, "\nAdministrator authorization is required: %s\n", change.ElevationReason)
+	}
+	return writeSetupText(out, text.String())
 }

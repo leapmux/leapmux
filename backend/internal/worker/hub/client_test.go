@@ -508,7 +508,8 @@ func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *te
 			}
 			assert.Equal(t, 1, strings.Count(logged, "does not know this worker"), logged)
 			assert.Contains(t, logged, "level=ERROR")
-			assert.Contains(t, logged, "--hub")
+			assert.Contains(t, logged, "saved Hub endpoint")
+			assert.NotContains(t, logged, "Check --hub")
 			assert.Contains(t, logged, "state.json")
 			assert.Contains(t, logged, "more than 7 days ago")
 			for i, records := range recordsBefore {
@@ -804,6 +805,33 @@ func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
 	require.NotNil(t, captured, "OnWorkerIdentity should receive the Hub's identity")
 	assert.Equal(t, "owner-1", captured.GetRegisteredBy(), "the callback receives the Hub's owner")
 	assert.Equal(t, "alice", captured.GetRegisteredByUsername(), "the callback receives the owner's username")
+}
+
+func TestConnectionStateRequiresAcceptedIdentityAndReportsDisconnection(t *testing.T) {
+	for _, accept := range []bool{false, true} {
+		t.Run(fmt.Sprint(accept), func(t *testing.T) {
+			client := newTestClient(t, "http://localhost:0")
+			var transitions []bool
+			var causes []error
+			client.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool { return accept }
+			client.OnConnectionState = func(connected bool, err error) {
+				transitions = append(transitions, connected)
+				causes = append(causes, err)
+			}
+			identity := &leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}}
+			failure := refusalReasonError(t, connect.CodePermissionDenied, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+			err := client.connectWithReconnect(t.Context(), "token", func(context.Context, string) error { client.handleMessage(identity); return failure }, newFastBackoff(), time.Second)
+			require.ErrorIs(t, err, ErrKeysRefused)
+			if accept {
+				assert.Equal(t, []bool{true, false}, transitions)
+				assert.Nil(t, causes[0])
+			} else {
+				assert.Equal(t, []bool{false}, transitions)
+			}
+			assert.ErrorIs(t, causes[len(causes)-1], failure)
+			assert.Equal(t, accept, client.identityReceived.Load())
+		})
+	}
 }
 
 // The Hub sends the identity again on a live stream when the owner's account

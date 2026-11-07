@@ -118,6 +118,10 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
     void (async () => {
       try {
         const resp = await workerClient.createRegistrationKey({})
+        if (!resp.registrationKey) {
+          setError('The Hub did not return a registration key. Close this dialog and try again.')
+          return
+        }
         setRegistrationKey(resp.registrationKey)
         if (resp.expiresAt)
           setExpiresAt(timestampDate(resp.expiresAt))
@@ -130,14 +134,15 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
 
   async function handleSendEmail() {
     const k = registrationKey()
-    if (!k)
+    const command = commands()?.register
+    if (!k || !command || !canEmail() || emailing() || emailSent())
       return
     setEmailing(true)
     setError(null)
     try {
       await workerClient.emailRegistrationInstructions({
         registrationKey: k,
-        command: commands()?.register ?? '',
+        command,
       })
       setEmailSent(true)
     }
@@ -161,7 +166,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
           start over.
         </p>
 
-        <Show when={registrationKey()} fallback={<p>Generating registration key…</p>}>
+        <Show when={registrationKey()} fallback={<Show when={!error()}><p>Generating registration key…</p></Show>}>
           <div class={styles.shellRow} role="radiogroup" aria-label="Shell">
             <PillGroup
               label="Shell"
@@ -170,7 +175,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               options={shellOptions}
             />
           </div>
-          <Show when={commands()} fallback={<p class={errorText}>This registration key cannot be shown as a safe command. Mint a new key.</p>}>
+          <Show when={commands()} fallback={<p class={errorText}>The Hub address or registration key cannot form a safe command. Check the Hub configuration or generate a new key.</p>}>
             <p>1. Register the worker.</p>
             <pre class={styles.command} data-testid="registration-command">{commands()!.register}</pre>
             <p>2. After registration succeeds, start the worker.</p>
@@ -194,14 +199,16 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               permanently-disabled button would mislead users — drop it
               entirely. */}
           <Show when={!isSoloMode() && isEmailEnabled()}>
-            <Tooltip text={canEmail()
-              ? 'Email this command to your verified address'
-              : 'Verify your email to enable this'}
+            <Tooltip text={!commands()
+              ? 'A safe registration command is required before sending email'
+              : canEmail()
+                ? 'Email this command to your verified address'
+                : 'Verify your email to enable this'}
             >
               <button
                 type="button"
                 data-testid="email-registration-instructions"
-                disabled={!canEmail() || emailing() || emailSent()}
+                disabled={!commands() || !canEmail() || emailing() || emailSent()}
                 onClick={() => void handleSendEmail()}
               >
                 <Icon icon={Mail} size="sm" />

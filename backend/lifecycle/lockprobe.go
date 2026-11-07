@@ -10,16 +10,13 @@ import (
 // any process, creating nothing. An absent file is a free lock reported
 // with no error.
 func probeExclusiveLock(path string) (bool, error) {
-	if _, err := os.Stat(path); err != nil {
+	f, err := filelock.OpenExisting(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, err
-	}
-	f, err := filelock.Open(path, false)
-	if err != nil {
-		// A path that cannot be opened cannot be proven held; report it
-		// free rather than guessing liveness from an error.
+		// An open failure leaves liveness unknown. Preserve it so callers
+		// cannot mistake failure for a released lock.
 		return false, err
 	}
 	defer func() { _ = f.Close() }()

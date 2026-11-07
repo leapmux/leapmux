@@ -43,6 +43,8 @@ func TestDurableWindowsPublicationFlags(t *testing.T) {
 		if conflicts == 0 {
 			conflicts++
 			err = windows.ERROR_SHARING_VIOLATION
+		} else {
+			err = prev(from, to, flags)
 		}
 		calls = append(calls, observedMove{from: from, to: to, flags: flags, result: err})
 		return err

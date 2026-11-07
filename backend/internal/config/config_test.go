@@ -10,65 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractConfigFlag(t *testing.T) {
-	tests := []struct {
-		name     string
-		args     []string
-		def      string
-		expected string
-	}{
-		{
-			name:     "no flag uses default",
-			args:     []string{"-listen", ":9999"},
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-		{
-			name:     "-config with space",
-			args:     []string{"-config", "/custom/path.yaml", "-listen", ":9999"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "--config with space",
-			args:     []string{"--config", "/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "-config=value",
-			args:     []string{"-config=/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "--config=value",
-			args:     []string{"--config=/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "-config at end without value uses default",
-			args:     []string{"-listen", ":9999", "-config"},
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-		{
-			name:     "empty args uses default",
-			args:     nil,
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ExtractConfigFlag(tt.args, tt.def)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 func TestFlagProvider(t *testing.T) {
 	t.Run("only loads explicitly set flags", func(t *testing.T) {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)

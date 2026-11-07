@@ -9,12 +9,55 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPublicationThroughSymlinkUsesCanonicalProvenance(t *testing.T) {
+	realParent := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	require.NoError(t, os.Symlink(realParent, alias))
+	throughAlias := filepath.Join(alias, "new-root", "worker")
+	canonicalParent, err := filepath.EvalSymlinks(realParent)
+	require.NoError(t, err)
+	canonical := filepath.Join(canonicalParent, "new-root", "worker")
+	require.NoError(t, MkdirAllDurable(throughAlias))
+	require.NoError(t, MkdirAllDurable(canonical), "a later canonical lease must accept publication created through an alias")
+	require.NoError(t, MkdirAllDurable(throughAlias))
+	record, err := loadRecordAt(recordPathAt(filepath.Join(canonicalParent, "new-root")))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(canonicalParent, "new-root"), record.Directory)
+	assert.Equal(t, canonical, record.TargetDirectory)
+}
+
+// canonicalTempDir gives filesystem observers the same identity publication uses.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return path
+}
+
 // writeRawRecord writes record bytes verbatim, so a test can plant a
 // malformed or hostile record without the validation in the way.
 func writeRawRecord(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	require.NoError(t, WriteFile(path, []byte(content), 0o600))
+}
+
+func TestNestedPublicationRecordDoesNotHideInvalidAncestor(t *testing.T) {
+	outer := filepath.Join(t.TempDir(), "outer")
+	inner := filepath.Join(outer, "worker")
+	writeRawRecord(t, recordPathAt(outer), "account_id: [invalid]\nphase: prepared\n")
+	record, err := yamlMarshalRecord(&publicationRecord{
+		AccountID: currentAccountID(), Directory: inner,
+		TargetDirectory: inner, Phase: phaseCommitted,
+	})
+	require.NoError(t, err)
+	writeRawRecord(t, recordPathAt(inner), string(record))
+	target := filepath.Join(inner, "sessions")
+	require.Error(t, MkdirAllDurable(target))
+	assert.NoDirExists(t, target)
+	content, err := os.ReadFile(recordPathAt(outer))
+	require.NoError(t, err)
+	assert.Equal(t, "account_id: [invalid]\nphase: prepared\n", string(content))
 }
 
 // TestPublicationRecordValidationAndConcurrency covers the record
@@ -100,7 +143,7 @@ func TestPublicationRecordValidationAndConcurrency(t *testing.T) {
 // creation publishes only the new part and keeps the original
 // provenance.
 func TestMkdirAllDurableReusesACommittedRecord(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	root := filepath.Join(base, "leapmux", "worker")
 	require.NoError(t, MkdirAllDurable(root))
 

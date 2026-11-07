@@ -112,7 +112,7 @@ func Observe(ctx context.Context, dataDirectory string) (Status, error) {
 	paths := pathsFor(canonical)
 
 	status := Status{
-		Mode:         "",
+		Process:      ProcessStatus{State: ProcessStopped},
 		Registration: RegistrationStatus{State: RegistrationNotApplicable},
 		Connection:   ConnectionStatus{State: ConnectionNotApplicable},
 		Diagnostics:  []Diagnostic{},
@@ -123,27 +123,33 @@ func Observe(ctx context.Context, dataDirectory string) (Status, error) {
 	if specErr == nil {
 		status.Startup = &spec.Startup
 		status.Configured = true
-		status.Mode = string(spec.Mode)
-		status.InstanceID = spec.InstanceID
+		status.Mode = new(string(spec.Mode))
+		status.InstanceID = new(spec.InstanceID)
 	}
 	if recordErr == nil {
-		status.InstanceID = record.InstanceID
-		status.Mode = string(record.Mode)
-		status.Execution = record.Execution
+		status.InstanceID = new(record.InstanceID)
+		status.Mode = new(string(record.Mode))
+		status.Execution = new(record.Execution)
 		started := record.StartedAt
 		status.Attempt = AttemptStatus{
-			ID:        record.AttemptID,
+			ID:        new(record.AttemptID),
 			StartedAt: &started,
-			LogPath:   paths.AttemptLogPath(record.AttemptID),
+			LogPath:   new(paths.AttemptLogPath(record.AttemptID)),
 		}
 		pid := record.PID
 		status.Process = ProcessStatus{State: ProcessStopped, PID: &pid, StartedAt: &started}
 	}
 
-	lockHeld := probeLockHeld(paths.RuntimeLock)
+	lockHeld, probeErr := probeExclusiveLock(paths.RuntimeLock)
+	if probeErr != nil {
+		return unresponsiveStatus(status, fmt.Errorf("inspect the runtime lock: %w", probeErr))
+	}
 
 	// No record and no lock: nothing claims this directory.
 	if recordErr != nil {
+		if lockHeld {
+			return unresponsiveStatus(status, fmt.Errorf("read the runtime record: %w", recordErr))
+		}
 		if errors.Is(recordErr, os.ErrNotExist) {
 			status.Process.State = ProcessStopped
 			return status, nil
@@ -152,9 +158,19 @@ func Observe(ctx context.Context, dataDirectory string) (Status, error) {
 	}
 
 	if !lockHeld {
-		// The lock is free: the process that wrote the record is gone.
-		// A listening endpoint on a free lock belongs to nobody this
-		// record names, so stopped is the verdict.
+		if record.Status != nil {
+			status = *record.Status
+			if !status.matchesAttempt(record) {
+				return status, errors.New("the saved status belongs to another process attempt")
+			}
+			if status.Attempt.EndedAt == nil {
+				status.Process.State = ProcessFailed
+				status.Readiness = new(ReadinessFailed)
+				reason := "the process exited without recording its shutdown outcome"
+				status.Attempt.Error = &reason
+			}
+			return status, nil
+		}
 		status.Process.State = ProcessStopped
 		return status, nil
 	}
@@ -163,23 +179,30 @@ func Observe(ctx context.Context, dataDirectory string) (Status, error) {
 	// lock is an unresponsive instance, never a stopped one.
 	token, tokenErr := ReadControlToken(paths.ControlToken)
 	if tokenErr != nil {
-		return status, fmt.Errorf("read the control token: %w", tokenErr)
+		return unresponsiveStatus(status, fmt.Errorf("read the control token: %w", tokenErr))
 	}
 	if token == "" {
-		status.Process.State = ProcessUnresponsive
-		return status, ErrUnresponsive
+		return unresponsiveStatus(status, errors.New("the control token is missing or empty"))
 	}
 	client, clientErr := newControlClient(record.ControlURL, token)
 	if clientErr != nil {
-		status.Process.State = ProcessUnresponsive
-		return status, ErrUnresponsive
+		return unresponsiveStatus(status, fmt.Errorf("create the local control client: %w", clientErr))
 	}
+	defer client.http.CloseIdleConnections()
 	live, liveErr := client.Status(ctx)
 	if liveErr != nil {
-		status.Process.State = ProcessUnresponsive
-		return status, ErrUnresponsive
+		return unresponsiveStatus(status, fmt.Errorf("request local status: %w", liveErr))
+	}
+	if !live.matchesAttempt(record) {
+		return unresponsiveStatus(status, errors.New("the response belongs to another instance or process attempt"))
 	}
 	return live, nil
+}
+
+func unresponsiveStatus(status Status, cause error) (Status, error) {
+	status.Process.State = ProcessUnresponsive
+	status.Diagnostics = append(status.Diagnostics, Diagnostic{Kind: "error", Title: "Local control", Body: cause.Error()})
+	return status, fmt.Errorf("%w: %w", ErrUnresponsive, cause)
 }
 
 // RequestStop asks the running instance to stop and reports whether the
@@ -197,6 +220,7 @@ func RequestStop(ctx context.Context, record RuntimeRecord) (StopResponse, error
 	if err != nil {
 		return StopResponse{}, err
 	}
+	defer client.http.CloseIdleConnections()
 	return client.RequestStop(ctx, StopRequest{InstanceID: record.InstanceID, AttemptID: record.AttemptID})
 }
 
@@ -204,30 +228,31 @@ func RequestStop(ctx context.Context, record RuntimeRecord) (StopResponse, error
 // free, the context ends, or the deadline passes. It reports false when
 // the lock was still held at the end; the caller then reports that
 // shutdown continues.
-func WaitForLockRelease(ctx context.Context, dataDirectory string, deadline time.Duration) bool {
+func WaitForLockRelease(ctx context.Context, dataDirectory string, timeout time.Duration) (bool, error) {
 	canonical, err := CanonicalDir(dataDirectory)
 	if err != nil {
-		return false
+		return false, err
 	}
-	deadlineTime := time.Now().Add(deadline)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return waitForLockRelease(ctx, canonical)
+}
+
+func waitForLockRelease(ctx context.Context, canonical string) (bool, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
-		if !probeLockHeld(pathsFor(canonical).RuntimeLock) {
-			return true
+		held, err := probeExclusiveLock(pathsFor(canonical).RuntimeLock)
+		if err != nil {
+			return false, err
 		}
-		if ctx.Err() != nil || time.Now().After(deadlineTime) {
-			return false
+		if !held {
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
+			return false, ctx.Err()
+		case <-ticker.C:
 		}
 	}
-}
-
-// probeLockHeld reports whether any process holds the lock at path. An
-// absent file is a free lock.
-func probeLockHeld(path string) bool {
-	held, err := probeExclusiveLock(path)
-	return err == nil && held
 }

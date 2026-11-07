@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +14,111 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestServiceRuntimeRequiresSavedSpecification(t *testing.T) {
+	runtimeEnv(t)
+	root := filepath.Join(t.TempDir(), "not-created")
+	runtime, err := StartRuntime(RuntimeConfig{Mode: RoleHub, DataDir: root, Execution: ExecutionService})
+	if runtime != nil {
+		t.Cleanup(func() { _ = runtime.Finish(nil) })
+	}
+	require.ErrorContains(t, err, "service specification")
+	assert.NoDirExists(t, root)
+}
+
+func TestRuntimeReadySignalsApplicationInitializationOnce(t *testing.T) {
+	for _, ready := range []string{ReadinessReady, ReadinessReadyForSetup} {
+		t.Run(ready, func(t *testing.T) {
+			runtimeEnv(t)
+			runtime := startTestRuntime(t, RoleHub, t.TempDir())
+			for _, initial := range []string{ReadinessStarting, ReadinessFailed} {
+				runtime.SetReadiness(initial)
+				select {
+				case <-runtime.Ready():
+					t.Fatal("control publication or an initialization failure must not signal readiness")
+				default:
+				}
+			}
+			runtime.SetReadiness(ready)
+			select {
+			case <-runtime.Ready():
+			default:
+				t.Fatal("required initialization must signal readiness")
+			}
+			require.NotPanics(t, func() { runtime.SetReadiness(ready); runtime.SetReadiness(ReadinessReady) })
+		})
+	}
+}
+
+func TestRuntimeShutdownReleasesUntransferredLease(t *testing.T) {
+	runtimeEnv(t)
+	r := startTestRuntime(t, RoleWorker, t.TempDir())
+	lease := r.Lease()
+	t.Cleanup(func() { _ = lease.Close() })
+	require.NoError(t, r.Shutdown())
+	assert.True(t, lease.Closed(), "shutdown must release a root lease that dispatch never consumed")
+	replacement, err := AcquireDirectory(lease.Owner(), lease.Mode(), lease.Path())
+	require.NoError(t, err, "a rejected startup must not retain ownership of its data directory")
+	require.NoError(t, replacement.Close())
+}
+
+func TestRuntimeRejectsInvalidExecutionBeforePublication(t *testing.T) {
+	runtimeEnv(t)
+	for _, execution := range []ExecutionKind{"", "background"} {
+		t.Run(string(execution), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "must-not-exist")
+			runtime, err := StartRuntime(RuntimeConfig{Mode: RoleWorker, DataDir: root, Execution: execution})
+			if runtime != nil {
+				require.NoError(t, runtime.Shutdown())
+			}
+			require.Error(t, err, "execution must use the declared status vocabulary")
+			assert.NoDirExists(t, root)
+		})
+	}
+}
+
+func TestRuntimeStatusDoesNotExposeMutableState(t *testing.T) {
+	runtimeEnv(t)
+	r := startTestRuntime(t, RoleWorker, t.TempDir())
+	workerID, hubURL, lastError, source := new("original worker"), new("original hub"), new("original error"), new("original source")
+	r.SetRegistration(RegistrationStatus{State: RegistrationRegistered, WorkerID: workerID, HubURL: hubURL})
+	r.SetConnection(ConnectionStatus{State: ConnectionDisconnected, LastError: lastError})
+	r.AddDiagnostic(Diagnostic{Kind: "log", Title: "Startup", Body: "failure", Source: source})
+	*workerID, *hubURL, *lastError, *source = "changed input", "changed input", "changed input", "changed input"
+	first := r.Status()
+	assert.Equal(t, new("original worker"), first.Registration.WorkerID)
+	assert.Equal(t, new("original hub"), first.Registration.HubURL)
+	assert.Equal(t, new("original error"), first.Connection.LastError)
+	require.Len(t, first.Diagnostics, 1)
+	assert.Equal(t, new("original source"), first.Diagnostics[0].Source)
+	*first.Registration.WorkerID, *first.Registration.HubURL = "changed snapshot", "changed snapshot"
+	*first.Connection.LastError, *first.Diagnostics[0].Source = "changed snapshot", "changed snapshot"
+	second := r.Status()
+	assert.Equal(t, new("original worker"), second.Registration.WorkerID)
+	assert.Equal(t, new("original hub"), second.Registration.HubURL)
+	assert.Equal(t, new("original error"), second.Connection.LastError)
+	assert.Equal(t, new("original source"), second.Diagnostics[0].Source)
+}
+
+func TestRuntimeShutdownPersistsFailure(t *testing.T) {
+	runtimeEnv(t)
+	r := startTestRuntime(t, RoleWorker, t.TempDir())
+	lease := r.Lease()
+	t.Cleanup(func() { _ = lease.Close() })
+	r.SetReadiness(ReadinessFailed)
+	r.SetProcessState(ProcessFailed)
+	r.AddDiagnostic(Diagnostic{Kind: "error", Title: "Startup failed", Body: "open worker database: permission denied"})
+	require.NoError(t, r.Shutdown())
+	status, err := Observe(context.Background(), lease.Path())
+	require.NoError(t, err)
+	assert.Equal(t, ProcessFailed, status.Process.State)
+	assert.Equal(t, new(ReadinessFailed), status.Readiness)
+	assert.NotNil(t, status.Attempt.EndedAt)
+	assert.NotNil(t, status.Attempt.ExitCode)
+	assert.Contains(t, status.Diagnostics, Diagnostic{
+		Kind: "error", Title: "Startup failed", Body: "open worker database: permission denied",
+	})
+}
 
 // runtimeEnv redirects the control sockets into one private, SHORT
 // directory for the test, so tests never collide on the account's real
@@ -85,9 +191,8 @@ func TestEmbeddedAndStandaloneStorageCannotOverlap(t *testing.T) {
 		combined := startTestRuntime(t, RoleSolo, root)
 		workerDir := filepath.Join(root, "worker")
 
-		combinedOwner := DirectoryOwner{AccountID: CurrentAccountID(), Mode: RoleSolo, Root: mustCanonical(t, root)}
-		lease, err := AcquireDirectory(combinedOwner, RoleWorker, workerDir)
-		require.NoError(t, err)
+		lease := combined.Lease().TakeComponent(RoleWorker)
+		require.NotNil(t, lease)
 
 		direct := NewDirectoryOwner(RoleWorker, mustCanonical(t, workerDir))
 		conflicting, err := AcquireDirectory(direct, RoleWorker, workerDir)
@@ -126,7 +231,7 @@ func TestEmbeddedAndStandaloneStorageCannotOverlap(t *testing.T) {
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		assert.ElementsMatch(t, []string{ownershipRecordName, dataLockName}, names,
+		assert.ElementsMatch(t, []string{ownershipRecordName, dataLockName, ".leapmux-directory-publication.yaml"}, names,
 			"a refused acquisition creates no runtime records or tokens")
 	})
 

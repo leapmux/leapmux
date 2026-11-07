@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/signal"
+	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -20,11 +23,26 @@ import (
 // The worker database is preserved: deregistration removes the
 // registration, not the machine's sessions and local state.
 func runWorkerDeregister(args []string) error {
-	cfg, _, err := config.Load(args)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runWorkerDeregisterWithFiles(ctx, args, configuredWorkerRegistrationFiles)
+}
+
+func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
+	cfg, options, err := loadWorkerCredentialCommand(args, defaultStopTimeout)
+	if handleVersionQuery(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logging.Setup()
+	files := filesFor(cfg)
+	ctx, cancel := context.WithTimeout(ctx, options.timeout)
+	defer cancel()
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)
@@ -36,7 +54,11 @@ func runWorkerDeregister(args []string) error {
 
 	// A stopped worker only: the runtime lock proves no process runs.
 	paths := lifecycle.PathsOf(canonical)
-	if held, probeErr := lifecycle.ProbeRuntimeLock(paths); probeErr == nil && held {
+	held, probeErr := lifecycle.ProbeRuntimeLock(paths)
+	if probeErr != nil {
+		return probeErr
+	}
+	if held {
 		return fmt.Errorf("the worker is running; stop it with `leapmux worker stop` before deregistering")
 	}
 
@@ -52,14 +74,24 @@ func runWorkerDeregister(args []string) error {
 	defer release()
 	defer func() { _ = lease.Close() }()
 
-	state, err := cfg.LoadState()
+	state, err := files.LoadState()
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
-	if state == nil || !state.Registered() {
-		// Nothing is registered here. Still sweep the leftovers, so the
-		// command leaves the directory clean of registration material.
-		if err := cfg.RemovePendingRegistration(); err != nil {
+	if state != nil && !state.Registered() {
+		return fmt.Errorf("the saved registration is incomplete; preserve %s and recover its registration before deregistering", cfg.StatePath())
+	}
+	if state == nil {
+		pending, pendingErr := files.LoadPendingRegistration()
+		if pendingErr != nil {
+			return pendingErr
+		}
+		if pending != nil {
+			return fmt.Errorf("the pending registration in %s may already be committed; complete `leapmux worker register` with the same Hub and key before deregistering", cfg.PendingPath())
+		}
+		// A previous confirmed deletion may have removed state.json before
+		// temporary-copy cleanup failed. Finish both cleanup operations.
+		if err := errors.Join(files.ClearState(), files.RemovePendingRegistration()); err != nil {
 			return err
 		}
 		fmt.Println("Worker is not registered; nothing to remove.")
@@ -74,19 +106,22 @@ func runWorkerDeregister(args []string) error {
 	}
 	// An error here keeps the credentials. The hub's retained deleted
 	// row accepts a repeat call, so a retry completes rather than wedges.
-	if err := hub.Deregister(context.Background(), endpoint, state.AuthToken); err != nil {
+	defer endpoint.CloseIdleConnections()
+	if err := hub.Deregister(ctx, endpoint, state.AuthToken); err != nil {
 		return err
 	}
 
-	// The hub no longer knows this worker; remove every local copy of
-	// the credentials. The worker database stays.
-	if err := cfg.ClearState(); err != nil {
-		return fmt.Errorf("the hub removed this worker, but its local credentials at %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
-			cfg.StatePath(), err)
-	}
-	if err := cfg.RemovePendingRegistration(); err != nil {
+	// The Hub confirmed deletion. Remove every local credential copy and
+	// preserve the worker database.
+	if err := files.RemovePendingRegistration(); err != nil {
 		return fmt.Errorf("the hub removed this worker, but the pending record %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
 			cfg.PendingPath(), err)
+	}
+	// Retain the token until recovery-material cleanup succeeds, so a retry
+	// can authenticate against the Hub's retained deletion record.
+	if err := files.ClearState(); err != nil {
+		return fmt.Errorf("the hub removed this worker, but its local credentials at %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
+			cfg.StatePath(), err)
 	}
 
 	fmt.Println("Worker deregistered.")

@@ -1,6 +1,9 @@
 package servicelaunch
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,8 +59,11 @@ func TestRunArgumentsInvokeRunNotStart(t *testing.T) {
 	require.NotEmpty(t, args)
 	assert.Equal(t, "worker", args[0])
 	assert.Equal(t, "run", args[1], "native definitions invoke run, never start")
-	assert.Contains(t, args, spec.ConfigFile)
-	assert.Contains(t, args, "--log-level")
+	assert.NotContains(t, args, spec.ConfigFile)
+	assert.NotContains(t, args, "--log-level")
+	assert.Contains(t, args, "--service-spec")
+	assert.Contains(t, args, "--data-dir")
+	assert.Contains(t, args, spec.DataDirectory, "native launch must pin the separately selected data directory")
 }
 
 // A relative path in the specification is refused: a service must not
@@ -75,4 +81,95 @@ func TestRelativePathsAreRefused(t *testing.T) {
 		require.Error(t, err, "a relative %s is refused", name)
 		assert.Contains(t, err.Error(), "absolute")
 	}
+}
+
+func TestEnvironmentFileIsValidatedBeforeConfiguration(t *testing.T) {
+	for _, test := range []struct{ name, data string }{
+		{"malformed", "[unterminated"},
+		{"sequence", "- value\n"},
+		{"number", "TOKEN: 123\n"},
+		{"boolean", "TOKEN: true\n"},
+		{"nested", "TOKEN:\n  nested: value\n"},
+		{"duplicate", "TOKEN: first\nTOKEN: second\n"},
+		{"identity", "HOME: /another/account\n"},
+		{"windows identity", "userprofile: /another/account\n"},
+		{"empty key", "'': value\n"},
+		{"invalid key", "BAD=KEY: value\n"},
+		{"null value", "TOKEN: \"a\\0b\"\n"},
+		{"multiple documents", "TOKEN: first\n---\nTOKEN: second\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runtime.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(test.data), 0o600))
+			spec := testSpec()
+			spec.EnvironmentFile = &path
+			_, err := LaunchSpecFromService(spec)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "another/account", "validation must not print environment values")
+		})
+	}
+	for _, path := range []string{"relative.yaml", filepath.Join(t.TempDir(), "missing.yaml")} {
+		spec := testSpec()
+		spec.EnvironmentFile = &path
+		_, err := LaunchSpecFromService(spec)
+		require.Error(t, err)
+	}
+}
+
+func TestLoadEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("TOKEN: '123'\nEMPTY: ''\nPATH: /provider/bin\n"), 0o600))
+	spec, err := LaunchSpecFromService(testSpec())
+	require.NoError(t, err)
+	spec.EnvironmentFile = &path
+	spec.RuntimeEnvironment = map[string]string{"PATH": "/explicit/bin", "OTHER": "true"}
+	values, err := spec.LoadEnvironment()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"TOKEN": "123", "EMPTY": "", "PATH": "/explicit/bin", "OTHER": "true"}, values)
+	values["OTHER"] = "changed"
+	assert.Equal(t, "true", spec.RuntimeEnvironment["OTHER"])
+}
+
+func TestSavedRuntimeRejectsNullArgument(t *testing.T) {
+	spec := testSpec()
+	spec.RuntimeArguments = []string{"--name", "a\x00b"}
+	_, err := LaunchSpecFromService(spec)
+	require.Error(t, err)
+}
+
+func TestSavedRuntimeAllowsFlagSpellingAsValue(t *testing.T) {
+	spec := testSpec()
+	spec.RuntimeArguments = []string{"--name", "--config"}
+	_, err := LaunchSpecFromService(spec)
+	require.NoError(t, err)
+}
+
+func TestNativeArgumentsKeepRuntimeOverridesPrivate(t *testing.T) {
+	spec := testSpec()
+	spec.Mode = lifecycle.RoleHub
+	spec.RuntimeArguments = []string{"--storage-postgres-dsn", "postgres://user:private-password@host/database"}
+	launch, err := LaunchSpecFromService(spec)
+	require.NoError(t, err)
+	arguments := launch.RunArguments()
+	assert.NotContains(t, strings.Join(arguments, " "), "private-password")
+	assert.NotContains(t, arguments, "--storage-postgres-dsn")
+	assert.Contains(t, arguments, "--service-spec")
+	assert.Contains(t, arguments, lifecycle.PathsOf(spec.DataDirectory).ServiceSpec)
+	assert.Contains(t, arguments, spec.DataDirectory)
+}
+
+func TestWindowsEnvironmentNamesAreCaseInsensitive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("Path: /file/bin\nTOKEN: value\n"), 0o600))
+	spec := LaunchSpec{EnvironmentFile: &path, RuntimeEnvironment: map[string]string{"PATH": "/explicit/bin"}}
+	values, err := spec.loadEnvironment(true)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"PATH": "/explicit/bin", "TOKEN": "value"}, values)
+	require.NoError(t, os.WriteFile(path, []byte("Path: first\nPATH: second\n"), 0o600))
+	_, err = spec.loadEnvironment(true)
+	require.ErrorContains(t, err, "duplicate")
+	spec.EnvironmentFile = nil
+	spec.RuntimeEnvironment = map[string]string{"PATH": "first", "Path": "second"}
+	_, err = spec.loadEnvironment(true)
+	require.ErrorContains(t, err, "duplicate")
 }

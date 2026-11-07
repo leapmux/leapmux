@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,16 +80,24 @@ func TestPendingPersistenceAndPartialCleanup(t *testing.T) {
 		require.NoError(t, cfg.RemovePendingRegistration())
 	})
 
-	t.Run("an unreadable-directory cleanup reports both causes", func(t *testing.T) {
-		cfg, pending := pendingFixture(t)
-		require.NoError(t, cfg.SavePendingRegistration(pending))
-		require.NoError(t, os.WriteFile(cfg.PendingPath()+".tmp5678", []byte("{}"), 0o600))
-		require.NoError(t, os.Chmod(cfg.DataDir, 0o500))
-		t.Cleanup(func() { _ = os.Chmod(cfg.DataDir, 0o700) })
-
-		err := cfg.RemovePendingRegistration()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "pending-registration.json", "the destination failure is named")
-		assert.Contains(t, err.Error(), "tmp5678", "the copy failure is named too")
+	t.Run("cleanup keeps all three failure causes", func(t *testing.T) {
+		cfg, _ := pendingFixture(t)
+		destination := cfg.PendingPath()
+		first, second := destination+".tmp-a", destination+".tmp-b"
+		destinationErr, firstErr, secondErr := errors.New("destination failure"), errors.New("first copy failure"), errors.New("second copy failure")
+		failures := map[string]error{destination: destinationErr, first: firstErr, second: secondErr}
+		var attempted []string
+		remove := func(path string) error {
+			attempted = append(attempted, path)
+			return &os.PathError{Op: "remove", Path: path, Err: failures[path]}
+		}
+		err := removeSensitiveRecord(destination, remove, func(path string) error {
+			assert.Equal(t, destination, path)
+			return errors.Join(remove(first), remove(second))
+		}, func(string) error { return nil })
+		require.ErrorIs(t, err, destinationErr)
+		require.ErrorIs(t, err, firstErr)
+		require.ErrorIs(t, err, secondErr)
+		assert.Equal(t, []string{destination, first, second}, attempted)
 	})
 }

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 // publishExclusive is the exclusive write-through publication step,
@@ -22,7 +24,7 @@ var publishExclusive = renameNoReplace
 func publishStaged(firstMissing, target string) error {
 	parent := filepath.Dir(firstMissing)
 
-	stage, err := os.MkdirTemp(parent, stagePrefix)
+	stage, err := useronly.MkdirTemp(parent, stagePrefix)
 	if err != nil {
 		return fmt.Errorf("atomicfile: create the staging directory beside %s: %w", firstMissing, err)
 	}
@@ -38,7 +40,7 @@ func publishStaged(firstMissing, target string) error {
 
 	for _, element := range missingBelow(firstMissing, target) {
 		p := filepath.Join(stage, element)
-		if err := os.Mkdir(p, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err := useronly.Mkdir(p); err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("atomicfile: stage %s: %w", p, err)
 		}
 	}

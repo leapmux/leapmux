@@ -399,6 +399,12 @@ The `encryption.key` file holds more than the encryption key ring. It also carri
 Sessions, Worker auth tokens, and registration keys do not use the pepper and survive a rotation. Losing the file is therefore not only an OAuth-data loss; it takes every issued token with it.
 {{< /callout >}}
 
+## Local lifecycle control and service accounts
+
+Each instance exposes a private local control endpoint. Unix sockets permit the selected account only; Windows named pipes restrict access to its SID. Requests also require the instance's private control token and exact process attempt identity. Local lifecycle control does not replace network authentication. Protect the data directory and registration recovery material as credentials.
+
+Native services run as the selected user account even in boot mode. Administrator authorization configures the native mechanism and required logon rights. It does not make the application run as administrator. Keep service environment files private and use `enable` to repair native credentials after an account password change.
+
 ## Recommendations for administrators
 
 If you run a Hub for a team, the security of the deployment rests largely on the host and a few files. Concrete steps:

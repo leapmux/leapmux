@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	internalconfig "github.com/leapmux/leapmux/internal/config"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -19,9 +20,8 @@ type PreparedConfig struct {
 	role lifecycle.Role
 	// dataDir is the canonical containing data root.
 	dataDir string
-	// args carry the caller's original launch arguments for the
-	// convenience Start path's logging.
-	devMode bool
+	// config retains the launch options that apply after configuration loading.
+	config Config
 }
 
 // DataDirectory returns the canonical containing data root.
@@ -35,9 +35,12 @@ func (p *PreparedConfig) Role() lifecycle.Role { return p.role }
 // component starts.
 func Prepare(cfg Config) (*PreparedConfig, error) {
 	opts, modeName := soloLoadOptions(cfg)
-	hubCfg, _, err := hubconfig.LoadWithOptions(cfg.Args, opts)
+	hubCfg, showVersion, err := hubconfig.LoadWithOptions(cfg.Args, opts)
 	if err != nil {
 		return nil, fmt.Errorf("load hub config: %w", err)
+	}
+	if showVersion {
+		return nil, internalconfig.ErrVersionRequested
 	}
 	hubCfg.DevMode = cfg.DevMode
 	role, err := lifecycle.ParseRole(modeName)
@@ -48,7 +51,7 @@ func Prepare(cfg Config) (*PreparedConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PreparedConfig{hubCfg: hubCfg, role: role, dataDir: canonical, devMode: cfg.DevMode}, nil
+	return &PreparedConfig{hubCfg: hubCfg, role: role, dataDir: canonical, config: cfg}, nil
 }
 
 // Start launches a Hub and Worker in-process, as one combined instance
@@ -87,8 +90,7 @@ func StartPrepared(ctx context.Context, prepared *PreparedConfig, root *lifecycl
 		_ = root.Close()
 		return nil, err
 	}
-	cfg := Config{DevMode: prepared.devMode}
-	return start(ctx, cfg, defaultDeps(), prepared, root)
+	return start(ctx, prepared.config, defaultDeps(), prepared, root)
 }
 
 // validateRootLease states what StartPrepared accepts as its root lease.

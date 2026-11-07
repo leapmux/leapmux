@@ -81,6 +81,7 @@ func runWorkerProcess(args []string) error {
 	if err != nil {
 		return fmt.Errorf("acquire the worker data directory: %w", err)
 	}
+	defer func() { _ = directory.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

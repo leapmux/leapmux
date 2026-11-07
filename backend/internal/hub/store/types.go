@@ -554,9 +554,8 @@ type CreateUserParams struct {
 // the two ends from drifting -- the id create accepts is by construction
 // exactly the id a predicate can bind.
 //
-// This closes the store API as a route to that shape; it does not make the
-// shape unrepresentable in the database, which still permits a blank TEXT key
-// through raw SQL. The bind guards stay load-bearing for that reason.
+// The initial schemas enforce the same nonempty-ID rule with a CHECK.
+// Ownership predicates still validate their inputs before binding them.
 //
 // The username must be a routable slug -- see validateUsernameSlug, which
 // create and rename share so the rule cannot drift between them.
@@ -894,6 +893,15 @@ type CreateWorkerParams struct {
 	// cannot carry an attempt.
 	RegistrationAttemptID string
 	RegistrationKeyHash   []byte
+}
+
+// RegistrationKeyHashOrNil represents every absent digest as SQL NULL.
+// A present digest remains unchanged; Validate checks its required size.
+func (p CreateWorkerParams) RegistrationKeyHashOrNil() []byte {
+	if len(p.RegistrationKeyHash) == 0 {
+		return nil
+	}
+	return p.RegistrationKeyHash
 }
 
 // Validate reports whether the row is insertable. The key set and the

@@ -10,6 +10,11 @@ import (
 // control token, and the attempt logs.
 const lifecycleDirName = ".lifecycle"
 
+// accountRuntimePath separates private scratch resources beneath a shared parent.
+func accountRuntimePath(parent, account string) string {
+	return filepath.Join(parent, "leapmux-"+hashID(account))
+}
+
 // File names inside the lifecycle directory. The locks are
 // directory-scoped on purpose: neither name includes the mode or the
 // instance identity, so a second mode resolving to the same directory

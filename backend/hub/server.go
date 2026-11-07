@@ -311,32 +311,31 @@ func (s *Server) Ready() <-chan struct{} {
 // successful construction hands it to the returned Server, whose Serve
 // releases it after the store and listener cleanup.
 func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...ServerOption) (*Server, error) {
+	// Record each resource as it is acquired, so every failure closes
+	// exactly what is open without restating the subset (see acquiredResources).
+	// Retain the supplied lease from entry. Every rejection releases it,
+	// including validation that must precede configuration writes.
+	acquired := acquiredResources{directory: directory}
+	if cfg == nil {
+		return nil, acquired.close(errors.New("hub: NewServer requires a configuration"))
+	}
+	if err := validateHubLease(cfg, directory); err != nil {
+		return nil, acquired.close(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, acquired.close(fmt.Errorf("validate config: %w", err))
+	}
+
 	so := serverOptions{listenLocal: locallisten.Listen}
 	for _, opt := range opts {
 		opt(&so)
 	}
 
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("validate config: %w", err)
-	}
-	if err := validateHubLease(cfg, directory); err != nil {
-		return nil, err
-	}
-
-	// Records each resource as it is acquired, so every failure below closes
-	// exactly what is open without restating the subset (see acquiredResources).
-	// The lease joined first: a construction that fails below releases the
-	// directory it was given.
-	var acquired acquiredResources
-	acquired.directory = directory
-
 	// Bind the whole bind set before any database work so that concurrent
 	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
 	// pipe name) fail fast on conflict without a TOCTOU window. Binding
-	// the local listeners here also avoids a race where solo.Start's
-	// dial-based readiness probe could connect to a foreign listener on
-	// the same name (e.g. another running Solo instance) while our own
-	// Serve goroutine still propagates the bind failure.
+	// local listeners here also reports same-name conflicts during
+	// construction, before serving or application readiness.
 	// The extra listen addresses do NOT join here, although they are bound
 	// the same way. They live in a settings row, which is unreadable until
 	// the store opens below, and moving this bind after the store would give
@@ -1352,9 +1351,9 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 
 // LeaseHeld reports the moment the Hub runtime lease was acquired: the channel
 // closes directly after a successful acquire, before Serve accepts on its
-// listeners. solo.Start waits on it, because a bound socket proves nothing:
-// NewServer binds before Serve runs, and the lease is the one signal that the
-// previous Hub is gone.
+// listeners. NewServer binds before Serve runs, so a bound socket alone does
+// not prove that this Hub acquired its runtime lease. Solo waits for Ready,
+// which also includes listener startup.
 func (s *Server) LeaseHeld() <-chan struct{} {
 	return s.leaseHeld
 }

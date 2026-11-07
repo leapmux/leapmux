@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -80,6 +81,212 @@ func fastRegisterRetry(clock quartz.Clock) registerRetry {
 		backoff:        newFastBackoff(),
 		attemptTimeout: registerAttemptTimeout,
 		clock:          clock,
+	}
+}
+
+func TestRegistrationProtocolSharesOneAttemptDeadline(t *testing.T) {
+	opts := testRegistrationOptions("key")
+	opts.Signer = func([]byte) ([]byte, error) { return []byte("proof"), nil }
+	var deadline time.Time
+	checkDeadline := func(ctx context.Context) {
+		got, ok := ctx.Deadline()
+		assert.True(t, ok, "every recovery request needs the attempt deadline")
+		assert.Equal(t, deadline, got, "recovery must not extend the protocol pass")
+	}
+	client := &mockConnectorClient{
+		registerFn: func(ctx context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+			var ok bool
+			deadline, ok = ctx.Deadline()
+			require.True(t, ok)
+			return nil, connect.NewError(connect.CodeAlreadyExists, "committed")
+		},
+		challengeFn: func(ctx context.Context, _ *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+			checkDeadline(ctx)
+			return &leapmuxv1.GetRegistrationChallengeResponse{ChallengeId: "b9a0425886d148f68a8f94716ed47a78", Nonce: make([]byte, 32)}, nil
+		},
+		recoverFn: func(ctx context.Context, _ *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+			checkDeadline(ctx)
+			return &leapmuxv1.RegisterResponse{WorkerId: "worker", AuthToken: "token"}, nil
+		},
+	}
+	_, outcome, err := registerProtocolOnce(context.Background(), client, "key", time.Hour, opts)
+	require.NoError(t, err)
+	assert.Equal(t, outcomeSuccess, outcome)
+}
+
+func TestRegistrationProtocolStopsStalledRecoveryAtAttemptDeadline(t *testing.T) {
+	for _, stage := range []string{"challenge", "recovery"} {
+		t.Run(stage, func(t *testing.T) {
+			opts := testRegistrationOptions("key")
+			opts.Signer = func([]byte) ([]byte, error) { return []byte("proof"), nil }
+			stall := func(ctx context.Context) error {
+				if _, ok := ctx.Deadline(); !ok {
+					return errors.New("the recovery request escaped its attempt deadline")
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			client := &mockConnectorClient{
+				// A completed response can arrive as the budget expires. Recovery
+				// must retain that expired budget rather than begin another wait.
+				registerFn: func(context.Context, *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+					return nil, connect.NewError(connect.CodeAlreadyExists, "committed")
+				},
+				challengeFn: func(ctx context.Context, _ *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+					if stage == "challenge" {
+						return nil, stall(ctx)
+					}
+					return &leapmuxv1.GetRegistrationChallengeResponse{ChallengeId: "b9a0425886d148f68a8f94716ed47a78", Nonce: make([]byte, 32)}, nil
+				},
+				recoverFn: func(ctx context.Context, _ *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+					return nil, stall(ctx)
+				},
+			}
+			_, outcome, err := registerProtocolOnce(context.Background(), client, "key", time.Nanosecond, opts)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			assert.Equal(t, outcomeTransient, outcome, "an attempt deadline must not end the overall retry policy")
+		})
+	}
+}
+
+func TestRegistrationRecoveryRefusalClassification(t *testing.T) {
+	for _, test := range []struct {
+		name, stage string
+		code        connect.Code
+		want        registerOutcome
+	}{
+		{"challenge capacity", "challenge", connect.CodeResourceExhausted, outcomeTransient},
+		{"challenge owner refusal", "challenge", connect.CodeFailedPrecondition, outcomePermanentRefusal},
+		{"stale challenge", "recovery", connect.CodeAborted, outcomeTransient},
+		{"recovery owner refusal", "recovery", connect.CodeFailedPrecondition, outcomePermanentRefusal},
+		{"rejected signature", "recovery", connect.CodeUnauthenticated, outcomePermanentRefusal},
+		{"worker maximum", "register", connect.CodeResourceExhausted, outcomePermanentRefusal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := testRegistrationOptions("key")
+			opts.Signer = func([]byte) ([]byte, error) { return []byte("proof"), nil }
+			refusal := connect.NewError(test.code, "refusal")
+			client := &mockConnectorClient{
+				registerFn: func(context.Context, *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+					if test.stage == "register" {
+						return nil, refusal
+					}
+					return nil, connect.NewError(connect.CodeAlreadyExists, "committed")
+				},
+				challengeFn: func(context.Context, *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+					if test.stage == "challenge" {
+						return nil, refusal
+					}
+					return &leapmuxv1.GetRegistrationChallengeResponse{ChallengeId: "b9a0425886d148f68a8f94716ed47a78", Nonce: make([]byte, 32)}, nil
+				},
+				recoverFn: func(context.Context, *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+					return nil, refusal
+				},
+			}
+			_, outcome, err := registerProtocolOnce(context.Background(), client, "key", time.Hour, opts)
+			require.ErrorIs(t, err, refusal)
+			assert.Equal(t, test.want, outcome)
+		})
+	}
+}
+
+type cancelRegistrationBackoff struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (b *cancelRegistrationBackoff) Next() time.Duration {
+	b.calls++
+	b.cancel()
+	return time.Hour
+}
+
+func (b *cancelRegistrationBackoff) Reset() {}
+
+func TestRegistrationRecoveryRefusesIncompleteCredentialsWithoutRetry(t *testing.T) {
+	for _, response := range []*leapmuxv1.RegisterResponse{
+		nil, {}, {WorkerId: "worker"}, {AuthToken: "token"},
+	} {
+		t.Run(response.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+			defer cancel()
+			policy := &cancelRegistrationBackoff{cancel: cancel}
+			opts := testRegistrationOptions("key")
+			opts.Signer = func([]byte) ([]byte, error) { return []byte("proof"), nil }
+			var registrations, challenges, recoveries int
+			client := &mockConnectorClient{
+				registerFn: func(context.Context, *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+					registrations++
+					return nil, connect.NewError(connect.CodeAlreadyExists, "committed")
+				},
+				challengeFn: func(context.Context, *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+					challenges++
+					return &leapmuxv1.GetRegistrationChallengeResponse{ChallengeId: "b9a0425886d148f68a8f94716ed47a78", Nonce: make([]byte, 32)}, nil
+				},
+				recoverFn: func(context.Context, *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+					recoveries++
+					return response, nil
+				},
+			}
+			result, err := registerWithClient(ctx, client, "key", registerRetry{
+				backoff: policy, clock: testutil.NewQuartzMock(t), attemptTimeout: time.Minute,
+			}, opts)
+			require.ErrorIs(t, err, ErrRegistrationRefused)
+			require.Contains(t, err.Error(), "incomplete credentials")
+			require.Nil(t, result)
+			require.Zero(t, policy.calls, "a malformed success must not enter backoff")
+			require.Equal(t, 1, registrations)
+			require.Equal(t, 1, challenges)
+			require.Equal(t, 1, recoveries)
+		})
+	}
+}
+
+func TestRegistrationRecoveryRetriesWithFreshChallenge(t *testing.T) {
+	for _, stage := range []string{"challenge capacity", "stale proof"} {
+		t.Run(stage, func(t *testing.T) {
+			clock := testutil.NewQuartzMock(t)
+			ctx := testutil.DeadlineContext(t)
+			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
+			opts := testRegistrationOptions("key")
+			opts.Signer = func([]byte) ([]byte, error) { return []byte("proof"), nil }
+			var registrations, challenges, recoveries atomic.Int32
+			client := &mockConnectorClient{
+				registerFn: func(context.Context, *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+					registrations.Add(1)
+					return nil, connect.NewError(connect.CodeAlreadyExists, "committed")
+				},
+				challengeFn: func(context.Context, *leapmuxv1.GetRegistrationChallengeRequest) (*leapmuxv1.GetRegistrationChallengeResponse, error) {
+					if challenges.Add(1) == 1 && stage == "challenge capacity" {
+						return nil, connect.NewError(connect.CodeResourceExhausted, "temporary challenge capacity")
+					}
+					return &leapmuxv1.GetRegistrationChallengeResponse{ChallengeId: "b9a0425886d148f68a8f94716ed47a78", Nonce: make([]byte, 32)}, nil
+				},
+				recoverFn: func(context.Context, *leapmuxv1.RecoverRegistrationRequest) (*leapmuxv1.RegisterResponse, error) {
+					if recoveries.Add(1) == 1 && stage == "stale proof" {
+						return nil, connect.NewError(connect.CodeAborted, "challenge replaced")
+					}
+					return &leapmuxv1.RegisterResponse{WorkerId: "original worker", AuthToken: "original token"}, nil
+				},
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := registerWithClient(ctx, client, "key", fastRegisterRetry(clock), opts)
+				done <- err
+			}()
+			delay := testutil.WaitForTimer(t, ctx, newTimer)
+			testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("registration did not recover after the transient challenge failure")
+			}
+			assert.EqualValues(t, 2, registrations.Load())
+			assert.EqualValues(t, 2, challenges.Load(), "a retry must request a fresh challenge")
+			_, running := clock.Peek()
+			assert.False(t, running)
+		})
 	}
 }
 

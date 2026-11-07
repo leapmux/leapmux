@@ -56,11 +56,10 @@ func (s *WorkerConnectorService) DeregisterSelf(
 			"the bundled local worker cannot deregister itself; use its own launcher")
 	}
 
-	// The retained deleted row: a repeat of a call whose reply was lost.
-	// The deletion is already complete, so the caller may proceed to its
-	// local cleanup.
+	// A retained deleted row confirms the commit. The prior call may have
+	// stopped before its effects, so complete those before local cleanup.
 	if worker.DeletedAt != nil {
-		return &leapmuxv1.DeregisterSelfResponse{}, nil
+		return s.completeSelfDeregistration(ctx, worker)
 	}
 
 	// Complete deletion inside the user's transaction, fencing the same
@@ -91,8 +90,12 @@ func (s *WorkerConnectorService) DeregisterSelf(
 		return nil, err
 	}
 
-	// After the commit, never inside the transaction -- the same rule
-	// every other removal surface follows (see WorkerDeregisterEffects).
+	return s.completeSelfDeregistration(ctx, worker)
+}
+
+// completeSelfDeregistration runs effects after the commit, including retries
+// whose deletion committed before a previous Hub stopped.
+func (s *WorkerConnectorService) completeSelfDeregistration(ctx context.Context, worker *store.Worker) (*leapmuxv1.DeregisterSelfResponse, error) {
 	if err := s.deregisterEffects.Apply(ctx, worker.ID, worker.RegisteredBy); err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}

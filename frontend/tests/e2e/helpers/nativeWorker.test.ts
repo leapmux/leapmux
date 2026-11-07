@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnRegisteredWorker, spawnWorkerProcess, withNativeWorker } from './nativeWorker'
 import { createServerOutput } from './serverOutput'
+import { createTimingLogReceiver } from './timingFixture'
 
 const calls = vi.hoisted(() => ({
   mint: vi.fn(),
@@ -60,7 +61,10 @@ function routeSpawnToProc(current: () => ChildProcess) {
         stderr: new PassThrough(),
         pid: 31233,
       })
-      queueMicrotask(() => registerProc.emit('exit', 0, null))
+      queueMicrotask(() => {
+        Object.assign(registerProc, { exitCode: 0 })
+        registerProc.emit('exit', 0, null)
+      })
       return registerProc
     }
     return current()
@@ -87,14 +91,48 @@ beforeEach(() => {
   calls.spawn.mockImplementation(routeSpawnToProc(() => proc))
   calls.environment.mockImplementation(value => ({ ...value, PRIVATE_ENV_FILTERED: 'true' }))
   calls.alive.mockReturnValue(false)
-  calls.stop.mockImplementation(async () => {
-    Object.assign(proc, { exitCode: 0 })
-    proc.emit('close', 0)
+  calls.stop.mockImplementation(async (child: ChildProcess) => {
+    Object.assign(child, { exitCode: 0 })
+    child.emit('exit', 0, null)
+    child.emit('close', 0)
   })
 })
 afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
 describe('withNativeWorker', () => {
+  it('keeps registration EOF separate from the runtime timing streams', async () => {
+    const registration = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31233,
+    })
+    calls.spawn.mockImplementation((_command: string, args: readonly string[]) => {
+      if (args[1] !== 'register')
+        return proc
+      queueMicrotask(() => {
+        registration.stderr.emit('data', Buffer.from('registration diagnostic\n'))
+        registration.stdout.emit('end')
+        registration.stderr.emit('end')
+        Object.assign(registration, { exitCode: 0 })
+        registration.emit('exit', 0, null)
+        registration.emit('close', 0, null)
+      })
+      return registration
+    })
+    const receiver = createTimingLogReceiver(() => 123)
+    await withNativeWorker(server, {
+      ...options,
+      onStdio: receiver.receive,
+      onStdioEnd: receiver.end,
+    }, async (worker) => {
+      expect(() => proc.stderr?.emit('data', Buffer.from('{"phase":"ready"}\n'))).not.toThrow()
+      expect(receiver.logLines.map(line => line.json)).toEqual([
+        { phase: 'ready' },
+      ])
+      expect(worker.output.since(0)).toContain('registration diagnostic')
+    })
+  })
+
   it('captures an asynchronous spawn error before online registration', async () => {
     let entered!: () => void
     let cancelOnline!: (error: Error) => void
@@ -454,6 +492,143 @@ describe('spawnWorkerProcess', () => {
 
 describe('spawnRegisteredWorker', () => {
   const hub = { hubUrl: server.hubUrl, adminToken: server.adminToken }
+
+  it('cancels pending registration and joins its child before rejecting', async () => {
+    const registerProc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+    })
+    calls.spawn.mockReturnValue(registerProc)
+    const controller = new AbortController()
+    const failure = new Error('The fixture was cancelled.')
+    const operation = spawnRegisteredWorker(hub, {
+      name: 'cancelled-registration',
+      dataDir: directory,
+      output: createServerOutput(),
+      signal: controller.signal,
+      onRegistrationSpawn: () => controller.abort(failure),
+    })
+    await expect(operation).rejects.toBe(failure)
+    expect(calls.stop).toHaveBeenCalledExactlyOnceWith(registerProc)
+    expect(calls.spawn).toHaveBeenCalledOnce()
+    expect(registerProc.listenerCount('error')).toBe(0)
+    expect(registerProc.listenerCount('exit')).toBe(0)
+  })
+
+  it('preserves registration and cleanup failures together', async () => {
+    const registerProc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+    })
+    const failure = new Error('Registration could not spawn.')
+    const cleanupFailure = new Error('Registration cleanup failed.')
+    calls.spawn.mockReturnValue(registerProc)
+    calls.stop.mockRejectedValue(cleanupFailure)
+    const operation = spawnRegisteredWorker(hub, {
+      name: 'failed-registration-cleanup',
+      dataDir: directory,
+      output: createServerOutput(),
+      onRegistrationSpawn: () => registerProc.emit('error', failure),
+    })
+    await expect(operation).rejects.toMatchObject({
+      errors: [failure, cleanupFailure],
+    })
+    expect(calls.spawn).toHaveBeenCalledOnce()
+    expect(registerProc.listenerCount('error')).toBe(0)
+  })
+
+  it('accepts a successful registration that exited before the watcher attached', async () => {
+    const registerProc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+      exitCode: 0,
+    })
+    calls.spawn.mockImplementation((_command: string, args: string[]) => args[1] === 'register'
+      ? registerProc
+      : proc)
+    const registered = await spawnRegisteredWorker(hub, {
+      name: 'already-registered',
+      dataDir: directory,
+      output: createServerOutput(),
+    })
+    expect(registered.proc).toBe(proc)
+    expect(calls.spawn).toHaveBeenCalledTimes(2)
+    expect(registerProc.listenerCount('exit')).toBe(0)
+  })
+
+  it('reports a registration spawn error and cleans only that process', async () => {
+    const registerProc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+    })
+    let notifySpawned!: () => void
+    const spawned = new Promise<void>((resolve) => {
+      notifySpawned = resolve
+    })
+    calls.spawn.mockImplementation((_command: string, args: string[]) => {
+      if (args[1] === 'register') {
+        notifySpawned()
+        return registerProc
+      }
+      return proc
+    })
+    const failure = new Error('Registration executable could not start.')
+    const operation = spawnRegisteredWorker(hub, {
+      name: 'spawn-failure',
+      dataDir: directory,
+      output: createServerOutput(),
+    })
+      .then(() => undefined, error => error)
+    await spawned
+    let unhandled: unknown
+    try {
+      registerProc.emit('error', failure)
+    }
+    catch (error) {
+      unhandled = error
+    }
+    Object.assign(registerProc, { exitCode: 2 })
+    registerProc.emit('exit', 2, null)
+    const result = await operation
+    expect(unhandled).toBeUndefined()
+    expect(result).toBe(failure)
+    expect(calls.spawn).toHaveBeenCalledOnce()
+    expect(calls.stop).toHaveBeenCalledExactlyOnceWith(registerProc)
+    expect(registerProc.listenerCount('error')).toBe(0)
+    expect(registerProc.listenerCount('exit')).toBe(0)
+  })
+
+  it.each([
+    { code: 3, signal: null },
+    { code: null, signal: 'SIGTERM' },
+  ])('cleans failed registration with code $code and signal $signal', async ({ code, signal }) => {
+    const registerProc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+    })
+    calls.spawn.mockImplementation(() => {
+      queueMicrotask(() => {
+        Object.assign(registerProc, { exitCode: code, signalCode: signal })
+        registerProc.emit('exit', code, signal)
+      })
+      return registerProc
+    })
+    const operation = spawnRegisteredWorker(hub, {
+      name: 'registration-failure',
+      dataDir: directory,
+      output: createServerOutput(),
+    })
+    await expect(operation).rejects.toThrow(signal ?? '3')
+    expect(calls.spawn).toHaveBeenCalledOnce()
+    expect(calls.stop).toHaveBeenCalledExactlyOnceWith(registerProc)
+    expect(registerProc.listenerCount('error')).toBe(0)
+    expect(registerProc.listenerCount('exit')).toBe(0)
+  })
 
   it('registers the Worker with a fresh key, gives the process to onSpawn before the online wait, and returns its ID', async () => {
     const onSpawn = vi.fn()

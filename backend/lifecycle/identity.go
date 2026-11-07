@@ -8,10 +8,9 @@ package lifecycle
 import (
 	"crypto/sha256"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
+
+	"github.com/leapmux/leapmux/internal/util/canonicalpath"
 )
 
 // Role is one of LeapMux's four CLI modes. The same vocabulary names a
@@ -106,32 +105,7 @@ func CanonicalDir(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("lifecycle: a data directory is required")
 	}
-	// A leading ~ names the account's home, the same convention the
-	// mode loaders resolve; the CLI's defaults carry it.
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return "", fmt.Errorf("lifecycle: expand ~ in %s: %w", path, homeErr)
-		}
-		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("lifecycle: make %s absolute: %w", path, err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return filepath.Clean(resolved), nil
-	}
-	// Resolve the deepest existing ancestor, then rejoin the missing
-	// tail: a symlinked prefix must fold into the identity, and a
-	// not-yet-created tail must not fail the lookup.
-	parent := filepath.Dir(abs)
-	canonicalParent, parentErr := CanonicalDir(parent)
-	if parentErr != nil {
-		return filepath.Clean(abs), nil
-	}
-	return filepath.Join(canonicalParent, filepath.Base(abs)), nil
+	return canonicalpath.Directory(path)
 }
 
 // DirectoryOwner states the instance that owns a storage component: the

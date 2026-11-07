@@ -38,12 +38,38 @@ Session settings apply to solo mode when you sign in over the network. For HTTPS
 
 A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub run` (with separate Workers) or `leapmux dev run` instead.
 
+## Lifecycle and native startup
+
+All four modes require one of these subcommands:
+
+| Subcommand | Behavior |
+| --- | --- |
+| `run` | Run in the foreground without configuring a native service |
+| `start` | Start through the native mechanism and wait for application readiness |
+| `stop` | Request graceful shutdown and wait for databases and other resources to close |
+| `restart` | Stop, then start, using one runtime wait budget |
+| `status` | Print process, readiness, registration, connection, and diagnostics |
+| `enable` | Configure or repair automatic startup without starting now |
+| `disable` | Remove native configuration; refuse until the process has stopped |
+
+The first `start` asks whether to start at login or boot. The preview shows the selected account, native definition, executable, working directory, configuration, and data directory. Type `y` or `yes` to apply it. Empty consent, end of input, or cancellation changes nothing. For scripts, specify both `--startup=login|boot` and `--yes`. `--yes` alone cannot choose a startup mode.
+
+Login startup runs one instance per account and configuration. It stops after the account's last applicable login session ends. Screen locking and disconnecting a retained session do not stop it. Linux uses graphical login sessions and leaves other applications' lingering settings unchanged. A headless host should use boot startup. Boot startup continues without an interactive login and still runs as the selected user account.
+
+macOS uses a LaunchAgent for login and a LaunchDaemon for boot. Linux uses a systemd user service for login and a system service for boot. System-level configuration requests `sudo` authorization after the preview. Windows uses a noninteractive scheduled task for login and a Windows service for boot. Both Windows choices need account credentials. Windows may request User Account Control authorization to install the definition or grant the required logon right. Password input is protected. LeapMux does not save the password; Windows stores the credentials for native startup. After a password change or expired credentials, stop the instance and rerun `enable` to repair it.
+
+`start` succeeds only after database initialization, required listeners, internal components, and local control are ready. Solo also waits for automatic registration. A fresh dev instance can succeed as `ready_for_setup`; completing `/setup` registers and starts its Worker automatically. A standalone Worker can be ready while disconnected from its Hub.
+
+`--timeout` limits waiting, not the process lifetime. The defaults are 60 seconds for start/restart, 30 seconds for stop, and 3 seconds for status. Consent and configuration authorization do not consume the runtime wait budget. A timeout returns failure and explains whether startup or shutdown may continue. Inspect `status` before issuing another operation. Startup failure and timeout print recent attempt logs and their full path. `status` also reports native startup failures and missing or changed definitions. `status --json` emits the same diagnostic model.
+
+Use the same `--config` or `--data-dir` selector for each operation. Hub and Worker require separate data directories. Solo and dev own their root and both component directories exclusively. `disable` preserves credentials, databases, and logs. To change an active instance's startup mode or runtime configuration, stop it first.
+
 ## Solo mode
 
 Solo mode runs a personal Hub and Worker with no required configuration. By default, only your own machine can connect. Set the first password when you open it in a browser. The desktop app connects without a sign-in.
 
 ```bash
-leapmux solo
+leapmux solo run
 # Then open http://127.0.0.1:4327
 ```
 
@@ -100,7 +126,7 @@ For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse proxy an
 
 Run a Worker on each machine where you want to run agents and terminals. Workers connect to the Hub without accepting inbound connections, so they need no port forwarding. Register each Worker with a one-time registration key from the Hub.
 
-On first run, point the Worker at the Hub and supply a registration key:
+Register the Worker, then run it as a separate command:
 
 ```bash
 leapmux worker register --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
@@ -111,8 +137,8 @@ After a successful registration, the Worker saves its credentials and keypair to
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-hub` | `http://127.0.0.1:4327` | Hub URL (`http[s]://…`, `unix:<socket-path>`, or `npipe:<pipe-name>`) |
-| `-registration-key` | empty | Registration key from the Hub UI; required on first run only, never persisted |
+| `-hub` | required explicitly for registration and recovery | Hub URL (`http[s]://…`, `unix:<socket-path>`, or `npipe:<pipe-name>`) |
+| `-registration-key` | empty | Registration key from the Hub UI; used by `register` only; removed with the pending record after success |
 | `-name` | hostname | Worker display name |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/worker`) | Data directory |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
@@ -120,7 +146,7 @@ After a successful registration, the Worker saves its credentials and keypair to
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
-If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI. If you pass `-registration-key` to a Worker that is already registered, it stops rather than consuming the key by accident; the error tells you to remove `-registration-key`, or to deregister the Worker, delete its `state.json`, and register it again.
+An unregistered Worker refuses `run`, `start`, and `restart` and recommends `worker register`. Runtime commands reject `--hub` and `--registration-key`; the saved registration owns the endpoint. A registered Worker can become locally ready while the Hub is unavailable. Its status reports registration and connection separately.
 
 For creating registration keys, approving Workers, verifying their identities, and choosing a Worker for a tab, see [Managing Workers](/docs/admin/managing-workers/).
 
@@ -208,21 +234,26 @@ Solo mode listens on `127.0.0.1:4327` inside the container by default, so publis
 
 ### Running a Worker container
 
-Set the Hub URL and a registration key from the Hub. Workers need no published port.
+Register in a one-shot container, then run the Worker using the same volume. Keep the registration dialog open until registration exits successfully.
 
 ```bash
-docker run --name leapmux-worker -e LEAPMUX_MODE=worker \
-  -e LEAPMUX_WORKER_HUB=https://hub.example.com \
-  -e LEAPMUX_WORKER_REGISTRATION_KEY=YOUR_REGISTRATION_KEY \
-  -v leapmux-worker-data:/data \
+# Register once. No Worker daemon starts in this container.
+docker run --rm --entrypoint /usr/local/bin/leapmux \
+  -v leapmux-worker-data:/data ghcr.io/leapmux/leapmux:latest \
+  worker register --data-dir /data/worker \
+  --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
+
+# Reuse the saved credentials. No registration key belongs here.
+docker run -d --name leapmux-worker --restart unless-stopped \
+  -e LEAPMUX_MODE=worker -v leapmux-worker-data:/data \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-After registration, recreate the container with the same volume and without `LEAPMUX_WORKER_REGISTRATION_KEY`. A registered Worker refuses to start if you supply a registration key again. Keep its volume so it can reconnect with its saved credentials. See [Managing Workers](/docs/admin/managing-workers/) for registration and approval.
+The default container command runs `worker run` in the foreground under the container supervisor. Native host service installation is unnecessary. Registration and runtime must use the same `/data/worker` directory. See [Managing Workers](/docs/admin/managing-workers/) for recovery and approval.
 
 ### Restart policy
 
-Use `--restart unless-stopped` with `docker run`, or `restart: unless-stopped` in Compose, to restart the container automatically after an exit or a Docker restart. Containers you stop manually stay stopped. Remove a Worker's initial registration key before enabling automatic restarts.
+Use `--restart unless-stopped` with `docker run`, or `restart: unless-stopped` in Compose, to restart the container automatically after an exit or a Docker restart. Containers you stop manually stay stopped. Keep registration keys out of the runtime container.
 
 ## Reverse proxy and public URL
 

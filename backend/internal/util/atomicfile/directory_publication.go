@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/leapmux/leapmux/internal/util/canonicalpath"
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 // publicationRecordName is the fixed file name of a directory
@@ -94,39 +97,31 @@ func MkdirAllDurable(target string) error {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("atomicfile: MkdirAllDurable needs an absolute path, got %s", target)
 	}
-
-	firstMissing, deepestRecord, err := walkExistingPrefixes(target)
+	canonical, err := canonicalpath.Directory(target)
 	if err != nil {
 		return err
 	}
+	target = canonical
 
-	if firstMissing == "" {
-		// Everything exists. A deepest record may still need repair or
-		// confirmation; no new publication is created.
-		if deepestRecord == "" {
-			return nil
-		}
-		return confirmExistingRecord(deepestRecord)
+	firstMissing, records, err := walkExistingPrefixes(target)
+	if err != nil {
+		return err
 	}
-
-	// A LeapMux-published ancestor may still hold a prepared record.
-	// Repair it before any new staging work, so the barrier it names is
-	// complete before this invocation publishes anything below it.
-	if deepestRecord != "" {
-		if err := repairRecord(deepestRecord); err != nil {
+	for _, record := range records {
+		if err := confirmExistingRecord(record); err != nil {
 			return err
 		}
 	}
-
+	if firstMissing == "" {
+		return nil
+	}
 	return publishStaged(firstMissing, target)
 }
 
 // walkExistingPrefixes inspects target's prefixes from the root down.
-// It reports the first missing prefix ("" when none is missing) and the
-// deepest existing publication record found along the way ("" when none
-// is). It reads no directory's contents: each prefix is stated, and the
-// fixed record name is stated inside each existing prefix.
-func walkExistingPrefixes(target string) (firstMissing, deepestRecord string, err error) {
+// It validates every publication record before any repair or creation and returns
+// those records in ancestor order. Looking up a fixed record does not list a directory.
+func walkExistingPrefixes(target string) (firstMissing string, records []string, err error) {
 	var prefixes []string
 	for p := target; ; p = filepath.Dir(p) {
 		prefixes = append(prefixes, p)
@@ -139,22 +134,25 @@ func walkExistingPrefixes(target string) (firstMissing, deepestRecord string, er
 		info, statErr := os.Stat(p)
 		if statErr == nil {
 			if !info.IsDir() {
-				return "", "", fmt.Errorf("atomicfile: %s exists and is not a directory", p)
+				return "", nil, fmt.Errorf("atomicfile: %s exists and is not a directory", p)
 			}
 			rec := filepath.Join(p, publicationRecordName)
 			if _, lerr := os.Lstat(rec); lerr == nil {
-				deepestRecord = rec
+				if _, recordErr := loadRecordAt(rec); recordErr != nil {
+					return "", nil, recordErr
+				}
+				records = append(records, rec)
 			} else if !errors.Is(lerr, fs.ErrNotExist) {
-				return "", "", lerr
+				return "", nil, lerr
 			}
 			continue
 		}
 		if !errors.Is(statErr, fs.ErrNotExist) {
-			return "", "", statErr
+			return "", nil, statErr
 		}
-		return p, deepestRecord, nil
+		return p, records, nil
 	}
-	return "", deepestRecord, nil
+	return "", records, nil
 }
 
 // loadRecordAt reads and validates the record at path. A record that
@@ -169,7 +167,7 @@ func loadRecordAt(path string) (*publicationRecord, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("atomicfile: %s is not a regular publication record", path)
 	}
-	data, err := os.ReadFile(path)
+	data, err := useronly.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

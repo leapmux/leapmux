@@ -139,7 +139,22 @@ The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a revers
 
 ### Running a Worker container
 
-A `worker` container connects out to a Hub. It must be registered with a registration key minted in the Hub UI. The container's start script passes no Hub URL or key for you. Supply them via the Worker config (`/data/worker/worker.yaml`), or via the `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/admin/managing-workers/) for the full registration flow.
+Register in a one-shot container, then run the Worker using the same volume. Keep the registration dialog open until registration exits successfully.
+
+```bash
+# Register once. No Worker daemon starts in this container.
+docker run --rm --entrypoint /usr/local/bin/leapmux \
+  -v leapmux-worker-data:/data ghcr.io/leapmux/leapmux:latest \
+  worker register --data-dir /data/worker \
+  --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
+
+# Reuse the saved credentials. No registration key belongs here.
+docker run -d --name leapmux-worker --restart unless-stopped \
+  -e LEAPMUX_MODE=worker -v leapmux-worker-data:/data \
+  ghcr.io/leapmux/leapmux:latest
+```
+
+The default container command runs `worker run` in the foreground under the container supervisor. Native host service installation is unnecessary. Registration and runtime must use the same `/data/worker` directory. See [Managing Workers](/docs/admin/managing-workers/) for recovery and approval.
 
 ### Upgrading
 
@@ -166,8 +181,10 @@ Download the archive for your platform, extract it, and run the `leapmux` execut
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
 cd leapmux_<version>_linux_amd64
-./leapmux hub run          # or: solo, worker, dev
+./leapmux hub run          # or: solo run, dev run
 ```
+
+For background execution, run `leapmux hub start`. The first start offers login or boot startup and explains any administrator authorization before requesting consent. `leapmux hub enable` performs configuration in advance. `run` never installs a service. A standalone Worker requires a successful `worker register` first.
 
 The macOS package is signed with a Developer ID and notarized.
 

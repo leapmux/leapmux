@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"strings"
+	"os/signal"
+	"syscall"
 
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/workerkeys"
@@ -32,17 +34,30 @@ import (
 //     pending record removed. A failure in between leaves the pending
 //     record as the recovery material of the NEXT run.
 func runWorkerRegister(args []string) error {
-	cfg, _, err := config.Load(args)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return runWorkerRegisterWithFiles(ctx, args, configuredWorkerRegistrationFiles)
+}
+
+func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
+	cfg, commandOptions, err := loadWorkerCredentialCommand(args, hub.DefaultRegistrationDeadline)
+	if handleVersionQuery(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logging.Setup()
+	files := filesFor(cfg)
 
 	// --hub defaults to the loopback hub in the configuration layer, so
 	// its PRESENCE is what the register command requires: registering
 	// against a default the operator never named would burn the key on
 	// the wrong hub.
-	if !flagPresent(args, "hub") {
+	if !commandOptions.explicitHub {
 		return fmt.Errorf("--hub is required: the hub this worker registers with")
 	}
 	if cfg.RegistrationKey == "" {
@@ -76,15 +91,34 @@ func runWorkerRegister(args []string) error {
 	// record did not get cleaned up: the registered state wins, the
 	// pending record must agree, and the cleanup finishes without a new
 	// registration.
-	if state, stateErr := cfg.LoadState(); stateErr == nil && state != nil && state.Registered() {
-		pending, pendingErr := cfg.LoadPendingRegistration()
-		if pendingErr == nil && pending != nil {
+	if state, stateErr := files.LoadState(); stateErr == nil && state != nil && state.Registered() {
+		pending, pendingErr := files.LoadPendingRegistration()
+		if pendingErr != nil {
+			return pendingErr
+		}
+		if pending != nil {
 			if err := pendingAgreesWithState(cfg, pending, state); err != nil {
 				return err
 			}
-			if err := cfg.RemovePendingRegistration(); err != nil {
-				return fmt.Errorf("finish the interrupted registration's cleanup: %w", err)
+		}
+		copies, err := atomicfile.TempFiles(cfg.PendingPath())
+		if err != nil {
+			return fmt.Errorf("inspect interrupted registration copies: %w", err)
+		}
+		interrupted := pending != nil || len(copies) != 0
+		if interrupted {
+			// A prior rename may have succeeded before its directory flush failed.
+			// Reconfirm durable credentials before deleting recovery material.
+			if err := files.SaveState(state); err != nil {
+				return fmt.Errorf("confirm durable saved credentials: %w", err)
 			}
+		}
+		if err := files.RemovePendingRegistration(); err != nil {
+			return fmt.Errorf("finish the interrupted registration's cleanup: %w", err)
+		}
+		if interrupted {
+			printWorkerRegistration(cfg)
+			return nil
 		}
 		return alreadyRegisteredError(cfg.StatePath())
 	} else if stateErr != nil {
@@ -94,7 +128,7 @@ func runWorkerRegister(args []string) error {
 	// Load or durably publish the pending attempt record. A record from
 	// a cancelled, timed-out, or crashed run is REUSED: its attempt
 	// identity and keypair are what the hub may already have committed.
-	pending, err := cfg.LoadPendingRegistration()
+	pending, err := files.LoadPendingRegistration()
 	if err != nil {
 		return err
 	}
@@ -113,7 +147,7 @@ func runWorkerRegister(args []string) error {
 		}
 		// Durable publication before the first network request. A
 		// failure here means zero requests left this machine.
-		if err := cfg.SavePendingRegistration(pending); err != nil {
+		if err := files.SavePendingRegistration(pending); err != nil {
 			return fmt.Errorf("publish the pending registration: %w", err)
 		}
 	} else if pending.HubURL != cfg.HubURL || pending.RegKey != cfg.RegistrationKey {
@@ -137,7 +171,9 @@ func runWorkerRegister(args []string) error {
 	if err != nil {
 		return fmt.Errorf("hub URL %q: %w", pending.HubURL, err)
 	}
-	result, err := hub.Register(context.Background(), endpoint, opts)
+	defer endpoint.CloseIdleConnections()
+	opts.Deadline = commandOptions.timeout
+	result, err := hub.Register(ctx, endpoint, opts)
 	if err != nil {
 		return fmt.Errorf("registration: %w", err)
 	}
@@ -151,20 +187,24 @@ func runWorkerRegister(args []string) error {
 		AuthToken:   result.AuthToken,
 		KeyMaterial: pending.KeyMaterial,
 	}
-	if err := cfg.SaveState(state); err != nil {
-		// The credentials exist on the hub but not here; the pending
-		// record stays as the recovery material of the next run.
+	if err := files.SaveState(state); err != nil {
+		// The Hub committed registration, but durable local publication is
+		// unconfirmed. Keep the pending record so the next run can recover.
 		return fmt.Errorf("save state: %w", err)
 	}
-	if err := cfg.RemovePendingRegistration(); err != nil {
+	if err := files.RemovePendingRegistration(); err != nil {
 		return fmt.Errorf(
 			"the worker registered and its credentials were saved, but the pending record %s could not be removed: %w; rerun `leapmux worker register` to finish the cleanup",
 			cfg.PendingPath(), err)
 	}
 
+	printWorkerRegistration(cfg)
+	return nil
+}
+
+func printWorkerRegistration(cfg *config.Config) {
 	fmt.Println("Worker registered.")
 	fmt.Printf("Credentials saved to %s\n", cfg.StatePath())
-	return nil
 }
 
 // pendingAgreesWithState checks that a surviving pending record and a
@@ -205,16 +245,4 @@ func newAttemptID() (string, error) {
 		return "", fmt.Errorf("mint an attempt identity: %w", err)
 	}
 	return hex.EncodeToString(buf[:]), nil
-}
-
-// flagPresent reports whether args name the flag explicitly, as
-// --name, --name=value, or -name.
-func flagPresent(args []string, name string) bool {
-	for _, arg := range args {
-		trimmed := strings.TrimLeft(arg, "-")
-		if trimmed == name || strings.HasPrefix(trimmed, name+"=") {
-			return true
-		}
-	}
-	return false
 }

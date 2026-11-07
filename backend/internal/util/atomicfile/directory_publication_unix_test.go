@@ -18,7 +18,7 @@ import (
 // reading. With mode 0111 any read-open fails, so a helper that tried
 // would fail loudly here; success is the proof it did not.
 func TestExistingExecuteOnlyAncestorRemainsUsable(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	executeOnly := filepath.Join(base, "mode-0111")
 	beneath := filepath.Join(executeOnly, "data")
 	require.NoError(t, os.MkdirAll(beneath, 0o700))
@@ -40,7 +40,7 @@ func TestExistingExecuteOnlyAncestorRemainsUsable(t *testing.T) {
 // and returns. The destination holds exactly one subtree, no staging
 // tree survives, and the record ends committed with one provenance.
 func TestPublicationConcurrentInitializers(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	target := filepath.Join(base, "leapmux", "worker")
 
 	start := make(chan struct{})
@@ -77,7 +77,7 @@ func TestPublicationConcurrentInitializers(t *testing.T) {
 // destination never appears, and another invocation can publish after
 // the fault clears.
 func TestPublicationPrePublishFailureCleansOwnStage(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	target := filepath.Join(base, "leapmux", "worker")
 
 	prev := publishExclusive
@@ -107,7 +107,7 @@ func TestPublicationPrePublishFailureCleansOwnStage(t *testing.T) {
 // flush after a successful publish: the destination stays, the record
 // stays prepared, and a later invocation repairs it.
 func TestPublicationPostPublishFailureKeepsDestination(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	target := filepath.Join(base, "leapmux", "worker")
 
 	lockOpsForTest(t)
@@ -131,7 +131,7 @@ func TestPublicationPostPublishFailureKeepsDestination(t *testing.T) {
 // the same committed record; the provenance never changes and the
 // directory never moves.
 func TestConcurrentRepairsAreIdempotent(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	target := filepath.Join(base, "leapmux", "worker")
 
 	// Arrive at a prepared record: publish, then fail the parent flush.
@@ -141,25 +141,34 @@ func TestConcurrentRepairsAreIdempotent(t *testing.T) {
 
 	before, err := os.ReadFile(recordPathAt(filepath.Join(base, "leapmux")))
 	require.NoError(t, err)
+	original, err := loadRecordAt(recordPathAt(filepath.Join(base, "leapmux")))
+	require.NoError(t, err)
 
 	start := make(chan struct{})
+	results := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_ = MkdirAllDurable(target)
+			results <- MkdirAllDurable(target)
 		}()
 	}
 	close(start)
 	wg.Wait()
+	close(results)
+	for err := range results {
+		assert.NoError(t, err, "each concurrent repair must succeed")
+	}
 
 	after, err := os.ReadFile(recordPathAt(filepath.Join(base, "leapmux")))
 	require.NoError(t, err)
 	rec, loadErr := loadRecordAt(recordPathAt(filepath.Join(base, "leapmux")))
 	require.NoError(t, loadErr)
 	assert.Equal(t, phaseCommitted, rec.Phase)
+	original.Phase = phaseCommitted
+	assert.Equal(t, original, rec, "repair must preserve every provenance field")
 	assert.NotEqual(t, string(before), string(after), "the repair rewrote the prepared record")
 	assert.DirExists(t, target, "the directory itself never moves")
 }
