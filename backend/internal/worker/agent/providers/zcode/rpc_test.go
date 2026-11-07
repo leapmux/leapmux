@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -68,11 +69,12 @@ func TestRouteZCodeRPC_TheRuntimeHeaderHandlerRunsAfterItsRegistration(t *testin
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+	seedZCodeAccountStateForTests(t, a)
 	const logical = "sess-1:provider-runtime-headers:91919191-9292-4393-8494-959595959595"
 
 	handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	require.True(t, consumed, "a server request is consumed by its handler")
 	require.NotNil(t, handler)
 	assert.Empty(t, stdin.Frames(), "routeZCodeRPC returns the handler without running it")
@@ -85,9 +87,9 @@ func TestRouteZCodeRPC_TheRuntimeHeaderHandlerRunsAfterItsRegistration(t *testin
 
 	// Without a cancellation the handler answers.
 	handler2, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	handler2()
-	replies := stdin.Requests(t)
+	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1)
 	assert.Equal(t, `"server-2"`, string(replies[0].ID))
 }
@@ -98,6 +100,13 @@ func TestRouteZCodeRPC_RegistersTheRuntimeHeaderAnswerBeforeTheHandlerRuns(t *te
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	blocked := zcodeBlockFirstStdin(stdin)
+	// This test pauses after recording, so release the delegate's earlier pause.
+	close(blocked.release)
+	paused := &zcodeAfterRecordPause{delegate: blocked, recorded: make(chan struct{}), release: make(chan struct{})}
+	a.SetStdinForTest(paused)
+	releaseWrite := sync.OnceFunc(func() { close(paused.release) })
+	t.Cleanup(releaseWrite)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
 	const logical = "sess-1:provider-runtime-headers:bbbb2222-3333-4444-8555-666666666666"
 
@@ -114,7 +123,17 @@ func TestRouteZCodeRPC_RegistersTheRuntimeHeaderAnswerBeforeTheHandlerRuns(t *te
 	assert.Empty(t, stdin.Frames())
 
 	handler()
-	_ = zcodeAwaitReplies(t, stdin, 1)
+	zcodeTestReceive(t, paused.recorded)
+	replies := zcodeAwaitReplies(t, stdin, 1)
+	assert.Equal(t, `"server-1"`, string(replies[0].ID))
+	a.runtimeHeaderMu.Lock()
+	registered := a.runtimeHeaderAnswers[logical]
+	state := answer.state
+	a.runtimeHeaderMu.Unlock()
+	assert.Same(t, answer, registered, "the registration stays owned until its write finishes")
+	assert.Equal(t, zcodeRuntimeHeaderReplying, state)
+	releaseWrite()
+	zcodeTestReceive(t, answer.ctx.Done())
 	a.runtimeHeaderMu.Lock()
 	remaining := len(a.runtimeHeaderAnswers)
 	a.runtimeHeaderMu.Unlock()

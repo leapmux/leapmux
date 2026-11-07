@@ -234,6 +234,11 @@ func (a *Agent) dispatchAdmittedFrame(env codewhaleEnvelope) {
 
 	case eventThreadStarted, eventThreadForked:
 		// The create and resume replies already stated the thread.
+	case eventOperationActivityStarted, eventOperationActivityCompleted, eventOperationHeartbeat, eventToolExecutionStarted:
+		// These receipts carry coarse activity and execution timing, never tool content.
+		// The item events already own tool input, output and completion.
+	case eventThreadPermissionsChanged:
+		// The settings API response already updates the posture and emits the shared settings notice.
 	case eventTurnLifecycle:
 		// It repeats turn.started for a turn that is already running.
 	case eventTurnInterruptRequested:

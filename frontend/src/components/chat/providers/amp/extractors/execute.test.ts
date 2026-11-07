@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ampCommandResult, ampShellCommand, ampShellOutput, ampShellTaskResult } from './execute'
 
 describe('ampShellCommand', () => {
-  it('reads `command` first, then the `cmd` of the legacy Bash tool', () => {
+  it('reads `command` first, then the `cmd` of the current Bash tool', () => {
     expect(ampShellCommand({ command: 'ls', cmd: 'pwd' })).toBe('ls')
     expect(ampShellCommand({ cmd: 'pwd' })).toBe('pwd')
     expect(ampShellCommand({ command: '', cmd: 'pwd' })).toBe('pwd')

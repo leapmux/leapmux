@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -119,4 +120,8 @@ func (codewhaleProvider) ResolveControlResponse(ctx agent.ControlResponseContext
 	res.Content = encoded
 	res.FollowUp = agent.FeedbackFollowUp(feedback)
 	return res
+}
+
+func (codewhaleProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
+	return agent.ChildCapabilities{AcceptsInterrupt: true}
 }

@@ -6,12 +6,13 @@ import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, waitForWorkerOffline } from '../process-control-fixtures'
+import { countChatBubbles } from './chatBubbleCount'
 import { withCleanup } from './cleanup'
 import { sendNativeAnswer } from './nativeConversation'
-import { countOriginalAnswerRows, expectNativeResumeContext, expectResumedConversation, nativeResumeTexts } from './nativeResume'
+import { expectNativeResumeContext, expectResumedConversation, nativeResumeTexts, readOriginalConversationRows } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeModelConversationTurns } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
-import { assistantBubbles, expectAssistantAnswer, loginViaToken, openWorkspace, reopenWorkspace, waitForAgentIdle } from './ui'
+import { expectAssistantAnswer, loginViaToken, openWorkspace, reopenWorkspace, waitForAgentIdle } from './ui'
 import { openProviderAgent, withTestWorkspace } from './workspace'
 
 /** The workspace that `withRestartWorkspace` opens, and its one provider agent. */
@@ -52,8 +53,8 @@ export async function exerciseWorkerRestart(
   expect(prior.agentProvider).toBe(context.provider)
   expect(prior.agentSessionId).not.toBe('')
   await context.waitForNativeCheckpoint?.(prior.agentSessionId)
-  const originalRows = await countOriginalAnswerRows(context, prior.id, texts)
-  const originalBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
+  const { answerRows: originalRows, userSequence } = await readOriginalConversationRows(context, prior.id, texts)
+  const originalBubbles = await countChatBubbles(context.page, 'agent', texts.originalAnswer, userSequence)
   await withCleanup(async () => {
     await stopWorker(server)
     await waitForWorkerOffline(server)

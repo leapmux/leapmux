@@ -65,7 +65,7 @@ func TestPiStoredSessions(t *testing.T) {
 	assert.Equal(t, base, got[0].UpdatedAt.UTC())
 }
 
-func TestPiStoredSessions_ReadsAVersion4Header(t *testing.T) {
+func TestPiStoredSessions_RejectsAnObsoleteHeader(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	home := t.TempDir()
@@ -79,8 +79,7 @@ func TestPiStoredSessions_ReadsAVersion4Header(t *testing.T) {
 		WorkingDir: dir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"v4"}, agenttest.Handles(got))
-	assert.Equal(t, "v4 prompt", got[0].Title)
+	assert.Empty(t, got)
 }
 
 func TestPiStoredSessions_ExcludesSubagentTranscripts(t *testing.T) {

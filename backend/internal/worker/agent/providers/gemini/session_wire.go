@@ -85,15 +85,6 @@ func decodeGeminiSession(data []byte) (geminiSession, error) {
 	if len(trimmed) == 0 {
 		return session, errors.New("the Gemini session is empty")
 	}
-	// Gemini can load a complete JSON session from versions that precede JSONL.
-	if json.Valid(trimmed) {
-		if err := json.Unmarshal(trimmed, &session); err != nil {
-			return session, fmt.Errorf("decode the Gemini session: %w", err)
-		}
-		if session.SessionID != "" && session.ProjectHash != "" {
-			return session, nil
-		}
-	}
 	lines := bytes.Split(data, []byte{'\n'})
 	for index, line := range lines {
 		line = bytes.TrimSpace(line)
@@ -108,6 +99,9 @@ func decodeGeminiSession(data []byte) (geminiSession, error) {
 			return geminiSession{}, fmt.Errorf("decode Gemini record %d: %w", index+1, err)
 		}
 		if identity, exists := record["sessionId"]; exists {
+			if _, exists := record["messages"]; exists {
+				return geminiSession{}, errors.New("the Gemini transcript must contain native JSONL records")
+			}
 			var metadata geminiSession
 			if json.Unmarshal(identity, &metadata.SessionID) != nil || json.Unmarshal(line, &metadata) != nil {
 				return geminiSession{}, errors.New("the Gemini session identity is invalid")

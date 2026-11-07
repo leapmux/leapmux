@@ -1905,6 +1905,7 @@ describe('generate', () => {
       'backend/generated/contracts/acp-protocol.go',
       'backend/generated/contracts/agent-input.go',
       'backend/generated/contracts/amp-protocol.go',
+      'backend/generated/contracts/antigravity-protocol.go',
       'backend/generated/contracts/attachment-media.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
@@ -1961,6 +1962,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/acp-protocol.ts',
       'frontend/src/generated/contracts/agent-input.ts',
       'frontend/src/generated/contracts/amp-protocol.ts',
+      'frontend/src/generated/contracts/antigravity-protocol.ts',
       'frontend/src/generated/contracts/attachment-media.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
@@ -3006,52 +3008,56 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     }), 'filePathByteLimit must be > session.byteLimit')
   })
 
-  it('rejects a reserved username the Go const mangle cannot spell', () => {
-    // goReservedUsernames builds `Username<Name>` with case changes only. A
-    // hyphen produces invalid Go. Generation must identify that username.
-    expectContractError(() => checkValidate({
-      name: {
-        byteLimit: 1,
-        invisibleFormat: [
-          [1, 2],
-        ],
-        whitespaceFold: [
-          [3, 4],
-        ],
-      },
-      session: {
-        byteLimit: 1,
-        filePathByteLimit: 2,
-        invisibleFormat: [
-          [1, 2],
-        ],
-        refusedControl: [
-          [0, 1],
-        ],
-        refusedAscii: [
-          [2, 2],
-        ],
-      },
-      password: {
-        minLength: 1,
-        maxLength: 2,
-        printableAsciiMin: 32,
-        printableAsciiMax: 126,
-      },
-      branch: {
-        byteLimit: 1,
-        refusedControl: [
-          [0, 1],
-        ],
-        refusedAscii: [
-          [2, 2],
-        ],
-      },
-      usernames: {
-        systemReserved: { 'ci-bot': 'why' },
-        publicReserved: {},
-      },
-    }), 'not a valid Go identifier')
+  it.each([
+    ['ci-bot', 'UsernameCiBot', 'USERNAME_CI_BOT'],
+    ['ci--bot', 'UsernameCiBot', 'USERNAME_CI__BOT'],
+    ['ci-', 'UsernameCi', 'USERNAME_CI_'],
+  ])('accepts and emits the schema-valid reserved username %s', (name, goName, tsName) => {
+    const v = readContract('validate')
+    v.usernames.systemReserved = { [name]: 'Test reservation' }
+    v.usernames.publicReserved = {}
+    expect(() => checkValidate(v)).not.toThrow()
+    expect(emitGoValidate(v)).toContain(`${goName} = "${name}"`)
+    expect(emitGoValidate(v)).toContain(`${goName}:`)
+    expect(emitTsValidate(v)).toContain(`${tsName} = "${name}"`)
+  })
+
+  it.each([
+    ['a-1', 'a1'],
+    ['ci-bot', 'ci--bot'],
+  ])('rejects colliding Go identifiers for %s and %s across reservation groups', (first, second) => {
+    const v = readContract('validate')
+    v.usernames.systemReserved = { [first]: 'First' }
+    v.usernames.publicReserved = { [second]: 'Second' }
+    expectContractError(() => checkValidate(v), 'collide')
+    v.usernames.systemReserved[second] = 'Second'
+    v.usernames.publicReserved = {}
+    expectContractError(() => checkValidate(v), 'collide')
+  })
+
+  it.each(['', '-ci', 'Ci', 'ci_bot', 'ci.bot'])('rejects an invalid reserved username %j with a contract error', (name) => {
+    const v = readContract('validate')
+    v.usernames.systemReserved = { [name]: 'Test reservation' }
+    v.usernames.publicReserved = {}
+    expectContractError(() => checkValidate(v), 'reserved username')
+  })
+
+  it('generates both languages for schema-valid hyphenated reservations', () => {
+    const directory = contractScratchDirectory('contracts-usernames-')
+    try {
+      cpSync(join(ROOT, 'contracts'), directory, { recursive: true })
+      const v = readContract('validate')
+      v.usernames.systemReserved = { 'ci--bot': 'Build account', 'runner-': 'Runner account' }
+      v.usernames.publicReserved = {}
+      writeFileSync(join(directory, 'validate.json'), JSON.stringify(v))
+      const files = generate(directory, DESCRIPTOR)
+      expect(files['backend/generated/contracts/validate.go']).toMatch(/UsernameCiBot\s+= "ci--bot"/)
+      expect(files['backend/generated/contracts/validate.go']).toContain('UsernameRunner = "runner-"')
+      expect(files['frontend/src/generated/contracts/validate.ts']).toContain('USERNAME_CI__BOT = "ci--bot"')
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('rejects a session.invisibleFormat that diverges from the frozen name rule', () => {

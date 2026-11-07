@@ -12,6 +12,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
   AMP_SHELL_WAIT_LIMIT_MS,
   ampShellCommandStatusToolCall,
+  antigravitySendMessageToolCall,
   askUserQuestionToolCall,
   backgroundBashToolCall,
   bashToolCall,
@@ -33,6 +34,8 @@ import {
   codebuddyWaitForMcpServersToolCall,
   codebuddyWorkflowToolCall,
   codeExecutionToolCall,
+  codewhaleBashAliasToolCall,
+  codewhaleEditToolCall,
   codewhaleReadMediaToolCall,
   codewhaleToolSearchToolCall,
   codewhaleWorkflowToolCall,
@@ -106,8 +109,10 @@ import {
   spawnSubagentBatchToolCall,
   spawnSubagentToolCall,
   updateTodosToolCall,
+  viewFileToolCall,
   WORKFLOW_TOOL_NAMES,
   workflowToolNames,
+  writeAntigravityPlan,
   writeToolCall,
   zcodeCreateWorkflowToolCall,
   zcodeGetWorkflowRunToolCall,
@@ -992,6 +997,16 @@ describe('readToolCall', () => {
   })
 })
 
+describe('viewFileToolCall', () => {
+  it('uses the file tool that Antigravity gives its subagents', () => {
+    expect(viewFileToolCall('child-read', '/work/child.txt')).toEqual({
+      id: 'child-read',
+      name: 'view_file',
+      arguments: { AbsolutePath: '/work/child.txt' },
+    })
+  })
+})
+
 describe('codexExecToolCall', () => {
   it('preserves the native freeform JavaScript source without adding function arguments', () => {
     const source = 'const values = await Promise.all([tools.first(), tools.second()]);\ntext(values)'
@@ -1445,7 +1460,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(30)
+    expect(PROVIDERS).toHaveLength(31)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })
@@ -1523,14 +1538,22 @@ describe('backgroundBashToolCall', () => {
   })
 })
 
+describe('codewhaleBashAliasToolCall', () => {
+  it('keeps the current capitalized handler and canonical command arguments', () => {
+    expect(codewhaleBashAliasToolCall('alias-call', 'printf current')).toEqual({
+      id: 'alias-call',
+      name: 'Bash',
+      arguments: { command: 'printf current' },
+    })
+  })
+})
+
 describe('backgroundBashToolCall for Codewhale', () => {
-  it('starts the job through task_shell_start, which is the one tool that takes it', () => {
-    // `bash` refuses a `background` argument, so the flag form Claude uses would
-    // fail the call and open no shell row.
+  it('uses the current bash foreground timeout to retain a running job', () => {
     expect(backgroundBashToolCall(AgentProvider.CODEWHALE, 'call-1', 'sleep 60')).toEqual({
       id: 'call-1',
-      name: 'task_shell_start',
-      arguments: { command: 'sleep 60' },
+      name: 'bash',
+      arguments: { command: 'sleep 60', timeout: 1 },
     })
   })
 })
@@ -2133,9 +2156,9 @@ describe('updateTodosToolCall', () => {
     })
   })
 
-  // Claude, ZCode and Reasonix state the whole list as `todos` with
-  // `content`/`status`/`activeForm`. The sidebar draws the neutral statuses,
-  // and `activeForm` is a display string the schema allows.
+  // Claude Code and Reasonix send the whole list as `todos` with
+  // `content`, `status` and `activeForm`. ZCode sends `content`, `status`
+  // and `priority`, without `activeForm`.
   it('writes the Claude list as TodoWrite todos', () => {
     expect(updateTodosToolCall(AgentProvider.CLAUDE_CODE, 'call-1', [
       { step: 'First', status: 'completed' },
@@ -2309,6 +2332,15 @@ describe('copilotAsyncBashToolCall', () => {
  * init command take no status at all, so their builders read none and refuse none.
  */
 const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[]> = new Map([
+  [
+    AgentProvider.CODEWHALE,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ],
+  ],
   [
     AgentProvider.GITHUB_COPILOT,
     [
@@ -4421,5 +4453,58 @@ describe('enterPlanModeToolCall for Kimi Code', () => {
   it('refuses the removed tool for entering Plan mode', () => {
     expect(() => enterPlanModeToolCall(AgentProvider.KIMI_CODE, 'unsupported-enter'))
       .toThrow(`AgentProvider ${AgentProvider.KIMI_CODE} has no enter plan mode builder in this table`)
+  })
+})
+
+describe('antigravitySendMessageToolCall', () => {
+  it('uses the native recipient and message fields', () => {
+    expect(antigravitySendMessageToolCall('message-1', 'native-conversation', 'Continue')).toEqual({
+      id: 'message-1',
+      name: 'send_message',
+      arguments: { Recipient: 'native-conversation', Message: 'Continue' },
+    })
+  })
+})
+
+describe('writeAntigravityPlan', () => {
+  it('writes a user-facing native plan artifact', () => {
+    expect(writeAntigravityPlan('/p/plan.md', '# Plan')).toEqual({
+      id: 'antigravity-plan-write',
+      name: 'write_file',
+      arguments: {
+        Path: '/p/plan.md',
+        Content: '# Plan',
+        Overwrite: true,
+        ArtifactMetadata: { Summary: 'Implementation plan', UserFacing: true, RequestFeedback: true },
+      },
+    })
+  })
+})
+
+describe('codewhaleEditToolCall', () => {
+  it('preserves both current edit forms and owns the array entries', () => {
+    const edits = [
+      { oldText: 'one', newText: 'ONE' },
+    ]
+    const call = codewhaleEditToolCall('current-edit', {
+      path: 'a.ts',
+      edits,
+      oldText: 'two',
+      newText: '',
+    })
+    edits[0]!.newText = 'changed later'
+    expect(call.name).toBe('edit')
+    expect(call.arguments).toEqual({
+      path: 'a.ts',
+      edits: [
+        { oldText: 'one', newText: 'ONE' },
+      ],
+      oldText: 'two',
+      newText: '',
+    })
+    const encoded = JSON.stringify([
+      { oldText: 'one', newText: 'ONE' },
+    ])
+    expect(codewhaleEditToolCall('encoded-edit', { path: 'a.ts', edits: encoded }).arguments).toEqual({ path: 'a.ts', edits: encoded })
   })
 })

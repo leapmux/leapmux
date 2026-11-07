@@ -197,13 +197,12 @@ func TestZCodeGenerationDiscardKeepsUnselectedScopes(t *testing.T) {
 func TestZCodeTurnSteerability(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		turnActive, compaction, unsupported bool
-		want                                agent.TurnState
+		turnActive, compaction bool
+		want                   agent.TurnState
 	}{
-		"a running turn":                   {turnActive: true, want: agent.TurnState{Active: true, Steerable: true}},
-		"a running turn without the inbox": {turnActive: true, unsupported: true, want: agent.TurnState{Active: true}},
-		"a compaction alone":               {compaction: true, want: agent.TurnState{Active: true}},
-		"no turn":                          {want: agent.TurnState{}},
+		"a running turn":     {turnActive: true, want: agent.TurnState{Active: true, Steerable: true}},
+		"a compaction alone": {compaction: true, want: agent.TurnState{Active: true}},
+		"no turn":            {want: agent.TurnState{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -213,10 +212,9 @@ func TestZCodeTurnSteerability(t *testing.T) {
 			if tc.compaction {
 				a.compactionSessionID = a.sessionID
 			}
-			a.steeringUnsupported = tc.unsupported
 			a.Mu.Unlock()
 			assert.Equal(t, tc.want, a.PublishTurnActive())
-			assert.Equal(t, !tc.unsupported, a.SupportsSteering())
+			assert.True(t, a.SupportsSteering())
 		})
 	}
 }

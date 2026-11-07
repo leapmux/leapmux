@@ -36,10 +36,9 @@ type Agent struct {
 	workingDir string
 	clock      quartz.Clock
 
-	// endpoint and runtime are set once, before the agent is visible to any
+	// endpoint and store are set once, before the agent is visible to any
 	// other goroutine, and never change.
 	endpoint *providerkit.HTTPEndpoint
-	runtime  codewhaleRuntimeInfo
 	store    codewhaleStore
 	// stopProcess sends SIGTERM to the process group at once. The runtime does
 	// not read its stdin, so the stdin close that Process.Stop starts with ends

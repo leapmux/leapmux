@@ -272,6 +272,21 @@ func (e *HTTPEndpoint) OpenStreamQuery(ctx context.Context, method, path string,
 	return response, nil
 }
 
+// OpenStreamBody sends a raw request body with contentType and returns the open
+// reply for a 2xx status. It is for framed streaming protocols whose request body
+// is not JSON. The caller reads and closes the body; cancelling ctx ends it.
+func (e *HTTPEndpoint) OpenStreamBody(ctx context.Context, method, path string, header http.Header, contentType string, body []byte) (*http.Response, error) {
+	response, err := e.sendReader(ctx, method, path, nil, header, contentType, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStatus(method, path, response); err != nil {
+		_ = response.Body.Close()
+		return nil, err
+	}
+	return response, nil
+}
+
 // OpenWebSocket upgrades a request to path into a WebSocket connection, for a
 // server that pushes its events over a WebSocket rather than an event stream.
 //
@@ -328,13 +343,19 @@ func (e *HTTPEndpoint) OpenWebSocket(ctx context.Context, path string, opts *web
 
 func (e *HTTPEndpoint) send(ctx context.Context, method, path string, query url.Values, header http.Header, body any) (*http.Response, error) {
 	var reader io.Reader
+	contentType := ""
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("%s %s: encode the request: %w", method, path, err)
 		}
 		reader = bytes.NewReader(encoded)
+		contentType = "application/json"
 	}
+	return e.sendReader(ctx, method, path, query, header, contentType, reader)
+}
+
+func (e *HTTPEndpoint) sendReader(ctx context.Context, method, path string, query url.Values, header http.Header, contentType string, reader io.Reader) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, method, e.URL(path, query), reader)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
@@ -350,8 +371,8 @@ func (e *HTTPEndpoint) send(ctx context.Context, method, path string, query url.
 			request.Header.Add(key, value)
 		}
 	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
 	}
 	if request.Header.Get("Accept") == "" {
 		request.Header.Set("Accept", "application/json")

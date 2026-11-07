@@ -75,9 +75,9 @@ vi.mock('./workerTabs', () => ({
 
 vi.mock('./nativeResume', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeResume')>(),
-  countOriginalAnswerRows: async (_context: unknown, agentId: string) => {
+  readOriginalConversationRows: async (_context: unknown, agentId: string) => {
     picker.events.push(`count-rows:${agentId}`)
-    return 2
+    return { answerRows: 2, userSequence: 1n }
   },
   expectReopenedNativeAgent: async (_context: unknown, stored: { agentSessionId: string }, earlierAgentIds: readonly string[]) => {
     picker.events.push(`reopened:${stored.agentSessionId}:${earlierAgentIds.join(',')}`)
@@ -124,6 +124,16 @@ function rows(texts: () => readonly string[], filters: readonly string[] = []) {
     }),
   }
 }
+
+vi.mock('./chatBubbleCount', () => ({
+  countChatBubbles: async (_page: Page, role: string, text: string) => {
+    const count = await rows(() => role === 'user'
+      ? picker.userRows
+      : picker.assistantRows).filter({ hasText: text }).count()
+    picker.events.push(`bubble-count:${role}:${count}`)
+    return count
+  },
+}))
 
 vi.mock('./ui', () => ({
   agentTabs: (page: Page) => page.locator('[data-testid="tab"][data-tab-type="agent"]'),
@@ -392,23 +402,23 @@ describe('resumePickerScenario', () => {
       'send:Keep',
       'steps:1',
       'idle',
-      'count:1',
-      'visible',
       'request-at:0',
       'list-agents',
       'count-rows:subject-agent',
+      'bubble-count:user:1',
+      'bubble-count:agent:1',
       `close:${SUBJECT_ID}`,
       `reopen:${STORED_SESSION}`,
       `reopened:${STORED_SESSION}:${KEEPER_ID},${SUBJECT_ID}`,
-      'count:1',
-      'count:1',
+      'bubble-count:user:1',
+      'bubble-count:agent:1',
       'queue:1',
       'send:Reply',
       'steps:2',
       'idle',
       'request-at:1',
       expect.stringMatching(/^context:/),
-      'count:1',
+      'bubble-count:agent:1',
       `conversation:${REOPENED_ID}`,
     ])
     expect(result.request.stepIndex).toBe(1)
@@ -576,13 +586,16 @@ describe('resumePickerScenario', () => {
     it('checks one original prompt bubble and a drawn original answer before the close', async () => {
       await run()
       const close = picker.events.indexOf(`close:${SUBJECT_ID}`)
-      expect(picker.events.slice(picker.events.indexOf('idle'), close).filter(event => event.startsWith('count:') || event === 'visible')).toEqual(['count:1', 'visible'])
+      expect(picker.events.slice(picker.events.indexOf('idle'), close).filter(event => event.startsWith('bubble-count:'))).toEqual(['bubble-count:user:1', 'bubble-count:agent:1'])
     })
 
     it('fails before the close when the live transcript draws no original answer', async () => {
       picker.bubblesPerAnswer = [0]
       // The bubble count of the original answer fails: none where the proof requires one.
-      await expect(run()).rejects.toThrow('expected +0 to be 1')
+      await expect(run()).rejects.toMatchObject({
+        matcherResult: { name: 'toBeGreaterThan', pass: false },
+      })
+      expect(picker.events).toContain('bubble-count:agent:0')
       expect(picker.events).not.toContain(`close:${SUBJECT_ID}`)
     })
 
@@ -590,7 +603,7 @@ describe('resumePickerScenario', () => {
       picker.bubblesPerAnswer = [3, 3]
       await run()
       const afterResume = picker.events.slice(picker.events.indexOf('steps:2'))
-      expect(afterResume.filter(event => event.startsWith('count:'))).toEqual(['count:3'])
+      expect(afterResume.filter(event => event.startsWith('bubble-count:'))).toEqual(['bubble-count:agent:3'])
       expect(picker.conversation).toEqual([
         { agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 3 },
       ])
@@ -599,7 +612,14 @@ describe('resumePickerScenario', () => {
     it('fails when the resumed answer draws another number of bubbles than the original answer', async () => {
       picker.bubblesPerAnswer = [2, 1]
       // The bubble count of the resumed answer fails: one where the original answer drew two.
-      await expect(run()).rejects.toThrow('expected 1 to be 2')
+      await expect(run()).rejects.toMatchObject({
+        matcherResult: {
+          name: 'toBe',
+          actual: 1,
+          expected: 2,
+          pass: false,
+        },
+      })
       expect(picker.events).not.toContain(`conversation:${REOPENED_ID}`)
     })
 

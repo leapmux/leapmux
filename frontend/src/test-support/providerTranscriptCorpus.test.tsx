@@ -906,6 +906,60 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       frame('result', provider, id, 'edit_file', commandCodeNativeFuzzyEditResult),
     ]
   }
+  if (provider === AgentProvider.ANTIGRAVITY_CLI) {
+    return [
+      frame('request', provider, 'parity-edit', 'edit_file', {
+        type: 'CORTEX_STEP_TYPE_CODE_ACTION',
+        status: 'CORTEX_STEP_STATUS_RUNNING',
+        metadata: {
+          toolCall: {
+            id: 'parity-edit',
+            name: 'edit_file',
+            argumentsJson: JSON.stringify({ Path: path, Target: before, Replacement: after }),
+          },
+        },
+        codeAction: {
+          actionSpec: {
+            command: {
+              isEdit: true,
+              file: { absoluteUri: `file://${path}` },
+            },
+          },
+        },
+      }),
+      frame('result', provider, 'parity-edit', 'edit_file', {
+        type: 'CORTEX_STEP_TYPE_CODE_ACTION',
+        status: 'CORTEX_STEP_STATUS_DONE',
+        metadata: {
+          toolCall: {
+            id: 'parity-edit',
+            name: 'edit_file',
+            argumentsJson: JSON.stringify({ Path: path, Target: before, Replacement: after }),
+          },
+        },
+        codeAction: {
+          actionSpec: {
+            command: {
+              isEdit: true,
+              file: { absoluteUri: `file://${path}` },
+            },
+          },
+          actionResult: {
+            edit: {
+              diff: {
+                unifiedDiff: {
+                  lines: [
+                    { text: before, type: 'DIFF_LINE_TYPE_DELETE' },
+                    { text: after, type: 'DIFF_LINE_TYPE_ADD' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]
+  }
   if (provider === AgentProvider.GEMINI_CLI) {
     return [
       frame('result', provider, geminiNativeCommittedEdit.id, 'replace', geminiNativeCommittedEdit),
@@ -1530,6 +1584,7 @@ const EDIT_PROVIDERS = [
   ['Deepseek Harness', AgentProvider.DEEPSEEK_HARNESS],
   ['Gemini CLI', AgentProvider.GEMINI_CLI],
   ['Muse Code', AgentProvider.MUSE_CODE],
+  ['Antigravity CLI', AgentProvider.ANTIGRAVITY_CLI],
 ] as const
 
 describe('native file edits render their committed results', () => {

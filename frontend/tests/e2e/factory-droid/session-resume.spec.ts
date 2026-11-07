@@ -1,7 +1,7 @@
 import type { ConsoleMessage } from '@playwright/test'
 import { toJson } from '@bufbuild/protobuf'
 import { AgentChatMessageSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DROID_E2E_SKIP_REASON, droidTest } from '../droid-fixtures'
+import { droidTest } from '../droid-fixtures'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
@@ -19,7 +19,6 @@ droidTest('reopens a completed picker session and restores its saved Worker rows
 const restartTest = createProviderProcessTest({
   agent: DROID_AGENT,
   nativeContext,
-  skipReason: DROID_E2E_SKIP_REASON,
   modelRules: [DROID_TITLE_RULE],
 })
 restartTest.use({ debugLogging: true })

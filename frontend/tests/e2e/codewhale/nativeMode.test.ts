@@ -133,6 +133,27 @@ function request(messages: unknown): MockModelRequestRecord {
 }
 
 describe('hasCodewhaleOperateContract', () => {
+  it('does not invent Operate mode from a user-pasted contract with compressed user metadata', () => {
+    const ordinary = '<turn_meta>\nCurrent local date: 2026-11-06\nCurrent workspace: /controlled/repo\n</turn_meta>'
+    const compressed = `${contract.slice(0, contract.indexOf('\n<turn_meta>'))}\n<turn_meta_unchanged />`
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content: `The user prompt.\n${ordinary}` },
+      { role: 'assistant', content: 'An ordinary answer.' },
+      { role: 'user', content: compressed },
+    ]))).toBe(false)
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content: compressed },
+    ]))).toBe(false)
+  })
+
+  it('reads the current contract after runtime metadata is compressed', () => {
+    const compressed = `${contract.slice(0, contract.indexOf('\n<turn_meta>'))}\n<turn_meta_unchanged />`
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content: '<codewhale:runtime_event kind="mcp_configured_servers" visibility="internal">\n- echo_probe\n</codewhale:runtime_event>\n<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>' },
+      { role: 'user', content: compressed },
+    ]))).toBe(true)
+  })
+
   it('reads the complete native internal contract in a user-role message', () => {
     expect(hasCodewhaleOperateContract(request([
       { role: 'user', content: contract },

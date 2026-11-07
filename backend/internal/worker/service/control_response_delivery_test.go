@@ -1,14 +1,19 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -325,4 +330,122 @@ func processControlResponseForTest(svc *Service, agentID string, row db.Agent, c
 	}
 	err := svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{AgentId: agentID, Content: content, ClaimToken: claimToken})
 	return received, delivered, err
+}
+
+func TestExecuteControlResponseRoutesVirtualChildToRootProcess(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "root")
+	root, err := svc.Queries.GetAgentByID(t.Context(), "root")
+	require.NoError(t, err)
+	child := createControlResponseChild(t, svc, root, "child")
+	plan := pendingControlResponsePlan(t, svc, child)
+	var owner string
+	svc.sendControlResponseFn = func(agentID string, _ []byte) error {
+		owner = agentID
+		return nil
+	}
+	err = svc.executeControlResponse(child.ID, child, plan)
+	require.NoError(t, err)
+	require.Equal(t, root.ID, owner)
+}
+
+func createControlResponseChild(t *testing.T, svc *Service, parent db.Agent, id string) db.Agent {
+	t.Helper()
+	require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
+		ID: id, ParentAgentID: sqlString(parent.ID), ProviderChildKey: "native-" + id,
+		WorkingDir: parent.WorkingDir, Title: "Child", Options: parent.Options,
+		AgentProvider: parent.AgentProvider, AgentSessionID: id + "-session",
+	}))
+	child, err := svc.Queries.GetAgentByID(t.Context(), id)
+	require.NoError(t, err)
+	return child
+}
+
+func pendingControlResponsePlan(t *testing.T, svc *Service, row db.Agent) controlResponsePlan {
+	t.Helper()
+	payload := []byte(`{"id":"request","method":"item/commandExecution/requestApproval"}`)
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: row.ID, RequestID: "request", ClaimToken: "claim", AgentSessionID: row.AgentSessionID, Payload: payload,
+	})
+	return controlResponsePlan{
+		requestMeta: controlResponseRequestMetadata{
+			RequestID: "request", ClaimToken: "claim", AgentSessionID: row.AgentSessionID,
+			Payload: payload, Exists: true, Loaded: true,
+		},
+		resolution: agent.ControlResponseResolution{Content: []byte(`{"id":"request","result":{"decision":"accept"}}`)},
+	}
+}
+
+func TestExecuteControlResponseWaitsForRootLifecycle(t *testing.T) {
+	for _, depth := range []int{1, 2} {
+		for _, mutation := range []string{"unchanged", "retired", "replaced", "provider-changed"} {
+			t.Run(fmt.Sprintf("depth=%d/%s", depth, mutation), func(t *testing.T) {
+				svc, _, _ := setupTestService(t)
+				createClaimTestAgent(t, svc, "root")
+				root, err := svc.Queries.GetAgentByID(t.Context(), "root")
+				require.NoError(t, err)
+				child := root
+				for index := 0; index < depth; index++ {
+					child = createControlResponseChild(t, svc, child, fmt.Sprintf("child-%d", index))
+				}
+				plan := pendingControlResponsePlan(t, svc, child)
+				var sends atomic.Int32
+				delivered := make(chan string, 1)
+				svc.sendControlResponseFn = func(owner string, _ []byte) error {
+					sends.Add(1)
+					delivered <- owner
+					return nil
+				}
+				unlock := sync.OnceFunc(svc.Agents.LockAgent(root.ID))
+				t.Cleanup(unlock)
+				done := make(chan error, 1)
+				var finished atomic.Bool
+				go func() {
+					done <- svc.executeControlResponse(child.ID, child, plan)
+					finished.Store(true)
+				}()
+				require.Eventually(t, func() bool {
+					return svc.Agents.LifecycleLockCallersForTest(root.ID) >= 2 || sends.Load() > 0 || finished.Load()
+				}, 30*time.Second, 5*time.Millisecond)
+				assert.Equal(t, 2, svc.Agents.LifecycleLockCallersForTest(root.ID))
+				assert.Zero(t, sends.Load(), "delivery must wait for the root process lifecycle")
+				switch mutation {
+				case "retired":
+					_, err := svc.Queries.DeleteControlRequestInstance(t.Context(), db.DeleteControlRequestInstanceParams{
+						AgentID: child.ID, RequestID: plan.requestMeta.RequestID, ClaimToken: plan.requestMeta.ClaimToken,
+					})
+					require.NoError(t, err)
+				case "replaced":
+					createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+						AgentID: child.ID, RequestID: plan.requestMeta.RequestID, ClaimToken: "replacement-claim",
+						AgentSessionID: child.AgentSessionID, Payload: plan.requestMeta.Payload,
+					})
+				case "provider-changed":
+					_, err := svc.DB.ExecContext(t.Context(), "UPDATE agents SET agent_provider = ? WHERE id = ?",
+						leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, root.ID)
+					require.NoError(t, err)
+				}
+				unlock()
+				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+				defer cancel()
+				select {
+				case err := <-done:
+					switch mutation {
+					case "retired", "replaced":
+						assert.ErrorContains(t, err, "no longer pending")
+						assert.Zero(t, sends.Load())
+					case "provider-changed":
+						assert.ErrorContains(t, err, "different provider")
+						assert.Zero(t, sends.Load())
+					default:
+						require.NoError(t, err)
+						assert.Equal(t, int32(1), sends.Load())
+						assert.Equal(t, root.ID, <-delivered)
+					}
+				case <-ctx.Done():
+					t.Fatalf("wait for child control delivery: %v", ctx.Err())
+				}
+			})
+		}
+	}
 }

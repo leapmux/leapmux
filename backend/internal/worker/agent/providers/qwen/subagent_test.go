@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -309,7 +310,8 @@ func TestQwenForegroundShellTakesNoRow(t *testing.T) {
 
 func TestQwenWorkflowRunKeepsARow(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newQwenAgent(t, nil, nil)
+	clock := testutil.NewQuartzMock(t)
+	a, sink, _ := newQwenAgent(t, clock, qwenWorkflowTaskList(""))
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call","toolCallId":"call_wf","status":"pending","title":"Workflow","kind":"other","rawInput":{"name":"triage"},"_meta":{"toolName":"workflow"}}`))
 	row, ok := sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	require.True(t, ok)
@@ -325,7 +327,44 @@ func TestQwenWorkflowRunKeepsARow(t *testing.T) {
 	poller := a.children.workflows["call_wf"]
 	a.stateMu.Unlock()
 	require.NotNil(t, poller)
+	// A Worker retries accepted registry writes after their source locks clear.
+	queue := agent.OutputQueueFor(a.Sink())
+	retry := clock.Trap().NewTimer(agent.OutputRetryTimerTag)
+	queue.ConfigureRetry(t.Context(), clock, nil)
+	t.Cleanup(queue.StopRetries)
+	t.Cleanup(retry.Close)
+	leaseEntered := make(chan string, 1)
+	leaseReleased := make(chan struct{})
+	leaseDone := make(chan struct{})
+	releaseLease := sync.OnceFunc(func() { close(leaseReleased) })
+	t.Cleanup(func() { releaseLease(); <-leaseDone })
+	go func() {
+		defer close(leaseDone)
+		assert.NoError(t, a.WithSessionID(func(sessionID string) error {
+			leaseEntered <- sessionID
+			<-leaseReleased
+			return nil
+		}))
+	}()
+	select {
+	case sessionID := <-leaseEntered:
+		require.Equal(t, qwenTestSession, sessionID)
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the session lease did not start")
+	}
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed"}`))
+	waitForQwenWorkflowReaders(t, a)
+	require.True(t, queue.HasPending(), "the lease must defer accepted registry output")
+	remaining := testutil.WaitForTimer(t, testutil.DeadlineContext(t), retry)
+	releaseLease()
+	<-leaseDone
+	for remaining > 0 {
+		step, waiter := clock.AdvanceNext()
+		require.Positive(t, step)
+		require.LessOrEqual(t, step, remaining)
+		waiter.MustWait(testutil.DeadlineContext(t))
+		remaining -= step
+	}
 	waitForQwenWorkflowStorage(t, a, poller)
 	row, _ = sink.BackgroundTask(qwenWorkflowRowKey(qwenTestSession, "call_wf"))
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)

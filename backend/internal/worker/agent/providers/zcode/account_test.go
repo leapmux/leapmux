@@ -387,7 +387,6 @@ func newZCodeRecheckHarnessWithHandler(t *testing.T, store zcodeCredentialStore,
 	h.newTimer, h.stopTimer = testutil.NewTimerTraps(t, h.clock, zcodeStartPlanRecheckTimerTag)
 	h.a = zcodeStartPlanTestAgentWithClock(t, h.stdin, server.URL, client, h.clock)
 	h.a.credentials = store
-	refuseZCodeRequest(t, h.a, h.stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, h.a, h.stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
 	// The initial snapshot is followed by the registry refresh, before any

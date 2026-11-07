@@ -263,6 +263,16 @@
         "icon": "/icons/agents/muse-code.svg",
         "id": "muse-code"
       }
+    ],
+    [
+      {
+        "id": "antigravity-cli",
+        "label": "Antigravity CLI",
+        "url": "https://antigravity.google/",
+        "icon": "/icons/agents/antigravity-cli.svg",
+        "userNote": "Tested with agy 1.5.0. Antigravity uses an undocumented language-server protocol. While an agent runs, its local language-server port accepts requests without authentication, so another local process can read the conversation, send prompts, and approve permissions.",
+        "detailNote": "The provider drives the LanguageServerService API hosted by `agy acp`, because ACP supplies no wake-turn or subagent approvals and `agy --hub` ignores the strict permission config. The LS protocol is undocumented and can change with an automatic agy update. In `agy acp` mode the loopback port has no request authentication; this is upstream behavior that LeapMux cannot change."
+      }
     ]
   ],
   "cells": {
@@ -536,6 +546,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/text-attachments.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "image-attachments": {
@@ -808,6 +827,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/image-attachments.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "pdf-attachments": {
@@ -1080,6 +1108,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/pdf-attachments.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "audio-attachments": {
@@ -1350,6 +1387,15 @@
         "detailNote": "Muse native MSP rejects audio and file prompt variants with -32602; the input union lists text,image,skill,video,mention. rpc-nrvRaY in .tmp/audio-native-probe/muse-audit-2.log uses a valid UUIDv7 session and records zero model requests. Earlier invalid-session refusals are excluded. Browser refusal passes in e2e-wi2L9n.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
         "spec": "frontend/tests/e2e/muse-code/audio-attachments.spec.ts",
         "audit": "unsupported",
+        "verified": true,
+        "testStatus": "passed"
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/audio-attachments.spec.ts",
+        "audit": "covered",
         "verified": true,
         "testStatus": "passed"
       }
@@ -1624,6 +1670,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/other-binary-attachments.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "images-in-tool-results": {
@@ -1896,6 +1951,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/images-in-tool-results.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "thinking-in-the-transcript": {
@@ -2168,6 +2232,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/thinking-in-the-transcript.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "context-usage": {
@@ -2440,6 +2513,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/context-usage.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "compaction-notice": {
@@ -2712,6 +2794,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/compaction-notice.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "manual-compaction": {
@@ -2984,6 +3075,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/manual-compaction.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "rate-limit-state": {
@@ -3256,6 +3356,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "Antigravity CLI reports quota for a Google sign-in. A session that uses an API key shows no window in Agent info.",
+        "detailNote": "The catalog holds quotaInfo values only on a signed-in account, so the mock cannot reach it. A Go test covers the mapping, and a manual check on a signed-in account covers the display.",
+        "spec": "frontend/tests/e2e/antigravity-cli/rate-limit-state.spec.ts",
+        "audit": "source-verified",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "model-context-on-resume": {
@@ -3528,6 +3637,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/model-context-on-resume.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "permission-prompts": {
@@ -3800,6 +3918,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/permission-prompts.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "plan-mode": {
@@ -4072,6 +4199,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/plan-mode.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "plan-approval-banner": {
@@ -4344,6 +4480,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/plan-approval-banner.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "agent-questions": {
@@ -4616,6 +4761,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/agent-questions.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "mcp-tool-execution": {
@@ -4888,6 +5042,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/mcp-tool-execution.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "mcp-input-request": {
@@ -5160,6 +5323,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "Antigravity answers MCP elicitation with cancel, so LeapMux has no form to display.",
+        "detailNote": "Antigravity answers MCP elicitation with cancel, so LeapMux has no form to display. The Antigravity spec verifies the exact native cancellation and its tool result.",
+        "spec": "frontend/tests/e2e/antigravity-cli/mcp-input-request.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "smart-permissions-shortcut": {
@@ -5432,6 +5604,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "Antigravity Auto mode needs the terminal sandbox. This integration keeps the sandbox off and has no proof that Auto mode stays safe under that configuration.",
+        "detailNote": "Antigravity Auto mode needs the terminal sandbox. This integration keeps the sandbox off and has no proof that Auto mode stays safe under that configuration. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/smart-permissions-shortcut.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "bypass-permissions-shortcut": {
@@ -5704,6 +5885,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/bypass-permissions-shortcut.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "model": {
@@ -5976,6 +6166,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/model.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "reasoning-effort": {
@@ -6248,6 +6447,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/reasoning-effort.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "mode": {
@@ -6520,6 +6728,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/mode.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "session-goal-set-and-clear": {
@@ -6792,6 +7009,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "The /goal command works in chat, but the language-server stream reports no goal state for the sidebar.",
+        "detailNote": "The /goal command works in chat, but the language-server stream reports no goal state for the sidebar. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/session-goal-set-and-clear.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "session-goal-pause-and-resume": {
@@ -7064,6 +7290,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "The language-server stream reports no goal state that could pause or resume a sidebar goal.",
+        "detailNote": "The language-server stream reports no goal state that could pause or resume a sidebar goal. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/session-goal-pause-and-resume.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "to-do-sidebar": {
@@ -7336,6 +7571,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "Antigravity has no to-do tool, and its system prompt defines no task-list convention.",
+        "detailNote": "Antigravity has no to-do tool, and its system prompt defines no task-list convention. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/to-do-sidebar.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "background-tasks-sidebar": {
@@ -7608,6 +7852,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/background-tasks-sidebar.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "subagent-transcript-tab": {
@@ -7880,6 +8133,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/subagent-transcript-tab.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "subagent-live-transcript": {
@@ -8152,6 +8414,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/subagent-live-transcript.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "send-to-a-subagent": {
@@ -8424,6 +8695,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/send-to-a-subagent.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "interrupt-a-subagent": {
@@ -8518,11 +8798,11 @@
         "verified": true
       },
       "codewhale": {
-        "support": "agent-limit",
-        "userNote": "CodeWhale 0.10.0 has no route that stops one subagent, so LeapMux cannot interrupt a subagent alone. A later CodeWhale release adds a cancel route for subagent runs.",
-        "detailNote": "The current provider bridge exposes no native child interrupt route. LeapMux keeps the child Interrupt control absent and refuses direct child interruption.\n\nClassified as an agent limit for the tested version 0.10.0: the installed binary holds no `POST /v1/agent-runs/{run_id}/cancel` route. The 0.10.1 source adds `cancel_agent_run`. After an upgrade this cell likely becomes a LeapMux limit. Recheck it then (binary and source checked 2026-10-05).",
+        "support": "supported",
+        "userNote": "Interrupt stops the selected subagent while the parent remains usable.",
+        "detailNote": "The current native POST /v1/agent-runs/{run_id}/cancel route stops the selected child. LeapMux preserves the native outcome and leaves the parent turn unchanged. The native cancellation does not start a parent model turn; the browser proof sends a new parent prompt and verifies its answer. The stopped child has no active indicator or end divider after reload. Source verified against v0.10.2; browser acceptance passed in e2e-9JoRDD.",
         "spec": "frontend/tests/e2e/codewhale/interrupt-a-subagent.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -8696,6 +8976,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/interrupt-a-subagent.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "steer-mid-turn": {
@@ -8968,6 +9257,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/steer-mid-turn.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "workflow-grouping": {
@@ -9240,6 +9538,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "The language-server stream has no workflow group model.",
+        "detailNote": "The language-server stream has no workflow group model. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/workflow-grouping.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "basic-chat": {
@@ -9512,6 +9819,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/basic-chat.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "conversation-context": {
@@ -9784,6 +10100,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/conversation-context.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "shell-tool-execution": {
@@ -10056,6 +10381,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/shell-tool-execution.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "file-tool-execution": {
@@ -10328,6 +10662,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/file-tool-execution.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "interrupt-a-turn": {
@@ -10600,6 +10943,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/interrupt-a-turn.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "close-an-agent": {
@@ -10872,6 +11224,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/close-an-agent.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "session-reset": {
@@ -11144,6 +11505,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/session-reset.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "session-resume": {
@@ -11416,6 +11786,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/session-resume.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "agent-startup": {
@@ -11688,6 +12067,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/agent-startup.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "turn-end-sound": {
@@ -11960,6 +12348,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/turn-end-sound.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "generation-progress": {
@@ -12232,6 +12629,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/generation-progress.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "editor-requests": {
@@ -12504,6 +12910,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The language-server protocol exposes no editor request channel. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/editor-requests.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "workspace-trust": {
@@ -12776,6 +13191,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The strict config asks before actions outside the workspace and supplies no separate trust decision. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/workspace-trust.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "swarm-mode": {
@@ -13048,6 +13472,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "Antigravity has no swarm orchestration mode. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/swarm-mode.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "model-error": {
@@ -13320,6 +13753,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/model-error.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "credential-isolation": {
@@ -13592,6 +14034,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/credential-isolation.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "extended-thinking": {
@@ -13864,6 +14315,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The model catalog and stream expose no separate extended-thinking setting. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/extended-thinking.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "fast-mode": {
@@ -14136,6 +14596,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "The model catalog holds no fast tier, and the stream reports none. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/fast-mode.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "output-style": {
@@ -14408,6 +14877,15 @@
         "audit": "covered-negative",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "",
+        "detailNote": "Antigravity has no output-style setting. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/output-style.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "code-execution": {
@@ -14680,6 +15158,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "agent-limit",
+        "userNote": "Antigravity has no separate code-execution tool or runtime result.",
+        "detailNote": "Antigravity has no separate code-execution tool or runtime result. The Antigravity spec confirms that LeapMux exposes no corresponding feature.",
+        "spec": "frontend/tests/e2e/antigravity-cli/code-execution.spec.ts",
+        "audit": "covered-negative",
+        "verified": true,
+        "testStatus": "passed"
       }
     },
     "output-file-paths": {
@@ -14952,6 +15439,15 @@
         "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
+      },
+      "antigravity-cli": {
+        "support": "supported",
+        "userNote": "",
+        "detailNote": "",
+        "spec": "frontend/tests/e2e/antigravity-cli/output-file-paths.spec.ts",
+        "audit": "covered",
+        "verified": true,
+        "testStatus": "passed"
       }
     }
   }

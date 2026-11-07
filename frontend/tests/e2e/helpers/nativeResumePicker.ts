@@ -11,12 +11,13 @@ import type { ProviderWorkingDir } from './providerWorkingDir'
 import { expect } from '@playwright/test'
 import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
+import { countChatBubbles } from './chatBubbleCount'
 import { stepRequest } from './mockModelScript'
-import { countOriginalAnswerRows, expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
+import { expectNativeResumeContext, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, readOriginalConversationRows, reopenFromSessionPicker } from './nativeResume'
 import { nativeAgentById, nativeModelConversationTurns, nativeTextStep } from './nativeScenario'
 import { deliberateWorkingDir } from './providerWorkingDir'
 import { retryUntilPass } from './retryUntilPass'
-import { agentTabs, assistantBubbles, loginViaToken, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from './ui'
+import { agentTabs, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait } from './workerTabs'
 import { createGitRepo } from './worktree'
 
@@ -158,8 +159,6 @@ export async function resumePickerScenario(
   const firstStatus = await modelScript.waitForSteps(originalStep + 1)
   await options.onFirstTurn?.(stepRequest(firstStatus, originalStep))
   await waitForAgentIdle(page)
-  await expect(userBubbles(page).filter({ hasText: texts.originalPrompt }), 'The live transcript draws the original prompt once.').toHaveCount(1)
-  await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer }).first(), 'The live transcript draws the original answer.').toBeVisible()
   // Read the record after the turn, for the same reason as the resumed request below.
   const originalRequest = await modelScript.requestAt(originalStep)
   const sessionId = await retryUntilPass(async () => {
@@ -167,12 +166,14 @@ export async function resumePickerScenario(
     expect(stored, 'the Worker stores the native session of the first turn').not.toBe('')
     return stored
   })
-  const originalAnswerRows = await countOriginalAnswerRows(context, subjectId, texts)
+  const { answerRows: originalAnswerRows, userSequence } = await readOriginalConversationRows(context, subjectId, texts)
   // What the live transcript drew before the close is what the reopened one must
   // draw again, and what the live resumed answer must draw: an answer tool can
   // store the answer in rows that render no bubble, or in several rows that each
   // render one, so the page count is its own number, not the row count.
-  const originalAnswerBubbles = await assistantBubbles(page).filter({ hasText: texts.originalAnswer }).count()
+  expect(await countChatBubbles(page, 'user', texts.originalPrompt, userSequence), 'The live transcript draws the original prompt once.').toBe(1)
+  const originalAnswerBubbles = await countChatBubbles(page, 'agent', texts.originalAnswer, userSequence)
+  expect(originalAnswerBubbles, 'The live transcript draws the original answer.').toBeGreaterThan(0)
   await closeNativeAgentAndWait(context, subjectId)
 
   await reopenFromSessionPicker(page, {
@@ -185,8 +186,8 @@ export async function resumePickerScenario(
   })
   const reopened = await expectReopenedNativeAgent(context, { agentProvider: provider, agentSessionId: sessionId }, [keeperId, subjectId])
 
-  await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
-  await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(originalAnswerBubbles)
+  expect(await countChatBubbles(page, 'user', texts.originalPrompt, userSequence)).toBe(1)
+  expect(await countChatBubbles(page, 'agent', texts.originalAnswer, userSequence)).toBe(originalAnswerBubbles)
   await options.beforeResumedPrompt?.(context, reopened)
   const resumedStep = await modelScript.queue(nativeTextStep(context, texts.resumedAnswer))
   await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
@@ -200,7 +201,7 @@ export async function resumePickerScenario(
   await options.onResumedRequest?.(resumed)
   expectNativeResumeContext((context.readConversationTurns ?? nativeModelConversationTurns)(resumed), texts)
   // The resumed answer comes from the same answer step as the original one, so it draws the same number of bubbles.
-  await expect(assistantBubbles(page).filter({ hasText: texts.resumedAnswer }), 'The resumed answer draws as many bubbles as the original answer.').toHaveCount(originalAnswerBubbles)
+  expect(await countChatBubbles(page, 'agent', texts.resumedAnswer, userSequence), 'The resumed answer draws as many bubbles as the original answer.').toBe(originalAnswerBubbles)
   await expectResumedConversation(context, reopened.id, texts, originalAnswerRows, originalAnswerBubbles)
   return { ...texts, originalRequest, request: resumed }
 }

@@ -61,7 +61,7 @@ func TestKnownInternalItemsAreDroppedAndUnknownItemsPersist(t *testing.T) {
 	a.HandleOutput(itemEvent(1, "item.completed", "item_1", itemKindUserMessage, "Say hello.", nil))
 	// The runtime's own loop.
 	for i, summary := range []string{"Continuing — tool results", "Executing tools sequentially (writes)", "Loaded deferred tool 'apply_patch'.", "Policy: Full Access / ACT", "Permissions: Ask · Work"} {
-		a.HandleOutput(itemEvent(uint64(2+i), "item.completed", "item_2", contracts.CodewhaleItemKindStatus, summary, nil))
+		a.HandleOutput(itemEvent(uint64(2+i), "item.completed", "item_2", contracts.CodewhaleItemKindStatus, summary, map[string]any{"visibility": "internal"}))
 	}
 	a.HandleOutput(itemEvent(10, "item.completed", "item_3", contracts.CodewhaleItemKindStatus, "An internal note", map[string]any{"visibility": "internal"}))
 	// A delta of another kind, and an item of no kind this build knows.
@@ -716,4 +716,14 @@ func TestCodewhaleInvalidRequestSnapshotKeepsOpenOutput(t *testing.T) {
 		assert.Equal(t, "The open answer.", text)
 		assert.Empty(t, sink.Messages())
 	}
+}
+
+func TestCodewhaleQueuedSteerNoticeDoesNotCreateATranscriptRow(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemCompleted, "queued-steer", contracts.CodewhaleItemKindStatus, "Steer input queued: STEER_MARKER", nil))
+	assert.Empty(t, sink.PersistedNotifications())
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemCompleted, "ordinary-note", contracts.CodewhaleItemKindStatus, "Checkpoint saved", nil))
+	notes := sink.PersistedNotifications()
+	require.Len(t, notes, 1)
 }

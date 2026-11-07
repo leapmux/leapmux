@@ -686,51 +686,33 @@ func TestApplyZCodeModel_RefusesAnUnknownModelWithoutAnRPC(t *testing.T) {
 	assert.Empty(t, stdin.Frames(), "an unresolvable model must not reach the wire")
 }
 
-// The overlay carries the thought level so a model switch does not silently drop it.
+// The model selection carries the thought level so a model switch preserves it.
 //
 // Auto resolves to the MODEL's own declared default rather than to nothing: a
 // session told no level runs on the app-server's fallback, which is the lowest
 // level, so "send nothing" would deliver the weakest thinking under a label that
 // promises the model's default.
-func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *testing.T) {
+func TestApplyZCodeModel_SelectionCarriesTheLevelAndAutoResolvesTheDefault(t *testing.T) {
 	t.Parallel()
-
-	cases := map[string]string{
-		"high":           "high",
-		"low":            "low",
-		agent.EffortAuto: "high",
-		"":               "high",
-	}
-	for level, want := range cases {
+	for level, want := range map[string]string{"high": "high", "low": "low", agent.EffortAuto: "high", "": "high"} {
 		t.Run("level "+level, func(t *testing.T) {
 			t.Parallel()
-			stdin := &zcodeRecordedStdin{}
-			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-			a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
-			a.Mu.Lock()
-			a.thoughtLevel = level
-			a.Mu.Unlock()
-
-			// The reply omits settings; this test inspects the outgoing request.
+			a, stdin := zcodeAgentOnTheWideModel(t, "high")
 			zcodeRecordRequestRepliesWithoutState(t, a, stdin)
-			_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
-
+			_, _ = a.applyZCodeModel("account:p/narrow", level, 0)
 			requests := stdin.Requests(t)
 			require.Len(t, requests, 1)
 			assert.Equal(t, MethodSetModel, requests[0].Method)
 			var params struct {
-				SessionID    string            `json:"sessionId"`
-				Model        zcodeModelRef     `json:"model"`
-				RuntimeModel zcodeRuntimeModel `json:"runtimeModel"`
+				Model   zcodeModelSelection `json:"model"`
+				Persist bool                `json:"persistAsWorkspaceLastUsed"`
 			}
 			require.NoError(t, json.Unmarshal(requests[0].Params, &params))
-			assert.Equal(t, "sess-1", params.SessionID)
-			assert.Equal(t, "GLM-5.3", params.Model.ModelID)
-			assert.Equal(t, want, params.RuntimeModel.ThoughtLevel)
-			require.NotNil(t, params.RuntimeModel.Provider.APIKey)
-			assert.Equal(t, "zai-key", params.RuntimeModel.Provider.APIKey.Value)
-			assert.NotContains(t, string(requests[0].Params), "persistAsWorkspaceLastUsed",
-				"the legacy runtime-model request keeps its own shape")
+			require.NotNil(t, params.Model.Options)
+			assert.Equal(t, want, params.Model.Options.ReasoningLevel)
+			assert.Equal(t, "narrow", params.Model.ModelID)
+			assert.False(t, params.Persist)
+			assert.NotContains(t, string(requests[0].Params), "runtimeModel")
 		})
 	}
 }
@@ -777,24 +759,21 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
 	assert.Equal(t, "high", model.Options.ReasoningLevel)
 }
 
-// A model that declares NO default level gets no level: the overlay must not invent
+// A model that declares NO default level gets no level: the selection must not invent
 // one the model would refuse.
-func TestApplyZCodeModel_OverlayOmitsTheLevelWhenTheModelDeclaresNoDefault(t *testing.T) {
+func TestApplyZCodeModel_SelectionOmitsTheLevelWhenTheModelDeclaresNoDefault(t *testing.T) {
 	t.Parallel()
-
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a, stdin := zcodeAgentOnSnapshot(t, `{"model":{"current":{"providerId":"account:p","modelId":"plain"},"available":[{"ref":{"providerId":"account:p","modelId":"plain"},"properties":{"inputFormat":{"supportsText":true}}}]},"thoughtLevel":{"enabled":false,"current":%q}}`, agent.EffortAuto)
 	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
-	_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, 0)
-
+	_, _ = a.applyZCodeModel("account:p/plain", "", 0)
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
 	var params struct {
-		RuntimeModel zcodeRuntimeModel `json:"runtimeModel"`
+		Model zcodeModelSelection `json:"model"`
 	}
 	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
-	assert.Empty(t, params.RuntimeModel.ThoughtLevel)
+	assert.Nil(t, params.Model.Options)
+	assert.NotContains(t, string(requests[0].Params), "runtimeModel")
 }
 
 // The parameter is REQUIRED even though the app-server's schema marks it optional:

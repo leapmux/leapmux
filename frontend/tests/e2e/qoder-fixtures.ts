@@ -10,14 +10,11 @@
 import type { TestInfo } from '@playwright/test'
 import type { AgentWorkspace } from './helpers/workspace'
 import { existsSync, readdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { QODER_MODE } from '../../src/generated/contracts/qoder-protocol'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
 import { nativeContext, QODER_AGENT } from './qoder-cli/scenarios'
-
-export const QODER_E2E_SKIP_REASON: string | null = missingBinaryReason('qodercli', 'Qoder E2E requires the qodercli CLI on PATH (https://qoder.com)')
 
 /**
  * The agent opens in Accept Edits, which answers every edit at once.
@@ -30,10 +27,10 @@ const ACCEPT_EDITS = {
 
 /** Keep the native endpoint trace when a Qoder browser test fails. */
 async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: TestInfo): Promise<void> {
-  const authFile = agentEnv.QODER_SDK_AUTH_PAYLOAD_FILE
-  if (!authFile)
+  const home = agentEnv.HOME
+  if (!home)
     return
-  const runsDir = join(dirname(authFile), 'logs', 'runs')
+  const runsDir = join(home, '.qoder', 'logs', 'runs')
   if (!existsSync(runsDir))
     return
   const runs = readdirSync(runsDir, { withFileTypes: true })
@@ -52,7 +49,6 @@ const QODER_DIAGNOSTICS = {
 export const qoderTest = createProviderTest({
   agent: QODER_AGENT,
   nativeContext,
-  skipReason: QODER_E2E_SKIP_REASON,
   /** An agent in Accept Edits, which answers every edit at once. */
   workspaceName: 'authenticatedQoderWorkspace',
   workspaceOptions: { openOptions: ACCEPT_EDITS, ...QODER_DIAGNOSTICS },

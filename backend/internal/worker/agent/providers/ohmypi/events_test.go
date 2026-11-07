@@ -119,13 +119,12 @@ func TestAReadyFrameWithoutALimitKeepsTheDefault(t *testing.T) {
 	assert.Equal(t, defaultMaxReassembledFrameBytes, r.agent.chunks.maxBytes())
 }
 
-// A ready frame that omp garbled still states that RPC mode runs, so the start
-// goes on. It states no protocol version, so the handshake negotiates none.
-func TestAGarbledReadyFrameStillEndsTheWait(t *testing.T) {
+// A malformed ready frame cannot establish the protocol that preserves complete frames.
+func TestAGarbledReadyFrameFailsTheHandshake(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"ready","supportedProtocolVersions":"two","maxReassembledFrameBytes":"many"}`)
-	require.NoError(t, r.agent.handshake(10*time.Second))
+	require.Error(t, r.agent.handshake(10*time.Second))
 	assert.Empty(t, r.commandsOfType(CommandNegotiateProtocol))
 	assert.Equal(t, defaultMaxReassembledFrameBytes, r.agent.chunks.maxBytes())
 }
@@ -248,4 +247,17 @@ func TestUnknownFramesPersist(t *testing.T) {
 		r.emit(string(tc.Frame))
 		return &r.sink.Sink
 	})
+}
+
+func TestAProtocolNegotiationFailureFailsStartup(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(command recordedCommand) *rigReply {
+		if command.Type == CommandNegotiateProtocol {
+			return &rigReply{Error: "negotiation refused"}
+		}
+		return nil
+	})
+	r.emit(`{"type":"ready","supportedProtocolVersions":[1,2]}`)
+	require.ErrorContains(t, r.agent.handshake(10*time.Second), "negotiation refused")
 }

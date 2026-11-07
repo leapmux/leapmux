@@ -71,12 +71,9 @@ func manglePiPath(cwd string) string {
 	return "--" + replaced + "--"
 }
 
-// piSessionHeader is the first record of a Pi transcript. Version 3 and version
-// 4 differ elsewhere in the file; both carry these fields in the header, so
-// this reader does not branch on the version.
+// piSessionHeader is the first record of the current Pi transcript.
 type piSessionHeader struct {
 	Type    string `json:"type"`
-	Kind    string `json:"kind"`
 	ID      string `json:"id"`
 	Cwd     string `json:"cwd"`
 	Version int    `json:"version"`
@@ -142,10 +139,7 @@ func readPiSession(entry sessionstore.Entry, workingDir string) (agent.StoredSes
 	if json.Unmarshal(head[0], &header) != nil {
 		return agent.StoredSession{}, false
 	}
-	// Version 3 marks the header with `"type":"session"`, version 4 with
-	// `"kind":"header"`. A file whose first record is neither is not a session
-	// transcript this reader understands.
-	if header.Type != "session" && header.Kind != "header" {
+	if header.Type != "session" {
 		return agent.StoredSession{}, false
 	}
 	// The directory name already encodes the working directory, so this is a

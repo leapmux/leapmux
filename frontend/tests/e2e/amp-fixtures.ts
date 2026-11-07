@@ -1,19 +1,8 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import { AMP_PERMISSION_MODE } from '../../src/generated/contracts/amp-protocol'
 import { AMP_AGENT, nativeContext } from './amp/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
-
-/**
- * Skip the Amp specs when the `amp` CLI is not installed.
- * The worker starts `amp --execute --stream-json`. Without the binary, the agent cannot take a turn.
- *
- * The check finds the binary without running it.
- * Playwright uses the developer's HOME. Amp reads its configuration and login there on every start.
- * See `helpers/binaryOnPath.ts`.
- */
-export const AMP_E2E_SKIP_REASON: string | null = missingBinaryReason('amp', 'Amp E2E requires the amp CLI on PATH (https://ampcode.com)')
 
 /**
  * The agent opens in Allow All, which answers every tool call at once.
@@ -29,7 +18,6 @@ export const AMP_ALLOW_ALL = {
 export const ampTest = createProviderTest({
   agent: AMP_AGENT,
   nativeContext,
-  skipReason: AMP_E2E_SKIP_REASON,
   workspaceName: 'authenticatedAmpWorkspace',
   workspaceOptions: { openOptions: AMP_ALLOW_ALL },
 }).extend<{

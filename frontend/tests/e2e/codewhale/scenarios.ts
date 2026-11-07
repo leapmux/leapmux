@@ -6,6 +6,7 @@ import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
+import { codewhaleModelTurns } from './modelTurns'
 import { codewhaleToolRowIdResolver } from './toolCallIdentity'
 
 /**
@@ -21,6 +22,7 @@ export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHAL
 /** Build the scenario context of Codewhale. Its tool rows key by the runtime's own call id, so the context resolves them. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return managedNativeContext(fixtures, CODEWHALE_AGENT, {
+    readConversationTurns: codewhaleModelTurns,
     resolveToolRowId: codewhaleToolRowIdResolver(fixtures),
   })
 }

@@ -1,5 +1,6 @@
 import type { MockModelRequestRecord } from './mockModelScript'
 import { describe, expect, it } from 'vitest'
+import { antigravityNativeToolResult } from '../antigravity-cli/toolResult'
 import { hasNativeToolResult, nativeToolCallArguments, nativeToolResult, nativeToolResultContent, nativeToolResultEntry } from './nativeToolResult'
 
 function request(protocol: MockModelRequestRecord['protocol'], body: unknown): MockModelRequestRecord {
@@ -26,6 +27,26 @@ describe('nativeToolResult', () => {
     expect(nativeToolResultContent(record(serialized), 'color')).toBe(serialized)
     expect(nativeToolResult(record(content), 'color')).toBe(serialized)
     expect(nativeToolResult(record(serialized), 'color')).toBe(serialized)
+  })
+
+  it('reads an Antigravity tool result from a model history entry', () => {
+    const record = request('google-generative-language', {
+      contents: [
+        {
+          role: 'model',
+          parts: [
+            {
+              functionResponse: {
+                id: 'child-read',
+                name: 'view_file',
+                response: { output: 'NATIVE_CHILD_OUTPUT' },
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(antigravityNativeToolResult(record, 'child-read')).toBe('{"output":"NATIVE_CHILD_OUTPUT"}')
   })
 
   it('keeps native text blocks distinct from a scalar string that imitates their JSON', () => {

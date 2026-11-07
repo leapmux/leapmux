@@ -3,12 +3,44 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base } from './fixtures'
+import * as apiHelpers from './helpers/api'
 import { createTranscriptGuard, runTranscriptGuard } from './helpers/transcriptGuard'
+import * as workerTabs from './helpers/workerTabs'
 import * as workspaceHelpers from './helpers/workspace'
-import { processTest } from './process-control-fixtures'
-import { cliSkipFixture, createProviderProcessTest, createProviderTest } from './provider-fixture-factory'
+import * as processFixtures from './process-control-fixtures'
+import { createProviderProcessTest, createProviderTest } from './provider-fixture-factory'
+
+const fixtureProcesses = vi.hoisted(() => ({ calls: [] as string[] }))
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  const reject = (method: string) => (...args: unknown[]): never => {
+    fixtureProcesses.calls.push(`${method}: ${String(args[0])}`)
+    throw new Error('Provider fixture collection must not execute a program.')
+  }
+  return {
+    ...actual,
+    exec: reject('exec'),
+    execSync: reject('execSync'),
+    execFile: reject('execFile'),
+    execFileSync: reject('execFileSync'),
+    spawn: reject('spawn'),
+    spawnSync: reject('spawnSync'),
+    fork: reject('fork'),
+  }
+})
+
+// Controlled discovery makes an import-time execution attempt observable on
+// machines that have no agent installed. The process guard still runs the real fixtures.
+vi.mock('./helpers/binaryOnPath', async importOriginal => ({
+  ...await importOriginal<typeof import('./helpers/binaryOnPath')>(),
+  findBinary: () => '/unit/agent-cli',
+  findBinaryOnPath: () => '/unit/agent-cli',
+  requireBinary: () => '/unit/agent-cli',
+}))
 
 // Use real Playwright registration without the shared browser lifecycle. Browser specs exercise that lifecycle.
 vi.mock('./fixtures', async () => {
@@ -20,48 +52,6 @@ vi.mock('./helpers/transcriptGuard', async importOriginal => ({
   ...await importOriginal<typeof import('./helpers/transcriptGuard')>(),
   runTranscriptGuard: vi.fn(async () => {}),
 }))
-
-describe('cliSkipFixture', () => {
-  /** Run the fixture callback with a recording test info, as Playwright runs an automatic fixture. */
-  async function run(reason: string | null) {
-    const [fixture, options] = cliSkipFixture(reason)
-    const events: string[] = []
-    const testInfo = {
-      skip: vi.fn((condition: boolean, description: string) => {
-        events.push(`skip:${condition}:${description}`)
-        // Playwright ends the test from inside `skip` with a thrown marker when the condition holds.
-        if (condition)
-          throw new Error(`skipped: ${description}`)
-      }),
-    }
-    const use = vi.fn(async () => {
-      events.push('use')
-    })
-    const outcome = await (fixture as unknown as (args: object, use: () => Promise<void>, info: typeof testInfo) => Promise<void>)({}, use, testInfo)
-      .then(() => 'ran', (error: unknown) => (error as Error).message)
-    return { options, events, outcome }
-  }
-
-  it('registers an automatic fixture, so it runs before the fixtures that start an agent', () => {
-    expect(cliSkipFixture(null)[1]).toEqual({ auto: true })
-  })
-
-  it('skips with the reason before the test uses any fixture when the CLI is missing', async () => {
-    const { events, outcome } = await run('Amp E2E requires the amp CLI on PATH')
-    expect(events).toEqual(['skip:true:Amp E2E requires the amp CLI on PATH'])
-    expect(outcome).toBe('skipped: Amp E2E requires the amp CLI on PATH')
-  })
-
-  it('runs the test when the CLI is present', async () => {
-    const { events, outcome } = await run(null)
-    expect(events).toEqual(['skip:false:', 'use'])
-    expect(outcome).toBe('ran')
-  })
-
-  it.each(['', '  \n'])('refuses an empty reason, which would skip without saying why: %j', (reason) => {
-    expect(() => cliSkipFixture(reason)).toThrow('needs the reason')
-  })
-})
 
 /** The facts of one provider test object that its source states. */
 interface ProviderTestObject {
@@ -125,6 +115,8 @@ async function providerTestObjects(): Promise<ProviderTestObject[]> {
   const objects: ProviderTestObject[] = []
   const capture = vi.spyOn(base, 'extend')
   try {
+    // One spy captures every registration. Serial imports keep each captured
+    // call associated with the fixture module that made it.
     for (const file of files) {
       const source = readFileSync(join(import.meta.dirname, file), 'utf-8')
       if (!source.includes('createProviderTest('))
@@ -165,12 +157,15 @@ async function providerTestObjects(): Promise<ProviderTestObject[]> {
 }
 
 /**
- * These fixtures have no members. A context that calls a member fails.
+ * The page and server fixtures are empty. The model script supplies only a rule stub,
+ * so a context can register model rules but cannot use other fixture methods.
  * A context that copies these fixtures retains the same objects.
  */
 const UNIT_FIXTURES = {
   page: Object.freeze({}),
-  modelScript: Object.freeze({}),
+  modelScript: Object.freeze({
+    rule: vi.fn(),
+  }),
   leapmuxServer: Object.freeze({}),
   workspaceId: 'unit-workspace',
 } as unknown as NativeContextFixtures
@@ -186,6 +181,7 @@ describe('provider test objects', () => {
   // Import each fixture once, then read the canonical agents from the scenario modules.
   beforeAll(async () => {
     objects = await providerTestObjects()
+    expect(fixtureProcesses.calls, 'collecting provider fixtures must not invoke installed agent programs').toEqual([])
     scenarioModules = await Promise.all(objects.map(async object => await import(`./${object.scenarioDirectory}/scenarios.ts`) as ScenarioModule))
   })
 
@@ -275,7 +271,6 @@ describe('createProviderTest', () => {
       createProviderTest({
         agent,
         nativeContext: async fixtures => ({ ...fixtures, provider: agent.provider, providerAgent: agent }) as ManagedNativeScenarioContext,
-        skipReason: null,
         workspaceName: 'authenticatedUnitWorkspace',
         ...overrides,
       })
@@ -286,6 +281,10 @@ describe('createProviderTest', () => {
       capture.mockRestore()
     }
   }
+
+  it('requires agent startup instead of registering a missing-binary skip', () => {
+    expect(register()).not.toHaveProperty('cliSkip')
+  })
 
   it('passes workspace options and diagnostics without replacing the canonical provider', () => {
     const onFailure = vi.fn(async () => {})
@@ -423,32 +422,67 @@ describe('createProviderTest', () => {
       ? []
       : [modelRules])
   })
-
-  it('retains the CLI skip reason in the automatic fixture', async () => {
-    const fixtures = register({ skipReason: 'The test CLI is absent.' })
-    const [skip, options] = fixtures.cliSkip as ReturnType<typeof cliSkipFixture>
-    const stop = new Error('Skipped.')
-    const testInfo = {
-      skip: vi.fn(() => {
-        throw stop
-      }),
-    }
-    const use = vi.fn(async () => {})
-    await expect((skip as unknown as (args: object, use: () => Promise<void>, info: typeof testInfo) => Promise<void>)({}, use, testInfo)).rejects.toBe(stop)
-    expect(options).toEqual({ auto: true })
-    expect(testInfo.skip).toHaveBeenCalledExactlyOnceWith(true, 'The test CLI is absent.')
-    expect(use).not.toHaveBeenCalled()
-  })
 })
 
 describe('createProviderProcessTest', () => {
-  it('checks the transcript after the process workspace fixture runs', async () => {
-    const capture = vi.spyOn(processTest, 'extend')
+  it('rejects failed startup before use and still deletes the process workspace', async () => {
+    const failure = new Error('The required provider binary is missing.')
+    const server = { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'unit-worker' }
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
+    const online = vi.spyOn(processFixtures, 'ensureWorkerOnline').mockResolvedValue(undefined)
+    const create = vi.spyOn(apiHelpers, 'createWorkspaceViaAPI').mockResolvedValue('unit-process-workspace')
+    const remove = vi.spyOn(apiHelpers, 'deleteWorkspaceViaAPI').mockResolvedValue(undefined)
+    const open = vi.spyOn(workspaceHelpers, 'openProviderAgent').mockResolvedValue({
+      agentId: 'unit-agent',
+      workingDir: unitWorkingDir('/unit-process'),
+    })
+    const startup = vi.spyOn(workerTabs, 'waitForAgentStartupViaAPI').mockRejectedValue(failure)
     try {
       createProviderProcessTest({
         agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
         nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
-        skipReason: null,
+      })
+      const registered = capture.mock.calls[0]?.[0] as unknown as { workspace: (args: object, use: (value: unknown) => Promise<void>) => Promise<void> }
+      const use = vi.fn(async () => {})
+      await expect(registered.workspace({ separateHubWorker: server }, use)).rejects.toBe(failure)
+      expect(use).not.toHaveBeenCalled()
+      expect(startup).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, server.workerId, 'unit-process-workspace')
+      expect(remove).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, 'unit-process-workspace')
+    }
+    finally {
+      for (const spy of [
+        capture,
+        online,
+        create,
+        remove,
+        open,
+        startup,
+      ])
+        spy.mockRestore()
+    }
+  })
+
+  it('requires agent startup instead of registering a missing-binary skip', () => {
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
+    try {
+      createProviderProcessTest({
+        agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
+        nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
+      })
+      expect(capture).toHaveBeenCalledOnce()
+      expect(capture.mock.calls[0]?.[0]).not.toHaveProperty('cliSkip')
+    }
+    finally {
+      capture.mockRestore()
+    }
+  })
+
+  it('checks the transcript after the process workspace fixture runs', async () => {
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
+    try {
+      createProviderProcessTest({
+        agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
+        nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
       })
       const registered = capture.mock.calls[0]?.[0] as unknown as {
         authenticatedWorkspace: (args: object, use: (workspace: unknown) => Promise<void>, info: object) => Promise<void>
@@ -480,10 +514,9 @@ describe('createProviderProcessTest', () => {
     const options = {
       agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
       nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
-      skipReason: null,
       modelRules,
     }
-    const capture = vi.spyOn(processTest, 'extend')
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
     try {
       createProviderProcessTest(options)
       const registered = capture.mock.calls[0]?.[0] as unknown as {
@@ -513,9 +546,9 @@ describe('createProviderProcessTest', () => {
     const agent = { provider: AgentProvider.CODEX, prefix: 'process-unit' }
     const expected = { ...UNIT_FIXTURES, provider: agent.provider, providerAgent: agent } as ManagedNativeScenarioContext
     const nativeContext = vi.fn(async () => expected)
-    const capture = vi.spyOn(processTest, 'extend')
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
     try {
-      createProviderProcessTest({ agent, nativeContext, skipReason: null })
+      createProviderProcessTest({ agent, nativeContext })
       const registered = capture.mock.calls[0]?.[0] as unknown as {
         native: (args: object, use: (context: ManagedNativeScenarioContext) => Promise<void>) => Promise<void>
       }
@@ -543,12 +576,11 @@ describe('createProviderProcessTest', () => {
   it('rejects a context from another provider before it runs the test', async () => {
     const agent = { provider: AgentProvider.CODEX, prefix: 'process-unit' }
     const other = { provider: AgentProvider.CLAUDE_CODE, prefix: 'other-unit' }
-    const capture = vi.spyOn(processTest, 'extend')
+    const capture = vi.spyOn(processFixtures.processTest, 'extend')
     try {
       createProviderProcessTest({
         agent,
         nativeContext: async () => ({ ...UNIT_FIXTURES, provider: other.provider, providerAgent: other }) as ManagedNativeScenarioContext,
-        skipReason: null,
       })
       const registered = capture.mock.calls[0]?.[0] as unknown as {
         native: (args: object, use: () => Promise<void>) => Promise<void>

@@ -12,6 +12,7 @@ import { readToolCall } from './providerToolCalls'
 export async function exerciseNativeReadOnlyPlan(
   context: ManagedNativeScenarioContext,
   options: {
+    readResult?: (request: MockModelRequestRecord | undefined, callId: string) => string
     preparePlan: () => Promise<void>
     nativeProof: (request: MockModelRequestRecord) => void | Promise<void>
   },
@@ -31,6 +32,7 @@ export async function exerciseNativeReadOnlyPlan(
     prompt: 'Read the supplied context and return the read-only plan.',
     answer: '# Native plan\n\n1. Inspect the file context.\n2. Implement after the user selects execution mode.',
   })
-  expect(nativeToolResult(request, callId)).toContain(marker)
+  const readResult = options.readResult ?? nativeToolResult
+  expect(readResult(request, callId)).toContain(marker)
   await options.nativeProof(request)
 }

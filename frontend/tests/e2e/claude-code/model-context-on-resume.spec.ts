@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { claudeProcessTest as test } from '../claude-fixtures'
-import { countOriginalAnswerRows, expectNativeResumeContext, expectResumedConversation, nativeResumeTexts } from '../helpers/nativeResume'
+import { expectNativeResumeContext, expectResumedConversation, nativeResumeTexts, readOriginalConversationRows } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from '../helpers/nativeWorkerRestart'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -24,7 +24,7 @@ test.describe('agent session resume', () => {
 
       // Wait for the assistant's response
       await expectAnswerAndTurnEnd(page)
-      const originalAnswerRows = await countOriginalAnswerRows(server, agentId, texts)
+      const { answerRows: originalAnswerRows } = await readOriginalConversationRows(server, agentId, texts)
 
       // Stop the worker
       await stopWorker(separateHubWorker)

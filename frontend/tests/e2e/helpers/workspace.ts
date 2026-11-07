@@ -11,6 +11,7 @@ import { withCleanup } from './cleanup'
 import { newProviderWorkingDir } from './providerWorkingDir'
 import { runTranscriptGuard } from './transcriptGuard'
 import { loginViaToken, openWorkspace } from './ui'
+import { waitForAgentStartupViaAPI } from './workerTabs'
 
 export interface WorkspaceFixture {
   workspaceId: string
@@ -112,6 +113,7 @@ export async function withAgentWorkspace(
   await withTestWorkspace(server, options.prefix, async (workspace) => {
     const workingDir = newProviderWorkingDir(options)
     await openAgentViaAPI(server, workspace.workspaceId, workingDir, request)
+    await waitForAgentStartupViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId)
     await use({ workspaceId: workspace.workspaceId, workingDir })
   })
 }

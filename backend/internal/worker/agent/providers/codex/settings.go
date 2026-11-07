@@ -380,8 +380,6 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 // The outcomes:
 //   - Codex accepts: the values are acknowledged, and a reviewer change also reaches
 //     the active turn through turn/settings/update.
-//   - Codex lacks the method (an older Codex): the values stay. The next turn/start
-//     carries them, and its turn/started acknowledges them.
 //   - Codex refuses: the prior values return, so the snapshot reports the refusal.
 //   - The delivery is uncertain: the values stay, and it returns true, so the caller
 //     reports both permission axes unresolved.
@@ -403,10 +401,6 @@ func (a *Agent) applyPermissionSettingsLive(threadID, turnID string, prior codex
 		if turnID != "" && reviewer != priorReviewer {
 			return a.updateActiveTurnReviewer(threadID, turnID, reviewer)
 		}
-		return false
-	case codexSettingsUpdateUnsupported:
-		slog.Info("codex lacks thread/settings/update; the next turn applies the permission settings",
-			"agent_id", a.AgentID())
 		return false
 	case codexSettingsUpdateRefused:
 		slog.Warn("codex refused the permission settings", "agent_id", a.AgentID(),
@@ -431,9 +425,6 @@ type codexSettingsUpdateOutcome uint8
 const (
 	// codexSettingsUpdateAccepted: Codex holds the settings now.
 	codexSettingsUpdateAccepted codexSettingsUpdateOutcome = iota + 1
-	// codexSettingsUpdateUnsupported: an older Codex lacks the method, so the next
-	// turn/start carries the settings.
-	codexSettingsUpdateUnsupported
 	// codexSettingsUpdateRefused: Codex answered and refused the settings, for example
 	// because the managed requirements forbid them.
 	codexSettingsUpdateRefused
@@ -449,8 +440,6 @@ func classifyCodexSettingsUpdate(err error) codexSettingsUpdateOutcome {
 	switch {
 	case err == nil:
 		return codexSettingsUpdateAccepted
-	case providerkit.HasJSONRPCErrorCode(err, providerkit.JSONRPCErrMethodNotFound):
-		return codexSettingsUpdateUnsupported
 	case errors.As(err, &response):
 		return codexSettingsUpdateRefused
 	default:

@@ -32,14 +32,10 @@ type zcodeCatalogRefreshOwner struct {
 
 // refreshZCodeProviderRegistry asks the app-server to reload its provider
 // registry from disk, so a personal configuration change reaches the session's
-// model catalog. The acknowledgement is required: only a build that does not
-// implement the method has no such capability, and that absence is ignored.
+// model catalog. The current protocol requires its acknowledgement.
 func (a *Agent) refreshZCodeProviderRegistry(timeout time.Duration) error {
 	raw, err := a.sendZCodeRequest(MethodProviderRefreshRegistry, map[string]any{"reason": registryRefreshReason}, timeout)
 	if err != nil {
-		if zcodeIsMethodNotFound(err) {
-			return nil
-		}
 		return err
 	}
 	var response struct {

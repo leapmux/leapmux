@@ -93,7 +93,8 @@ func TestBuildZCodeCatalog_DisabledProviderWithAKeyIsStillOffered(t *testing.T) 
     }`)
 
 	require.Len(t, catalog.Providers, 1)
-	assert.True(t, catalog.hasInlineAPIKey("only"))
+	require.NotNil(t, catalog.Providers[0].APIKey)
+	assert.Equal(t, "k", catalog.Providers[0].APIKey.Value)
 }
 
 func TestBuildZCodeCatalog_ModelsAreASortedNonNilArray(t *testing.T) {
@@ -560,39 +561,6 @@ func TestZCodeCatalog_AcceptsInputModality(t *testing.T) {
 	assert.True(t, catalog.acceptsInputModality("acme/acme-1", zcodeModalityText))
 	assert.False(t, catalog.acceptsInputModality("acme/acme-1", zcodeModalityImage))
 	assert.False(t, catalog.acceptsInputModality("unknown/model", zcodeModalityImage))
-}
-
-func TestZCodeCatalog_RegistryPayloadNestsTheRegistryObject(t *testing.T) {
-	t.Parallel()
-
-	catalog := zcodeTestCatalog(t, zcodeTwoProviderConfig)
-	payload := catalog.registryPayload(zcodeWorkspaceFor("/w"), "rev-1", 1700)
-
-	encoded, err := json.Marshal(payload)
-	require.NoError(t, err)
-	var got struct {
-		Workspace zcodeWorkspace `json:"workspace"`
-		Registry  struct {
-			Providers   []zcodeRegistryProvider `json:"providers"`
-			GeneratedAt int64                   `json:"generatedAt"`
-			Revision    string                  `json:"revision"`
-		} `json:"registry"`
-	}
-	require.NoError(t, json.Unmarshal(encoded, &got))
-
-	assert.Equal(t, "/w", got.Workspace.WorkspacePath)
-	assert.Equal(t, "/w", got.Workspace.WorkspaceKey)
-	assert.Equal(t, "rev-1", got.Registry.Revision)
-	assert.Equal(t, int64(1700), got.Registry.GeneratedAt)
-	assert.Len(t, got.Registry.Providers, 2)
-
-	// The three fields must NOT also appear at the top level: the app-server refuses
-	// the whole request with an "unrecognized keys" report when they do.
-	var top map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(encoded, &top))
-	for _, key := range []string{"providers", "generatedAt", "revision"} {
-		assert.NotContains(t, top, key)
-	}
 }
 
 // zcodeTestStartAndCodingPlanConfig holds a Z.ai Coding Plan that config.json enables and
@@ -1132,36 +1100,6 @@ func TestZCodeCatalog_LaunchModel(t *testing.T) {
 		"a model that config.json does not list stays for the live list to resolve")
 	assert.Equal(t, "GLM-9", catalog.launchModel("GLM-9"))
 	assert.Equal(t, "", catalog.launchModel("  "))
-}
-
-func TestZCodeCatalog_RuntimeModelForCarriesTheProvidersKey(t *testing.T) {
-	t.Parallel()
-
-	catalog := zcodeTestCatalog(t, zcodeTwoProviderConfig)
-
-	overlay, ok := catalog.runtimeModelFor("builtin:zai/GLM-5.3", "rev-2", 99)
-	require.True(t, ok)
-	assert.Equal(t, "rev-2", overlay.Revision)
-	assert.Equal(t, int64(99), overlay.GeneratedAt)
-	assert.Equal(t, zcodeModelRef{ProviderID: "builtin:zai", ModelID: "GLM-5.3"}, overlay.Model)
-	require.NotNil(t, overlay.Provider.APIKey)
-	assert.Equal(t, "zai-key", overlay.Provider.APIKey.Value,
-		"the overlay must carry the credential, so a model switch does not race the registry push")
-	assert.Equal(t, "", overlay.ThoughtLevel, "no level is implied by the overlay itself")
-
-	_, ok = catalog.runtimeModelFor("nope/nope", "rev", 1)
-	assert.False(t, ok)
-}
-
-func TestZCodeCatalog_HasInlineAPIKey(t *testing.T) {
-	t.Parallel()
-
-	catalog := zcodeTestCatalog(t, zcodeTwoProviderConfig)
-
-	assert.True(t, catalog.hasInlineAPIKey("builtin:zai"))
-	assert.True(t, catalog.hasInlineAPIKey(""), "an empty provider id asks about any provider")
-	assert.False(t, catalog.hasInlineAPIKey("unknown"))
-	assert.False(t, zcodeCatalog{}.hasInlineAPIKey(""))
 }
 
 func TestLoadZCodeCodingPlanEntitlements(t *testing.T) {

@@ -6,47 +6,18 @@ import { withCommandExit } from '../../../model/commandResult'
 import { CODEWHALE_RESULT_METADATA } from '../protocol'
 
 /**
- * The `git` subcommand each single-purpose Git tool runs.
- *
- * The tool NAME states it, and no argument repeats it. The `Git` facade states the
- * same word in its `action` argument instead.
- */
-const GIT_SUBCOMMANDS: ReadonlyMap<string, string> = new Map<string, string>([
-  [CODEWHALE_TOOL.GitStatus, 'status'],
-  [CODEWHALE_TOOL.GitDiff, 'diff'],
-  [CODEWHALE_TOOL.GitLog, 'log'],
-  [CODEWHALE_TOOL.GitShow, 'show'],
-  [CODEWHALE_TOOL.GitBlame, 'blame'],
-])
-
-/** The tools whose `code` argument is JavaScript. */
-const JAVASCRIPT_TOOLS: ReadonlySet<string> = new Set<string>([CODEWHALE_TOOL.JsExecution])
-
-/**
- * The command line one Git tool runs, from the tool name or the facade's `action`.
- *
- * The runtime composes the real argument list itself; this states the subcommand and
- * the path it was scoped to, which is what the reader needs to recognize the call.
- */
-function gitCommand(toolName: string, args: Record<string, unknown>): string {
-  const subcommand = GIT_SUBCOMMANDS.get(toolName) ?? pickString(args, 'action').replaceAll('_', '-')
-  const path = pickString(args, 'path')
-  return ['git', subcommand, path].filter(Boolean).join(' ')
-}
-
-/**
  * The command one execute call states.
  *
  * Most command tools send a `command` argument. The rest state what they run in the
  * tool name or in another argument: code for the two sandboxes, the text a terminal
- * receives, the Git subcommand, and the test runner's extra arguments. A tool that
+ * receives, the Git subcommand. A tool that
  * states none of them heads its row with its own name and action, which is the one
  * true statement about what ran.
  */
 export function codewhaleExecuteRequest(toolName: string, args: Record<string, unknown>): ExecuteRequest {
   const description = pickString(args, 'description')
   const cwd = pickString(args, 'cwd')
-  const language: CommandLanguage | undefined = JAVASCRIPT_TOOLS.has(toolName)
+  const language: CommandLanguage | undefined = toolName === CODEWHALE_TOOL.JsExecution
     ? 'javascript'
     : undefined
   return {
@@ -64,12 +35,12 @@ export function codewhaleExecuteRequest(toolName: string, args: Record<string, u
 }
 
 function codewhaleCommandText(toolName: string, args: Record<string, unknown>): string {
-  if (toolName === CODEWHALE_TOOL.Git || GIT_SUBCOMMANDS.has(toolName))
-    return gitCommand(toolName, args)
-  if (toolName === CODEWHALE_TOOL.RunTests) {
+  if (toolName === CODEWHALE_TOOL.Git) {
+    // The runtime composes the arguments. Display only the selected subcommand and path.
     return [
-      'cargo test',
-      pickString(args, 'args'),
+      'git',
+      pickString(args, 'action').replaceAll('_', '-'),
+      pickString(args, 'path'),
     ].filter(Boolean).join(' ')
   }
   const stated = pickString(args, 'command') || pickString(args, 'cmd') || pickString(args, 'code') || pickString(args, 'input')

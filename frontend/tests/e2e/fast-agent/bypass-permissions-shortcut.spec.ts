@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { FASTAGENT_OPTION } from '../../../src/generated/contracts/fastagent-protocol'
-import { FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from '../fastagent-fixtures'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { exerciseNativePermissionDecision, exerciseNativeToolWrite } from '../helpers/nativePermission'
 import { currentNativeAgent, expectNativeOptionValue } from '../helpers/nativeScenario'
@@ -40,7 +40,6 @@ fastAgentTest('applies native Bypass before the first message, retains it on rel
 const restartTest = createProviderProcessTest({
   agent: FAST_AGENT_AGENT,
   nativeContext,
-  skipReason: FAST_AGENT_E2E_SKIP_REASON,
   openOptions: {
     optionValues: { [FASTAGENT_OPTION.BypassPermissions]: 'true' },
   },

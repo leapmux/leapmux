@@ -78,13 +78,8 @@ type zcodeSteer struct {
 	pendingInputID string
 }
 
-// SupportsSteering reports whether the app-server takes a steer. It is true
-// until the app-server refuses the command inbox as an unknown method.
-func (a *Agent) SupportsSteering() bool {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	return !a.steeringUnsupported
-}
+// SupportsSteering reports the current app-server's command-inbox capability.
+func (a *Agent) SupportsSteering() bool { return true }
 
 // SteerRowAtEcho keeps the queue's row until ZCode proves the delivery: the
 // app-server never repeats a steered input into its own stream, so the row
@@ -124,9 +119,6 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	case a.StoppedLocked():
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
-	case a.steeringUnsupported:
-		a.Mu.Unlock()
-		return fmt.Errorf("%w: the ZCode app-server has no command inbox", agent.ErrSteeringUnsupported)
 	case !a.turnActive:
 		// A compaction alone is not a turn to steer: its summary query is not
 		// the user's conversation, and the queued input takes the next turn.
@@ -152,10 +144,6 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	})
 	if err != nil {
 		a.forgetZCodeSteer(commandID)
-		if zcodeIsMethodNotFound(err) {
-			a.markZCodeSteeringUnsupported()
-			return fmt.Errorf("%w: %v", agent.ErrSteeringUnsupported, err)
-		}
 		return classifyZCodeDeliveryError(MethodCommand, err)
 	}
 	if ack.Status != zcodeCommandAccepted || ack.Result == nil || ack.Result.Type != zcodeCommandResultInputAccepted {
@@ -185,25 +173,6 @@ func (a *Agent) forgetZCodeSteer(commandID string) {
 	if ok {
 		a.steerLedger.Forget(steer.ticket)
 		a.steerLedger.Settle(a.sink)
-	}
-}
-
-// markZCodeSteeringUnsupported records that the app-server has no command
-// inbox, and republishes the two states that read it: the turn state, whose
-// steerable flag the queue follows, and the agent status, whose
-// SupportsSteering the browser's Steer control follows.
-func (a *Agent) markZCodeSteeringUnsupported() {
-	a.Mu.Lock()
-	known := a.steeringUnsupported
-	a.steeringUnsupported = true
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	if known {
-		return
-	}
-	a.PublishTurnActive()
-	if sessionID != "" {
-		a.sink.BroadcastStatusActive(sessionID)
 	}
 }
 

@@ -216,25 +216,23 @@ func (a *Agent) handshake(timeout time.Duration) error {
 		return a.FormatStartupError("ready", err)
 	}
 
-	// Protocol version 1 shrinks a frame above 1 MiB by eliding strings, which
-	// loses data. Version 2 splits it into rpc_chunk frames.
-	if ready.supports(rpcProtocolVersion) {
-		if _, err := a.sendCommand(CommandNegotiateProtocol, map[string]any{"protocolVersion": rpcProtocolVersion}, timeout); err != nil {
-			slog.Warn("omp protocol negotiation failed; large frames arrive shortened", "agent_id", a.AgentID(), "error", err)
-		}
-	} else {
-		slog.Warn("omp offers no split frames; large frames arrive shortened", "agent_id", a.AgentID(), "versions", ready.SupportedProtocolVersions)
+	// The current protocol splits large payloads into chunks instead of truncating them.
+	if !ready.supports(rpcProtocolVersion) {
+		return a.FormatStartupError("protocol negotiation", fmt.Errorf("the Oh My Pi runtime does not offer RPC protocol %d", rpcProtocolVersion))
+	}
+	if _, err := a.sendCommand(CommandNegotiateProtocol, map[string]any{"protocolVersion": rpcProtocolVersion}, timeout); err != nil {
+		return a.FormatStartupError("protocol negotiation", err)
 	}
 
 	// Without the subscription omp sends no subagent frame at all: a subagent
 	// then has no registry row and no transcript, and its result reaches the
 	// parent as text alone.
 	if _, err := a.sendCommand(CommandSetSubagentSubscription, map[string]any{"level": subagentSubscriptionEvents}, timeout); err != nil {
-		slog.Warn("omp subagent subscription failed; subagents get no transcript", "agent_id", a.AgentID(), "error", err)
+		return a.FormatStartupError(CommandSetSubagentSubscription, err)
 	}
 
 	if _, err := a.sendCommand(CommandSetEventFilter, map[string]any{"events": nil, "messageUpdates": "delta"}, timeout); err != nil {
-		slog.Warn("omp delta filter failed; root updates include full snapshots", "agent_id", a.AgentID(), "error", err)
+		return a.FormatStartupError(CommandSetEventFilter, err)
 	}
 
 	state, err := a.sendCommand(CommandGetState, nil, timeout)

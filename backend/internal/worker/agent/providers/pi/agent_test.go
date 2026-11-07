@@ -27,6 +27,15 @@ type piRecordedRequest struct {
 	Payload map[string]interface{}
 }
 
+// piRequestTypes lists the `type` of each recorded stdin line, in order.
+func piRequestTypes(requests []piRecordedRequest) []string {
+	types := make([]string, 0, len(requests))
+	for _, request := range requests {
+		types = append(types, request.Type)
+	}
+	return types
+}
+
 // piTestRig wires an Agent to an in-memory pipe pair and a fake peer that
 // echoes responses for the requests it sees. The peer also records every
 // request so tests can assert wire format.
@@ -567,42 +576,69 @@ func TestPi_ApplySessionStats_SkipsStaleResponses(t *testing.T) {
 func TestPi_RefreshSessionStats_BroadcastsCostAndContextUsage(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	rig := newPiTestRig(t, agent.NewProviderServices(sink))
-	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
-		if req.Type == "get_session_stats" {
-			return json.RawMessage(`{
-				"sessionFile":"/tmp/pi-test.jsonl",
-				"sessionId":"sess-1",
-				"tokens":{"input":1000,"output":100,"cacheRead":200,"cacheWrite":50,"total":1350},
-				"cost":0.42,
-				"contextUsage":{"tokens":60000,"contextWindow":200000,"percent":30}
-			}`), true, ""
-		}
-		return nil, true, ""
-	})
+	for _, tc := range []struct {
+		name                    string
+		initialSessionID        string
+		expectedRequests        []string
+		expectedIdentityUpdates int
+	}{
+		{name: "existing session", initialSessionID: "sess-1", expectedRequests: []string{CommandGetSessionStats}},
+		{name: "discovered session", expectedRequests: []string{CommandGetSessionStats, CommandGetCommands}, expectedIdentityUpdates: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			rig := newPiTestRig(t, agent.NewProviderServices(sink))
+			rig.agent.Mu.Lock()
+			rig.agent.sessionID = tc.initialSessionID
+			rig.agent.Mu.Unlock()
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				switch req.Type {
+				case CommandGetSessionStats:
+					return json.RawMessage(`{
+						"sessionFile":"/tmp/pi-test.jsonl",
+						"sessionId":"sess-1",
+						"tokens":{"input":1000,"output":100,"cacheRead":200,"cacheWrite":50,"total":1350},
+						"cost":0.42,
+						"contextUsage":{"tokens":60000,"contextWindow":200000,"percent":30}
+					}`), true, ""
+				case CommandGetCommands:
+					return json.RawMessage(`{"commands":[]}`), true, ""
+				default:
+					return nil, false, "unexpected command"
+				}
+			})
 
-	snap, ok := rig.agent.refreshPiSessionStats(time.Second)
-	require.True(t, ok)
-	assert.True(t, snap.HasTotalCost)
-	assert.Equal(t, 0.42, snap.TotalCostUsd)
+			snap, ok := rig.agent.refreshPiSessionStats(time.Second)
+			require.True(t, ok)
+			assert.True(t, snap.HasTotalCost)
+			assert.Equal(t, 0.42, snap.TotalCostUsd)
+			if tc.initialSessionID == "" {
+				// New identity discovery refreshes the catalog before any optional goal RPC.
+				// Its empty catalog makes completion explicit without starting a goal read.
+				require.Eventually(t, func() bool {
+					rig.agent.Mu.Lock()
+					defer rig.agent.Mu.Unlock()
+					return rig.agent.extensionCommands != nil
+				}, 30*time.Second, time.Millisecond)
+			}
+			assert.Equal(t, tc.expectedRequests, piRequestTypes(rig.requests()))
+			assert.Equal(t, tc.expectedIdentityUpdates, sink.SessionIDCount())
+			require.Equal(t, 1, sink.SessionInfoCount())
+			info := sink.LastSessionInfo()
+			assert.Equal(t, 0.42, info["total_cost_usd"])
+			usage, ok := info["context_usage"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, int64(60000), usage["context_tokens"])
+			assert.Equal(t, int64(200000), usage["context_window"])
 
-	reqs := rig.requests()
-	require.Equal(t, 1, len(reqs))
-	assert.Equal(t, "get_session_stats", reqs[0].Type)
-
-	require.Equal(t, 1, sink.SessionInfoCount())
-	info := sink.LastSessionInfo()
-	assert.Equal(t, 0.42, info["total_cost_usd"])
-	usage, ok := info["context_usage"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, int64(60000), usage["context_tokens"])
-	assert.Equal(t, int64(200000), usage["context_window"])
-
-	rig.agent.Mu.Lock()
-	defer rig.agent.Mu.Unlock()
-	assert.True(t, rig.agent.sessionCostKnown)
-	assert.Equal(t, 0.42, rig.agent.sessionCostUsd)
+			rig.agent.Mu.Lock()
+			defer rig.agent.Mu.Unlock()
+			assert.Equal(t, "sess-1", rig.agent.sessionID)
+			assert.True(t, rig.agent.sessionCostKnown)
+			assert.Equal(t, 0.42, rig.agent.sessionCostUsd)
+		})
+	}
 }
 
 func TestPi_ApplyStateResponse_PopulatesFields(t *testing.T) {

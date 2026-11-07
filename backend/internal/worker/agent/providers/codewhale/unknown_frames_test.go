@@ -9,6 +9,7 @@ import (
 func TestCodewhaleUnknownEventsPersist(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "future operation event", Frame: runtimeEvent(1, "operation.future", testTurnID, "", map[string]any{"value": 1})},
 		{Name: "current event", Frame: runtimeEvent(1, "future.event", testTurnID, "", map[string]any{"value": 1})},
 		{Name: "current item start", Frame: itemEvent(1, "item.started", "future-item", "future_kind", "", nil)},
 		{Name: "current item delta", Frame: runtimeEvent(1, eventItemDelta, testTurnID, "future-item", map[string]any{"kind": "future_kind", "delta": "Future content."})},
@@ -25,7 +26,7 @@ func TestCodewhaleUnknownEventsPersist(t *testing.T) {
 func TestCodewhaleStreamEventVerdictsStoreNothing(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
-	for i, event := range []string{"turn.artifacts", "turn.workspace_snapshot", "approval.grant_added", "approval.grant_revoked", "agent.future", "tool_call.future", "agent_mail.future"} {
+	for i, event := range []string{"turn.artifacts", "turn.workspace_snapshot", "approval.grant_added", "approval.grant_revoked", "agent.future", "tool_call.future", "agent_mail.future", "thread.permissions_changed", "operation.activity_started", "operation.activity_completed", "operation.heartbeat", "tool.execution_started"} {
 		a.HandleOutput(runtimeEvent(uint64(i+1), event, testTurnID, "", map[string]any{}))
 	}
 	if len(sink.Messages()) != 0 || len(sink.PersistedNotifications()) != 0 {

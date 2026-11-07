@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS, MOCK_MODELS } from '../helpers/mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from '../helpers/mockModelScenario'
+import { lastUserText, matchesRequest } from '../helpers/mockModelScript'
 import { createMockModelServer } from '../helpers/mockModelServer'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { CLAUDE_CHILD_COMPLETED_STATUS, CLAUDE_CHILD_COMPLETION_REPLY, claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './childReportRule'
@@ -261,6 +262,51 @@ describe('registerClaudeChildReportRules', () => {
 })
 
 describe('claudeChildCompletionRule', () => {
+  it('matches a native completion after its separate tool-summary reminder', () => {
+    const rule = claudeChildCompletionRule(nativeSpawnBody(), {
+      spawnCallId: 'actual-spawn',
+      report: 'The native report.',
+      reply: 'The report reply.',
+    })
+    const summary = '<system-reminder>\n<tools-used-before-summary>Read, mcp__echo:probe</tools-used-before-summary>\n</system-reminder>\n'
+    const matches = (completion: string, prefix = summary) => {
+      const body = {
+        messages: [
+          ...nativeSpawnBody().messages,
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prefix },
+              { type: 'text', text: completion },
+            ],
+          },
+        ],
+      }
+      return matchesRequest(rule.when, {
+        protocol: 'anthropic-messages',
+        systemText: '',
+        userText: lastUserText('anthropic-messages', body),
+        body,
+      })
+    }
+    expect(matches(completionNotification())).toBe(true)
+    for (const changed of [
+      { childId: 'other-child' },
+      { spawnCallId: 'other-spawn' },
+      { status: 'failed' },
+      { deliveredId: 'other-child' },
+    ])
+      expect(matches(completionNotification(changed))).toBe(false)
+    for (const prefix of [
+      `Ordinary user input.\n${summary}`,
+      summary + summary,
+      summary.replace('Read, mcp__echo:probe', ''),
+      summary.replace('Read, mcp__echo:probe', 'Read<injected>'),
+      summary.replace('Read, mcp__echo:probe', 'x'.repeat(257)),
+    ])
+      expect(matches(completionNotification(), prefix)).toBe(false)
+  })
+
   it('matches an actual direct report with the exact child, call, status, and literal content', () => {
     const report = '  Native [literal] report.\n실제 내용 🧪\t  '
     const options = {
@@ -414,7 +460,7 @@ describe('claude child report rules in the mock model server', () => {
       ],
       rules: [reportRule, completionRule],
     })
-    const send = (content: string) => fetch(`${server.url}/v1/messages`, {
+    const send = (content: string | Array<{ type: string, text: string }>) => fetch(`${server.url}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -433,7 +479,7 @@ describe('claude child report rules in the mock model server', () => {
         { type: 'text', text: options.reply },
       ],
     })
-    const completion = await send([
+    const completionText = [
       '<system-reminder>',
       '[SYSTEM NOTIFICATION - NOT USER INPUT]',
       'This is an automated background-task event, NOT a message from the user.',
@@ -449,7 +495,11 @@ describe('claude child report rules in the mock model server', () => {
       '<usage><subagent_tokens>0</subagent_tokens></usage>',
       '</task-notification>',
       '</system-reminder>',
-    ].join('\n'))
+    ].join('\n')
+    const completion = await send([
+      { type: 'text', text: '<system-reminder>\n<tools-used-before-summary>Read</tools-used-before-summary>\n</system-reminder>\n' },
+      { type: 'text', text: completionText },
+    ])
     expect(completion.status).toBe(200)
     expect(await completion.json()).toMatchObject({
       content: [

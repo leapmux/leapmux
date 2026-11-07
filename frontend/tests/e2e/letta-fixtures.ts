@@ -18,14 +18,11 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import { LETTA_MODE } from '../../src/generated/contracts/letta-protocol'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockAgentEnvironment'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { LETTA_TITLE_RULE } from './letta-code/housekeeping'
 import { LETTA_AGENT, nativeContext } from './letta-code/scenarios'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta', 'Letta Code E2E requires the letta CLI on PATH (https://docs.letta.com/letta-code)')
 
 /**
  * The agent opens in Unrestricted, which answers every tool call at once.
@@ -43,7 +40,6 @@ const REASONING_UNRESTRICTED = { model: LETTA_REASONING_MODEL_ID, optionValues: 
 export const lettaTest = createProviderTest({
   agent: LETTA_AGENT,
   nativeContext,
-  skipReason: LETTA_E2E_SKIP_REASON,
   /** An agent in Unrestricted, which raises no banner for a tool call. */
   workspaceName: 'authenticatedLettaWorkspace',
   workspaceOptions: { openOptions: UNRESTRICTED },

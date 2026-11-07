@@ -2,10 +2,8 @@ package zcode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -55,7 +53,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	opts.HomeDir = accountEnvironment.home
 	credentials := accountEnvironment.credentials
 	catalog, err := loadZCodeCatalog(opts.HomeDir)
-	legacyConfigurationError := err
 	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
 		cancel()
 		return nil, err
@@ -82,7 +79,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		workspace:                 zcodeWorkspaceFor(opts.WorkingDir),
 		homeDir:                   accountEnvironment.home,
 		catalog:                   catalog,
-		legacyConfigurationError:  legacyConfigurationError,
 		registryRevision:          "leapmux-" + opts.AgentID,
 		builtinProviderConfigPath: accountEnvironment.builtinProviderConfigPath,
 		credentials:               credentials,
@@ -179,39 +175,7 @@ func zcodeLaunchEnvValue(env []string, key string) string {
 
 // pushProviderRegistry hands the app-server the model providers it may use.
 func (a *Agent) pushProviderRegistry(timeout time.Duration) error {
-	// The account snapshot's inputs need nothing from the app-server, so LeapMux
-	// gathers them while the app-server boots and answers the legacy request
-	// below. A legacy build never reads them, and stop ends a Start Plan check
-	// that nothing waits for.
 	account := a.prepareAccountSnapshot(timeout)
 	defer account.stop()
-	params := a.catalog.registryPayload(a.workspace, a.registryRevision, time.Now().UnixMilli())
-	raw, err := a.sendZCodeRequest(MethodUpdateProviderRegistry, params, timeout)
-	if err != nil {
-		if !zcodeIsMethodNotFound(err) {
-			if code, ok := zcodeErrorCode(err); ok && code == -32602 && a.legacyConfigurationError != nil {
-				return a.legacyConfigurationError
-			}
-			return err
-		}
-		return a.pushAccountProviderConfig(account, timeout)
-	}
-	if a.legacyConfigurationError != nil {
-		return a.legacyConfigurationError
-	}
-	var resp struct {
-		Status        string `json:"status"`
-		ProviderCount int    `json:"providerCount"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		// The registry was accepted (no error object) but the acknowledgement did not
-		// parse. That is a diagnostic loss, not a startup failure.
-		slog.Warn("zcode provider registry response unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return nil
-	}
-	if resp.Status == "failed" {
-		return fmt.Errorf("the app-server refused the provider registry")
-	}
-	slog.Debug("zcode provider registry applied", "agent_id", a.AgentID(), "status", resp.Status, "providers", resp.ProviderCount)
-	return nil
+	return a.pushAccountProviderConfig(account, timeout)
 }

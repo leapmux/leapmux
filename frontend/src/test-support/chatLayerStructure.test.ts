@@ -88,6 +88,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'letta/plugin.ts': './classification',
   'mimo/plugin.ts': './classification',
   'muse/plugin.ts': './classification',
+  'antigravity/plugin.ts': './classification',
   'ohmypi/plugin.ts': './classification',
   'pi/plugin.ts': './classification',
   'zcode/plugin.ts': './classification',

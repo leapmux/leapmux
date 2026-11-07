@@ -14,8 +14,8 @@ import (
 //
 //   - `turn.usage` states what ONE model request cost, once for each request of
 //     a turn. The last one's prompt is the best reading of how full the context
-//     was, and it is the only reading 0.9.13 gives.
-//   - GET /v1/threads/{id}/context, from 0.10.0, states the context window and
+//     was.
+//   - GET /v1/threads/{id}/context states the context window and
 //     the runtime's own estimate of what the context holds. It is authoritative,
 //     so a reading from it is never overwritten by a request's counts.
 
@@ -94,13 +94,8 @@ type threadContextReport struct {
 	InputTokens  *int64 `json:"input_tokens"`
 }
 
-// refreshContextUsage reads the runtime's context report, when the runtime has
-// the route. It runs on its own goroutine: the dispatch must not wait for a
-// request.
+// refreshContextUsage reads the current context report without blocking event dispatch.
 func (a *Agent) refreshContextUsage() {
-	if !a.runtime.hasContextRoute {
-		return
-	}
 	threadID := a.currentThreadID()
 	if threadID == "" {
 		return

@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/amp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/antigravity"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cline"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codebuddy"
@@ -76,6 +77,7 @@ func Registrations() []agent.Registration {
 		deepseekharness.Registration(),
 		gemini.Registration(),
 		muse.Registration(),
+		antigravity.Registration(),
 	}
 }
 

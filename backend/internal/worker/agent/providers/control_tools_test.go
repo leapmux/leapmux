@@ -59,13 +59,14 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 	t.Parallel()
 
 	planModeProviders := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:   true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:     true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:           true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:           true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:           true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI: true,
 	}
 	registry := Registry()
 	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, contracts.CodexControlToolPlanModePrompt}
@@ -120,7 +121,7 @@ func TestProvidersWithLocalPlanApprovalSettings(t *testing.T) {
 
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
-		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI ||
 			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS {
 			continue
 		}

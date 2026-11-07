@@ -55,6 +55,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: {"deepseek-official/deepseek-flash", "deepseek-official/deepseek-flash"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        {agent.DefaultModelSentinel, agent.DefaultModelSentinel},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       {"gemini-2.5-pro", "gemini-2.5-pro"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI:  {agent.DefaultModelSentinel, agent.DefaultModelSentinel},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:      {"opus", "opus[1m]"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:            {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR:           {"default", "auto"},
@@ -106,13 +107,14 @@ func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 	registry := Registry()
 
 	bypassModes := map[leapmuxv1.AgentProvider]string{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: contracts.ClaudeModeBypassPermissions,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:       contracts.GooseModeAuto,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       contracts.ZCodeModeYolo,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:   contracts.CodewhalePostureFullAccess,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   contracts.KimiModeAuto,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:   contracts.QwenModeYolo,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI:    contracts.OhMyPiApprovalModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:     contracts.ClaudeModeBypassPermissions,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:           contracts.GooseModeAuto,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:           contracts.ZCodeModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:       contracts.CodewhalePostureFullAccess,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:       contracts.KimiModeAuto,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:       contracts.QwenModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI:        contracts.OhMyPiApprovalModeYolo,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI: contracts.AntigravityModeBypass,
 	}
 	for provider, bypass := range bypassModes {
 		t.Run(provider.String(), func(t *testing.T) {

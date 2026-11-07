@@ -506,7 +506,11 @@ describe('codex fileChange routes through the shared diff component', () => {
       type: 'fileChange',
       status: 'completed',
       changes: [
-        { path: '/tmp/added.ts', kind: 'add', diff: 'codexAddedContentMARKER\nsecondLine\n' },
+        {
+          path: '/tmp/added.ts',
+          kind: { type: 'add' },
+          diff: 'codexAddedContentMARKER\nsecondLine\n',
+        },
       ],
     })
     const text = container.textContent ?? ''
@@ -521,12 +525,12 @@ describe('codex fileChange routes through the shared diff component', () => {
       changes: [
         {
           path: '/tmp/a.ts',
-          kind: 'update',
+          kind: { type: 'update' },
           diff: '@@ -1,1 +1,1 @@\n-codexFileAOld\n+codexFileANew\n',
         },
         {
           path: '/tmp/b.ts',
-          kind: 'update',
+          kind: { type: 'update' },
           diff: '@@ -1,1 +1,1 @@\n-codexFileBOld\n+codexFileBNew\n',
         },
       ],
@@ -549,7 +553,7 @@ describe('codex fileChange routes through the shared diff component', () => {
       changes: [
         {
           path: '/tmp/failed.ts',
-          kind: 'update',
+          kind: { type: 'update' },
           diff: '@@ -1,1 +1,1 @@\n-codexFailedOld\n+codexFailedNew\n',
         },
       ],

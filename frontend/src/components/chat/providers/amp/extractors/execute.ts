@@ -35,10 +35,15 @@ export interface AmpShellOutput {
 
 /**
  * The command of one shell call. `shell_command` states it as `command`, and the
- * legacy `Bash` tool of an old thread states it as `cmd`.
+ * current `Bash` tool states it as `cmd`.
  */
 export function ampShellCommand(args: Record<string, unknown>): string {
   return pickString(args, 'command') || pickString(args, 'cmd')
+}
+
+/** The directory of a current shell_command or Bash call. */
+export function ampShellWorkingDirectory(args: Record<string, unknown>): string | undefined {
+  return pickString(args, 'workdir', undefined) || pickString(args, 'cwd', undefined)
 }
 
 /** Read one shell result. Text that is not Amp's record is the output itself. */

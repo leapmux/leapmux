@@ -53,15 +53,6 @@ func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
 		"Interrupt with no active turn must not write any command")
 }
 
-// piRequestTypes lists the `type` of each recorded stdin line, in order.
-func piRequestTypes(requests []piRecordedRequest) []string {
-	types := make([]string, 0, len(requests))
-	for _, request := range requests {
-		types = append(types, request.Type)
-	}
-	return types
-}
-
 // piOpenSelect is an extension's select dialog with no deadline. The installed
 // rpiv-ask-user-question extension asks this way, and passes Pi no abort signal.
 func piOpenSelect(id string) []byte {

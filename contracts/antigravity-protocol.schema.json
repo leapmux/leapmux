@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "antigravity-protocol.schema.json",
+  "title": "Antigravity language-server vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "frameKinds",
+    "controlTools",
+    "controlPayload",
+    "modes",
+    "stepTypes",
+    "stepStatuses",
+    "permissionActions",
+    "toolNames"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frameKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "controlTools": {
+      "$ref": "#/$defs/table"
+    },
+    "controlPayload": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "stepTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "stepStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionActions": {
+      "$ref": "#/$defs/table"
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

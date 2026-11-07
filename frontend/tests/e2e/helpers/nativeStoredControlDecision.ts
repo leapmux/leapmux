@@ -40,7 +40,7 @@ export interface NativeStoredControlDecision {
  *   caller saw.
  */
 export function onlyObservedNativeControl(frames: readonly NativeControlFrame[]): NativeControlFrame {
-  const first = frames[0]
+  const first = frames.find(frame => !frame.canceled)
   if (!first)
     throw new Error('The Worker watch observed no native control request.')
   if (!first.requestId.trim())
@@ -48,7 +48,7 @@ export function onlyObservedNativeControl(frames: readonly NativeControlFrame[])
   for (const frame of frames) {
     if (frame.requestId !== first.requestId)
       throw new Error(`The Worker sent a second native control request ${frame.requestId} after ${first.requestId}.`)
-    if (!isDeepStrictEqual(frame.payload, first.payload))
+    if (!frame.canceled && !isDeepStrictEqual(frame.payload, first.payload))
       throw new Error(`The native control request ${first.requestId} changed its payload.`)
   }
   return first

@@ -55,7 +55,8 @@ Use LeapMux in a browser or as a native desktop app.
   <a href="https://commandcode.ai/"><img src="icons/agents/command-code.svg" width="64" height="64" alt="Command Code" title="Command Code"></a>&nbsp;
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="icons/agents/deepseek-harness.svg" width="64" height="64" alt="DeepSeek Harness" title="DeepSeek Harness"></a>&nbsp;
   <a href="https://geminicli.com/"><img src="icons/agents/gemini-cli.svg" width="64" height="64" alt="Gemini CLI" title="Gemini CLI"></a>&nbsp;
-  <a href="https://muse.meta.ai/"><img src="icons/agents/muse-code.svg" width="64" height="64" alt="Muse Code" title="Muse Code"></a>
+  <a href="https://muse.meta.ai/"><img src="icons/agents/muse-code.svg" width="64" height="64" alt="Muse Code" title="Muse Code"></a>&nbsp;
+  <a href="https://antigravity.google/"><img src="icons/agents/antigravity-cli.svg" width="64" height="64" alt="Antigravity CLI" title="Antigravity CLI"></a>
 </p>
 
 > **📖 Want to use LeapMux?**

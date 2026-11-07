@@ -1,0 +1,68 @@
+{
+  "_readme": "Antigravity owns the language-server step types, step statuses, permission actions, and tool names. LeapMux owns the persisted frame kinds, the plan-review control, and the permission modes. The Worker and browser read these values from one contract.",
+  "frameKinds": {
+    "Step": "antigravity_step",
+    "Interaction": "antigravity_interaction",
+    "TurnEnd": "antigravity_turn_end"
+  },
+  "controlTools": {
+    "PlanReview": "AntigravityPlanReview"
+  },
+  "controlPayload": {
+    "PlanContent": "planContent"
+  },
+  "modes": {
+    "Default": "default",
+    "AcceptEdits": "accept-edits",
+    "Plan": "plan",
+    "Bypass": "bypass"
+  },
+  "stepTypes": {
+    "PlannerResponse": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+    "RunCommand": "CORTEX_STEP_TYPE_RUN_COMMAND",
+    "ViewFile": "CORTEX_STEP_TYPE_VIEW_FILE",
+    "CodeAction": "CORTEX_STEP_TYPE_CODE_ACTION",
+    "AskQuestion": "CORTEX_STEP_TYPE_ASK_QUESTION",
+    "McpTool": "CORTEX_STEP_TYPE_MCP_TOOL",
+    "InvokeSubagent": "CORTEX_STEP_TYPE_INVOKE_SUBAGENT",
+    "Generic": "CORTEX_STEP_TYPE_GENERIC",
+    "ErrorMessage": "CORTEX_STEP_TYPE_ERROR_MESSAGE",
+    "Checkpoint": "CORTEX_STEP_TYPE_CHECKPOINT",
+    "SystemMessage": "CORTEX_STEP_TYPE_SYSTEM_MESSAGE",
+    "UserInput": "CORTEX_STEP_TYPE_USER_INPUT"
+  },
+  "stepStatuses": {
+    "Generating": "CORTEX_STEP_STATUS_GENERATING",
+    "Queued": "CORTEX_STEP_STATUS_QUEUED",
+    "Pending": "CORTEX_STEP_STATUS_PENDING",
+    "Running": "CORTEX_STEP_STATUS_RUNNING",
+    "Waiting": "CORTEX_STEP_STATUS_WAITING",
+    "Done": "CORTEX_STEP_STATUS_DONE",
+    "Error": "CORTEX_STEP_STATUS_ERROR",
+    "Canceled": "CORTEX_STEP_STATUS_CANCELED"
+  },
+  "permissionActions": {
+    "Command": "command",
+    "ReadFile": "read_file",
+    "WriteFile": "write_file",
+    "Mcp": "mcp"
+  },
+  "toolNames": {
+    "ReadFile": "read_file",
+    "ViewFile": "view_file",
+    "WriteFile": "write_file",
+    "EditFile": "edit_file",
+    "RunCommand": "run_command",
+    "SearchWeb": "search_web",
+    "InvokeSubagent": "invoke_subagent",
+    "DefineSubagent": "define_subagent",
+    "ManageSubagents": "manage_subagents",
+    "ManageTask": "manage_task",
+    "SendMessage": "send_message",
+    "Schedule": "schedule",
+    "AskQuestion": "ask_question",
+    "CallMcpTool": "call_mcp_tool",
+    "ListResources": "list_resources",
+    "ReadResource": "read_resource"
+  }
+}

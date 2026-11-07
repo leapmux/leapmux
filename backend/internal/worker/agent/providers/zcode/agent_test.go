@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
+func TestZCodeProviderSetupUsesCurrentAccountConfig(t *testing.T) {
 	t.Parallel()
 
 	stdin := &zcodeRecordedStdin{}
@@ -38,9 +38,6 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 	a.registryRevision = "leapmux-test"
 	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
 	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
-
-	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry,
-		ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":1,"status":"received"}`)
 	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
@@ -51,12 +48,11 @@ func TestZCodeProviderSetupFallsBackToAccountConfig(t *testing.T) {
 	a.Mu.Unlock()
 	assert.True(t, accountConfig)
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 3)
-	assert.Equal(t, MethodUpdateProviderRegistry, requests[0].Method)
-	assert.Equal(t, MethodUpdateAccountConfig, requests[1].Method)
-	assert.Equal(t, MethodProviderRefreshRegistry, requests[2].Method)
+	require.Len(t, requests, 2)
+	assert.Equal(t, MethodUpdateAccountConfig, requests[0].Method)
+	assert.Equal(t, MethodProviderRefreshRegistry, requests[1].Method)
 	var params zcodeAccountProviderPayload
-	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	assert.Contains(t, params.Providers, "account:zai-individual-coding-plan")
 	a.Mu.Lock()
 	accountID, bridged := a.catalog.accountProviderID("builtin:zai-coding-plan")
@@ -82,9 +78,6 @@ func TestZCodeProviderSetupRejectsAMismatchedAccountRevision(t *testing.T) {
 	a.registryRevision = "leapmux-test"
 	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "zcode-builtin.json")
 	require.NoError(t, os.WriteFile(a.builtinProviderConfigPath, []byte(zcodeBuiltinZAIAccountConfig), 0o600))
-
-	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry,
-		ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"another-revision","providerCount":1,"status":"received"}`)
 
@@ -140,16 +133,15 @@ func TestZCodeProviderSetupReportsTheCheckedStartPlan(t *testing.T) {
 	})
 	stdin := &zcodeRecordedStdin{}
 	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
-	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
 	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	requests := stdin.Requests(t)
-	require.Len(t, requests, 3)
+	require.Len(t, requests, 2)
 	var params zcodeAccountProviderPayload
-	require.NoError(t, json.Unmarshal(requests[1].Params, &params))
+	require.NoError(t, json.Unmarshal(requests[0].Params, &params))
 	start := params.Providers["account:zai-start-plan"]
 	assert.True(t, start.Access.Entitled)
 	assert.Equal(t, []string{"GLM-5.3-Flash", "GLM-5.3"}, start.BuiltinModelIDs,
@@ -170,14 +162,13 @@ func TestZCodeProviderSetupReportsARefusedStartPlanCredential(t *testing.T) {
 	})
 	stdin := &zcodeRecordedStdin{}
 	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
-	refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
 	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
 	var params zcodeAccountProviderPayload
-	require.NoError(t, json.Unmarshal(stdin.Requests(t)[1].Params, &params))
+	require.NoError(t, json.Unmarshal(zcodeNthRequest(t, stdin, MethodUpdateAccountConfig, 1).Params, &params))
 	assert.False(t, params.Providers["account:zai-start-plan"].Access.Entitled)
 	assert.Nil(t, params.Providers["account:zai-start-plan"].BuiltinModelIDs)
 	assert.Equal(t, zcodeAccountProviderState{
@@ -185,56 +176,37 @@ func TestZCodeProviderSetupReportsARefusedStartPlanCredential(t *testing.T) {
 	}, params.States["account:zai-start-plan"])
 }
 
-// A legacy build takes the workspace registry and never reads the account snapshot, so
-// the Start Plan check that runs beside the legacy request must end.
-func TestZCodeProviderSetupLegacyBuildStopsTheStartPlanCheck(t *testing.T) {
+func TestZCodeProviderSetupStopsAnInFlightAccountCheck(t *testing.T) {
 	t.Parallel()
-
-	reached := make(chan struct{}, 1)
-	ended := make(chan struct{}, 1)
-	server, client := zcodeTestStartPlanServer(t, func(_ http.ResponseWriter, r *http.Request) {
-		reached <- struct{}{}
-		<-r.Context().Done()
-		ended <- struct{}{}
+	reached, ended := make(chan struct{}), make(chan struct{})
+	server, client := zcodeTestStartPlanServer(t, func(_ http.ResponseWriter, request *http.Request) {
+		close(reached)
+		<-request.Context().Done()
+		close(ended)
 	})
-	stdin := &zcodeRecordedStdin{}
-	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
-	// The legacy reply waits until the check's request is in flight, so the test
-	// observes the stop end that request rather than a request that never started.
-	go func() {
-		<-reached
-		req := waitZCodeRequest(t, stdin, MethodUpdateProviderRegistry)
-		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(`{"status":"applied","providerCount":2}`)))
-	}()
-
-	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
+	a := zcodeStartPlanTestAgent(t, &zcodeRecordedStdin{}, server.URL, client)
+	snapshot := a.prepareAccountSnapshot(zcodeTestRPCTimeout)
+	defer snapshot.stop()
+	select {
+	case <-reached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the account check did not start")
+	}
+	snapshot.stop()
 	select {
 	case <-ended:
 	case <-time.After(30 * time.Second):
-		t.Fatal("the Start Plan check kept running after the legacy registry was applied")
+		t.Fatal("the account check did not stop")
 	}
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	assert.False(t, a.account != nil)
 }
 
-func TestZCodeProviderSetupOverlapsCurrentAccountCheckWithProtocolDetection(t *testing.T) {
+func TestZCodeProviderSetupChecksTheCurrentAccount(t *testing.T) {
 	t.Parallel()
-	reached := make(chan struct{}, 1)
 	server, client := zcodeTestStartPlanServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		reached <- struct{}{}
 		_, _ = io.WriteString(w, zcodeLiveBalanceReply)
 	})
 	stdin := &zcodeRecordedStdin{}
 	a := zcodeStartPlanTestAgent(t, stdin, server.URL, client)
-	go func() {
-		select {
-		case <-reached:
-			req := waitZCodeRequest(t, stdin, MethodUpdateProviderRegistry)
-			a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, req), ErrMethodNotFound, "Method not found"))
-		case <-a.Context().Done():
-		}
-	}()
 	answerZCodeRequest(t, a, stdin, MethodUpdateAccountConfig, `{"receivedRevision":"leapmux-test","status":"received"}`)
 	answerZCodeRequest(t, a, stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 	require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
@@ -246,27 +218,13 @@ func TestZCodeProviderSetupOverlapsCurrentAccountCheckWithProtocolDetection(t *t
 
 // An installed release that LeapMux cannot read fails the account snapshot only, and
 // LeapMux sends no credential over the network for a start that must fail.
-func TestZCodeProviderSetupAnUnreadableReleaseFailsOnlyTheAccountPath(t *testing.T) {
+func TestZCodeProviderSetupRequiresTheInstalledProviderConfiguration(t *testing.T) {
 	t.Parallel()
-
-	for _, legacy := range []bool{false, true} {
-		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
-			t.Parallel()
-
-			stdin := &zcodeRecordedStdin{}
-			a := zcodeStartPlanTestAgent(t, stdin, "https://zcode.invalid", newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}))
-			a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "missing.json")
-			if legacy {
-				answerZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, `{"status":"applied","providerCount":2}`)
-				require.NoError(t, a.pushProviderRegistry(zcodeTestRPCTimeout))
-				return
-			}
-			refuseZCodeRequest(t, a, stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
-			err := a.pushProviderRegistry(zcodeTestRPCTimeout)
-			require.ErrorContains(t, err, "read ZCode built-in provider configuration")
-			assert.Len(t, stdin.Requests(t), 1, "no account snapshot is sent")
-		})
-	}
+	stdin := &zcodeRecordedStdin{}
+	a := zcodeStartPlanTestAgent(t, stdin, "https://zcode.invalid", newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}))
+	a.builtinProviderConfigPath = filepath.Join(t.TempDir(), "missing.json")
+	require.ErrorContains(t, a.pushProviderRegistry(zcodeTestRPCTimeout), "read ZCode built-in provider configuration")
+	assert.Empty(t, stdin.Requests(t), "an unreadable configuration sends no account snapshot")
 }
 
 func TestZCodeLaunchEnvValueTakesTheFinalDuplicate(t *testing.T) {

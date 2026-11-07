@@ -14,7 +14,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// Codewhale 0.10.1 tries to attach whenever its owner receipt exists.
+// The current Codewhale runtime tries to attach whenever its owner receipt exists.
 // A signal exit can leave the receipt after the owner releases its socket.
 // Retire only a receipt for this store whose process no longer exists.
 // The native socket binder then removes its stale socket itself.

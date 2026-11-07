@@ -104,11 +104,8 @@ func TestDecodeGeminiSessionIgnoresOnlyTheIncompleteLastRecord(t *testing.T) {
 	assert.Equal(t, "retained", geminiMessageText(session.Messages[0].Content))
 }
 
-func TestDecodeGeminiSessionReadsNativeCompleteJSON(t *testing.T) {
+func TestDecodeGeminiSessionRejectsAnObsoleteCompleteJSONTranscript(t *testing.T) {
 	t.Parallel()
-	session, err := decodeGeminiSession([]byte(`{"sessionId":"legacy-session","projectHash":"native-project","messages":[{"id":"u","type":"user","content":"native context"}]}`))
-	require.NoError(t, err)
-	assert.Equal(t, "legacy-session", session.SessionID)
-	require.Len(t, session.Messages, 1)
-	assert.Equal(t, "native context", geminiMessageText(session.Messages[0].Content))
+	_, err := decodeGeminiSession([]byte(`{"sessionId":"obsolete-session","projectHash":"native-project","messages":[{"id":"u","type":"user","content":"obsolete context"}]}`))
+	require.Error(t, err)
 }

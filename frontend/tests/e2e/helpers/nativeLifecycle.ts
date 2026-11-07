@@ -14,13 +14,14 @@ import { AgentInputState, AgentStatus } from '../../../src/generated/proto/leapm
 import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
+import { countChatBubbles } from './chatBubbleCount'
 import { withCleanup } from './cleanup'
 import { parseGenerationCounters } from './generationProgress'
 import { newNativeWorkingDir } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
 import { readNativeInputQueue } from './nativeInputQueueIdle'
 import { resolveNativeProcessOwnership } from './nativeProcessOwnership'
-import { countOriginalAnswerRows, expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, reopenFromSessionPicker } from './nativeResume'
+import { expectReopenedNativeAgent, expectResumedConversation, nativeResumeTexts, readOriginalConversationRows, reopenFromSessionPicker } from './nativeResume'
 import { currentNativeAgent, nativeAgentById, nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { withNativeStartupWorker } from './nativeStartupWorker'
 import { approveNativeToolsUntil } from './nativeToolExecution'
@@ -472,8 +473,8 @@ export async function exerciseSessionResume(
   await context.waitForNativeCheckpoint?.(before.agentSessionId)
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'stored', prior: before })
-  const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)
-  const originalAnswerBubbles = await assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }).count()
+  const { answerRows: originalAnswerRows, userSequence } = await readOriginalConversationRows(context, before.id, texts)
+  const originalAnswerBubbles = await countChatBubbles(context.page, 'agent', texts.originalAnswer, userSequence)
   const server = context.leapmuxServer
   const keeper = await openAgentViaAPI(server, context.workspaceId, newNativeWorkingDir(context, 'native-resume-keeper-'), {
     ...agentOpenOptions(context.provider),
@@ -486,12 +487,12 @@ export async function exerciseSessionResume(
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'opened', prior: before })
   const reopened = await expectReopenedNativeAgent(context, before, [before.id, keeper])
-  await expect(userBubbles(context.page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
+  expect(await countChatBubbles(context.page, 'user', texts.originalPrompt, userSequence)).toBe(1)
   // The reopened transcript draws exactly the answer bubbles the live one drew
   // before the close: an answer tool can leave the answer in several stored row
   // kinds (Dirac's `respond` request, result and text rows), and rows that render
   // no bubble keep the page count its own number, not the row count.
-  await expect(assistantBubbles(context.page).filter({ hasText: texts.originalAnswer })).toHaveCount(originalAnswerBubbles)
+  expect(await countChatBubbles(context.page, 'agent', texts.originalAnswer, userSequence)).toBe(originalAnswerBubbles)
   const resumedRequest = await sendNativeAnswer(context, texts.resumedPrompt, texts.resumedAnswer)
   const continued = await currentNativeAgent(context)
   expect(continued.id).toBe(reopened.id)

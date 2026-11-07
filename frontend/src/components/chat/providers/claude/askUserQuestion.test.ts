@@ -12,9 +12,9 @@ function payload(questions: unknown, toolName: string = CLAUDE_TOOL_NAMES.ASK_US
 }
 
 describe('claudeIsAskUserQuestion', () => {
-  it('answers for both spellings of the question tool', () => {
+  it('accepts the current question tool and rejects the obsolete spelling', () => {
     expect(claudeIsAskUserQuestion(payload([]))).toBe(true)
-    expect(claudeIsAskUserQuestion(payload([], 'request_user_input'))).toBe(true)
+    expect(claudeIsAskUserQuestion(payload([], 'request_user_input'))).toBe(false)
   })
 
   it('refuses another tool', () => {

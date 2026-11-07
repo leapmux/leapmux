@@ -241,13 +241,6 @@ func (a *Agent) waitHealthy(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
-// readRuntimeInfo reads the runtime's version.
-func (a *Agent) readRuntimeInfo() (codewhaleRuntimeInfo, error) {
-	var info codewhaleRuntimeInfo
-	err := a.call(http.MethodGet, routeRuntimeInfo, nil, nil, &info)
-	return info, err
-}
-
 // --- ownership ---
 
 // processIdentity reads a process's start time, which pairs with its id to

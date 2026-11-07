@@ -587,3 +587,26 @@ func TestRefuseNonLoopbackAddress(t *testing.T) {
 		"a name is not an address, and the dialer states an address")
 	assert.ErrorContains(t, refuseNonLoopbackAddress("tcp", "no-port", nil), "cannot be read")
 }
+
+func TestHTTPEndpointOpenStreamBody(t *testing.T) {
+	t.Parallel()
+
+	received := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "application/connect+json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "Bearer local", r.Header.Get("Authorization"))
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		received <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	endpoint, err := NewHTTPEndpoint(server.URL, BearerAuth("local"))
+	require.NoError(t, err)
+	defer endpoint.Close()
+
+	response, err := endpoint.OpenStreamBody(t.Context(), http.MethodPost, "/stream", nil, "application/connect+json", []byte{0, 0, 0, 0, 2, '{', '}'})
+	require.NoError(t, err)
+	_ = response.Body.Close()
+	assert.Equal(t, []byte{0, 0, 0, 0, 2, '{', '}'}, <-received)
+}

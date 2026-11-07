@@ -60,7 +60,7 @@ func TestCheckProtocol(t *testing.T) {
 				return
 			}
 			require.ErrorIs(t, err, errProtocolMismatch)
-			assert.Contains(t, err.Error(), "Cline 3.0.64", "the error says what to install")
+			assert.Contains(t, err.Error(), "hub protocol v1", "the error says what to install")
 		})
 	}
 }

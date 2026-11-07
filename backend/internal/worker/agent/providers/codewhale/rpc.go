@@ -3,6 +3,7 @@ package codewhale
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -111,15 +112,6 @@ type pendingUserInput struct {
 	ID      string          `json:"id"`
 	TurnID  string          `json:"turn_id"`
 	Request json.RawMessage `json:"request"`
-}
-
-// codewhaleRuntimeInfo is the part of GET /v1/runtime/info that the provider
-// reads.
-type codewhaleRuntimeInfo struct {
-	CodewhaleVersion string `json:"codewhale_version"`
-	// hasContextRoute is not on the wire. start.go sets it when the thread's
-	// context route answers, which it does from 0.10.0.
-	hasContextRoute bool
 }
 
 // providerModelsPage is one page of GET /v1/providers/{id}/models.
@@ -256,19 +248,8 @@ func (a *Agent) readThreadContext(threadID string) (json.RawMessage, error) {
 	return raw, err
 }
 
-// listThreadJobs lists the thread's background shell jobs. The route exists
-// from 0.10.0, and 0.9.13 answers 404. The poller lists only to learn which of
-// the two it talks to: the list drops old finished jobs as it answers, so it
-// reads each job by readThreadJob instead. ctx is the poller's.
-func (a *Agent) listThreadJobs(ctx context.Context, threadID string) error {
-	var response struct {
-		Jobs []shellJob `json:"jobs"`
-	}
-	return a.callIn(ctx, a.APITimeout(), http.MethodGet, threadPath(threadID, threadRouteJobs), nil, nil, &response)
-}
-
 // readThreadJob reads one background shell job of the thread. Unlike the list,
-// the read drops no finished job. The route exists from 0.10.0. ctx is the
+// the read drops no finished job. ctx belongs to the
 // poller's.
 func (a *Agent) readThreadJob(ctx context.Context, threadID, jobID string) (shellJob, error) {
 	var response struct {
@@ -302,4 +283,42 @@ func (a *Agent) listProviderModels(provider, providerID string) ([]providerModel
 		cursor = result.NextCursor
 	}
 	return models, nil
+}
+
+// agentRunRecord is the current native receipt for one worker run.
+type agentRunRecord struct {
+	Spec struct {
+		WorkerID string `json:"worker_id"`
+		RunID    string `json:"run_id"`
+	} `json:"spec"`
+	Status string `json:"status"`
+}
+
+func (record agentRunRecord) validate(childKey string) error {
+	if (record.Spec.WorkerID != childKey && record.Spec.RunID != childKey) || record.Status == "" {
+		return fmt.Errorf("the Codewhale run receipt does not identify child %q and its status", childKey)
+	}
+	return nil
+}
+
+func (a *Agent) cancelAgentRun(childKey string) (agentRunRecord, error) {
+	var record agentRunRecord
+	err := a.call(http.MethodPost, routeAgentRuns+"/"+url.PathEscape(childKey)+"/cancel", nil, nil, &record)
+	if err == nil {
+		err = record.validate(childKey)
+	}
+	return record, err
+}
+
+func (a *Agent) readAgentRuns(ctx context.Context) ([]agentRunRecord, error) {
+	var response struct {
+		Runs *[]agentRunRecord `json:"runs"`
+	}
+	if err := a.callIn(ctx, a.APITimeout(), http.MethodGet, routeAgentRuns, nil, nil, &response); err != nil {
+		return nil, err
+	}
+	if response.Runs == nil {
+		return nil, fmt.Errorf("the Codewhale run snapshot contains no runs list")
+	}
+	return *response.Runs, nil
 }

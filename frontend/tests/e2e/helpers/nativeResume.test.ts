@@ -6,9 +6,8 @@ import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
-import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, AgentInfoSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import {
-  countOriginalAnswerRows,
   createFromSessionRow,
   expectNativeResumeContext,
   expectReopenedNativeAgent,
@@ -19,6 +18,7 @@ import {
   openNewAgentFor,
   openSoleSessionRow,
   openStoredSessionRow,
+  readOriginalConversationRows,
   reopenedNativeAgentVerdict,
   reopenFromSessionPicker,
 } from './nativeResume'
@@ -67,6 +67,12 @@ function bubbles(texts: () => readonly string[], filters: readonly string[] = []
     }),
   }
 }
+
+vi.mock('./chatBubbleCount', () => ({
+  countChatBubbles: async (_page: Page, role: string, text: string) => (role === 'user'
+    ? calls.user
+    : calls.assistant).filter(value => value.includes(text)).length,
+}))
 
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
@@ -546,10 +552,27 @@ describe('expectReopenedNativeAgent', () => {
   })
 })
 
-describe('countOriginalAnswerRows', () => {
+describe('readOriginalConversationRows', () => {
+  it('accepts queue-written user input with an empty native session field', async () => {
+    const input = {
+      ...row('input', 1n, { text: texts.originalPrompt }),
+      source: MessageSource.USER,
+      agentSessionId: '',
+    }
+    calls.snapshot.mockResolvedValue(snapshot('original', [
+      input,
+      row('answer', 2n, { text: texts.originalAnswer }),
+    ]))
+    await expect(readOriginalConversationRows({ leapmuxServer: server }, 'original', texts)).resolves.toEqual({ answerRows: 1, userSequence: 1n })
+  })
+
   it('counts each row that holds the original answer in its content or supplement', async () => {
     calls.snapshot.mockResolvedValue(snapshot('original', [
-      row('prompt', 1n, { role: 'user', text: texts.originalPrompt }),
+      {
+        ...row('prompt', 1n, { role: 'user', text: texts.originalPrompt }),
+        source: MessageSource.USER,
+        agentSessionId: '',
+      },
       row('answer', 2n, {
         message: {
           content: [
@@ -561,21 +584,25 @@ describe('countOriginalAnswerRows', () => {
       row('turn-end', 4n, { type: 'turn_end', tokens: 0 }),
     ]))
     const context = { leapmuxServer: server }
-    expect(await countOriginalAnswerRows(context, 'original', texts)).toBe(2)
+    expect(await readOriginalConversationRows(context, 'original', texts)).toEqual({ answerRows: 2, userSequence: 1n })
     expect(calls.snapshot).toHaveBeenCalledExactlyOnceWith(context, 'original')
   })
 
   it('refuses an original agent that stored no answer row', async () => {
     calls.snapshot.mockResolvedValue(snapshot('original', [
-      row('prompt', 1n, { text: texts.originalPrompt }),
+      {
+        ...row('prompt', 1n, { text: texts.originalPrompt }),
+        source: MessageSource.USER,
+        agentSessionId: '',
+      },
     ]))
-    await expect(countOriginalAnswerRows({ leapmuxServer: server }, 'original', texts)).rejects.toThrow('stored no Worker row that holds the original answer')
+    await expect(readOriginalConversationRows({ leapmuxServer: server }, 'original', texts)).rejects.toThrow('stored no Worker row that holds the original answer')
   })
 
   it('propagates the Worker read failure', async () => {
     const failure = new Error('The native message read requires a started agent.')
     calls.snapshot.mockRejectedValue(failure)
-    await expect(countOriginalAnswerRows({ leapmuxServer: server }, 'original', texts)).rejects.toBe(failure)
+    await expect(readOriginalConversationRows({ leapmuxServer: server }, 'original', texts)).rejects.toBe(failure)
   })
 })
 
@@ -585,14 +612,89 @@ describe('expectResumedConversation', () => {
   const originalRow = row('reopened:2', 2n, { text: texts.originalAnswer })
   const resumedRow = row('resumed-answer', 7n, { text: texts.resumedAnswer })
 
+  function withOriginalUser(agentId: string, messages: AgentChatMessage[]) {
+    const prompt = {
+      ...row('original-prompt', 1n, { text: texts.originalPrompt }),
+      source: MessageSource.USER,
+      agentSessionId: '',
+    }
+    return snapshot(agentId, [prompt, ...messages])
+  }
+
   function settledPage() {
     calls.user.push(texts.originalPrompt, texts.resumedPrompt)
     calls.assistant.push(texts.originalAnswer, texts.resumedAnswer)
   }
 
+  it('refuses visible user text when the Worker snapshot has no original user row', async () => {
+    settledPage()
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, resumedRow]))
+    await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('original Worker user row')
+  })
+
+  it.each([
+    {
+      label: 'agent metadata',
+      fields: { source: MessageSource.AGENT },
+    },
+    {
+      label: 'zero sequence',
+      fields: { seq: 0n },
+    },
+    {
+      label: 'negative sequence',
+      fields: { seq: -1n },
+    },
+    {
+      label: 'another native session',
+      fields: { agentSessionId: 'another-native-session' },
+    },
+    {
+      label: 'empty row ID',
+      fields: { id: '' },
+    },
+  ])('refuses a malformed or foreign original Worker user row: $label', async ({ fields }) => {
+    settledPage()
+    const invalid = {
+      ...row('original-prompt', 1n, { text: texts.originalPrompt }),
+      source: MessageSource.USER,
+      agentSessionId: '',
+      ...fields,
+    }
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [invalid, originalRow, resumedRow]))
+    await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('original Worker user row')
+  })
+
+  it('refuses duplicate original Worker user rows even when the UI draws only one', async () => {
+    settledPage()
+    const user = {
+      ...row('original-prompt', 1n, { text: texts.originalPrompt }),
+      source: MessageSource.USER,
+      agentSessionId: '',
+    }
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      user,
+      { ...user, id: 'duplicate-prompt', seq: 3n },
+      originalRow,
+      resumedRow,
+    ]))
+    await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('original Worker user row')
+  })
+
+  it('accepts the owned Worker input when only its snapshot identifies the native session', async () => {
+    settledPage()
+    const input = {
+      ...row('input', 1n, { text: texts.originalPrompt }),
+      source: MessageSource.USER,
+      agentSessionId: '',
+    }
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [input, originalRow, resumedRow]))
+    await expect(expectResumedConversation(context, 'reopened', texts, 1)).resolves.toBeUndefined()
+  })
+
   it('accepts one copy of each original row and a separate resumed answer', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [
       originalRow,
       row('resumed-prompt', 6n, { text: texts.resumedPrompt }),
       resumedRow,
@@ -604,7 +706,7 @@ describe('expectResumedConversation', () => {
   it('accepts an original answer that the original agent stored in two rows and drew twice', async () => {
     settledPage()
     calls.assistant.push(texts.originalAnswer)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [
       originalRow,
       row('reopened:3', 3n, {
         tool: { input: texts.originalAnswer },
@@ -616,7 +718,7 @@ describe('expectResumedConversation', () => {
 
   it('accepts an original answer that two stored rows drew as one bubble', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [
       originalRow,
       row('reopened:3', 3n, {
         tool: { input: texts.originalAnswer },
@@ -629,14 +731,14 @@ describe('expectResumedConversation', () => {
   it('refuses a resumed answer bubble that holds the replayed original answer', async () => {
     calls.user.push(texts.originalPrompt, texts.resumedPrompt)
     calls.assistant.push(texts.originalAnswer, `${texts.originalAnswer}${texts.resumedAnswer}`)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, resumedRow]))
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [originalRow, resumedRow]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('The resumed answer bubble must not hold the original answer.')
     expect(calls.snapshot).not.toHaveBeenCalled()
   })
 
   it('refuses a resumed answer row that holds the replayed original answer', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [
       originalRow,
       row('merged', 7n, { text: `${texts.originalAnswer}${texts.resumedAnswer}` }),
     ]))
@@ -645,7 +747,7 @@ describe('expectResumedConversation', () => {
 
   it('refuses a replayed original answer that the resumed agent stored as a new row', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [
       originalRow,
       row('replayed', 5n, { text: texts.originalAnswer }),
       resumedRow,
@@ -656,27 +758,27 @@ describe('expectResumedConversation', () => {
   it('refuses a second original answer bubble', async () => {
     settledPage()
     calls.assistant.push(texts.originalAnswer)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, resumedRow]))
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [originalRow, resumedRow]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toMatchObject({ actual: 2, expected: 1 })
   })
 
   it('refuses a second original prompt bubble', async () => {
     settledPage()
     calls.user.push(texts.originalPrompt)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, resumedRow]))
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [originalRow, resumedRow]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toMatchObject({ actual: 2, expected: 1 })
   })
 
   it('refuses an absent resumed answer bubble', async () => {
     calls.user.push(texts.originalPrompt)
     calls.assistant.push(texts.originalAnswer)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, resumedRow]))
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [originalRow, resumedRow]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toMatchObject({ actual: 0 })
   })
 
   it('refuses an absent resumed answer row', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow]))
+    calls.snapshot.mockResolvedValue(withOriginalUser('reopened', [originalRow]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('must store a Worker row that holds the resumed answer')
   })
 

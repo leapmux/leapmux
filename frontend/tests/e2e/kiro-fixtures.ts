@@ -11,17 +11,13 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { KIRO_AGENT, nativeContext } from './kiro/scenarios'
 import { createProviderTest } from './provider-fixture-factory'
 
-export const KIRO_E2E_SKIP_REASON: string | null = missingBinaryReason('kiro-cli-chat', 'Kiro E2E requires the kiro-cli-chat CLI on PATH')
-
 export const kiroTest = createProviderTest({
   agent: KIRO_AGENT,
   nativeContext,
-  skipReason: KIRO_E2E_SKIP_REASON,
   workspaceName: 'authenticatedKiroWorkspace',
 }).extend<{
   askingKiroWorkspace: AgentWorkspace

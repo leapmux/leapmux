@@ -446,10 +446,10 @@ func TestZCodeInterrupt_SendsAGuardedV4StopForTheLatestBackgroundTurn(t *testing
 	assert.Equal(t, 1, timer.armed)
 }
 
-// TestZCodeInterrupt_UnknownExecutionIDUsesTheLegacyStop: an owner that
+// TestZCodeInterrupt_UnknownExecutionIDUsesSessionStop: an owner that
 // recorded no execution id takes session/stop and sends NO v4 command at all --
 // the v4 stop without its guard aborts whatever execution is current.
-func TestZCodeInterrupt_UnknownExecutionIDUsesTheLegacyStop(t *testing.T) {
+func TestZCodeInterrupt_UnknownExecutionIDUsesSessionStop(t *testing.T) {
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
@@ -523,25 +523,15 @@ func TestZCodeInterrupt_TargetChangedNoopSendsNoLegacyStop(t *testing.T) {
 	assert.Zero(t, timer.armed)
 }
 
-// TestZCodeInterrupt_MethodNotFoundFallsBackToTheLegacyStop: an app-server with
-// no command inbox still implements session/stop.
-func TestZCodeInterrupt_MethodNotFoundFallsBackToTheLegacyStop(t *testing.T) {
+func TestZCodeInterrupt_DoesNotFallBackAfterARefusedCurrentCommand(t *testing.T) {
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
-	timer := &zcodeCapturedTimer{}
-	a.afterFunc = timer.afterFunc
-	t.Cleanup(a.cancelStoppedZCodeTurn)
 	zcodeStartExecTurn(t, a, "turn-1", "exec-u")
-
-	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
 	refuseZCodeRequest(t, a, stdin, MethodCommand, ErrMethodNotFound, "Method not found")
-	require.NoError(t, a.Interrupt(agent.StopContext{}))
-
-	assert.Equal(t, []string{MethodCommand, MethodSessionStop}, zcodeStopMethods(t, stdin),
-		"a refused command inbox selects the legacy stop")
-	assert.True(t, a.stopWindow.armed())
-	assert.Equal(t, 1, timer.armed)
+	require.Error(t, a.Interrupt(agent.StopContext{}))
+	assert.Equal(t, []string{MethodCommand}, zcodeStopMethods(t, stdin))
+	assert.False(t, a.stopWindow.armed())
 }
 
 // TestZCodeInterrupt_OtherV4RefusalsDoNotFallThrough: every refusal that does

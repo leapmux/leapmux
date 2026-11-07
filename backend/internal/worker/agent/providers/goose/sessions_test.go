@@ -3,7 +3,6 @@ package goose
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -58,7 +57,7 @@ func TestGooseStoredSessions(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	home := t.TempDir()
-	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+	seedGooseDB(t, gooseDBPath(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}), []gooseSessionRow{
 		{id: "20260830_2", name: "Newest", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 15:54:13"},
 		{id: "20260830_1", name: "Older", kind: "user", workingDir: dir, createdAt: "2026-08-30 09:00:00", updatedAt: "2026-08-30 09:30:00"},
 		{id: "20260830_3", name: "Delegated task", kind: "sub_agent", workingDir: dir, createdAt: "2026-08-30 16:00:00", updatedAt: "2026-08-30 16:00:00", parentID: "20260830_2"},
@@ -85,7 +84,7 @@ func TestGooseStoredSessions_KeepsACPSessions(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	home := t.TempDir()
-	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+	seedGooseDB(t, gooseDBPath(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}), []gooseSessionRow{
 		{id: "acp_only", name: "Started by LeapMux", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 10:00:00"},
 	})
 
@@ -106,7 +105,7 @@ func TestGooseStoredSessions_OrdersByInstantNotByText(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	home := t.TempDir()
-	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+	seedGooseDB(t, gooseDBPath(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}), []gooseSessionRow{
 		// The newest instant, in the shape CURRENT_TIMESTAMP writes.
 		{id: "late", name: "Late", kind: "acp", workingDir: dir, createdAt: "2026-08-30 23:59:00", updatedAt: "2026-08-30 23:59:00"},
 		// Two much earlier instants, in the shapes a driver writes. Both sort
@@ -130,7 +129,7 @@ func TestGooseStoredSessions_AnUnreadableTimeDoesNotTakeASlot(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
 	home := t.TempDir()
-	seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), []gooseSessionRow{
+	seedGooseDB(t, gooseDBPath(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}), []gooseSessionRow{
 		{id: "junk", name: "Unreadable", kind: "acp", workingDir: dir, createdAt: "nonsense", updatedAt: "nonsense"},
 		{id: "real_a", name: "Real A", kind: "acp", workingDir: dir, createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 12:00:00"},
 		{id: "real_b", name: "Real B", kind: "acp", workingDir: dir, createdAt: "2026-08-30 09:00:00", updatedAt: "2026-08-30 11:00:00"},
@@ -171,42 +170,41 @@ func TestGooseStoredSessions_NeedsTheSessionsSubdirectory(t *testing.T) {
 	assert.Empty(t, got)
 }
 
-func TestGooseDBCandidates(t *testing.T) {
+func TestGooseDBPath_CurrentPlatformLayouts(t *testing.T) {
 	t.Parallel()
 	home := testutil.NativeAbsPath("/home/dev")
-
-	// An ABSOLUTE GOOSE_PATH_ROOT wins and is probed first. Absolute for the
-	// HOST: Goose asks filepath.IsAbs, and a rooted POSIX literal fails that
-	// question on Windows.
-	root := testutil.NativeAbsPath("/goose-root")
-	rooted := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(map[string]string{"GOOSE_PATH_ROOT": root})}
-	assert.Equal(t, filepath.Join(root, "data", "sessions", "sessions.db"), gooseDBCandidates(rooted)[0])
-
-	// A RELATIVE one is ignored, exactly as Goose ignores it.
-	relative := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(map[string]string{"GOOSE_PATH_ROOT": "relative/path"})}
-	assert.Equal(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), gooseDBCandidates(relative)[0])
-
-	// The legacy Apple location is probed on macOS, after the XDG one.
-	plain := gooseDBCandidates(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)})
-	assert.Equal(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"), plain[0])
-	if runtime.GOOS == "darwin" {
-		assert.Contains(t, plain[len(plain)-1], filepath.Join("Library", "Application Support", "Block", "goose"))
+	data := testutil.NativeAbsPath("/data")
+	for _, platform := range []string{"darwin", "linux", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			t.Parallel()
+			q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
+			want := filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db")
+			if platform == "windows" {
+				want = filepath.Join(home, "AppData", "Roaming", "Block", "goose", "data", "sessions", "sessions.db")
+			}
+			assert.Equal(t, want, gooseDBPathForPlatform(q, platform))
+			q.Getenv = agenttest.FixtureEnv(map[string]string{"XDG_DATA_HOME": "relative"})
+			assert.Equal(t, want, gooseDBPathForPlatform(q, platform))
+			q.Getenv = agenttest.FixtureEnv(map[string]string{"XDG_DATA_HOME": data, "APPDATA": data})
+			want = filepath.Join(data, "goose", "sessions", "sessions.db")
+			if platform == "windows" {
+				want = filepath.Join(data, "Block", "goose", "data", "sessions", "sessions.db")
+			}
+			assert.Equal(t, want, gooseDBPathForPlatform(q, platform))
+			q.Getenv = agenttest.FixtureEnv(map[string]string{"GOOSE_PATH_ROOT": data})
+			assert.Equal(t, filepath.Join(data, "data", "sessions", "sessions.db"), gooseDBPathForPlatform(q, platform))
+		})
 	}
 }
 
-func TestGooseDBPath_PrefersTheCandidateThatExists(t *testing.T) {
+func TestGooseDBPath_AnExplicitRootRemainsAuthoritativeWhenAbsent(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	// Only the legacy location holds a store, so it wins over the XDG path
-	// that resolves first but is empty.
-	legacy := filepath.Join(home, "Library", "Application Support", "Block", "goose", "sessions", "sessions.db")
-	agenttest.WriteFixtureFile(t, legacy, "")
-
-	q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}
-	if runtime.GOOS != "darwin" {
-		t.Skip("the legacy Apple location is only probed on macOS")
-	}
-	assert.Equal(t, legacy, gooseDBPath(q))
+	root := t.TempDir()
+	data := t.TempDir()
+	agenttest.WriteFixtureFile(t, filepath.Join(data, "goose", "sessions", "sessions.db"), "")
+	q := agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(map[string]string{"GOOSE_PATH_ROOT": root, "XDG_DATA_HOME": data})}
+	assert.Equal(t, filepath.Join(root, "data", "sessions", "sessions.db"), gooseDBPath(q))
 }
 
 func TestParseGooseTimestamp(t *testing.T) {
@@ -226,7 +224,7 @@ func TestParseGooseTimestamp(t *testing.T) {
 func TestGooseReadsItsSessionStore(t *testing.T) {
 	t.Parallel()
 	agenttest.RequireReadsSessionStore(t, Registration().Plugin, func(t *testing.T, home, dir string) string {
-		seedGooseDB(t, filepath.Join(home, ".local", "share", "goose", "sessions", "sessions.db"),
+		seedGooseDB(t, gooseDBPath(agent.StoredSessionQuery{HomeDir: home, Getenv: agenttest.FixtureEnv(nil)}),
 			[]gooseSessionRow{{
 				id: "goose-session", name: "work", kind: "acp", workingDir: dir,
 				createdAt: "2026-08-30 10:00:00", updatedAt: "2026-08-30 10:00:00",

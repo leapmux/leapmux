@@ -2,19 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { codexChangeKind } from './fileChange'
 
 describe('codexChangeKind', () => {
-  it('reads the bare word an older frame spells', () => {
-    expect(codexChangeKind({ kind: 'add', path: 'a.ts' })).toBe('add')
-    expect(codexChangeKind({ kind: 'delete', path: 'gone.ts' })).toBe('delete')
-    expect(codexChangeKind({ kind: 'update', path: 'edit.ts' })).toBe('update')
+  it('rejects a bare kind outside the current tagged union', () => {
+    expect(codexChangeKind({ kind: 'add', path: 'a.ts' })).toBe('')
+    expect(codexChangeKind({ kind: 'delete', path: 'gone.ts' })).toBe('')
+    expect(codexChangeKind({ kind: 'update', path: 'edit.ts' })).toBe('')
   })
 
-  it('unwraps the object a newer frame spells', () => {
+  it('reads the current tagged union', () => {
     expect(codexChangeKind({
       kind: { type: 'update' },
       path: 'edit.ts',
     })).toBe('update')
     expect(codexChangeKind({
-      kind: { type: 'update', movePath: 'moved.ts' },
+      kind: { type: 'update', move_path: 'moved.ts' },
     })).toBe('update')
   })
 

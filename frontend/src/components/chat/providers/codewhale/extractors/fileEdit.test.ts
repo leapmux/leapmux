@@ -304,7 +304,7 @@ describe('codewhaleRequestedChanges', () => {
           newStr: 'b',
         },
       ])
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.EditFile, { path: 'a.ts', old_string: 'a', new_string: 'b' }))
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, { path: 'a.ts', oldText: 'a', newText: 'b' }))
       .toStrictEqual([
         {
           filePath: 'a.ts',
@@ -320,19 +320,19 @@ describe('codewhaleRequestedChanges', () => {
     expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, { patch: `${A_DIFF}${B_DIFF}` }).map(change => change.filePath)).toStrictEqual(['a.ts', 'b.ts'])
     // Hunks alone, for the file `path` states.
     expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, { path: 'c.ts', patch: '@@ -1 +1 @@\n-a\n+b' }).map(change => change.filePath)).toStrictEqual(['c.ts'])
-    // Whole-file replacements, under both spellings.
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, {
-      replace: [
-        { path: 'd.ts', content: 'x' },
-      ],
-      changes: [
-        { path: 'e.ts', content: 'y' },
-      ],
-    }).map(change => change.filePath)).toStrictEqual(['d.ts', 'e.ts'])
+    // Each current replacement spelling is a separate native mode.
+    for (const key of ['replace', 'changes']) {
+      expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, {
+        [key]: [
+          { path: 'd.ts', content: 'x' },
+          { path: 'e.ts', content: 'y' },
+        ],
+      }).map(change => change.filePath)).toStrictEqual(['d.ts', 'e.ts'])
+    }
     // The envelope a model sends although the tool refuses it.
     expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, { patch: '*** Begin Patch\n*** Add File: f.txt\n+hi\n*** End Patch\n' }).map(change => change.filePath)).toStrictEqual(['f.txt'])
-    // The facade's patch action.
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.File, { action: 'patch', patch: A_DIFF }).map(change => change.filePath)).toStrictEqual(['a.ts'])
+    // The current patch tool reads unified diffs.
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, { patch: A_DIFF }).map(change => change.filePath)).toStrictEqual(['a.ts'])
   })
 
   it('answers no change for arguments that name no file', () => {
@@ -341,8 +341,8 @@ describe('codewhaleRequestedChanges', () => {
     expect(codewhaleRequestedChanges(CODEWHALE_TOOL.ApplyPatch, {})).toStrictEqual([])
   })
 
-  it('reads the File facade\'s write and edit actions, and a write with no content as an empty file', () => {
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.File, { action: 'write', path: 'a.ts', content: 'x' }))
+  it('reads current writes and edits, including an empty file', () => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Write, { path: 'a.ts', content: 'x' }))
       .toStrictEqual([
         {
           filePath: 'a.ts',
@@ -352,8 +352,7 @@ describe('codewhaleRequestedChanges', () => {
           operation: 'add',
         },
       ])
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.File, {
-      action: 'edit',
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, {
       path: 'a.ts',
       edits: [
         { oldText: 'a', newText: 'b' },
@@ -367,7 +366,7 @@ describe('codewhaleRequestedChanges', () => {
           newStr: 'b',
         },
       ])
-    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.WriteFile, { path: 'empty.txt' }))
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Write, { path: 'empty.txt' }))
       .toStrictEqual([
         {
           filePath: 'empty.txt',
@@ -379,9 +378,8 @@ describe('codewhaleRequestedChanges', () => {
       ])
   })
 
-  // Only the File facade states its operation in `action`. Any other tool that
-  // carries the word keeps the operation its own name states.
-  it('reads an action word as the operation only for the File facade', () => {
+  // An action argument cannot change the operation that the tool performs.
+  it('keeps the operation of the current tool when arguments include an action', () => {
     expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, {
       action: 'write',
       path: 'a.ts',
@@ -429,5 +427,72 @@ describe('codewhaleRequestedChanges', () => {
       ],
     }).map(change => change.filePath))
       .toStrictEqual(['a.ts', 'd.ts'])
+  })
+})
+
+describe('current Codewhale edit inputs', () => {
+  it.each([
+    {
+      edits: [
+        { oldText: 'one', newText: 'ONE' },
+      ],
+    },
+    {
+      edits: JSON.stringify([
+        { oldText: 'one', newText: 'ONE' },
+      ]),
+    },
+  ])('reads the current array and encoded-array variants: %j', (args) => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, { path: 'a.ts', ...args }).map(change => [change.oldStr, change.newStr])).toEqual([
+      ['one', 'ONE'],
+    ])
+  })
+
+  it.each([
+    {
+      edits: [
+        { oldText: 'one', newText: 'ONE' },
+      ],
+    },
+    {
+      edits: JSON.stringify([
+        { oldText: 'one', newText: 'ONE' },
+      ]),
+    },
+  ])('appends the top-level substitution after the declared edits: %j', ({ edits }) => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, {
+      path: 'a.ts',
+      edits,
+      oldText: 'two',
+      newText: '',
+    }).map(change => [change.oldStr, change.newStr])).toEqual([
+      ['one', 'ONE'],
+      ['two', ''],
+    ])
+  })
+
+  it('keeps a valid top-level substitution when the encoded array is malformed', () => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, {
+      path: 'a.ts',
+      edits: '[broken',
+      oldText: 'one',
+      newText: 'ONE',
+    }).map(change => [change.oldStr, change.newStr])).toEqual([
+      ['one', 'ONE'],
+    ])
+  })
+
+  it.each([
+    { oldText: 'one' },
+    { newText: '' },
+    { old_string: 'one', new_string: 'two' },
+  ])('rejects an incomplete or obsolete substitution: %j', (args) => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.Edit, { path: 'a.ts', ...args })).toEqual([])
+  })
+
+  it('keeps the current fill-in-the-middle file identity without inventing its diff', () => {
+    expect(codewhaleRequestedChanges(CODEWHALE_TOOL.FimEdit, { path: 'a.ts', prefix: 'a', suffix: 'z' })).toMatchObject([
+      { filePath: 'a.ts' },
+    ])
   })
 })

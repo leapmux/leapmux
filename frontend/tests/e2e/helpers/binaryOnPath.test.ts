@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, sy
 import { delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { agentSearchPath, agentSearchPathEnv, exeExtensionOnPath, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, requireBinary, unusableBinaryReason, versionOutput } from './binaryOnPath'
+import { agentSearchPath, agentSearchPathEnv, exeExtensionOnPath, findBinary, findBinaryOnPath, requireBinary, unusableBinaryReason } from './binaryOnPath'
 
 let directory: string
 
@@ -271,183 +271,76 @@ describe.skipIf(process.platform === 'win32')('unusableBinaryReason', () => {
   })
 })
 
-describe('missingBinaryReason', () => {
-  // The skip check runs in the Playwright process with the developer's own HOME,
-  // so it must find the CLI without running it. This one would leave a marker.
-  it('finds the CLI without running it', () => {
+describe('requireBinary', () => {
+  it('finds an executable without running it', () => {
     const marker = join(directory, 'ran')
-    const cli = join(directory, 'agent')
+    const cli = file('agent', 0o755)
     writeFileSync(cli, `#!/bin/sh\ntouch '${marker}'\n`)
-    chmodSync(cli, 0o755)
-
-    expect(missingBinaryReason('agent', 'needs agent', { PATH: directory })).toBeNull()
+    expect(requireBinary('agent', 'needs agent', { PATH: directory })).toBe(cli)
     expect(existsSync(marker)).toBe(false)
   })
 
-  it('states the reason when the CLI is not on the path', () => {
-    expect(missingBinaryReason('agent', 'needs agent', { PATH: directory })).toBe('needs agent')
-    expect(missingBinaryReason('agent', 'needs agent', {})).toBe('needs agent')
+  it('fails when no executable exists', () => {
+    expect(() => requireBinary('agent', 'needs agent', { PATH: directory })).toThrow('needs agent')
+    expect(() => requireBinary('agent', 'needs agent', {})).toThrow('needs agent')
+    expect(() => requireBinary(['agent', 'other'], 'needs agent', { PATH: directory })).toThrow('needs agent')
   })
 
-  it('states no reason when the path holds any one of the names', () => {
-    file('agent-host-triple', 0o755)
-    expect(missingBinaryReason(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toBeNull()
+  it('refuses an empty list of executable names', () => {
+    expect(() => requireBinary([], 'needs agent', { PATH: directory })).toThrow('at least one executable name')
   })
 
-  // The run's isolated HOME stops a mise shim, so a shim that the spawn takes must
-  // skip the specs rather than fail each agent start.
-  it.skipIf(process.platform === 'win32')('states the reason and the fix when the CLI that the spawn takes is a mise shim', () => {
-    const shims = join(directory, 'shims')
-    const shim = miseShim('agent', shims)
-    file('agent', 0o755, join(directory, 'install'))
-
-    const reason = missingBinaryReason('agent', 'needs agent', {
-      PATH: [
-        shims,
-        join(directory, 'install'),
-      ].join(delimiter),
-    })
-    expect(reason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
-    expect(reason).toContain('mise shim')
+  it('resolves the next alias when the first alias is absent', () => {
+    const cli = file('other', 0o755)
+    expect(requireBinary(['agent', 'other'], 'needs agent', { PATH: directory })).toBe(cli)
   })
 
-  // The run's own search path puts the install directory before the shims, so the
-  // specs run in a shell that holds only the shims.
-  it.skipIf(process.platform === 'win32')('accepts the CLI when mise lists its install directory', () => {
-    const install = join(directory, 'install')
-    const agent = file('agent', 0o755, install)
-    const shims = listingMise([install])
-
-    expect(missingBinaryReason('agent', 'needs agent', { PATH: shims })).toBeNull()
-    expect(findBinary('agent', { PATH: shims })).toBe(agent)
-  })
-
-  it.skipIf(process.platform === 'win32')('accepts the CLI when its install directory comes before the shims', () => {
-    const shims = join(directory, 'shims')
-    miseShim('agent', shims)
-    file('agent', 0o755, join(directory, 'install'))
-
-    expect(missingBinaryReason('agent', 'needs agent', {
-      PATH: [
-        join(directory, 'install'),
-        shims,
-      ].join(delimiter),
-    })).toBeNull()
-  })
-})
-
-describe('lookupBinary', () => {
-  it('returns the file that the run starts', () => {
-    const agent = file('agent', 0o755)
-    expect(lookupBinary('agent', 'needs agent', { PATH: directory })).toEqual({ path: agent, skipReason: null })
-  })
-
-  it('returns the reason when the path holds no such file', () => {
-    expect(lookupBinary('agent', 'needs agent', { PATH: directory })).toEqual({ path: null, skipReason: 'needs agent' })
-  })
-
-  it.skipIf(process.platform === 'win32')('returns no path for a mise shim that mise does not list', () => {
-    const shim = miseShim('agent', join(directory, 'shims'))
-    const lookup = lookupBinary('agent', 'needs agent', {
-      PATH: join(directory, 'shims'),
-    })
-    expect(lookup.path).toBeNull()
-    expect(lookup.skipReason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
-  })
-
-  // The worker probes its names in order and starts the first one that it finds.
-  it('returns a later name when the path holds no earlier one', () => {
-    const triple = file('agent-host-triple', 0o755)
-    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toEqual({ path: triple, skipReason: null })
-  })
-
-  // The worker probes each name across the whole path before the next name, so the
-  // order of the names decides, not the order of the directories.
-  it('returns the first name although a later name sits in an earlier directory', () => {
-    file('agent-host-triple', 0o755, join(directory, 'first'))
-    const agent = file('agent', 0o755, join(directory, 'second'))
-    const env = {
+  it('prefers alias order over directory order', () => {
+    file('other', 0o755, join(directory, 'first'))
+    const cli = file('agent', 0o755, join(directory, 'second'))
+    expect(requireBinary(['agent', 'other'], 'needs agent', {
       PATH: [
         join(directory, 'first'),
         join(directory, 'second'),
       ].join(delimiter),
-    }
-    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env)).toEqual({ path: agent, skipReason: null })
+    })).toBe(cli)
   })
 
-  it('returns the reason when the path holds none of the names', () => {
-    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toEqual({ path: null, skipReason: 'needs agent' })
-  })
-
-  // The worker starts the shim of the first name, so a later name cannot rescue it.
-  it.skipIf(process.platform === 'win32')('returns the mise-shim cause of a first name although a later name is on the path', () => {
-    const shim = miseShim('agent', join(directory, 'shims'))
-    file('agent-host-triple', 0o755, join(directory, 'install'))
-    const env = {
-      PATH: [
-        join(directory, 'shims'),
-        join(directory, 'install'),
-      ].join(delimiter),
-    }
-    expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env))
-      .toEqual({ path: null, skipReason: `needs agent. ${unusableBinaryReason('agent', shim)}` })
-  })
-
-  it('refuses an empty list of names', () => {
-    expect(() => lookupBinary([], 'needs agent', { PATH: directory })).toThrow('A binary lookup needs at least one executable name.')
-  })
-
-  // A reason that ends with its own period must not gain a second one.
-  it.skipIf(process.platform === 'win32')('adds no second period after a reason that ends a sentence', () => {
-    const shim = miseShim('agent', join(directory, 'shims'))
-    for (const reason of ['Needs agent.', 'Needs agent!', 'Needs agent?']) {
-      const lookup = lookupBinary('agent', reason, {
-        PATH: join(directory, 'shims'),
-      })
-      expect(lookup.skipReason).toBe(`${reason} ${unusableBinaryReason('agent', shim)}`)
+  it.skipIf(process.platform === 'win32')('rejects the first alias when it resolves to an unusable mise shim', () => {
+    const shims = join(directory, 'shims')
+    const shim = miseShim('agent', shims)
+    file('other', 0o755, join(directory, 'install'))
+    for (const reason of [
+      'Needs agent',
+      'Needs agent.',
+      'Needs agent!',
+      'Needs agent?',
+    ]) {
+      expect(() => requireBinary(['agent', 'other'], reason, {
+        PATH: [
+          shims,
+          join(directory, 'install'),
+        ].join(delimiter),
+      })).toThrow(`${/[.!?]$/.test(reason)
+        ? reason
+        : `${reason}.`} ${unusableBinaryReason('agent', shim)}`)
     }
   })
-})
 
-describe('requireBinary', () => {
-  it('returns the file that the run starts', () => {
-    const agent = file('agent', 0o755)
-    expect(requireBinary('agent', 'needs agent', { PATH: directory })).toBe(agent)
+  it.skipIf(process.platform === 'win32')('uses the installation directory that mise lists', () => {
+    const install = join(directory, 'install')
+    const cli = file('agent', 0o755, install)
+    const shims = listingMise([install])
+    expect(requireBinary('agent', 'needs agent', { PATH: shims })).toBe(cli)
   })
 
-  it('throws the reason when the path holds no such file', () => {
-    expect(() => requireBinary('agent', 'needs agent', { PATH: directory })).toThrow(new Error('needs agent'))
-  })
-
-  it('returns the file of a later name when the path holds no earlier one', () => {
-    const triple = file('agent-host-triple', 0o755)
-    expect(requireBinary(['agent', 'agent-host-triple'], 'needs agent', { PATH: directory })).toBe(triple)
-  })
-
-  // The four native catalog readers once threw their own reason and lost this cause.
-  it.skipIf(process.platform === 'win32')('throws the mise-shim cause for a shim that mise does not list', () => {
-    const shim = miseShim('agent', join(directory, 'shims'))
-    expect(() => requireBinary('agent', 'needs agent', {
-      PATH: join(directory, 'shims'),
-    }))
-      .toThrow(new Error(`needs agent. ${unusableBinaryReason('agent', shim)}`))
-  })
-})
-
-// A script stands in for the CLI, so these cases run on Unix alone.
-describe.skipIf(process.platform === 'win32')('versionOutput', () => {
-  it('returns what the file prints on stdout for --version', () => {
-    const cli = join(directory, 'agent')
-    writeFileSync(cli, '#!/bin/sh\n[ "$1" = --version ] && echo "agent 1.2.3"\necho noise >&2\n')
-    chmodSync(cli, 0o755)
-    expect(versionOutput(cli)).toBe('agent 1.2.3\n')
-  })
-
-  it('returns null for a file that fails or does not exist', () => {
-    const cli = join(directory, 'agent')
-    writeFileSync(cli, '#!/bin/sh\nexit 3\n')
-    chmodSync(cli, 0o755)
-    expect(versionOutput(cli)).toBeNull()
-    expect(versionOutput(join(directory, 'absent'))).toBeNull()
+  it.skipIf(process.platform === 'win32')('accepts an installation before a shim', () => {
+    const shims = join(directory, 'shims')
+    miseShim('agent', shims)
+    const install = join(directory, 'install')
+    const cli = file('agent', 0o755, install)
+    expect(requireBinary('agent', 'needs agent', {
+      PATH: [install, shims].join(delimiter),
+    })).toBe(cli)
   })
 })

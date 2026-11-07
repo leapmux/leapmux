@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// zcodeRegistryProvider is one strict legacy registry entry.
+// zcodeRegistryProvider is one provider entry read from the current desktop configuration.
 type zcodeRegistryProvider struct {
 	ProviderID string               `json:"providerId"`
 	Kind       string               `json:"kind"`
@@ -62,15 +62,6 @@ type zcodeModelSelection struct {
 
 type zcodeModelSelectionOptions struct {
 	ReasoningLevel string `json:"reasoningLevel"`
-}
-
-// zcodeRuntimeModel prevents a legacy model switch from racing the registry push.
-type zcodeRuntimeModel struct {
-	Revision     string                `json:"revision"`
-	GeneratedAt  int64                 `json:"generatedAt"`
-	Model        zcodeModelRef         `json:"model"`
-	Provider     zcodeRegistryProvider `json:"provider"`
-	ThoughtLevel string                `json:"thoughtLevel,omitempty"`
 }
 
 // zcodeAccountProviderConfig is one provider entry of the account snapshot.
@@ -436,43 +427,6 @@ func (p zcodeRegistryProvider) inlineAPIKey() (string, bool) {
 		return "", false
 	}
 	return p.APIKey.Value, true
-}
-
-func (c zcodeCatalog) inlineAPIKey(providerID string) (string, bool) {
-	for _, provider := range c.Providers {
-		if providerID != "" && provider.ProviderID != providerID {
-			continue
-		}
-		if key, ok := provider.inlineAPIKey(); ok {
-			return key, true
-		}
-	}
-	return "", false
-}
-
-// registryPayload nests the legacy registry fields under the strict wire envelope.
-func (c zcodeCatalog) registryPayload(workspace zcodeWorkspace, revision string, generatedAt int64) map[string]any {
-	return map[string]any{
-		"workspace": workspace,
-		"registry": map[string]any{
-			"providers":   c.Providers,
-			"generatedAt": generatedAt,
-			"revision":    revision,
-		},
-	}
-}
-
-func (c zcodeCatalog) runtimeModelFor(modelID, revision string, generatedAt int64) (zcodeRuntimeModel, bool) {
-	ref, ok := c.refs[modelID]
-	if !ok {
-		return zcodeRuntimeModel{}, false
-	}
-	for _, provider := range c.Providers {
-		if provider.ProviderID == ref.ProviderID {
-			return zcodeRuntimeModel{Revision: revision, GeneratedAt: generatedAt, Model: ref, Provider: provider}, true
-		}
-	}
-	return zcodeRuntimeModel{}, false
 }
 
 type zcodeWorkspace struct {

@@ -234,9 +234,6 @@ func (a *Agent) checkZCodeTurnRecovery(ctx context.Context, owner *zcodeTurnStat
 		return a.checkZCodeNativeSettlement(ctx, owner, state)
 	}
 	if err != nil {
-		if zcodeIsMethodNotFound(err) {
-			return true, nil
-		}
 		return false, err
 	}
 	return a.applyZCodeRecoverySnapshotContext(ctx, owner, state, snap)

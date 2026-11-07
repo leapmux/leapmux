@@ -839,42 +839,22 @@ func TestHandleUserInputRequest_NoRequestIDDeclinesImmediately(t *testing.T) {
 
 // The app-server BLOCKS behind these, so an unanswered one stalls the flow. The
 // answer is honest about what LeapMux holds rather than a claim it cannot back.
-func TestAnswerProviderRuntimeHeaders_ReportsAuthorizedOnlyWithAnInlineKey(t *testing.T) {
+func TestAnswerProviderRuntimeHeaders_RequiresACurrentAccountProvider(t *testing.T) {
 	t.Parallel()
-
-	cases := map[string]struct {
-		providerID string
-		authorized bool
-	}{
-		"a configured provider": {"builtin:zai", true},
-		"an unknown provider":   {"nope", false},
-		// A request that gives no provider asks about ANY of them, so a single
-		// configured key is a truthful yes.
-		"no provider at all": {"", true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, provider := range []string{"nope", ""} {
+		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
 			stdin := &zcodeRecordedStdin{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-			a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
-
-			a.HandleOutput(zcodeRequestLine(t, 13, MethodRequestProviderRuntimeHeaders,
-				`{"providerId":"`+tc.providerID+`"}`))
-
-			requests := stdin.Requests(t)
-			require.Len(t, requests, 1)
-			assert.Equal(t, "13", string(requests[0].ID))
+			a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+			seedZCodeAccountStateForTests(t, a)
+			a.HandleOutput(zcodeRequestLine(t, 13, MethodRequestProviderRuntimeHeaders, `{"providerId":"`+provider+`"}`))
+			requests := zcodeAwaitReplies(t, stdin, 1)
 			var result map[string]any
 			require.NoError(t, json.Unmarshal(requests[0].Result, &result))
-			assert.Equal(t, tc.authorized, result["authorized"])
-			assert.Equal(t, map[string]any{}, result["headers"],
-				"LeapMux mints no header: the key it holds is already in the registry")
-			if tc.authorized {
-				assert.NotContains(t, result, "error")
-			} else {
-				assert.Contains(t, result, "error", "an unauthorized answer must say why, or the retry is blind")
-			}
+			assert.Equal(t, false, result["headersApplied"])
+			assert.NotContains(t, result, "requestAuth")
+			assert.NotEmpty(t, result["errorMessage"])
 		})
 	}
 }
@@ -972,13 +952,13 @@ func TestAnswerProviderRuntimeHeaders_MalformedParamsAreNeverAuthorized(t *testi
 			}
 			a.HandleOutput([]byte(line))
 
-			requests := stdin.Requests(t)
+			requests := zcodeAwaitReplies(t, stdin, 1)
 			require.Len(t, requests, 1)
 			assert.Equal(t, "13", string(requests[0].ID), "the answer must address the request that blocked")
 			var result map[string]any
 			require.NoError(t, json.Unmarshal(requests[0].Result, &result))
-			assert.Equal(t, false, result["authorized"])
-			assert.Contains(t, result, "error", "an unauthorized answer must say why, or the retry is blind")
+			assert.Equal(t, false, result["headersApplied"])
+			assert.Contains(t, result, "errorMessage", "an unauthorized answer must say why, or the retry is blind")
 		})
 	}
 }
@@ -1080,21 +1060,22 @@ func TestAnswerProviderRuntimeHeaders_CancelsByLogicalIDAndNotByEnvelopeID(t *te
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+	seedZCodeAccountStateForTests(t, a)
 	const logical = "sess-1:provider-runtime-headers:0d4c7c3e-5a3f-4a1e-9f0d-1b2c3d4e5f60"
 
 	handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	require.True(t, consumed)
 	require.NotNil(t, handler)
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, "server-1", "sess-1", zcodeTestRuntimeWorkspace))
 	handler()
-	replies := stdin.Requests(t)
+	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1, "the envelope id is not a cancellation key")
 	assert.Equal(t, `"server-1"`, string(replies[0].ID))
 
 	handler2, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical+"-2", "sess-1", zcodeTestRuntimeWorkspace))
 	handler2()
 	assert.Len(t, stdin.Requests(t), 1, "the app-server withdrew the request: the answer must not arrive")
@@ -1243,27 +1224,33 @@ func TestAnswerProviderRuntimeHeaders_RequestIDReuseKeepsTheNewerAnswer(t *testi
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+	seedZCodeAccountStateForTests(t, a)
 	const logical = "sess-1:provider-runtime-headers:33333333-4444-4555-8666-777777777777"
 
 	// The first answer is cancelled before its handler runs, so its completion
 	// arrives late -- after the second answer took the id.
 	first, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
 	second, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-2", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-2", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
+	a.runtimeHeaderMu.Lock()
+	secondAnswer := a.runtimeHeaderAnswers[logical]
+	a.runtimeHeaderMu.Unlock()
+	require.NotNil(t, secondAnswer)
 	first()
 	assert.Empty(t, stdin.Frames(), "the cancelled first answer writes nothing")
 
 	second()
-	replies := stdin.Requests(t)
+	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1, "the newer answer of a reused request id keeps its reply")
 	assert.Equal(t, `"server-2"`, string(replies[0].ID))
+	zcodeTestReceive(t, secondAnswer.ctx.Done())
 
-	// The first answer's entry must not linger: the id is free for the next use.
+	// The completed replacement frees the logical ID for its next registration.
 	third, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-3", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-3", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
 	third()
 	assert.Len(t, stdin.Requests(t), 1, "a cancellation reaches the answer that reused the id")
@@ -1305,22 +1292,23 @@ func TestAnswerProviderRuntimeHeaders_CancellationMatchesTheWorkspaceByValue(t *
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+	seedZCodeAccountStateForTests(t, a)
 	const reordered = `{ "workspaceKey" : "/tmp/zcode-workspace" , "workspacePath" : "/tmp/zcode-workspace" }`
 
 	const logicalA = "sess-1:provider-runtime-headers:11111111-2222-4333-8444-555555555555"
 	first, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-1", logicalA, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-1", logicalA, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logicalA, "sess-1", reordered))
 	first()
 	assert.Empty(t, stdin.Frames(), "the same workspace object in other bytes cancels the answer")
 
 	const logicalB = "sess-1:provider-runtime-headers:66666666-7777-4888-8999-000000000000"
 	second, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-2", logicalB, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-2", logicalB, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logicalB, "sess-1", zcodeTestOtherWorkspace))
 	second()
-	replies := stdin.Requests(t)
+	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1, "a semantically different workspace cancels nothing")
 	assert.Equal(t, `"server-2"`, string(replies[0].ID))
 }
@@ -1426,22 +1414,6 @@ func TestAnswerProviderRuntimeHeaders_StopAndWaitCancelEveryOutstandingAnswer(t 
 				"teardown must end the outstanding credential work promptly, not leave it to its timeout")
 		})
 	}
-}
-
-func TestAnswerOfficialMcpAuthHeaders_DeclaresUnavailable(t *testing.T) {
-	t.Parallel()
-
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-
-	a.HandleOutput(zcodeRequestLine(t, 15, MethodRequestOfficialMcpAuthHeaders, `{"server":"docs"}`))
-
-	requests := stdin.Requests(t)
-	require.Len(t, requests, 1)
-	var result map[string]any
-	require.NoError(t, json.Unmarshal(requests[0].Result, &result))
-	assert.Equal(t, OfficialAuthUnavailable, result["status"],
-		"a declared unavailability lets the app-server fall through to the servers it can reach")
 }
 
 func TestAnswerOfficialMcpAuthHeaders_AccountConfigUsesTheCurrentShape(t *testing.T) {

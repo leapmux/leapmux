@@ -48,6 +48,26 @@ describe('nativeControlFrame', () => {
     })
   })
 
+  it('captures a completed cancellation after the native request withdraws', () => {
+    expect(nativeControlFrame(create(AgentEventSchema, {
+      agentId: 'agent-1',
+      event: {
+        case: 'controlCancel',
+        value: {
+          requestId: 'native-control-1',
+          claimToken: 'claim-1',
+          responseState: ControlResponseState.COMPLETED,
+        },
+      },
+    }))).toEqual({
+      requestId: 'native-control-1',
+      claimToken: 'claim-1',
+      payload: {},
+      canceled: true,
+      responseState: ControlResponseState.COMPLETED,
+    })
+  })
+
   it('skips a response-state update that contains no native payload, but refuses an empty request payload', () => {
     expect(nativeControlFrame(controlEvent('', { changed: true }))).toBeUndefined()
     expect(selectorFailure(controlEvent('')).message).toBe('The Worker sent an invalid native control frame.')

@@ -58,8 +58,8 @@ export function claudeImagesFromToolResult(args: ClaudeImageArgs): ImageResultSo
  * The `tool_use_result` image shape Claude Code's `Read` produces.
  *
  * `file.type` is the MIME type (`image/png`), NOT the `type: 'image'`
- * discriminant one field up. `dimensions` is optional -- older CLI versions
- * omit it -- so the renderer still falls back to sniffing when it is absent.
+ * discriminant one field up. Current image compression may omit `dimensions`,
+ * so the renderer falls back to sniffing when they are absent.
  */
 function claudeStructuredImage(toolUseResult: Record<string, unknown> | null | undefined): ImageResultSource | null {
   if (!toolUseResult || toolUseResult.type !== 'image')
@@ -70,8 +70,7 @@ function claudeStructuredImage(toolUseResult: Record<string, unknown> | null | u
   if (!data)
     return null
   const dimensions = claudeImageDimensions(file)
-  // Each optional half rides only when the payload stated it; older CLIs omit
-  // the MIME type and the dimensions both.
+  // Preserve each optional field only when the payload supplies it.
   return {
     data,
     ...(mimeType !== undefined
@@ -97,8 +96,8 @@ function claudeImageDimensions(file: Record<string, unknown> | null): { width: n
   const dims = pickObject(file, 'dimensions')
   if (!dims)
     return null
-  const width = pickFirstNumber(dims, ['displayWidth', 'originalWidth', 'width'])
-  const height = pickFirstNumber(dims, ['displayHeight', 'originalHeight', 'height'])
+  const width = pickFirstNumber(dims, ['displayWidth', 'originalWidth'])
+  const height = pickFirstNumber(dims, ['displayHeight', 'originalHeight'])
   // A zero or negative side would make the aspect-ratio reservation divide by
   // zero, so treat it the same as an absent field and sniff instead.
   return width && height && width > 0 && height > 0

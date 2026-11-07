@@ -11,7 +11,11 @@ const item = {
   type: 'fileChange',
   status: 'completed',
   changes: [
-    { path: '/private/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' },
+    {
+      path: '/private/file.txt',
+      kind: { type: 'add' },
+      diff: 'ACTUAL_FILE42\n',
+    },
   ],
 }
 const payload = (nativeItem: unknown) => ({ threadId: sessionId, turnId: 'native-turn', item: nativeItem })
@@ -108,7 +112,11 @@ describe('codexAppliedFileChange', () => {
         storedMessage('native-completed', 42n, payload({
           ...item,
           changes: [
-            { path: '/another/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' },
+            {
+              path: '/another/file.txt',
+              kind: { type: 'add' },
+              diff: 'ACTUAL_FILE42\n',
+            },
           ],
         })),
       ],
@@ -248,10 +256,18 @@ describe('codexAppliedFileChange', () => {
     const currentEnd = storedMessage('native-completed', 2n, payload({
       ...item,
       changes: [
-        { path: '/private/file.txt', kind: 'add', diff: '' },
+        {
+          path: '/private/file.txt',
+          kind: { type: 'add' },
+          diff: '',
+        },
       ],
     }))
-    expect(codexAppliedFileChange([currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual({ path: '/private/file.txt', kind: 'add', diff: '' })
+    expect(codexAppliedFileChange([currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual({
+      path: '/private/file.txt',
+      kind: { type: 'add' },
+      diff: '',
+    })
   })
 })
 

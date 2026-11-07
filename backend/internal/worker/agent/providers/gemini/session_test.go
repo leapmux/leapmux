@@ -269,11 +269,11 @@ func TestLocateGeminiSessionUsesExactFilenameAndFullNativeIdentity(t *testing.T)
 	assert.Equal(t, selected, actual)
 }
 
-func TestLocateGeminiSessionAcceptsNativeJSONAndShortTokenSuffixes(t *testing.T) {
+func TestLocateGeminiSessionAcceptsNativeJSONLAndShortTokenSuffixes(t *testing.T) {
 	t.Parallel()
 	query, directory, hash := geminiStoreFixture(t)
-	path := filepath.Join(directory, "session-2026-10-02T05-07-root.json")
-	data, err := json.Marshal(map[string]any{"sessionId": "root", "projectHash": hash, "kind": "main", "lastUpdated": "9999-12-31T23:59:59Z", "messages": []any{}})
+	path := filepath.Join(directory, "session-2026-10-02T05-07-root.jsonl")
+	data, err := json.Marshal(map[string]any{"sessionId": "root", "projectHash": hash, "kind": "main", "lastUpdated": "9999-12-31T23:59:59Z"})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	actual, err := locateGeminiSession(query, "root")

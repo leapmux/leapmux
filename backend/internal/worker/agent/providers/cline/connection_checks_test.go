@@ -122,45 +122,9 @@ func TestRefuseTokenlessHubFailsClosedWhenItCannotAsk(t *testing.T) {
 	assert.Contains(t, err.Error(), "check that the Cline hub requires its token")
 }
 
-// An older Cline can speak hub v1 and ignore what keeps its daemon private:
-// CLINE_TASKS_DB_PATH and --no-connectors. Its start would mark the user's own
-// agenda runs interrupted, so the start requires the core of Cline 3.0.64.
-func TestCheckProtocolRequiresTheCoreOfCline3064(t *testing.T) {
+func TestCheckProtocolDoesNotRequireReleaseMetadata(t *testing.T) {
 	t.Parallel()
-	record := discoveryRecord{ProtocolVersion: "v1", MinClientProtocolVersion: "v1", MaxClientProtocolVersion: "v1"}
-	for _, tc := range []struct {
-		core string
-		ok   bool
-	}{
-		{"0.0.85", true},
-		{"0.0.86", true},
-		{"0.1.0", true},
-		{"1.0.0", true},
-		{"0.0.84", false},
-		{"0.0.70", false},
-		{"", false},
-		{"source-0.0.85", false},
-		{"0.0", false},
-		{"0.0.85-beta.1", true},
-		{"0.0.84+build.7", false},
-		{"0.0.-1", false},
-		{"0.0.85.0", true},
-		{"0.0.84.9", false},
-		{"1", true},
-		{" 0.0.85 ", true},
-		{"0..85", false},
-		{"0.0.85+build.7", true},
-		{"0.0.84-rc.1+build.7", false},
-	} {
-		record.CoreVersion = tc.core
-		err := checkProtocol(record)
-		if tc.ok {
-			assert.NoError(t, err, tc.core)
-			continue
-		}
-		require.ErrorIs(t, err, errProtocolMismatch, tc.core)
-		assert.Contains(t, err.Error(), "Cline 3.0.64", tc.core)
-	}
+	require.NoError(t, checkProtocol(discoveryRecord{ProtocolVersion: "v1"}))
 }
 
 // The check refuses a record whose address is not a loopback address, as the

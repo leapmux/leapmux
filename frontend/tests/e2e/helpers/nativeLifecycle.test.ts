@@ -42,7 +42,7 @@ const resume = vi.hoisted(() => ({
   closeWithoutWait: vi.fn<() => Promise<{ failureMessage: string, failureDetail: string }>>(),
   directory: vi.fn<(prefix: string) => string>(),
   picker: vi.fn<(page: Page, options: { provider: AgentProvider, workingDir: string, sessionId: string }) => Promise<void>>(),
-  countRows: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalAnswer'>) => Promise<number>>(),
+  readRows: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer'>) => Promise<{ answerRows: number, userSequence: bigint }>>(),
   reopen: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, stored: NativeResumeIdentity, earlierAgentIds: readonly string[]) => Promise<AgentInfo>>(),
   conversation: vi.fn<(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, agentId: string, texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer' | 'resumedAnswer'>, originalAnswerRows: number) => Promise<void>>(),
   startupWorker: vi.fn<typeof import('./nativeStartupWorker').withNativeStartupWorker>(),
@@ -63,7 +63,7 @@ vi.mock('./nativeScenario', async importOriginal => ({
 // nativeResume.test.ts proves each proof. This file proves where the resume scenario calls them.
 vi.mock('./nativeResume', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeResume')>(),
-  countOriginalAnswerRows: resume.countRows,
+  readOriginalConversationRows: resume.readRows,
   expectReopenedNativeAgent: resume.reopen,
   expectResumedConversation: resume.conversation,
   reopenFromSessionPicker: resume.picker,
@@ -110,6 +110,15 @@ function rows(kind: RowKind, texts: readonly string[] = []) {
     filter: ({ hasText }: { hasText: string }) => rows(kind, [...texts, hasText]),
   }
 }
+
+vi.mock('./chatBubbleCount', () => ({
+  countChatBubbles: async (_page: Page, role: string, text: string) => {
+    resume.events.push(`count:${role}`)
+    return rows(role === 'user'
+      ? 'user'
+      : 'assistant').filter({ hasText: text }).count()
+  },
+}))
 
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
@@ -285,12 +294,12 @@ function scenario(providerAgent: ProviderAgent = CODEX) {
     expect(pickerOptions).toEqual({ provider: AgentProvider.CODEX, workingDir: prior.workingDir, sessionId: prior.agentSessionId })
     resume.events.push('picker:reopen')
   })
-  resume.countRows.mockImplementation(async (rowContext, agentId, texts) => {
+  resume.readRows.mockImplementation(async (rowContext, agentId, texts) => {
     expect(rowContext).toBe(context)
     expect(agentId).toBe(prior.id)
     expect(resume.assistantRows).toContain(texts.originalAnswer)
     resume.events.push('rows:original-answer')
-    return 1
+    return { answerRows: 1, userSequence: 1n }
   })
   resume.reopen.mockImplementation(async (reopenContext, stored, earlierAgentIds) => {
     expect(reopenContext).toBe(context)
@@ -419,6 +428,7 @@ describe('exerciseSessionResume', () => {
       'agent:original',
       'assert:original-session',
       'rows:original-answer',
+      'count:agent',
       'keeper:directory',
       'keeper:create',
       'original:close',
@@ -427,7 +437,7 @@ describe('exerciseSessionResume', () => {
       'picker:reopen',
       'verdict:reopened',
       'count:user',
-      'count:assistant',
+      'count:agent',
       'answer:resumed',
       'agent:resumed',
       'assert:resumed-session',
@@ -438,7 +448,7 @@ describe('exerciseSessionResume', () => {
     expect(resume.open).toHaveBeenCalledTimes(1)
     expect(resume.close).toHaveBeenCalledTimes(1)
     expect(resume.closeWithoutWait).not.toHaveBeenCalled()
-    expect(resume.countRows).toHaveBeenCalledTimes(1)
+    expect(resume.readRows).toHaveBeenCalledTimes(1)
     expect(resume.picker).toHaveBeenCalledTimes(1)
     expect(resume.reopen).toHaveBeenCalledTimes(1)
     expect(resume.conversation).toHaveBeenCalledTimes(1)
@@ -495,7 +505,7 @@ describe('exerciseSessionResume', () => {
       resumedPrompt: result.resumedPrompt,
       resumedAnswer: result.resumedAnswer,
     }
-    expect(resume.countRows.mock.calls[0]?.[2]).toEqual(texts)
+    expect(resume.readRows.mock.calls[0]?.[2]).toEqual(texts)
     expect(resume.conversation.mock.calls[0]?.[2]).toEqual(texts)
   })
 
@@ -513,7 +523,7 @@ describe('exerciseSessionResume', () => {
     expect(observations).toEqual(['stored', 'opened'])
     expect(resume.events.at(-1)).toBe('verdict:failed')
     expect(resume.events).not.toContain('count:user')
-    expect(resume.events).not.toContain('count:assistant')
+    expect(resume.events.filter(event => event === 'count:agent')).toHaveLength(1)
     expect(resume.send).toHaveBeenCalledTimes(1)
     expect(resume.current).toHaveBeenCalledTimes(2)
     expect(resume.conversation).not.toHaveBeenCalled()
@@ -541,7 +551,7 @@ describe('exerciseSessionResume', () => {
   it('counts the original answer rows before the keeper exists', async () => {
     const { context } = scenario()
     const failure = new Error('The original agent stored no Worker row that holds the original answer.')
-    resume.countRows.mockReset().mockRejectedValue(failure)
+    resume.readRows.mockReset().mockRejectedValue(failure)
     await expect(exerciseSessionResume(context, options())).rejects.toBe(failure)
     expect(resume.open).not.toHaveBeenCalled()
     expect(resume.close).not.toHaveBeenCalled()
@@ -592,7 +602,7 @@ describe('exerciseSessionResume', () => {
     expect(opened).toEqual({ phase: 'opened', prior })
     expect(resume.events.indexOf('evidence:opened')).toBeGreaterThan(resume.events.indexOf('picker:reopen'))
     expect(resume.events.indexOf('evidence:opened')).toBeLessThan(resume.events.indexOf('count:user'))
-    expect(resume.events.indexOf('evidence:opened')).toBeLessThan(resume.events.indexOf('count:assistant'))
+    expect(resume.events.indexOf('evidence:opened')).toBeLessThan(resume.events.lastIndexOf('count:agent'))
   })
 
   it('awaits stored evidence before closing the original agent', async () => {
@@ -612,7 +622,7 @@ describe('exerciseSessionResume', () => {
     const held = await holdEvidence('opened')
     try {
       expect(resume.events).not.toContain('count:user')
-      expect(resume.events).not.toContain('count:assistant')
+      expect(resume.events.filter(event => event === 'count:agent')).toHaveLength(1)
       expect(resume.send).toHaveBeenCalledTimes(1)
     }
     finally {
@@ -666,7 +676,7 @@ describe('exerciseSessionResume', () => {
     if (phase === 'stored') {
       expect(resume.open).not.toHaveBeenCalled()
       expect(resume.close).not.toHaveBeenCalled()
-      expect(resume.countRows).not.toHaveBeenCalled()
+      expect(resume.readRows).not.toHaveBeenCalled()
     }
     if (phase !== 'continued') {
       expect(resume.send).toHaveBeenCalledTimes(1)

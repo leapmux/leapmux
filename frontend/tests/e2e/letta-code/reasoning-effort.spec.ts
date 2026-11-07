@@ -3,7 +3,7 @@ import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from '../helpers/mock
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseNativeOptionSequence, exerciseRestoredNativeOption } from '../helpers/nativeSettings'
 import { exerciseWorkerRestart } from '../helpers/nativeWorkerRestart'
-import { LETTA_E2E_SKIP_REASON, lettaTest } from '../letta-fixtures'
+import { lettaTest } from '../letta-fixtures'
 import { createProviderProcessTest } from '../provider-fixture-factory'
 import { LETTA_TITLE_RULE } from './housekeeping'
 import { LETTA_AGENT, nativeContext } from './scenarios'
@@ -76,7 +76,6 @@ lettaTest('keeps an offered effort when switching reasoning models', async ({ au
 const restartTest = createProviderProcessTest({
   agent: LETTA_AGENT,
   nativeContext,
-  skipReason: LETTA_E2E_SKIP_REASON,
   modelRules: [LETTA_TITLE_RULE],
   openOptions: {
     model: LETTA_REASONING_MODEL_ID,

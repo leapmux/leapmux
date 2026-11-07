@@ -10,10 +10,8 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,11 +23,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // The launch tests put a fake `kimi` on PATH that re-runs this test binary as
-// TestHelperProcessKimi. The helper answers `--version`, and `web` starts the
+// TestHelperProcessKimi. The helper rejects `--version`, and `web` starts the
 // same fake kap-server the other tests use, on a real loopback port, and prints
 // the ready line the real server prints.
 //
@@ -38,11 +35,7 @@ import (
 
 const (
 	kimiHelperEnv         = "LEAPMUX_TEST_KIMI_HELPER"
-	kimiHelperVersionEnv  = "LEAPMUX_TEST_KIMI_VERSION"
 	kimiHelperScenarioEnv = "LEAPMUX_TEST_KIMI_SCENARIO"
-	// kimiHelperChildPIDEnv gives the file where the helper records the PID and
-	// creation time of a process that it leaves behind.
-	kimiHelperChildPIDEnv = "LEAPMUX_TEST_KIMI_CHILD_PID_FILE"
 )
 
 func installFakeKimi(t *testing.T, env ...string) string {
@@ -177,21 +170,29 @@ func TestKimiStartReportsAFailedResume(t *testing.T) {
 	assert.Contains(t, err.Error(), "session_missing")
 }
 
-func TestKimiStartRefusesTheLegacyCLI(t *testing.T) {
-	argsFile := installFakeKimi(t, kimiHelperVersionEnv+"=kimi, version 1.5.0")
-	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorIs(t, err, errKimiUnsupportedVersion)
-	assert.Contains(t, err.Error(), "1.5.0")
-	args, readErr := os.ReadFile(argsFile)
-	require.NoError(t, readErr)
-	assert.Equal(t, "--version", strings.TrimSpace(string(args)), "the legacy CLI's own web command never runs")
+func TestKimiStartDoesNotProbeTheRelease(t *testing.T) {
+	argsFile := installFakeKimi(t, kimiHelperScenarioEnv+"=version-fails")
+	started, _, err := startKimiForTest(t, agent.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	args, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(args), "--version")
+	assert.Contains(t, string(args), "web")
+}
+
+func TestKimiStartDoesNotRequireServerReleaseMetadata(t *testing.T) {
+	installFakeKimi(t, kimiHelperScenarioEnv+"=legacy-server")
+	started, _, err := startKimiForTest(t, agent.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
 }
 
 func TestKimiStartReportsAServerThatExitsBeforeItIsReady(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=exit-early")
 	_, _, err := startKimiForTest(t, agent.Options{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Kimi Code "+kimiMinimumVersion.String()+" or later")
+	assert.Contains(t, err.Error(), "server start")
 }
 
 func TestKimiStartRefusesAServerWithNoModel(t *testing.T) {
@@ -199,89 +200,6 @@ func TestKimiStartRefusesAServerWithNoModel(t *testing.T) {
 	_, _, err := startKimiForTest(t, agent.Options{})
 	// The startup error keeps the reason's text, not its chain.
 	require.ErrorContains(t, err, errKimiNoModel.Error())
-}
-
-func TestKimiStartReportsAVersionProbeThatFails(t *testing.T) {
-	installFakeKimi(t, kimiHelperScenarioEnv+"=version-fails")
-	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorContains(t, err, "run `kimi --version`")
-	assert.Contains(t, err.Error(), "kimi: the installation is broken", "the error quotes what the program printed on stderr")
-	assert.NotContains(t, err.Error(), "second line", "the error quotes only the first line")
-}
-
-func TestKimiStartReportsAVersionProbeThatNeverAnswers(t *testing.T) {
-	installFakeKimi(t, kimiHelperScenarioEnv+"=version-hangs")
-	// The fake never answers, so only the probe's own limit ends the wait. The
-	// startup timeout sets that limit.
-	_, _, err := startKimiForTest(t, agent.Options{StartupTimeout: 2 * time.Second})
-	require.ErrorContains(t, err, "`kimi --version` did not answer within 2s")
-}
-
-// A background job that the login shell's profile starts inherits the shell's
-// stdout, and it keeps the pipe open after `kimi --version` exits. The probe
-// must not wait for that job, which can run for as long as the user's session.
-func TestKimiStartIsNotHeldByAProcessTheVersionProbeLeftBehind(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "child.pid")
-	installFakeKimi(t, kimiHelperScenarioEnv+"=version-leaves-child", kimiHelperChildPIDEnv+"="+pidFile)
-	opts := agent.Options{
-		AgentID: "kimi-launch", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
-		APITimeout: 30 * time.Second, StartupTimeout: 60 * time.Second,
-	}
-
-	type startResult struct {
-		agent agent.Agent
-		err   error
-	}
-	done := make(chan startResult, 1)
-	go func() {
-		started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.ControlSink{}))
-		done <- startResult{agent: started, err: err}
-	}()
-	settle := func(result startResult) {
-		if result.err == nil {
-			result.agent.Stop()
-			_ = result.agent.Wait()
-		}
-	}
-	var result startResult
-	select {
-	case result = <-done:
-	case <-time.After(45 * time.Second):
-		// End the process that holds the probe, so the start returns and its
-		// server does not outlive the test.
-		identity := readKimiHelperChildIdentity(t, pidFile)
-		_, _ = identity.Kill()
-		settle(<-done)
-		t.Fatal("the start waits for a process that the version probe left behind")
-	}
-	childIdentity := readKimiHelperChildIdentity(t, pidFile)
-	t.Cleanup(func() { _, _ = childIdentity.Kill() })
-	require.NoError(t, result.err, "the probe read the version the program printed before it exited")
-	t.Cleanup(func() { settle(result) })
-	require.True(t, childIdentity.Runs(), "the exact process that holds the pipe still runs, so the start did not wait for it")
-}
-
-// readKimiHelperChildIdentity reads the creation identity recorded at launch.
-func readKimiHelperChildIdentity(t *testing.T, pidFile string) procutil.ProcessIdentity {
-	t.Helper()
-	data, err := os.ReadFile(pidFile)
-	require.NoError(t, err)
-	fields := strings.Fields(string(data))
-	require.Len(t, fields, 2)
-	pid, err := strconv.Atoi(fields[0])
-	require.NoError(t, err)
-	start, err := strconv.ParseInt(fields[1], 10, 64)
-	require.NoError(t, err)
-	require.Positive(t, pid)
-	require.Positive(t, start)
-	return procutil.ProcessIdentity{PID: pid, StartTime: start}
-}
-
-func TestKimiStartReportsAServerThatStatesNoVersion(t *testing.T) {
-	installFakeKimi(t, kimiHelperScenarioEnv+"=legacy-server")
-	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorContains(t, err, errKimiUnsupportedVersion.Error(), "the server's own version is checked too")
-	assert.Contains(t, err.Error(), kimiVersionFromServer)
 }
 
 // TestHelperProcessKimi is the fake `kimi`. It does nothing in the test process
@@ -300,7 +218,8 @@ func TestHelperProcessKimi(t *testing.T) {
 func runFakeKimi(args []string) int {
 	scenario := os.Getenv(kimiHelperScenarioEnv)
 	if slices.Contains(args, "--version") {
-		return runFakeKimiVersion(scenario)
+		fmt.Fprintln(os.Stderr, "version probes are forbidden")
+		return 91
 	}
 	if len(args) == 0 || args[0] != "web" {
 		fmt.Fprintln(os.Stderr, "unknown command")
@@ -358,62 +277,12 @@ func runFakeKimi(args []string) int {
 	return 0
 }
 
-// runFakeKimiVersion answers `kimi --version` as the scenario states.
-func runFakeKimiVersion(scenario string) int {
-	switch scenario {
-	case "version-fails":
-		fmt.Fprintln(os.Stderr, "kimi: the installation is broken\nsecond line")
-		return 1
-	case "version-hangs":
-		// The fake never answers. The probe's timeout kills it.
-		time.Sleep(time.Hour)
-		return 0
-	case "version-leaves-child":
-		// A process that inherits stdout and outlives this one, as a background
-		// job of the login shell's profile does.
-		child := exec.Command("sleep", "3600")
-		child.Stdout, child.Stderr = os.Stdout, os.Stderr
-		if err := child.Start(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		// Record the identity while this parent still owns the unreaped child.
-		// A later lookup from its bare PID could adopt an unrelated process.
-		identity, identified := procutil.IdentifyProcess(child.Process.Pid)
-		if !identified {
-			_ = child.Process.Kill()
-			_ = child.Wait()
-			fmt.Fprintln(os.Stderr, "the probe's child supplied no creation identity")
-			return 1
-		}
-		receipt := fmt.Sprintf("%d %d", identity.PID, identity.StartTime)
-		if err := os.WriteFile(os.Getenv(kimiHelperChildPIDEnv), []byte(receipt), 0o600); err != nil {
-			_, _ = identity.Kill()
-			_ = child.Wait()
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-	version := os.Getenv(kimiHelperVersionEnv)
-	if version == "" {
-		version = "2.4.0"
-	}
-	fmt.Println(version)
-	return 0
-}
-
-// Kimi Code installs a staged native update, and re-executes itself, from main()
-// before it parses a command, so `kimi --version` and `kimi web` both take that
-// path in a native (single-file) install. It stops for a true
-// KIMI_CODE_NO_AUTO_UPDATE (`1`, `true`, `yes` or `on`). The launch runs the
-// program twice, for the version and for the server, so both runs must carry the
-// pin after the user's profile.
-func TestLaunchPinsTheUpdaterOffForTheVersionProbeAndTheServer(t *testing.T) {
+// The server launch disables automatic updates after the shell profile runs.
+func TestLaunchPinsTheUpdaterOffForTheServer(t *testing.T) {
 	agenttest.RequireLaunchPins(t, agenttest.LaunchProbe{
-		Binary:  kimiBinaryName,
-		Start:   Start,
-		Pins:    []string{"KIMI_CODE_NO_AUTO_UPDATE=1"},
-		Answers: map[string]string{"--version": "kimi-code 2.4.0"},
-		Runs:    2,
+		Binary: kimiBinaryName,
+		Start:  Start,
+		Pins:   []string{"KIMI_CODE_NO_AUTO_UPDATE=1"},
+		Runs:   1,
 	})
 }

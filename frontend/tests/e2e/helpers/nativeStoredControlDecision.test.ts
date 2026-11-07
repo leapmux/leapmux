@@ -276,6 +276,16 @@ describe('onlyObservedNativeControl', () => {
     expect(onlyObservedNativeControl([ready, completed])).toBe(ready)
   })
 
+  it('accepts a payload-free cancellation for the observed request', () => {
+    const ready = frame(REQUEST_ID, NATIVE_REQUEST)
+    const canceled = {
+      ...frame(REQUEST_ID, {}, ControlResponseState.COMPLETED),
+      canceled: true,
+    }
+    expect(onlyObservedNativeControl([ready, canceled])).toBe(ready)
+    expect(() => onlyObservedNativeControl([canceled])).toThrow('observed no native control request')
+  })
+
   it('refuses a second request ID', () => {
     expect(() => onlyObservedNativeControl([
       frame(REQUEST_ID, NATIVE_REQUEST),

@@ -1,4 +1,4 @@
-import { CODEWHALE_E2E_SKIP_REASON, codewhaleTest } from '../codewhale-fixtures'
+import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { exerciseWorkerRestart } from '../helpers/nativeWorkerRestart'
 import { createProviderProcessTest } from '../provider-fixture-factory'
@@ -8,7 +8,7 @@ codewhaleTest('reopens the native picker handle and restores the saved transcrip
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: CODEWHALE_AGENT, nativeContext, skipReason: CODEWHALE_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: CODEWHALE_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

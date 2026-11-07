@@ -1,7 +1,7 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { AMP_PERMISSION_REQUEST_FIELD, AMP_PERMISSION_REQUEST_TYPE } from '~/generated/contracts/amp-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { ampShellCommand } from './extractors/execute'
+import { ampShellCommand, ampShellWorkingDirectory } from './extractors/execute'
 import { ampToolKind } from './toolKinds'
 
 /**
@@ -27,7 +27,7 @@ export function ampExtractControl(input: ControlExtractionInput): ExtractedContr
     ? ampShellCommand(toolInput) || undefined
     : undefined
   const workingDirectory = shell
-    ? pickString(toolInput, 'workdir', undefined)
+    ? ampShellWorkingDirectory(toolInput)
     : undefined
   return {
     kind: 'permission',

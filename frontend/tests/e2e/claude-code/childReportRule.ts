@@ -107,6 +107,8 @@ export function claudeChildCompletionRule(requestBody: unknown, given: ClaudeChi
   const childId = claudeSpawnedChildId(requestBody, options.spawnCallId)
   if (!childId)
     throw new Error('The Claude completion rule has no matching actual Agent spawn result.')
+  const toolName = '[A-Za-z0-9_.:-]{1,256}'
+  const toolSummary = `(?:<system-reminder>\\n<tools-used-before-summary>${toolName}(?:, ${toolName})*</tools-used-before-summary>\\n</system-reminder>\\n\\n)?`
   const betweenFields = '(?:(?!<task-id>|<tool-use-id>|<status>|<result>|</?task-notification>)[\\s\\S])*'
   const directReport = escapeRegExp(options.report)
   const deliveredReport = `This agent's report was delivered to you as a message from "${escapeRegExp(childId)}" \\(its SubagentHandback call\\)\\. Read it there; it is not repeated here\\.\\n`
@@ -114,7 +116,7 @@ export function claudeChildCompletionRule(requestBody: unknown, given: ClaudeChi
     name: `claude-parent-completion-${childId}`,
     when: {
       protocol: 'anthropic-messages',
-      user: '^<system-reminder>\\n\\[SYSTEM NOTIFICATION - NOT USER INPUT\\]\\n'
+      user: `^${toolSummary}<system-reminder>\\n\\[SYSTEM NOTIFICATION - NOT USER INPUT\\]\\n`
         + '(?:(?!<task-notification>)[\\s\\S])*\\n<task-notification>\\n'
         + `<task-id>${escapeRegExp(childId)}</task-id>\\n<tool-use-id>${escapeRegExp(options.spawnCallId)}</tool-use-id>\\n`
         + '<output-file>[^\\n]*</output-file>\\n'

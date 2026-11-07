@@ -150,6 +150,10 @@ export function qoderEndpointCacheRecords(origin: string, updatedAt: number): { 
 
 /** Serve Qoder's native authentication, discovery, and catalog endpoints. */
 export function handleQoderHttp(request: IncomingMessage, response: ServerResponse, url: URL, options: QoderSurfaceOptions): boolean | Promise<boolean> {
+  if (request.method === 'GET' && url.pathname === '/algo/api/v1/ping') {
+    response.writeHead(200).end()
+    return true
+  }
   if (url.pathname === '/api/v1/qcs/config/resolve' || url.pathname === '/api/v1/qcs/config/stream')
     return handleQoderConfiguration(request, response, url, options)
   if (url.pathname === '/algo/api/v3/service/region/endpoints' || url.pathname === '/algo/api/v5/service/region/endpoints') {

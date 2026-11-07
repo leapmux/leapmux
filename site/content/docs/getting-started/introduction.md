@@ -65,6 +65,8 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | Command Code | `command-code`, `commandcode`, or `cmdc` |
 | DeepSeek Harness | `dsh` |
 | Gemini CLI | `gemini` |
+| Muse Code | `muse` |
+| Antigravity CLI | `agy` |
 
 Install the latest GitHub Copilot CLI on the Worker.
 

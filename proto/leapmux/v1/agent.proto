@@ -137,6 +137,7 @@ enum AgentProvider {
   AGENT_PROVIDER_DEEPSEEK_HARNESS = 28;
   AGENT_PROVIDER_GEMINI_CLI = 29;
   AGENT_PROVIDER_MUSE_CODE = 30;
+  AGENT_PROVIDER_ANTIGRAVITY_CLI = 31;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

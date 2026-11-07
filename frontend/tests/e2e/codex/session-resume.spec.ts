@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { CODEX_E2E_SKIP_REASON, codexTest } from '../codex-fixtures'
+import { codexTest } from '../codex-fixtures'
 import { runReviewedNativeToolTurn } from '../helpers/nativeAutoReview'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
@@ -20,7 +20,7 @@ codexTest('reopens the native session and restores its saved UI transcript', asy
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: CODEX_AGENT, nativeContext, skipReason: CODEX_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: CODEX_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

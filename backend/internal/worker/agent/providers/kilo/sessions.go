@@ -2,7 +2,6 @@ package kilo
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -24,14 +23,8 @@ func kiloDataDir(q agent.StoredSessionQuery) string {
 	return filepath.Join(base, "kilo")
 }
 
-// kiloDBPath resolves Kilo's session database.
-//
-// KILO_DB behaves like OPENCODE_DB: absolute, or a bare name under the data
-// directory. Without it, `kilo.db` is the current name and `opencode.db` is the
-// name a store carried before the fork renamed it -- Kilo still reads that one,
-// so an installation that never re-created its database keeps working here.
-// The legacy name is only used when the current one is absent, so a machine
-// that holds both reads the live store.
+// kiloDBPath resolves the current Kilo database. KILO_DB overrides its filename
+// with an absolute path or a bare name under the current data directory.
 func kiloDBPath(q agent.StoredSessionQuery) string {
 	dir := kiloDataDir(q)
 	if path, ok := sessionstore.OverridePath(q, "KILO_DB", dir); ok {
@@ -40,17 +33,7 @@ func kiloDBPath(q agent.StoredSessionQuery) string {
 	if dir == "" {
 		return ""
 	}
-	current := filepath.Join(dir, "kilo.db")
-	if _, err := os.Stat(current); err == nil {
-		return current
-	}
-	legacy := filepath.Join(dir, "opencode.db")
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy
-	}
-	// Neither is present. Return the current name so the caller reports the
-	// absent store against the path a reader would expect to find.
-	return current
+	return filepath.Join(dir, "kilo.db")
 }
 
 // kiloStoredSessions is Kilo's Provider.ListStoredSessions.

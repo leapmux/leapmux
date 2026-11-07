@@ -272,23 +272,10 @@ func buildZCodeRegistryProviders(cfg zcodeConfigFile) ([]zcodeRegistryProvider, 
 	return providers, skipped
 }
 
-// zcodeModelOrder ranks a provider's models the way ZCode itself ranks them:
-// `zcode.priority` ascending, then by model id.
-//
-// The order is load-bearing twice over. It is the order of the `models` array in
-// the legacy registry push (workspace/updateProviderRegistry), and a legacy
-// app-server starts a session on the FIRST model of the FIRST provider -- so an
-// alphabetical order would open every ZCode agent on whichever model sorts first,
-// which for the shipped Z.ai plans is the weakest one. It is also the order of the
-// catalog LeapMux shows, and markZCodeDefaultModel marks its first entry.
-//
-// The account snapshot (provider/updateAccountConfig) carries no such array. A
-// current app-server orders its models by its own rules, and the snapshot's
-// `model.current` replaces this order's default before Start returns.
-//
-// A model that states no priority sorts LAST, behind every ranked one: an entry the
-// user added by hand has no claim to be the default, and the id keeps the order
-// stable among such models.
+// zcodeModelOrder sorts configured models by zcode.priority, then by model ID.
+// This determines LeapMux's catalog order and its provisional default.
+// The account snapshot does not override the native model order. The live
+// session's model.current supplies the authoritative default before Start returns.
 func zcodeModelOrder(models map[string]zcodeConfigModel) []string {
 	// Ascending model id, so a payload built from a Go map is byte-stable across runs.
 	ids := slices.Sorted(maps.Keys(models))
@@ -414,10 +401,7 @@ func titleCaseHyphenated(s string) string {
 // that file -- so discarding the rename would leave a user with no way to tell
 // two accounts apart and no message saying why.
 //
-// ONE label serves both the registry push and LeapMux's catalog. The registry's
-// copy is display-only -- the app-server resolves a model by the composite
-// `providerID/modelID`, never by a label -- so a second, uncorrected spelling
-// would only be a copy that can disagree with what the user sees.
+// The catalog uses this label consistently for provider and model groups.
 func zcodeProviderLabel(providerID, configuredName string, collides bool) string {
 	builtin := zcodeBuiltinProviderLabel(providerID)
 	if builtin == "" {
@@ -558,15 +542,10 @@ func zcodeModelInfo(composite, providerLabel, modelID string, model zcodeConfigM
 	return info
 }
 
-// markZCodeDefaultModel flags the catalog's default model.
-//
-// The configuration specifies no default, so the FIRST entry is used -- which is the
-// same model a legacy app-server starts a session on. The providers are ordered
-// enabled-first and their models by ZCode's own `zcode.priority` (see
-// zcodeModelOrder), so the choice is stable and lands on the best model of a
-// provider the user enabled. A current app-server chooses the session model itself
-// (its configured default, or the first executable model in its own order), and
-// the snapshot's `model.current` replaces this flag before Start returns.
+// markZCodeDefaultModel marks the configured catalog's provisional first model.
+// Providers are ordered enabled-first, then models by zcode.priority.
+// The native session chooses its own model; model.current replaces this
+// provisional flag before Start returns.
 func markZCodeDefaultModel(models []*agent.ModelInfo) {
 	for _, m := range models {
 		if m != nil {
@@ -574,19 +553,6 @@ func markZCodeDefaultModel(models []*agent.ModelInfo) {
 			return
 		}
 	}
-}
-
-// hasInlineAPIKey reports whether the catalog carries a usable inline credential
-// for a provider id.
-//
-// It answers the app-server's interaction/requestProviderRuntimeHeaders honestly:
-// LeapMux mints no OAuth header, so the only authorization it can claim is the key
-// it already pushed with the registry. An empty provider id asks about ANY
-// provider, which is what a request that gives none means. It shares the lookup
-// of inlineAPIKey.
-func (c zcodeCatalog) hasInlineAPIKey(providerID string) bool {
-	_, ok := c.inlineAPIKey(providerID)
-	return ok
 }
 
 // resolveModelID maps whatever spelling a caller supplied onto a catalog id.

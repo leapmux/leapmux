@@ -20,7 +20,7 @@
 export const AMP_TOOL_NAME = {
   /** The name under which the executor runs `shell_command`. */
   AsyncShellCommand: 'async_shell_command',
-  /** The shell tool of the modes that predate `shell_command`. */
+  /** The concurrent Bash shell registration, with cmd and cwd arguments. */
   Bash: 'Bash',
   /** Edits files through one `*** Begin Patch` text. */
   ApplyPatch: 'apply_patch',

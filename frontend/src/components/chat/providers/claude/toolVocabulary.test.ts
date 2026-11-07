@@ -102,7 +102,8 @@ describe('claude tool tables over an Object.prototype name', () => {
 
   it('still folds every alias the table holds', () => {
     expect(canonicalClaudeToolName('Task')).toBe(CLAUDE_TOOL_NAMES.AGENT)
-    expect(canonicalClaudeToolName('BashOutput')).toBe(CLAUDE_TOOL_NAMES.TASK_OUTPUT)
+    expect(canonicalClaudeToolName('BashOutput')).toBe('BashOutput')
+    expect(canonicalClaudeToolName('AgentOutput')).toBe('AgentOutput')
     expect(canonicalClaudeToolName('KillShell')).toBe(CLAUDE_TOOL_NAMES.TASK_STOP)
     expect(canonicalClaudeToolName('ListPeers')).toBe(CLAUDE_TOOL_NAMES.LIST_AGENTS)
     expect(canonicalClaudeToolName('Brief')).toBe(CLAUDE_TOOL_NAMES.SEND_USER_MESSAGE)

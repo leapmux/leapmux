@@ -33,7 +33,7 @@ describe('codewhaleExtractControl', () => {
       })
   })
 
-  it('states the summary when the call gives no intent, and the intent when it gives both', () => {
+  it('uses the current intent and ignores the obsolete summary field', () => {
     expect(codewhaleExtractControl({
       payload: approvalPayload(CODEWHALE_TOOL.Write, { path: 'a' }, { summary: 'Write a' }),
     }))
@@ -41,7 +41,6 @@ describe('codewhaleExtractControl', () => {
         kind: 'permission',
         permission: {
           title: CODEWHALE_TOOL.Write,
-          reason: 'Write a',
           input: { path: 'a' },
           options: [],
         },

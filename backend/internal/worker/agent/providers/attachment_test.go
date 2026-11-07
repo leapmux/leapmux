@@ -22,14 +22,15 @@ func TestNormalizeAttachmentsForProvider_RequiresAnImplementedAudioPolicy(t *tes
 	registry := Registry()
 	audio := []*leapmuxv1.Attachment{{Filename: "voice.wav", MimeType: "audio/wav", Data: []byte{0, 1}}}
 	supported := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:      true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:  true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:  true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:  true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:   true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:           true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:      true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:      true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:        true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:            true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI: true,
 	}
 	for _, registration := range Registrations() {
 		t.Run(registration.Provider.String(), func(t *testing.T) {

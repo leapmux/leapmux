@@ -15,15 +15,15 @@ func TestStatusItemIsPlumbing(t *testing.T) {
 		"Resuming turn with 1 queued sub-agent completion(s)",
 		"Loaded deferred tool 'apply_patch'. Retry the call with its visible schema.",
 		"Steer input accepted: Also mention the word banana.",
-		"Steer input queued: Read the next file.",
 		"Request cancelled",
 		"Policy: Full Access / ACT",
 		"Permissions: Ask · Work",
 		"  Continuing with leading space",
 	} {
-		assert.True(t, statusItemIsPlumbing(summary, ""), summary)
+		assert.False(t, statusItemIsPlumbing(summary, ""), summary)
 	}
-	assert.True(t, statusItemIsPlumbing("Anything at all", "internal"), "a later release marks its own notes")
+	assert.True(t, statusItemIsPlumbing("Steer input queued: Read the next file.", ""), "the current runtime leaves this queued-steer diagnostic unmarked")
+	assert.True(t, statusItemIsPlumbing("Anything at all", "internal"), "the current runtime marks its internal notes")
 	assert.False(t, statusItemIsPlumbing("Checkpoint saved", ""))
 	assert.False(t, statusItemIsPlumbing("", ""))
 }

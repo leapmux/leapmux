@@ -262,11 +262,13 @@ func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) 
 //
 // A lower limit of 1 is the rule, because proto3 fixes UNSPECIFIED at 0 and an
 // unset Go field holds 0, so a write that forgot the value fails instead of
-// recording a state nobody chose. Six columns start at 0, and in each the zero
-// IS a state the code chose: goal_status means "no goal", assembled_kind and
-// completion both mean "this message is not an assembled one and reports no
-// completion", pause_reason means "not paused", pause_owner means "nobody
-// owns this pause", and follow_up_kind means "no follow-up input".
+// recording a state nobody chose. Only agents.goal_status and
+// control_response_payloads.follow_up_kind admit zero. For goal_status, zero
+// means no goal. For follow_up_kind, zero means no follow-up input and requires
+// empty follow_up text. The optional assembled_kind, completion, pause_reason
+// and pause_owner columns use SQL NULL for absence and reject zero. The
+// completion range includes zero to show the enum numbering; its separate
+// type CHECK rejects zero.
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
@@ -399,8 +401,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			// agents is the one table that stores a provider: a message and a
 			// control answer report the provider of their agent.
 			column:       "agents.agent_provider",
-			check:        "CHECK (agent_provider BETWEEN 1 AND 30)",
-			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE),
+			check:        "CHECK (agent_provider BETWEEN 1 AND 31)",
+			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 	} {
@@ -446,15 +448,15 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE); ordinal++ {
+	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI); ordinal++ {
 		_, declared := leapmuxv1.AgentProvider_name[ordinal]
 		assert.Truef(t, declared,
 			"AgentProvider %d is a hole; the agents.agent_provider CHECK states a plain range, so either close it by renumbering or narrow it", ordinal)
 	}
 }
 
-// goal_status is the one column whose zero is a REAL state, so ClearAgentGoal
-// spells the literal 0. proto3 fixes the first enumerator at 0, so no renumber
+// goal_status uses zero to represent no goal, so ClearAgentGoal spells the
+// literal 0. proto3 fixes the first enumerator at 0, so no renumber
 // can move it -- this states that rather than guarding against it.
 func TestClearAgentGoalWritesTheUnspecifiedOrdinal(t *testing.T) {
 	t.Parallel()
@@ -597,7 +599,7 @@ func TestAgentProviderColumnRefusesUnspecified(t *testing.T) {
 	// One past the last declared provider. The CHECK states a plain range now,
 	// so its ceiling is the only thing standing between an unset enum and a row
 	// nobody can read back.
-	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE) + 1)
+	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI) + 1)
 	assert.ErrorContains(t, createAgent("beyond-last-ordinal", beyondLast),
 		"CHECK constraint failed", "an ordinal past the last declared provider is refused")
 }

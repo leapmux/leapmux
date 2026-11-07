@@ -117,7 +117,7 @@ func validGeminiSessionID(value string) bool {
 func geminiSessionEntries(directory string, limit int) ([]sessionstore.Entry, error) {
 	return sessionstore.NewestEntries(directory, limit, sessionstore.EntryItself(func(entry os.DirEntry) bool {
 		return !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(entry.Name(), "session-") &&
-			(filepath.Ext(entry.Name()) == ".jsonl" || filepath.Ext(entry.Name()) == ".json")
+			filepath.Ext(entry.Name()) == ".jsonl"
 	}))
 }
 
@@ -200,7 +200,7 @@ func locateGeminiSession(query agent.StoredSessionQuery, sessionID string) (stri
 	ambiguous := false
 	for _, entry := range entries {
 		// Native exact-ID lookup considers only files with the requested short-ID suffix.
-		if !strings.HasSuffix(entry.Name, "-"+shortID+".jsonl") && !strings.HasSuffix(entry.Name, "-"+shortID+".json") {
+		if !strings.HasSuffix(entry.Name, "-"+shortID+".jsonl") {
 			continue
 		}
 		session, err := readGeminiSession(query, entry.Path)

@@ -1,35 +1,21 @@
 import type { TodoItem } from '~/models/todo'
 import { rawTodosToItems } from '~/components/chat/normalizers/todo'
-import { CODEWHALE_RESULT_FIELD, CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { CODEWHALE_RESULT_FIELD } from '~/generated/contracts/codewhale-protocol'
+import { pickObject } from '~/lib/jsonPick'
 
 /**
  * The checklist one to-do call states, read from its arguments.
  *
- * `todo_write` and its hidden aliases send `{todos:[{content, status}]}`, the whole
- * list each time. `update_plan` sends its steps as `{plan:[{step, status}]}`. Null when
- * the arguments hold neither list, which makes the row take the generic card rather
+ * `todo_write` sends `{todos:[{content, status}]}`, the whole
+ * list each time. Null when the arguments hold no list, which makes the row take the generic card rather
  * than draw an empty checklist.
  *
  * The ITEMS alone. The header above them belongs to the shared to-do renderer.
  */
-export function codewhaleTodoItems(toolName: string, args: Record<string, unknown>): TodoItem[] | null {
+export function codewhaleTodoItems(args: Record<string, unknown>): TodoItem[] | null {
   if (Array.isArray(args.todos))
     return rawTodosToItems(args.todos)
-  if (toolName === CODEWHALE_TOOL.UpdatePlan && Array.isArray(args.plan)) {
-    return rawTodosToItems(args.plan.filter(isObject).map(step => ({
-      content: pickString(step, 'step'),
-      status: pickString(step, 'status'),
-    })))
-  }
   return null
-}
-
-/** The explanation an `update_plan` call gives above its steps, when it gives one. */
-export function codewhalePlanNote(toolName: string, args: Record<string, unknown>): string {
-  return toolName === CODEWHALE_TOOL.UpdatePlan
-    ? pickString(args, 'explanation').trim()
-    : ''
 }
 
 /**

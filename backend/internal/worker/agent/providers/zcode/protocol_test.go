@@ -123,12 +123,13 @@ func TestZCodeErrorCode_OnlyUnwrapsWireErrors(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestZCodeIsPromptRunning_CoversBothCodes(t *testing.T) {
+func TestZCodeIsPromptRunning_RecognizesOnlyTheCurrentCode(t *testing.T) {
 	t.Parallel()
 
-	for _, code := range []int{ErrPromptRunning, ErrPromptRunningLegacy} {
+	for _, code := range []int{ErrPromptRunning} {
 		assert.Truef(t, zcodeIsPromptRunning(&zcodeError{Code: code}), "code %d must be retryable", code)
 	}
+	assert.False(t, zcodeIsPromptRunning(&zcodeError{Code: 1308}))
 	assert.False(t, zcodeIsPromptRunning(&zcodeError{Code: ErrSessionNotActive}))
 	assert.False(t, zcodeIsPromptRunning(fmt.Errorf("timeout")))
 	assert.False(t, zcodeIsPromptRunning(nil))
@@ -143,20 +144,11 @@ func TestZCodeRuntimeUnavailable_IsPermanentAndKeepsItsMessage(t *testing.T) {
 
 	wire := &zcodeError{Code: ErrRuntimeUnavailable, Message: "Session restore warning: the workspace moved"}
 	assert.False(t, zcodeIsPromptRunning(wire), "a permanent failure must never be retried")
-	assert.False(t, zcodeIsMethodNotFound(wire), "it states a runtime that cannot act, not an absent method")
 
 	classified := classifyZCodeDeliveryError(MethodSessionSend, wire)
 	assert.ErrorIs(t, classified, error(wire), "the wire error must reach the caller unchanged")
 	assert.NotErrorIs(t, classified, agent.ErrDeliveryUncertain, "the app-server answered, so the delivery is certain")
 	assert.Contains(t, classified.Error(), "the workspace moved")
-}
-
-func TestZCodeIsMethodNotFound(t *testing.T) {
-	t.Parallel()
-
-	assert.True(t, zcodeIsMethodNotFound(&zcodeError{Code: ErrMethodNotFound}))
-	assert.False(t, zcodeIsMethodNotFound(&zcodeError{Code: ErrInternal}))
-	assert.False(t, zcodeIsMethodNotFound(fmt.Errorf("nope")))
 }
 
 func TestZCodeError_ErrorTextFallsBackWhenTheMessageIsEmpty(t *testing.T) {

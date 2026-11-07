@@ -11,13 +11,9 @@ import type { AgentWorkspace, AuthenticatedAgentWorkspaceOptions, ProviderAgent 
 import { test as base } from './fixtures'
 import { deliberateWorkingDir } from './helpers/providerWorkingDir'
 import { runTranscriptGuard } from './helpers/transcriptGuard'
+import { waitForAgentStartupViaAPI } from './helpers/workerTabs'
 import { agentWorkspaceFixture, authenticatedAgentWorkspace, openProviderAgent, withTestWorkspace } from './helpers/workspace'
 import { ensureWorkerOnline, processTest } from './process-control-fixtures'
-
-/** The fixture of {@link cliSkipFixture}, for the type parameter of a provider's `extend` call. */
-export interface CliSkipFixture {
-  cliSkip: void
-}
 
 /**
  * The provider's scenario context for its main authenticated workspace.
@@ -35,7 +31,6 @@ interface ProviderWorkspaceFixture {
 interface ProviderTestOptions {
   agent: ProviderAgent
   nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext>
-  skipReason: string | null
   modelRules?: readonly MockModelRule[]
 }
 
@@ -44,9 +39,8 @@ export function createProviderTest<K extends `authenticated${string}Workspace`>(
   workspaceName: K
   workspaceOptions?: Omit<AuthenticatedAgentWorkspaceOptions, keyof ProviderAgent>
 }) {
-  type ProviderFixtures = CliSkipFixture & NativeFixture & ProviderWorkspaceFixture & Record<K, AgentWorkspace>
+  type ProviderFixtures = NativeFixture & ProviderWorkspaceFixture & Record<K, AgentWorkspace>
   const sharedFixtures = {
-    cliSkip: cliSkipFixture(options.skipReason),
     modelScript: providerModelScriptFixture(options.modelRules ?? []),
     providerWorkspace: authenticatedAgentWorkspace({
       ...options.workspaceOptions,
@@ -66,7 +60,7 @@ export function createProviderTest<K extends `authenticated${string}Workspace`>(
         throw new Error('The native context must retain its workspace and test fixtures.')
       await use(context)
     },
-  } satisfies Parameters<typeof base.extend<CliSkipFixture & NativeFixture & ProviderWorkspaceFixture>>[0]
+  } satisfies Parameters<typeof base.extend<NativeFixture & ProviderWorkspaceFixture>>[0]
   const fixtures = {
     ...sharedFixtures,
     // Playwright parses literal dependencies from the callback source. A computed dependency cannot work here.
@@ -76,28 +70,6 @@ export function createProviderTest<K extends `authenticated${string}Workspace`>(
   }
   // TypeScript widens a computed generic key to string. The key above is exactly the workspace alias K.
   return base.extend<ProviderFixtures>(fixtures as Parameters<typeof base.extend<ProviderFixtures>>[0])
-}
-
-/**
- * An automatic fixture that skips each test of one provider when the E2E run cannot start the provider's CLI.
- *
- * A missing CLI is a property of the machine, not of model behavior.
- * Every spec of the provider skips with the same reason.
- * Each provider test object registers this automatic fixture as `cliSkip`.
- * It runs before requested fixtures, so a missing CLI skips the test before a workspace fixture starts an agent.
- */
-export function cliSkipFixture(reason: string | null): [TestFixture<void, object>, { auto: true }] {
-  if (reason !== null && reason.trim() === '')
-    throw new Error('A provider skip needs the reason that its CLI is missing.')
-  // Playwright reads the fixture names from the first parameter, which must be an object pattern.
-  return [
-    // eslint-disable-next-line no-empty-pattern
-    async ({}, use, testInfo) => {
-      testInfo.skip(reason !== null, reason ?? '')
-      await use()
-    },
-    { auto: true },
-  ]
 }
 
 /** Register provider housekeeping before a scenario can consume an ordered model answer. */
@@ -113,8 +85,7 @@ export function providerModelScriptFixture(rules: readonly MockModelRule[]): Tes
 export function createProviderProcessTest(options: ProviderTestOptions & {
   openOptions?: AgentOpenOverrides
 }) {
-  return processTest.extend<CliSkipFixture & NativeFixture>({
-    cliSkip: cliSkipFixture(options.skipReason),
+  return processTest.extend<NativeFixture>({
     modelScript: providerModelScriptFixture(options.modelRules ?? []),
     authenticatedWorkspace: async ({ page, authenticatedWorkspace, transcriptGuard }, use, testInfo) => {
       await use(authenticatedWorkspace)
@@ -131,6 +102,7 @@ export function createProviderProcessTest(options: ProviderTestOptions & {
                 workingDir: deliberateWorkingDir(agentWorkingDir, 'The restart test explicitly supplies the native agent directory.'),
               }),
         })
+        await waitForAgentStartupViaAPI(separateHubWorker.hubUrl, separateHubWorker.adminToken, separateHubWorker.workerId, workspace.workspaceId)
         await use(agentWorkspaceFixture(workspace, opened.agentId, opened.workingDir))
       })
     },

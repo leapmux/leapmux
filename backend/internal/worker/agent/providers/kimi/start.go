@@ -17,10 +17,6 @@ import (
 
 var _ agent.StartFunc = Start
 
-// kimiVersionProbeTimeout limits `kimi --version`, which runs the installed CLI
-// through the configured shell and prints one line.
-const kimiVersionProbeTimeout = 60 * time.Second
-
 // Start launches `kimi web`, connects to it, and opens the agent's session.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	registration := Registration()
@@ -28,14 +24,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	if err != nil {
 		return nil, err
 	}
-	timeout := opts.EffectiveStartupTimeout()
-	if _, err := probeKimiVersion(ctx, opts, spec, min(timeout, kimiVersionProbeTimeout)); err != nil {
-		return nil, err
-	}
 	return startServer(ctx, opts, sink, spec, registration.ShutdownGrace)
 }
 
-// startServer runs the server the version check approved.
+// startServer launches the native server and completes its authenticated handshake.
 func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderServices, spec launch.Spec, shutdownGrace time.Duration) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
@@ -77,7 +69,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	if err != nil {
 		cleanup()
 		if errors.Is(err, providerkit.ErrServerExited) {
-			return nil, a.FormatStartupError("server start", fmt.Errorf("%w; the program named `kimi` must be Kimi Code %s or later", err, contracts.KimiVersionMinimum))
+			return nil, a.FormatStartupError("server start", err)
 		}
 		return nil, a.FormatStartupError("server start", err)
 	}
@@ -122,17 +114,13 @@ func (a *Agent) connect(ctx context.Context, address, token string, opts agent.O
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var meta struct {
-		ServerVersion string `json:"server_version"`
-		Features      []struct {
+		Features []struct {
 			Name  string `json:"name"`
 			State string `json:"state"`
 		} `json:"features"`
 	}
 	if err := a.api.get(reqCtx, kimiRouteMeta, &meta); err != nil {
 		return fmt.Errorf("read the server description: %w", err)
-	}
-	if _, err := checkKimiVersion(kimiVersionFromServer, meta.ServerVersion); err != nil {
-		return err
 	}
 	a.features = make(map[string]bool, len(meta.Features))
 	for _, feature := range meta.Features {
