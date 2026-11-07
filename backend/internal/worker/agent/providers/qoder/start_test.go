@@ -30,3 +30,14 @@ func TestQoderPermissionFlagCoversEveryMode(t *testing.T) {
 	assert.Equal(t, "default", qoderPermissionFlag(""))
 	assert.Equal(t, "default", qoderPermissionFlag("yolo"), "an unknown mode launches in Default")
 }
+
+func TestQoderAgentEnvDoesNotRestoreTheRemovedSDKWorkerMode(t *testing.T) {
+	t.Parallel()
+	env := qoderAgentEnv([]string{
+		"QODER_AGENT_SDK_ENTRYPOINT=1",
+		"QODER_SDK_AUTH_PAYLOAD_FILE=/controlled/obsolete-payload.json",
+		`QODER_JOB_TOKEN={"token":"controlled-key"}`,
+	})
+	assert.NotContains(t, env, "QODER_AGENT_SDK_ENTRYPOINT=1")
+	assert.Contains(t, env, `QODER_JOB_TOKEN={"token":"controlled-key"}`)
+}

@@ -38,6 +38,10 @@ const (
 // mimoIgnoredEvents are the event types the worker reads and acts on nowhere.
 // Each entry states its reason. The default branch preserves an unknown event of the current session.
 var mimoIgnoredEvents = map[string]string{
+	"session.receipt.updated": "native input delivery metadata; conversation rows carry user input",
+	"session.inbox.delta":     "native inbox synchronization metadata",
+	"session.inbox.snapshot":  "native inbox synchronization metadata",
+
 	"session.idle":    "a deprecated repeat of session.status idle",
 	"session.created": "the create route already returned the session",
 	"session.updated": "LeapMux titles an agent itself; a title the model wrote would fight that",
@@ -49,8 +53,6 @@ var mimoIgnoredEvents = map[string]string{
 	"session.try_best.detected": "the native idle ends the optional handoff turn",
 	"command.executed":          "the goal and compaction routes report their own effect",
 	"inbox.arrived":             "actor.status states the same completion, and the parent turn it starts reports itself",
-	"actor.stuck":               "legacy; the server never emits it",
-	"actor.stalled":             "a watchdog hint; actor.status states the lifecycle",
 	"writer.cache_perf":         "checkpoint-writer telemetry",
 	"workflow.log":              "the workflow tool's own result carries its transcript",
 	"workflow.agent_failed":     "the failed actor's own actor.status ends its row",

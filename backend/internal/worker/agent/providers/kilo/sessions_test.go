@@ -42,13 +42,13 @@ func TestKiloDBPath(t *testing.T) {
 			"a machine holding both names must read the live store")
 	})
 
-	t.Run("falls back to the pre-fork name", func(t *testing.T) {
+	t.Run("ignores the obsolete pre-fork store", func(t *testing.T) {
 		t.Parallel()
 		data := t.TempDir()
 		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "opencode.db"), "")
 
 		q := agent.StoredSessionQuery{HomeDir: testutil.NativeAbsPath("/home/dev"), Getenv: agenttest.FixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
-		assert.Equal(t, filepath.Join(data, "kilo", "opencode.db"), kiloDBPath(q))
+		assert.Equal(t, filepath.Join(data, "kilo", "kilo.db"), kiloDBPath(q))
 	})
 
 	t.Run("names the current file when neither exists", func(t *testing.T) {

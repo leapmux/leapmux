@@ -4,17 +4,15 @@ import { ControlResponseState } from '../../../src/generated/proto/leapmux/v1/ag
 import { antigravityTest } from '../antigravity-fixtures'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
 import { currentNativeAgent, nativeModelContextText } from '../helpers/nativeScenario'
+import { writeAntigravityPlan } from '../helpers/providerToolCalls'
 import { answerPlanReview, assistantBubbles, chooseSettingsOption, controlBanner, enterControlFeedback, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
-import { writeAntigravityPlan } from './scenarios'
+import { antigravityNativeSessionPath } from './nativeStore'
 
 for (const decision of ['approve', 'reject'] as const) {
   antigravityTest(`reads the complete native plan file before ${decision}`, async ({ native, page, modelScript }) => {
     await chooseSettingsOption(page, 'permissionMode-plan')
     const agent = await currentNativeAgent(native)
-    const home = native.leapmuxServer.agentEnv?.HOME
-    if (!home)
-      throw new Error('The Antigravity plan scenario requires the isolated HOME.')
-    const path = join(home, '.gemini', 'antigravity-cli', 'brain', agent.agentSessionId, 'implementation_plan.md')
+    const path = join(antigravityNativeSessionPath(native, agent), 'implementation_plan.md')
     const plan = '# Native complete plan\n\n1. Read the actual source.\n2. Apply only the approved change.\n'
     const start = await modelScript.queue(
       {
@@ -59,10 +57,7 @@ for (const decision of ['approve', 'reject'] as const) {
 antigravityTest('requests a revision and presents one new review card for it', async ({ native, page, modelScript }) => {
   await chooseSettingsOption(page, 'permissionMode-plan')
   const agent = await currentNativeAgent(native)
-  const home = native.leapmuxServer.agentEnv?.HOME
-  if (!home)
-    throw new Error('The Antigravity plan scenario requires the isolated HOME.')
-  const path = join(home, '.gemini', 'antigravity-cli', 'brain', agent.agentSessionId, 'implementation_plan.md')
+  const path = join(antigravityNativeSessionPath(native, agent), 'implementation_plan.md')
   const feedback = 'Add a verification step before implementation.'
   const start = await modelScript.queue(
     {
@@ -98,10 +93,7 @@ antigravityTest('requests a revision and presents one new review card for it', a
 antigravityTest('approves with Clear Context and carries the full plan into the new cascade', async ({ native, page, modelScript }) => {
   await chooseSettingsOption(page, 'permissionMode-plan')
   const agent = await currentNativeAgent(native)
-  const home = native.leapmuxServer.agentEnv?.HOME
-  if (!home)
-    throw new Error('The Antigravity plan scenario requires the isolated HOME.')
-  const path = join(home, '.gemini', 'antigravity-cli', 'brain', agent.agentSessionId, 'implementation_plan.md')
+  const path = join(antigravityNativeSessionPath(native, agent), 'implementation_plan.md')
   // The fresh cascade's first prompt is this plan, so it must carry the scenario marker.
   const plan = modelScript.prompt('# Plan for a fresh cascade\n\nRead the source.\nVerify the approved change.\n')
   const start = await modelScript.queue(

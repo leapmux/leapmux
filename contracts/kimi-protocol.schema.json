@@ -23,8 +23,7 @@
     "defaultMode",
     "notificationEvents",
     "frames",
-    "interactionKinds",
-    "versions"
+    "interactionKinds"
   ],
   "$defs": {
     "table": {
@@ -200,19 +199,6 @@
     },
     "interactionKinds": {
       "$ref": "#/$defs/table"
-    },
-    "versions": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "Minimum"
-      ],
-      "properties": {
-        "Minimum": {
-          "type": "string",
-          "pattern": "^\\d+\\.\\d+\\.\\d+$"
-        }
-      }
     }
   }
 }

@@ -3,7 +3,6 @@ package goose
 import (
 	"context"
 	"database/sql"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -47,56 +46,35 @@ WHERE working_dir = ?
 ORDER BY julianday(COALESCE(updated_at, created_at, '')) DESC
 LIMIT ?`
 
-// gooseSessionDBRelPath is the database's path under Goose's data directory.
-var gooseSessionDBRelPath = []string{"sessions", "sessions.db"}
-
-// gooseDBCandidates lists the paths Goose's session database can be at, in the
-// order the CLI itself would resolve them.
-//
-// GOOSE_PATH_ROOT wins when it is ABSOLUTE -- Goose ignores a relative value
-// rather than resolving it, and so does this.
-//
-// Otherwise Goose asks etcetera's `choose_app_strategy`, which follows the XDG
-// layout when the XDG variables decide it and the platform-native layout
-// otherwise. Rather than reimplement that choice, both are probed and the one
-// that HOLDS a database wins. The observed installation on macOS with no XDG
-// variables set resolved to `~/.local/share/goose`, so XDG is first; the
-// `Block` directory is the legacy Apple location Goose's own source keeps for
-// installations that predate the change.
-func gooseDBCandidates(q agent.StoredSessionQuery) []string {
-	var dirs []string
-	if root := strings.TrimSpace(q.Env("GOOSE_PATH_ROOT")); root != "" && filepath.IsAbs(root) {
-		dirs = append(dirs, filepath.Join(root, "data"))
-	}
-	if base := q.XDGDataHome(); base != "" {
-		dirs = append(dirs, filepath.Join(base, "goose"))
-	}
-	if runtime.GOOS == "darwin" {
-		if home := q.Home(); home != "" {
-			dirs = append(dirs, filepath.Join(home, "Library", "Application Support", "Block", "goose"))
-		}
-	}
-	paths := make([]string, 0, len(dirs))
-	for _, dir := range dirs {
-		paths = append(paths, filepath.Join(append([]string{dir}, gooseSessionDBRelPath...)...))
-	}
-	return paths
+// gooseDBPath follows the current native directory strategy. An absolute override
+// remains authoritative even before the runtime creates its database.
+func gooseDBPath(q agent.StoredSessionQuery) string {
+	return gooseDBPathForPlatform(q, runtime.GOOS)
 }
 
-// gooseDBPath picks the first candidate that exists, and otherwise the first
-// candidate at all, so an absent store is reported against the path a reader
-// would expect to find.
-func gooseDBPath(q agent.StoredSessionQuery) string {
-	candidates := gooseDBCandidates(q)
-	for _, path := range candidates {
-		if _, err := os.Stat(path); err == nil {
-			return path
+func gooseDBPathForPlatform(q agent.StoredSessionQuery, platform string) string {
+	if root := q.Env("GOOSE_PATH_ROOT"); filepath.IsAbs(root) {
+		return filepath.Join(root, "data", "sessions", "sessions.db")
+	}
+	var base string
+	if platform == "windows" {
+		base = q.Env("APPDATA")
+		if base == "" && q.Home() != "" {
+			base = filepath.Join(q.Home(), "AppData", "Roaming")
 		}
+		if base == "" {
+			return ""
+		}
+		return filepath.Join(base, "Block", "goose", "data", "sessions", "sessions.db")
 	}
-	if len(candidates) == 0 {
-		return ""
+	base = q.Env("XDG_DATA_HOME")
+	if !filepath.IsAbs(base) {
+		if q.Home() == "" {
+			return ""
+		}
+		base = filepath.Join(q.Home(), ".local", "share")
 	}
-	return candidates[0]
+	return filepath.Join(base, "goose", "sessions", "sessions.db")
 }
 
 // gooseStoredSessions is Goose's Provider.ListStoredSessions.

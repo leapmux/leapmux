@@ -3,14 +3,14 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -42,80 +42,94 @@ type Agent struct {
 
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
-	streamWG     sync.WaitGroup
+	streamWG     *sync.WaitGroup
 	inputWG      sync.WaitGroup
 	approvalWork providerkit.CoalescingWork
+	quotaWork    providerkit.CoalescingWork
 	settingsMu   sync.Mutex
+	childSetupMu sync.Mutex
 
-	// Mu protects every field below. A stream applies its whole frame in order,
-	// and no caller holds Mu across a sink call or an HTTP request.
-	sessionID           string
-	generation          uint64
-	sessionSwitching    bool
-	root                *cascadeState
-	cascades            map[string]*cascadeState
-	catalog             antigravityCatalog
-	model               string
-	effort              string
-	mode                string
-	slashCommands       []string
-	planPromptRequestID string
+	// Mu protects streamCtx, streamCancel, streamWG, and every field below.
+	// No caller holds Mu across a sink call or an HTTP request.
+	sessionID        string
+	generation       uint64
+	sessionSwitching bool
+	root             *cascadeState
+	cascades         map[string]*cascadeState
+	catalog          antigravityCatalog
+	model            string
+	effort           string
+	mode             string
+	slashCommands    []string
 }
 
 type cascadeState struct {
-	id            string
-	sink          agent.ProviderServices
-	parent        *cascadeState
-	childAgentID  string
-	generation    uint64
-	seededCount   int
-	stored        bool
-	seenUpdate    bool
-	trajectoryID  string
-	steps         map[int]*stepState
-	turnSteps     map[int]struct{}
-	childKeys     map[string]*childKey
-	background    map[int]backgroundTask
-	controls      map[int]*antigravityControl
-	turnActive    bool
-	sendInFlight  bool
-	heldError     string
-	interrupted   bool
-	retryPending  bool
-	planPath      string
-	contextWindow int64
-	contextTokens int64
-	rowOpen       bool
-	stopped       bool
-	closed        bool
-	connectErr    error
-	connected     chan struct{}
-	connectedOnce sync.Once
-	done          chan struct{}
+	id           string
+	sink         agent.ProviderServices
+	parent       *cascadeState
+	childAgentID string
+	generation   uint64
+	seededCount  int
+	stored       bool
+	seenUpdate   bool
+	trajectoryID string
+	steps        map[int]*stepState
+	turnSteps    map[int]struct{}
+	childKeys    map[string]*childKey
+	background   map[int]backgroundTask
+	// Removed tasks stay owned until their close enters the Worker output queue.
+	closingBackground map[string]backgroundTask
+	controls          map[int]*antigravityControl
+	planControl       *antigravityControl
+	turnPhase         cascadeTurnPhase
+	sendInFlight      bool
+	heldErrorStep     json.RawMessage
+	interrupted       bool
+	retryPending      bool
+	planPath          string
+	contextWindow     int64
+	contextTokens     int64
+	rowOpen           bool
+	closed            bool
+	connectErr        error
+	streamDone        chan struct{}
+	connected         chan struct{}
+	connectedOnce     sync.Once
+}
+
+type cascadeTurnPhase uint8
+
+const (
+	cascadeTurnIdle cascadeTurnPhase = iota
+	cascadeTurnActive
+	cascadeTurnFinalizing
+)
+
+type cascadeTurnStart struct {
+	state   *cascadeState
+	seq     uint64
+	revival *agent.OutputTicket
 }
 
 type stepState struct {
-	status        string
-	persisted     bool
-	livePersisted bool
-	spanID        string
-	text          string
-	thinking      string
-	modelUsage    map[string]string
-	raw           json.RawMessage
-	background    bool
+	status             string
+	consumed           bool
+	liveOutputAccepted bool
+	spanID             string
+	text               string
+	toolStep           bool
+	modelUsage         map[string]string
+	raw                json.RawMessage
 }
 
 type childKey struct {
-	role            string
-	spawnSpanID     string
-	prompt          string
-	promptPersisted bool
-	stored          bool
-	idle            bool
-	refused         bool
-	linked          bool
-	state           *cascadeState
+	role        string
+	spawnSpanID string
+	stored      bool
+	idle        bool
+	refused     bool
+	linked      bool
+	state       *cascadeState
 }
 
 type backgroundTask struct {
@@ -141,9 +155,10 @@ func newAgentState(sink agent.ProviderServices, rpc antigravityRPC, workingDir s
 	if rpc.timeout <= 0 {
 		rpc.timeout = 30 * time.Second
 	}
+	sink = agent.NewOrderedProviderServices(sink.OutputQueue(), sink)
 	a := &Agent{
 		sink: sink, rpc: rpc, workingDir: workingDir, workspace: workingDir,
-		clock: clock, cascades: map[string]*cascadeState{}, mode: "default",
+		clock: clock, streamWG: &sync.WaitGroup{}, cascades: map[string]*cascadeState{}, mode: contracts.AntigravityModeDefault,
 	}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
 		Ctx: context.Background(), ProcessDone: make(chan struct{}), Clock: clock,
@@ -156,8 +171,8 @@ func newCascadeState(id string, sink agent.ProviderServices, generation uint64, 
 	return &cascadeState{
 		id: id, sink: sink, generation: generation, stored: stored,
 		steps: map[int]*stepState{}, turnSteps: map[int]struct{}{}, childKeys: map[string]*childKey{},
-		background: map[int]backgroundTask{}, controls: map[int]*antigravityControl{},
-		connected: make(chan struct{}), done: make(chan struct{}),
+		background: map[int]backgroundTask{}, closingBackground: map[string]backgroundTask{}, controls: map[int]*antigravityControl{},
+		connected: make(chan struct{}),
 	}
 }
 
@@ -169,21 +184,68 @@ func (a *Agent) installRoot(id string, stored bool) *cascadeState {
 	return root
 }
 
+func (a *Agent) cascadeInstalledLocked(state *cascadeState) bool {
+	return state != nil && a.cascades[state.id] == state
+}
+
+func (a *Agent) cascadeInstalled(state *cascadeState) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.cascadeInstalledLocked(state)
+}
+
+func (a *Agent) cascadeCurrentLocked(state *cascadeState) bool {
+	return a.cascadeInstalledLocked(state) && state.generation == a.generation && !a.StoppedLocked()
+}
+
+func (a *Agent) cascadeCurrent(state *cascadeState) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.cascadeCurrentLocked(state)
+}
+
+func (a *Agent) acceptsCascadeUpdate(state *cascadeState) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.cascadeCurrentLocked(state) && !state.closed && !a.IsDiscardingOutput()
+}
+
 func (a *Agent) startCascadeStream(state *cascadeState) {
-	a.streamWG.Add(1)
+	a.startCascadeWorker(state, a.runCascadeStream)
+}
+
+func (a *Agent) startCascadeWorker(state *cascadeState, work func(context.Context, *cascadeState)) {
+	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed || a.streamCtx.Err() != nil || a.IsDiscardingOutput() {
+		a.Mu.Unlock()
+		return
+	}
+	if state.streamDone != nil {
+		select {
+		case <-state.streamDone:
+		default:
+			a.Mu.Unlock()
+			return
+		}
+	}
+	done := make(chan struct{})
+	state.streamDone = done
+	ctx, group := a.streamCtx, a.streamWG
+	group.Add(1)
+	a.Mu.Unlock()
 	go func() {
-		defer a.streamWG.Done()
-		defer close(state.done)
-		a.runCascadeStream(state)
+		defer group.Done()
+		defer close(done)
+		work(ctx, state)
 	}()
 }
 
-func (a *Agent) runCascadeStream(state *cascadeState) {
+func (a *Agent) runCascadeStream(ctx context.Context, state *cascadeState) {
 	delay := antigravityStreamRetryFirst
 	emptyAttempts := 0
 	undecodable := 0
 	for {
-		if a.streamCtx.Err() != nil {
+		if ctx.Err() != nil {
 			return
 		}
 		a.Mu.Lock()
@@ -194,7 +256,7 @@ func (a *Agent) runCascadeStream(state *cascadeState) {
 			return
 		}
 		firstOnAttempt := true
-		delivered, err := a.rpc.consumeStream(a.streamCtx, state.id, startIndex, func(update agentStateUpdate) error {
+		delivered, err := a.rpc.consumeStream(ctx, state.id, startIndex, func(update agentStateUpdate) error {
 			first := firstOnAttempt
 			firstOnAttempt = false
 			if err := a.applyUpdate(state, update, first); err != nil {
@@ -202,7 +264,7 @@ func (a *Agent) runCascadeStream(state *cascadeState) {
 			}
 			return nil
 		})
-		if a.streamCtx.Err() != nil {
+		if ctx.Err() != nil {
 			return
 		}
 		if isUndecodableFrame(err) {
@@ -221,7 +283,7 @@ func (a *Agent) runCascadeStream(state *cascadeState) {
 				delay = antigravityStreamRetryFirst
 			} else {
 				emptyAttempts++
-				statusErr := a.rpc.status(a.streamCtx)
+				statusErr := a.rpc.status(ctx)
 				if statusErr != nil && emptyAttempts >= 5 || statusErr == nil && emptyAttempts >= 30 {
 					fatal = true
 					if statusErr != nil {
@@ -237,7 +299,7 @@ func (a *Agent) runCascadeStream(state *cascadeState) {
 		slog.Debug("antigravity stream ended; reconnecting", "agent_id", a.AgentID(), "cascade_id", state.id, "error", err, "delay", delay)
 		timer := a.clock.NewTimer(delay, antigravityStreamReconnectTimerTag)
 		select {
-		case <-a.streamCtx.Done():
+		case <-ctx.Done():
 			timer.Stop(antigravityStreamReconnectTimerTag)
 			return
 		case <-a.ProcessDone():
@@ -250,8 +312,9 @@ func (a *Agent) runCascadeStream(state *cascadeState) {
 }
 
 func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstOnAttempt bool) error {
+	queue := a.sink.OutputQueue()
 	a.Mu.Lock()
-	if a.cascades[state.id] != state || state.generation != a.generation || state.closed {
+	if a.IsDiscardingOutput() || a.cascades[state.id] != state || state.generation != a.generation || state.closed {
 		a.Mu.Unlock()
 		return nil
 	}
@@ -274,14 +337,24 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 			record.idle = child.Status == cascadeStatusIdle
 		}
 	}
+	var start *cascadeTurnStart
+	if update.Status == cascadeStatusRunning || update.Status == cascadeStatusBusy {
+		start = a.beginTurnLocked(state, queue)
+	}
 	a.Mu.Unlock()
+	a.publishTurnStart(start)
 
-	a.applyBackgroundTasks(state, update.BackgroundTasks, firstOnAttempt)
+	if err := a.applyBackgroundTasks(state, update.BackgroundTasks, firstOnAttempt); err != nil {
+		return err
+	}
 
 	patch := update.MainTrajectory.StepsUpdate
 	for position, raw := range patch.Steps {
 		if position >= len(patch.Indices) {
 			break
+		}
+		if !a.acceptsCascadeUpdate(state) {
+			return nil
 		}
 		index := patch.Indices[position]
 		a.Mu.Lock()
@@ -290,6 +363,17 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 			continue
 		}
 		previous := state.steps[index]
+		if previous != nil && previous.consumed {
+			a.Mu.Unlock()
+			if step, err := decodeStep(raw); err == nil {
+				a.Mu.Lock()
+				if state.steps[index] == previous && previous.consumed {
+					previous.modelUsage = step.Metadata.ModelUsage
+				}
+				a.Mu.Unlock()
+			}
+			continue
+		}
 		isNew := previous == nil
 		if previous == nil {
 			previous = &stepState{}
@@ -299,92 +383,136 @@ func (a *Agent) applyUpdate(state *cascadeState, update agentStateUpdate, firstO
 		if isNew {
 			a.beginTurn(state)
 		}
+		if !a.acceptsCascadeUpdate(state) {
+			return nil
+		}
 		a.Mu.Lock()
 		state.turnSteps[index] = struct{}{}
 		a.Mu.Unlock()
 		step, err := decodeStep(raw)
 		if err != nil {
-			a.persistUnknownStep(state, index, raw)
+			if err := a.persistUnknownStep(state, index, raw); err != nil {
+				return err
+			}
 			continue
 		}
-		a.applyStep(state, index, step, raw)
+		if err := a.applyStep(state, index, step, raw); err != nil {
+			return err
+		}
 	}
 
+	if !a.acceptsCascadeUpdate(state) {
+		return nil
+	}
 	if update.ExecutionStatus.ModelRequest != nil {
 		a.noteModelRetry(state, update.ExecutionStatus.ModelRequest)
+	}
+	if !a.acceptsCascadeUpdate(state) {
+		return nil
 	}
 	if update.ContextWindowUsage != nil {
 		a.publishContextUsage(state, update.ContextWindowUsage)
 	}
-	if update.Status == cascadeStatusRunning || update.Status == cascadeStatusBusy {
-		a.beginTurn(state)
+	if !a.acceptsCascadeUpdate(state) {
+		return nil
 	}
 	if update.Status == cascadeStatusIdle {
-		a.endTurn(state, agent.MessageCompletionComplete)
+		if err := a.endTurn(state, agent.MessageCompletionComplete); err != nil {
+			return err
+		}
 	}
 	a.ensureChildren(state)
 	a.Mu.Lock()
-	connectErr := state.connectErr
-	a.Mu.Unlock()
-	if connectErr == nil {
+	if a.cascadeCurrentLocked(state) && !state.closed && state.connectErr == nil {
 		state.connectedOnce.Do(func() { close(state.connected) })
 	}
+	a.Mu.Unlock()
 	return nil
 }
 
 func (a *Agent) firstOpenIndexLocked(state *cascadeState) int {
-	first := -1
-	last := state.seededCount
-	for index, step := range state.steps {
-		last = max(last, index+1)
-		if index >= state.seededCount && isOpenStepStatus(step.status) {
-			if _, background := state.background[index]; !background && (first < 0 || index < first) {
-				first = index
-			}
+	for index := state.seededCount; ; index++ {
+		step := state.steps[index]
+		if step == nil {
+			return index
 		}
+		if step.consumed {
+			continue
+		}
+		if _, background := state.background[index]; background && isOpenStepStatus(step.status) && step.liveOutputAccepted {
+			continue
+		}
+		return index
 	}
-	if first >= 0 {
-		return first
-	}
-	return last
 }
 
 func (a *Agent) beginTurn(state *cascadeState) {
+	queue := a.sink.OutputQueue()
 	a.Mu.Lock()
-	if state.turnActive || state.closed {
-		a.Mu.Unlock()
-		return
+	start := a.beginTurnLocked(state, queue)
+	a.Mu.Unlock()
+	a.publishTurnStart(start)
+}
+
+func (a *Agent) beginTurnLocked(state *cascadeState, queue *agent.OutputQueue) *cascadeTurnStart {
+	if !a.cascadeCurrentLocked(state) || state.turnPhase != cascadeTurnIdle || state.closed {
+		return nil
 	}
-	state.turnActive = true
+	state.turnPhase = cascadeTurnActive
 	state.sendInFlight = false
 	state.interrupted = false
 	state.planPath = ""
 	state.turnSteps = map[int]struct{}{}
-	seq := a.NextTurnSeq()
-	isChild := state.parent != nil
-	rowKey, revive := state.id, state.rowOpen
-	if isChild && !revive {
+	start := &cascadeTurnStart{state: state, seq: a.NextTurnSeq()}
+	if state.parent != nil {
+		if !state.rowOpen {
+			sink, rowKey := a.sink, state.id
+			start.revival = queue.Append(agent.OutputWrite{
+				ScopeID: rowKey, RetainedBytes: len(rowKey), Label: "revive an Antigravity subagent",
+				Run: func() error { return sink.ReviveBackgroundTask(rowKey) },
+			})[0]
+		}
 		state.rowOpen = true
 	}
-	a.Mu.Unlock()
-	if isChild {
-		if revive {
-			providerkit.LogRegistryRefusal("antigravity", "revive", a.sink.ReviveBackgroundTask(rowKey))
-		}
-		providerkit.PublishSteerableTurnActiveTo(state.sink, true, seq)
+	return start
+}
+
+func (a *Agent) publishTurnStart(start *cascadeTurnStart) {
+	if start == nil {
 		return
 	}
-	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: true, Steerable: true}, seq)
-	a.sink.ReportProgress(agent.ResetModelProgress())
+	if start.revival != nil {
+		if queue := start.revival.Queue(); queue != nil {
+			a.flushBackgroundTaskWrites(queue)
+		}
+	}
+	state := start.state
+	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed || a.IsDiscardingOutput() {
+		a.Mu.Unlock()
+		return
+	}
+	snapshot := a.turnStateLocked(state)
+	a.Mu.Unlock()
+	providerkit.PublishTurnStateTo(state.sink, snapshot, start.seq)
+	if state.parent == nil && a.acceptsCascadeUpdate(state) {
+		a.sink.ReportProgress(agent.ResetModelProgress())
+	}
+}
+
+func (a *Agent) turnStateLocked(state *cascadeState) agent.TurnState {
+	if !a.cascadeCurrentLocked(state) {
+		return agent.TurnState{}
+	}
+	return agent.TurnState{
+		Active:    state.turnPhase != cascadeTurnIdle || state.sendInFlight,
+		Steerable: state.turnPhase == cascadeTurnActive && !state.closed && !a.sessionSwitching && a.streamCtx.Err() == nil && !a.IsDiscardingOutput(),
+	}
 }
 
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	state := agent.TurnState{}
-	if a.root != nil {
-		state = agent.TurnState{Active: a.root.turnActive || a.root.sendInFlight, Steerable: a.root.turnActive}
-	}
-	seq := a.NextTurnSeq()
+	state, seq := a.turnStateLocked(a.root), a.NextTurnSeq()
 	a.Mu.Unlock()
 	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }
@@ -406,24 +534,28 @@ func (a *Agent) HandleOutput(content []byte) {
 func (a *Agent) childState(childKey string) (*cascadeState, error) {
 	a.Mu.Lock()
 	state := a.cascades[childKey]
-	a.Mu.Unlock()
-	if state == nil {
+	if !a.cascadeCurrentLocked(state) {
+		a.Mu.Unlock()
 		return nil, agent.ErrChildRouteNotReady
 	}
+	connected, ctx := state.connected, a.streamCtx
+	a.Mu.Unlock()
 	timer := a.clock.NewTimer(a.APITimeout(), antigravityChildAttachTimerTag)
 	defer timer.Stop(antigravityChildAttachTimerTag)
 	select {
-	case <-state.connected:
+	case <-connected:
 		a.Mu.Lock()
-		err := state.connectErr
-		a.Mu.Unlock()
-		if err != nil {
-			return nil, err
+		defer a.Mu.Unlock()
+		if !a.cascadeCurrentLocked(state) || state.connected != connected {
+			return nil, agent.ErrChildRouteNotReady
+		}
+		if state.connectErr != nil {
+			return nil, state.connectErr
 		}
 		return state, nil
 	case <-timer.C:
 		return nil, agent.ErrChildRouteNotReady
-	case <-a.streamCtx.Done():
+	case <-ctx.Done():
 		return nil, fmt.Errorf("agent is stopped")
 	}
 }
@@ -431,46 +563,16 @@ func (a *Agent) childState(childKey string) (*cascadeState, error) {
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	state := a.cascades[childKey]
-	if state == nil {
-		return agent.TurnState{}
-	}
-	return agent.TurnState{Active: state.turnActive || state.sendInFlight, Steerable: state.turnActive}
+	return a.turnStateLocked(a.cascades[childKey])
 }
 
 func (a *Agent) SupportsSteering() bool     { return true }
 func (a *Agent) SteerSurvivesTurnEnd() bool { return true }
 
 func isInputNotRegistered(err error) bool {
-	return providerkit.IsHTTPStatus(err, 500) && errors.Is(err, err) && containsInputNotRegistered(streamErrorText(err))
-}
-
-func containsInputNotRegistered(text string) bool {
-	return len(text) >= len("input not registered") && stringContainsFold(text, "input not registered")
-}
-
-func stringContainsFold(text, substring string) bool {
-	for index := 0; index+len(substring) <= len(text); index++ {
-		match := true
-		for offset := range len(substring) {
-			left, right := text[index+offset], substring[offset]
-			if left >= 'A' && left <= 'Z' {
-				left += 'a' - 'A'
-			}
-			if left != right {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
+	return providerkit.IsHTTPStatus(err, 500) && strings.Contains(strings.ToLower(streamErrorText(err)), "input not registered")
 }
 
 func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	return a.executeControlReply(data)
 }
-
-var _ = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT

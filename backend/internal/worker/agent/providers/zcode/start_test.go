@@ -81,12 +81,6 @@ func TestZCodeStartupProcess(t *testing.T) {
 		}
 		reply := map[string]any{"id": request.ID}
 		switch request.Method {
-		case MethodUpdateProviderRegistry:
-			if os.Getenv("LEAPMUX_ZCODE_FIXTURE_PROTOCOL") == "legacy" {
-				reply["error"] = map[string]any{"code": -32602, "message": "the legacy registry requires providers"}
-			} else {
-				reply["error"] = map[string]any{"code": ErrMethodNotFound, "message": "method not found"}
-			}
 		case MethodUpdateAccountConfig:
 			var params struct {
 				Revision string `json:"revision"`
@@ -134,7 +128,7 @@ func TestZCodeStartupProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func zcodeStartupFixture(t *testing.T, protocol, legacyConfig string) (agent.Options, string) {
+func zcodeStartupFixture(t *testing.T, desktopConfig string) (agent.Options, string) {
 	t.Helper()
 	shell, err := exec.LookPath("sh")
 	require.NoError(t, err)
@@ -143,8 +137,8 @@ func zcodeStartupFixture(t *testing.T, protocol, legacyConfig string) (agent.Opt
 	home, working := t.TempDir(), t.TempDir()
 	configDir := filepath.Join(home, ".zcode", "v2")
 	require.NoError(t, os.MkdirAll(configDir, 0o700))
-	if legacyConfig != "" {
-		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.json"), []byte(legacyConfig), 0o600))
+	if desktopConfig != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.json"), []byte(desktopConfig), 0o600))
 	}
 	// The native personal file is independent of the legacy registry and OAuth store.
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "provider_config.json"), []byte(`{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[{"providerId":"personal:work","enabled":true,"config":{"access":{"type":"api-key","apiKey":"fixture-key"},"api":{"type":"openai-chat-completions","baseUrl":"https://model.invalid/v1"},"personalModelIds":["m"]}}]}}}`), 0o600))
@@ -155,7 +149,7 @@ func zcodeStartupFixture(t *testing.T, protocol, legacyConfig string) (agent.Opt
 	previous, existed := zcodeLaunchCache.Load(key)
 	zcodeLaunchCache.Store(key, zcodeLaunchCacheEntry{res: launch.Found, spec: launch.Spec{
 		Program: executable, PrefixArgs: []string{"-test.run=^TestZCodeStartupProcess$", "--"},
-		Env: []string{"LEAPMUX_ZCODE_STARTUP_FIXTURE=1", "LEAPMUX_ZCODE_FIXTURE_PROTOCOL=" + protocol,
+		Env: []string{"LEAPMUX_ZCODE_STARTUP_FIXTURE=1",
 			"LEAPMUX_ZCODE_FIXTURE_DATABASE=" + filepath.Join(home, "native.db"), "LEAPMUX_ZCODE_FIXTURE_CALLS=" + calls,
 			zcodeBuiltinProviderConfigEnv + "=" + builtin},
 	}})
@@ -175,7 +169,7 @@ func TestZCodeStart_UsesNativePersonalProvidersWithoutALegacyRegistry(t *testing
 	// Launch resolution is a package cache, so these fixtures run serially.
 	for _, legacyConfig := range []string{"", `{"provider":{}}`} {
 		t.Run(legacyConfig, func(t *testing.T) {
-			opts, _ := zcodeStartupFixture(t, "current", legacyConfig)
+			opts, _ := zcodeStartupFixture(t, legacyConfig)
 			started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 			require.NoError(t, err)
 			t.Cleanup(func() { started.Stop(); _ = started.Wait() })
@@ -188,23 +182,8 @@ func TestZCodeStart_UsesNativePersonalProvidersWithoutALegacyRegistry(t *testing
 	}
 }
 
-func TestZCodeStart_RequiresARegistryOnlyAfterLegacyProtocolDetection(t *testing.T) {
-	for _, legacyConfig := range []string{"", `{"provider":{}}`} {
-		t.Run(legacyConfig, func(t *testing.T) {
-			opts, calls := zcodeStartupFixture(t, "legacy", legacyConfig)
-			started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
-			require.Error(t, err)
-			assert.Nil(t, started)
-			data, readErr := os.ReadFile(calls)
-			require.NoError(t, readErr)
-			assert.Contains(t, string(data), MethodUpdateProviderRegistry)
-			assert.NotContains(t, string(data), MethodSessionCreate)
-		})
-	}
-}
-
 func TestZCodeStart_ReportsNativePersonalConfigurationFailure(t *testing.T) {
-	opts, _ := zcodeStartupFixture(t, "current", "")
+	opts, _ := zcodeStartupFixture(t, "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_INVALID_PERSONAL=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.ErrorContains(t, err, "native provider configuration has no executable model")
@@ -214,7 +193,7 @@ func TestZCodeStart_ReportsNativePersonalConfigurationFailure(t *testing.T) {
 // A subscribe reply that proves nothing fails the whole start: the agent must
 // not run without a live event stream.
 func TestZCodeStart_ReportsAnInvalidSubscribeReceipt(t *testing.T) {
-	opts, _ := zcodeStartupFixture(t, "current", "")
+	opts, _ := zcodeStartupFixture(t, "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_BAD_SUBSCRIBE=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.ErrorContains(t, err, MethodSessionSubscribe)
@@ -222,7 +201,7 @@ func TestZCodeStart_ReportsAnInvalidSubscribeReceipt(t *testing.T) {
 }
 
 func TestZCodeStart_RejectsMalformedLegacyConfigurationBeforeTheServer(t *testing.T) {
-	opts, calls := zcodeStartupFixture(t, "current", "{")
+	opts, calls := zcodeStartupFixture(t, "{")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
 	assert.Nil(t, started)
@@ -242,20 +221,20 @@ func zcodeStartupCalls(t *testing.T, calls string) string {
 // The registry refresh sits between the initial account snapshot and the startup
 // catalog read, and its acknowledgement is required.
 func TestZCodeStart_RequiresARefreshedRegistryAcknowledgement(t *testing.T) {
-	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts, calls := zcodeStartupFixture(t, "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_BAD_REGISTRY_REFRESH=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
 	assert.Nil(t, started)
 	assert.Equal(t, strings.Join([]string{
-		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
 	}, "\n"), zcodeStartupCalls(t, calls),
 		"a refused registry refresh stops the start before the catalog read")
 }
 
 // A complete catalog controls choices without changing the observed current model.
 func TestZCodeCatalog_RetainsAnUnavailableCurrentModelAtStartup(t *testing.T) {
-	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts, calls := zcodeStartupFixture(t, "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_REVOKED_MODEL=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
@@ -265,7 +244,7 @@ func TestZCodeCatalog_RetainsAnUnavailableCurrentModelAtStartup(t *testing.T) {
 	snapshot := native.SettingsSnapshot()
 	assert.Equal(t, agent.OptionSettlementUnresolved, snapshot.Settlements[agent.OptionIDModel].State)
 	assert.Equal(t, strings.Join([]string{
-		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
 		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,
 	}, "\n"), zcodeStartupCalls(t, calls), "startup must not choose a different model")
 }
@@ -273,7 +252,7 @@ func TestZCodeCatalog_RetainsAnUnavailableCurrentModelAtStartup(t *testing.T) {
 // A persisted selection that the live catalog still holds stays: the repair adds
 // no setter call of its own.
 func TestZCodeModelRepair_RetainsAValidPersistedSelection(t *testing.T) {
-	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts, calls := zcodeStartupFixture(t, "")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
@@ -282,7 +261,7 @@ func TestZCodeModelRepair_RetainsAValidPersistedSelection(t *testing.T) {
 	defer native.Mu.Unlock()
 	assert.Equal(t, "personal:work/m", native.model)
 	assert.Equal(t, strings.Join([]string{
-		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
 		MethodSessionCreate, MethodSetModel, MethodSetMode, MethodSessionSubscribe,
 	}, "\n"), zcodeStartupCalls(t, calls),
 		"the normal reassertion is the only setter call")
@@ -291,7 +270,7 @@ func TestZCodeModelRepair_RetainsAValidPersistedSelection(t *testing.T) {
 // An explicitly empty live catalog is the authoritative answer: no setter call,
 // and the model is unresolved.
 func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *testing.T) {
-	opts, calls := zcodeStartupFixture(t, "current", "")
+	opts, calls := zcodeStartupFixture(t, "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_EMPTY_CATALOG=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
@@ -302,7 +281,7 @@ func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *tes
 	assert.Equal(t, "personal:work/revoked", native.model, "an empty catalog manufactures no model")
 	assert.True(t, native.zcodeCurrentModelUnavailableLocked(), "the current model remains unavailable")
 	assert.Equal(t, strings.Join([]string{
-		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
+		MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
 		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,
 	}, "\n"), zcodeStartupCalls(t, calls),
 		"an explicitly empty catalog makes no setter call")

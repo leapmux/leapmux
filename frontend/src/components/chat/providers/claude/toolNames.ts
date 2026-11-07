@@ -67,9 +67,8 @@ export type ClaudeToolName = typeof CLAUDE_TOOL_NAMES[keyof typeof CLAUDE_TOOL_N
 /**
  * The second name each of these tools also answers to.
  *
- * The command line interface registers one tool under two names for
- * compatibility with an older release, and a transcript recorded then still
- * carries the old one. `canonicalClaudeToolName` folds each key into its value,
+ * The current command line interface registers these aliases alongside the
+ * canonical tools. `canonicalClaudeToolName` folds each key into its value,
  * ONCE, at the extraction boundary.
  *
  * A Map rather than an object, for the reason `CLAUDE_TOOL_KINDS` gives: the name
@@ -80,8 +79,6 @@ export type ClaudeToolName = typeof CLAUDE_TOOL_NAMES[keyof typeof CLAUDE_TOOL_N
  */
 export const CLAUDE_TOOL_ALIAS: ReadonlyMap<string, ClaudeToolName> = new Map<string, ClaudeToolName>([
   ['Task', CLAUDE_TOOL_NAMES.AGENT],
-  ['BashOutput', CLAUDE_TOOL_NAMES.TASK_OUTPUT],
-  ['AgentOutput', CLAUDE_TOOL_NAMES.TASK_OUTPUT],
   ['KillShell', CLAUDE_TOOL_NAMES.TASK_STOP],
   ['KillBash', CLAUDE_TOOL_NAMES.TASK_STOP],
   ['ListPeers', CLAUDE_TOOL_NAMES.LIST_AGENTS],

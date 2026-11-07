@@ -27,15 +27,17 @@ describe('ampExtractControl', () => {
     })
   })
 
-  // The legacy `Bash` tool of an old thread states its command as `cmd`, and the
-  // banner reads it as the transcript does.
-  it('reads the command of a legacy Bash call', () => {
+  // The current Bash registration states its command as cmd and its directory as cwd.
+  it('reads the command and directory of the current Bash call', () => {
     const surface = ampExtractControl({
-      payload: request('Bash', { cmd: 'make clean' }),
+      payload: request('Bash', { cmd: 'make clean', cwd: '/bash-work' }),
     })
     expect(surface?.kind === 'permission'
       ? surface.permission.command
       : 'none').toBe('make clean')
+    expect(surface?.kind === 'permission'
+      ? surface.permission.workingDirectory
+      : undefined).toBe('/bash-work')
   })
 
   // The executor runs `shell_command` as `async_shell_command`, so a helper run can

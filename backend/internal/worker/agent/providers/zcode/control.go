@@ -663,56 +663,20 @@ func zcodeJSONEqual(left, right json.RawMessage) bool {
 // answerProviderRuntimeHeaders answers the app-server's request for freshly-minted
 // provider credentials.
 //
-// Legacy builds already hold the inline key from workspace/updateProviderRegistry,
-// so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
-// in the host and requires the key in `requestAuth` for each model request, which
-// accountRequestAuth resolves.
+// The current app-server keeps account credentials in the host and requests
+// requestAuth for each model request. Credential minting leaves the event reader free.
 //
 // The answer is the registration prepareZCodeRuntimeHeaderAnswer made; every
 // reply goes through it, so a withdrawn answer writes nothing.
 func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage, answer *zcodeRuntimeHeaderAnswer) {
-	a.Mu.Lock()
-	accountConfig := a.account != nil
-	a.Mu.Unlock()
-	var req zcodeRuntimeHeadersRequest
-	if err := json.Unmarshal(params, &req); err != nil {
-		// Do NOT fall through. An undecodable request leaves ProviderID empty, and
-		// hasInlineAPIKey reads an empty id as "any provider" -- so LeapMux would answer
-		// `authorized: true` for a provider it holds no credential for, and the turn would
-		// fail later with an authentication error from the model provider instead of here.
+	var request zcodeRuntimeHeadersRequest
+	if err := json.Unmarshal(params, &request); err != nil {
 		slog.Warn("zcode provider runtime headers unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		var result any = map[string]any{
-			"headers":    map[string]string{},
-			"authorized": false,
-			"error":      "leapmux could not read the provider runtime headers request",
-		}
-		if accountConfig {
-			result = map[string]any{
-				"headersApplied": false,
-				"errorMessage":   "leapmux could not read the provider runtime headers request",
-			}
-		}
-		a.replyZCodeRuntimeHeader(id, answer, result)
+		a.replyZCodeRuntimeHeader(id, answer, map[string]any{"headersApplied": false, "errorMessage": "LeapMux could not read the provider runtime headers request"})
 		return
 	}
-	if accountConfig {
-		// The caller sits on the event goroutine, and a coding plan's credential can
-		// take a network call, so the answer goes on a goroutine of its own: the
-		// reader must keep reading frames while the call runs.
-		go a.answerAccountRuntimeHeaders(id, answer, req)
-		return
-	}
-	a.Mu.Lock()
-	authorized := a.catalog.hasInlineAPIKey(req.ProviderID)
-	a.Mu.Unlock()
-	result := map[string]any{
-		"headers":    map[string]string{},
-		"authorized": authorized,
-	}
-	if !authorized {
-		result["error"] = fmt.Sprintf("leapmux holds no credential for provider %q; add it to ZCode's configuration", req.ProviderID)
-	}
-	a.replyZCodeRuntimeHeader(id, answer, result)
+	// Credential minting must leave the event reader free to receive native frames.
+	go a.answerAccountRuntimeHeaders(id, answer, request)
 }
 
 // answerAccountRuntimeHeaders answers a runtime headers request of an account
@@ -742,22 +706,7 @@ func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, answer *zcodeRun
 // It is answered rather than ignored: the app-server blocks the tool behind it, and
 // a declared unavailability lets it fall through to the servers it can reach.
 func (a *Agent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
-	a.Mu.Lock()
-	accountConfig := a.account != nil
-	a.Mu.Unlock()
-	if accountConfig {
-		if err := a.sendZCodeReply(id, map[string]any{
-			"ok":     false,
-			"reason": OfficialAuthUnavailable,
-		}); err != nil {
-			slog.Warn("zcode official mcp auth reply failed", "agent_id", a.AgentID(), "error", err)
-		}
-		return
-	}
-	if err := a.sendZCodeReply(id, map[string]any{
-		"status":  OfficialAuthUnavailable,
-		"headers": map[string]string{},
-	}); err != nil {
+	if err := a.sendZCodeReply(id, map[string]any{"ok": false, "reason": OfficialAuthUnavailable}); err != nil {
 		slog.Warn("zcode official mcp auth reply failed", "agent_id", a.AgentID(), "error", err)
 	}
 }

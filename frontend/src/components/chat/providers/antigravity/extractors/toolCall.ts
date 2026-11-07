@@ -2,6 +2,7 @@ import type { ToolCall, ToolCallEnvelope, ToolCallSpecReaderTable, ToolCallSpecV
 import type { ToolCallStatus } from '../../../model/toolCallStatus'
 import type { ToolKind } from '../../../model/toolKind'
 import type { ToolRequestByKind } from '../../../model/tools'
+import type { FileChangeResult } from '../../../model/tools/fileChange'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { AntigravityStep } from './toolCommon'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -18,7 +19,7 @@ import { antigravityCommandResult, antigravityExecuteRequest } from './execute'
 import { antigravityFileChange, antigravityLandedChanges } from './fileEdit'
 import { antigravityMcpRequest, antigravityMcpResult } from './mcp'
 import { antigravityReadImages, antigravityReadRequest, antigravityReadResult } from './read'
-import { antigravityGenericResult, antigravityStep, antigravityStepDeclined, antigravityStepFailed, antigravityStepOpen, antigravityToolName } from './toolCommon'
+import { antigravityGenericResult, antigravityStepDeclined, antigravityStepFailed, antigravityStepOpen, antigravityToolName } from './toolCommon'
 
 export interface AntigravityToolRow {
   own: AntigravityStep
@@ -72,20 +73,22 @@ function antigravityFrameStatus(status: string): ToolCallStatus {
     return 'failed'
   if (status === ANTIGRAVITY_STEP_STATUS.Waiting)
     return 'pending'
-  return antigravityStepOpen({ status } as AntigravityStep)
+  return antigravityStepOpen({ status })
     ? 'in_progress'
     : 'unstated'
+}
+
+function fileChangeRequest(_args: Record<string, unknown>, facts: AntigravityToolFacts): ToolRequestByKind['edit'] {
+  return {
+    changes: antigravityFileChange(facts.step),
+  }
 }
 
 export const ANTIGRAVITY_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<AntigravityToolFacts> = {
   read: (_args, facts): ToolRequestByKind['read'] => antigravityReadRequest(facts.step),
   execute: (_args, facts): ToolRequestByKind['execute'] => antigravityExecuteRequest(facts.step),
-  edit: (_args, facts): ToolRequestByKind['edit'] => ({
-    changes: antigravityFileChange(facts.step),
-  }),
-  write: (_args, facts): ToolRequestByKind['write'] => ({
-    changes: antigravityFileChange(facts.step),
-  }),
+  edit: fileChangeRequest,
+  write: fileChangeRequest,
   agent: (_args, facts): ToolRequestByKind['agent'] => {
     const request = antigravityAgentRequest(facts.step)
     return {
@@ -98,6 +101,14 @@ export const ANTIGRAVITY_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<Antigravit
     }
   },
   mcp: (_args, facts): ToolRequestByKind['mcp'] => antigravityMcpRequest(facts.step),
+  message: (args): ToolRequestByKind['message'] => ({
+    ...(pickString(args, 'Recipient')
+      ? {
+          to: pickString(args, 'Recipient'),
+        }
+      : {}),
+    text: pickString(args, 'Message'),
+  }),
   question: (args): ToolRequestByKind['question'] => ({
     questions: questionsFromRecords(args.questions, question => ({
       question: pickString(question, 'question'),
@@ -109,12 +120,6 @@ export const ANTIGRAVITY_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<Antigravit
 
 function requestFor<K extends ToolKind>(kind: K, facts: AntigravityToolFacts): ToolRequestByKind[K] {
   return toolRequestFor(kind, facts.args, facts, ANTIGRAVITY_TOOL_REQUEST_OVERRIDES)
-}
-
-function unread(facts: AntigravityToolFacts): UnparsedToolResult | undefined {
-  return facts.text
-    ? unparsedResult(facts.text)
-    : undefined
 }
 
 function early<K extends ToolKind>(kind: K, facts: AntigravityToolFacts, request: ToolRequestByKind[K]): ToolCallSpecVariant<K> | null {
@@ -139,7 +144,9 @@ function declared<K extends ToolKind>(kind: K): (facts: AntigravityToolFacts) =>
     const initial = early(kind, facts, request)
     if (initial)
       return initial
-    const result = unread(facts)
+    const result = facts.text
+      ? unparsedResult(facts.text)
+      : undefined
     return {
       kind,
       request,
@@ -147,6 +154,23 @@ function declared<K extends ToolKind>(kind: K): (facts: AntigravityToolFacts) =>
         ? { result }
         : {}),
     }
+  }
+}
+
+function genericFallback(facts: AntigravityToolFacts, payload: string): UnparsedToolResult | undefined {
+  return facts.text && !pickObject(facts.step.raw, payload)
+    ? unparsedResult(facts.text)
+    : undefined
+}
+
+function fileChangeReader<K extends 'edit' | 'write'>(kind: K): (facts: AntigravityToolFacts) => ToolCallSpecVariant<K> {
+  return (facts): ToolCallSpecVariant<K> => {
+    const request = requestFor(kind, facts)
+    const initial = early(kind, facts, request)
+    if (initial)
+      return initial
+    const result: FileChangeResult | UnparsedToolResult = genericFallback(facts, 'codeAction') ?? { changes: antigravityLandedChanges(facts.step) ?? request.changes }
+    return { kind, request, result }
   }
 }
 
@@ -160,7 +184,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
     return {
       kind: 'execute',
       request,
-      result: {
+      result: genericFallback(facts, 'runCommand') ?? {
         commands: [
           antigravityCommandResult(facts.step),
         ],
@@ -173,26 +197,12 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
     return early('read', facts, request) ?? {
       kind: 'read',
       request,
-      result: antigravityReadResult(facts.step),
+      result: genericFallback(facts, 'viewFile') ?? antigravityReadResult(facts.step),
       images: antigravityReadImages(facts.step),
     }
   },
-  edit: (facts): ToolCallSpecVariant<'edit'> => {
-    const request = requestFor('edit', facts)
-    return early('edit', facts, request) ?? {
-      kind: 'edit',
-      request,
-      result: { changes: antigravityLandedChanges(facts.step) ?? request.changes },
-    }
-  },
-  write: (facts): ToolCallSpecVariant<'write'> => {
-    const request = requestFor('write', facts)
-    return early('write', facts, request) ?? {
-      kind: 'write',
-      request,
-      result: { changes: antigravityLandedChanges(facts.step) ?? request.changes },
-    }
-  },
+  edit: fileChangeReader('edit'),
+  write: fileChangeReader('write'),
   agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = requestFor('agent', facts)
     const initial = early('agent', facts, request)
@@ -202,7 +212,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
       kind: 'agent',
       request,
       title: request.description,
-      result: antigravityAgentResult(facts.step, request),
+      result: genericFallback(facts, 'invokeSubagent') ?? antigravityAgentResult(facts.step, request),
     }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
@@ -210,7 +220,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
     return early('mcp', facts, request) ?? {
       kind: 'mcp',
       request,
-      result: antigravityMcpResult(facts.step),
+      result: genericFallback(facts, 'mcpTool') ?? antigravityMcpResult(facts.step),
     }
   },
   question: declared('question'),
@@ -239,11 +249,7 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
   todo: declared('todo'),
 }
 
-export function antigravityToolRow(raw: Record<string, unknown> | undefined, result: Record<string, unknown> | undefined, completion?: MessageCompletion): AntigravityToolRow | null {
-  const own = antigravityStep(raw)
-  if (!own)
-    return null
-  const other = antigravityStep(result)
+export function antigravityToolRow(own: AntigravityStep, other: AntigravityStep | null, completion?: MessageCompletion): AntigravityToolRow {
   const ownID = pickString(own.toolCall, 'id')
   const paired = other && pickString(other.toolCall, 'id') === ownID
     ? other
@@ -258,10 +264,6 @@ export function antigravityToolRow(raw: Record<string, unknown> | undefined, res
       : {}),
     rowFinal: retainedRowIsFinal(completion) || !antigravityStepOpen(own),
   }
-}
-
-export function antigravityStepResultText(step: AntigravityStep): string {
-  return antigravityGenericResult(step) || pickString(pickObject(step.raw, 'runCommand'), 'commandLine')
 }
 
 function antigravityToolCall(row: AntigravityToolRow): ToolCall {

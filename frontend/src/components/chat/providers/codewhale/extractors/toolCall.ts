@@ -26,31 +26,25 @@ import { codewhaleToolContent, codewhaleToolMediaImages } from './image'
 import { codewhaleListResult } from './list'
 import { codewhaleReadRequest, codewhaleReadResult } from './read'
 import { codewhaleCorpusSearchResult, codewhaleFileSearchResult, codewhaleGrepResult } from './search'
-import { codewhaleChecklistItems, codewhalePlanNote, codewhaleTodoItems } from './todo'
+import { codewhaleChecklistItems, codewhaleTodoItems } from './todo'
 import { codewhaleFrameFailed, codewhalePairedFrame, codewhaleToolSpanRole } from './toolCommon'
 
-/**
- * The kind each action of the `File` facade performs (`canonical_action.rs`).
- *
- * The facade states its real operation in `action`, one of seven single-purpose tools
- * the runtime keeps as hidden aliases. An action this table does not hold keeps the
- * table's own kind for the facade.
- */
-const FILE_ACTION_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
-  ['read', 'read'],
-  ['list', 'list'],
-  ['search_name', 'glob'],
-  ['search_content', 'grep'],
-  ['write', 'write'],
-  ['edit', 'edit'],
-  ['patch', 'edit'],
-])
-
-/** The kind each action of the `Web` facade performs. */
-const WEB_ACTION_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
-  ['search', 'web_search'],
-  ['fetch', 'fetch'],
-  ['wait', 'wait'],
+/** The kind each current facade action performs. Unlisted actions keep the tool's default kind. */
+const FACADE_ACTION_KINDS: ReadonlyMap<string, ReadonlyMap<string, ToolKind>> = new Map([
+  [
+    CODEWHALE_TOOL.Web,
+    new Map<string, ToolKind>([
+      ['search', 'web_search'],
+      ['fetch', 'fetch'],
+      ['wait', 'wait'],
+    ]),
+  ],
+  [
+    CODEWHALE_TOOL.Git,
+    new Map<string, ToolKind>([
+      ['commit_plan', 'report'],
+    ]),
+  ],
 ])
 
 /** The task action each single-purpose background tool performs, by its name. */
@@ -180,7 +174,7 @@ export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleTool
  *
  * Each swap states the input that causes it:
  *
- *   - The `File` and `Web` facades state their real operation in `action`.
+ *   - The `Web` and `Git` facades state their operation in `action`.
  *   - A to-do tool whose arguments carry no list states none, so it takes the generic
  *     card rather than an empty checklist.
  *   - A file change that names NO file is not a file change. The model refuses the
@@ -190,12 +184,8 @@ export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleTool
  */
 export function codewhaleReclassify(facts: CodewhaleToolFacts): ToolKind {
   const action = pickString(facts.input, 'action')
-  const kind = facts.toolName === CODEWHALE_TOOL.File
-    ? FILE_ACTION_KINDS.get(action) ?? facts.kind
-    : facts.toolName === CODEWHALE_TOOL.Web
-      ? WEB_ACTION_KINDS.get(action) ?? facts.kind
-      : facts.kind
-  if (kind === 'todo' && codewhaleTodoItems(facts.toolName, facts.input) === null)
+  const kind = FACADE_ACTION_KINDS.get(facts.toolName)?.get(action) ?? facts.kind
+  if (kind === 'todo' && codewhaleTodoItems(facts.input) === null)
     return 'other'
   if ((kind === 'edit' || kind === 'write') && fileChanges(facts).length === 0)
     return 'other'
@@ -348,16 +338,10 @@ export const CODEWHALE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodewhaleToo
         : {}),
     }
   },
-  // The parsed items, and the explanation `update_plan` gives above them.
-  todo: (args, facts): ToolRequestByKind['todo'] => {
-    const note = codewhalePlanNote(facts.toolName, args)
-    return {
-      items: codewhaleTodoItems(facts.toolName, args) ?? [],
-      ...(note
-        ? { note }
-        : {}),
-    }
-  },
+  // The current progress tool supplies its complete list.
+  todo: (args): ToolRequestByKind['todo'] => ({
+    items: codewhaleTodoItems(args) ?? [],
+  }),
   // The advanced `search_query` list, which the shared reader does not know.
   web_search: (args): ToolRequestByKind['web_search'] => ({
     query: codewhaleWebQuery(args),

@@ -1,6 +1,6 @@
 import type { Page, TestInfo } from '@playwright/test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createProcessStub } from '~/test-support/childProcess'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AGENT_E2E_SETTINGS } from '../agentSettings'
@@ -8,6 +8,7 @@ import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from '.
 import { createTestDirectory } from './runDirectory'
 import { createTranscriptGuard, runTranscriptGuard } from './transcriptGuard'
 import { loginViaToken, openWorkspace } from './ui'
+import { waitForAgentStartupViaAPI } from './workerTabs'
 import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
 
 vi.mock('./api', () => ({
@@ -26,6 +27,9 @@ vi.mock('./ui', () => ({
   loginViaToken: vi.fn(),
   openWorkspace: vi.fn(),
 }))
+vi.mock('./workerTabs', () => ({
+  waitForAgentStartupViaAPI: vi.fn(),
+}))
 
 const server = { hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker' }
 const fastAgent = { provider: AgentProvider.FAST_AGENT, prefix: 'fastagent-e2e' }
@@ -39,6 +43,15 @@ beforeEach(() => {
   vi.mocked(loginViaToken).mockReset().mockResolvedValue(undefined)
   vi.mocked(openWorkspace).mockReset().mockResolvedValue(undefined)
   vi.mocked(runTranscriptGuard).mockReset().mockResolvedValue(undefined)
+  vi.mocked(waitForAgentStartupViaAPI).mockReset().mockResolvedValue([
+    {
+      id: 'agent',
+      title: '',
+      workingDir: '/private-directory',
+      status: AgentStatus.ACTIVE,
+      startupError: '',
+    },
+  ])
 })
 
 /** The open request of the one agent that the test opened. */
@@ -48,6 +61,20 @@ function openRequest() {
 }
 
 describe('workspace fixture lifetime', () => {
+  it('rejects a missing provider binary before fixture use and still removes the workspace', async () => {
+    const failure = new Error('Agent startup failed: the required CLI is missing.')
+    vi.mocked(waitForAgentStartupViaAPI).mockRejectedValue(failure)
+    const use = vi.fn(async () => {})
+    await expect(withAgentWorkspace(server, pi, use)).rejects.toBe(failure)
+    expect(use).not.toHaveBeenCalled()
+    expect(deleteWorkspaceViaAPI).toHaveBeenCalledExactlyOnceWith(server.hubUrl, server.adminToken, 'workspace')
+  })
+
+  it('keeps the explicit provider open asynchronous for startup scenarios', async () => {
+    expect(await openProviderAgent(server, 'workspace', pi)).toEqual({ agentId: 'agent', workingDir: '/private-directory' })
+    expect(waitForAgentStartupViaAPI).not.toHaveBeenCalled()
+  })
+
   it('deletes the workspace after the fixture finishes', async () => {
     const order: string[] = []
     vi.mocked(deleteWorkspaceViaAPI).mockImplementation(async () => {

@@ -184,7 +184,7 @@ func TestClineStartRefusesAHubItCannotDrive(t *testing.T) {
 	installFakeCline(t, clineHelperScenarioEnv+"=v2")
 	_, _, _, err := startClineForTest(t, agent.Options{})
 	require.ErrorIs(t, err, errProtocolMismatch)
-	assert.Contains(t, err.Error(), "Cline 3.0.64")
+	assert.Contains(t, err.Error(), "hub protocol v1")
 }
 
 func TestClineStartReportsAHubThatExitsBeforeItIsReady(t *testing.T) {
@@ -192,7 +192,7 @@ func TestClineStartReportsAHubThatExitsBeforeItIsReady(t *testing.T) {
 	_, _, dir, err := startClineForTest(t, agent.Options{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot start the hub", "the error carries the daemon's stderr")
-	assert.Contains(t, err.Error(), "Cline 3.0.64")
+	assert.Contains(t, err.Error(), "hub protocol v1")
 	assert.NoDirExists(t, dir)
 }
 

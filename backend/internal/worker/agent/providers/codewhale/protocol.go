@@ -20,13 +20,12 @@ const codewhaleProviderName = "codewhale"
 // Runtime API routes. A path parameter is appended with url.PathEscape, never by
 // string formatting of a raw value.
 const (
-	routeHealth      = "/health"
-	routeRuntimeInfo = "/v1/runtime/info"
-	routeThreads     = "/v1/threads"
-	routeApprovals   = "/v1/approvals"
-	routeUserInput   = "/v1/user-input"
-	routeProviders   = "/v1/providers"
-	routeAgentRuns   = "/v1/agent-runs"
+	routeHealth    = "/health"
+	routeThreads   = "/v1/threads"
+	routeApprovals = "/v1/approvals"
+	routeUserInput = "/v1/user-input"
+	routeProviders = "/v1/providers"
+	routeAgentRuns = "/v1/agent-runs"
 
 	// Thread sub-routes, after /v1/threads/{id}.
 	threadRouteResume  = "/resume"
@@ -34,13 +33,9 @@ const (
 	threadRouteTurns   = "/turns"
 	threadRouteCompact = "/compact"
 	threadRouteGoal    = "/goal"
-	// threadRouteContext exists from 0.10.0. start.go probes it, because the
-	// runtime capability map does not report route additions.
+	// The current context report and individual shell jobs belong to the thread.
 	threadRouteContext = "/context"
-	// threadRouteJobs exists from 0.10.0. It lists the thread's background
-	// shell jobs, and `/jobs/{job_id}` below it reads one. 0.9.13 answers 404,
-	// which the shell poller reads as "no such route". See subagent.go.
-	threadRouteJobs = "/jobs"
+	threadRouteJobs    = "/jobs"
 
 	// Turn sub-routes, after /v1/threads/{id}/turns/{turn_id}.
 	turnRouteSteer     = "/steer"
@@ -58,25 +53,30 @@ const (
 // Runtime events that the worker consumes and never persists. The persisted
 // ones, which the browser plugin classifies, are in the contract.
 const (
-	eventThreadStarted          = "thread.started"
-	eventThreadUpdated          = "thread.updated"
-	eventThreadForked           = "thread.forked"
-	eventTurnStarted            = "turn.started"
-	eventTurnLifecycle          = "turn.lifecycle"
-	eventTurnUsage              = "turn.usage"
-	eventTurnProviderRequest    = "turn.provider_request"
-	eventTurnSteered            = "turn.steered"
-	eventTurnInterruptRequested = "turn.interrupt_requested"
-	eventItemDelta              = "item.delta"
-	eventApprovalDecided        = "approval.decided"
-	eventUserInputAnswered      = "user_input.answered"
-	eventGoalUpdated            = "thread_goal_updated"
-	eventGoalCleared            = "thread_goal_cleared"
-	eventModelToolsSnapshot     = "model.tools.snapshot"
-	eventTurnArtifacts          = "turn.artifacts"
-	eventTurnWorkspaceSnapshot  = "turn.workspace_snapshot"
-	eventApprovalGrantAdded     = "approval.grant_added"
-	eventApprovalGrantRevoked   = "approval.grant_revoked"
+	eventOperationActivityStarted   = "operation.activity_started"
+	eventOperationActivityCompleted = "operation.activity_completed"
+	eventOperationHeartbeat         = "operation.heartbeat"
+	eventToolExecutionStarted       = "tool.execution_started"
+	eventThreadStarted              = "thread.started"
+	eventThreadUpdated              = "thread.updated"
+	eventThreadPermissionsChanged   = "thread.permissions_changed"
+	eventThreadForked               = "thread.forked"
+	eventTurnStarted                = "turn.started"
+	eventTurnLifecycle              = "turn.lifecycle"
+	eventTurnUsage                  = "turn.usage"
+	eventTurnProviderRequest        = "turn.provider_request"
+	eventTurnSteered                = "turn.steered"
+	eventTurnInterruptRequested     = "turn.interrupt_requested"
+	eventItemDelta                  = "item.delta"
+	eventApprovalDecided            = "approval.decided"
+	eventUserInputAnswered          = "user_input.answered"
+	eventGoalUpdated                = "thread_goal_updated"
+	eventGoalCleared                = "thread_goal_cleared"
+	eventModelToolsSnapshot         = "model.tools.snapshot"
+	eventTurnArtifacts              = "turn.artifacts"
+	eventTurnWorkspaceSnapshot      = "turn.workspace_snapshot"
+	eventApprovalGrantAdded         = "approval.grant_added"
+	eventApprovalGrantRevoked       = "approval.grant_revoked"
 )
 
 // Event families that the worker ignores as a whole. The runtime emits them
@@ -152,45 +152,10 @@ var listeningLinePattern = regexp.MustCompile(`Runtime API listening on (\S+)`)
 // another process took after the worker reserved it.
 const bindFailureText = "Failed to bind"
 
-// plumbingStatusPrefixes identify status items about the runtime's own loop.
-// Versions through 0.10.0 send these items without a visibility tag.
-// Later releases mark them as `visibility: internal`. statusItemIsPlumbing reads that tag also.
-//
-//   - "Continuing" covers the tool-result and the goal-continuation passes.
-//   - "Executing tools sequentially" is the dispatcher's own note.
-//   - "Resuming turn with" reports queued subagent completions.
-//   - "Loaded deferred tool" reports the schema that a first call loaded.
-//   - "Steer input accepted" repeats the steer that the input queue already shows.
-//   - "Steer input queued" repeats the accepted input in LeapMux's queue.
-//   - "Request cancelled" repeats the interrupted turn end.
-//   - "Policy:" (0.9.13) and "Permissions:" (later releases) report posture or mode changes.
-//     LeapMux already shows those as settings changes.
-var plumbingStatusPrefixes = []string{
-	"Continuing",
-	"Executing tools sequentially",
-	"Resuming turn with",
-	"Loaded deferred tool",
-	"Steer input accepted",
-	"Steer input queued",
-	"Request cancelled",
-	"Policy:",
-	"Permissions:",
-}
-
-// statusItemIsPlumbing reports whether a status item describes the runtime's
-// own loop. visibility is the item's `metadata.visibility`, which is empty up
-// to 0.10.0.
-func statusItemIsPlumbing(summary, visibility string) bool {
-	if visibility == "internal" {
-		return true
-	}
-	summary = strings.TrimSpace(summary)
-	for _, prefix := range plumbingStatusPrefixes {
-		if strings.HasPrefix(summary, prefix) {
-			return true
-		}
-	}
-	return false
+// statusItemIsPlumbing hides explicit internal notes and the unmarked queued-steer diagnostic.
+// The runtime leaves queued-steer diagnostics without visibility metadata.
+func statusItemIsPlumbing(summary string, visibility string) bool {
+	return visibility == "internal" || strings.HasPrefix(summary, "Steer input queued: ")
 }
 
 // These memberships come from the same contract subsets that the browser reads.

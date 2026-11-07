@@ -276,7 +276,7 @@ func (e *HTTPEndpoint) OpenStreamQuery(ctx context.Context, method, path string,
 // reply for a 2xx status. It is for framed streaming protocols whose request body
 // is not JSON. The caller reads and closes the body; cancelling ctx ends it.
 func (e *HTTPEndpoint) OpenStreamBody(ctx context.Context, method, path string, header http.Header, contentType string, body []byte) (*http.Response, error) {
-	response, err := e.sendRaw(ctx, method, path, header, contentType, body)
+	response, err := e.sendReader(ctx, method, path, nil, header, contentType, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -353,10 +353,6 @@ func (e *HTTPEndpoint) send(ctx context.Context, method, path string, query url.
 		contentType = "application/json"
 	}
 	return e.sendReader(ctx, method, path, query, header, contentType, reader)
-}
-
-func (e *HTTPEndpoint) sendRaw(ctx context.Context, method, path string, header http.Header, contentType string, body []byte) (*http.Response, error) {
-	return e.sendReader(ctx, method, path, nil, header, contentType, bytes.NewReader(body))
 }
 
 func (e *HTTPEndpoint) sendReader(ctx context.Context, method, path string, query url.Values, header http.Header, contentType string, reader io.Reader) (*http.Response, error) {

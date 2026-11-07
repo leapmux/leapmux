@@ -4,7 +4,7 @@ import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { antigravityNotificationEntry } from './extractors/notification'
-import { antigravityStep, antigravityStepOpen } from './extractors/toolCommon'
+import { antigravityMessageIsChildPrompt, antigravityStepHeader, antigravityStepOpen } from './extractors/toolCommon'
 
 export function classifyAntigravityMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
@@ -22,7 +22,7 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
     return { kind: 'result_divider' }
   if (pickString(parent, 'name') === ANTIGRAVITY_FRAME.Interaction)
     return notification([parent], 'hidden')
-  const step = antigravityStep(parent)
+  const step = antigravityStepHeader(parent)
   if (step) {
     switch (step.type) {
       case ANTIGRAVITY_STEP_TYPE.PlannerResponse: {
@@ -34,8 +34,14 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
       }
       case ANTIGRAVITY_STEP_TYPE.UserInput:
         return { kind: 'user_content' }
-      case ANTIGRAVITY_STEP_TYPE.SystemMessage:
-        return { kind: 'hidden' }
+      case ANTIGRAVITY_STEP_TYPE.SystemMessage: {
+        const message = pickObject(pickObject(parent, 'systemMessage'), 'agentMessage')
+        if (!message || message.hideFromUser === true || !pickString(message, 'content'))
+          return { kind: 'hidden' }
+        return antigravityMessageIsChildPrompt(message)
+          ? { kind: 'user_content' }
+          : notification([parent], 'hidden')
+      }
       case ANTIGRAVITY_STEP_TYPE.ErrorMessage:
       case ANTIGRAVITY_STEP_TYPE.Checkpoint:
         return notification([parent], 'hidden')

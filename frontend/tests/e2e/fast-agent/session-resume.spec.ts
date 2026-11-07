@@ -1,4 +1,4 @@
-import { FAST_AGENT_E2E_SKIP_REASON, fastAgentTest } from '../fastagent-fixtures'
+import { fastAgentTest } from '../fastagent-fixtures'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { exerciseWorkerRestart } from '../helpers/nativeWorkerRestart'
 import { createProviderProcessTest } from '../provider-fixture-factory'
@@ -8,7 +8,7 @@ fastAgentTest('reopens a completed picker session and restores its saved Worker 
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: FAST_AGENT_AGENT, nativeContext, skipReason: FAST_AGENT_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: FAST_AGENT_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { ANTIGRAVITY_E2E_SKIP_REASON, antigravityTest } from '../antigravity-fixtures'
+import { antigravityTest } from '../antigravity-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { createNativePermissionFileWrite } from '../helpers/nativePermission'
@@ -19,7 +19,7 @@ antigravityTest('reopens the native session and restores the saved transcript', 
   await exerciseAntigravityResumeWithEvidence(native, testInfo)
 })
 
-const restartTest = createProviderProcessTest({ agent: ANTIGRAVITY_AGENT, nativeContext, skipReason: ANTIGRAVITY_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: ANTIGRAVITY_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

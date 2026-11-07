@@ -3,8 +3,6 @@ package kimi
 import (
 	"fmt"
 	"regexp"
-
-	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // kimiPromptReply is the data of POST /sessions/{id}/prompts.
@@ -39,23 +37,13 @@ const (
 	kimiInteractionEnded   = "ended"
 )
 
-// kimiMinimumVersion is the release that supplies native interaction frames.
-// The end-to-end install probe reads the same contract.
-var kimiMinimumVersion = func() kimiVersion {
-	version, ok := parseKimiVersion(contracts.KimiVersionMinimum)
-	if !ok {
-		panic("the Kimi Code protocol contract specifies an invalid minimum version")
-	}
-	return version
-}()
-
 // kimiNoAutoUpdateEnv turns off the update that Kimi Code starts from main(): a
 // native (single-file) install swaps in a payload that an earlier TUI run staged,
 // and starts again, before it reads a command, so `kimi --version` and `kimi web`
 // both take that path. The TUI also downloads a payload, and installs a
 // package-manager release, unless the switch says otherwise. `1`, `true`, `yes`
 // and `on` turn it off. The shell wrapper states it after the user's profile, for
-// both launches (see probeKimiVersion and startServer).
+// the server launch.
 const kimiNoAutoUpdateEnv = "KIMI_CODE_NO_AUTO_UPDATE=1"
 
 // kimiServerArgs start the kap-server.

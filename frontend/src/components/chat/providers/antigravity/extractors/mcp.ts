@@ -1,7 +1,9 @@
 import type { McpRequest, McpResult } from '../../../model/tools/mcp'
 import type { AntigravityStep } from './toolCommon'
-import { pickObject, pickString } from '~/lib/jsonPick'
-import { antigravityMcpImages } from './read'
+import type { ImageResultSource } from '~/lib/imageBlocks'
+import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { fileUriToPath } from '~/lib/paths'
 
 export function antigravityMcpRequest(step: AntigravityStep): McpRequest {
   const mcp = pickObject(step.raw, 'mcpTool')
@@ -22,4 +24,24 @@ export function antigravityMcpResult(step: AntigravityStep): McpResult {
       ...antigravityMcpImages(step).map(source => ({ type: 'image' as const, source })),
     ],
   }
+}
+
+function antigravityMcpImages(step: AntigravityStep): ImageResultSource[] {
+  const mcp = pickObject(step.raw, 'mcpTool')
+  const images = Array.isArray(mcp?.images)
+    ? mcp.images
+    : []
+  return images.filter(isObject).flatMap((entry) => {
+    const uri = pickString(entry, 'uri')
+    const image = parseImageBlock({
+      type: 'image',
+      data: pickString(entry, 'base64Data'),
+      mimeType: pickString(entry, 'mimeType'),
+    })
+    return image
+      ? [
+          withFallbackFilePath(image, fileUriToPath(uri) ?? uri),
+        ]
+      : []
+  })
 }

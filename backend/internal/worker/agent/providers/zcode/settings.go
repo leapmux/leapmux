@@ -181,16 +181,14 @@ type zcodeThoughtLevelOption struct {
 }
 
 // zcodeAvailableModel is one live model option in the settings snapshot. The
-// legacy fields stay for older builds. ZCode 0.16.9 nests media support under
-// properties.inputFormat and states every model's reasoning levels here.
+// current protocol nests media support under properties.inputFormat and states
+// every model's reasoning levels here.
 type zcodeAvailableModel struct {
 	Ref            zcodeModelRef `json:"ref"`
 	Label          string        `json:"label"`
 	ProviderLabel  string        `json:"providerLabel"`
 	Description    string        `json:"description"`
 	ContextWindow  int64         `json:"contextWindow"`
-	SupportsImages bool          `json:"supportsImages"`
-	SupportsPdf    bool          `json:"supportsPdf"`
 	DisabledReason string        `json:"disabledReason"`
 	Reasoning      *struct {
 		Levels       []zcodeThoughtLevelOption `json:"levels"`
@@ -220,10 +218,7 @@ type zcodeLiveModelRecord struct {
 // changed -- an absent axis must leave the agent's value alone, which a value type
 // could not express.
 type zcodeSettingsSnapshot struct {
-	// AppliedProviderRevision is the legacy registry revision that supplied the
-	// session credential.
-	AppliedProviderRevision string `json:"appliedProviderRevision"`
-	Mode                    *struct {
+	Mode *struct {
 		// Current is the AUTHORITATIVE native mode. `session.mode` is the
 		// creation-time record and never tracks a switch, so it is deliberately not
 		// read. Current does not state plan mode: a session in plan mode reports its
@@ -423,13 +418,6 @@ func (a *Agent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel, curr
 			}
 			if formats.SupportsAudio {
 				input = append(input, "audio")
-			}
-		} else {
-			if wire.SupportsImages {
-				input = append(input, zcodeModalityImage)
-			}
-			if wire.SupportsPdf {
-				input = append(input, zcodeModalityPDF)
 			}
 		}
 		records[id] = zcodeLiveModelRecord{info: info, ref: wire.Ref, modalities: input}
@@ -633,9 +621,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 // does not offer falls back in the same way, because the app-server refuses a selection
 // that carries such a level. LeapMux's Auto sentinel is no level, so it never reaches the wire.
 //
-// Both request shapes need this answer -- the account-config selection carries it
-// in `options.reasoningLevel`, and the legacy overlay in `ThoughtLevel` -- and the
-// two spelled it out separately until one of them dropped the level on a switch.
+// The current model selection carries the resolved level in options.reasoningLevel.
 func resolveZCodeThoughtLevel(level, defaultLevel string, offered []*agent.EffortInfo) string {
 	if level != "" && level != agent.EffortAuto && zcodeOffersLevel(offered, level) {
 		return level
@@ -743,18 +729,13 @@ type zcodeModelApplyResult struct {
 // applyZCodeModel pins the session's model and reports what the app-server settled
 // on.
 //
-// Legacy builds receive a runtimeModel overlay with the inline key, as one
-// attempt. ZCode 0.16.9 owns the provider registry and strictly refuses that
-// field, so a current account configuration sends only the model reference -- and
-// may retry: an app-server that refuses a reasoning level with one of the two
-// verified failure classes gets the ladder of zcodeModelLevelCandidates with a fixed attempt limit
-// instead of a dead switch that a restart would repeat.
+// Current model switches send the selected model and reasoning level. A verified
+// reasoning-level refusal tries the remaining offered levels within a fixed limit.
 func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) (zcodeModelApplyResult, error) {
 	a.Mu.Lock()
 	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
 	sessionID := a.sessionID
 	identity := a.captureZCodeSettingsRequestLocked()
-	accountConfig := a.account != nil
 	ref := a.liveModels[resolved].ref
 	defaultLevel := a.zcodeDefaultThoughtLevelLocked(resolved)
 	offered := a.zcodeThoughtLevelsLocked(resolved)
@@ -766,25 +747,6 @@ func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) (z
 		return zcodeModelApplyResult{}, errNoZCodeSession
 	}
 	thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel, offered)
-
-	if !accountConfig {
-		overlay, found := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
-		if !found {
-			return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
-		}
-		// A concrete level rides along so a legacy model switch does not drop it.
-		overlay.ThoughtLevel = thoughtLevel
-		params := map[string]any{
-			"sessionId":    sessionID,
-			"model":        overlay.Model,
-			"runtimeModel": overlay,
-		}
-		raw, err := a.sendZCodeSessionRequest(a.Context(), identity.observation, MethodSetModel, params, timeout, nil)
-		if err != nil {
-			return zcodeModelApplyResult{}, err
-		}
-		return a.settleZCodeModelSnapshot(identity, resolved, raw)
-	}
 
 	if ref.ModelID == "" {
 		providerID, providerModelID, valid := splitZCodeModelID(resolved)

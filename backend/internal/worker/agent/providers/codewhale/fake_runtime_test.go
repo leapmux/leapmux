@@ -68,7 +68,7 @@ func newFakeRuntime(t *testing.T) *fakeRuntime {
 		streamOpened: make(chan string, 16),
 	}
 	rt.respondJSON(http.MethodGet, routeHealth, http.StatusOK, map[string]any{"status": "ok"})
-	rt.respondJSON(http.MethodGet, routeRuntimeInfo, http.StatusOK, map[string]any{"codewhale_version": "0.9.13"})
+	rt.respondJSON(http.MethodGet, threadPath(testThreadID, threadRouteContext), http.StatusOK, map[string]any{"window_tokens": nil, "input_tokens": nil})
 	rt.server = httptest.NewServer(http.HandlerFunc(rt.serve))
 	t.Cleanup(func() {
 		rt.closeStreams()
@@ -254,6 +254,9 @@ type testAgentOptions struct {
 
 func newTestAgentWith(t *testing.T, rt *fakeRuntime, options testAgentOptions) (*Agent, *agenttest.ControlSink) {
 	t.Helper()
+	if rt == nil {
+		rt = newFakeRuntime(t)
+	}
 	clock := options.clock
 	if clock == nil {
 		clock = quartz.NewReal()

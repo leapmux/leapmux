@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ func writeSession(t *testing.T, dir, id string, at time.Time, records ...string)
 	t.Helper()
 	path := filepath.Join(dir, sessionFileName(id))
 	content := ""
+	if len(records) > 0 && strings.HasPrefix(records[0], `{"type":"session"`) {
+		content = `{"type":"title","v":1,"title":"","pad":""}` + "\n"
+	}
 	for _, record := range records {
 		content += record + "\n"
 	}
@@ -215,24 +219,20 @@ func TestReadSession(t *testing.T) {
 	}{
 		{
 			name:    "the title slot wins",
-			records: []string{`{"type":"title","v":1,"title":"Slot title","pad":"    "}`, `{"type":"session","id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
+			records: []string{`{"type":"title","v":1,"title":"Slot title","pad":"    "}`, `{"type":"session","version":3,"id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
 			title:   "Slot title",
 		},
 		{
 			name:    "a blank slot clears the header's title",
-			records: []string{`{"type":"title","v":1,"title":"   ","pad":"    "}`, `{"type":"session","id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
+			records: []string{`{"type":"title","v":1,"title":"   ","pad":"    "}`, `{"type":"session","version":3,"id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
 			title:   "Prompt",
 		},
 		{
-			name:    "a slot with no title keeps the header's title",
-			records: []string{`{"type":"title","v":1,"pad":"    "}`, `{"type":"session","id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
-			title:   "Header title",
+			name:    "a slot with no title is invalid",
+			records: []string{`{"type":"title","v":1,"pad":"    "}`, `{"type":"session","version":3,"id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
+			skipped: true,
 		},
-		{
-			name:    "the header's title with no slot",
-			records: []string{`{"type":"session","id":"s","cwd":"/work/project","title":"Header title"}`, userMessage("Prompt")},
-			title:   "Header title",
-		},
+
 		{
 			name:    "a compaction's short summary before the first prompt",
 			records: []string{sessionHeader("s", cwd), userMessage("Prompt"), assistantMessage, `{"type":"compaction","id":"c","summary":"long","shortSummary":"Compacted work"}`},
@@ -260,7 +260,7 @@ func TestReadSession(t *testing.T) {
 		},
 		{
 			name:    "a header with no id is skipped",
-			records: []string{`{"type":"session","id":" ","cwd":"/work/project"}`, userMessage("Prompt")},
+			records: []string{`{"type":"session","version":3,"id":" ","cwd":"/work/project"}`, userMessage("Prompt")},
 			skipped: true,
 		},
 		{
@@ -461,4 +461,10 @@ func TestTempDir(t *testing.T) {
 	assert.Equal(t, "/t", tempDir(sessionQuery("", "", map[string]string{"TEMP": "/t"})))
 	assert.Equal(t, "/", tempDir(sessionQuery("", "", map[string]string{"TMPDIR": "/"})), "the root keeps its slash")
 	assert.Equal(t, "/tmp", tempDir(sessionQuery("", "", nil)))
+}
+
+func TestParseSessionHeadRejectsAnObsoleteHeaderWithoutTheTitleSlot(t *testing.T) {
+	t.Parallel()
+	_, ok := parseSessionHead([][]byte{[]byte(sessionHeader("s", "/work")), []byte(userMessage("prompt"))})
+	assert.False(t, ok)
 }

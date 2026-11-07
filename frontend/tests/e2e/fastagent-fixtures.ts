@@ -6,14 +6,10 @@
  * another model opens its own agent with a `model` override.
  */
 import { FAST_AGENT_AGENT, nativeContext } from './fast-agent/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const FAST_AGENT_E2E_SKIP_REASON: string | null = missingBinaryReason('fast-agent', 'Fast Agent E2E requires a fast-agent CLI on PATH')
 
 export const fastAgentTest = createProviderTest({
   agent: FAST_AGENT_AGENT,
   nativeContext,
-  skipReason: FAST_AGENT_E2E_SKIP_REASON,
   workspaceName: 'authenticatedFastAgentWorkspace',
 })

@@ -7,15 +7,10 @@ import { codewhaleToolKind } from './toolKinds'
 /**
  * `Provider.extractControl` for Codewhale: an approval, read into the shared permission.
  *
- * The runtime's `approval.required` states the tool and the call, and no arguments up
- * to 0.10.0. The worker takes the arguments from the call's own start event and puts
- * them in the shared header, so the banner draws the command the call runs. The
- * event's `description` is the tool's STATIC description, which says nothing about this
- * call; the reason is the call's own intent summary, which a later release sends.
- *
- * Codewhale answers an approval with allow or deny alone. It offers no scope: a
- * remembered approval switches the whole thread to full access up to 0.10.0, which the
- * worker never sends, so the banner shows the shared Allow and Deny pair.
+ * The current approval identifies the tool and call and may carry its input and
+ * intent summary. The Worker preserves the call input in the shared header.
+ * The tool description is static, so the reason comes from the call's intent.
+ * LeapMux answers one call with Allow or Deny.
  *
  * A QUESTION never reaches here: `askUserQuestion.isRequest` recognizes it first.
  */
@@ -27,7 +22,7 @@ export function codewhaleExtractControl(input: ControlExtractionInput): Extracte
   const approval = pickObject(event, CODEWHALE_ENVELOPE_FIELD.Payload)
   const toolName = getToolName(payload) || pickString(approval, CODEWHALE_APPROVAL_FIELD.ToolName)
   const toolInput = getToolInput(payload)
-  const reason = pickString(approval, CODEWHALE_APPROVAL_FIELD.IntentSummary) || pickString(approval, CODEWHALE_APPROVAL_FIELD.Summary)
+  const reason = pickString(approval, CODEWHALE_APPROVAL_FIELD.IntentSummary)
   // A command tool states the command it runs, which the banner draws as code above
   // the arguments. The kind table decides which tools those are.
   const command = codewhaleToolKind(toolName) === 'execute'

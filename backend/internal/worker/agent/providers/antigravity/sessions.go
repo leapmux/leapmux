@@ -59,7 +59,18 @@ func antigravityStoredSessions(ctx context.Context, query agent.StoredSessionQue
 }
 
 func fileURI(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	path = filepath.ToSlash(path)
+	uri := url.URL{Scheme: "file", Path: path}
+	if remainder, unc := strings.CutPrefix(path, "//"); unc {
+		host, share, ok := strings.Cut(remainder, "/")
+		if ok && host != "" {
+			uri.Host = host
+			uri.Path = "/" + share
+		}
+	} else if len(path) >= 2 && path[1] == ':' {
+		uri.Path = "/" + path
+	}
+	return uri.String()
 }
 
 func parseSQLiteTime(value string) time.Time {

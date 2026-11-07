@@ -1,4 +1,3 @@
-import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { ProviderAgent } from '../helpers/workspace'
@@ -73,18 +72,4 @@ export async function exerciseAntigravityAutoEditWrite(context: ManagedNativeSce
 /** The related proof of a missing-setting cell: the native model answers one marked prompt. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
   await exerciseCapabilityProbe(context)
-}
-
-/** Write the plan whose file Antigravity presents for approval. */
-export function writeAntigravityPlan(path: string, text: string): MockModelToolCall {
-  return {
-    id: 'antigravity-plan-write',
-    name: 'write_file',
-    arguments: {
-      Path: path,
-      Content: text,
-      Overwrite: true,
-      ArtifactMetadata: { Summary: 'Implementation plan', UserFacing: true, RequestFeedback: true },
-    },
-  }
 }

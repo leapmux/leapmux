@@ -205,22 +205,18 @@ const TODOS = [
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   // Files.
   [CODEWHALE_TOOL.Read]: done(CODEWHALE_TOOL.Read, { path: 'a.ts' }, 'alpha\nbeta'),
-  [CODEWHALE_TOOL.ReadFile]: done(CODEWHALE_TOOL.ReadFile, { path: 'a.ts' }, 'alpha'),
-  [CODEWHALE_TOOL.File]: done(CODEWHALE_TOOL.File, { action: 'read', path: 'a.ts' }, 'alpha'),
   [CODEWHALE_TOOL.ReadMedia]: done(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'Attached image shot.png'),
   [CODEWHALE_TOOL.ImageOcr]: done(CODEWHALE_TOOL.ImageOcr, { path: 'shot.png' }, 'Hello, world'),
   [CODEWHALE_TOOL.ImageAnalyze]: done(CODEWHALE_TOOL.ImageAnalyze, { path: 'shot.png' }, 'A window with a button'),
   [CODEWHALE_TOOL.HandleRead]: done(CODEWHALE_TOOL.HandleRead, { handle: 's1/result' }, '[1, 2, 3]'),
   [CODEWHALE_TOOL.RetrieveToolResult]: done(CODEWHALE_TOOL.RetrieveToolResult, { ref: 'art_1' }, 'stored output'),
   [CODEWHALE_TOOL.Write]: done(CODEWHALE_TOOL.Write, { path: 'a.ts', content: 'hi\n' }, 'Successfully wrote 3 bytes to a.ts', mutation('a.ts', 'created', WRITE_DIFF)),
-  [CODEWHALE_TOOL.WriteFile]: done(CODEWHALE_TOOL.WriteFile, { path: 'a.ts', content: 'hi\n' }, 'Wrote a.ts', mutation('a.ts', 'created', WRITE_DIFF)),
   [CODEWHALE_TOOL.Edit]: done(CODEWHALE_TOOL.Edit, {
     path: 'a.ts',
     edits: [
       { oldText: 'before', newText: 'after' },
     ],
   }, 'Successfully replaced 1 block(s) in a.ts.', mutation('a.ts', 'updated', EDIT_DIFF)),
-  [CODEWHALE_TOOL.EditFile]: done(CODEWHALE_TOOL.EditFile, { path: 'a.ts', old_string: 'before', new_string: 'after' }, 'Edited a.ts', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.ApplyPatch]: done(CODEWHALE_TOOL.ApplyPatch, { patch: PATCH }, 'Applied the patch to 1 file', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.FimEdit]: done(CODEWHALE_TOOL.FimEdit, { path: 'a.ts', prefix: 'const a = ', suffix: '\n' }, 'Filled a.ts', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.ListDir]: done(CODEWHALE_TOOL.ListDir, { path: '.' }, JSON.stringify([
@@ -246,22 +242,14 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
 
   // Commands.
   [CODEWHALE_TOOL.Bash]: done(CODEWHALE_TOOL.Bash, { command: 'ls -1' }, 'a.ts\n', COMMAND),
-  [CODEWHALE_TOOL.LegacyBash]: done(CODEWHALE_TOOL.LegacyBash, { command: 'ls -1' }, 'a.ts\n', COMMAND),
-  [CODEWHALE_TOOL.TaskShellStart]: done(CODEWHALE_TOOL.TaskShellStart, { command: 'npm run dev' }, 'Started shell_1', COMMAND),
+  [CODEWHALE_TOOL.BashAlias]: done(CODEWHALE_TOOL.BashAlias, { command: 'printf current' }, 'current', COMMAND),
   [CODEWHALE_TOOL.TerminalRun]: done(CODEWHALE_TOOL.TerminalRun, { command: 'make' }, 'built', COMMAND),
   [CODEWHALE_TOOL.TerminalSend]: done(CODEWHALE_TOOL.TerminalSend, { terminal_id: 't1', input: 'y\n' }, 'sent'),
   [CODEWHALE_TOOL.CodeExecution]: done(CODEWHALE_TOOL.CodeExecution, { code: 'print(1)' }, '1'),
   [CODEWHALE_TOOL.JsExecution]: done(CODEWHALE_TOOL.JsExecution, { code: '1 + 1' }, '2'),
   [CODEWHALE_TOOL.PandocConvert]: done(CODEWHALE_TOOL.PandocConvert, { input: 'a.md', to: 'html' }, 'Wrote a.html'),
   [CODEWHALE_TOOL.Git]: done(CODEWHALE_TOOL.Git, { action: 'status' }, 'On branch main', COMMAND),
-  [CODEWHALE_TOOL.GitStatus]: done(CODEWHALE_TOOL.GitStatus, {}, 'On branch main', COMMAND),
-  [CODEWHALE_TOOL.GitDiff]: done(CODEWHALE_TOOL.GitDiff, { path: 'src' }, 'diff --git a/src/a.ts b/src/a.ts', COMMAND),
-  [CODEWHALE_TOOL.GitLog]: done(CODEWHALE_TOOL.GitLog, {}, 'commit 1234', COMMAND),
-  [CODEWHALE_TOOL.GitShow]: done(CODEWHALE_TOOL.GitShow, {}, 'commit 1234', COMMAND),
-  [CODEWHALE_TOOL.GitBlame]: done(CODEWHALE_TOOL.GitBlame, { path: 'a.ts' }, '1234 (a) line', COMMAND),
   [CODEWHALE_TOOL.Run]: done(CODEWHALE_TOOL.Run, { action: 'tests' }, 'test result: ok', COMMAND),
-  [CODEWHALE_TOOL.RunTests]: done(CODEWHALE_TOOL.RunTests, { args: '--lib' }, 'test result: ok', COMMAND),
-  [CODEWHALE_TOOL.RunVerifiers]: done(CODEWHALE_TOOL.RunVerifiers, {}, 'All verifiers passed', COMMAND),
 
   // Background work.
   [CODEWHALE_TOOL.TaskShellWait]: done(CODEWHALE_TOOL.TaskShellWait, { task_id: 'shell_1' }, 'exited 0'),
@@ -306,29 +294,12 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
       },
     },
   }),
-  [CODEWHALE_TOOL.LegacyTodoWrite]: done(CODEWHALE_TOOL.LegacyTodoWrite, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.Todo]: done(CODEWHALE_TOOL.Todo, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.ChecklistWrite]: done(CODEWHALE_TOOL.ChecklistWrite, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.ChecklistUpdate]: done(CODEWHALE_TOOL.ChecklistUpdate, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.WorkUpdate]: done(CODEWHALE_TOOL.WorkUpdate, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.UpdatePlan]: done(CODEWHALE_TOOL.UpdatePlan, {
-    explanation: 'Plan',
-    plan: [
-      { step: 'Investigate', status: 'completed' },
-      { step: 'Implement', status: 'in_progress' },
-    ],
-  }, 'Plan updated'),
-
-  // The web.
-  [CODEWHALE_TOOL.FetchURL]: done(CODEWHALE_TOOL.FetchURL, { url: 'https://example.com' }, '# Example Domain', { duration_ms: 40 }),
-  [CODEWHALE_TOOL.WebSearch]: done(CODEWHALE_TOOL.WebSearch, { query: 'codewhale' }, '1. Codewhale - https://example.com'),
   [CODEWHALE_TOOL.Web]: done(CODEWHALE_TOOL.Web, { action: 'search', query: 'codewhale' }, '1. Codewhale'),
   [CODEWHALE_TOOL.WebRun]: done(CODEWHALE_TOOL.WebRun, {
     search_query: [
       { q: 'codewhale' },
     ],
   }, '1. Codewhale'),
-  [CODEWHALE_TOOL.WaitForDevServer]: done(CODEWHALE_TOOL.WaitForDevServer, { url: 'http://localhost:3000' }, 'Ready after 2s'),
 
   // Searches of a corpus that is not the file tree.
   [CODEWHALE_TOOL.ToolSearch]: done(CODEWHALE_TOOL.ToolSearch, { query: 'ask the user' }, JSON.stringify({
@@ -359,7 +330,6 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CODEWHALE_TOOL.Review]: done(CODEWHALE_TOOL.Review, { target: 'HEAD' }, 'No findings'),
   [CODEWHALE_TOOL.Verify]: done(CODEWHALE_TOOL.Verify, {}, 'Verified'),
   [CODEWHALE_TOOL.Harness]: done(CODEWHALE_TOOL.Harness, { action: 'status' }, 'Idle'),
-  [CODEWHALE_TOOL.GitCommitPlan]: done(CODEWHALE_TOOL.GitCommitPlan, {}, 'One commit'),
   [CODEWHALE_TOOL.Github]: done(CODEWHALE_TOOL.Github, { action: 'issue_read', number: 1 }, 'Issue 1'),
   [CODEWHALE_TOOL.Finance]: done(CODEWHALE_TOOL.Finance, { symbol: 'ACME' }, 'ACME 1.00'),
   [CODEWHALE_TOOL.Speech]: done(CODEWHALE_TOOL.Speech, { text: 'Hello' }, 'Spoke'),
@@ -379,8 +349,11 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
 const ERROR_TEXT = 'The tool reported an error.'
 
 /** The FAILED frame of the call one successful fixture already states. */
-function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {
-  const fixture = FIXTURES[name]
+function failed(kind: ToolKind, name: string, overrides: { status?: ToolFailureFixture['status'], input?: Record<string, unknown> } = {}): ToolFailureFixture {
+  const status = overrides.status ?? 'failed'
+  const fixture = overrides.input === undefined
+    ? FIXTURES[name]
+    : done(name, overrides.input, '')
   const request = fixture?.options?.request?.parentObject
   const args = request
     ? (((request.payload as Record<string, unknown>).tool as Record<string, unknown>).input as Record<string, unknown>)
@@ -411,7 +384,7 @@ export const CODEWHALE_TOOL_RESULTS: ToolResultCheck = {
     failed('grep', CODEWHALE_TOOL.GrepFiles),
     failed('execute', CODEWHALE_TOOL.Bash),
     // An interrupted command is stopped rather than failed.
-    failed('execute', CODEWHALE_TOOL.Bash, 'cancelled'),
+    failed('execute', CODEWHALE_TOOL.Bash, { status: 'cancelled' }),
     failed('task', CODEWHALE_TOOL.Workflow),
     failed('trigger', CODEWHALE_TOOL.Automation),
     failed('agent', CODEWHALE_TOOL.Agent),
@@ -419,8 +392,10 @@ export const CODEWHALE_TOOL_RESULTS: ToolResultCheck = {
     failed('message', CODEWHALE_TOOL.AgentsMessage),
     failed('wait', CODEWHALE_TOOL.AgentsWait),
     failed('todo', CODEWHALE_TOOL.TodoWrite),
-    failed('fetch', CODEWHALE_TOOL.FetchURL),
-    failed('web_search', CODEWHALE_TOOL.WebSearch),
+    failed('fetch', CODEWHALE_TOOL.Web, {
+      input: { action: 'fetch', url: 'https://example.com' },
+    }),
+    failed('web_search', CODEWHALE_TOOL.Web),
     failed('search', CODEWHALE_TOOL.ToolSearch),
     failed('memory', CODEWHALE_TOOL.Remember),
     failed('skill', CODEWHALE_TOOL.LoadSkill),

@@ -76,8 +76,8 @@ const EDIT = {
         diff: {
           unifiedDiff: {
             lines: [
-              { text: 'alpha', type: 'DIFF_LINE_TYPE_DELETE' },
-              { text: 'omega', type: 'DIFF_LINE_TYPE_ADD' },
+              { text: 'alpha', type: 'UNIFIED_DIFF_LINE_TYPE_DELETE' },
+              { text: 'omega', type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
             ],
           },
         },
@@ -97,7 +97,7 @@ const ANTIGRAVITY_FIXTURES = {
   [ANTIGRAVITY_TOOL.ReadFile]: done(ANTIGRAVITY_TOOL.ReadFile, { Path: '/p/a.ts' }, READ),
   [ANTIGRAVITY_TOOL.ViewFile]: done(ANTIGRAVITY_TOOL.ViewFile, { Path: '/p/a.ts' }, READ),
   [ANTIGRAVITY_TOOL.WriteFile]: done(ANTIGRAVITY_TOOL.WriteFile, { Path: '/p/new.ts', Content: 'fresh\n', Overwrite: true }, {}),
-  [ANTIGRAVITY_TOOL.EditFile]: done(ANTIGRAVITY_TOOL.EditFile, { Path: '/p/a.ts', Target: 'alpha', Replacement: 'omega' }, EDIT),
+  [ANTIGRAVITY_TOOL.EditFile]: done(ANTIGRAVITY_TOOL.EditFile, { Path: '/p/a.ts', Target: 'alpha', Replacement: 'proposed' }, EDIT),
   [ANTIGRAVITY_TOOL.RunCommand]: done(ANTIGRAVITY_TOOL.RunCommand, { CommandLine: 'echo probe', WaitMsBeforeAsync: 1000, toolSummary: 'probe' }, {
     runCommand: {
       commandLine: 'echo probe',
@@ -124,7 +124,7 @@ const ANTIGRAVITY_FIXTURES = {
   }),
   [ANTIGRAVITY_TOOL.ManageSubagents]: done(ANTIGRAVITY_TOOL.ManageSubagents, { operation: 'list' }, generic('Subagents listed')),
   [ANTIGRAVITY_TOOL.ManageTask]: done(ANTIGRAVITY_TOOL.ManageTask, { operation: 'status', task_id: 'task-1' }, generic('Task running')),
-  [ANTIGRAVITY_TOOL.SendMessage]: done(ANTIGRAVITY_TOOL.SendMessage, { conversation_id: 'child-cascade', message: 'Continue' }, generic('Message sent')),
+  [ANTIGRAVITY_TOOL.SendMessage]: done(ANTIGRAVITY_TOOL.SendMessage, { Recipient: 'child-cascade', Message: 'Continue' }, generic('Message sent')),
   [ANTIGRAVITY_TOOL.Schedule]: done(ANTIGRAVITY_TOOL.Schedule, { schedule: '* * * * *', prompt: 'Check' }, generic('Schedule created')),
   [ANTIGRAVITY_TOOL.AskQuestion]: done(ANTIGRAVITY_TOOL.AskQuestion, {
     questions: [

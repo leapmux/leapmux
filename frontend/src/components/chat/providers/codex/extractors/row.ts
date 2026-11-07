@@ -239,10 +239,10 @@ function codexChangeEntries(item: Record<string, unknown>): FileChangeEntry[] {
     .filter(isObject)
     .map((change) => {
       const kind = codexChangeKind(change)
-      const movePath = pickString(pickObject(change, 'kind'), 'movePath')
+      const movePath = pickString(pickObject(change, 'kind'), 'move_path')
       const patchOrBody = pickString(change, 'diff')
       return {
-        // A move states its DESTINATION in `kind.movePath` and its source in `path`.
+        // A move states its DESTINATION in `kind.move_path` and its source in `path`.
         filePath: movePath || pickString(change, 'path'),
         ...(movePath
           ? {

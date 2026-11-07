@@ -8798,11 +8798,11 @@
         "verified": true
       },
       "codewhale": {
-        "support": "agent-limit",
-        "userNote": "CodeWhale 0.10.0 has no route that stops one subagent, so LeapMux cannot interrupt a subagent alone. A later CodeWhale release adds a cancel route for subagent runs.",
-        "detailNote": "The current provider bridge exposes no native child interrupt route. LeapMux keeps the child Interrupt control absent and refuses direct child interruption.\n\nClassified as an agent limit for the tested version 0.10.0: the installed binary holds no `POST /v1/agent-runs/{run_id}/cancel` route. The 0.10.1 source adds `cancel_agent_run`. After an upgrade this cell likely becomes a LeapMux limit. Recheck it then (binary and source checked 2026-10-05).",
+        "support": "supported",
+        "userNote": "Interrupt stops the selected subagent while the parent remains usable.",
+        "detailNote": "The current native POST /v1/agent-runs/{run_id}/cancel route stops the selected child. LeapMux preserves the native outcome and leaves the parent turn unchanged. The native cancellation does not start a parent model turn; the browser proof sends a new parent prompt and verifies its answer. The stopped child has no active indicator or end divider after reload. Source verified against v0.10.2; browser acceptance passed in e2e-9JoRDD.",
         "spec": "frontend/tests/e2e/codewhale/interrupt-a-subagent.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },

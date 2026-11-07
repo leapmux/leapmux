@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	cascadeStatusIdle      = "CASCADE_RUN_STATUS_IDLE"
-	cascadeStatusRunning   = "CASCADE_RUN_STATUS_RUNNING"
-	cascadeStatusCanceling = "CASCADE_RUN_STATUS_CANCELING"
-	cascadeStatusBusy      = "CASCADE_RUN_STATUS_BUSY"
-	pastEveryStep          = 1 << 30
+	cascadeStatusIdle        = "CASCADE_RUN_STATUS_IDLE"
+	cascadeStatusRunning     = "CASCADE_RUN_STATUS_RUNNING"
+	cascadeStatusCanceling   = "CASCADE_RUN_STATUS_CANCELING"
+	cascadeStatusBusy        = "CASCADE_RUN_STATUS_BUSY"
+	antigravityQueueInputTag = "leapmux:queue-input"
+	pastEveryStep            = 1 << 30
 )
 
 type agentStateEnvelope struct {
@@ -103,6 +104,15 @@ type antigravityStep struct {
 		ModifiedResponse string `json:"modifiedResponse"`
 		Thinking         string `json:"thinking"`
 	} `json:"plannerResponse"`
+	UserInput struct {
+		Tags []string `json:"tags"`
+	} `json:"userInput"`
+	SystemMessage struct {
+		AgentMessage *struct {
+			Content      string `json:"content"`
+			HideFromUser bool   `json:"hideFromUser"`
+		} `json:"agentMessage"`
+	} `json:"systemMessage"`
 	RunCommand struct {
 		CommandLine    string `json:"commandLine"`
 		CWD            string `json:"cwd"`
@@ -159,8 +169,8 @@ type questionOption struct {
 
 func isOpenStepStatus(status string) bool {
 	switch status {
-	case "CORTEX_STEP_STATUS_GENERATING", "CORTEX_STEP_STATUS_QUEUED", "CORTEX_STEP_STATUS_PENDING",
-		"CORTEX_STEP_STATUS_RUNNING", contracts.AntigravityStepStatusWaiting:
+	case contracts.AntigravityStepStatusGenerating, contracts.AntigravityStepStatusQueued, contracts.AntigravityStepStatusPending,
+		contracts.AntigravityStepStatusRunning, contracts.AntigravityStepStatusWaiting:
 		return true
 	default:
 		return false
@@ -205,25 +215,4 @@ func stepDeclined(step antigravityStep) bool {
 	err := step.Error
 	text := strings.Join([]string{err.UserErrorMessage, err.ModelErrorMessage, err.ShortError, err.FullError, err.Details}, "\n")
 	return strings.Contains(text, "user denied permission")
-}
-
-func stepErrorText(step antigravityStep) string {
-	err := step.ErrorMessage.Error
-	text := strings.TrimSpace(err.UserErrorMessage)
-	if short := strings.TrimSpace(err.ShortError); short != "" && short != text {
-		if text != "" {
-			text += "\n\n"
-		}
-		text += short
-	}
-	if text == "" {
-		text = strings.TrimSpace(err.ModelErrorMessage)
-	}
-	if text == "" {
-		text = strings.TrimSpace(err.FullError)
-	}
-	if text == "" {
-		text = "Antigravity CLI reported an error."
-	}
-	return text
 }

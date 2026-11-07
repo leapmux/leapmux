@@ -98,7 +98,7 @@ describe('reasoning text from Codex', () => {
 })
 
 describe('codex file change kinds', () => {
-  // A rename states its DESTINATION in `kind.movePath` and its source in `path`.
+  // A rename states its DESTINATION in `kind.move_path` and its source in `path`.
   // Both halves used to read the same key, and the kind never reached `move` at
   // all, so the row drew the edit icon and "old.ts → old.ts".
   it('reads a rename as a move from its source to its destination', () => {
@@ -108,7 +108,7 @@ describe('codex file change kinds', () => {
       changes: [
         {
           path: 'old/name.ts',
-          kind: { type: 'move', movePath: 'new/name.ts' },
+          kind: { type: 'update', move_path: 'new/name.ts' },
         },
       ],
     })
@@ -150,7 +150,11 @@ describe('codex retained outcome', () => {
  * change did not land.
  */
 describe('codex fileChange results', () => {
-  const change = { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }
+  const change = {
+    path: 'src/a.ts',
+    kind: { type: 'update', move_path: null },
+    diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+  }
 
   function pairedRequestRow(resultFields: Record<string, unknown>): ToolCallRow | null {
     const request = parsedItem({
@@ -547,8 +551,16 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: 'completed',
       changes: [
-        { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
-        { path: 'src/b.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-x\n+y' },
+        {
+          path: 'src/a.ts',
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+        },
+        {
+          path: 'src/b.ts',
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1,1 +1,1 @@\n-x\n+y',
+        },
       ],
       filePath: '/shared.ts',
     },
@@ -556,7 +568,11 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: 'completed',
       changes: [
-        { path: 'src/new.ts', kind: 'add', diff: 'hello\n' },
+        {
+          path: 'src/new.ts',
+          kind: { type: 'add' },
+          diff: 'hello\n',
+        },
       ],
       filePath: '/shared.ts',
     },
@@ -564,7 +580,11 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: 'failed',
       changes: [
-        { path: 'src/gone.ts', kind: 'delete', diff: 'body\n' },
+        {
+          path: 'src/gone.ts',
+          kind: { type: 'delete' },
+          diff: 'body\n',
+        },
       ],
       aggregatedOutput: 'apply_patch: refused',
       filePath: '/shared.ts',
@@ -575,7 +595,7 @@ describe('CODEX_TOOL_READERS', () => {
       changes: [
         {
           path: 'old/name.ts',
-          kind: { type: 'move', movePath: 'new/name.ts' },
+          kind: { type: 'update', move_path: 'new/name.ts' },
         },
       ],
       sourcePath: '/shared-src.ts',
@@ -883,7 +903,11 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: CODEX_STATUS.IN_PROGRESS,
       changes: [
-        { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+        {
+          path: 'src/a.ts',
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+        },
       ],
     }, false)
     expect(payload.request.changes).toMatchObject([
@@ -900,7 +924,10 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: CODEX_STATUS.COMPLETED,
       changes: [
-        { kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+        {
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1,1 +1,1 @@\n-old\n+new',
+        },
       ],
     })
     expect(payload.request.changes).toEqual([])
@@ -916,8 +943,14 @@ describe('CODEX_TOOL_READERS', () => {
       type: CODEX_ITEM.FileChange,
       status: CODEX_STATUS.COMPLETED,
       changes: [
-        { path: 'src/new.ts', kind: 'add', diff: 'hello\n' },
-        { kind: 'delete' },
+        {
+          path: 'src/new.ts',
+          kind: { type: 'add' },
+          diff: 'hello\n',
+        },
+        {
+          kind: { type: 'delete' },
+        },
       ],
     }
     expect(codexItemKind(item)).toBe('write')

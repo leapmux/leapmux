@@ -90,3 +90,22 @@ func TestAntigravityReadsSessionStore(t *testing.T) {
 func TestAntigravitySessionFixtureURI(t *testing.T) {
 	assert.Equal(t, "file:///tmp/a%20b", fileURI("/tmp/a b"))
 }
+
+func TestAntigravityFileURIWindowsDrive(t *testing.T) {
+	assert.Equal(t, "file:///C:/Work/My%20Project", fileURI("C:/Work/My Project"))
+}
+
+func TestAntigravityFileURIUNCAuthority(t *testing.T) {
+	assert.Equal(t, "file://server/share/My%20Project", fileURI("//server/share/My Project"))
+}
+func TestAntigravityStoredSessionMatchesIndependentWindowsURI(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".gemini", "antigravity-cli", "conversation_summaries.db")
+	agenttest.NewFixtureDB(t, path, antigravitySessionDDL+`
+ INSERT INTO conversation_summaries(conversation_id,title,last_modified_time,workspace_uris,last_user_input_time)
+ VALUES('native-drive-session','Native drive session','2026-01-02 03:04:05','["file:///C:/Work/My%20Project"]','2026-01-02 03:04:05');`)
+	sessions, err := antigravityStoredSessions(t.Context(), agent.StoredSessionQuery{HomeDir: home, WorkingDir: "C:/Work/My Project"})
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	assert.Equal(t, "native-drive-session", sessions[0].Handle)
+}

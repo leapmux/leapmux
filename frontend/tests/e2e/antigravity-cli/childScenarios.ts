@@ -3,7 +3,7 @@ import type { RunningNativeChild } from '../helpers/runningChildProof'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { isObject } from '../../../src/lib/jsonPick'
+import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall, viewFileToolCall } from '../helpers/providerToolCalls'
@@ -74,7 +74,7 @@ export async function openAntigravityRunningChild(context: ManagedNativeScenario
   expect(snapshot.messages.length).toBeGreaterThan(0)
   const frames = snapshot.messages.map(message => nativeMessageBody(message)).filter(isObject)
   expect(frames.every(frame => !('sessionUpdate' in frame))).toBe(true)
-  expect(frames.some(frame => frame.type === 'CORTEX_STEP_TYPE_USER_INPUT' && JSON.stringify(frame).includes(task)), JSON.stringify(frames, null, 2)).toBe(true)
+  expect(frames.filter(frame => frame.type === 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE' && pickString(pickObject(pickObject(frame, 'systemMessage'), 'agentMessage'), 'content').includes(task))).toHaveLength(1)
   return {
     ...child,
     prompt: task,
@@ -96,6 +96,7 @@ export async function expectAntigravityLiveChild(context: ManagedNativeScenarioC
     child.fileMarker,
   ])
     await expect(messageContents(context.page).filter({ hasText: text }).first()).toBeVisible()
+  await expect(messageContents(context.page).filter({ hasText: child.prompt })).toHaveCount(1)
   await expect(messageContents(context.page).filter({ hasText: child.finalReply })).toHaveCount(0)
   await expect(child.row).toHaveAttribute('data-status', 'running')
 }
@@ -110,8 +111,10 @@ export async function finishAntigravityChildWithReload(
   await expect(child.row).toHaveAttribute('data-status', 'succeeded')
   await openChildTabFromRow(context.page, child.row)
   await expect(messageContents(context.page).filter({ hasText: child.finalReply }).first()).toBeVisible()
+  await expect(messageContents(context.page).filter({ hasText: child.prompt })).toHaveCount(1)
   await options.beforeReload?.()
   await context.page.reload()
+  await expect(messageContents(context.page).filter({ hasText: child.prompt })).toHaveCount(1)
   for (const text of [
     child.prompt,
     child.progress,

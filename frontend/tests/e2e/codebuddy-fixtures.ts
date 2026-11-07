@@ -13,11 +13,8 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import { CODEBUDDY_MODE } from '../../src/generated/contracts/codebuddy-protocol'
 import { CODEBUDDY_AGENT, nativeContext } from './codebuddy-code/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('codebuddy', 'CodeBuddy E2E requires the codebuddy CLI on PATH (https://cnb.cool/codebuddy/codebuddy-code)')
 
 /**
  * The agent opens in Bypass Permissions, which approves ordinary tools automatically.
@@ -32,7 +29,6 @@ export const CODEBUDDY_BYPASS = {
 export const codebuddyTest = createProviderTest({
   agent: CODEBUDDY_AGENT,
   nativeContext,
-  skipReason: CODEBUDDY_E2E_SKIP_REASON,
   /** An agent in Bypass Permissions, which asks only for protected decisions. */
   workspaceName: 'authenticatedCodebuddyWorkspace',
   workspaceOptions: { openOptions: CODEBUDDY_BYPASS },

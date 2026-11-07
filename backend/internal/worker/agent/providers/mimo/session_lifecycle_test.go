@@ -851,6 +851,7 @@ func TestManualCompactionRouteFailureAfterEarlyIdleReleasesTheQueue(t *testing.T
 		defer a.Mu.Unlock()
 		return !a.turnActive && a.manualCompactionID == ""
 	}, "the failed native route releases the manual compaction turn")
+	waitFor(t, func() bool { return len(sink.LeapMuxNotifications()) == 1 }, "the failed native compaction publishes its error notification")
 	notices := sink.LeapMuxNotifications()
 	require.Len(t, notices, 1)
 	assert.Equal(t, contracts.NotificationTypeAgentError, notices[0][contracts.NotificationFieldType])

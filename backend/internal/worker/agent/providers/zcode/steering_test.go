@@ -330,18 +330,18 @@ func TestZCodeSteerInputThatTheAppServerRefuses(t *testing.T) {
 
 // An app-server without the command inbox steers nothing: the input goes in the
 // next turn, and the turn state and the agent status lose the Steer control.
-func TestZCodeSteerInputWithoutTheCommandInbox(t *testing.T) {
+func TestZCodeSteerInputReportsAnAbsentCurrentMethod(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newZCodeSteerAgent(t)
 	refuseZCodeRequest(t, a, stdin, MethodCommand, ErrMethodNotFound, "Method not found")
-	require.ErrorIs(t, a.SteerInput("no inbox", nil), agent.ErrSteeringUnsupported)
-	assert.False(t, a.SupportsSteering())
-	assert.Equal(t, agent.TurnState{Active: true}, a.PublishTurnActive())
-	assert.Equal(t, []string{"sess-1"}, sink.StatusActives(), "the status republishes the capability")
-
-	require.ErrorIs(t, a.SteerInput("again", nil), agent.ErrSteeringUnsupported)
-	assert.Len(t, zcodeSentCommands(t, stdin), 1, "a known absence sends nothing")
+	err := a.SteerInput("no inbox", nil)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrSteeringUnsupported)
+	assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain)
+	assert.True(t, a.SupportsSteering())
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, a.PublishTurnActive())
 	assert.Empty(t, sink.SteerEchoReports())
+	assert.Empty(t, a.steers)
 }
 
 func TestZCodeSteerInputPreconditions(t *testing.T) {

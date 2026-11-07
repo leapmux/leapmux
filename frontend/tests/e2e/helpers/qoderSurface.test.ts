@@ -1,10 +1,13 @@
 import type { Server } from 'node:http'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_IDENTITY_TOKEN } from './mockAgentEnvironment'
 import { registerMockModelScenario, removeMockModelScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
+import { createQoderEnvironment } from './qoderEnvironment'
 import { handleQoderHttp, QODER_QUOTA_CONTROL_PREFIX, QODER_QUOTA_PATH, qoderEndpointCacheRecords } from './qoderSurface'
 
 const origin = 'http://127.0.0.1:4555'
@@ -59,6 +62,18 @@ afterEach(async () => {
 })
 
 describe('handleQoderHttp', () => {
+  it('answers the current unauthenticated endpoint health probe', async () => {
+    const url = await configServer()
+    const response = await fetch(`${url}/algo/api/v1/ping`)
+    expect(response.status).toBe(200)
+  })
+
+  it('does not claim unrelated health paths or unsupported ping methods', async () => {
+    const url = await configServer()
+    expect((await fetch(`${url}/algo/api/v1/ping-other`)).status).toBe(404)
+    expect((await fetch(`${url}/algo/api/v1/ping`, { method: 'POST' })).status).toBe(404)
+  })
+
   it.each([
     { path: '/algo/api/v3/service/region/endpoints', machineId: undefined, node: origin },
     {
@@ -359,6 +374,42 @@ describe('createQoderSurface quota service', () => {
     })
     return { server, control, usage, configure }
   }
+
+  it('authenticates quota and configuration with the generated job credential', async () => {
+    const { server, usage, configure } = await quotaServer('qoder-current-job-auth')
+    const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+    mkdirSync(scratch, { recursive: true })
+    const directory = mkdtempSync(join(scratch, 'qoder-current-job-auth-'))
+    try {
+      const options = {
+        homeDir: join(directory, 'home'),
+        origin: server.url,
+        baseURL: `${server.url}/v1`,
+        modelKey: 'a-separate-model-credential',
+        identityToken: MOCK_IDENTITY_TOKEN,
+        modelID: 'qoder-quota-test',
+        alternateModelID: 'qoder-alternate',
+      }
+      const environment = createQoderEnvironment(options)
+      const credential = JSON.parse(environment.QODER_JOB_TOKEN!)
+      expect((await configure({ user_id: 'leapmux-e2e', total_usage_percentage: 42 })).status).toBe(200)
+      const headers = { 'authorization': `Bearer ${credential.token}`, 'content-type': 'application/json' }
+      expect((await fetch(usage, { headers })).status).toBe(200)
+      const config = await fetch(`${server.url}/api/v1/qcs/config/resolve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          namespaces: ['qodercli-feature-gates'],
+          keys: [],
+          context: { platform: 'macos', clientVersion: '1.1.81', clientType: 'qodercli' },
+        }),
+      })
+      expect(config.status).toBe(200)
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
 
   it('answers the scenario quota only to the mocked account, and records each request', async () => {
     const { control, usage, configure } = await quotaServer('qoder-quota-owner')

@@ -47,12 +47,16 @@ func TestAntigravityResumeIgnoresSeededSteps(t *testing.T) {
 
 func TestAntigravityFirstOpenIndexSkipsBackgroundSteps(t *testing.T) {
 	a, _ := testAgent(t)
+	a.root.seededCount = 2
 	for index := 2; index <= 5; index++ {
-		a.root.steps[index] = &stepState{status: "CORTEX_STEP_STATUS_DONE"}
+		a.root.steps[index] = &stepState{status: "CORTEX_STEP_STATUS_DONE", consumed: true}
 	}
 	a.root.steps[2].status = "CORTEX_STEP_STATUS_RUNNING"
+	a.root.steps[2].consumed = false
+	a.root.steps[2].liveOutputAccepted = true
 	a.root.background[2] = backgroundTask{rowKey: "task", stepIndex: 2}
 	assert.Equal(t, 6, a.firstOpenIndexLocked(a.root))
 	a.root.steps[3].status = "CORTEX_STEP_STATUS_RUNNING"
+	a.root.steps[3].consumed = false
 	assert.Equal(t, 3, a.firstOpenIndexLocked(a.root))
 }

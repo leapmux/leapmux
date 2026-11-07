@@ -2,7 +2,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { CURSOR_OPTION } from '../../../src/generated/contracts/cursor-protocol'
 import { AgentOptionSettlementState, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CURSOR_E2E_SKIP_REASON, cursorTest } from '../cursor-fixtures'
+import { cursorTest } from '../cursor-fixtures'
 import { getTestChannel } from '../helpers/api'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
@@ -93,7 +93,6 @@ async function expectBypassLocked(context: ManagedNativeScenarioContext): Promis
 const restartTest = createProviderProcessTest({
   agent: CURSOR_AGENT,
   nativeContext,
-  skipReason: CURSOR_E2E_SKIP_REASON,
   openOptions: {
     optionValues: { [CURSOR_OPTION.BypassPermissions]: 'true' },
   },

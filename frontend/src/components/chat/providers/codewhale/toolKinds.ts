@@ -11,8 +11,8 @@ import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
  * input summary.
  *
  * Every tool `CODEWHALE_TOOL` lists reaches a kind, so only a tool from a later
- * release takes the uncategorized row; `toolVocabulary.test.ts` is the guard. Four
- * facade tools -- `File`, `Web`, `Git` and `Run` -- state their real operation in an
+ * release takes the uncategorized row; `toolVocabulary.test.ts` is the guard. Three
+ * facade tools -- `Web`, `Git` and `Run` -- state their real operation in an
  * `action` argument, and `codewhaleReclassify` refines their kind from it.
  *
  * A Map rather than an object: a Model Context Protocol tool may be called
@@ -20,21 +20,16 @@ import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
  * `Object.prototype` instead of reporting that it holds no entry.
  */
 const CODEWHALE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>([
-  // Files. The legacy spellings are hidden aliases the runtime still accepts.
+  // Current model-visible file tools.
   [CODEWHALE_TOOL.Read, 'read'],
-  [CODEWHALE_TOOL.ReadFile, 'read'],
   [CODEWHALE_TOOL.Write, 'write'],
-  [CODEWHALE_TOOL.WriteFile, 'write'],
   [CODEWHALE_TOOL.Edit, 'edit'],
-  [CODEWHALE_TOOL.EditFile, 'edit'],
   [CODEWHALE_TOOL.ApplyPatch, 'edit'],
   [CODEWHALE_TOOL.FimEdit, 'edit'],
   [CODEWHALE_TOOL.ListDir, 'list'],
   [CODEWHALE_TOOL.ProjectMap, 'list'],
   [CODEWHALE_TOOL.FileSearch, 'glob'],
   [CODEWHALE_TOOL.GrepFiles, 'grep'],
-  // The facade reads a file unless its `action` says otherwise.
-  [CODEWHALE_TOOL.File, 'read'],
   // A picture or a document read from a path, and the text read out of an image.
   [CODEWHALE_TOOL.ReadMedia, 'read'],
   [CODEWHALE_TOOL.ImageOcr, 'read'],
@@ -45,22 +40,14 @@ const CODEWHALE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, Tool
 
   // Commands. Each of these runs a process in the workspace.
   [CODEWHALE_TOOL.Bash, 'execute'],
-  [CODEWHALE_TOOL.LegacyBash, 'execute'],
-  [CODEWHALE_TOOL.TaskShellStart, 'execute'],
+  [CODEWHALE_TOOL.BashAlias, 'execute'],
   [CODEWHALE_TOOL.TerminalRun, 'execute'],
   [CODEWHALE_TOOL.TerminalSend, 'execute'],
   [CODEWHALE_TOOL.CodeExecution, 'execute'],
   [CODEWHALE_TOOL.JsExecution, 'execute'],
   [CODEWHALE_TOOL.PandocConvert, 'execute'],
   [CODEWHALE_TOOL.Git, 'execute'],
-  [CODEWHALE_TOOL.GitStatus, 'execute'],
-  [CODEWHALE_TOOL.GitDiff, 'execute'],
-  [CODEWHALE_TOOL.GitLog, 'execute'],
-  [CODEWHALE_TOOL.GitShow, 'execute'],
-  [CODEWHALE_TOOL.GitBlame, 'execute'],
   [CODEWHALE_TOOL.Run, 'execute'],
-  [CODEWHALE_TOOL.RunTests, 'execute'],
-  [CODEWHALE_TOOL.RunVerifiers, 'execute'],
 
   // Background work the transcript already opened: a shell job, a terminal, a
   // durable task, a server the runtime started, or a workflow run.
@@ -88,22 +75,12 @@ const CODEWHALE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, Tool
   // A notice to the reader is a message to a peer outside the session.
   [CODEWHALE_TOOL.Notify, 'message'],
 
-  // Checklists and plans. `update_plan` states its steps as `plan[{step, status}]`,
-  // which `codewhaleTodoItems` reads beside the `todos` list of the others.
+  // The current progress tool replaces the complete checklist.
   [CODEWHALE_TOOL.TodoWrite, 'todo'],
-  [CODEWHALE_TOOL.LegacyTodoWrite, 'todo'],
-  [CODEWHALE_TOOL.Todo, 'todo'],
-  [CODEWHALE_TOOL.ChecklistWrite, 'todo'],
-  [CODEWHALE_TOOL.ChecklistUpdate, 'todo'],
-  [CODEWHALE_TOOL.UpdatePlan, 'todo'],
-  [CODEWHALE_TOOL.WorkUpdate, 'todo'],
 
   // The web. The facade searches unless its `action` says otherwise.
-  [CODEWHALE_TOOL.FetchURL, 'fetch'],
-  [CODEWHALE_TOOL.WebSearch, 'web_search'],
   [CODEWHALE_TOOL.Web, 'web_search'],
   [CODEWHALE_TOOL.WebRun, 'web_search'],
-  [CODEWHALE_TOOL.WaitForDevServer, 'wait'],
 
   // Queries against a corpus the session holds: the tool registry, and the
   // language-server index.
@@ -131,7 +108,6 @@ const CODEWHALE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, Tool
   [CODEWHALE_TOOL.Review, 'report'],
   [CODEWHALE_TOOL.Verify, 'report'],
   [CODEWHALE_TOOL.Harness, 'report'],
-  [CODEWHALE_TOOL.GitCommitPlan, 'report'],
   [CODEWHALE_TOOL.Github, 'report'],
   [CODEWHALE_TOOL.Finance, 'report'],
   [CODEWHALE_TOOL.Speech, 'report'],

@@ -51,15 +51,6 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		model, settledEffort = agent.DefaultModelSentinel, ""
 	}
 	a.model, a.effort, a.mode = model, settledEffort, mode
-	if mode == contracts.AntigravityModeBypass {
-		for _, state := range a.cascades {
-			for _, control := range state.controls {
-				if control.kind == "permission" {
-					control.automatic = true
-				}
-			}
-		}
-	}
 	a.Mu.Unlock()
 	a.sink.PersistSettingsRefresh(optionmap.Map{
 		agent.OptionIDModel: model, agent.OptionIDEffort: settledEffort, agent.OptionIDPermissionMode: mode,

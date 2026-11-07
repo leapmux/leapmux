@@ -38,11 +38,11 @@ CREATE TABLE agents (
     -- option_groups: cached catalog of every configuration axis reported by the
     -- agent process (model/effort/permission/etc.), as a JSON array.
     option_groups    TEXT NOT NULL DEFAULT '[]',
-    -- An AgentProvider ordinal, under the same CHECK as its two siblings
-    -- (messages, control_response_answers). Every agent runs ONE provider's
-    -- process, so a 0 here is a field the writer forgot rather than a state.
-    -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
-    -- CHECK is the only guard.
+    -- An AgentProvider ordinal. agents is the only table that stores it.
+    -- messages identifies its agent through agent_id; control_response_answers
+    -- reads the provider from agents. A virtual child stores its parent's provider.
+    -- An unset provider is 0 and fails the CHECK.
+    -- CreateAgent binds the column rather than relying on the default.
     agent_provider   INTEGER NOT NULL DEFAULT 1
         CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 31),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
@@ -684,13 +684,12 @@ CREATE TABLE agent_background_tasks (
     -- an upsert that forgot to set the status fails the write rather than
     -- storing a row no reader can classify.
     --
-    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are working,
-    -- PAUSED (3) is open but idle, and COMPLETED (4) through FINISHED (8)
-    -- are final. The queries bind that boundary rather than listing five
-    -- values, and TestBackgroundTaskFinalStatusesAreTheTopOfTheRange pins the
-    -- split against bgtask.Status.IsFinished, so a new status added on the
-    -- wrong side of it fails the suite instead of silently joining the other
-    -- pool.
+    -- The ordinals are ordered: PENDING (1) and RUNNING (2) are working.
+    -- PAUSED (3) is open but idle. SUCCEEDED (4) through
+    -- ENDED_WITH_UNKNOWN_OUTCOME (8) are final.
+    -- Queries bind the lowest final ordinal rather than listing five values.
+    -- TestBackgroundTaskFinalStatusesAreTheTopOfTheRange verifies that this
+    -- split agrees with bgtask.Status.IsFinished for every declared status.
     status          INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 8),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),

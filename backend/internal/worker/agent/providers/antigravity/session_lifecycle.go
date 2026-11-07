@@ -1,10 +1,12 @@
 package antigravity
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -56,21 +58,49 @@ func (a *Agent) sendChild(childKey, content string, attachments []*leapmuxv1.Att
 	}
 	state := a.cascades[childKey]
 	if state != nil && state.closed && !steer {
-		state.closed = false
-		state.connectErr = nil
-		state.connected = make(chan struct{})
-		state.connectedOnce = sync.Once{}
-		state.stored = true
+		done, ctx := state.streamDone, a.streamCtx
 		a.Mu.Unlock()
-		go a.startStoredChild(state)
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return agent.ErrChildRouteNotReady
+			}
+		}
+		a.Mu.Lock()
+		reopen, reopenErr := a.reopenChildLocked(state, done)
+		a.Mu.Unlock()
+		if reopenErr != nil {
+			return reopenErr
+		}
+		if reopen {
+			// Recounting here can classify new native peer work as history.
+			// Startup already established the replay boundary, so reuse it and the acknowledged steps.
+			a.startCascadeWorker(state, a.runCascadeStream)
+		}
 	} else {
 		a.Mu.Unlock()
 	}
+
 	state, err := a.childState(childKey)
 	if err != nil {
 		return err
 	}
 	return a.sendToState(state, content, attachments, steer, false)
+}
+
+func (a *Agent) reopenChildLocked(state *cascadeState, completed chan struct{}) (bool, error) {
+	if !a.cascadeCurrentLocked(state) || a.sessionSwitching || state.streamDone != completed {
+		return false, agent.ErrChildRouteNotReady
+	}
+	reopen := state.closed
+	if reopen {
+		state.closed = false
+		state.connectErr = nil
+		state.connected = make(chan struct{})
+		state.connectedOnce = sync.Once{}
+	}
+	return reopen, nil
 }
 
 func (a *Agent) sendToState(state *cascadeState, content string, attachments []*leapmuxv1.Attachment, steer, allowSlash bool) error {
@@ -95,11 +125,26 @@ func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachme
 		a.Mu.Unlock()
 		return agent.ErrAgentBusy
 	}
-	if state.closed {
+	if state == nil {
 		a.Mu.Unlock()
-		return agent.ErrChildRouteNotReady
+		return agent.ErrInputSessionChanged
 	}
-	if !steer && (state.turnActive || state.sendInFlight) {
+	if a.cascades[state.id] != state || state.generation != a.generation || state.parent == nil && a.root != state {
+		a.Mu.Unlock()
+		if state.parent != nil {
+			return agent.ErrChildRouteNotReady
+		}
+		return agent.ErrInputSessionChanged
+	}
+	if state.closed || a.streamCtx.Err() != nil {
+		child := state.parent != nil
+		a.Mu.Unlock()
+		if child {
+			return agent.ErrChildRouteNotReady
+		}
+		return fmt.Errorf("the Antigravity event stream is closed")
+	}
+	if state.turnPhase == cascadeTurnFinalizing || !steer && (state.turnPhase != cascadeTurnIdle || state.sendInFlight) {
 		root := state.parent == nil
 		a.Mu.Unlock()
 		if root {
@@ -107,7 +152,7 @@ func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachme
 		}
 		return agent.ErrAgentBusy
 	}
-	if steer && !state.turnActive {
+	if steer && state.turnPhase != cascadeTurnActive {
 		a.Mu.Unlock()
 		return agent.ErrNoActiveTurn
 	}
@@ -123,40 +168,26 @@ func (a *Agent) sendToStateCommand(state *cascadeState, content string, attachme
 	}
 	state.sendInFlight = true
 	seq := a.NextTurnSeq()
-	isChild := state.parent != nil
+	outgoing := a.turnStateLocked(state)
 	a.inputWG.Add(1)
 	a.Mu.Unlock()
-	if isChild {
-		providerkit.PublishSteerableTurnActiveTo(state.sink, true, seq)
-	} else {
-		providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: true, Steerable: state.turnActive}, seq)
-	}
-	request := map[string]any{"cascadeId": state.id, "items": items, "media": media, "cascadeConfig": config}
+	defer a.inputWG.Done()
+	providerkit.PublishTurnStateTo(state.sink, outgoing, seq)
+	request := map[string]any{"cascadeId": state.id, "items": items, "media": media, "cascadeConfig": config, "tags": []string{antigravityQueueInputTag}}
 	err = a.rpc.sendUserMessage(a.Context(), request)
-	a.inputWG.Done()
 	a.Mu.Lock()
-	if err != nil && !state.turnActive {
+	if err != nil && state.turnPhase == cascadeTurnIdle {
 		state.sendInFlight = false
 	}
-	childActive := state.turnActive
+	errorState := a.turnStateLocked(state)
 	errorSeq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	if err != nil {
-		if state.parent == nil {
-			a.PublishTurnActive()
-		} else {
-			providerkit.PublishSteerableTurnActiveTo(state.sink, childActive, errorSeq)
-		}
+		providerkit.PublishTurnStateTo(state.sink, errorState, errorSeq)
 		if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
 			return providerkit.ResumeFailedError(state.id, err)
 		}
-		if steer {
-			return fmt.Errorf("%w: Antigravity refused the steer: %v", agent.ErrAgentBusy, err)
-		}
-		return providerkit.ClassifyHTTPDeliveryError("send the Antigravity message", err)
-	}
-	if isChild {
-		providerkit.LogRegistryRefusal("antigravity", "revive", a.sink.ReviveBackgroundTask(state.id))
+		return err
 	}
 	return nil
 }
@@ -184,35 +215,46 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 	a.sessionSwitching = true
 	oldRoot := a.root
+	admissionGeneration := a.generation
 	a.Mu.Unlock()
 	newID, err := a.openACPSession(a.Context(), "")
 	if err != nil {
 		a.Mu.Lock()
-		a.sessionSwitching = false
+		if a.root == oldRoot && a.generation == admissionGeneration && !a.StoppedLocked() {
+			a.sessionSwitching = false
+		}
 		a.Mu.Unlock()
 		return "", err
 	}
-	a.inputWG.Wait()
-	a.Mu.Lock()
-	var states []*cascadeState
-	for _, state := range a.cascades {
-		states = append(states, state)
-	}
-	a.Mu.Unlock()
-	for _, state := range states {
-		if state.turnActive {
-			if err := a.rpc.cancel(a.Context(), state.id); err != nil {
-				slog.Warn("antigravity cancel during clear", "agent_id", a.AgentID(), "cascade_id", state.id, "error", err)
+	installed := false
+	defer func() {
+		if !installed {
+			if closeErr := a.closeACPSession(a.Context(), newID); closeErr != nil {
+				slog.Debug("antigravity close an unused replacement session", "error", closeErr)
 			}
 		}
-	}
-	if a.streamCancel != nil {
-		a.streamCancel()
-	}
-	a.awaitStreams(antigravityClearTimerTag)
+	}()
+	a.inputWG.Wait()
 	a.Mu.Lock()
+	if a.root != oldRoot || a.generation != admissionGeneration || a.StoppedLocked() {
+		a.Mu.Unlock()
+		return "", agent.ErrInputSessionChanged
+	}
 	a.generation++
+	retiredGeneration := a.generation
+	cancel, group := a.streamCancel, a.streamWG
+	states := a.cascadeSnapshotLocked()
+	activeIDs := a.nativeCancellationIDsLocked(states)
 	a.Mu.Unlock()
+	for _, cascadeID := range activeIDs {
+		if err := a.rpc.cancel(a.Context(), cascadeID); err != nil {
+			slog.Warn("antigravity cancel during clear", "agent_id", a.AgentID(), "cascade_id", cascadeID, "error", err)
+		}
+	}
+	if cancel != nil {
+		cancel()
+	}
+	a.awaitStreams(group, antigravityClearTimerTag)
 	a.finishCascades(states, agent.MessageCompletionInterrupted, bgtask.StatusStopped)
 	if oldRoot != nil {
 		if err := a.closeACPSession(a.Context(), oldRoot.id); err != nil {
@@ -220,11 +262,16 @@ func (a *Agent) ClearContext() (string, error) {
 		}
 	}
 	streamCtx, streamCancel := context.WithCancel(a.Context())
-	a.streamCtx, a.streamCancel = streamCtx, streamCancel
 	a.Mu.Lock()
+	if a.root != oldRoot || a.generation != retiredGeneration || a.StoppedLocked() {
+		a.Mu.Unlock()
+		streamCancel()
+		return "", agent.ErrInputSessionChanged
+	}
+	a.streamCtx, a.streamCancel, a.streamWG = streamCtx, streamCancel, &sync.WaitGroup{}
 	root := a.installRoot(newID, false)
+	installed = true
 	a.sessionSwitching = false
-	a.planPromptRequestID = ""
 	a.Mu.Unlock()
 	a.startCascadeStream(root)
 	a.sink.ResetSpans()
@@ -235,13 +282,56 @@ func (a *Agent) ClearContext() (string, error) {
 	return newID, nil
 }
 
+func (a *Agent) nativeCancellationIDsLocked(states []*cascadeState) []string {
+	refused := map[string]struct{}{}
+	for _, state := range states {
+		for id, record := range state.childKeys {
+			if record.refused {
+				refused[id] = struct{}{}
+			}
+		}
+	}
+	depths := map[string]int{}
+	for _, state := range states {
+		depth := 0
+		for parent := state.parent; parent != nil; parent = parent.parent {
+			depth++
+		}
+		if _, excluded := refused[state.id]; !excluded && state.id != "" {
+			depths[state.id] = depth
+		}
+		// A cached idle status can precede a native wake, so cleanup includes every owned child.
+		for id, record := range state.childKeys {
+			if !record.refused && id != "" {
+				depths[id] = max(depths[id], depth+1)
+			}
+		}
+	}
+	if a.root != nil && a.root.id != "" {
+		depths[a.root.id] = 0
+	}
+	ids := make([]string, 0, len(depths))
+	for id := range depths {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(left, right string) int {
+		if order := cmp.Compare(depths[right], depths[left]); order != 0 {
+			return order
+		}
+		return cmp.Compare(left, right)
+	})
+	return ids
+}
+
 func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageCompletion, status bgtask.Status) {
 	var root *cascadeState
 	for _, state := range states {
-		a.flushOpenSteps(state, completion)
 		a.retireAllInteractions(state)
 		a.closeBackgroundTasks(state, status)
 		if state.parent != nil {
+			if err := a.endTurn(state, completion); err != nil {
+				slog.Error("antigravity finish child output", "agent_id", a.AgentID(), "error", err)
+			}
 			a.closeChildRow(state, status)
 			a.Mu.Lock()
 			seq := a.NextTurnSeq()
@@ -252,29 +342,33 @@ func (a *Agent) finishCascades(states []*cascadeState, completion agent.MessageC
 		}
 	}
 	if root != nil {
-		a.endTurn(root, completion)
+		if err := a.endTurn(root, completion); err != nil {
+			slog.Error("antigravity finish root output", "agent_id", a.AgentID(), "error", err)
+		}
 	}
 }
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	root := a.root
-	if root == nil || !root.turnActive {
+	if root == nil || !a.cascadeCurrentLocked(root) {
 		a.Mu.Unlock()
 		return nil
 	}
 	root.interrupted = true
 	a.Mu.Unlock()
+	// An idle foreground can still own native background tasks. Their cancellation
+	// must reach the runtime even when the local turn already ended.
 	if err := a.rpc.cancel(a.Context(), root.id); err != nil {
 		return fmt.Errorf("cancel the Antigravity turn: %w", err)
 	}
 	return nil
 }
 
-func (a *Agent) awaitStreams(tag string) {
+func (a *Agent) awaitStreams(group *sync.WaitGroup, tag string) {
 	done := make(chan struct{})
 	go func() {
-		a.streamWG.Wait()
+		group.Wait()
 		close(done)
 	}()
 	timer := a.clock.NewTimer(5*time.Second, tag)

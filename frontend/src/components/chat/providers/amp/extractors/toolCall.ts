@@ -18,7 +18,7 @@ import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { ampToolKind } from '../toolKinds'
 import { AMP_TOOL_NAME } from '../toolNames'
 import { ampAgentRequest, ampAgentResult } from './agent'
-import { ampCommandResult, ampShellCommand, ampShellTaskResult } from './execute'
+import { ampCommandResult, ampShellCommand, ampShellTaskResult, ampShellWorkingDirectory } from './execute'
 import { ampCreateFileChange, ampEditFileChange, ampEditFileResultChange, ampPatchRequestChanges, ampPatchResultChanges } from './fileEdit'
 import { ampReadRequest, ampReadResult } from './read'
 import { ampGlobResult, ampGrepResult } from './search'
@@ -215,9 +215,9 @@ export const AMP_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<AmpToolFacts> = {
   },
   // `Read` states its lines as an inclusive `read_range` pair.
   read: (args): ToolRequestByKind['read'] => ampReadRequest(args),
-  // A shell call states its directory as `workdir`.
+  // Current shell registrations use workdir or cwd for the directory.
   execute: (args): ToolRequestByKind['execute'] => {
-    const cwd = pickString(args, 'workdir')
+    const cwd = ampShellWorkingDirectory(args)
     return {
       command: ampShellCommand(args),
       ...(cwd

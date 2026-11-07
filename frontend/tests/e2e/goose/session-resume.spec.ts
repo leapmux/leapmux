@@ -1,4 +1,4 @@
-import { GOOSE_E2E_SKIP_REASON, gooseTest } from '../goose-fixtures'
+import { gooseTest } from '../goose-fixtures'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { exerciseWorkerRestart } from '../helpers/nativeWorkerRestart'
 import { createProviderProcessTest } from '../provider-fixture-factory'
@@ -8,7 +8,7 @@ gooseTest('reopens the native picker session and restores saved Worker messages'
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: GOOSE_AGENT, nativeContext, skipReason: GOOSE_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: GOOSE_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

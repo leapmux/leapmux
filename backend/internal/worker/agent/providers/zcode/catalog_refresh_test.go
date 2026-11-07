@@ -195,7 +195,7 @@ func TestZCodeCatalogRegistry_RequiresARefreshedAcknowledgement(t *testing.T) {
 		{name: "an empty acknowledgement", reply: `{}`},
 		{name: "a refreshed false", reply: `{"refreshed":false}`},
 		{name: "a malformed acknowledgement", reply: `"refreshed"`},
-		{name: "a missing method", errCode: ErrMethodNotFound, ok: true},
+		{name: "a missing method", errCode: ErrMethodNotFound},
 		{name: "another refusal", errCode: -32019},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -280,7 +280,7 @@ func TestZCodeCatalogRefresh_StopsThePassOnAMalformedRegistryAcknowledgement(t *
 
 // A build without provider/refreshRegistry has no such capability: the pass
 // keeps going and reads the catalog.
-func TestZCodeCatalogRefresh_TreatsAMissingMethodAsAnAbsentCapability(t *testing.T) {
+func TestZCodeCatalogRefresh_RejectsAnAbsentCurrentMethod(t *testing.T) {
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
@@ -288,8 +288,8 @@ func TestZCodeCatalogRefresh_TreatsAMissingMethodAsAnAbsentCapability(t *testing
 	go func() { done <- a.awaitZCodeCatalogRefresh() }()
 	registry := zcodeNthRequest(t, stdin, MethodProviderRefreshRegistry, 1)
 	a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, registry), ErrMethodNotFound, "Method not found"))
-	zcodeAnswerCatalogResume(t, a, stdin, 1, `[]`)
-	assert.NoError(t, <-done)
+	require.Error(t, <-done)
+	assert.Empty(t, stdin.RequestsFor(MethodSessionResume))
 }
 
 // Account and workspace triggers coalesce through one owner: a burst during a

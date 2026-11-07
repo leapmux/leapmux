@@ -32,6 +32,10 @@
     "UserInput": "CORTEX_STEP_TYPE_USER_INPUT"
   },
   "stepStatuses": {
+    "Generating": "CORTEX_STEP_STATUS_GENERATING",
+    "Queued": "CORTEX_STEP_STATUS_QUEUED",
+    "Pending": "CORTEX_STEP_STATUS_PENDING",
+    "Running": "CORTEX_STEP_STATUS_RUNNING",
     "Waiting": "CORTEX_STEP_STATUS_WAITING",
     "Done": "CORTEX_STEP_STATUS_DONE",
     "Error": "CORTEX_STEP_STATUS_ERROR",

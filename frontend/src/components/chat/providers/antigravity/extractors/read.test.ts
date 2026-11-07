@@ -70,3 +70,12 @@ describe('antigravity read extraction', () => {
     expect(antigravityReadRequest(step)).toEqual({ path: '/p/image.png' })
   })
 })
+
+describe('antigravityReadRequest', () => {
+  it('preserves the host of a native file URI', () => {
+    expect(antigravityReadRequest(antigravityStep({
+      type: 'CORTEX_STEP_TYPE_VIEW_FILE',
+      viewFile: { absolutePathUri: 'file://server/share/My%20File.txt' },
+    })!).path).toBe('//server/share/My File.txt')
+  })
+})

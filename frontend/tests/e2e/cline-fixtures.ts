@@ -13,11 +13,8 @@
 import type { AgentWorkspace } from './helpers/workspace'
 import { CLINE_PERMISSION_MODE } from '../../src/generated/contracts/cline-protocol'
 import { CLINE_AGENT, nativeContext } from './cline/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const CLINE_E2E_SKIP_REASON: string | null = missingBinaryReason('cline', 'Cline E2E requires the cline CLI on PATH (https://cline.bot/cli)')
 
 /**
  * The agent opens in Auto-approve, which answers every tool call at once.
@@ -33,7 +30,6 @@ const AUTO_APPROVE = {
 export const clineTest = createProviderTest({
   agent: CLINE_AGENT,
   nativeContext,
-  skipReason: CLINE_E2E_SKIP_REASON,
   /** An agent in Auto-approve, which raises no banner for a tool call. */
   workspaceName: 'authenticatedClineWorkspace',
   workspaceOptions: { openOptions: AUTO_APPROVE },

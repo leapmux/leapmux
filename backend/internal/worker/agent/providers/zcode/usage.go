@@ -236,9 +236,7 @@ func (a *Agent) refreshZCodeUsageFromSession() {
 	}
 	state, err := a.readZCodeSession(a.Context(), identity)
 	if err != nil {
-		if !zcodeIsMethodNotFound(err) {
-			slog.Debug("zcode session/read failed", "agent_id", a.AgentID(), "error", err)
-		}
+		slog.Debug("zcode session/read failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
 	body := zcodeStatePatchBody{Runtime: state.Runtime, readIdentity: state.identity}

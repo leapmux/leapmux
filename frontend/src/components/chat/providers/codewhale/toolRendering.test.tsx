@@ -109,7 +109,7 @@ describe('codewhale tool rendering', () => {
   // A partial update sends one item, and the runtime answers with the whole list it
   // kept. The item that only the kept list holds proves which list the row drew.
   it('draws the checklist the runtime kept over the one the call sent', () => {
-    const { container } = renderResult(CODEWHALE_TOOL.ChecklistUpdate, {
+    const { container } = renderResult(CODEWHALE_TOOL.TodoWrite, {
       todos: [
         { content: 'Run the tests', status: 'completed' },
       ],

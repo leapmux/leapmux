@@ -9,10 +9,8 @@ describe('copilotPatchText', () => {
     expect(copilotPatchText(COPILOT_TOOL.ApplyPatch, { input: PATCH })).toBe(PATCH)
   })
 
-  // An older frame spells the same argument `patch`, and a persisted transcript still
-  // holds frames in that shape.
-  it('reads the older spelling of the same argument', () => {
-    expect(copilotPatchText(COPILOT_TOOL.ApplyPatch, { patch: PATCH })).toBe(PATCH)
+  it('rejects the obsolete patch argument', () => {
+    expect(copilotPatchText(COPILOT_TOOL.ApplyPatch, { patch: PATCH })).toBe('')
   })
 
   it('keeps the current spelling ahead of the older one', () => {

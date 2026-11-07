@@ -2,28 +2,32 @@ import { expect } from '@playwright/test'
 
 import { codewhaleTest } from '../codewhale-fixtures'
 import { exerciseShellToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall } from '../helpers/providerToolCalls'
+import { bashToolCall, codewhaleBashAliasToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, assistantBubbles, toolRows, transcriptRows } from '../helpers/ui'
 import { runWithoutApprovals } from './toolScenarios'
 
 codewhaleTest.describe('Codewhale tool execution', () => {
-  codewhaleTest('runs a command and draws its output', async ({ native }) => {
-    const { page } = native
-    await runWithoutApprovals(page)
-    // The command text states no `codewhale-42`, so only the command's own output
-    // can put it in a tool row. A command that printed its own text would match the
-    // row's header whether or not the output reached the page.
-    await runNativeToolTurn(native, {
-      toolCalls: [
-        bashToolCall(native.provider, 'echo-call', 'echo "codewhale-$((40 + 2))"'),
-      ],
-      prompt: 'Run the arithmetic command and report what it printed.',
-      answer: 'The command printed its number.',
+  for (const spelling of ['canonical', 'capitalized'] as const) {
+    codewhaleTest(`runs the ${spelling} shell spelling and draws its output`, async ({ native }) => {
+      const { page } = native
+      await runWithoutApprovals(page)
+      const command = 'echo "codewhale-$((40 + 2))"'
+      const toolCall = spelling === 'canonical'
+        ? bashToolCall(native.provider, 'echo-call', command)
+        : codewhaleBashAliasToolCall('echo-call', command)
+      await runNativeToolTurn(native, {
+        toolCalls: [toolCall],
+        prompt: 'Run the arithmetic command and report what it printed.',
+        answer: 'The command printed its number.',
+      })
+      for (const reload of [false, true]) {
+        if (reload)
+          await page.reload()
+        await expect(toolRows(page).filter({ hasText: 'codewhale-42' }).first()).toBeVisible()
+        await expect(assistantBubbles(page).filter({ hasText: 'The command printed its number.' })).toBeVisible()
+      }
     })
-
-    await expect(toolRows(page).filter({ hasText: 'codewhale-42' }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'The command printed its number.' })).toBeVisible()
-  })
+  }
 
   codewhaleTest('draws the error of a command that fails', async ({ native }) => {
     const { page } = native

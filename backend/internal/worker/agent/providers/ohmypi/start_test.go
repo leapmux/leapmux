@@ -104,20 +104,20 @@ func TestHandshakeToleratesOptionalFailures(t *testing.T) {
 	r := newRig(t)
 	r.respond(func(command recordedCommand) *rigReply {
 		switch command.Type {
-		case CommandNegotiateProtocol, CommandSetSubagentSubscription, CommandSetEventFilter, CommandGetAvailableModels:
-			return &rigReply{Error: "unknown command"}
+		case CommandGetAvailableModels:
+			return &rigReply{Error: "model discovery is unavailable"}
 		}
 		return nil
 	})
 	r.emit(frameReady)
-	assert.NoError(t, r.agent.handshake(10*time.Second), "an old omp without these commands still starts")
+	assert.NoError(t, r.agent.handshake(10*time.Second), "optional catalog discovery failures do not prevent startup")
 }
 
-func TestHandshakeSkipsANegotiationOmpDoesNotOffer(t *testing.T) {
+func TestHandshakeRejectsAMissingCurrentProtocol(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.emit(`{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1]}`)
-	require.NoError(t, r.agent.handshake(10*time.Second))
+	require.Error(t, r.agent.handshake(10*time.Second))
 	assert.Empty(t, r.commandsOfType(CommandNegotiateProtocol))
 }
 
@@ -202,12 +202,36 @@ func TestHandshakeSetsTheDeltaFilter(t *testing.T) {
 				return nil
 			})
 			r.emit(frameReady)
-			require.NoError(t, r.agent.handshake(10*time.Second))
+			err := r.agent.handshake(10 * time.Second)
+			if refuse {
+				require.ErrorContains(t, err, "filter refused")
+			} else {
+				require.NoError(t, err)
+			}
 			commands := r.commandsOfType("set_event_filter")
 			require.Len(t, commands, 1)
 			assert.Contains(t, commands[0].Payload, "events")
 			assert.Nil(t, commands[0].Payload["events"])
 			assert.Equal(t, "delta", commands[0].Payload["messageUpdates"])
+		})
+	}
+}
+
+func TestHandshakeRequiresCurrentEventSubscriptions(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{CommandSetSubagentSubscription, CommandSetEventFilter} {
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.respond(func(actual recordedCommand) *rigReply {
+				if actual.Type == command {
+					return &rigReply{Error: "subscription refused"}
+				}
+				return nil
+			})
+			r.emit(frameReady)
+			require.ErrorContains(t, r.agent.handshake(10*time.Second), "subscription refused")
+			assert.Empty(t, r.commandsOfType(CommandGetState), "transport setup must finish before reading session state")
 		})
 	}
 }

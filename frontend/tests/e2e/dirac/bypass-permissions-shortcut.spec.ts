@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
 import { DIRAC_CONFIG } from '../../../src/generated/contracts/dirac-protocol'
-import { DIRAC_E2E_SKIP_REASON, diracTest } from '../dirac-fixtures'
+import { diracTest } from '../dirac-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { exerciseNativePermissionDecision, exerciseNativeToolWrite } from '../helpers/nativePermission'
@@ -58,7 +58,7 @@ diracTest('approves the pending native tool and the next tool when Bypass change
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'true')
 })
 
-const restartTest = createProviderProcessTest({ agent: DIRAC_AGENT, nativeContext, skipReason: DIRAC_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: DIRAC_AGENT, nativeContext })
 
 restartTest('restores native Bypass after a worker restart and executes a tool without approval', async ({ native, separateHubWorker }) => {
   await applyPermissionPreset(native.page, 'bypass')

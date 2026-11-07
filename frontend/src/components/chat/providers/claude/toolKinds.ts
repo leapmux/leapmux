@@ -6,7 +6,7 @@ import { CLAUDE_TOOL_ALIAS, CLAUDE_TOOL_NAMES } from './toolNames'
  * The one name every table below this reads.
  *
  * The command line interface registers several tools under two names, and a
- * transcript recorded on an older release still carries the older one. Folding
+ * current transcript can carry either name. Folding
  * them here -- ONCE, at the extraction boundary -- is what lets each table below
  * hold one entry for each tool. Both names used to be spelled at each site that
  * remembered to, and the result side remembered `Agent` alone: a `Task`-named

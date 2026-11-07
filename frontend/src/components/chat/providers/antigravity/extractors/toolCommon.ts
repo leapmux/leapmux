@@ -1,4 +1,4 @@
-import { ANTIGRAVITY_STEP_STATUS, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/antigravity-protocol'
+import { ANTIGRAVITY_STEP_STATUS, ANTIGRAVITY_STEP_TYPE, ANTIGRAVITY_TOOL } from '~/generated/contracts/antigravity-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 
 export interface AntigravityStep {
@@ -10,11 +10,23 @@ export interface AntigravityStep {
   raw: Record<string, unknown>
 }
 
-export function antigravityStep(raw: Record<string, unknown> | undefined): AntigravityStep | null {
+const STEP_TYPES = new Set<string>(Object.values(ANTIGRAVITY_STEP_TYPE))
+
+export function antigravityStepHeader(raw: Record<string, unknown> | undefined): Pick<AntigravityStep, 'type' | 'status'> | null {
   if (!raw || !isObject(raw))
     return null
   const type = pickString(raw, 'type')
-  if (!type)
+  return type
+    ? {
+        type,
+        status: pickString(raw, 'status'),
+      }
+    : null
+}
+
+export function antigravityStep(raw: Record<string, unknown> | undefined): AntigravityStep | null {
+  const header = antigravityStepHeader(raw)
+  if (!raw || !header || !STEP_TYPES.has(header.type))
     return null
   const metadata = pickObject(raw, 'metadata') ?? {}
   const toolCall = pickObject(metadata, 'toolCall') ?? {}
@@ -23,16 +35,16 @@ export function antigravityStep(raw: Record<string, unknown> | undefined): Antig
   if (argumentsJson) {
     try {
       const parsed: unknown = JSON.parse(argumentsJson)
-      if (isObject(parsed))
-        args = parsed
+      if (!isObject(parsed))
+        return null
+      args = parsed
     }
     catch {
-      // The generic row retains the malformed arguments as native text.
+      return null
     }
   }
   return {
-    type,
-    status: pickString(raw, 'status'),
+    ...header,
     metadata,
     toolCall,
     args,
@@ -40,14 +52,16 @@ export function antigravityStep(raw: Record<string, unknown> | undefined): Antig
   }
 }
 
-export function antigravityStepOpen(step: AntigravityStep): boolean {
-  return [
-    'CORTEX_STEP_STATUS_GENERATING',
-    'CORTEX_STEP_STATUS_QUEUED',
-    'CORTEX_STEP_STATUS_PENDING',
-    'CORTEX_STEP_STATUS_RUNNING',
-    ANTIGRAVITY_STEP_STATUS.Waiting,
-  ].includes(step.status)
+const OPEN_STATUSES = new Set<string>([
+  ANTIGRAVITY_STEP_STATUS.Generating,
+  ANTIGRAVITY_STEP_STATUS.Queued,
+  ANTIGRAVITY_STEP_STATUS.Pending,
+  ANTIGRAVITY_STEP_STATUS.Running,
+  ANTIGRAVITY_STEP_STATUS.Waiting,
+])
+
+export function antigravityStepOpen(step: Pick<AntigravityStep, 'status'>): boolean {
+  return OPEN_STATUSES.has(step.status)
 }
 
 export function antigravityStepFailed(step: AntigravityStep): boolean {
@@ -63,10 +77,6 @@ export function antigravityToolName(step: AntigravityStep): string {
   return pickString(step.toolCall, 'name')
 }
 
-export function antigravityToolArguments(step: AntigravityStep): Record<string, unknown> {
-  return step.args
-}
-
 export function antigravityGenericResult(step: AntigravityStep): string {
   const generic = pickObject(step.raw, 'generic')
   const result = pickObject(generic, 'result')
@@ -76,6 +86,7 @@ export function antigravityGenericResult(step: AntigravityStep): string {
     || pickString(error, 'fullError') || pickString(error, 'details')
 }
 
-export function antigravityStepIsQuestion(step: AntigravityStep): boolean {
-  return step.type === ANTIGRAVITY_STEP_TYPE.AskQuestion
+export function antigravityMessageIsChildPrompt(message: Record<string, unknown> | null | undefined): boolean {
+  const tool = pickObject(pickObject(pickObject(message, 'sourceMetadata'), 'tool'), 'toolCall')
+  return pickString(tool, 'name') === ANTIGRAVITY_TOOL.InvokeSubagent
 }

@@ -519,7 +519,7 @@ export async function createMockAgentEnvironment(
       }),
       ...createQoderEnvironment({
         homeDir,
-        shimsDirectory: cliShimsDir,
+        identityToken: MOCK_IDENTITY_TOKEN,
         origin,
         baseURL: openAIBaseURL,
         modelKey: MODEL_KEY,

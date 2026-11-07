@@ -4,12 +4,17 @@ import { join } from 'node:path'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { getGlobalState } from '../helpers/server'
 
-/** Locate the native transcript directory of the exact Antigravity conversation. */
-export function antigravityNativeSessionDir(context: ManagedNativeScenarioContext, agent: AgentInfo): string {
+/** Construct the native session path before the runtime creates its directory. */
+export function antigravityNativeSessionPath(context: ManagedNativeScenarioContext, agent: AgentInfo): string {
   const home = context.leapmuxServer.agentEnv?.HOME
   if (!home || !agent.agentSessionId)
     throw new Error('The native Antigravity session has no private home or identity.')
-  const project = join(home, '.gemini', 'antigravity-cli', 'brain', agent.agentSessionId)
-  assertPrivateNativePath(project, getGlobalState().tmpDir)
-  return project
+  return join(home, '.gemini', 'antigravity-cli', 'brain', agent.agentSessionId)
+}
+
+/** Locate an existing native session directory inside the private test run. */
+export function antigravityNativeSessionDir(context: ManagedNativeScenarioContext, agent: AgentInfo): string {
+  const directory = antigravityNativeSessionPath(context, agent)
+  assertPrivateNativePath(directory, getGlobalState().tmpDir)
+  return directory
 }

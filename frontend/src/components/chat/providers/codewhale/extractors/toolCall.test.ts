@@ -95,6 +95,18 @@ function finished(name: string, args: Record<string, unknown>, detail: string, m
 
 describe('codewhaleToolCall', () => {
   describe('a command', () => {
+    it('reads raw current capitalized shell metadata as an execute request and result', () => {
+      const done = finished('Bash', { command: 'printf current' }, 'current', { exit_code: 0 })
+      expect(done.kind).toBe('execute')
+      expect(done.request).toStrictEqual({ command: 'printf current' })
+      expect(done.result).toStrictEqual({
+        commands: [
+          { output: 'current', exitCode: 0 },
+        ],
+        unresolvedTerminals: [],
+      })
+    })
+
     it('states the command and no result while it runs', () => {
       const running = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls -1' }), { role: 'request' })
       expect(running.kind).toBe('execute')
@@ -126,7 +138,7 @@ describe('codewhaleToolCall', () => {
       })
     })
 
-    // Codewhale 0.10.0 fails the item of a command that exits nonzero, states no
+    // Codewhale fails the item of a command that exits nonzero, states no
     // `exit_code`, and wraps the output: its tool-failure prefix, then the output, then
     // the exit trailer.
     it('reads the exit code of a command that ran and failed from the native trailer, and draws only its output', () => {
@@ -179,7 +191,7 @@ describe('codewhaleToolCall', () => {
     // A background launch answers at once with a null code, because the job it
     // started has not ended. The words are the launch notice, not a failure.
     it('draws a background launch, whose exit code is null, as output with no code', () => {
-      const launched = finished(CODEWHALE_TOOL.TaskShellStart, { command: 'npm run dev' }, 'Background task started: shell_1', {
+      const launched = finished(CODEWHALE_TOOL.Bash, { command: 'npm run dev', timeout: 1 }, 'Background task started: shell_1', {
         task_id: 'shell_1',
         backgrounded: true,
         status: 'Running',
@@ -195,10 +207,10 @@ describe('codewhaleToolCall', () => {
     })
 
     it('composes the command of a tool that states none', () => {
-      expect(finished(CODEWHALE_TOOL.GitStatus, {}, 'clean', { exit_code: 0 }).request).toStrictEqual({ command: 'git status' })
-      expect(finished(CODEWHALE_TOOL.Git, { action: 'commit_plan', path: 'src' }, 'x', { exit_code: 0 }).request).toStrictEqual({ command: 'git commit-plan src' })
-      expect(finished(CODEWHALE_TOOL.RunTests, { args: '--lib' }, 'ok', { exit_code: 0 }).request).toStrictEqual({ command: 'cargo test --lib' })
-      expect(finished(CODEWHALE_TOOL.RunVerifiers, {}, 'ok').request).toStrictEqual({ command: CODEWHALE_TOOL.RunVerifiers })
+      expect(finished(CODEWHALE_TOOL.Git, { action: 'status' }, 'clean', { exit_code: 0 }).request).toStrictEqual({ command: 'git status' })
+      expect(finished(CODEWHALE_TOOL.Git, { action: 'commit_plan', path: 'src' }, 'x').kind).toBe('report')
+      expect(finished(CODEWHALE_TOOL.Run, { action: 'tests', args: '--lib' }, 'ok', { exit_code: 0 }).request).toStrictEqual({ command: 'Run tests' })
+      expect(finished(CODEWHALE_TOOL.Run, { action: 'verifiers' }, 'ok').request).toStrictEqual({ command: 'Run verifiers' })
       expect(finished(CODEWHALE_TOOL.JsExecution, { code: '1 + 1' }, '2').request).toStrictEqual({ command: '1 + 1', language: 'javascript' })
     })
   })
@@ -307,7 +319,7 @@ describe('codewhaleToolCall', () => {
     })
 
     it('falls back to the requested change when the result states no mutation', () => {
-      const done = finished(CODEWHALE_TOOL.WriteFile, { path: 'n.txt', content: 'hi' }, 'Wrote')
+      const done = finished(CODEWHALE_TOOL.Write, { path: 'n.txt', content: 'hi' }, 'Wrote')
       expect(done.result).toStrictEqual({
         changes: [
           {
@@ -356,17 +368,6 @@ describe('codewhaleToolCall', () => {
       expect(silent.result).toStrictEqual({ failure: true, text: 'Tool call failed' })
     })
 
-    it('reads the operation of the File facade from its action', () => {
-      expect(finished(CODEWHALE_TOOL.File, { action: 'list', path: '.' }, '[]').kind).toBe('list')
-      expect(finished(CODEWHALE_TOOL.File, { action: 'search_name', query: 'a' }, '[]').kind).toBe('glob')
-      expect(finished(CODEWHALE_TOOL.File, { action: 'search_content', pattern: 'a' }, '{"matches":[]}').kind).toBe('grep')
-      expect(finished(CODEWHALE_TOOL.File, { action: 'write', path: 'a.ts', content: 'x' }, 'Wrote').kind).toBe('write')
-      expect(finished(CODEWHALE_TOOL.File, { action: 'patch', patch: DIFF }, 'Applied').kind).toBe('edit')
-      expect(finished(CODEWHALE_TOOL.File, { action: 'a_later_action', path: 'a.ts' }, 'x').kind).toBe('read')
-    })
-  })
-
-  describe('the reads and the searches', () => {
     it('numbers a read from the offset it asked for', () => {
       const done = finished(CODEWHALE_TOOL.Read, { path: 'a.ts', offset: 10 }, 'ten\neleven')
       expect(done.request).toStrictEqual({ path: 'a.ts', offset: 10 })
@@ -400,7 +401,7 @@ describe('codewhaleToolCall', () => {
     })
 
     it('reads the query of every web search spelling', () => {
-      expect(finished(CODEWHALE_TOOL.WebSearch, { q: 'one' }, 'r').request).toStrictEqual({ query: 'one' })
+      expect(finished(CODEWHALE_TOOL.Web, { action: 'search', query: 'one' }, 'r').request).toStrictEqual({ query: 'one' })
       expect(finished(CODEWHALE_TOOL.WebRun, {
         search_query: [
           { query: 'two' },
@@ -429,7 +430,7 @@ describe('codewhaleToolCall', () => {
         ],
       }, 'r').request).toStrictEqual({ query: 'two' })
       expect(finished(CODEWHALE_TOOL.WebRun, { search_query: 'one' }, 'r').request).toStrictEqual({ query: '' })
-      expect(finished(CODEWHALE_TOOL.WebSearch, {
+      expect(finished(CODEWHALE_TOOL.Web, {
         query: 'direct',
         search_query: [
           { q: 'advanced' },
@@ -443,8 +444,8 @@ describe('codewhaleToolCall', () => {
     })
 
     it('reads the duration of a fetch only when it is a number', () => {
-      expect(finished(CODEWHALE_TOOL.FetchURL, { url: 'https://example.com' }, 'page', { duration_ms: 40 }).result).toStrictEqual({ result: 'page', durationMs: 40 })
-      expect(finished(CODEWHALE_TOOL.FetchURL, { url: 'https://example.com' }, 'page', { duration_ms: '40' }).result).toStrictEqual({ result: 'page' })
+      expect(finished(CODEWHALE_TOOL.Web, { action: 'fetch', url: 'https://example.com' }, 'page', { duration_ms: 40 }).result).toStrictEqual({ result: 'page', durationMs: 40 })
+      expect(finished(CODEWHALE_TOOL.Web, { action: 'fetch', url: 'https://example.com' }, 'page', { duration_ms: '40' }).result).toStrictEqual({ result: 'page' })
     })
   })
 
@@ -525,40 +526,6 @@ describe('codewhaleToolCall', () => {
       expect((done.result as { items: Array<{ content: string, status: string }> }).items).toMatchObject([
         { content: 'A', status: 'in_progress' },
       ])
-    })
-
-    it('reads a plan\'s steps and its explanation', () => {
-      const done = finished(CODEWHALE_TOOL.UpdatePlan, {
-        explanation: 'Why',
-        plan: [
-          { step: 'Look', status: 'completed' },
-        ],
-      }, 'Plan updated')
-      expect(done.request).toMatchObject({
-        items: [
-          { content: 'Look', status: 'completed' },
-        ],
-        note: 'Why',
-      })
-      // The runtime keeps no checklist for a plan, so the result states the plan's own
-      // steps, with the explanation above them.
-      expect(done.result).toMatchObject({
-        items: [
-          { content: 'Look', status: 'completed' },
-        ],
-        note: 'Why',
-      })
-    })
-
-    it('states no note for a plan whose explanation is blank', () => {
-      const done = finished(CODEWHALE_TOOL.UpdatePlan, {
-        explanation: '  ',
-        plan: [
-          { step: 'Look', status: 'pending' },
-        ],
-      }, 'Plan updated')
-      expect(done.request).not.toHaveProperty('note')
-      expect(done.result).not.toHaveProperty('note')
     })
 
     it('draws the request\'s list for a checklist call whose result keeps none', () => {
@@ -813,7 +780,7 @@ describe('codewhaleToolCall', () => {
           { type: 'text', text: 'two' },
         ],
       }, 2)
-      expect(call(result, { spanType: CODEWHALE_TOOL.WebSearch }).result).toStrictEqual({ links: [], summary: 'one\ntwo' })
+      expect(call(result, { spanType: CODEWHALE_TOOL.Web }).result).toStrictEqual({ links: [], summary: 'one\ntwo' })
     })
 
     it('reads no tool frame from an item that names no call', () => {
@@ -1004,5 +971,11 @@ describe('codewhale recovered image pairing', () => {
         },
       },
     })).toEqual([])
+  })
+})
+
+describe('current Git report action', () => {
+  it('renders a commit plan as a report instead of inventing a shell command', () => {
+    expect(finished(CODEWHALE_TOOL.Git, { action: 'commit_plan' }, 'The current commit plan.').kind).toBe('report')
   })
 })

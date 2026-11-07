@@ -17,18 +17,8 @@ import (
 
 var _ agent.StartFunc = Start
 
-// qoderAgentEnv builds the environment for one Qoder launch.
-//
-// Qoder's own tool launcher scrubs QODER_CLI_*, GEMINI_CLI_*, CLAUDE_* and
-// ANTHROPIC_* prefixes from children; this scrub does the same in reverse so a
-// nested LeapMux never inherits a parent Qoder session.
-//
-// `QODER_AGENT_SDK_ENTRYPOINT` is the exception: it marks the process as an SDK
-// host, which is an identity variable in production but is also the switch that
-// selects the `QODER_SDK_AUTH_PAYLOAD_FILE` credential seam. The scrub therefore
-// removes the INHERITED marker and restores it only when the launch itself names
-// a payload file, so a nested LeapMux starts clean and a test that installs a
-// mocked credential keeps the seam it needs.
+// qoderAgentEnv pins startup settings and removes inherited native session identity.
+// The headless CLI rejects SDK-worker identity even when a payload file exists.
 func qoderAgentEnv(environ []string) []string {
 	env := envutil.FilterEnv(environ,
 		"QODER_SESSION_ID",
@@ -36,6 +26,8 @@ func qoderAgentEnv(environ []string) []string {
 		"QODER_SESSION_TYPE",
 		"QODER_REMOTE_CHILD",
 		"QODER_AGENT_SDK_ENTRYPOINT",
+		"QODER_SDK_AUTH_PAYLOAD_FILE",
+		"QODER_SDK_CUSTOM_BASE_URL_BYOK",
 		"QODER_CLI",
 		"QODERCN_CLI",
 		"QODER_PERSONAL_ACCESS_TOKEN",
@@ -45,9 +37,6 @@ func qoderAgentEnv(environ []string) []string {
 		"QODER_NO_RC=1",
 		"QODER_FORCE_FILE_STORAGE=1",
 		"QODER_HTTPDNS=0",
-	}
-	if len(envutil.ValuesFor(env, "QODER_SDK_AUTH_PAYLOAD_FILE")) > 0 {
-		pins = append(pins, "QODER_AGENT_SDK_ENTRYPOINT=1")
 	}
 	return envutil.PinEnv(env, pins...)
 }

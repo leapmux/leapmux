@@ -19,19 +19,16 @@ import (
 
 // ZCode client->server methods.
 const (
-	// MethodUpdateProviderRegistry is the legacy model-provider push. Builds
-	// before 0.16.9 require it and receive inline API keys through it.
-	MethodUpdateProviderRegistry = "workspace/updateProviderRegistry"
-	// MethodUpdateAccountConfig replaced the workspace registry push in
-	// 0.16.9. The app server loads built-in and personal providers itself. Its
+
+	// MethodUpdateAccountConfig supplies the current account plans. The app server
+	// loads built-in and personal providers itself. Its
 	// host supplies the active account plans with this method.
 	MethodUpdateAccountConfig = "provider/updateAccountConfig"
 	// MethodProviderRefreshRegistry asks the app-server to reload its built-in
 	// and personal provider registry from disk. A current app-server caches the
 	// registry it loaded at boot, and a personal configuration change reaches
 	// the session's model catalog only after this call. The reply is
-	// `{"refreshed":true}`; a build that does not implement it answers
-	// method-not-found, which the caller treats as "the capability is absent".
+	// `{"refreshed":true}`; startup and refresh require that acknowledgement.
 	MethodProviderRefreshRegistry = "provider/refreshRegistry"
 
 	MethodSessionCreate  = "session/create"
@@ -75,8 +72,7 @@ const (
 const (
 	MethodRequestRuntimePreferences = "session/requestRuntimePreferences"
 	// MethodRequestProviderRuntimeHeaders asks the client for freshly-minted
-	// credentials for an account provider. A legacy build already holds the inline
-	// key. ZCode 0.16.9 requires the host to return it as requestAuth.
+	// credentials for an account provider, returned as requestAuth.
 	MethodRequestProviderRuntimeHeaders = "interaction/requestProviderRuntimeHeaders"
 	// MethodRequestOfficialMcpAuthHeaders asks for credentials for ZCode's
 	// hosted MCP servers, which LeapMux likewise does not hold.
@@ -222,12 +218,9 @@ const (
 	// ErrSessionNotActive is returned for a session the app-server dropped.
 	ErrSessionNotActive = -32004
 	// ErrMethodNotFound marks a method this app-server build does not implement.
-	// Treated as "the capability is absent", never as a hard failure.
+	// An unknown inbound method receives this code; an outbound refusal remains a failure.
 	ErrMethodNotFound = -32601
-	// ErrPromptRunningLegacy is the code an older app-server build used for
-	// "a prompt is already running". Kept beside the current one so a user on the
-	// older build still gets the retry rather than a delivery error.
-	ErrPromptRunningLegacy = 1308
+
 	// ErrInternal is the code LeapMux replies with when it cannot satisfy a
 	// server request at all. It is never used for a DENIAL: a denial is a decision
 	// the user made, and it travels as a result.
@@ -398,12 +391,5 @@ func zcodeErrorCode(err error) (int, bool) {
 // both codes the app-server uses for it.
 func zcodeIsPromptRunning(err error) bool {
 	code, ok := zcodeErrorCode(err)
-	return ok && (code == ErrPromptRunning || code == ErrPromptRunningLegacy)
-}
-
-// zcodeIsMethodNotFound reports whether err says the app-server does not implement
-// the method, so an optional startup step can be skipped rather than failed.
-func zcodeIsMethodNotFound(err error) bool {
-	code, ok := zcodeErrorCode(err)
-	return ok && code == ErrMethodNotFound
+	return ok && code == ErrPromptRunning
 }

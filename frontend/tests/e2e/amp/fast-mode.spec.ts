@@ -1,7 +1,7 @@
 import type { AmpThreadView } from '../helpers/ampSurface'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { AMP_E2E_THREADS_PATH } from '../helpers/ampSurface'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
@@ -68,7 +68,6 @@ for (const fast of [false, true]) {
 const restartTest = createProviderProcessTest({
   agent: AMP_AGENT,
   nativeContext,
-  skipReason: AMP_E2E_SKIP_REASON,
   openOptions: {
     optionValues: { agent_mode: 'high', fastMode: 'true' },
   },

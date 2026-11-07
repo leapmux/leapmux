@@ -18,7 +18,7 @@ import { retryUntilPass } from '../helpers/retryUntilPass'
 import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { assistantBubbles, chatScrollContainer, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
-import { MUSE_E2E_SKIP_REASON, museTest } from '../muse-fixtures'
+import { museTest } from '../muse-fixtures'
 import { createProviderProcessTest } from '../provider-fixture-factory'
 import { MUSE_AGENT, nativeContext } from './scenarios'
 import { expectMuseChildResult, MUSE_CHILD_OUTPUT, MUSE_CHILD_PROGRESS, MUSE_CHILD_TASK, openMuseChild, readMuseNativeControlRecords } from './subagent-common.muse'
@@ -69,7 +69,6 @@ museTest('opens the actual child history and preserves its native session after 
 const restartTest = createProviderProcessTest({
   agent: MUSE_AGENT,
   nativeContext,
-  skipReason: MUSE_E2E_SKIP_REASON,
   openOptions: {
     optionValues: { workspaceTrust: 'agent', permissionMode: 'allowAll' },
   },

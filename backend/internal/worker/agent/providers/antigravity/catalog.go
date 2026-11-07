@@ -25,19 +25,19 @@ type antigravityModelConfig struct {
 	ModelOrAlias struct {
 		Model string `json:"model"`
 	} `json:"modelOrAlias"`
-	Disabled           bool            `json:"disabled"`
-	SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
-	QuotaInfo          struct {
-		RemainingFraction float64 `json:"remainingFraction"`
-		ResetTime         string  `json:"resetTime"`
-	} `json:"quotaInfo"`
+	Disabled           bool                  `json:"disabled"`
+	SupportedMimeTypes map[string]bool       `json:"supportedMimeTypes"`
+	QuotaInfo          *antigravityQuotaInfo `json:"quotaInfo"`
+}
+
+type antigravityQuotaInfo struct {
+	RemainingFraction float64 `json:"remainingFraction"`
+	ResetTime         string  `json:"resetTime"`
 }
 
 type catalogVariant struct {
 	token     string
 	mimeTypes map[string]bool
-	label     string
-	quota     antigravityModelConfig
 }
 
 type antigravityCatalog struct {
@@ -53,6 +53,7 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		variants: map[string]map[string]catalogVariant{},
 	}
 	families := map[string]*agent.ModelInfo{}
+	var familyOrder []string
 	for _, config := range reply.ClientModelConfigs {
 		if config.Disabled || config.ModelID == "" || config.ModelOrAlias.Model == "" {
 			continue
@@ -61,21 +62,23 @@ func buildAntigravityCatalog(reply antigravityCatalogReply) antigravityCatalog {
 		if catalog.variants[family] == nil {
 			catalog.variants[family] = map[string]catalogVariant{}
 		}
-		catalog.variants[family][effort] = catalogVariant{token: config.ModelOrAlias.Model, mimeTypes: config.SupportedMimeTypes, label: config.Label, quota: config}
+		catalog.variants[family][effort] = catalogVariant{token: config.ModelOrAlias.Model, mimeTypes: config.SupportedMimeTypes}
 		if families[family] == nil {
 			families[family] = &agent.ModelInfo{Id: family, DisplayName: config.Label, Description: family}
+			familyOrder = append(familyOrder, family)
 		}
 		if effort != "" {
 			families[family].SupportedEfforts = append(families[family].SupportedEfforts, providerkit.EffortTier(effort))
 		}
-		if config.QuotaInfo.RemainingFraction != 0 || config.QuotaInfo.ResetTime != "" {
+		if config.QuotaInfo != nil {
 			catalog.quota = append(catalog.quota, config)
 		}
 	}
 	if reply.DefaultOverrideModelConfig != nil && reply.DefaultOverrideModelConfig.ModelOrAlias.Model != "" {
 		catalog.defaultToken = reply.DefaultOverrideModelConfig.ModelOrAlias.Model
 	}
-	for _, family := range families {
+	for _, id := range familyOrder {
+		family := families[id]
 		providerkit.SortEffortsDescending(family.SupportedEfforts)
 		catalog.models = append(catalog.models, family)
 	}
@@ -172,21 +175,31 @@ func (a *Agent) loadCatalog() error {
 }
 
 func (a *Agent) refreshRateLimits() {
-	reply, err := a.rpc.modelConfig(a.Context())
+	a.Mu.Lock()
+	ctx, generation := a.streamCtx, a.generation
+	eligible := a.cascadeCurrentLocked(a.root) && !a.IsDiscardingOutput()
+	a.Mu.Unlock()
+	if !eligible || ctx.Err() != nil {
+		return
+	}
+	reply, err := a.rpc.modelConfig(ctx)
 	if err != nil {
 		slog.Debug("antigravity refresh model quota", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if len(reply.ClientModelConfigs) == 0 && reply.DefaultOverrideModelConfig == nil {
-		return
-	}
 	a.Mu.Lock()
-	a.catalog = buildAntigravityCatalog(reply)
-	quota := append([]antigravityModelConfig(nil), a.catalog.quota...)
-	a.Mu.Unlock()
-	if len(quota) == 0 {
+	if generation != a.generation || !a.cascadeCurrentLocked(a.root) || ctx.Err() != nil || a.IsDiscardingOutput() {
+		a.Mu.Unlock()
 		return
 	}
+	catalog := buildAntigravityCatalog(reply)
+	if len(reply.ClientModelConfigs) > 0 || reply.DefaultOverrideModelConfig != nil {
+		a.catalog = catalog
+	} else {
+		a.catalog.quota = nil
+	}
+	quota := catalog.quota
+	a.Mu.Unlock()
 	values := map[string]any{}
 	for _, config := range quota {
 		value := map[string]any{

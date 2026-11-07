@@ -23,6 +23,8 @@ const (
 
 var connectHeaders = http.Header{"Connect-Protocol-Version": {"1"}}
 
+var errLanguageServerNotConnected = errors.New("antigravity language server is not connected")
+
 type antigravityRPC struct {
 	endpoint *providerkit.HTTPEndpoint
 	timeout  time.Duration
@@ -30,7 +32,7 @@ type antigravityRPC struct {
 
 func (r antigravityRPC) do(ctx context.Context, method string, body, out any) error {
 	if r.endpoint == nil {
-		return fmt.Errorf("antigravity language server is not connected")
+		return errLanguageServerNotConnected
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
@@ -38,15 +40,23 @@ func (r antigravityRPC) do(ctx context.Context, method string, body, out any) er
 }
 
 func (r antigravityRPC) sendUserMessage(ctx context.Context, request map[string]any) error {
-	return r.do(ctx, "SendUserCascadeMessage", request, nil)
+	return r.deliver(ctx, "SendUserCascadeMessage", request)
 }
 
 func (r antigravityRPC) handleInteraction(ctx context.Context, cascadeID string, interaction map[string]any) error {
-	return r.do(ctx, "HandleCascadeUserInteraction", map[string]any{"cascadeId": cascadeID, "interaction": interaction}, nil)
+	return r.deliver(ctx, "HandleCascadeUserInteraction", map[string]any{"cascadeId": cascadeID, "interaction": interaction})
+}
+
+func (r antigravityRPC) deliver(ctx context.Context, method string, body any) error {
+	err := r.do(ctx, method, body, nil)
+	if errors.Is(err, errLanguageServerNotConnected) {
+		return err
+	}
+	return providerkit.ClassifyHTTPDeliveryError("the Antigravity request", err)
 }
 
 func (r antigravityRPC) cancel(ctx context.Context, cascadeID string) error {
-	return r.do(ctx, "CancelCascadeInvocation", map[string]any{"cascadeId": cascadeID}, nil)
+	return r.do(ctx, "CancelCascadeInvocation", map[string]any{"cascadeId": cascadeID, "killBackgroundTasks": true}, nil)
 }
 
 func (r antigravityRPC) modelConfig(ctx context.Context) (antigravityCatalogReply, error) {
@@ -119,10 +129,7 @@ func encodeStreamRequest(conversationID, subscriberID string, startIndex int) ([
 	if err != nil {
 		return nil, err
 	}
-	frame := make([]byte, 5+len(payload))
-	binary.BigEndian.PutUint32(frame[1:5], uint32(len(payload)))
-	copy(frame[5:], payload)
-	return frame, nil
+	return encodeSingleFrame(payload), nil
 }
 
 type streamEndError struct {

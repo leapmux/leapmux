@@ -2,7 +2,7 @@ import type { ExecFileSyncOptions } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1114,8 +1114,8 @@ describe('createMockAgentEnvironment', () => {
 
   it('opens the Qoder headless gate with a mocked account and pre-seeded endpoints', async () => {
     // Two independent seams have to hold at once or the agent dies with
-    // "Not logged in · Please run /login" before any model call: the SDK
-    // credential (the one injection that reaches stream-json) and the
+    // "Not logged in · Please run /login" before any model call: the current job
+    // credential and the
     // endpoint-election caches (without which the exchange and the model call
     // fall through to the real `*.qoder.sh`).
     const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
@@ -1126,15 +1126,15 @@ describe('createMockAgentEnvironment', () => {
       QODER_ENV: 'prod',
       QODER_HTTPDNS: '0',
       QODER_FORCE_FILE_STORAGE: '1',
-      QODER_AGENT_SDK_ENTRYPOINT: '1',
-      QODER_SDK_CUSTOM_BASE_URL_BYOK: '1',
       QODER_CONFIG_SERVICE_URL: origin,
       QODER_SERVER_ENDPOINT: '',
       // Empty, not unset: a developer's own PAT must not reach the E2E Qoder.
       QODER_PERSONAL_ACCESS_TOKEN: '',
     })
-    const payload = JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))
-    expect(payload).toMatchObject({ type: 'accessToken' })
+    const payload = JSON.parse(env.QODER_JOB_TOKEN!)
+    expect(payload).toEqual({ token: MOCK_IDENTITY_TOKEN })
+    expect(env.QODER_AGENT_SDK_ENTRYPOINT).toBeUndefined()
+    expect(env.QODER_SDK_AUTH_PAYLOAD_FILE).toBeUndefined()
 
     const qoderHome = join(homeDir, '.qoder')
     const cacheDir = join(qoderHome, '.cache')
@@ -1187,24 +1187,8 @@ describe('createMockAgentEnvironment', () => {
     expect(existsSync(settings.mcpServers.form_probe.args[0])).toBe(true)
     expect(settings.modelConfigs).toBeUndefined()
 
-    // The CLI consumes the file once. The launch shim must restore it for a
-    // Worker restart that the browser fixture cannot call ahead of time.
-    const launcher = join(directory, 'cli-shims', 'qodercli')
-    if (process.platform !== 'win32' && findBinary('qodercli')) {
-      expect(existsSync(launcher)).toBe(true)
-      unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
-      execFileSync(launcher, ['--version'], {
-        env: {
-          ...process.env,
-          ...env,
-        },
-        timeout: 10_000,
-      })
-      expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toMatchObject({ type: 'accessToken' })
-    }
-    else {
-      expect(existsSync(launcher)).toBe(false)
-    }
+    expect(existsSync(join(directory, 'cli-shims', 'qodercli'))).toBe(false)
+    expect(existsSync(join(qoderHome, 'qoder-sdk-auth.json'))).toBe(false)
   })
 
   it('keeps Factory Droid under one override home and points its BYOK model at the mock', async () => {

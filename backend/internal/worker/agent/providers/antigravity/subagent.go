@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -18,30 +16,33 @@ import (
 
 func (a *Agent) ensureChildren(parent *cascadeState) {
 	a.Mu.Lock()
-	records := make([]*childKey, 0, len(parent.childKeys))
-	for _, record := range parent.childKeys {
+	type pendingChild struct {
+		id     string
+		record *childKey
+	}
+	records := make([]pendingChild, 0, len(parent.childKeys))
+	for id, record := range parent.childKeys {
 		if record.state == nil && !record.refused {
-			records = append(records, record)
+			records = append(records, pendingChild{id: id, record: record})
 		}
 	}
 	a.Mu.Unlock()
-	for range records {
-		a.ensureOneChild(parent)
+	for _, child := range records {
+		a.ensureOneChild(parent, child.id, child.record)
 	}
 	a.linkPendingChildSpans(parent)
 }
 
-func (a *Agent) ensureOneChild(parent *cascadeState) {
+func (a *Agent) ensureOneChild(parent *cascadeState, childID string, expectedRecord *childKey) {
+	a.childSetupMu.Lock()
+	defer a.childSetupMu.Unlock()
 	a.Mu.Lock()
-	var childID string
-	var record *childKey
-	for id, candidate := range parent.childKeys {
-		if candidate.state == nil && !candidate.refused {
-			childID, record = id, candidate
-			break
-		}
+	if !a.cascadeCurrentLocked(parent) || parent.closed {
+		a.Mu.Unlock()
+		return
 	}
-	if record == nil {
+	record := parent.childKeys[childID]
+	if record == nil || record != expectedRecord || record.state != nil || record.refused {
 		a.Mu.Unlock()
 		return
 	}
@@ -63,49 +64,69 @@ func (a *Agent) ensureOneChild(parent *cascadeState) {
 		slog.Warn("antigravity ensure child", "agent_id", a.AgentID(), "cascade_id", childID, "error", err)
 		return
 	}
+	a.Mu.Lock()
+	parentCurrent := a.cascadeCurrentLocked(parent) && !parent.closed && parent.childKeys[childID] == record
+	a.Mu.Unlock()
+	if !parentCurrent {
+		a.queueChildRowClose(childID, bgtask.StatusStopped)
+		return
+	}
 	state := newCascadeState(childID, parent.sink.ChildSink(childAgentID), parent.generation, stored)
 	state.parent = parent
 	state.childAgentID = childAgentID
 	state.rowOpen = true
 	a.Mu.Lock()
-	if parent.childKeys[childID] != record || parent.generation != state.generation {
+	if !a.cascadeCurrentLocked(parent) || parent.closed || parent.childKeys[childID] != record {
 		a.Mu.Unlock()
+		a.queueChildRowClose(childID, bgtask.StatusStopped)
 		return
 	}
 	record.state = state
 	a.cascades[childID] = state
 	a.Mu.Unlock()
-	a.persistChildPromptOnce(record, state)
+	a.Mu.Lock()
+	current := a.cascadeCurrentLocked(state)
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
 	providerkit.LogRegistryRefusal("antigravity", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: childID, ChildAgentID: childAgentID, Kind: bgtask.KindSubagent,
 		Title: role, Description: role, Status: bgtask.StatusRunning,
 	}))
+	a.Mu.Lock()
+	current = a.cascadeCurrentLocked(state)
+	a.Mu.Unlock()
+	if !current {
+		a.queueChildRowClose(childID, bgtask.StatusStopped)
+		return
+	}
 	if stored && idle {
 		a.closeChildRow(state, bgtask.StatusEndedWithUnknownOutcome)
 	}
 	if stored {
-		go a.startStoredChild(state)
+		a.startCascadeWorker(state, a.startStoredChild)
 		return
 	}
 	a.startCascadeStream(state)
 }
 
-func (a *Agent) startStoredChild(state *cascadeState) {
+func (a *Agent) startStoredChild(ctx context.Context, state *cascadeState) {
 	var err error
 	for attempt := range 3 {
 		var count int
-		attemptCtx, cancel := context.WithTimeout(a.streamCtx, a.rpc.timeout)
+		attemptCtx, cancel := context.WithTimeout(ctx, a.rpc.timeout)
 		count, err = a.rpc.readStepCount(attemptCtx, state.id)
 		cancel()
 		if err == nil {
 			a.Mu.Lock()
-			if state.closed || a.cascades[state.id] != state {
+			if state.closed || !a.cascadeCurrentLocked(state) {
 				a.Mu.Unlock()
 				return
 			}
 			state.seededCount = count
 			a.Mu.Unlock()
-			a.startCascadeStream(state)
+			a.runCascadeStream(ctx, state)
 			return
 		}
 		if isStreamNotFound(err) {
@@ -114,24 +135,22 @@ func (a *Agent) startStoredChild(state *cascadeState) {
 		if attempt < 2 {
 			timer := a.clock.NewTimer(time.Duration(attempt+1)*100*time.Millisecond, antigravityStreamReconnectTimerTag)
 			select {
-			case <-a.streamCtx.Done():
+			case <-ctx.Done():
 				timer.Stop(antigravityStreamReconnectTimerTag)
 				return
 			case <-timer.C:
 			}
 		}
 	}
-	a.fatalCascade(state, err)
+	if ctx.Err() == nil {
+		a.fatalCascade(state, err)
+	}
 }
 
 func (a *Agent) linkSubagentResults(parent *cascadeState, index int, step antigravityStep) {
 	if step.Type != "CORTEX_STEP_TYPE_INVOKE_SUBAGENT" {
 		return
 	}
-	var arguments struct {
-		Prompt string `json:"Prompt"`
-	}
-	_ = json.Unmarshal([]byte(step.Metadata.ToolCall.ArgumentsJSON), &arguments)
 	for position, result := range step.InvokeSubagent.Results {
 		if result.ConversationID == "" {
 			continue
@@ -146,44 +165,18 @@ func (a *Agent) linkSubagentResults(parent *cascadeState, index int, step antigr
 			record.role = step.InvokeSubagent.Subagents[position].Role
 		}
 		record.spawnSpanID = step.Metadata.ToolCall.ID
-		if arguments.Prompt != "" {
-			record.prompt = arguments.Prompt
-		}
-		state := record.state
 		a.Mu.Unlock()
-		if state != nil {
-			a.persistChildPromptOnce(record, state)
-		}
 	}
-}
-
-func (a *Agent) persistChildPromptOnce(record *childKey, state *cascadeState) {
-	a.Mu.Lock()
-	prompt := record.prompt
-	if prompt == "" || record.promptPersisted {
-		a.Mu.Unlock()
-		return
-	}
-	record.promptPersisted = true
-	a.Mu.Unlock()
-	raw, _ := json.Marshal(map[string]any{
-		"type": contracts.AntigravityStepTypeUserInput, "status": contracts.AntigravityStepStatusDone,
-		"userInput": map[string]any{"userResponse": prompt},
-	})
-	err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
-		Original: raw, AgentSessionID: state.id, IdempotencyKey: "antigravity:" + state.id + ":initial-prompt",
-	}, agent.SpanInfo{})
-	if err == nil {
-		return
-	}
-	a.Mu.Lock()
-	record.promptPersisted = false
-	a.Mu.Unlock()
-	slog.Error("antigravity persist child prompt", "agent_id", a.AgentID(), "cascade_id", state.id, "error", err)
 }
 
 func (a *Agent) linkPendingChildSpans(parent *cascadeState) {
+	a.childSetupMu.Lock()
+	defer a.childSetupMu.Unlock()
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(parent) || parent.closed {
+		a.Mu.Unlock()
+		return
+	}
 	type link struct {
 		id, role, span string
 		state          *cascadeState
@@ -197,6 +190,12 @@ func (a *Agent) linkPendingChildSpans(parent *cascadeState) {
 	}
 	a.Mu.Unlock()
 	for _, item := range links {
+		a.Mu.Lock()
+		current := a.cascadeCurrentLocked(parent) && a.cascadeCurrentLocked(item.state)
+		a.Mu.Unlock()
+		if !current {
+			return
+		}
 		if _, err := parent.sink.EnsureChildAgent(agent.ChildAgentSpec{
 			ProviderChildKey: item.id, AgentSessionID: item.id, Title: item.role, SpawnSpanID: item.span,
 		}); err != nil {
@@ -207,85 +206,131 @@ func (a *Agent) linkPendingChildSpans(parent *cascadeState) {
 			a.Mu.Unlock()
 			slog.Warn("antigravity link child spawn span", "agent_id", a.AgentID(), "error", err)
 		}
+		a.Mu.Lock()
+		current = a.cascadeCurrentLocked(parent) && a.cascadeCurrentLocked(item.state)
+		a.Mu.Unlock()
+		if !current {
+			a.queueChildRowClose(item.id, bgtask.StatusStopped)
+		}
 	}
 }
 
-func (a *Agent) applyBackgroundTasks(state *cascadeState, patch *backgroundTasksPatch, firstOnAttempt bool) {
+func (a *Agent) applyBackgroundTasks(state *cascadeState, patch *backgroundTasksPatch, firstOnAttempt bool) error {
 	if patch == nil && !firstOnAttempt {
-		return
+		return nil
 	}
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return nil
+	}
 	previous := state.background
-	current := map[int]backgroundTask{}
+	slots := map[int]backgroundTask{}
 	if !firstOnAttempt {
-		for index, task := range previous {
-			current[index] = task
+		for _, task := range previous {
+			slots[task.slot] = task
 		}
 	}
 	if patch != nil {
 		for position, snapshot := range patch.BackgroundTasks {
-			stepIndex := snapshot.TaskSnapshot.StepIndex
-			slot := position
-			if position < len(patch.Indices) {
-				slot = patch.Indices[position]
+			if position >= len(patch.Indices) {
+				break
+			}
+			slot := patch.Indices[position]
+			if slot < 0 || slot >= patch.TotalLength {
+				continue
 			}
 			logPath := snapshot.TaskSnapshot.LogURI
 			if parsed, err := url.Parse(logPath); err == nil && parsed.Scheme == "file" {
 				logPath = parsed.Path
+				if parsed.Host != "" && parsed.Host != "localhost" {
+					logPath = "//" + parsed.Host + logPath
+				}
 			}
-			current[stepIndex] = backgroundTask{
-				rowKey: snapshot.TaskSnapshot.TaskID, title: snapshot.TaskSnapshot.Description,
-				description: logPath, stepIndex: stepIndex, slot: slot,
-			}
+			slots[slot] = backgroundTask{rowKey: snapshot.TaskSnapshot.TaskID, title: snapshot.TaskSnapshot.Description, description: logPath, stepIndex: snapshot.TaskSnapshot.StepIndex, slot: slot}
 		}
-		for index, task := range current {
-			if patch.TotalLength > 0 && task.slot >= patch.TotalLength {
-				delete(current, index)
+		for slot := range slots {
+			if slot >= patch.TotalLength {
+				delete(slots, slot)
 			}
 		}
 	}
+	current := make(map[int]backgroundTask, len(slots))
+	publish := make([]backgroundTask, 0, len(slots))
+	for _, task := range slots {
+		current[task.stepIndex] = task
+		publish = append(publish, task)
+	}
 	state.background = current
+	retained := make(map[string]struct{}, len(current))
+	for _, task := range current {
+		retained[task.rowKey] = struct{}{}
+	}
 	var removed []backgroundTask
-	for index, task := range previous {
-		if _, keeps := current[index]; !keeps {
+	for _, task := range previous {
+		if _, keeps := retained[task.rowKey]; !keeps {
+			state.closingBackground[task.rowKey] = task
 			removed = append(removed, task)
 		}
 	}
 	a.Mu.Unlock()
-	for _, task := range current {
-		providerkit.LogRegistryRefusal("antigravity", "upsert shell", state.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey: task.rowKey, Kind: bgtask.KindShell, Title: task.title,
-			TitleIsCommand: true, Description: task.description, Status: bgtask.StatusRunning,
-		}))
+	for _, task := range publish {
+		if !a.acceptsCascadeUpdate(state) {
+			return nil
+		}
+		providerkit.LogRegistryRefusal("antigravity", "upsert shell", state.sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: task.rowKey, Kind: bgtask.KindShell, Title: task.title, TitleIsCommand: true, Description: task.description, Status: bgtask.StatusRunning}))
+		if !a.acceptsCascadeUpdate(state) {
+			a.queueBackgroundTaskCloses(state, []backgroundTask{task}, bgtask.StatusStopped)
+			return nil
+		}
 	}
-	for _, task := range removed {
-		a.finishRemovedBackgroundTask(state, task)
-	}
+	return a.finishRemovedBackgroundTasks(state, removed)
 }
 
-func (a *Agent) finishRemovedBackgroundTask(state *cascadeState, task backgroundTask) {
+func (a *Agent) finishRemovedBackgroundTasks(state *cascadeState, tasks []backgroundTask) error {
 	a.Mu.Lock()
-	record := state.steps[task.stepIndex]
-	open := record != nil && isOpenStepStatus(record.status)
-	a.Mu.Unlock()
-	if !open {
-		return
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return nil
 	}
-	steps, err := a.rpc.steps(a.Context(), state.id, task.stepIndex)
-	if err != nil || len(steps) == 0 {
-		if err == nil {
-			err = fmt.Errorf("the language server returned no step at index %d", task.stepIndex)
+	ctx := a.streamCtx
+	minimum := -1
+	for _, task := range tasks {
+		record := state.steps[task.stepIndex]
+		if record != nil && isOpenStepStatus(record.status) && (minimum < 0 || task.stepIndex < minimum) {
+			minimum = task.stepIndex
 		}
-		slog.Warn("antigravity read finished background step", "agent_id", a.AgentID(), "error", err)
-		providerkit.LogRegistryRefusal("antigravity", "close shell", state.sink.CloseBackgroundTask(task.rowKey, bgtask.StatusEndedWithUnknownOutcome))
-		return
 	}
-	step, err := decodeStep(steps[0])
-	if err != nil {
-		a.persistUnknownStep(state, task.stepIndex, steps[0])
-		return
+	a.Mu.Unlock()
+	var steps []json.RawMessage
+	var readErr error
+	if minimum >= 0 {
+		steps, readErr = a.rpc.steps(ctx, state.id, minimum)
 	}
-	a.applyStep(state, task.stepIndex, step, steps[0])
+	var persistErr error
+	for _, task := range tasks {
+		if !a.acceptsCascadeUpdate(state) {
+			return nil
+		}
+		offset := task.stepIndex - minimum
+		if readErr != nil || minimum < 0 || offset < 0 || offset >= len(steps) {
+			a.queueBackgroundTaskCloses(state, []backgroundTask{task}, bgtask.StatusEndedWithUnknownOutcome)
+			continue
+		}
+		raw := steps[offset]
+		step, err := decodeStep(raw)
+		if err != nil {
+			persistErr = errors.Join(persistErr, a.persistUnknownStep(state, task.stepIndex, raw))
+		} else {
+			persistErr = errors.Join(persistErr, a.applyStep(state, task.stepIndex, step, raw))
+		}
+		if err != nil || isOpenStepStatus(step.Status) {
+			a.queueBackgroundTaskCloses(state, []backgroundTask{task}, bgtask.StatusEndedWithUnknownOutcome)
+		} else {
+			a.finishBackgroundStep(state, task, step)
+		}
+	}
+	return persistErr
 }
 
 func (a *Agent) backgroundForStep(state *cascadeState, index int) (backgroundTask, bool) {
@@ -303,19 +348,66 @@ func (a *Agent) finishBackgroundStep(state *cascadeState, task backgroundTask, s
 	case step.Status == "CORTEX_STEP_STATUS_ERROR" || step.RunCommand.ExitCode != 0:
 		status = bgtask.StatusFailed
 	}
-	providerkit.LogRegistryRefusal("antigravity", "close shell", state.sink.CloseBackgroundTask(task.rowKey, status))
+	a.queueBackgroundTaskCloses(state, []backgroundTask{task}, status)
 }
 
 func (a *Agent) closeBackgroundTasks(state *cascadeState, status bgtask.Status) {
 	a.Mu.Lock()
-	tasks := make([]backgroundTask, 0, len(state.background))
+	owned := make(map[string]backgroundTask, len(state.background)+len(state.closingBackground))
 	for _, task := range state.background {
-		tasks = append(tasks, task)
+		owned[task.rowKey] = task
+	}
+	for key, task := range state.closingBackground {
+		owned[key] = task
 	}
 	clear(state.background)
+	clear(state.closingBackground)
+	tasks := make([]backgroundTask, 0, len(owned))
+	for _, task := range owned {
+		tasks = append(tasks, task)
+	}
 	a.Mu.Unlock()
+	a.queueBackgroundTaskCloses(state, tasks, status)
+}
+
+func backgroundTaskCloseWrite(sink agent.ProviderServices, rowKey string, status bgtask.Status) agent.OutputWrite {
+	return agent.OutputWrite{
+		ScopeID: rowKey, RetainedBytes: len(rowKey), Label: "close an Antigravity background task",
+		Run: func() error { return sink.CloseBackgroundTask(rowKey, status) },
+	}
+}
+
+func (a *Agent) queueBackgroundTaskCloses(state *cascadeState, tasks []backgroundTask, status bgtask.Status) {
+	if len(tasks) == 0 {
+		return
+	}
+	queue := state.sink.OutputQueue()
+	writes := make([]agent.OutputWrite, 0, len(tasks))
 	for _, task := range tasks {
-		providerkit.LogRegistryRefusal("antigravity", "close shell", state.sink.CloseBackgroundTask(task.rowKey, status))
+		writes = append(writes, backgroundTaskCloseWrite(state.sink, task.rowKey, status))
+	}
+	a.Mu.Lock()
+	queue.Append(writes...)
+	for _, task := range tasks {
+		if current, ok := state.closingBackground[task.rowKey]; ok && current == task {
+			delete(state.closingBackground, task.rowKey)
+		}
+	}
+	a.Mu.Unlock()
+	a.flushBackgroundTaskWrites(queue)
+}
+
+func (a *Agent) queueChildRowClose(childID string, status bgtask.Status) {
+	queue := a.sink.OutputQueue()
+	a.Mu.Lock()
+	queue.Append(backgroundTaskCloseWrite(a.sink, childID, status))
+	a.Mu.Unlock()
+	a.flushBackgroundTaskWrites(queue)
+}
+
+func (a *Agent) flushBackgroundTaskWrites(queue *agent.OutputQueue) {
+	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Warn("antigravity background task update remains queued", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
@@ -326,7 +418,6 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		a.Mu.Unlock()
 		return nil
 	}
-	state.stopped = true
 	state.interrupted = true
 	a.Mu.Unlock()
 	if err := a.rpc.cancel(a.Context(), childKey); err != nil {

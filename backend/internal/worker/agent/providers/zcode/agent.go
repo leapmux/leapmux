@@ -70,11 +70,7 @@ type Agent struct {
 	// Accepted account snapshots replace the bridge under Mu. Every catalog
 	// method that copies or reads the bridge holds Mu too.
 	catalog zcodeCatalog
-	// Only a legacy app-server requires the legacy registry to be usable.
-	legacyConfigurationError error
-	// registryRevision identifies this agent's provider configuration. Legacy
-	// builds use it on the workspace registry, and current builds use it on the
-	// account snapshot.
+	// registryRevision identifies this agent's account provider snapshot.
 	registryRevision string
 	// builtinProviderConfigPath identifies the installed release that the account
 	// provider snapshot overlays. Launch resolution sets it whenever it finds an
@@ -99,7 +95,7 @@ type Agent struct {
 	// --- guarded by Mu ---
 
 	// account is the account snapshot that the app-server accepted, or nil before
-	// it accepts one and on a legacy build.
+	// it accepts one.
 	account             *zcodeAccountState
 	sessionID           string
 	sessionEpoch        uint64
@@ -161,9 +157,7 @@ type Agent struct {
 	// stopped-turn recovery compare the generation stored on their OWNING turn,
 	// never this latest value, so a background start cannot invalidate them.
 	turnGeneration uint64
-	// steeringUnsupported is true once the app-server refused the command
-	// inbox as an unknown method. SupportsSteering reports its inverse.
-	steeringUnsupported bool
+
 	// steers maps the command id of each steer that ZCode accepted and has not
 	// resolved to its bookkeeping. See steering.go.
 	steers map[string]*zcodeSteer

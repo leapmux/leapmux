@@ -7,6 +7,7 @@ import { watchAgentEvents } from './agentEventWatch'
 export interface NativeControlFrame {
   requestId: string
   payload: Record<string, unknown>
+  canceled?: boolean
   responseState: AgentControlRequest['responseState']
   claimToken?: string
 }
@@ -25,6 +26,7 @@ export function nativeControlFrame(event: AgentEvent): NativeControlFrame | unde
     return {
       requestId: inner.value.requestId,
       payload: {},
+      canceled: true,
       responseState: inner.value.responseState,
       ...(inner.value.claimToken
         ? { claimToken: inner.value.claimToken }

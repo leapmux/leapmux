@@ -1,9 +1,10 @@
+import type { ExecFileOptionsWithStringEncoding } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { Server } from 'node:net'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { withCleanup } from './cleanup'
 import { ancestorInstructionsReport, refusedHostsReport, startSuiteServer } from './suiteServer'
 
@@ -28,14 +29,21 @@ function scratchRoot(): string {
   return root
 }
 
-// `startSuiteServer` awaits `createMockAgentEnvironment` before it runs the (fake) hub,
-// and that call runs the real setup commands of the installed agent CLIs. Each run starts
-// operating-system processes, so a case takes 1 to 7 seconds, and vitest's default limit
-// of 5 seconds fails a correct run on a busy machine. The limit is generous because no
-// case waits on it: a case ends as soon as its start settles.
-const START_SUITE_SERVER_TEST_TIMEOUT_MS = 60_000
+// Letta setup is external to suite-server ownership. Keep its command boundary controlled.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    execFile: (file: string, args: readonly string[], options: ExecFileOptionsWithStringEncoding, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      if (!/^letta(?:\.(?:exe|cmd|bat))?$/i.test(basename(file)))
+        return actual.execFile(file, args, options, callback)
+      queueMicrotask(() => callback(null, '', ''))
+      return new actual.ChildProcess()
+    },
+  }
+})
 
-describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, () => {
+describe('startSuiteServer', () => {
   it('rejects when the binary does not exist', async () => {
     const root = scratchRoot()
     await expect(startSuiteServer({

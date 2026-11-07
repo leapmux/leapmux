@@ -73,7 +73,7 @@ vi.mock('./nativeConversation', () => ({
 
 vi.mock('./nativeResume', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeResume')>(),
-  countOriginalAnswerRows: async () => 1,
+  readOriginalConversationRows: async () => ({ answerRows: 1, userSequence: 1n }),
   expectResumedConversation: async (_context: unknown, agentId: string, _texts: unknown, rows: number, bubbles: number) => {
     expect({ agentId, rows, bubbles }).toEqual({ agentId: 'restart-agent', rows: 1, bubbles: 1 })
     steps.events.push('transcript')
@@ -99,6 +99,10 @@ vi.mock('./workspace', () => ({
       steps.events.push('workspace-deleted')
     }
   },
+}))
+
+vi.mock('./chatBubbleCount', () => ({
+  countChatBubbles: async () => 1,
 }))
 
 vi.mock('./ui', () => ({

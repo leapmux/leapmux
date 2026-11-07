@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,17 +16,30 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage) {
+func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage) error {
+	if a.IsDiscardingOutput() {
+		return nil
+	}
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return nil
+	}
 	record := state.steps[index]
 	if record == nil {
 		record = &stepState{}
 		state.steps[index] = record
 	}
+	if record.consumed {
+		record.modelUsage = step.Metadata.ModelUsage
+		a.Mu.Unlock()
+		return nil
+	}
 	previousStatus := record.status
 	record.status = step.Status
 	record.raw = append(json.RawMessage(nil), raw...)
 	record.modelUsage = step.Metadata.ModelUsage
+	record.toolStep = isToolStep(step)
 	spanID := record.spanID
 	if spanID == "" {
 		spanID = step.Metadata.ToolCall.ID
@@ -34,8 +48,6 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 		}
 		record.spanID = spanID
 	}
-	_, background := state.background[index]
-	record.background = background
 	a.Mu.Unlock()
 
 	if step.Type == contracts.AntigravityStepTypePlannerResponse {
@@ -46,9 +58,12 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 	}
 	if step.Type == contracts.AntigravityStepTypeErrorMessage && !isOpenStepStatus(step.Status) {
 		a.Mu.Lock()
-		state.heldError = stepErrorText(step)
+		state.heldErrorStep = append(json.RawMessage(nil), raw...)
 		state.retryPending = false
 		a.Mu.Unlock()
+	}
+	if !a.acceptsCascadeUpdate(state) {
+		return nil
 	}
 	if step.Status == contracts.AntigravityStepStatusWaiting {
 		a.registerInteraction(state, index, step)
@@ -58,42 +73,49 @@ func (a *Agent) applyStep(state *cascadeState, index int, step antigravityStep, 
 	if isOpenStepStatus(step.Status) {
 		if isToolStep(step) {
 			state.sink.OpenSpan(spanID, "")
-			a.persistLiveStep(state, index, step, raw, spanID)
-			if output := liveStepOutput(step); output != "" {
+			if err := a.persistLiveStep(state, index, step, raw, spanID); err != nil {
+				return err
+			}
+			if output := step.RunCommand.CombinedOutput.Full; output != "" {
 				state.sink.ReportProgress(agent.OutputTailProgress(spanID, output, false))
 			}
 		}
-		return
+		return nil
 	}
-	a.persistStep(state, index, step, raw)
+	return a.persistStep(state, index, step, raw)
 }
 
-func (a *Agent) persistLiveStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage, spanID string) {
+func (a *Agent) persistLiveStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage, spanID string) error {
+	if a.IsDiscardingOutput() {
+		return nil
+	}
 	a.Mu.Lock()
 	record := state.steps[index]
-	if record == nil || record.livePersisted {
+	if record == nil || record.liveOutputAccepted {
 		a.Mu.Unlock()
-		return
+		return nil
 	}
-	record.livePersisted = true
+	record.liveOutputAccepted = true
 	a.Mu.Unlock()
 	cleaned, err := scrubStep(raw)
 	if err != nil {
 		a.Mu.Lock()
-		record.livePersisted = false
+		record.liveOutputAccepted = false
 		a.Mu.Unlock()
 		slog.Error("antigravity scrub live step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
-		return
+		return err
 	}
 	err = state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
 		Original: cleaned, AgentSessionID: state.id, IdempotencyKey: fmt.Sprintf("antigravity:%s:%d:live", state.id, index),
 	}, agent.SpanInfo{SpanID: spanID, SpanType: contracts.AntigravityFrameStep})
-	if err != nil {
+	if !agent.OutputRetained(err) {
 		a.Mu.Lock()
-		record.livePersisted = false
+		record.liveOutputAccepted = false
 		a.Mu.Unlock()
 		slog.Error("antigravity persist live step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
+		return err
 	}
+	return nil
 }
 
 func isToolStep(step antigravityStep) bool {
@@ -107,13 +129,6 @@ func isToolStep(step antigravityStep) bool {
 	}
 }
 
-func liveStepOutput(step antigravityStep) string {
-	if step.RunCommand.CombinedOutput.Full != "" {
-		return step.RunCommand.CombinedOutput.Full
-	}
-	return ""
-}
-
 func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigravityStep) {
 	text := step.PlannerResponse.ModifiedResponse
 	if text == "" {
@@ -121,13 +136,16 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 	}
 	scope := fmt.Sprintf("antigravity:%s:%d", state.id, index)
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return
+	}
 	record := state.steps[index]
 	previous := record.text
 	record.text = text
-	record.thinking = step.PlannerResponse.Thinking
 	retryPending := state.retryPending
 	state.retryPending = false
-	state.heldError = ""
+	state.heldErrorStep = nil
 	a.Mu.Unlock()
 	if text != previous {
 		delta := text
@@ -147,15 +165,19 @@ func (a *Agent) applyPlannerResponse(state *cascadeState, index int, step antigr
 	}
 }
 
-func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage) {
+func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep, raw json.RawMessage) error {
+	if a.IsDiscardingOutput() {
+		return nil
+	}
 	a.Mu.Lock()
 	record := state.steps[index]
-	if record != nil && record.persisted {
-		a.Mu.Unlock()
-		return
+	if record == nil {
+		record = &stepState{status: step.Status, toolStep: isToolStep(step)}
+		state.steps[index] = record
 	}
-	if record != nil {
-		record.persisted = true
+	if record.consumed {
+		a.Mu.Unlock()
+		return nil
 	}
 	interrupted := state.interrupted
 	spanID := ""
@@ -166,19 +188,24 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 
 	switch step.Type {
 	case contracts.AntigravityStepTypeUserInput:
-		if state.parent == nil {
-			return
+		if state.parent == nil || slices.Contains(step.UserInput.Tags, antigravityQueueInputTag) {
+			a.consumeStep(state, index)
+			return nil
 		}
-	case contracts.AntigravityStepTypeSystemMessage, contracts.AntigravityStepTypeErrorMessage:
-		return
+	case contracts.AntigravityStepTypeSystemMessage:
+		message := step.SystemMessage.AgentMessage
+		if message == nil || message.HideFromUser || message.Content == "" {
+			a.consumeStep(state, index)
+			return nil
+		}
+	case contracts.AntigravityStepTypeErrorMessage:
+		a.consumeStep(state, index)
+		return nil
 	}
 	cleaned, err := scrubStep(raw)
 	if err != nil {
-		a.Mu.Lock()
-		record.persisted = false
-		a.Mu.Unlock()
 		slog.Error("antigravity scrub step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
-		return
+		return err
 	}
 	span := agent.SpanInfo{}
 	if spanID != "" {
@@ -205,24 +232,22 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 		thinkingRaw, splitErr := plannerThinkingOnly(cleaned)
 		if splitErr != nil {
 			slog.Error("antigravity split planner thinking", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", splitErr)
-			return
+			return splitErr
 		}
 		thinking := content
 		thinking.Original = thinkingRaw
 		thinking.IdempotencyKey += ":thinking"
 		contents = []agent.MessageContent{thinking, content}
 	}
+	messages := make([]agent.TranscriptMessage, 0, len(contents))
 	for _, item := range contents {
-		if err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, item, span); err != nil {
-			a.Mu.Lock()
-			if current := state.steps[index]; current != nil {
-				current.persisted = false
-			}
-			a.Mu.Unlock()
-			slog.Error("antigravity persist step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
-			return
-		}
+		messages = append(messages, agent.TranscriptMessage{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: item, Span: span})
 	}
+	if err := agent.PersistTranscriptBatch(state.sink, messages); !agent.OutputRetained(err) {
+		slog.Error("antigravity persist step", "agent_id", a.AgentID(), "cascade_id", state.id, "step_index", index, "error", err)
+		return err
+	}
+	a.consumeStep(state, index)
 	if spanID != "" {
 		state.sink.CloseSpan(spanID)
 		state.sink.ReportProgress(agent.CompleteOutputProgress(spanID))
@@ -238,6 +263,17 @@ func (a *Agent) persistStep(state *cascadeState, index int, step antigravityStep
 	}
 	if state.parent == nil && step.Status == contracts.AntigravityStepStatusDone {
 		a.recordPlanStep(state, step)
+	}
+	return nil
+}
+
+func (a *Agent) consumeStep(state *cascadeState, index int) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if record := state.steps[index]; record != nil {
+		record.consumed = true
+		record.raw = nil
+		record.text = ""
 	}
 }
 
@@ -257,28 +293,31 @@ func plannerThinkingOnly(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(value)
 }
 
-func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawMessage) {
+func (a *Agent) persistUnknownStep(state *cascadeState, index int, raw json.RawMessage) error {
+	if a.IsDiscardingOutput() {
+		return nil
+	}
 	a.Mu.Lock()
 	record := state.steps[index]
-	if record != nil && record.persisted {
+	if record != nil && record.consumed {
 		a.Mu.Unlock()
-		return
+		return nil
 	}
 	if record == nil {
 		record = &stepState{}
 		state.steps[index] = record
 	}
-	record.persisted = true
+	record.raw = append(json.RawMessage(nil), raw...)
 	a.Mu.Unlock()
 	if err := state.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
 		Original: append(json.RawMessage(nil), raw...), AgentSessionID: state.id,
 		IdempotencyKey: fmt.Sprintf("antigravity:%s:%d", state.id, index),
-	}, agent.SpanInfo{}); err != nil {
-		a.Mu.Lock()
-		record.persisted = false
-		a.Mu.Unlock()
+	}, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		slog.Error("antigravity persist unknown step", "agent_id", a.AgentID(), "error", err)
+		return err
 	}
+	a.consumeStep(state, index)
+	return nil
 }
 
 func scrubStep(raw json.RawMessage) (json.RawMessage, error) {
@@ -311,12 +350,16 @@ func scrubOpaqueFields(value any) {
 
 func (a *Agent) noteModelRetry(state *cascadeState, request *modelRequestStatus) {
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return
+	}
 	if state.retryPending {
 		a.Mu.Unlock()
 		return
 	}
 	state.retryPending = true
-	state.heldError = ""
+	state.heldErrorStep = nil
 	a.Mu.Unlock()
 	raw, err := json.Marshal(map[string]any{"name": contracts.AntigravityFrameInteraction, "modelRequest": request})
 	if err != nil {
@@ -329,6 +372,10 @@ func (a *Agent) noteModelRetry(state *cascadeState, request *modelRequestStatus)
 
 func (a *Agent) publishContextUsage(state *cascadeState, usage *contextWindowUsage) {
 	a.Mu.Lock()
+	if !a.cascadeCurrentLocked(state) || state.closed {
+		a.Mu.Unlock()
+		return
+	}
 	state.contextWindow = usage.MaxContextTokens
 	state.contextTokens = usage.EstimatedTokensUsed
 	a.Mu.Unlock()
@@ -338,104 +385,156 @@ func (a *Agent) publishContextUsage(state *cascadeState, usage *contextWindowUsa
 	state.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: values})
 }
 
-func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion) {
+func (a *Agent) endTurn(state *cascadeState, completion agent.MessageCompletion) (err error) {
 	a.Mu.Lock()
-	if !state.turnActive {
+	if !a.cascadeInstalledLocked(state) || state.turnPhase != cascadeTurnActive {
 		a.Mu.Unlock()
-		return
+		return nil
 	}
+	state.turnPhase = cascadeTurnFinalizing
 	if state.interrupted {
 		completion = agent.MessageCompletionInterrupted
-	} else if state.heldError != "" {
+	} else if len(state.heldErrorStep) > 0 {
 		completion = agent.MessageCompletionError
 	}
-	heldError := state.heldError
-	seq := a.NextTurnSeq()
+	heldErrorStep := append(json.RawMessage(nil), state.heldErrorStep...)
 	a.Mu.Unlock()
+	defer func() {
+		if err != nil {
+			a.Mu.Lock()
+			if a.cascadeInstalledLocked(state) {
+				state.turnPhase = cascadeTurnActive
+			}
+			a.Mu.Unlock()
+		}
+	}()
 
-	a.flushOpenSteps(state, completion)
-	if state.parent == nil && completion == agent.MessageCompletionComplete {
+	if !a.IsDiscardingOutput() {
+		if err := a.flushOpenSteps(state, completion); err != nil {
+			return err
+		}
+	}
+	if !a.cascadeInstalled(state) {
+		return nil
+	}
+	if !a.IsDiscardingOutput() && state.parent == nil && completion == agent.MessageCompletionComplete {
 		a.maybePublishPlan(state)
 	}
-	if heldError != "" {
-		raw, _ := json.Marshal(map[string]any{"name": contracts.AntigravityFrameStep, "type": contracts.AntigravityStepTypeErrorMessage, "errorMessage": map[string]any{"error": map[string]any{"userErrorMessage": heldError}}})
-		if _, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw, Completion: agent.MessageCompletionError, AgentSessionID: state.id}); err != nil {
-			slog.Error("antigravity persist agent error", "agent_id", a.AgentID(), "error", err)
+	if !a.cascadeInstalled(state) {
+		return nil
+	}
+	if !a.IsDiscardingOutput() && len(heldErrorStep) > 0 {
+		raw, scrubErr := scrubStep(heldErrorStep)
+		if scrubErr != nil {
+			return scrubErr
 		}
+		if _, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw, Completion: agent.MessageCompletionError, AgentSessionID: state.id}); !agent.OutputRetained(err) {
+			slog.Error("antigravity persist agent error", "agent_id", a.AgentID(), "error", err)
+			return err
+		}
+	}
+	if !a.cascadeInstalled(state) {
+		return nil
 	}
 	if state.parent != nil {
 		status := bgtask.StatusSucceeded
-		if state.stopped || completion == agent.MessageCompletionInterrupted {
+		switch completion {
+		case agent.MessageCompletionInterrupted:
 			status = bgtask.StatusStopped
-		} else if completion == agent.MessageCompletionError {
+		case agent.MessageCompletionError:
 			status = bgtask.StatusFailed
+		case agent.MessageCompletionComplete, agent.MessageCompletionFinished:
 		}
 		a.closeChildRow(state, status)
-	} else {
+	} else if !a.IsDiscardingOutput() {
 		frame := a.turnEndFrame(state, completion)
-		if err := state.sink.PersistTurnEnd(frame, agent.SpanInfo{}); err != nil {
+		if err := state.sink.PersistTurnEnd(frame, agent.SpanInfo{}); !agent.OutputRetained(err) {
 			slog.Error("antigravity persist turn end", "agent_id", a.AgentID(), "error", err)
+			return err
 		}
-		a.refreshRateLimits()
 	}
 	a.Mu.Lock()
-	state.turnActive = false
-	state.sendInFlight = false
-	state.heldError = ""
-	state.retryPending = false
+	if !a.cascadeInstalledLocked(state) {
+		a.Mu.Unlock()
+		return nil
+	}
 	backgroundOpen := len(state.background) > 0
 	a.Mu.Unlock()
 	if !backgroundOpen {
 		state.sink.ResetSpans()
 	}
+	if !a.cascadeInstalled(state) {
+		return nil
+	}
 	state.sink.ReportProgress(agent.ResetProgress())
+	a.Mu.Lock()
+	if !a.cascadeInstalledLocked(state) {
+		a.Mu.Unlock()
+		return nil
+	}
+	state.turnPhase = cascadeTurnIdle
+	state.sendInFlight = false
+	state.heldErrorStep = nil
+	state.retryPending = false
+	seq := a.NextTurnSeq()
+	a.Mu.Unlock()
 	if state.parent != nil {
 		providerkit.PublishSteerableTurnActiveTo(state.sink, false, seq)
 	} else {
 		providerkit.PublishTurnStateTo(a.sink, agent.TurnState{}, seq)
+		if a.cascadeCurrent(state) && !a.IsDiscardingOutput() {
+			a.quotaWork.Run("quota", a.refreshRateLimits)
+		}
 	}
+	return nil
 }
 
-func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageCompletion) {
+func (a *Agent) flushOpenSteps(state *cascadeState, completion agent.MessageCompletion) error {
 	a.Mu.Lock()
 	type pending struct {
 		index int
-		step  antigravityStep
 		raw   json.RawMessage
 	}
 	var pendingSteps []pending
-	for index, record := range state.steps {
-		if record.persisted || !isOpenStepStatus(record.status) {
+	for index := range state.turnSteps {
+		record := state.steps[index]
+		if record == nil || record.consumed || len(record.raw) == 0 {
 			continue
 		}
 		if _, background := state.background[index]; background {
 			continue
 		}
-		var step antigravityStep
-		if err := json.Unmarshal(record.raw, &step); err != nil {
-			continue
-		}
-		if completion != agent.MessageCompletionComplete {
-			step.Status = "CORTEX_STEP_STATUS_CANCELED"
-		}
-		pendingSteps = append(pendingSteps, pending{index: index, step: step, raw: record.raw})
+		pendingSteps = append(pendingSteps, pending{index: index, raw: append(json.RawMessage(nil), record.raw...)})
 	}
 	a.Mu.Unlock()
 	for _, item := range pendingSteps {
-		a.persistStep(state, item.index, item.step, item.raw)
+		step, err := decodeStep(item.raw)
+		if err != nil {
+			if err := a.persistUnknownStep(state, item.index, item.raw); err != nil {
+				return err
+			}
+			continue
+		}
+		if completion != agent.MessageCompletionComplete && isOpenStepStatus(step.Status) {
+			step.Status = contracts.AntigravityStepStatusCanceled
+		}
+		if err := a.persistStep(state, item.index, step, item.raw); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (a *Agent) turnEndFrame(state *cascadeState, completion agent.MessageCompletion) agent.MessageContent {
 	a.Mu.Lock()
 	uses := 0
 	usage := map[string]int64{}
-	for index, record := range state.steps {
-		if _, current := state.turnSteps[index]; !current {
+	for index := range state.turnSteps {
+		record := state.steps[index]
+		if record == nil {
 			continue
 		}
-		var step antigravityStep
-		if json.Unmarshal(record.raw, &step) == nil && isToolStep(step) && record.persisted {
+		if record.toolStep && record.consumed {
 			uses++
 		}
 		for key, value := range record.modelUsage {
@@ -470,31 +569,58 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 		streamErr = fmt.Errorf("antigravity stream ended")
 	}
 	a.Mu.Lock()
-	if state.closed {
+	if !a.cascadeCurrentLocked(state) || state.closed {
 		a.Mu.Unlock()
 		return
 	}
+	generationCtx := a.streamCtx
 	state.closed = true
 	state.connectErr = streamErr
 	state.sendInFlight = false
 	rootBeforeStart := state.parent == nil && !state.seenUpdate
-	active := state.turnActive
+	active := state.turnPhase != cascadeTurnIdle
+	hasOpenState := state.rowOpen || len(state.controls) > 0 || len(state.background) > 0
 	seq := a.NextTurnSeq()
-	a.Mu.Unlock()
 	state.connectedOnce.Do(func() { close(state.connected) })
+	a.Mu.Unlock()
 	if rootBeforeStart {
 		return
 	}
+	if state.parent != nil {
+		if err := a.rpc.cancel(generationCtx, state.id); err != nil {
+			slog.Warn("antigravity cancel a failed child invocation", "agent_id", a.AgentID(), "cascade_id", state.id, "error", err)
+		}
+		a.Mu.Lock()
+		current := a.cascadeCurrentLocked(state) && state.closed
+		a.Mu.Unlock()
+		if !current {
+			return
+		}
+	}
 	text := fmt.Sprintf("Antigravity CLI %s lost the language-server stream: %s", a.version, streamErrorText(streamErr))
 	if state.parent == nil {
-		state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldText: text})
-		a.endTurn(state, agent.MessageCompletionError)
-		go a.Stop()
+		if !a.IsDiscardingOutput() {
+			state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldText: text})
+		}
+		if !a.cascadeCurrent(state) {
+			return
+		}
+		if err := a.endTurn(state, agent.MessageCompletionError); err != nil {
+			slog.Error("antigravity finish failed stream", "agent_id", a.AgentID(), "error", err)
+		}
+		go a.stop(state)
 		return
 	}
-	if active || state.rowOpen || len(state.controls) > 0 || len(state.background) > 0 {
-		state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldText: text})
-		a.endTurn(state, agent.MessageCompletionError)
+	if active || hasOpenState {
+		if !a.IsDiscardingOutput() {
+			state.sink.PersistLeapMuxNotification(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldText: text})
+		}
+		if !a.cascadeCurrent(state) {
+			return
+		}
+		if err := a.endTurn(state, agent.MessageCompletionError); err != nil {
+			slog.Error("antigravity finish failed child stream", "agent_id", a.AgentID(), "error", err)
+		}
 		a.retireAllInteractions(state)
 		a.closeChildRow(state, bgtask.StatusFailed)
 		a.closeBackgroundTasks(state, bgtask.StatusEndedWithUnknownOutcome)
@@ -503,12 +629,14 @@ func (a *Agent) fatalCascade(state *cascadeState, streamErr error) {
 }
 
 func (a *Agent) closeChildRow(state *cascadeState, status bgtask.Status) {
+	queue := a.sink.OutputQueue()
 	a.Mu.Lock()
 	if !state.rowOpen {
 		a.Mu.Unlock()
 		return
 	}
+	queue.Append(backgroundTaskCloseWrite(a.sink, state.id, status))
 	state.rowOpen = false
 	a.Mu.Unlock()
-	providerkit.LogRegistryRefusal("antigravity", "close", a.sink.CloseBackgroundTask(state.id, status))
+	a.flushBackgroundTaskWrites(queue)
 }

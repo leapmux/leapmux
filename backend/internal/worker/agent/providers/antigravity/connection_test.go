@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,13 +34,30 @@ func TestAntigravityLiveLSPortUsesLastHTTPLine(t *testing.T) {
 	a.logPath = filepath.Join(t.TempDir(), "acp.log")
 	content := fmt.Sprintf("Language server listening on random port at 1 for HTTP\nLanguage server listening on random port at 2 for HTTPS (gRPC)\nLanguage server listening on random port at %d for HTTP\n", port)
 	require.NoError(t, os.WriteFile(a.logPath, []byte(content), 0o600))
-	live, err := a.liveLSPort(t.Context())
+	live, err := a.liveLSEndpoint(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, port, live)
+	defer live.Close()
+	assert.Equal(t, server.URL, live.BaseURL())
 }
 
 func TestAntigravityLastLogLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "acp.log")
 	require.NoError(t, os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o600))
 	assert.Equal(t, "two\nthree", lastLogLines(path, 2))
+}
+
+func TestAntigravityDiscoveryRetainsVerifiedConnection(t *testing.T) {
+	addresses := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { addresses <- r.RemoteAddr; _, _ = w.Write([]byte(`{}`)) }))
+	defer server.Close()
+	var port int
+	_, err := fmt.Sscanf(server.URL, "http://127.0.0.1:%d", &port)
+	require.NoError(t, err)
+	a, _ := testAgent(t)
+	a.logPath = filepath.Join(t.TempDir(), "acp.log")
+	require.NoError(t, os.WriteFile(a.logPath, fmt.Appendf(nil, "Language server listening on random port at %d for HTTP\n", port), 0o600))
+	require.NoError(t, a.discoverLSPort(t.Context(), time.Second))
+	defer a.rpc.endpoint.Close()
+	require.NoError(t, a.rpc.status(t.Context()))
+	assert.Equal(t, receiveTestValue(t, addresses), receiveTestValue(t, addresses))
 }

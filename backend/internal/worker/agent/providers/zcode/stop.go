@@ -313,23 +313,19 @@ func (a *Agent) zcodeStopTargetLocked() *zcodeTurnState {
 // second stop, because an unguarded stop could abort a newer execution.
 //
 // The v4 command is the primary path and carries the captured execution id as
-// its guard. The legacy session/stop covers the two cases the guard cannot: an
-// owner that recorded no execution id, and an app-server with no command inbox.
+// its guard. The current session/stop method covers an owner that recorded no
+// execution id.
 // Every other refusal and every transport failure returns the error and falls
 // through to nothing.
 func (a *Agent) sendZCodeStopExecution(sessionID, executionID string) (accepted bool, err error) {
 	if executionID == "" {
-		// An unknown execution id selects the legacy stop. A v4 stop without
+		// An unknown execution id selects the session stop. A v4 stop without
 		// the guard aborts whatever execution is current.
 		_, err = a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
 		return err == nil, err
 	}
 	ack, err := a.sendZCodeStopCommand(sessionID, executionID)
 	if err != nil {
-		if zcodeIsMethodNotFound(err) {
-			_, legacyErr := a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
-			return legacyErr == nil, legacyErr
-		}
 		return false, err
 	}
 	switch ack.Status {
@@ -354,7 +350,7 @@ func (a *Agent) sendZCodeStopExecution(sessionID, executionID string) (accepted 
 // The stop targets the user's turn, the latest background turn when no user turn
 // runs, or the live compaction. When the owner recorded a foreground execution
 // id, the primary path is the guarded v4 `stop` command: it aborts that one
-// execution and refuses one that took its place. The legacy session/stop remains
+// execution and refuses one that took its place. The current session/stop remains
 // for an owner with no execution id and for an app-server with no command inbox,
 // and for the compaction. Never an unguarded v4 stop: it can abort a newer
 // execution than the one the user stopped.

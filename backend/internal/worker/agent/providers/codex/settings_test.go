@@ -1167,7 +1167,7 @@ func TestCodexActiveReviewerSettlementFollowsTheRequestedTurn(t *testing.T) {
 	}
 }
 
-func TestCodexUpdateSettingsKeepsTheChangeForAnOlderCodex(t *testing.T) {
+func TestCodexUpdateSettingsRejectsAnAbsentCurrentMethod(t *testing.T) {
 	t.Parallel()
 
 	a, _, requests := newCodexThreadAgentForRPC(t, func(method string) agenttest.RPCReply {
@@ -1177,11 +1177,13 @@ func TestCodexUpdateSettingsKeepsTheChangeForAnOlderCodex(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.mainTurn.id = "turn-1"
+	prior := a.permissionMode
+	priorAcknowledged := a.permissionsAcknowledged
 
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
-	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode, "the next turn/start carries the change")
-	assert.False(t, a.permissionsAcknowledged, "nothing acknowledged the change yet")
+	assert.Equal(t, prior, a.permissionMode, "a refused method must restore the previous settings")
+	assert.Equal(t, priorAcknowledged, a.permissionsAcknowledged, "the refused update preserves the prior acknowledgement")
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
 	assert.Empty(t, methodRequests(requests(), codexMethodTurnSettingsUpdate))
 }
@@ -1190,7 +1192,7 @@ func TestClassifyCodexSettingsUpdate(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, codexSettingsUpdateAccepted, classifyCodexSettingsUpdate(nil))
-	assert.Equal(t, codexSettingsUpdateUnsupported, classifyCodexSettingsUpdate(&providerkit.JSONRPCResponseError{Code: providerkit.JSONRPCErrMethodNotFound}))
+	assert.Equal(t, codexSettingsUpdateRefused, classifyCodexSettingsUpdate(&providerkit.JSONRPCResponseError{Code: providerkit.JSONRPCErrMethodNotFound}))
 	assert.Equal(t, codexSettingsUpdateRefused, classifyCodexSettingsUpdate(&providerkit.JSONRPCResponseError{Code: -32600, Message: "refused"}))
 	assert.Equal(t, codexSettingsUpdateRefused, classifyCodexSettingsUpdate(fmt.Errorf("wrapped: %w", &providerkit.JSONRPCResponseError{Code: -32602})))
 	assert.Equal(t, codexSettingsUpdateUncertain, classifyCodexSettingsUpdate(agent.ErrDeliveryUncertain))

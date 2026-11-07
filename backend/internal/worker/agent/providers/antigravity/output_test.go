@@ -124,9 +124,9 @@ func TestAntigravityChildUserInputPersistsWithoutRootDuplication(t *testing.T) {
 	})
 	var step antigravityStep
 	require.NoError(t, json.Unmarshal(raw, &step))
-	a.persistStep(child, 0, step, raw)
+	assert.NoError(t, a.persistStep(child, 0, step, raw))
 	require.Len(t, transcriptMessages(sink), 1)
-	a.persistStep(a.root, 0, step, raw)
+	assert.NoError(t, a.persistStep(a.root, 0, step, raw))
 	require.Len(t, transcriptMessages(sink), 1)
 }
 
@@ -169,8 +169,12 @@ func TestAntigravityErrorThenRetryPublishesNoAgentError(t *testing.T) {
 	a, sink := testAgent(t)
 	errorStep, _ := json.Marshal(map[string]any{
 		"type": contracts.AntigravityStepTypeErrorMessage, "status": contracts.AntigravityStepStatusDone,
-		"errorMessage": map[string]any{"error": map[string]any{"userErrorMessage": "Agent execution terminated due to error.", "shortError": "boom"}},
+		"errorMessage": map[string]any{"error": map[string]any{"userErrorMessage": "Agent execution terminated due to error.", "shortError": "boom", "modelErrorMessage": "model reason", "fullError": "full reason"}},
 	})
+	var original map[string]any
+	require.NoError(t, json.Unmarshal(errorStep, &original))
+	original["diagnostics"] = map[string]any{"futureField": "retained"}
+	errorStep, _ = json.Marshal(original)
 	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{errorStep}))
 	update := agentStateUpdate{Status: cascadeStatusRunning}
 	update.ExecutionStatus.ModelRequest = &modelRequestStatus{Attempt: 1, MaxAttempts: 9}
@@ -186,23 +190,31 @@ func TestAntigravityFatalModelErrorPublishesShortReason(t *testing.T) {
 	a, sink := testAgent(t)
 	errorStep, _ := json.Marshal(map[string]any{
 		"type": contracts.AntigravityStepTypeErrorMessage, "status": contracts.AntigravityStepStatusDone,
-		"errorMessage": map[string]any{"error": map[string]any{"userErrorMessage": "Agent execution terminated due to error.", "shortError": "boom"}},
+		"errorMessage": map[string]any{"error": map[string]any{"userErrorMessage": "Agent execution terminated due to error.", "shortError": "boom", "modelErrorMessage": "model reason", "fullError": "full reason"}},
 	})
+	var original map[string]any
+	require.NoError(t, json.Unmarshal(errorStep, &original))
+	original["diagnostics"] = map[string]any{"futureField": "retained"}
+	errorStep, _ = json.Marshal(original)
 	feedUpdate(t, a, updateWithSteps(cascadeStatusRunning, []int{0}, []json.RawMessage{errorStep}))
 	feedUpdate(t, a, agentStateUpdate{Status: cascadeStatusIdle})
 	require.Len(t, sink.PersistedNotifications(), 1)
 	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), "boom")
+	var saved map[string]any
+	require.NoError(t, json.Unmarshal(sink.PersistedNotifications()[0].Content, &saved))
+	assert.Equal(t, original["errorMessage"], saved["errorMessage"])
+	assert.Equal(t, original["diagnostics"], saved["diagnostics"])
 }
 
 func TestAntigravityUnknownStepRetriesFailedPersistence(t *testing.T) {
 	a, sink := testAgent(t)
 	sink.PersistErr = errors.New("write refused")
 	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_FUTURE","status":"CORTEX_STEP_STATUS_DONE"}`)
-	a.persistUnknownStep(a.root, 0, raw)
-	assert.False(t, a.root.steps[0].persisted)
+	assert.NoError(t, a.persistUnknownStep(a.root, 0, raw))
+	assert.True(t, a.root.steps[0].consumed, "the output queue owns the failed write")
 	sink.PersistErr = nil
-	a.persistUnknownStep(a.root, 0, raw)
-	assert.True(t, a.root.steps[0].persisted)
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	assert.True(t, a.root.steps[0].consumed)
 	require.Len(t, transcriptMessages(sink), 2)
 }
 
@@ -215,7 +227,7 @@ func TestAntigravityDeniedToolDoesNotRetainErrorCompletion(t *testing.T) {
 	})
 	var deniedStep antigravityStep
 	require.NoError(t, json.Unmarshal(denied, &deniedStep))
-	a.persistStep(a.root, 0, deniedStep, denied)
+	assert.NoError(t, a.persistStep(a.root, 0, deniedStep, denied))
 	failed, _ := json.Marshal(map[string]any{
 		"type": contracts.AntigravityStepTypeGeneric, "status": contracts.AntigravityStepStatusError,
 		"metadata": map[string]any{"toolCall": map[string]any{"id": "failed", "name": "write_file"}},
@@ -223,7 +235,7 @@ func TestAntigravityDeniedToolDoesNotRetainErrorCompletion(t *testing.T) {
 	})
 	var failedStep antigravityStep
 	require.NoError(t, json.Unmarshal(failed, &failedStep))
-	a.persistStep(a.root, 1, failedStep, failed)
+	assert.NoError(t, a.persistStep(a.root, 1, failedStep, failed))
 	messages := transcriptMessages(sink)
 	require.Len(t, messages, 2)
 	assert.Equal(t, agent.MessageCompletionComplete, messages[0].Completion)
@@ -261,8 +273,8 @@ func TestAntigravityScrubFailureAllowsPersistenceRetry(t *testing.T) {
 	a, _ := testAgent(t)
 	a.root.steps[0] = &stepState{}
 	raw := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_RUN_COMMAND","status":"CORTEX_STEP_STATUS_RUNNING","metadata":`)
-	a.persistLiveStep(a.root, 0, antigravityStep{}, raw, "call")
-	assert.False(t, a.root.steps[0].livePersisted)
-	a.persistStep(a.root, 0, antigravityStep{}, raw)
-	assert.False(t, a.root.steps[0].persisted)
+	assert.Error(t, a.persistLiveStep(a.root, 0, antigravityStep{}, raw, "call"))
+	assert.False(t, a.root.steps[0].liveOutputAccepted)
+	assert.Error(t, a.persistStep(a.root, 0, antigravityStep{}, raw))
+	assert.False(t, a.root.steps[0].consumed)
 }

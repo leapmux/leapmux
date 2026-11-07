@@ -1729,15 +1729,27 @@ export function checkValidate(v) {
   for (const name of publicOnly) {
     mustBe(!system.includes(name), 'validate.json', `username ${name} is in both systemReserved and publicReserved -- a system reservation already covers every path`)
   }
-  // The Go emitter builds the const identifier Username<Name> from each
-  // reserved username by case-mangling alone; a name the mangle cannot turn
-  // into a valid identifier must fail generation, not the Go build.
+  // Validation and emission use the same identifier for each reserved username.
+  const goNames = new Map()
+  const tsNames = new Map()
   for (const name of [
     ...system,
     ...publicOnly,
   ]) {
-    const ident = `Username${name[0].toUpperCase()}${name.slice(1)}`
-    mustBe(/^[A-Z][A-Za-z0-9]*$/.test(ident), 'validate.json', `reserved username ${JSON.stringify(name)} mangles to ${ident}, which is not a valid Go identifier -- give the emitter a name table entry for this username`)
+    mustBe(/^[a-z][a-z0-9-]*$/.test(name), 'validate.json', `reserved username ${JSON.stringify(name)} is invalid`)
+    for (const [ident, seen] of [
+      [
+        goUsernameConstName(name),
+        goNames,
+      ],
+      [
+        usernameConstName(name),
+        tsNames,
+      ],
+    ]) {
+      mustBe(!seen.has(ident), 'validate.json', `reserved usernames ${JSON.stringify(seen.get(ident))} and ${JSON.stringify(name)} collide as ${ident}`)
+      seen.set(ident, name)
+    }
   }
   return {}
 }
@@ -1861,20 +1873,23 @@ ${goReservedUsernames(v)}
 `
 }
 
+function goUsernameConstName(name) {
+  return `Username${name.split('-').filter(Boolean).map(part => part[0].toUpperCase() + part.slice(1)).join('')}`
+}
+
 /** Reserved usernames: named consts plus lookup sets for the predicates. */
 function goReservedUsernames(v) {
   // The schema admits a HYPHEN in a username, and Go accepts none in an
   // identifier -- `UsernameRead-only` is a syntax error in a generated file
   // nobody reads before the compiler does. Each hyphenated segment is
   // capitalized instead, which is Go's own spelling for the same words.
-  const goConst = name => `Username${name.split('-').map(part => part[0].toUpperCase() + part.slice(1)).join('')}`
   const block = (kind, label) => {
     const names = Object.keys(v.usernames[kind])
     const consts = goConstBlock(names.map(name => ({
-      name: goConst(name),
+      name: goUsernameConstName(name),
       value: jsonString(name),
     })))
-    const map = goMapBlock(names.map(name => ({ key: `${goConst(name)}:`, value: 'true' })))
+    const map = goMapBlock(names.map(name => ({ key: `${goUsernameConstName(name)}:`, value: 'true' })))
     return `// ${label}
 const (
 ${consts}
@@ -2949,15 +2964,6 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'INTERACTION_KIND',
         tsType: 'KimiInteractionKind',
         doc: 'the controls carried by interaction frames',
-      },
-      {
-        key: 'versions',
-        goTable: 'Version',
-        tsTable: 'VERSION',
-        tsType: 'KimiVersion',
-        readers: ['go'],
-        readersWhy: 'The worker enforces native runtime versions. The TypeScript export serves the end-to-end install probe; browser code does not discover local executables.',
-        doc: 'the minimum native protocol release',
       },
       {
         key: 'events',

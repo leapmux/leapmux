@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -26,22 +27,9 @@ import (
 //
 // The model starts a background child through the agent tool with action: start.
 // The result immediately supplies agent_id while the child continues.
-// The runtime defines these child events:
-//   - agent.spawned.
-//   - agent.progress.
-//   - agent.completed.
-// Its monitor retains them only when the child's owner session equals the runtime thread ID.
-// The runtime engine uses a random session ID, so the thread stream drops those events and supplies no later child lifecycle.
-//
-// The worker therefore reads two sources:
-//   - <workspace>/.codewhale/state/subagent-transcripts/<sha256(agent_id)>.jsonl supplies each content block as the runtime writes it.
-//     The worker reads this file without modifying it and persists the blocks in the child transcript.
-//     A child states its run's answer there, and 0.10 states no terminal record beside it: the run ended
-//     when the child's latest assistant message holds an answer and no tool call, which is the runtime's
-//     own settled shape for an explore child.
-//   - The parent's agent tool result, whose status words the contract states. Codewhale 0.9 exposed a
-//     GET /v1/agent-runs ledger beside them; 0.10 serves that route from its launch governor, which lists
-//     no child, so the result and the transcript are the whole truth.
+// The watcher reads the child's native transcript for content and its exact run
+// receipt for lifecycle state. The parent tool's wait results wake that watcher.
+// Native cancellation uses the same worker identity as the run receipt.
 //
 // One watcher per child reads the transcript until the child ends.
 // The parent's agent wait result identifies settled children and wakes their watchers immediately.
@@ -62,6 +50,7 @@ const (
 
 // childTimerTag labels the watcher's tail timer for a test's clock trap.
 const childTimerTag = "codewhale-child-tail"
+const childRunTimerTag = "codewhale-child-runs"
 
 // codewhaleChildren tracks the thread's subagents.
 type codewhaleChildren struct {
@@ -69,8 +58,9 @@ type codewhaleChildren struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu   sync.Mutex
-	byID map[string]*codewhaleChild
+	mu      sync.Mutex
+	byID    map[string]*codewhaleChild
+	polling bool
 }
 
 func newCodewhaleChildren(ctx context.Context) *codewhaleChildren {
@@ -79,16 +69,17 @@ func newCodewhaleChildren(ctx context.Context) *codewhaleChildren {
 }
 
 // codewhaleChild represents one subagent.
-// The watcher goroutine owns every field below nudge until settlement joins it.
-// Startup sets the earlier fields once before starting the watcher.
+// The watcher goroutine alone owns every field below nudge until stopAll joins it.
+// Startup fixes identity and the transcript path. Observations use children.mu.
 type codewhaleChild struct {
-	agentID     string
-	childID     string
-	spawnSpan   string
-	title       string
-	path        string
-	watchCancel context.CancelFunc
-	watchDone   chan struct{}
+	agentID   string
+	childID   string
+	spawnSpan string
+	title     string
+	path      string
+	// observedStatus is guarded by codewhaleChildren.mu. Only the watcher publishes it.
+	observedStatus      bgtask.Status
+	observationSequence uint64
 	// nudge wakes the watcher before its next tick.
 	nudge chan struct{}
 
@@ -98,12 +89,6 @@ type codewhaleChild struct {
 	openTools map[string]string
 	// answer holds the text of the child's latest assistant message.
 	answer string
-}
-
-// answerSoFar is the child's latest answer text, for a settle that closes the
-// child from its parent's wait result.
-func (child *codewhaleChild) answerSoFar() string {
-	return child.answer
 }
 
 // stopAll ends every watcher and waits for each one. It is nil-safe and
@@ -145,65 +130,55 @@ func (c *codewhaleChildren) start(child *codewhaleChild, watch func(context.Cont
 	if _, exists := c.byID[child.agentID]; exists {
 		return false
 	}
-	ctx, cancel := context.WithCancel(c.ctx)
-	child.watchCancel = cancel
-	child.watchDone = make(chan struct{})
 	c.byID[child.agentID] = child
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		defer close(child.watchDone)
-		defer cancel()
-		watch(ctx, child)
+		watch(c.ctx, child)
 	}()
 	return true
 }
 
-// claim takes a child out of the registry so exactly one finalizer closes it.
-// It returns nil for a child another finalizer already claimed.
-func (c *codewhaleChildren) claim(agentID string) *codewhaleChild {
+// claim removes exactly the child whose watcher finished it.
+func (c *codewhaleChildren) claim(child *codewhaleChild) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	child := c.byID[agentID]
-	delete(c.byID, agentID)
-	return child
-}
-
-// restoreClaim retains a child whose completion could not enter the output
-// queue. A repeated parent result can retry it, and shutdown still finds it.
-func (c *codewhaleChildren) restoreClaim(child *codewhaleChild) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.byID[child.agentID] == nil {
-		c.byID[child.agentID] = child
-	}
-}
-
-// settle finalizes a child from outside its watcher. It reports false for a
-// child that is not watched or that another finalizer already claimed.
-func (c *codewhaleChildren) settle(agentID string, finalize func(*codewhaleChild)) bool {
-	c.mu.Lock()
-	child := c.byID[agentID]
-	if child != nil {
-		delete(c.byID, agentID)
-	}
-	c.mu.Unlock()
-	if child == nil {
+	if c.byID[child.agentID] != child {
 		return false
 	}
-	child.watchCancel()
-	<-child.watchDone
-	finalize(child)
+	delete(c.byID, child.agentID)
 	return true
 }
 
-// wake nudges the watcher of one child.
-func (c *codewhaleChildren) wake(agentID string) {
+func (c *codewhaleChildren) lookup(agentID string) *codewhaleChild {
 	c.mu.Lock()
-	child := c.byID[agentID]
-	c.mu.Unlock()
-	if child == nil {
+	defer c.mu.Unlock()
+	return c.byID[agentID]
+}
+
+func (c *codewhaleChildren) observation(child *codewhaleChild) (bgtask.Status, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byID[child.agentID] != child {
+		return 0, false
+	}
+	status := child.observedStatus
+	if !status.IsFinished() {
+		child.observedStatus = 0
+	}
+	return status, true
+}
+
+// observe delivers native state to the watcher that owns this exact child.
+func (c *codewhaleChildren) observe(child *codewhaleChild, status bgtask.Status) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byID[child.agentID] != child {
 		return
+	}
+	child.observationSequence++
+	if !child.observedStatus.IsFinished() {
+		child.observedStatus = status
 	}
 	select {
 	case child.nudge <- struct{}{}:
@@ -295,29 +270,17 @@ func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventP
 		a.startChild(agentID, spanID, subagentTitle(parsed), parsed.Prompt)
 	case contracts.CodewhaleAgentActionWait:
 		for _, settled := range result.Settled {
-			status, final := agentRunStatus(settled.Status)
-			if final {
-				a.settleChild(settled.AgentID, status)
-				continue
-			}
-			// A resumable child keeps its open row under the word the wait saw.
-			if err := a.sink.UpdateBackgroundTaskStatus(settled.AgentID, status, ""); err != nil {
-				slog.Warn("codewhale update a subagent run status", "agent_id", a.AgentID(), "child", settled.AgentID, "error", err)
-			}
-			a.children.wake(settled.AgentID)
+			status, _ := agentRunStatus(settled.Status)
+			a.settleChild(settled.AgentID, status)
 		}
 	}
 }
 
-// settleChild closes one child from the status word of its parent's wait
-// result. Its transcript keeps the answer, so the tail reads it once before
-// the row closes.
+// settleChild delivers the native wait outcome to the watcher that owns the child.
 func (a *Agent) settleChild(agentID string, status bgtask.Status) {
-	a.children.settle(agentID, func(child *codewhaleChild) {
-		sink := a.sink.ChildSink(child.childID)
-		a.tailChildTranscript(sink, child)
-		a.finishChild(sink, child, status, child.answerSoFar())
-	})
+	if child := a.children.lookup(agentID); child != nil {
+		a.children.observe(child, status)
+	}
 }
 
 // subagentTitle selects the first available child label in this order:
@@ -333,34 +296,88 @@ func subagentTitle(input agentToolInput) string {
 	return ""
 }
 
-// startChild creates the child transcript and registry row, then starts its watcher.
+// startChild retains child identity, registry state and opening prompt in order.
+// A watcher starts only after the registry write and prompt admission succeed.
 func (a *Agent) startChild(agentID, spawnSpan, title, prompt string) {
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpan, ProviderChildKey: agentID, Title: title})
-	if err != nil {
-		slog.Warn("codewhale open a child transcript", "agent_id", a.AgentID(), "child", agentID, "error", err)
-		return
-	}
-	providerkit.LogRegistryRefusal(codewhaleProviderName, "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:       agentID,
-		Kind:         bgtask.KindSubagent,
-		ChildAgentID: childID,
-		Title:        title,
-		Description:  bgtask.FirstLine(prompt),
-		Status:       bgtask.StatusRunning,
-	}))
-	if err := a.sink.PersistChildPrompt(childID, prompt); err != nil {
-		slog.Warn("codewhale persist a child prompt", "agent_id", a.AgentID(), "child", agentID, "error", err)
-	}
+	owner, sink := a.children, a.sink
 	child := &codewhaleChild{
-		agentID:   agentID,
-		childID:   childID,
-		spawnSpan: spawnSpan,
-		title:     title,
-		path:      childTranscriptPath(a.workingDir, agentID),
-		nudge:     make(chan struct{}, 1),
-		openTools: make(map[string]string),
+		agentID: agentID, spawnSpan: spawnSpan, title: title,
+		path:  childTranscriptPath(a.workingDir, agentID),
+		nudge: make(chan struct{}, 1), openTools: make(map[string]string),
 	}
-	a.children.start(child, a.watchChild)
+	// These receipts belong to this queue entry. A rejected later step cannot
+	// recreate the child or submit another copy of an accepted opening prompt.
+	var storedStatus bgtask.Status
+	promptAccepted := false
+	storeRegistry := func() error {
+		for {
+			status := bgtask.StatusRunning
+			if owner.ctx.Err() != nil {
+				status = agent.IncompleteTaskStatus(a.ProcessExitCompletion())
+			}
+			if storedStatus == status {
+				return nil
+			}
+			if err := sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID,
+				Title: title, Description: bgtask.FirstLine(prompt), Status: status,
+			}); err != nil {
+				return err
+			}
+			storedStatus = status
+			// Stop can arrive while the write runs. Recheck before any next setup step.
+		}
+	}
+	queue := sink.OutputQueue()
+	queue.Append(agent.OutputWrite{Label: "initialize Codewhale child", Run: func() error {
+		if owner.lookup(agentID) != nil {
+			return nil
+		}
+		if child.childID == "" {
+			// No identity was created, so shutdown can abandon the native start safely.
+			if owner.ctx.Err() != nil {
+				return nil
+			}
+			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpan, ProviderChildKey: agentID, Title: title})
+			if err != nil {
+				if errors.Is(err, agent.ErrChildIdentityRefused) {
+					slog.Warn("codewhale child identity refused", "agent_id", a.AgentID(), "child", agentID, "error", err)
+					return nil
+				}
+				return err
+			}
+			if id == "" {
+				slog.Warn("codewhale child creation returned no identity", "agent_id", a.AgentID(), "child", agentID)
+				return nil
+			}
+			child.childID = id
+		}
+		if err := storeRegistry(); err != nil {
+			return err
+		}
+		var promptErr error
+		if !promptAccepted {
+			promptErr = sink.PersistChildPrompt(child.childID, prompt)
+			promptAccepted = agent.OutputRetained(promptErr)
+		}
+		// A failed prompt must not keep a stopped native child visibly running.
+		if err := storeRegistry(); err != nil {
+			return err
+		}
+		if !promptAccepted {
+			return promptErr
+		}
+		if owner.start(child, a.watchChild) {
+			a.startChildRunPoller()
+		} else if owner.ctx.Err() != nil {
+			// The queue owns partial setup after shutdown, including final cleanup.
+			a.finishChild(sink.ChildSink(child.childID), child, agent.IncompleteTaskStatus(a.ProcessExitCompletion()), "")
+		}
+		return nil
+	}})
+	if err := queue.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Debug("codewhale retained child setup", "agent_id", a.AgentID(), "child", agentID, "error", err)
+	}
 }
 
 // --- the watcher ---
@@ -385,18 +402,30 @@ func agentRunStatus(word string) (status bgtask.Status, final bool) {
 	}
 }
 
-// watchChild reads one child's transcript until its run answers, or until ctx
-// ends. The tail claims the child before closing it. External settlement
-// removes that claim, cancels this watcher, and joins it before taking
-// ownership of the child's transcript state.
+// watchChild alone owns this child's transcript reads and lifecycle publication.
 func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	sink := a.sink.ChildSink(child.childID)
 	for {
-		if a.tailChildTranscript(sink, child) {
+		status, current := a.children.observation(child)
+		if !current || ctx.Err() != nil {
 			return
 		}
-		if ctx.Err() != nil {
-			return
+		if status.IsFinished() {
+			if err := a.drainChildTranscript(ctx, sink, child); err == nil {
+				if a.children.claim(child) {
+					a.finishChild(sink, child, status, child.answer)
+				}
+				return
+			} else if ctx.Err() != nil {
+				return
+			} else {
+				slog.Debug("codewhale read the final child transcript", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
+			}
+		} else {
+			a.tailChildTranscript(sink, child)
+			if status != 0 {
+				providerkit.LogRegistryRefusal(codewhaleProviderName, "update", a.sink.UpdateBackgroundTaskStatus(child.agentID, status, ""))
+			}
 		}
 		timer := a.clock.NewTimer(childTailInterval, childTimerTag)
 		select {
@@ -410,68 +439,167 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	}
 }
 
-// finishChild retains the child's report, registry close, and cleanup in output
-// order. A failed write stays queued with its original transcript destination.
-// The close runs only after the report persists, and cleanup runs only after
-// the close succeeds. A crash between those writes leaves an open row whose
-// report can be found, rather than a closed row with a lost report.
-func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
-	closeChildTools(sink, child)
-	batch, err := agent.ReserveCapturedTranscriptBatch(a.sink)
-	if err != nil {
-		a.retainChildCompletion(child, err)
+// A native list request can finish after an explicit wait or cancellation reply.
+// Its observation may apply only to the child instance and sequence it captured.
+type childRunObservation struct {
+	child    *codewhaleChild
+	sequence uint64
+}
+
+func (a *Agent) startChildRunPoller() {
+	children := a.children
+	children.mu.Lock()
+	defer children.mu.Unlock()
+	if children.polling || children.ctx.Err() != nil {
 		return
 	}
-	var operations []agent.CapturedTranscriptOperation
-	if strings.TrimSpace(summary) != "" {
-		report, present, captureErr := agent.CaptureSubagentReport(a.sink, agent.SubagentReportWrite{
-			ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
-			Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
-		})
-		if captureErr != nil {
-			batch.Discard()
-			a.retainChildCompletion(child, captureErr)
+	children.polling = true
+	children.wg.Add(1)
+	go func() { defer children.wg.Done(); a.pollChildRuns(children.ctx) }()
+}
+
+func (a *Agent) pollChildRuns(ctx context.Context) {
+	children := a.children
+	stop := func() { children.mu.Lock(); children.polling = false; children.mu.Unlock() }
+	for {
+		children.mu.Lock()
+		if ctx.Err() != nil || len(children.byID) == 0 {
+			children.polling = false
+			children.mu.Unlock()
 			return
 		}
-		if present {
-			operations = append(operations, report.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX))
+		snapshots := make(map[string]childRunObservation, len(children.byID))
+		for key, child := range children.byID {
+			if !child.observedStatus.IsFinished() {
+				snapshots[key] = childRunObservation{child: child, sequence: child.observationSequence}
+			}
 		}
-	}
-	err = batch.Prepare(func() []agent.CapturedTranscriptOperation { return operations })
-	if !agent.OutputRetained(err) {
-		a.retainChildCompletion(child, err)
-		return
-	}
-	parent, rowKey, childID := a.sink, child.agentID, child.childID
-	queue := agent.OutputQueueFor(parent)
-	queue.Append(agent.OutputWrite{Label: "close Codewhale child " + rowKey, Run: func() error {
-		if err := parent.CloseBackgroundTask(rowKey, status); err != nil {
-			return err
+		if len(snapshots) == 0 {
+			children.polling = false
+			children.mu.Unlock()
+			return
 		}
-		parent.CleanupChildAgent(childID)
-		return nil
-	}})
-	if err == nil {
-		err = agent.FlushPendingOutput(parent)
-	}
-	if err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
-		slog.Warn("codewhale child completion remains queued", "agent_id", a.AgentID(), "child", rowKey, "error", err)
+		children.mu.Unlock()
+		records, err := a.readAgentRuns(ctx)
+		if ctx.Err() != nil {
+			stop()
+			return
+		}
+		if err != nil {
+			slog.Debug("codewhale read the child runs", "agent_id", a.AgentID(), "error", err)
+		} else {
+			delivered := make(map[string]bool, len(snapshots))
+			for _, record := range records {
+				key := record.Spec.WorkerID
+				observed, ok := snapshots[key]
+				if !ok {
+					key = record.Spec.RunID
+					observed, ok = snapshots[key]
+				}
+				if !ok || delivered[key] {
+					continue
+				}
+				delivered[key] = true
+				if err := record.validate(key); err != nil {
+					continue
+				}
+				status, _ := agentRunStatus(record.Status)
+				children.mu.Lock()
+				child := observed.child
+				if children.byID[key] == child && child.observationSequence == observed.sequence {
+					if !child.observedStatus.IsFinished() {
+						child.observedStatus = status
+					}
+					select {
+					case child.nudge <- struct{}{}:
+					default:
+					}
+				}
+				children.mu.Unlock()
+			}
+		}
+		timer := a.clock.NewTimer(childTailInterval, childRunTimerTag)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
-func (a *Agent) retainChildCompletion(child *codewhaleChild, err error) {
-	a.children.restoreClaim(child)
-	slog.Warn("codewhale could not queue child completion", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
+var _ agent.ChildInterrupter = (*Agent)(nil)
+
+// InterruptChild requests native cancellation without changing the parent's turn.
+func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
+	if strings.TrimSpace(childKey) == "" {
+		return fmt.Errorf("the Codewhale child key is empty")
+	}
+	a.Mu.Lock()
+	stopped := a.StoppedLocked()
+	a.Mu.Unlock()
+	if stopped {
+		return fmt.Errorf("the Codewhale agent is stopped")
+	}
+	if a.children == nil {
+		return agent.ErrChildRouteNotReady
+	}
+	child := a.children.lookup(childKey)
+	if child == nil {
+		return agent.ErrChildRouteNotReady
+	}
+	record, err := a.cancelAgentRun(childKey)
+	if err != nil {
+		return fmt.Errorf("cancel the Codewhale child %q: %w", childKey, err)
+	}
+	// The watcher owns the returned outcome. A pending cancellation keeps its row open.
+	status, _ := agentRunStatus(record.Status)
+	a.children.observe(child, status)
+	return nil
+}
+
+// finishChild retains child output, the parent report, registry close, and cleanup in order.
+// A closed registry row therefore always has its available report persisted.
+func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
+	closeChildTools(sink, child)
+	queue := a.sink.OutputQueue()
+	if childQueue := sink.OutputQueue(); childQueue != nil && childQueue != queue {
+		queue.Append(agent.OutputWrite{Label: "flush Codewhale child output", Run: childQueue.Flush})
+	}
+	captured, present, captureErr := agent.CaptureSubagentReport(agent.DirectTranscript(a.sink), agent.SubagentReportWrite{
+		ReportID: providerkit.SubagentReportContentID(codewhaleProviderName, child.agentID, summary),
+		Report:   agent.SubagentReport{Label: child.title, Text: summary, Status: bgtask.StatusWire(status)},
+	})
+	closeWrite := agent.OutputWrite{Label: "close Codewhale child", Run: func() error {
+		return a.sink.CloseBackgroundTask(child.agentID, status)
+	}}
+	cleanup := agent.OutputWrite{Label: "release Codewhale child", Run: func() error { a.sink.CleanupChildAgent(child.childID); return nil }}
+	if captureErr != nil {
+		queue.Append(agent.OutputWrite{Label: "prepare Codewhale child report", Run: func() error { return captureErr }})
+	} else if present {
+		err := agent.PersistCapturedTranscriptBatch(a.sink, func() []agent.CapturedTranscriptOperation {
+			return []agent.CapturedTranscriptOperation{captured.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)}
+		})
+		if !agent.OutputRetained(err) {
+			// An unaccepted report keeps registry close and cleanup behind its failed admission.
+			queue.Append(agent.OutputWrite{Label: "admit Codewhale child report", Run: func() error { return err }})
+		} else {
+			queue.Append(closeWrite, cleanup)
+		}
+	} else {
+		queue.Append(closeWrite, cleanup)
+	}
+	if err := queue.Flush(); err != nil {
+		slog.Debug("codewhale retained final child output", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
+	}
 }
 
 // closeOpenChildren closes the rows of the children a process exit cut off.
 // Call it after children.stopAll.
 func (a *Agent) closeOpenChildren(completion agent.MessageCompletion) {
 	for _, child := range a.children.drain() {
-		sink := a.sink.ChildSink(child.childID)
-		closeChildTools(sink, child)
-		providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(child.agentID, agent.IncompleteTaskStatus(completion)))
-		a.sink.CleanupChildAgent(child.childID)
+		a.finishChild(a.sink.ChildSink(child.childID), child, agent.IncompleteTaskStatus(completion), "")
 	}
 }
 
@@ -490,10 +618,51 @@ func closeChildTools(sink agent.ProviderServices, child *codewhaleChild) {
 //
 // The user owns the workspace file, so accept only a regular file.
 // Inspect the path without following a symbolic link, and require the opened file to match that inspected file.
-func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhaleChild) bool {
+func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhaleChild) {
+	if err := a.readChildTranscriptChunk(sink, child, -1); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Debug("codewhale read a child transcript", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
+	}
+}
+
+func (a *Agent) drainChildTranscript(ctx context.Context, sink agent.ProviderServices, child *codewhaleChild) error {
 	info, err := os.Lstat(child.path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("the Codewhale child transcript is not a regular file")
+	}
+	end := info.Size()
+	if child.offset > end {
+		child.offset = 0
+		child.pending = nil
+	}
+	for child.offset < end {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		before := child.offset
+		if err := a.readChildTranscriptChunk(sink, child, end); err != nil {
+			return err
+		}
+		if child.offset <= before {
+			return fmt.Errorf("the Codewhale child transcript ended before its captured end")
+		}
+	}
+	return nil
+}
+
+func (a *Agent) readChildTranscriptChunk(sink agent.ProviderServices, child *codewhaleChild, end int64) error {
+
+	info, err := os.Lstat(child.path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("the Codewhale child transcript is not a regular file")
 	}
 	if info.Size() < child.offset {
 		// The file was replaced. Records are deduplicated by index, so a reread
@@ -501,28 +670,36 @@ func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhal
 		child.offset = 0
 		child.pending = nil
 	}
-	if info.Size() == child.offset {
-		return false
+	if end < 0 {
+		end = info.Size()
+	}
+	if min(info.Size(), end) <= child.offset {
+		return nil
 	}
 	f, err := os.Open(child.path)
 	if err != nil {
-		return false
+		return err
 	}
 	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return false
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) {
+		return fmt.Errorf("the Codewhale child transcript changed while opening it")
 	}
 	if _, err := f.Seek(child.offset, io.SeekStart); err != nil {
-		return false
+		return err
 	}
-	chunk, err := io.ReadAll(io.LimitReader(f, childReadChunk))
-	if err != nil || len(chunk) == 0 {
-		return false
+	chunk, err := io.ReadAll(io.LimitReader(f, min(childReadChunk, end-child.offset)))
+	if err != nil {
+		return err
+	}
+	if len(chunk) == 0 {
+		return nil
 	}
 	child.offset += int64(len(chunk))
 	data := append(child.pending, chunk...)
-	finished := false
 	for {
 		newline := bytes.IndexByte(data, '\n')
 		if newline < 0 {
@@ -531,7 +708,7 @@ func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhal
 		line := bytes.TrimSpace(data[:newline])
 		data = data[newline+1:]
 		if len(line) > 0 {
-			finished = a.persistChildRecord(sink, child, line) || finished
+			a.persistChildRecord(sink, child, line)
 		}
 	}
 	if len(data) > childMaxLine {
@@ -539,7 +716,8 @@ func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhal
 		data = nil
 	}
 	child.pending = append([]byte(nil), data...)
-	return finished
+
+	return nil
 }
 
 // transcriptRecord is one line of a child transcript.
@@ -584,37 +762,33 @@ type childRowMessage struct {
 //
 // PersistChildPrompt already records the child's first assignment as its opening row.
 // Later user text represents a message from the parent and enters the transcript as an ordinary user message.
-func (a *Agent) persistChildRecord(sink agent.ProviderServices, child *codewhaleChild, line []byte) bool {
+func (a *Agent) persistChildRecord(sink agent.ProviderServices, child *codewhaleChild, line []byte) {
 	var record transcriptRecord
 	if err := json.Unmarshal(line, &record); err != nil {
 		slog.Debug("codewhale subagent transcript record unreadable", "agent_id", a.AgentID(), "child", child.agentID, "error", err)
-		return false
+		return
 	}
 	switch record.Kind {
 	case contracts.CodewhaleTranscriptKindHeader:
-		return false
+		return
 	case contracts.CodewhaleTranscriptKindMessage:
 	default:
-		return false
+		return
 	}
 	if record.Index == nil || *record.Index < child.nextIndex {
-		return false
+		return
 	}
 	index := *record.Index
 	child.nextIndex = index + 1
 	var message transcriptMessage
 	if err := json.Unmarshal(record.Message, &message); err != nil {
-		return false
+		return
 	}
-	callsTool := false
 	answer := strings.Builder{}
 	for _, raw := range message.Content {
 		var block transcriptBlock
 		if json.Unmarshal(raw, &block) != nil {
 			continue
-		}
-		if block.Type == contracts.CodewhaleBlockTypeToolUse {
-			callsTool = true
 		}
 		if message.Role == contracts.CodewhaleTranscriptRoleAssistant && block.Type == contracts.CodewhaleBlockTypeText {
 			answer.WriteString(block.Text)
@@ -645,24 +819,11 @@ func (a *Agent) persistChildRecord(sink agent.ProviderServices, child *codewhale
 		a.persistChildBlock(sink, child, block, row)
 	}
 	if message.Role != contracts.CodewhaleTranscriptRoleAssistant {
-		return false
+		return
 	}
 	if text := strings.TrimSpace(answer.String()); text != "" {
 		child.answer = text
 	}
-	if callsTool {
-		// The child asked for a tool, so its run continues after the tool's result.
-		return false
-	}
-	// An assistant message that calls no tool is the run's answer: Codewhale
-	// states no terminal record beside the transcript, and a settled explore
-	// child ends on exactly this shape.
-	if a.children.claim(child.agentID) == nil {
-		// The parent's wait result already closed this child.
-		return true
-	}
-	a.finishChild(sink, child, bgtask.StatusSucceeded, child.answer)
-	return true
 }
 
 // persistChildBlock persists one block row, opening or closing the span of a
@@ -766,17 +927,15 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 
 // --- Background shells ---
 //
-// A background shell starts through task_shell_start or a bash call that exceeds its foreground wait.
+// A background shell starts when a bash call exceeds its foreground wait.
 // Its result metadata supplies task_id and backgrounded with status Running.
 // Create a shell registry row under the launching call's span, so the row identifies its originating call.
 //
 // The runtime reports completion to the model at the next turn's start, without a thread-stream event.
 // The worker closes the row through one of these sources:
 //   - A later task_shell_wait or bash wait result with task_id and a final status.
-//   - GET /v1/threads/{id}/jobs/{job_id}, available from Codewhale 0.10.0 and polled for each active job.
+//   - GET /v1/threads/{id}/jobs/{job_id}, polled for each active job.
 //   - Process exit, which ends every job that the runtime starts.
-// Codewhale 0.9.13 has no jobs routes, so its poller stops for the process lifetime.
-// Without a later model wait, that version retains the Running row until process exit.
 
 // These ShellStatus words belong to Codewhale's native shell protocol.
 // The browser does not interpret them, so they need no shared contract table.
@@ -802,23 +961,7 @@ type codewhaleShells struct {
 	rowKeys map[string]string
 	// polling is true while a poller goroutine runs.
 	polling bool
-	// jobsRoutes states whether the runtime serves the jobs routes. The answer
-	// does not change in the life of one process.
-	jobsRoutes jobsRouteState
 }
-
-// jobsRouteState is what the poller knows about the jobs routes.
-type jobsRouteState int
-
-const (
-	// jobsRoutesUnknown: the poller did not ask yet.
-	jobsRoutesUnknown jobsRouteState = iota
-	// jobsRoutesServed: the list route answered, so a 404 for one job means
-	// that the runtime no longer knows the job.
-	jobsRoutesServed
-	// jobsRoutesMissing: the list route answered 404, as 0.9.13 does.
-	jobsRoutesMissing
-)
 
 func (s *codewhaleShells) add(taskID, rowKey string) {
 	if s.rowKeys == nil {
@@ -897,7 +1040,7 @@ func (a *Agent) observeShellResult(payload itemEventPayload, spanID string, inpu
 		return
 	}
 	a.shells.add(metadata.TaskID, spanID)
-	startPoller := !a.shells.polling && a.shells.jobsRoutes != jobsRoutesMissing
+	startPoller := !a.shells.polling
 	if startPoller {
 		a.shells.polling = true
 	}
@@ -927,14 +1070,13 @@ func (a *Agent) finishShell(taskID string, status bgtask.Status) {
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(rowKey, status))
 }
 
-// pollShellJobs reads active jobs until none remain, the jobs routes are unavailable, or ctx ends.
+// pollShellJobs reads active jobs until none remain or ctx ends.
 //
 // Use each individual job route instead of repeatedly listing jobs.
-// In Codewhale 0.10.1, list_jobs runs cleanup before constructing its result.
+// The current list_jobs route runs cleanup before constructing its result.
 // That cleanup expires final records by finished_at and enforces record and retained-byte limits.
 // inspect_job performs no cleanup, so an individual read does not itself discard the final record before inspection.
 // Other runtime operations can already remove a record; the per-job not-found path handles that missing outcome.
-// Use the list once to determine whether jobs routes exist.
 func (a *Agent) pollShellJobs(ctx context.Context) {
 	for {
 		a.Mu.Lock()
@@ -944,7 +1086,6 @@ func (a *Agent) pollShellJobs(ctx context.Context) {
 			return
 		}
 		threadID := a.threadID
-		routes := a.shells.jobsRoutes
 		taskIDs := make([]string, 0, len(a.shells.rowKeys))
 		for taskID := range a.shells.rowKeys {
 			taskIDs = append(taskIDs, taskID)
@@ -957,39 +1098,11 @@ func (a *Agent) pollShellJobs(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		if routes == jobsRoutesUnknown && !a.probeJobsRoutes(ctx, threadID) {
-			return
-		}
 		for _, taskID := range taskIDs {
 			if !a.pollShellJob(ctx, threadID, taskID) {
 				return
 			}
 		}
-	}
-}
-
-// probeJobsRoutes reads the list endpoint and records whether the runtime supports jobs routes.
-// Return false for a missing route or a stopped context.
-// Retry an inconclusive response on the next tick.
-func (a *Agent) probeJobsRoutes(ctx context.Context, threadID string) bool {
-	err := a.listThreadJobs(ctx, threadID)
-	if ctx.Err() != nil {
-		// The stop that ended the poller closes the rows of the jobs.
-		return false
-	}
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	switch {
-	case err == nil:
-		a.shells.jobsRoutes = jobsRoutesServed
-		return true
-	case providerkit.IsHTTPStatus(err, httpStatusNotFound):
-		a.shells.jobsRoutes = jobsRoutesMissing
-		a.shells.polling = false
-		return false
-	default:
-		slog.Debug("codewhale read the shell jobs", "agent_id", a.AgentID(), "error", err)
-		return true
 	}
 }
 

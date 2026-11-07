@@ -1,16 +1,18 @@
 import type { Locator, Page } from '@playwright/test'
-import type { AgentChatMessage, AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import type { NativeMessageSnapshot } from './nativeMessages'
 import type { ManagedNativeScenarioContext, NativeModelTurn } from './nativeScenario'
 import type { ProviderWorkingDir } from './providerWorkingDir'
 import { expect } from '@playwright/test'
 import { typeAHandleLabel } from '../../../src/components/shell/resumeSession'
-import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
+import { countChatBubbles } from './chatBubbleCount'
+import { isStoredMessageSeq, nativeMessagesHoldingText, readNativeMessageSnapshot } from './nativeMessages'
 import { nativeAgentById, selectedAgentTab } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
 import { uniqueMarker } from './shellArguments'
-import { assistantBubbles, openMenu, openNewAgentDialog, setWorkingDir, userBubbles, waitForWorker } from './ui'
+import { assistantBubbles, openMenu, openNewAgentDialog, setWorkingDir, waitForWorker } from './ui'
 
 const RESUME_MARKER = /^[a-f0-9]{32}$/
 
@@ -228,16 +230,28 @@ export async function expectReopenedNativeAgent(
   return reopenedNativeAgentVerdict(settled, stored)
 }
 
-/** Count the Worker rows of the original agent that hold the original answer. The original agent must be active. */
-export async function countOriginalAnswerRows(
-  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
-  agentId: string,
-  texts: Pick<NativeResumeTexts, 'originalAnswer'>,
-): Promise<number> {
-  const rows = nativeMessagesHoldingText((await readNativeMessageSnapshot(context, agentId)).messages, texts.originalAnswer)
+/** Validate the original stored conversation and identify its visible history anchor. */
+function originalConversationRows(snapshot: NativeMessageSnapshot, texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer'>): { answerRows: number, userSequence: bigint } {
+  const users = nativeMessagesHoldingText(snapshot.messages, texts.originalPrompt).filter(message => message.source === MessageSource.USER)
+  const user = users[0]
+  // Queue-written user rows leave their native session field empty; the owned snapshot supplies their scope.
+  if (users.length !== 1 || !user || !user.id.trim() || !isStoredMessageSeq(user.seq)
+    || !snapshot.agentSessionId.trim() || (user.agentSessionId !== '' && user.agentSessionId !== snapshot.agentSessionId)) {
+    throw new Error('The conversation proof requires exactly one original Worker user row in the owned native session with a positive sequence.')
+  }
+  const rows = nativeMessagesHoldingText(snapshot.messages, texts.originalAnswer)
   if (rows.length === 0)
     throw new Error('The original agent stored no Worker row that holds the original answer.')
-  return rows.length
+  return { answerRows: rows.length, userSequence: user.seq }
+}
+
+/** Read the original Worker row count and the user sequence that anchors history readiness. */
+export async function readOriginalConversationRows(
+  context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>,
+  agentId: string,
+  texts: Pick<NativeResumeTexts, 'originalPrompt' | 'originalAnswer'>,
+): Promise<{ answerRows: number, userSequence: bigint }> {
+  return originalConversationRows(await readNativeMessageSnapshot(context, agentId), texts)
 }
 
 /** Prove on the page that the resumed answer bubble is visible and holds no original answer. */
@@ -252,13 +266,14 @@ async function proveResumedAnswerUnmerged(
   context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>,
   agentId: string,
   texts: Pick<NativeResumeTexts, 'originalAnswer' | 'resumedAnswer'>,
-): Promise<AgentChatMessage[]> {
+): Promise<NativeMessageSnapshot> {
   await expectUnmergedAnswerBubbles(context.page, texts)
-  const messages = (await readNativeMessageSnapshot(context, agentId)).messages
+  const snapshot = await readNativeMessageSnapshot(context, agentId)
+  const messages = snapshot.messages
   const resumedRows = nativeMessagesHoldingText(messages, texts.resumedAnswer)
   expect(resumedRows.length, 'The resumed agent must store a Worker row that holds the resumed answer.').toBeGreaterThan(0)
   expect(nativeMessagesHoldingText(resumedRows, texts.originalAnswer).map(row => row.id), 'A Worker row of the resumed answer must not hold the original answer.').toEqual([])
-  return messages
+  return snapshot
 }
 
 /**
@@ -295,8 +310,9 @@ export async function expectResumedConversation(
     throw new Error('The resumed conversation proof requires a positive count of original answer rows.')
   if (!Number.isInteger(originalAnswerBubbles) || originalAnswerBubbles <= 0)
     throw new Error('The resumed conversation proof requires a positive count of original answer bubbles.')
-  const messages = await proveResumedAnswerUnmerged(context, agentId, texts)
-  await expect(userBubbles(context.page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
-  await expect(assistantBubbles(context.page).filter({ hasText: texts.originalAnswer }), 'The reopened transcript draws exactly the original answer bubbles.').toHaveCount(originalAnswerBubbles)
-  expect(nativeMessagesHoldingText(messages, texts.originalAnswer).length, 'The resumed agent must store no new Worker row that holds the original answer.').toBe(originalAnswerRows)
+  const snapshot = await proveResumedAnswerUnmerged(context, agentId, texts)
+  const original = originalConversationRows(snapshot, texts)
+  expect(original.answerRows, 'The resumed agent must store no new Worker row that holds the original answer.').toBe(originalAnswerRows)
+  expect(await countChatBubbles(context.page, 'user', texts.originalPrompt, original.userSequence)).toBe(1)
+  expect(await countChatBubbles(context.page, 'agent', texts.originalAnswer, original.userSequence), 'The reopened transcript draws exactly the original answer bubbles.').toBe(originalAnswerBubbles)
 }

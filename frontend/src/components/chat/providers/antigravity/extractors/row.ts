@@ -38,16 +38,10 @@ export function antigravityExtractRow(input: RowExtractionInput): ChatRow | null
       const own = antigravityStep(parent)
       if (!own)
         return null
-      const ownID = pickString(own.toolCall, 'id')
-      const matches = (raw: Record<string, unknown> | undefined) => {
-        const step = antigravityStep(raw)
-        return step && pickString(step.toolCall, 'id') === ownID
-          ? raw
-          : undefined
-      }
-      const row = antigravityToolRow(parent, matches(span.result?.parentObject), input.completion ?? parsed.completion)
-      if (!row)
-        return null
+      const result = span.result?.parentObject
+      const row = antigravityToolRow(own, result === parent
+        ? own
+        : antigravityStep(result), input.completion ?? parsed.completion)
       if (input.spanId)
         row.registryKey = input.spanId
       return toolCallRow(antigravityToolCall(row), antigravityStepOpen(own)
@@ -55,6 +49,16 @@ export function antigravityExtractRow(input: RowExtractionInput): ChatRow | null
         : 'result', span.visibleRows)
     }
     case 'user_content': {
+      const native = pickObject(pickObject(parent, 'systemMessage'), 'agentMessage')
+      if (native) {
+        return native.hideFromUser !== true && pickString(native, 'content')
+          ? {
+              kind: 'user',
+              text: pickString(native, 'content'),
+              attachments: [],
+            }
+          : { kind: 'hidden' }
+      }
       if (pickObject(parent, 'userInput')) {
         const text = antigravityUserInputText(parent)
         return text

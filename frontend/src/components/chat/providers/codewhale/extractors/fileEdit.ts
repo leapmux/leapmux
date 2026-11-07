@@ -3,7 +3,7 @@ import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
 import { isObject, pickFirstString, pickObject, pickString } from '~/lib/jsonPick'
 import { applyPatchFileChanges } from '../../../model/applyPatch'
 import { fileEditDiffFromOldNew, fileEditDiffFromUnifiedPatch, fileEditDiffFromWholeFile, fileEditDiffsFromChanges } from '../../../model/fileEditDiff'
-import { TOOL_FILE_PATH_KEYS, TOOL_NEW_TEXT_KEYS, TOOL_OLD_TEXT_KEYS } from '../../toolInputKeys'
+import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { CODEWHALE_FILE_OUTCOME, CODEWHALE_MUTATION, CODEWHALE_RESULT_METADATA } from '../protocol'
 
 /** The operation each `mutation.files[].outcome` word states. */
@@ -150,17 +150,22 @@ export function codewhaleMutationChanges(metadata: Record<string, unknown>): Fil
 
 /** The substitutions an `edit` call lists, one diff for each, in the order it lists them. */
 function editChanges(filePath: string, args: Record<string, unknown>): FileEditDiff[] {
-  const edits = Array.isArray(args.edits)
-    ? args.edits.filter(isObject)
+  let value = args.edits
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    }
+    catch {
+      value = undefined
+    }
+  }
+  const edits = Array.isArray(value)
+    ? value.filter(isObject)
     : []
-  if (edits.length > 0)
-    return edits.map(edit => fileEditDiffFromOldNew(filePath, pickString(edit, 'oldText'), pickString(edit, 'newText')))
-  // The legacy `edit_file` spelling states one substitution at the top level.
-  const oldStr = pickFirstString(args, TOOL_OLD_TEXT_KEYS)
-  const newStr = pickFirstString(args, TOOL_NEW_TEXT_KEYS)
-  return [
-    fileEditDiffFromOldNew(filePath, oldStr ?? '', newStr ?? ''),
-  ]
+  if (typeof args.oldText === 'string' && typeof args.newText === 'string')
+    edits.push({ oldText: args.oldText, newText: args.newText })
+  return edits.filter(edit => typeof edit.oldText === 'string' && typeof edit.newText === 'string')
+    .map(edit => fileEditDiffFromOldNew(filePath, pickString(edit, 'oldText'), pickString(edit, 'newText')))
 }
 
 /**
@@ -218,23 +223,24 @@ function patchChanges(args: Record<string, unknown>): FileEditDiff[] {
 /**
  * The change a file tool ASKS for, read from its arguments before any result lands.
  *
- * `operation` is the facade's word when the `File` tool states one, and the tool's own
- * name otherwise. An empty list states that the arguments name no file, which the
+ * The current tool name determines the operation. An empty list states that the arguments identify no file, which the
  * caller reads as "not a file change".
  */
 export function codewhaleRequestedChanges(toolName: string, args: Record<string, unknown>): FileEditDiff[] {
-  const action = toolName === CODEWHALE_TOOL.File
-    ? pickString(args, 'action')
-    : ''
-  if (toolName === CODEWHALE_TOOL.ApplyPatch || action === 'patch')
+  if (toolName === CODEWHALE_TOOL.ApplyPatch)
     return patchChanges(args)
   const filePath = pickFirstString(args, TOOL_FILE_PATH_KEYS)
   if (!filePath)
     return []
-  if (toolName === CODEWHALE_TOOL.Write || toolName === CODEWHALE_TOOL.WriteFile || action === 'write') {
+  if (toolName === CODEWHALE_TOOL.Write) {
     return [
       fileEditDiffFromWholeFile(filePath, pickString(args, 'content'), 'add'),
     ]
   }
-  return editChanges(filePath, args)
+  const edits = editChanges(filePath, args)
+  return toolName === CODEWHALE_TOOL.FimEdit && edits.length === 0
+    ? [
+        fileEditDiffFromOldNew(filePath, '', ''),
+      ]
+    : edits
 }

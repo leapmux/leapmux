@@ -22,8 +22,8 @@ type zcodeAccountSnapshotInputs struct {
 	rules     []zcodeBuiltinProviderRule
 	bindings  []zcodeAccountBinding
 	canonical map[string]string
-	// err reports an installed release that LeapMux could not read. Only the
-	// account path needs the release, so only that path reports the error.
+	// err reports an installed provider configuration that LeapMux could not read.
+	// Startup must read it before sending account credentials.
 	err error
 	// startPlans is nil when err is set.
 	startPlans *zcodeStartPlanCheck

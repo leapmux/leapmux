@@ -19,11 +19,8 @@ import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
 import { DROID_EFFORT, DROID_MODE } from '../../src/generated/contracts/droid-protocol'
 import { DROID_TITLE_RULE } from './factory-droid/housekeeping'
 import { DROID_AGENT, nativeContext } from './factory-droid/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
 
 /**
  * The agent opens in Auto (High), which approves ordinary tools at every risk level.
@@ -44,7 +41,6 @@ const REASONING_AUTO_HIGH = {
 export const droidTest = createProviderTest({
   agent: DROID_AGENT,
   nativeContext,
-  skipReason: DROID_E2E_SKIP_REASON,
   /** An agent in Auto (High), which approves ordinary tools without a banner. */
   workspaceName: 'authenticatedDroidWorkspace',
   workspaceOptions: { openOptions: AUTO_HIGH },

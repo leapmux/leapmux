@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
  * The executable file of this name that a spawn takes from a search path, found
  * WITHOUT running it, or null when the path holds none.
  *
- * A skip check runs in the Playwright process, which carries the developer's own
+ * Executable discovery runs in the Playwright process, which carries the developer's own
  * HOME. Some agents write into their configuration directory on every start, so a
  * check that ran `<binary> --version` there would write into the developer's own
  * configuration. This check reads the file system and runs nothing.
@@ -38,11 +38,6 @@ export function findBinaryOnPath(binary: string, searchPath: string | undefined,
 }
 
 /**
- * The executable file of this name that a spawn in the E2E run takes, or null when
- * the run's search path holds none. The run's search path is
- * {@link agentSearchPath} of the PATH of env. See {@link findBinaryOnPath}.
- */
-/**
  * The spelling of the .exe extension as PATHEXT states it, or '.exe' when PATHEXT
  * holds none. Windows resolves a bare name through PATHEXT, and the lookup reports
  * the spelling it probed with, so a controlled `letta.exe` on the path is found as
@@ -52,6 +47,11 @@ export function exeExtensionOnPath(pathExt: string | undefined = process.env.PAT
   return pathExt?.split(';').find(extension => extension.toLowerCase() === '.exe') ?? '.exe'
 }
 
+/**
+ * The executable file of this name that a spawn in the E2E run takes, or null when
+ * the run's search path holds none. The run's search path is
+ * {@link agentSearchPath} of the PATH of env. See {@link findBinaryOnPath}.
+ */
 export function findBinary(binary: string, env: NodeJS.ProcessEnv = process.env): string | null {
   // A private environment that states PATH still resolves executables the way this
   // process does: PATHEXT is a system variable on Windows, and without it no name
@@ -69,7 +69,7 @@ export function findBinary(binary: string, env: NodeJS.ProcessEnv = process.env)
  * mise reads its configuration and its trust records under HOME. The run gives each
  * agent an isolated HOME, where mise does not trust the developer's configuration:
  * mise 2026.9 stops with "Config files in ~/.config/mise/config.toml are not
- * trusted" and starts no tool. The skip check runs with the developer's own HOME,
+ * trusted" and starts no tool. Discovery runs with the developer's own HOME,
  * where the same shim works, so a check that ran the shim would pass and the agent
  * start would then fail.
  *
@@ -84,11 +84,6 @@ export function unusableBinaryReason(binary: string, path: string): string | nul
     + `prints first on PATH.`
 }
 
-/** The file that the E2E run starts for a CLI, or the reason that it cannot start one. */
-export type BinaryLookup
-  = | { path: string, skipReason: null }
-    | { path: null, skipReason: string }
-
 /**
  * The executable name of a CLI, or the names that the worker probes for it in
  * preference order. The worker starts the first name that its shell finds, so a
@@ -96,17 +91,8 @@ export type BinaryLookup
  */
 export type ExecutableNames = string | readonly string[]
 
-/**
- * The file that the E2E run starts for a CLI, or the reason to skip the provider's
- * specs. It finds the CLI with {@link findBinary}, so it runs no agent in the
- * developer's own HOME. A fixture that must also run the CLI, for its version, runs
- * this path, which is the file that the worker starts.
- *
- * For several names, the first name that the search path holds decides, as it does
- * for the worker. A later name does not replace a first name that is a mise shim,
- * because the worker starts the shim.
- */
-export function lookupBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): BinaryLookup {
+/** Resolve the first executable that the Worker starts, or fail with its installation error. */
+export function requireBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): string {
   const names = typeof binary === 'string'
     ? [binary]
     : binary
@@ -117,23 +103,11 @@ export function lookupBinary(binary: ExecutableNames, reason: string, env: NodeJ
     if (path === null)
       continue
     const unusable = unusableBinaryReason(name, path)
-    return unusable === null
-      ? { path, skipReason: null }
-      : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
+    if (unusable !== null)
+      throw new Error(`${asSentence(reason)} ${unusable}`)
+    return path
   }
-  return { path: null, skipReason: reason }
-}
-
-/**
- * The file that the E2E run starts for a CLI. It throws the skip reason of
- * {@link lookupBinary} when the run cannot start one, so the failure keeps the
- * mise-shim cause.
- */
-export function requireBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): string {
-  const lookup = lookupBinary(binary, reason, env)
-  if (lookup.path === null)
-    throw new Error(lookup.skipReason)
-  return lookup.path
+  throw new Error(reason)
 }
 
 /** End `text` with a period unless it already ends with a sentence mark. */
@@ -141,35 +115,6 @@ function asSentence(text: string): string {
   return /[.!?]$/.test(text)
     ? text
     : `${text}.`
-}
-
-/**
- * What `<path> --version` prints on stdout, or null when the CLI does not start or
- * fails.
- *
- * It RUNS the CLI, in the Playwright process, with the developer's own HOME. A
- * fixture calls it only for a CLI whose version command writes nothing there, and
- * only with a path from {@link lookupBinary}, so it runs the file that the worker
- * starts.
- */
-export function versionOutput(path: string): string | null {
-  try {
-    return execFileSync(path, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-  }
-  catch {
-    return null
-  }
-}
-
-/**
- * The reason to skip a provider's specs when the E2E run cannot start its CLI, or
- * null when it can. See {@link lookupBinary}.
- */
-export function missingBinaryReason(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  return lookupBinary(binary, reason, env).skipReason
 }
 
 /**

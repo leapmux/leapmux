@@ -18,7 +18,7 @@ describe('codewhaleExecuteRequest', () => {
   })
 
   it('reads the command from each spelling, in order', () => {
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.LegacyBash, { cmd: 'make' }).command).toBe('make')
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, { cmd: 'make' }).command).toBe('make')
     expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, {
       command: 'ls',
       cmd: 'make',
@@ -28,18 +28,18 @@ describe('codewhaleExecuteRequest', () => {
     expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, { command: '', cmd: 'make' }).command).toBe('make')
   })
 
-  it('composes the Git command from the tool name, the facade\'s action and the path', () => {
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.GitDiff, { path: 'src' }).command).toBe('git diff src')
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.GitBlame, { path: 'a.ts', action: 'ignored' }).command).toBe('git blame a.ts')
+  it('composes the current Git action and path', () => {
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Git, { action: 'diff', path: 'src' }).command).toBe('git diff src')
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Git, { path: 'a.ts', action: 'blame' }).command).toBe('git blame a.ts')
     // The facade with no action states the one true word it has.
     expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Git, {}).command).toBe('git')
     // A Git tool never reads a `command` argument, which the runtime does not take.
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.GitLog, { command: 'rm -rf /' }).command).toBe('git log')
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Git, { action: 'log', command: 'rm -rf /' }).command).toBe('git log')
   })
 
-  it('states the test runner with and without its extra arguments', () => {
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.RunTests, {}).command).toBe('cargo test')
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.RunTests, { args: '-p core' }).command).toBe('cargo test -p core')
+  it('states the current Run action without assuming a project runner', () => {
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Run, { action: 'tests' }).command).toBe('Run tests')
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Run, { action: 'tests', args: '-p core' }).command).toBe('Run tests')
   })
 
   it('marks JavaScript for the JavaScript sandbox alone', () => {

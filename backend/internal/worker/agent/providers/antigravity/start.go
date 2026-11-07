@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -140,17 +141,75 @@ func (a *Agent) seedStepCount(ctx context.Context, root *cascadeState) error {
 func (a *Agent) waitForRoot(ctx context.Context, root *cascadeState, timeout time.Duration) error {
 	timer := a.clock.NewTimer(timeout, antigravityStreamConnectTimerTag)
 	defer timer.Stop(antigravityStreamConnectTimerTag)
-	select {
-	case <-root.connected:
+	a.Mu.Lock()
+	generationCtx := a.streamCtx
+	a.Mu.Unlock()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := generationCtx.Err(); err != nil {
+			return err
+		}
 		a.Mu.Lock()
-		err := root.connectErr
+		pending, err := a.pendingStartupCascadeLocked(root)
+		var connected <-chan struct{}
+		if pending != nil {
+			connected = pending.connected
+		}
 		a.Mu.Unlock()
-		return err
-	case <-a.ProcessDone():
-		return providerkit.ErrServerExited
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return fmt.Errorf("the Antigravity event stream did not connect within %s", timeout)
+		if err != nil {
+			return err
+		}
+		if pending == nil {
+			return nil
+		}
+		select {
+		case <-connected:
+		case <-a.ProcessDone():
+			return providerkit.ErrServerExited
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-generationCtx.Done():
+			return generationCtx.Err()
+		case <-timer.C:
+			return fmt.Errorf("the Antigravity runtime did not initialize the conversation and its subagents within %s", timeout)
+		}
 	}
+}
+
+func (a *Agent) pendingStartupCascadeLocked(root *cascadeState) (*cascadeState, error) {
+	if !a.cascadeCurrentLocked(root) {
+		return nil, agent.ErrInputSessionChanged
+	}
+	states := []*cascadeState{root}
+	ids := make([]string, 0, len(a.cascades))
+	for id, state := range a.cascades {
+		if state != root {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		states = append(states, a.cascades[id])
+	}
+	for _, state := range states {
+		if state.connectErr != nil {
+			if state == root {
+				return nil, state.connectErr
+			}
+			return nil, fmt.Errorf("the Antigravity subagent %s did not initialize: %w", state.id, state.connectErr)
+		}
+		select {
+		case <-state.connected:
+		default:
+			return state, nil
+		}
+		for id, record := range state.childKeys {
+			if !record.refused && record.state == nil {
+				return nil, fmt.Errorf("the Antigravity subagent %s did not initialize its session", id)
+			}
+		}
+	}
+	return nil, nil
 }

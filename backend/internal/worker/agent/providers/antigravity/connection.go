@@ -100,10 +100,10 @@ func (a *Agent) discoverLSPort(ctx context.Context, timeout time.Duration) error
 	timer := a.clock.NewTimer(timeout, antigravityStreamConnectTimerTag)
 	defer timer.Stop(antigravityStreamConnectTimerTag)
 	for {
-		port, err := a.liveLSPort(ctx)
+		endpoint, err := a.liveLSEndpoint(ctx)
 		if err == nil {
-			a.rpc.endpoint, err = providerkit.NewHTTPEndpoint("http://127.0.0.1:"+strconv.Itoa(port), nil)
-			return err
+			a.rpc.endpoint = endpoint
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -117,10 +117,10 @@ func (a *Agent) discoverLSPort(ctx context.Context, timeout time.Duration) error
 	}
 }
 
-func (a *Agent) liveLSPort(ctx context.Context) (int, error) {
+func (a *Agent) liveLSEndpoint(ctx context.Context) (*providerkit.HTTPEndpoint, error) {
 	content, err := os.ReadFile(a.logPath)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
 	for index := len(lines) - 1; index >= 0; index-- {
@@ -138,12 +138,11 @@ func (a *Agent) liveLSPort(ctx context.Context) (int, error) {
 		}
 		rpc := antigravityRPC{endpoint: endpoint, timeout: a.rpc.timeout}
 		if rpc.status(ctx) == nil {
-			a.rpc.endpoint = endpoint
-			return port, nil
+			return endpoint, nil
 		}
 		endpoint.Close()
 	}
-	return 0, fmt.Errorf("no live Antigravity language-server port appears in the log")
+	return nil, fmt.Errorf("no live Antigravity language-server port appears in the log")
 }
 
 func lastLogLines(path string, limit int) string {

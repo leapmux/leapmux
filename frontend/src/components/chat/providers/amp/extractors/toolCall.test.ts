@@ -167,6 +167,12 @@ describe('ampToolCall', () => {
       finished: content !== undefined,
     })
 
+  it('reads the current Bash directory', () => {
+    const shell = call('Bash', { cmd: 'pwd', cwd: '/bash-work' })
+    expect(shell.kind).toBe('execute')
+    expect(shell.request).toEqual({ command: 'pwd', cwd: '/bash-work' })
+  })
+
   it('reads a shell call with its directory and its exit code', () => {
     const shell = call('shell_command', { command: 'ls', workdir: '/work' }, '{"output":"a\\n","exitCode":0}')
     expect(shell.kind).toBe('execute')

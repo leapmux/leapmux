@@ -18,7 +18,7 @@ import { antigravityNativeToolResult, antigravityNativeToolResultContent } from 
 
 antigravityTest('requires a native permission decision before a real file change', async ({ native }) => {
   await exerciseNativePermissionWrite(native, {
-    // The saved row reads the name of Antigravity's own `proceed_once` option.
+    // The saved answer displays the native permission decision as Allow.
     viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow'),
   })
 })
@@ -58,10 +58,9 @@ antigravityTest('sends the exact native refusal after a Deny decision and keeps 
 })
 
 /**
- * A denied `write_file`. Antigravity CLI opens the call with the proposed diff and the file in
- * `locations`. It states no raw input. The failed update replaces the diff with the
- * refusal and states no file. The request and result rows form one pair, and both state the file.
- * No row draws the proposed text.
+ * The renderer reads Path and Content from the native tool-call arguments.
+ * After denial, both rows keep the file path visible and hide the proposed content.
+ * The result row displays the native refusal.
  */
 antigravityTest('reads a denied file write as declined, with its file and no proposed text', async ({ native }) => {
   const { page } = native

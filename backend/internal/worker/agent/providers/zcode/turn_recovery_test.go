@@ -2621,8 +2621,8 @@ func TestZCodeNativeEnd_RearmsAWatcherThatWasAlreadyExiting(t *testing.T) {
 	a.Mu.Unlock()
 	firstTimer.MustRelease(ctx)
 	clock.Advance(zcodeTurnRecoveryQuietInterval).MustWait(ctx)
-	read := waitZCodeRequest(t, stdin, MethodSessionRead)
-	a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, read), ErrMethodNotFound, "Method not found"))
+	_ = waitZCodeRequest(t, stdin, MethodSessionRead)
+	originalCancel()
 	replacementTimer := quiet.MustWait(ctx)
 	a.Mu.Lock()
 	newState, pending := owner.recovery, owner.pendingNative

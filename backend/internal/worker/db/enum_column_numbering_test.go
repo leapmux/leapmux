@@ -262,11 +262,13 @@ func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) 
 //
 // A lower limit of 1 is the rule, because proto3 fixes UNSPECIFIED at 0 and an
 // unset Go field holds 0, so a write that forgot the value fails instead of
-// recording a state nobody chose. Six columns start at 0, and in each the zero
-// IS a state the code chose: goal_status means "no goal", assembled_kind and
-// completion both mean "this message is not an assembled one and reports no
-// completion", pause_reason means "not paused", pause_owner means "nobody
-// owns this pause", and follow_up_kind means "no follow-up input".
+// recording a state nobody chose. Only agents.goal_status and
+// control_response_payloads.follow_up_kind admit zero. For goal_status, zero
+// means no goal. For follow_up_kind, zero means no follow-up input and requires
+// empty follow_up text. The optional assembled_kind, completion, pause_reason
+// and pause_owner columns use SQL NULL for absence and reject zero. The
+// completion range includes zero to show the enum numbering; its separate
+// type CHECK rejects zero.
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
@@ -453,8 +455,8 @@ func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	}
 }
 
-// goal_status is the one column whose zero is a REAL state, so ClearAgentGoal
-// spells the literal 0. proto3 fixes the first enumerator at 0, so no renumber
+// goal_status uses zero to represent no goal, so ClearAgentGoal spells the
+// literal 0. proto3 fixes the first enumerator at 0, so no renumber
 // can move it -- this states that rather than guarding against it.
 func TestClearAgentGoalWritesTheUnspecifiedOrdinal(t *testing.T) {
 	t.Parallel()

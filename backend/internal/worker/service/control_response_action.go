@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -32,15 +33,52 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	if plan.resolution.LeapMuxOwned && plan.resolution.FollowUp == (agent.ControlFollowUp{}) && !plan.isPlanPrompt() {
 		return nil
 	}
-	// Keep session validation and every approval effect inside the lifecycle lock.
-	unlock := svc.Agents.LockAgent(agentID)
-	defer unlock()
+	// A virtual child has no process of its own. Its root provider owns every
+	// native child session, so the answer must use the root's process route.
+	ownerID, err := svc.Queries.GetRootAgentID(bgCtx(), agentID)
+	if err != nil {
+		return fmt.Errorf("resolve the root provider process for a control response: %w", err)
+	}
+	// Lock the recipient before the child. Keep both session validation and
+	// approval effects inside the recipient's lifecycle operation.
+	unlockOwner := svc.Agents.LockAgent(ownerID)
+	defer unlockOwner()
+	if ownerID != agentID {
+		unlockChild := svc.Agents.LockAgent(agentID)
+		defer unlockChild()
+	}
 	latest, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		return fmt.Errorf("read the provider session before sending a control response: %w", err)
 	}
 	if latest.AgentSessionID != plan.requestMeta.AgentSessionID || latest.AgentProvider != currentAgent.AgentProvider {
 		return errors.New("the control request belongs to a different provider session")
+	}
+	currentOwnerID, err := svc.Queries.GetRootAgentID(bgCtx(), agentID)
+	if err != nil {
+		return fmt.Errorf("recheck the provider process for a control response: %w", err)
+	}
+	if currentOwnerID != ownerID {
+		return errors.New("the control request belongs to a different provider process")
+	}
+	if ownerID != agentID {
+		owner, err := svc.Queries.GetAgentByID(bgCtx(), ownerID)
+		if err != nil {
+			return fmt.Errorf("read the recipient provider before sending a control response: %w", err)
+		}
+		if owner.AgentProvider != latest.AgentProvider {
+			return errors.New("the control request belongs to a different provider process")
+		}
+	}
+	pending, err := svc.Queries.GetControlRequest(bgCtx(), db.GetControlRequestParams{AgentID: agentID, RequestID: plan.requestMeta.RequestID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("the control request is no longer pending")
+	}
+	if err != nil {
+		return fmt.Errorf("recheck the pending control request before delivery: %w", err)
+	}
+	if pending.ClaimToken != plan.requestMeta.ClaimToken || pending.AgentSessionID != plan.requestMeta.AgentSessionID {
+		return errors.New("the control request is no longer pending")
 	}
 	if mode := plan.settings.GetPermissionMode(); mode != "" {
 		group := optionids.GroupByID(svc.optionGroupsForAgent(&latest), agent.OptionIDPermissionMode)
@@ -66,15 +104,6 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 	}
 	// processControlResponse refuses a withheld resolution before it calls this
 	// function, so every plan that arrives here forwards its content.
-	// A virtual child has no process of its own. Its root provider owns every
-	// native child session, so the answer must use the root's process route.
-	ownerID := agentID
-	if latest.ParentAgentID.Valid {
-		ownerID, err = svc.Queries.GetRootAgentID(bgCtx(), agentID)
-		if err != nil {
-			return fmt.Errorf("resolve the root provider process for a control response: %w", err)
-		}
-	}
 	return svc.sendControlResponseFn(ownerID, plan.resolution.Content)
 }
 

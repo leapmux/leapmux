@@ -39,6 +39,7 @@ var allowedProviderImports = map[string][]string{
 	".": {"muse", "commandcode", "deepseekharness", "gemini", "antigravity", "amp", "claude", "cline", "codebuddy", "codewhale", "codex", "copilot", "cursor", "dirac", "droid", "fastagent", "goose", "grok", "junie", "kilo", "kimi", "kiro", "letta", "mimo", "ohmypi", "opencode", "pi", "qoder", "qwen", "reasonix", "zcode"},
 
 	"muse":                   nil,
+	"muse/musetest":          nil,
 	"commandcode":            nil,
 	"deepseekharness":        nil,
 	"gemini":                 {"acp"},

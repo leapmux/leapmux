@@ -32,3 +32,41 @@ describe('antigravity MCP extraction', () => {
     ])
   })
 })
+
+describe('antigravityMcpResult', () => {
+  it.each([undefined, null, 'invalid', {}])('keeps text when the native image collection is absent or invalid: %j', (images) => {
+    const step = antigravityStep({
+      type: 'CORTEX_STEP_TYPE_MCP_TOOL',
+      mcpTool: { resultString: 'native text', images },
+    })!
+    expect(antigravityMcpResult(step).content).toEqual([
+      { type: 'text', text: 'native text' },
+    ])
+  })
+
+  it('filters non-object image entries and preserves image order and file URI hosts', () => {
+    const step = antigravityStep({
+      type: 'CORTEX_STEP_TYPE_MCP_TOOL',
+      mcpTool: {
+        images: [
+          null,
+          0,
+          'invalid',
+          { base64Data: 'aGVsbG8=', mimeType: 'image/png', uri: 'file://server/share/first%20image.png' },
+          { base64Data: 'd29ybGQ=', mimeType: 'image/jpeg', uri: 'file:///second.jpg' },
+        ],
+      },
+    })!
+    expect(antigravityMcpResult(step).content).toEqual([
+      { type: 'text', text: '' },
+      {
+        type: 'image',
+        source: expect.objectContaining({ data: 'aGVsbG8=', filePath: '//server/share/first image.png' }),
+      },
+      {
+        type: 'image',
+        source: expect.objectContaining({ data: 'd29ybGQ=', filePath: '/second.jpg' }),
+      },
+    ])
+  })
+})

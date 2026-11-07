@@ -1,5 +1,5 @@
 /**
- * Unit tests for the ZCode E2E skip probe.
+ * Unit tests for the current ZCode installation layouts.
  *
  * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
  * no browser and no hub, so it costs milliseconds here and belongs to
@@ -9,9 +9,7 @@
  */
 import { win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { computeZCodeE2ESkipReason, zcodeScriptCandidatePaths } from './zcode-install'
-
-const SKIP_MESSAGE = 'ZCode E2E requires a zcode launcher on PATH or a ZCode.app / ZCode install that carries zcode.cjs'
+import { zcodeScriptCandidatePaths } from './zcode-install'
 
 describe('zcodeScriptCandidatePaths', () => {
   it('lists the per-user bundle before the machine-wide one on darwin', () => {
@@ -46,92 +44,5 @@ describe('zcodeScriptCandidatePaths', () => {
     })
     expect(paths[0]).toBe(win32.join('C:\\Users\\ada\\AppData\\Local', 'Programs', 'ZCode', 'resources', 'glm', 'zcode.cjs'))
     expect(paths).toHaveLength(3)
-  })
-})
-
-describe('computeZCodeE2ESkipReason', () => {
-  const base = {
-    platform: 'darwin' as const,
-    home: '/Users/ada',
-    env: {},
-    scriptExists: () => false,
-    launcherUnusableReason: null,
-  }
-
-  it('skips when an override points at a missing file', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: '/tmp/missing.cjs',
-      launcherOnPath: true,
-    })).toBe('LEAPMUX_ZCODE_SCRIPT points at a missing file: /tmp/missing.cjs')
-  })
-
-  it('runs when the override exists, even with no PATH launcher', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: '/tmp/zcode.cjs',
-      scriptExists: path => path === '/tmp/zcode.cjs',
-      launcherOnPath: false,
-    })).toBeNull()
-  })
-
-  it('runs when a launcher is on PATH', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: undefined,
-      launcherOnPath: true,
-    })).toBeNull()
-  })
-
-  it('runs when a bundled script exists', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: undefined,
-      launcherOnPath: false,
-      scriptExists: path => path === '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
-    })).toBeNull()
-  })
-
-  // The worker takes a launcher on PATH before the bundled script, so a launcher
-  // that the run cannot start (a mise shim) must skip, although a bundle exists.
-  it('skips for a launcher that the run cannot start, although a bundled script exists', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: undefined,
-      launcherOnPath: true,
-      launcherUnusableReason: 'The zcode on PATH is a mise shim.',
-      scriptExists: path => path === '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
-    })).toBe('ZCode E2E cannot start the zcode launcher on PATH. The zcode on PATH is a mise shim.')
-  })
-
-  // The override outranks the launcher in the worker too.
-  it('runs with an existing override, although the launcher on PATH cannot start', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: '/tmp/zcode.cjs',
-      scriptExists: path => path === '/tmp/zcode.cjs',
-      launcherOnPath: true,
-      launcherUnusableReason: 'The zcode on PATH is a mise shim.',
-    })).toBeNull()
-  })
-
-  it('skips when nothing is installed', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: undefined,
-      launcherOnPath: false,
-    })).toBe(SKIP_MESSAGE)
-  })
-
-  it('does not treat an empty override as a specified script', () => {
-    expect(computeZCodeE2ESkipReason({
-      ...base,
-      scriptOverride: '',
-      launcherOnPath: true,
-    })).toBeNull()
-  })
-
-  it('runs without a real account because the suite supplies private configuration', () => {
-    expect(computeZCodeE2ESkipReason({ ...base, scriptOverride: undefined, launcherOnPath: true })).toBeNull()
   })
 })

@@ -21,16 +21,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// clearCodewhaleLaunchCache drops every memoized answer of the production
-// resolver. The cache is package state keyed by shell, so a test that changes
-// what resolution SEES clears it on both sides.
-func clearCodewhaleLaunchCache() {
-	codewhaleProductionResolver.answers.Range(func(key, _ any) bool {
-		codewhaleProductionResolver.answers.Delete(key)
-		return true
-	})
-}
-
 // The fake runtime PROCESS: the test binary, re-executed in place of
 // `codewhale app-server --http`. It answers the routes a start reads, keeps its
 // threads in the store the worker points it at, and streams the events of each
@@ -73,14 +63,12 @@ func installFakeCodewhale(t *testing.T, scenario string) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "launches.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary:      codewhaleBinaryName,
+		Binary:      "codewhale",
 		HelperRun:   "TestHelperCodewhaleRuntime",
 		WantEnv:     fakeProcessWantEnv,
 		Env:         []string{fakeProcessScenarioEnv + "=" + scenario, fakeProcessRecordEnv + "=" + record},
 		ForwardArgs: true,
 	})
-	clearCodewhaleLaunchCache()
-	t.Cleanup(clearCodewhaleLaunchCache)
 	return record
 }
 
@@ -236,8 +224,6 @@ func (s *fakeProcessServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := r.URL.Path
 	switch {
-	case path == routeRuntimeInfo:
-		writeFakeJSON(w, http.StatusOK, map[string]any{"codewhale_version": "0.9.13"})
 	case path == routeThreads && r.Method == http.MethodPost:
 		s.createThread(w, r)
 	case strings.HasPrefix(path, routeProviders+"/"):
@@ -287,6 +273,8 @@ func (s *fakeProcessServer) threadRoute(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	switch {
+	case sub == "context" && r.Method == http.MethodGet:
+		writeFakeJSON(w, http.StatusOK, map[string]any{"window_tokens": nil, "input_tokens": nil})
 	case sub == "" && r.Method == http.MethodGet:
 		turns := []any{}
 		if os.Getenv(fakeProcessScenarioEnv) == "busy-turn" {

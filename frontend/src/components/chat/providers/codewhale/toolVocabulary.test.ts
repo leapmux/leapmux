@@ -21,6 +21,15 @@ const CHECK: ToolVocabularyCheck = {
 }
 
 describe('codewhale tool vocabulary', () => {
+  it('keeps both registered current shell spellings', () => {
+    expect(codewhaleToolKind('bash')).toBe('execute')
+    expect(codewhaleToolKind('Bash')).toBe('execute')
+  })
+
+  it('keeps the unregistered historical shell-start spelling opaque', () => {
+    expect(codewhaleToolKind('task_shell_start')).toBe('other')
+  })
+
   it('covers every tool the contract lists', () => {
     expect(
       undocumentedFallbacks(CHECK),

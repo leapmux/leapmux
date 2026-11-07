@@ -68,11 +68,12 @@ func TestRouteZCodeRPC_TheRuntimeHeaderHandlerRunsAfterItsRegistration(t *testin
 	t.Parallel()
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
-	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","enabled":true,"options":{"apiKey":"plan-key"},"models":{"GLM-5.3":{}}}}}`)
+	seedZCodeAccountStateForTests(t, a)
 	const logical = "sess-1:provider-runtime-headers:91919191-9292-4393-8494-959595959595"
 
 	handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	require.True(t, consumed, "a server request is consumed by its handler")
 	require.NotNil(t, handler)
 	assert.Empty(t, stdin.Frames(), "routeZCodeRPC returns the handler without running it")
@@ -85,9 +86,9 @@ func TestRouteZCodeRPC_TheRuntimeHeaderHandlerRunsAfterItsRegistration(t *testin
 
 	// Without a cancellation the handler answers.
 	handler2, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
-		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	handler2()
-	replies := stdin.Requests(t)
+	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1)
 	assert.Equal(t, `"server-2"`, string(replies[0].ID))
 }

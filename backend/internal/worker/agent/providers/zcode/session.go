@@ -589,5 +589,5 @@ func (a *Agent) retireZCodeSession(sessionID string) {
 
 func zcodeIsSessionGone(err error) bool {
 	code, ok := zcodeErrorCode(err)
-	return ok && (code == ErrMethodNotFound || code == ErrSessionNotActive)
+	return ok && code == ErrSessionNotActive
 }

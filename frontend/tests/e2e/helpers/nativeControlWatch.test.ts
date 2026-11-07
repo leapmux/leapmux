@@ -63,6 +63,7 @@ describe('nativeControlFrame', () => {
       requestId: 'native-control-1',
       claimToken: 'claim-1',
       payload: {},
+      canceled: true,
       responseState: ControlResponseState.COMPLETED,
     })
   })

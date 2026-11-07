@@ -1,7 +1,6 @@
 package cline
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -143,9 +142,8 @@ func (r discoveryRecord) ready() bool {
 	return r.AuthToken != "" && r.URL != "" && r.PID > 0
 }
 
-// minimumVersionHint states the Cline release that this provider drives, for
-// every error that a daemon it cannot drive produces.
-const minimumVersionHint = "LeapMux drives Cline through its hub protocol v1, which Cline 3.0.64 speaks; install Cline 3.0.64 or later, and make sure the `cline` on PATH is that version"
+// protocolHint identifies the native protocol that this provider requires.
+const protocolHint = "LeapMux requires the Cline hub protocol v1"
 
 // errProtocolMismatch reports a daemon that speaks no hub protocol this
 // provider can drive.
@@ -154,58 +152,7 @@ var errProtocolMismatch = errors.New("the Cline hub speaks a protocol that LeapM
 // hubProtocolNumber reads `vN`.
 var hubProtocolNumber = regexp.MustCompile(`^v(\d+)$`)
 
-// minimumCoreVersion is the version of Cline's core in Cline 3.0.64
-// (sdk/packages/core/package.json). An older core can speak hub protocol v1
-// and still ignore what keeps the daemon private: CLINE_TASKS_DB_PATH and
-// --no-connectors. Its start would then mark the user's own agenda runs
-// interrupted.
-var minimumCoreVersion = []int{0, 0, 85}
-
-// releaseComponents reads the release numbers of a version as Cline's own
-// parseReleaseComponents does: the numbers before any prerelease or build
-// suffix. It reports false for a version with no such numbers.
-func releaseComponents(version string) ([]int, bool) {
-	release, _, _ := strings.Cut(strings.TrimSpace(version), "+")
-	release, _, _ = strings.Cut(release, "-")
-	if release == "" {
-		return nil, false
-	}
-	parts := strings.Split(release, ".")
-	components := make([]int, 0, len(parts))
-	for _, part := range parts {
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
-			return nil, false
-		}
-		components = append(components, n)
-	}
-	return components, true
-}
-
-// compareReleases orders two releases as Cline's compareReleaseComponents
-// does: a component that one release does not state counts as 0.
-func compareReleases(a, b []int) int {
-	for i := range max(len(a), len(b)) {
-		var left, right int
-		if i < len(a) {
-			left = a[i]
-		}
-		if i < len(b) {
-			right = b[i]
-		}
-		if left != right {
-			return cmp.Compare(left, right)
-		}
-	}
-	return 0
-}
-
-// checkProtocol refuses a daemon that LeapMux cannot drive:
-//   - A daemon whose range of client protocol versions leaves v1 out. The
-//     check follows Cline's own isHubProtocolCompatible: a limit that the
-//     record does not state takes the daemon's own version.
-//   - A daemon whose core is older than minimumCoreVersion, or that states no
-//     core version.
+// checkProtocol requires a daemon whose client protocol range includes v1.
 func checkProtocol(record discoveryRecord) error {
 	parse := func(version string) (int, bool) {
 		match := hubProtocolNumber.FindStringSubmatch(strings.TrimSpace(version))
@@ -217,7 +164,7 @@ func checkProtocol(record discoveryRecord) error {
 	}
 	own, ok := parse(record.ProtocolVersion)
 	if !ok {
-		return fmt.Errorf("%w: its discovery record states no protocol version (%q); %s", errProtocolMismatch, record.ProtocolVersion, minimumVersionHint)
+		return fmt.Errorf("%w: its discovery record states no protocol version (%q); %s", errProtocolMismatch, record.ProtocolVersion, protocolHint)
 	}
 	low, high := own, own
 	if n, ok := parse(record.MinClientProtocolVersion); ok {
@@ -229,12 +176,7 @@ func checkProtocol(record discoveryRecord) error {
 	want, _ := parse(hubProtocolVersion)
 	if want < low || want > high {
 		return fmt.Errorf("%w: it accepts clients of protocol v%d to v%d, and LeapMux speaks %s; %s",
-			errProtocolMismatch, low, high, hubProtocolVersion, minimumVersionHint)
-	}
-	core, ok := releaseComponents(record.CoreVersion)
-	if !ok || compareReleases(core, minimumCoreVersion) < 0 {
-		return fmt.Errorf("%w: its core version is %q, older than the core of Cline 3.0.64; %s",
-			errProtocolMismatch, record.CoreVersion, minimumVersionHint)
+			errProtocolMismatch, low, high, hubProtocolVersion, protocolHint)
 	}
 	return nil
 }
@@ -345,7 +287,7 @@ func startDaemonOnPort(ctx context.Context, opts agent.Options, spec launch.Spec
 		if strings.Contains(stderrText, "EADDRINUSE") {
 			return nil, fmt.Errorf("%w: %s", errAddressInUse, stderrText)
 		}
-		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", err, minimumVersionHint))
+		return nil, process.FormatStartupError("hub start", fmt.Errorf("%w; %s", err, protocolHint))
 	}
 	if err := checkProtocol(record); err != nil {
 		stopDaemonAt(record)

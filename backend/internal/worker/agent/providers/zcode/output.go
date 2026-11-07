@@ -266,7 +266,7 @@ func (a *Agent) persistZCodeBackgroundTurnEnd(owner *zcodeTurnState, original []
 // a slow transport.
 //
 // A prompt turn is steerable through the command inbox unless the app-server
-// refused it (steeringUnsupported); a compaction never is -- its summary query
+// a compaction never is -- its summary query
 // is not the user's conversation. A BACKGROUND turn counts as active here,
 // deliberately. It persists no divider and closes none of the user's spans, but
 // the agent IS processing, and turnActive is already what Interrupt and Stop
@@ -279,7 +279,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{
 		Active:    a.turnActive || a.compactionSessionID != "",
-		Steerable: a.turnActive && !a.steeringUnsupported,
+		Steerable: a.turnActive,
 	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()

@@ -74,12 +74,7 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 		_ = a.Wait()
 	}
 
-	if a.runtime, err = a.readRuntimeInfo(); err != nil {
-		cleanup()
-		discardFreshStore(fresh, store)
-		return nil, a.FormatStartupError("runtime info", err)
-	}
-	slog.Debug("codewhale runtime ready", "agent_id", a.AgentID(), "version", a.runtime.CodewhaleVersion, "store", store.dir)
+	slog.Debug("codewhale runtime ready", "agent_id", a.AgentID(), "store", store.dir)
 
 	thread, err := a.openThread(opts)
 	if err != nil {
@@ -115,7 +110,6 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 	a.Mu.Unlock()
 
 	// Everything below reads the runtime, and no failure in it fails the start.
-	a.runtime.hasContextRoute = a.probeContextRoute(thread.ID)
 	a.refreshModelCatalog()
 	if !fresh {
 		a.syncGoalSnapshot(thread.ID)
@@ -132,12 +126,13 @@ func startWith(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 
 // newAgent builds an agent that has no process yet.
 func newAgent(opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) *Agent {
+	sink = agent.NewOrderedProviderServices(sink.OutputQueue(), agent.NewModelProgressResetSink(sink))
 	style := opts.Get(OptionOutputStyle)
 	if style == "" {
 		style = codewhaleOutputStyleGroup.GetDefaultValue()
 	}
 	return &Agent{
-		sink:       agent.NewModelProgressResetSink(sink),
+		sink:       sink,
 		workingDir: opts.WorkingDir,
 		clock:      clock,
 		settings:   codewhaleSettings{outputStyle: style},
@@ -196,18 +191,6 @@ func (a *Agent) openThread(opts agent.Options) (threadRecord, error) {
 		return thread, nil
 	}
 	return updated, nil
-}
-
-// probeContextRoute reports whether the runtime serves the thread's context
-// route, which exists from 0.10.0. The runtime's capability map does not state
-// route additions, so the route itself answers.
-func (a *Agent) probeContextRoute(threadID string) bool {
-	raw, err := a.readThreadContext(threadID)
-	if err != nil {
-		return false
-	}
-	a.applyContextReport(raw)
-	return true
 }
 
 // syncGoalSnapshot reports the goal a resumed thread already holds. It RESTATES

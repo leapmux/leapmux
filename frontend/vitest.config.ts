@@ -7,6 +7,7 @@ import { VITE_SOURCE_DIRECTORIES } from './viteAssetAccess.ts'
 import { NODE_TEST_FILES, PINNED_TEST_TIMEZONE, TIMEZONE_TEST_FILES } from './vitest.node.ts'
 
 const require = createRequire(import.meta.url)
+const TEST_TIMEOUT_MS = 30_000
 
 // vite-plugin-solid aliases solid-refresh to /@solid-refresh even with hot:false.
 // That option stops Babel hot-module-replacement (HMR) injection only.
@@ -52,10 +53,11 @@ export default defineConfig({
     // Threads avoid the cost of one process per file. Keep isolation for per-file mocks.
     pool: 'threads',
     globals: true,
-    // One budget for every test, so no test states its own: subprocess and
-    // server-driving tests need far more than the runner's 5s default, above
-    // all on the two-core Windows CI runner.
-    testTimeout: 30_000,
+    // One timeout for every test and hook, so no test states its own. Subprocess
+    // and server-driving tests need far more time than the runner defaults,
+    // above all on the two-core Windows CI runner.
+    testTimeout: TEST_TIMEOUT_MS,
+    hookTimeout: TEST_TIMEOUT_MS,
     // Show a test's captured stdout and stderr only when it fails. Passing
     // tests' console noise flooded the CI logs and buried the failures.
     silent: 'passed-only',
@@ -91,9 +93,10 @@ export default defineConfig({
           globals: true,
           pool: 'threads',
           include: NODE_TEST_FILES,
-          // This project does not extend the root, so the root's one 30s
-          // budget does not reach it. State it here for the same reason.
-          testTimeout: 30_000,
+          // This project does not extend the root, so its tests and hooks
+          // need the same timeouts here.
+          testTimeout: TEST_TIMEOUT_MS,
+          hookTimeout: TEST_TIMEOUT_MS,
         },
       },
       {
@@ -109,7 +112,8 @@ export default defineConfig({
           pool: 'forks',
           env: { TZ: PINNED_TEST_TIMEZONE },
           include: TIMEZONE_TEST_FILES,
-          testTimeout: 30_000,
+          testTimeout: TEST_TIMEOUT_MS,
+          hookTimeout: TEST_TIMEOUT_MS,
         },
       },
       {

@@ -703,7 +703,31 @@ function codexCommandCall(id: string, request: { cmd: string, sandbox_permission
   return codexExecToolCall(id, `const result = await tools.exec_command(${JSON.stringify(request)})\ntext(JSON.stringify(result))`)
 }
 
-function codexApplyPatch(id: string, patch: string): MockModelToolCall {
+/** The current Codewhale edit input accepts a list, an encoded list, and a top-level pair. */
+type CodewhaleEditInput = { path: string } & (
+  | { edits: readonly { oldText: string, newText: string }[] | string, oldText?: never, newText?: never }
+  | { edits?: readonly { oldText: string, newText: string }[] | string, oldText: string, newText: string }
+)
+
+export function codewhaleEditToolCall(id: string, input: CodewhaleEditInput): MockModelToolCall {
+  const edits = input.edits
+  return {
+    id,
+    name: CODEWHALE_TOOL.Edit,
+    arguments: {
+      ...input,
+      ...(edits === undefined
+        ? {}
+        : {
+            edits: typeof edits === 'string'
+              ? edits
+              : edits.map(edit => ({ ...edit })),
+          }),
+    },
+  }
+}
+
+export function codexApplyPatch(id: string, patch: string): MockModelToolCall {
   // Report the result through text.
   // Without text, the exec cell returns empty output for both successful and refused patches.
   return codexExecToolCall(
@@ -816,18 +840,12 @@ const TOOL_VOCABULARY = {
       name: 'bash',
       arguments: { command },
     }),
-    // The edit tool accepts a replacement list.
-    // Each replacement matches the original file.
-    // The path resolves against the workspace.
-    edit: (id, { path, before, after }) => ({
-      id,
-      name: 'edit',
-      arguments: {
-        path,
-        edits: [
-          { oldText: before, newText: after },
-        ],
-      },
+    // Each replacement matches the original file at its workspace path.
+    edit: (id, { path, before, after }) => codewhaleEditToolCall(id, {
+      path,
+      edits: [
+        { oldText: before, newText: after },
+      ],
     }),
     write: (id, { path, content }) => ({
       id,
@@ -878,25 +896,21 @@ const TOOL_VOCABULARY = {
       },
     }),
     spawnSubagentBatch: null,
-    // The bash tool refuses a background argument.
-    // Use the deferred task_shell_start tool for a background command.
-    // The first call loads its schema.
-    // Script the second call to start the command.
+    // A command that outlives this foreground wait becomes a native background job.
     backgroundBash: (id, command) => ({
       id,
-      name: 'task_shell_start',
-      arguments: { command },
+      name: CODEWHALE_TOOL.Bash,
+      arguments: { command, timeout: 1 },
     }),
     // `todo_write` replaces the whole list, and its rows say `content` where the
-    // shared shape says `step`. The schema of the 0.10.1 source also states `cancelled`; no probe of the installed
-    // 0.10.0 confirmed it, so the builder takes the three statuses alone.
+    // shared shape says `step`. The current schema also accepts cancelled.
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
       arguments: {
         todos: steps.map(step => ({
           content: step.step,
-          status: acceptedTodoStatus('Codewhale todo_write', BASE_TODO_STATUSES, step.status),
+          status: acceptedTodoStatus('Codewhale todo_write', [...BASE_TODO_STATUSES, 'cancelled'], step.status),
         })),
       },
     }),
@@ -3210,6 +3224,14 @@ function droidCallId(id: string): string {
     : `call_${id}`
 }
 
+/** Use the currently registered capitalized Codewhale shell spelling. */
+export function codewhaleBashAliasToolCall(id: string, command: string): MockModelToolCall {
+  return {
+    ...bashToolCall(AgentProvider.CODEWHALE, id, command),
+    name: CODEWHALE_TOOL.BashAlias,
+  }
+}
+
 /** A shell command, in the provider's own shell tool. */
 export function bashToolCall(provider: AgentProvider, id: string, command: string): MockModelToolCall {
   return requireBuilder(vocabulary(provider).bash, provider, 'shell')(id, command)
@@ -4292,5 +4314,28 @@ export function deepseekHarnessRunCodeToolCall(id: string, source: string): Mock
     id,
     name: DEEPSEEK_HARNESS_TOOL.RunCode,
     arguments: { description: 'Read the native MCP value.', code: source },
+  }
+}
+
+/** Write the plan whose file Antigravity presents for approval. */
+export function writeAntigravityPlan(path: string, text: string): MockModelToolCall {
+  return {
+    id: 'antigravity-plan-write',
+    name: ANTIGRAVITY_TOOL.WriteFile,
+    arguments: {
+      Path: path,
+      Content: text,
+      Overwrite: true,
+      ArtifactMetadata: { Summary: 'Implementation plan', UserFacing: true, RequestFeedback: true },
+    },
+  }
+}
+
+/** Deliver a native Antigravity agent message to one conversation. */
+export function antigravitySendMessageToolCall(id: string, recipient: string, message: string): MockModelToolCall {
+  return {
+    id,
+    name: ANTIGRAVITY_TOOL.SendMessage,
+    arguments: { Recipient: recipient, Message: message },
   }
 }

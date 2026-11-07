@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/antigravity-protocol'
 import { classifyAntigravityMessage } from './classification'
 import { antigravityExtractRow } from './extractors/row'
@@ -61,5 +61,77 @@ describe('antigravitySpanRole', () => {
     expect(antigravitySpanRole({
       parentObject: { type: ANTIGRAVITY_STEP_TYPE.PlannerResponse, status: 'CORTEX_STEP_STATUS_DONE' },
     } as never)).toBe('result')
+  })
+})
+
+describe('antigravity metadata extraction', () => {
+  it('does not parse tool arguments during classification and span detection', () => {
+    const argumentsJson = JSON.stringify({
+      Content: 'distinct large content'.repeat(1000),
+    })
+    const parsed = {
+      parentObject: {
+        type: 'CORTEX_STEP_TYPE_CODE_ACTION',
+        status: 'CORTEX_STEP_STATUS_RUNNING',
+        metadata: {
+          toolCall: { name: 'write_file', argumentsJson },
+        },
+      },
+    }
+    const parse = vi.spyOn(JSON, 'parse')
+    try {
+      expect(classifyAntigravityMessage(parsed as never).kind).toBe('tool_use')
+      expect(antigravitySpanRole(parsed as never)).toBe('request')
+      expect(parse.mock.calls.filter(args => args[0] === argumentsJson)).toHaveLength(0)
+    }
+    finally { parse.mockRestore() }
+  })
+
+  it('reads the initial native agent message as a child prompt', () => {
+    const parentObject = {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: {
+        agentMessage: {
+          content: 'initial child task',
+          sourceMetadata: {
+            tool: {
+              toolCall: { name: 'invoke_subagent' },
+            },
+          },
+        },
+      },
+    }
+    expect(classifyAntigravityMessage(input(parentObject)).kind).toBe('user_content')
+    expect(antigravityExtractRow({
+      category: { kind: 'user_content' },
+      resolved: { parentObject },
+    } as never)).toEqual({ kind: 'user', text: 'initial child task', attachments: [] })
+    expect(classifyAntigravityMessage(input({
+      ...parentObject,
+      systemMessage: {
+        agentMessage: { content: 'hidden', hideFromUser: true },
+      },
+    })).kind).toBe('hidden')
+  })
+  it('keeps a wrapped initial child prompt on the user-content path', () => {
+    const parentObject = {
+      type: 'CORTEX_STEP_TYPE_SYSTEM_MESSAGE',
+      systemMessage: {
+        agentMessage: {
+          content: 'initial task',
+          sourceMetadata: {
+            tool: {
+              toolCall: { name: 'invoke_subagent' },
+            },
+          },
+        },
+      },
+    }
+    expect(classifyAntigravityMessage({
+      parentObject,
+      wrapper: {
+        messages: [parentObject],
+      },
+    } as never).kind).toBe('user_content')
   })
 })

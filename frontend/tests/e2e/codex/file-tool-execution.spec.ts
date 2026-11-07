@@ -1,5 +1,5 @@
 import type { Locator } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codexTest } from '../codex-fixtures'
@@ -7,7 +7,7 @@ import { cssAttributeValue } from '../helpers/cssAttribute'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseFileToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { bashToolCall, editToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { bashToolCall, codexApplyPatch, editToolCall, writeToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, fileChangeRow, messageBubbles, toolRows } from '../helpers/ui'
 import { codexAppliedFileChange, requireCodexPatchResult } from './appliedFileChange'
 import { codexExecContext } from './scenarios'
@@ -118,4 +118,21 @@ codexTest('file-change statistics keep one presentation for one file and multipl
 
 codexTest('reads edits and creates private files with native result and reload proof', async ({ native }) => {
   await exerciseFileToolExecution(codexExecContext(native))
+})
+
+codexTest('renders the native rename destination from the current tagged update record', async ({ native }) => {
+  const agent = await currentNativeAgent(native)
+  const source = join(agent.workingDir, 'native-before-rename.txt')
+  const destination = join(agent.workingDir, 'native-after-rename.txt')
+  writeFileSync(source, 'before rename\n')
+  await runNativeToolTurn(codexExecContext(native), {
+    toolCalls: [
+      codexApplyPatch('native-rename', `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n-before rename\n+after rename\n*** End Patch\n`),
+    ],
+    prompt: 'Rename the prepared file and update its content through the native patch tool.',
+    answer: 'The requested rename completed.',
+  })
+  expect(existsSync(source)).toBe(false)
+  expect(readFileSync(destination, 'utf8')).toBe('after rename\n')
+  await expect(native.page.locator(`[data-file-diff][data-file-path="${cssAttributeValue(destination)}"]:visible`).first()).toBeVisible()
 })

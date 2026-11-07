@@ -1,4 +1,4 @@
-import { AMP_E2E_SKIP_REASON, ampTest } from '../amp-fixtures'
+import { ampTest } from '../amp-fixtures'
 import { exerciseSessionResume } from '../helpers/nativeLifecycle'
 import { exerciseWorkerRestart } from '../helpers/nativeWorkerRestart'
 import { createProviderProcessTest } from '../provider-fixture-factory'
@@ -8,7 +8,7 @@ ampTest('reopens the native picker handle and restores the saved transcript', as
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: AMP_AGENT, nativeContext, skipReason: AMP_E2E_SKIP_REASON })
+const restartTest = createProviderProcessTest({ agent: AMP_AGENT, nativeContext })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

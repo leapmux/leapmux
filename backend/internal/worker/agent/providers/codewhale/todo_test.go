@@ -52,7 +52,7 @@ func TestProviderExtractsNoChecklistFromAnythingElse(t *testing.T) {
 		"a failed call":            {contracts.CodewhaleToolTodoWrite, todoWriteResult(t, "item.failed", items)},
 		"the call's start":         {contracts.CodewhaleToolTodoWrite, toolStartEvent(1, "item_1", "call_1", contracts.CodewhaleToolTodoWrite, map[string]any{"todos": []any{}})},
 		"a result with no list":    {contracts.CodewhaleToolTodoWrite, toolEndEvent(9, "item.completed", "item_1", "call_1", contracts.CodewhaleToolTodoWrite, "done", nil, nil)},
-		"a result of another tool": {contracts.CodewhaleToolTodoWrite, toolEndEvent(9, "item.completed", "item_1", "call_1", contracts.CodewhaleToolUpdatePlan, "done", nil, map[string]any{"task_updates": map[string]any{"checklist": map[string]any{"items": items}}})},
+		"a result of another tool": {contracts.CodewhaleToolTodoWrite, toolEndEvent(9, "item.completed", "item_1", "call_1", contracts.CodewhaleToolWrite, "done", nil, map[string]any{"task_updates": map[string]any{"checklist": map[string]any{"items": items}}})},
 		"a broken frame":           {contracts.CodewhaleToolTodoWrite, []byte(`{"event":"item.completed","payload":"x"}`)},
 	}
 	for name, tc := range cases {

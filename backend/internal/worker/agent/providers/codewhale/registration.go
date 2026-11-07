@@ -4,6 +4,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // OptionOutputStyle selects Codewhale's native response verbosity for this process.
@@ -22,7 +23,7 @@ func Registration() agent.Registration {
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
 		Plugin:   codewhaleProvider{},
 		Start:    Start,
-		Locator:  codewhaleLocator,
+		Locator:  launch.Binaries("codewhale"),
 		// The catalog belongs to the provider the user configured Codewhale for,
 		// so no static entry could be right for everyone. A running agent reads
 		// it from the runtime.

@@ -37,13 +37,20 @@ const testChildID = "agent_34dcb3be"
 
 type finalizationServices struct {
 	agent.ProviderServices
-	reportBlocked atomic.Bool
-	closeBlocked  atomic.Bool
-	cleanups      atomic.Int32
+	reportBlocked   atomic.Bool
+	closeBlocked    atomic.Bool
+	cleanups        atomic.Int32
+	failureObserved chan struct{}
+	failureOnce     sync.Once
+}
+
+func (s *finalizationServices) recordFailure() {
+	s.failureOnce.Do(func() { close(s.failureObserved) })
 }
 
 func (s *finalizationServices) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
 	if s.reportBlocked.Load() {
+		s.recordFailure()
 		return false, errors.New("the report write failed")
 	}
 	return s.ProviderServices.PersistSubagentReport(write)
@@ -51,6 +58,7 @@ func (s *finalizationServices) PersistSubagentReport(write agent.SubagentReportW
 
 func (s *finalizationServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
 	if s.reportBlocked.Load() {
+		s.recordFailure()
 		return false, errors.New("the report write failed")
 	}
 	return s.ProviderServices.PersistNotification(source, content)
@@ -58,6 +66,7 @@ func (s *finalizationServices) PersistNotification(source leapmuxv1.MessageSourc
 
 func (s *finalizationServices) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 	if s.closeBlocked.Load() {
+		s.recordFailure()
 		return errors.New("the task close failed")
 	}
 	return s.ProviderServices.CloseBackgroundTask(rowKey, status)
@@ -73,7 +82,7 @@ func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
 		for _, failure := range []string{"report", "close", "preceding output"} {
 			t.Run(completion+"/"+failure, func(t *testing.T) {
 				t.Parallel()
-				services := &finalizationServices{}
+				services := &finalizationServices{failureObserved: make(chan struct{})}
 				a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
 					services.ProviderServices = inner
 					return services
@@ -85,7 +94,8 @@ func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 					RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 				}))
-				require.True(t, a.children.start(child, func(ctx context.Context, _ *codewhaleChild) { <-ctx.Done() }))
+				appendTranscript(t, child.path, transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": child.answer}))
+				require.True(t, a.children.start(child, a.watchChild))
 				services.reportBlocked.Store(failure == "report")
 				services.closeBlocked.Store(failure == "close")
 				var precedingBlocked atomic.Bool
@@ -93,17 +103,23 @@ func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
 					precedingBlocked.Store(true)
 					agent.OutputQueueFor(a.sink).Append(agent.OutputWrite{Label: "preceding output", Run: func() error {
 						if precedingBlocked.Load() {
+							services.recordFailure()
 							return errors.New("the preceding write failed")
 						}
 						return nil
 					}})
 				}
 				if completion == "watcher" {
-					line := transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": child.answer})
-					a.persistChildRecord(a.sink.ChildSink(child.childID), child, []byte(line))
+					a.children.observe(child, bgtask.StatusSucceeded)
 				} else {
 					a.settleChild(child.agentID, bgtask.StatusSucceeded)
 				}
+				select {
+				case <-services.failureObserved:
+				case <-testutil.DeadlineContext(t).Done():
+					t.Fatal("child finalization did not attempt the blocked write")
+				}
+				a.children.stopAll()
 				task, found := sink.BackgroundTask(child.agentID)
 				require.True(t, found)
 				assert.Equal(t, bgtask.StatusRunning, task.Status, "a failed dependency must keep the task open")
@@ -140,7 +156,7 @@ func TestChildFinalizationHandlesEmptyAndDuplicateReports(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			services := &finalizationServices{}
+			services := &finalizationServices{failureObserved: make(chan struct{})}
 			a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
 				services.ProviderServices = inner
 				return services
@@ -259,7 +275,7 @@ func (s *settlementChildServices) PersistMessage(source leapmuxv1.MessageSource,
 	return s.ProviderServices.PersistMessage(source, content, span)
 }
 
-func TestSettleChildJoinsTranscriptWatcher(t *testing.T) {
+func TestSettleChildPreservesTranscriptWatcherOwnership(t *testing.T) {
 	t.Parallel()
 	services := &settlementServices{
 		writeEntered: make(chan struct{}), writeRelease: make(chan struct{}), rowClosed: make(chan struct{}),
@@ -300,16 +316,22 @@ func TestSettleChildJoinsTranscriptWatcher(t *testing.T) {
 		<-settled
 	}()
 	select {
-	case <-watchCtx.Done():
-	case <-services.rowClosed:
+	case <-settled:
 	case <-ctx.Done():
-		t.Fatal("settlement neither cancelled the watcher nor closed the row")
+		t.Fatal("settlement did not deliver its observation while transcript persistence was blocked")
+	}
+	select {
+	case <-watchCtx.Done():
+		t.Fatal("settlement cancelled the watcher while it owned transcript persistence")
+	case <-services.rowClosed:
+		t.Fatal("settlement closed the row before transcript persistence finished")
+	default:
 	}
 	release()
 	select {
-	case <-settled:
+	case <-services.rowClosed:
 	case <-ctx.Done():
-		t.Fatal("settlement did not finish after transcript persistence resumed")
+		t.Fatal("the watcher did not finalize the child after transcript persistence resumed")
 	}
 	a.children.stopAll()
 	reports := sink.LeapMuxNotifications()
@@ -411,17 +433,17 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	// A wait that saw an interruptible child leaves its row open and paused.
 	a.HandleOutput(toolEndEvent(20, "item.completed", "item_wait", "call_wait", contracts.CodewhaleToolAgent,
 		`{"settled":[{"agent_id":"`+testChildID+`","status":"interrupted"}]}`, map[string]any{"action": "wait"}, nil))
-	task, ok := sink.BackgroundTask(testChildID)
+	_, ok := sink.BackgroundTask(testChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusPaused, task.Status)
+	require.Eventually(t, func() bool { row, _ := sink.BackgroundTask(testChildID); return row.Status == bgtask.StatusPaused }, 30*time.Second, time.Millisecond)
 	assert.Empty(t, sink.Child(child.childID).ClosedSpans(), "a resumable child keeps its transcript open")
 
 	// A wait that saw the child run again moves the row back.
 	a.HandleOutput(toolEndEvent(21, "item.completed", "item_wait2", "call_wait2", contracts.CodewhaleToolAgent,
 		`{"settled":[{"agent_id":"`+testChildID+`","status":"model_wait"}]}`, map[string]any{"action": "wait"}, nil))
-	task, ok = sink.BackgroundTask(testChildID)
+	_, ok = sink.BackgroundTask(testChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusRunning, task.Status)
+	require.Eventually(t, func() bool { row, _ := sink.BackgroundTask(testChildID); return row.Status == bgtask.StatusRunning }, 30*time.Second, time.Millisecond)
 
 	// A wait that saw the run end closes the row.
 	a.HandleOutput(toolEndEvent(22, "item.completed", "item_wait3", "call_wait3", contracts.CodewhaleToolAgent,
@@ -439,8 +461,12 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	a, sink := newTestAgentWithClock(t, rt, clock)
 	// The clock trap closes before stopping watchers because cleanup functions run in reverse order.
 	// A watcher blocked in the trap then returns, so the stop that joins it cannot wait indefinitely.
+	runs := clock.Trap().NewTimer(childRunTimerTag)
+	var closeRuns sync.Once
+	t.Cleanup(func() { closeRuns.Do(runs.Close) })
 	tail := clock.Trap().NewTimer(childTimerTag)
-	t.Cleanup(tail.Close)
+	var closeTail sync.Once
+	t.Cleanup(func() { closeTail.Do(tail.Close) })
 	ctx := testutil.DeadlineContext(t)
 	path := childTranscriptPath(a.workingDir, testChildID)
 	appendTranscript(t, path, `{"kind":"subagent_transcript_header","schema_version":1,"agent_id":"`+testChildID+"\"}\n"+
@@ -463,6 +489,9 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	// The first tick reads the file, then arms the tail timer.
 	// The watcher does nothing more until that timer fires or a wait wakes it.
 	assert.Equal(t, childTailInterval, testutil.WaitForTimer(t, ctx, tail))
+	closeTail.Do(tail.Close)
+	testutil.WaitForTimer(t, ctx, runs)
+	closeRuns.Do(runs.Close)
 	rows := child.Messages()
 	require.Len(t, rows, 3, "the prompt, then one row for each block; the partial record waits")
 	assert.Contains(t, string(rows[1].Content), "Child thinking.")
@@ -471,11 +500,12 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 
 	// The runtime completes the record and writes more. The replayed assistant
 	// text alone is not an answer, because its index already passed; the final
-	// assistant message that calls no tool ends the run.
+	// assistant message supplies the report. The native receipt ends the run.
 	appendTranscript(t, path, `age":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_child","content":"a\nb\nc"}]}}`+"\n"+
 		transcriptLine(t, 1, "assistant", map[string]any{"type": "text", "text": "A replayed record."})+
 		transcriptLine(t, 3, "user", map[string]any{"type": "text", "text": "Also count the directories."})+
 		transcriptLine(t, 4, "assistant", map[string]any{"type": "text", "text": "There are 3 files."}))
+	rt.respondJSON(http.MethodGet, routeAgentRuns, 200, map[string]any{"runs": []map[string]any{{"spec": map[string]string{"worker_id": testChildID}, "status": "completed"}}})
 	clock.Advance(childTailInterval).MustWait(ctx)
 	require.Eventually(t, func() bool {
 		task, ok := sink.BackgroundTask(testChildID)
@@ -491,6 +521,7 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	task, _ = sink.BackgroundTask(testChildID)
 	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(testChildID))
+	require.Eventually(t, func() bool { return !a.sink.OutputQueue().HasPending() }, 30*time.Second, time.Millisecond)
 	var reports []string
 	for _, notification := range sink.LeapMuxNotifications() {
 		reports = append(reports, string(mustJSON(t, notification)))
@@ -595,9 +626,9 @@ func TestCodewhaleChildrenWatchEachChildOnce(t *testing.T) {
 
 	// A nudge never blocks, whether the child's channel is full or no child has
 	// that id.
-	children.wake(testChildID)
-	children.wake(testChildID)
-	children.wake("agent_unknown")
+	children.observe(children.lookup(testChildID), 0)
+	children.observe(children.lookup(testChildID), 0)
+	children.observe(&codewhaleChild{agentID: "agent_unknown"}, 0)
 
 	children.stopAll()
 	assert.Equal(t, int32(1), watchers.Load())
@@ -776,18 +807,18 @@ func TestChildRowsStayInTheChildTranscript(t *testing.T) {
 
 const testShellTask = "shell_e2131998"
 
-var shellLaunchArgs = map[string]any{"command": "sleep 2; echo bg-done"}
+var shellLaunchArgs = map[string]any{"command": "sleep 2; echo bg-done", "timeout": 1}
 
-// shellLaunchResult reproduces a final task_shell_start event that launches a job in Codewhale 0.9.13 and 0.10.0.
+// shellLaunchResult reproduces a current bash result that exceeds its foreground wait.
 func shellLaunchResult(seq uint64, callID string) []byte {
-	return toolEndEvent(seq, "item.completed", "item_"+callID, callID, contracts.CodewhaleToolTaskShellStart,
+	return toolEndEvent(seq, "item.completed", "item_"+callID, callID, contracts.CodewhaleToolBash,
 		"Background task started: "+testShellTask, shellLaunchArgs,
 		map[string]any{"task_id": testShellTask, "backgrounded": true, "status": "Running", "exit_code": nil})
 }
 
-// launchShellJob runs one `task_shell_start` call through the stream.
+// launchShellJob runs one current backgrounded bash call through the stream.
 func launchShellJob(a *Agent, seq uint64, callID string) {
-	a.HandleOutput(toolStartEvent(seq, "item_"+callID, callID, contracts.CodewhaleToolTaskShellStart, shellLaunchArgs))
+	a.HandleOutput(toolStartEvent(seq, "item_"+callID, callID, contracts.CodewhaleToolBash, shellLaunchArgs))
 	a.HandleOutput(shellLaunchResult(seq+1, callID))
 }
 
@@ -812,10 +843,7 @@ func TestShellJobStatus(t *testing.T) {
 // The model waits for the job, and the wait's result states that it ended.
 func TestAShellJobIsARegistryRowUntilAWaitReportsItsEnd(t *testing.T) {
 	t.Parallel()
-	a, sink := newTestAgent(t, nil)
-	a.Mu.Lock()
-	a.shells.jobsRoutes = jobsRoutesMissing // 0.9.13: no poller
-	a.Mu.Unlock()
+	a, sink := newTestAgentWithClock(t, nil, testutil.NewQuartzMock(t))
 	launchShellJob(a, 1, "call_start")
 
 	task, ok := sink.BackgroundTask("call_start")
@@ -845,29 +873,22 @@ func TestAShellJobIsARegistryRowUntilAWaitReportsItsEnd(t *testing.T) {
 func TestAShellCallThatStartsNoJobOpensNoRow(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
-	// The deferred first call loads the schema and states no job.
-	a.HandleOutput(toolStartEvent(1, "item_1", "call_load", contracts.CodewhaleToolTaskShellStart, shellLaunchArgs))
-	a.HandleOutput(toolEndEvent(2, "item.completed", "item_1", "call_load", contracts.CodewhaleToolTaskShellStart, "Tool `task_shell_start` was deferred", shellLaunchArgs, map[string]any{"deferred_tool_loaded": true}))
+	// A foreground result with no retained job identity opens no shell row.
+	a.HandleOutput(toolStartEvent(1, "item_1", "call_plain", contracts.CodewhaleToolBash, map[string]any{"command": "pwd"}))
+	a.HandleOutput(toolEndEvent(2, "item.completed", "item_1", "call_plain", contracts.CodewhaleToolBash, "/controlled", map[string]any{"command": "pwd"}, map[string]any{"exit_code": 0}))
 	// A foreground command states a job id and a final status, and no job runs.
 	a.HandleOutput(toolStartEvent(3, "item_2", "call_ls", contracts.CodewhaleToolBash, map[string]any{"command": "ls"}))
 	a.HandleOutput(toolEndEvent(4, "item.completed", "item_2", "call_ls", contracts.CodewhaleToolBash, "a.ts", map[string]any{"command": "ls"}, map[string]any{"task_id": "shell_x", "backgrounded": false, "status": "Completed", "exit_code": 0}))
 	// A failed launch states nothing that runs.
-	a.HandleOutput(toolStartEvent(5, "item_3", "call_bad", contracts.CodewhaleToolTaskShellStart, shellLaunchArgs))
-	a.HandleOutput(toolEndEvent(6, "item.failed", "item_3", "call_bad", contracts.CodewhaleToolTaskShellStart, "denied", shellLaunchArgs, map[string]any{"task_id": "shell_y", "backgrounded": true, "status": "Running"}))
+	a.HandleOutput(toolStartEvent(5, "item_3", "call_bad", contracts.CodewhaleToolBash, shellLaunchArgs))
+	a.HandleOutput(toolEndEvent(6, "item.failed", "item_3", "call_bad", contracts.CodewhaleToolBash, "denied", shellLaunchArgs, map[string]any{"task_id": "shell_y", "backgrounded": true, "status": "Running"}))
 	assert.Empty(t, sink.BackgroundTasks())
 }
 
-// fakeShellJobs models the explicit Codewhale 0.10.0 jobs behavior.
-// list_jobs removes final jobs started more than an hour earlier before constructing its result, through FINISHED_SHELL_MAX_AGE.
-// inspect_job removes nothing.
-// This historical fixture differs from Codewhale 0.10.1, which prunes through these limits:
-//   - Finish age.
-//   - Record count.
-//   - Retained bytes.
+// fakeShellJobs supplies current retained job receipts and explicit retention eviction.
 type fakeShellJobs struct {
 	mu      sync.Mutex
 	status  string
-	old     bool
 	evicted bool
 }
 
@@ -876,9 +897,6 @@ func serveShellJobs(rt *fakeRuntime) *fakeShellJobs {
 	rt.handle(http.MethodGet, threadPath(testThreadID, threadRouteJobs), func(w http.ResponseWriter, _ *http.Request) {
 		jobs.mu.Lock()
 		defer jobs.mu.Unlock()
-		if jobs.old && jobs.status != "Running" {
-			jobs.evicted = true
-		}
 		listed := []map[string]any{{"id": "shell_other", "job_id": "shell_other", "status": "Completed"}}
 		if !jobs.evicted {
 			listed = append(listed, map[string]any{"id": testShellTask, "job_id": testShellTask, "status": jobs.status})
@@ -927,8 +945,7 @@ func pollerStopped(t *testing.T, a *Agent) {
 	}, 30*time.Second, 5*time.Millisecond, "the poller ends once no job runs")
 }
 
-// From 0.10.0 the runtime lists the thread's jobs, and a poller reads the end
-// that the event stream never states.
+// The current job endpoint supplies completion that the thread event stream does not state.
 func TestTheJobsPollerClosesAJobThatEnded(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -954,47 +971,40 @@ func TestTheJobsPollerClosesAJobThatEnded(t *testing.T) {
 	testutil.WaitForTimer(t, ctx, poll)
 	clock.Advance(shellPollInterval).MustWait(ctx)
 	testutil.WaitForTimer(t, ctx, poll)
-	assert.Len(t, rt.requestsTo(http.MethodGet, threadPath(testThreadID, threadRouteJobs)), 1, "the list is read once, to learn that the routes exist")
+	assert.Empty(t, rt.requestsTo(http.MethodGet, threadPath(testThreadID, threadRouteJobs)), "the current poller reads each retained job directly")
 	assert.Len(t, rt.requestsTo(http.MethodGet, shellJobRoute(testThreadID, testShellTask)), 3)
 }
 
 // A list error other than a missing route supplies no capability result.
 // Ask again on the next tick.
-func TestTheJobsPollerAsksAgainAfterAFailedProbe(t *testing.T) {
+func TestTheJobsPollerRetriesATransientJobReadFailure(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
-	serveShellJobs(rt)
-	listRoute := threadPath(testThreadID, threadRouteJobs)
+	jobs := serveShellJobs(rt)
+	route := shellJobRoute(testThreadID, testShellTask)
+	served := rt.handlerFor(http.MethodGet, route)
 	var failed atomic.Bool
-	served := rt.handlerFor(http.MethodGet, listRoute)
-	rt.handle(http.MethodGet, listRoute, func(w http.ResponseWriter, r *http.Request) {
+	rt.handle(http.MethodGet, route, func(w http.ResponseWriter, r *http.Request) {
 		if failed.CompareAndSwap(false, true) {
-			writeFakeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": "busy", "status": 500}})
+			writeFakeJSON(w, 500, map[string]any{"error": map[string]any{"message": "busy", "status": 500}})
 			return
 		}
 		served(w, r)
 	})
-	a, _, clock, poll, ctx := startJobsPoller(t, rt)
-
+	a, sink, clock, poll, ctx := startJobsPoller(t, rt)
 	clock.Advance(shellPollInterval).MustWait(ctx)
 	testutil.WaitForTimer(t, ctx, poll)
-	a.Mu.Lock()
-	routes := a.shells.jobsRoutes
-	a.Mu.Unlock()
-	assert.Equal(t, jobsRoutesUnknown, routes)
-
+	row, _ := sink.BackgroundTask("call_start")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	jobs.set(func(job *fakeShellJobs) { job.status = "Failed" })
 	clock.Advance(shellPollInterval).MustWait(ctx)
-	testutil.WaitForTimer(t, ctx, poll)
-	a.Mu.Lock()
-	routes = a.shells.jobsRoutes
-	a.Mu.Unlock()
-	assert.Equal(t, jobsRoutesServed, routes)
-	assert.Len(t, rt.requestsTo(http.MethodGet, listRoute), 2)
+	pollerStopped(t, a)
+	row, _ = sink.BackgroundTask("call_start")
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Len(t, rt.requestsTo(http.MethodGet, route), 2)
 }
 
-// The explicit Codewhale 0.10.0 fixture removes a final job based on its old start time while listing jobs.
-// Read the individual job instead, which performs no removal.
-// Retain this older counterexample separately from 0.10.1's finish-time retention behavior.
+// Direct inspection preserves a finished receipt without triggering list cleanup.
 func TestTheJobsPollerReadsTheEndOfAJobThatRanForAnHour(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -1004,7 +1014,6 @@ func TestTheJobsPollerReadsTheEndOfAJobThatRanForAnHour(t *testing.T) {
 	clock.Advance(shellPollInterval).MustWait(ctx)
 	testutil.WaitForTimer(t, ctx, poll)
 	jobs.set(func(j *fakeShellJobs) {
-		j.old = true
 		j.status = "Failed"
 	})
 	clock.Advance(shellPollInterval).MustWait(ctx)
@@ -1033,48 +1042,10 @@ func TestTheJobsPollerClosesAJobThatTheRuntimeForgot(t *testing.T) {
 	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, task.Status)
 }
 
-// Codewhale 0.9.13 has no jobs route.
-// One route-level not-found response stops the poller for the process lifetime.
-func TestTheJobsPollerStopsOnAMissingRoute(t *testing.T) {
-	t.Parallel()
-	rt := newFakeRuntime(t)
-	route := threadPath(testThreadID, threadRouteJobs)
-	clock := testutil.NewQuartzMock(t)
-	a, sink := newTestAgentWithClock(t, rt, clock)
-	poll := clock.Trap().NewTimer(shellPollTimerTag)
-	t.Cleanup(poll.Close)
-	ctx := testutil.DeadlineContext(t)
-	launchShellJob(a, 1, "call_start")
-
-	testutil.WaitForTimer(t, ctx, poll)
-	clock.Advance(shellPollInterval).MustWait(ctx)
-	require.Eventually(t, func() bool {
-		a.Mu.Lock()
-		defer a.Mu.Unlock()
-		return a.shells.jobsRoutes == jobsRoutesMissing && !a.shells.polling
-	}, 30*time.Second, 5*time.Millisecond)
-	assert.Len(t, rt.requestsTo(http.MethodGet, route), 1)
-
-	// A second job starts no poller, and its row stays open until something
-	// reports its end.
-	a.HandleOutput(toolStartEvent(10, "item_2", "call_second", contracts.CodewhaleToolTaskShellStart, shellLaunchArgs))
-	a.HandleOutput(toolEndEvent(11, "item.completed", "item_2", "call_second", contracts.CodewhaleToolTaskShellStart, "started", shellLaunchArgs,
-		map[string]any{"task_id": "shell_second", "backgrounded": true, "status": "Running"}))
-	a.Mu.Lock()
-	polling := a.shells.polling
-	a.Mu.Unlock()
-	assert.False(t, polling)
-	task, _ := sink.BackgroundTask("call_second")
-	assert.Equal(t, bgtask.StatusRunning, task.Status)
-}
-
 // The runtime ends every job with the process that started it.
 func TestAnExitStopsEveryJobThatRuns(t *testing.T) {
 	t.Parallel()
-	a, sink := newTestAgent(t, nil)
-	a.Mu.Lock()
-	a.shells.jobsRoutes = jobsRoutesMissing
-	a.Mu.Unlock()
+	a, sink := newTestAgentWithClock(t, nil, testutil.NewQuartzMock(t))
 	launchShellJob(a, 1, "call_start")
 
 	a.Stop()
@@ -1128,7 +1099,7 @@ func TestStopEndsTheRequestOfTheJobsPoller(t *testing.T) {
 	rt := newFakeRuntime(t)
 	clock := testutil.NewQuartzMock(t)
 	a, sink := newTestAgentWith(t, rt, testAgentOptions{clock: clock, apiTimeout: time.Hour})
-	entered := blockUntilCancelled(t, rt, http.MethodGet, threadPath(testThreadID, threadRouteJobs))
+	entered := blockUntilCancelled(t, rt, http.MethodGet, shellJobRoute(testThreadID, testShellTask))
 	poll := clock.Trap().NewTimer(shellPollTimerTag)
 	t.Cleanup(poll.Close)
 	ctx := testutil.DeadlineContext(t)

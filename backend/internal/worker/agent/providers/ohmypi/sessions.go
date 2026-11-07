@@ -350,6 +350,8 @@ func canonicalPath(path string) string {
 // header, a message, or a compaction.
 type sessionRecord struct {
 	Type         string  `json:"type"`
+	Version      int     `json:"version"`
+	V            int     `json:"v"`
 	ID           string  `json:"id"`
 	Cwd          string  `json:"cwd"`
 	Title        *string `json:"title"`
@@ -374,11 +376,9 @@ type sessionHead struct {
 //
 // The title follows omp's own lister (`scanSessionFile`), then omp's picker:
 //
-//  1. The title slot, when it holds a title. A slot that holds a BLANK title
-//     clears the header's title: omp writes that when a user removes the title.
-//  2. The header's title, when there is no slot.
-//  3. The short summary of the first compaction in the head.
-//  4. The first user message.
+//  1. The title slot. A blank title clears any title in the session header.
+//  2. The short summary of the first compaction in the head.
+//  3. The first user message.
 //
 // omp's picker hides an EMPTY session: no title, no user message, and no reply.
 // The reader skips it too, since it holds nothing to resume.
@@ -406,8 +406,7 @@ func readSession(entry sessionstore.Entry, workingDir, canonicalDir string) (age
 }
 
 // parseSessionHead reads the records of a session file's head. It reports false
-// for a file that is not an omp session: omp writes the header as the first
-// record, or as the second after the title slot.
+// for a file that lacks the current title slot followed by its session header.
 func parseSessionHead(lines [][]byte) (sessionHead, bool) {
 	var head sessionHead
 	var slot *sessionRecord
@@ -421,10 +420,10 @@ func parseSessionHead(lines [][]byte) (sessionHead, bool) {
 		}
 		if head.header == nil {
 			switch {
-			case i == 0 && record.Type == "title":
+			case i == 0 && record.Type == "title" && record.V == 1 && record.Title != nil:
 				slot = &record
 				continue
-			case record.Type == "session" && strings.TrimSpace(record.ID) != "":
+			case i == 1 && slot != nil && record.Type == "session" && record.Version == 3 && strings.TrimSpace(record.ID) != "":
 				head.header = &record
 				continue
 			default:
@@ -453,11 +452,6 @@ func parseSessionHead(lines [][]byte) (sessionHead, bool) {
 	if head.header == nil {
 		return sessionHead{}, false
 	}
-	switch {
-	case slot != nil && slot.Title != nil:
-		head.title = strings.TrimSpace(*slot.Title)
-	case head.header.Title != nil:
-		head.title = strings.TrimSpace(*head.header.Title)
-	}
+	head.title = strings.TrimSpace(*slot.Title)
 	return head, true
 }

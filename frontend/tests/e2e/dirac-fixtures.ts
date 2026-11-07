@@ -8,11 +8,8 @@ import type { AgentWorkspace } from './helpers/workspace'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DIRAC_AGENT, nativeContext } from './dirac/scenarios'
-import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { createProviderTest } from './provider-fixture-factory'
-
-export const DIRAC_E2E_SKIP_REASON: string | null = missingBinaryReason('dirac', 'Dirac E2E requires a dirac CLI on PATH')
 
 /** The asking workspace opens its agent only after the isolated Dirac home turns automatic approval off. */
 const askingDiracWorkspace = authenticatedAgentWorkspace({ ...DIRAC_AGENT, prefix: 'dirac-e2e-ask' })
@@ -20,7 +17,6 @@ const askingDiracWorkspace = authenticatedAgentWorkspace({ ...DIRAC_AGENT, prefi
 export const diracTest = createProviderTest({
   agent: DIRAC_AGENT,
   nativeContext,
-  skipReason: DIRAC_E2E_SKIP_REASON,
   workspaceName: 'authenticatedDiracWorkspace',
 }).extend<{
   approvalDisabledDiracHome: string

@@ -1,9 +1,9 @@
 import type { FileEditDiff } from '../../../model/fileEditDiff'
 import type { AntigravityStep } from './toolCommon'
 import { ANTIGRAVITY_TOOL } from '~/generated/contracts/antigravity-protocol'
-import { pickObject, pickString } from '~/lib/jsonPick'
-import { fileEditDiffFromOldNew, fileEditDiffFromUnifiedPatch, fileEditDiffFromWholeFile } from '../../../model/fileEditDiff'
-import { filePathFromURI } from './read'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { fileUriToPath } from '~/lib/paths'
+import { fileEditDiffFromHunks, fileEditDiffFromOldNew, fileEditDiffFromWholeFile } from '../../../model/fileEditDiff'
 
 export function antigravityFileChange(step: AntigravityStep): FileEditDiff[] {
   const name = String(step.toolCall.name ?? '')
@@ -26,28 +26,51 @@ export function antigravityFileChange(step: AntigravityStep): FileEditDiff[] {
 export function antigravityLandedChanges(step: AntigravityStep): FileEditDiff[] | null {
   const action = pickObject(step.raw, 'codeAction')
   const command = pickObject(pickObject(action, 'actionSpec'), 'command')
-  const path = filePathFromURI(pickString(pickObject(command, 'file'), 'absoluteUri'))
-  const lines = pickObject(pickObject(pickObject(action, 'actionResult'), 'edit'), 'diff')?.unifiedDiff
-  const entries = pickObject(lines as Record<string, unknown> | undefined, 'lines')
-  if (!path || !Array.isArray(entries))
+  const uri = pickString(pickObject(command, 'file'), 'absoluteUri')
+  const path = fileUriToPath(uri) ?? uri
+  const diff = pickObject(pickObject(pickObject(action, 'actionResult'), 'edit'), 'diff')
+  const entries = pickObject(diff, 'unifiedDiff')?.lines
+  if (!path || !Array.isArray(entries) || entries.length === 0)
     return null
-  const patch = entries.flatMap((entry) => {
-    if (typeof entry !== 'object' || entry === null)
-      return []
-    const record = entry as Record<string, unknown>
-    const text = pickString(record, 'text')
-    const type = pickString(record, 'type')
-    const prefix = type.includes('ADD')
-      ? '+'
-      : type.includes('DELETE') || type.includes('REMOVE')
-        ? '-'
-        : ' '
-    return [`${prefix}${text}`]
-  }).join('\n')
-  const change = fileEditDiffFromUnifiedPatch(path, patch)
-  return change
-    ? [
-        { ...change, operation: 'edit' },
-      ]
-    : null
+  const lines: string[] = []
+  let oldLines = 0
+  let newLines = 0
+  for (const entry of entries) {
+    if (!isObject(entry) || (entry.text !== undefined && entry.text !== null && typeof entry.text !== 'string'))
+      return null
+    const type = pickString(entry, 'type')
+    let prefix: string
+    switch (type) {
+      case 'UNIFIED_DIFF_LINE_TYPE_INSERT':
+        prefix = '+'
+        break
+      case 'UNIFIED_DIFF_LINE_TYPE_DELETE':
+        prefix = '-'
+        break
+      case 'UNIFIED_DIFF_LINE_TYPE_UNCHANGED':
+        prefix = ' '
+        break
+      default:
+        return null
+    }
+    for (const text of pickString(entry, 'text').split('\n')) {
+      lines.push(prefix + text)
+      if (prefix !== '+')
+        oldLines++
+      if (prefix !== '-')
+        newLines++
+    }
+  }
+  const change = fileEditDiffFromHunks(path, [
+    {
+      oldStart: oldLines ? 1 : 0,
+      oldLines,
+      newStart: newLines ? 1 : 0,
+      newLines,
+      lines,
+    },
+  ])
+  return [
+    { ...change, operation: 'edit', showLineNumbers: false },
+  ]
 }

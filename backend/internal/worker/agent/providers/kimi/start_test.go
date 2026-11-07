@@ -45,17 +45,6 @@ func TestKimiConnect(t *testing.T) {
 		assert.Zero(t, fake.socketDialCount(), "the stream opens only after the server is known")
 	})
 
-	t.Run("refuses a server of the legacy CLI", func(t *testing.T) {
-		t.Parallel()
-		fake, server := newFakeKap(t)
-		fake.mu.Lock()
-		fake.version = "1.9.9"
-		fake.mu.Unlock()
-		_, err := connectOffline(t, server.URL, fakeKapToken)
-		require.ErrorIs(t, err, errKimiUnsupportedVersion)
-		assert.Contains(t, err.Error(), "1.9.9")
-	})
-
 	t.Run("reports a model catalog it cannot read", func(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)

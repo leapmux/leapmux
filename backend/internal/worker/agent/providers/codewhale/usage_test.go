@@ -83,23 +83,29 @@ func TestTurnEndContentCarriesTheCountAndTheUsage(t *testing.T) {
 	assert.Contains(t, metadata, contracts.SessionInfoKeyContextUsage)
 }
 
-func TestTheContextRouteIsReadOnlyWhereItExists(t *testing.T) {
+func TestTheCurrentContextRouteNeedsNoReleaseProbe(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
 	route := threadPath(testThreadID, threadRouteContext)
 	rt.respondJSON(http.MethodGet, route, http.StatusOK, map[string]any{"window_tokens": 1000, "input_tokens": 10})
-	a, _ := newTestAgent(t, rt)
+	a, sink := newTestAgent(t, rt)
 	a.refreshContextUsage()
-	assert.Empty(t, rt.requestsTo(http.MethodGet, route), "0.9.13 has no context route")
+	require.Eventually(t, func() bool { _, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage); return ok }, 30*time.Second, time.Millisecond)
+	assert.Len(t, rt.requestsTo(http.MethodGet, route), 1)
+}
 
-	assert.True(t, a.probeContextRoute(testThreadID))
-	a.runtime.hasContextRoute = true
+func TestAFailedContextReadDoesNotDisableTheNextRefresh(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	route := threadPath(testThreadID, threadRouteContext)
+	rt.respondStatus(http.MethodGet, route, 500, "busy")
+	a, sink := newTestAgent(t, rt)
 	a.refreshContextUsage()
-	assert.Eventually(t, func() bool { return len(rt.requestsTo(http.MethodGet, route)) == 2 }, 30*time.Second, 5*time.Millisecond)
-
-	missing := newFakeRuntime(t)
-	b, _ := newTestAgent(t, missing)
-	assert.False(t, b.probeContextRoute(testThreadID))
+	require.Eventually(t, func() bool { return len(rt.requestsTo(http.MethodGet, route)) == 1 }, 30*time.Second, time.Millisecond)
+	rt.respondJSON(http.MethodGet, route, 200, map[string]any{"window_tokens": 1000, "input_tokens": 10})
+	a.refreshContextUsage()
+	require.Eventually(t, func() bool { _, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage); return ok }, 30*time.Second, time.Millisecond)
+	assert.Len(t, rt.requestsTo(http.MethodGet, route), 2)
 }
 
 // A fresh thread's report can state the window with no context total yet. The

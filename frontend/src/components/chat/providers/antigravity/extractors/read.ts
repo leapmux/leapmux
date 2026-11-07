@@ -3,12 +3,14 @@ import type { ReadRequest } from '../../../model/tools/read'
 import type { AntigravityStep } from './toolCommon'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { pickObject, pickString } from '~/lib/jsonPick'
+import { fileUriToPath } from '~/lib/paths'
 
 export function antigravityReadRequest(step: AntigravityStep): ReadRequest {
   const view = pickObject(step.raw, 'viewFile')
   const binaryURI = pickString(pickObject(view, 'binaryData'), 'uri') || pickString(pickObject(view, 'mediaData'), 'uri')
-  return { path: pickString(step.args, 'Path') || filePathFromURI(pickString(view, 'absolutePathUri') || binaryURI) }
+  const uri = pickString(view, 'absolutePathUri') || binaryURI
+  return { path: pickString(step.args, 'Path') || fileUriToPath(uri) || uri }
 }
 
 export function antigravityReadResult(step: AntigravityStep): ReadFileResult {
@@ -29,20 +31,6 @@ export function antigravityReadResult(step: AntigravityStep): ReadFileResult {
   return { lines, fallbackContent: body }
 }
 
-export function filePathFromURI(uri: string): string {
-  if (!uri.startsWith('file:'))
-    return uri
-  try {
-    const path = decodeURIComponent(new URL(uri).pathname)
-    return /^\/[A-Z]:/i.test(path)
-      ? path.slice(1)
-      : path
-  }
-  catch {
-    return uri
-  }
-}
-
 export function antigravityReadImages(step: AntigravityStep): ImageResultSource[] {
   const view = pickObject(step.raw, 'viewFile')
   const binary = pickObject(view, 'binaryData')
@@ -50,6 +38,7 @@ export function antigravityReadImages(step: AntigravityStep): ImageResultSource[
   const data = pickString(binary, 'base64Data') || pickString(media, 'inlineData')
   if (!data)
     return []
+  const uri = pickString(binary, 'uri') || pickString(media, 'uri') || pickString(view, 'absolutePathUri')
   const image = parseImageBlock({
     type: 'image',
     data,
@@ -57,26 +46,7 @@ export function antigravityReadImages(step: AntigravityStep): ImageResultSource[
   })
   return image
     ? [
-        withFallbackFilePath(image, filePathFromURI(pickString(binary, 'uri') || pickString(media, 'uri') || pickString(view, 'absolutePathUri'))),
+        withFallbackFilePath(image, fileUriToPath(uri) ?? uri),
       ]
     : []
-}
-
-export function antigravityMcpImages(step: AntigravityStep): ImageResultSource[] {
-  const mcp = pickObject(step.raw, 'mcpTool')
-  const images = Array.isArray(mcp?.images)
-    ? mcp.images
-    : []
-  return images.filter(isObject).flatMap((entry) => {
-    const image = parseImageBlock({
-      type: 'image',
-      data: pickString(entry, 'base64Data'),
-      mimeType: pickString(entry, 'mimeType'),
-    })
-    return image
-      ? [
-          withFallbackFilePath(image, filePathFromURI(pickString(entry, 'uri'))),
-        ]
-      : []
-  })
 }

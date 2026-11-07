@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from '
 import { isAbsolute, join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
+import { codewhaleRequestMessages, readCodewhaleRuntimeEvent } from './runtimeContext'
 
 export type CodewhaleNativeMode = 'agent' | 'plan' | 'operate'
 
@@ -56,11 +57,16 @@ export function readCodewhaleNativeMode(options: {
 export function hasCodewhaleOperateContract(request: MockModelRequestRecord): boolean {
   if (request.protocol !== 'openai-chat-completions' || !isObject(request.body) || !Array.isArray(request.body.messages))
     return false
-  return request.body.messages.filter(isObject).some(message => message.role === 'user'
-    && typeof message.content === 'string'
-    && message.content.startsWith('<codewhale:runtime_event kind="operate_contract" visibility="internal">\n')
-    && message.content.endsWith('</codewhale:runtime_event>\n<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>')
-    && message.content.includes('Orchestrate by default:')
-    && message.content.includes('`workflow`')
-    && message.content.includes('parallel'))
+  for (const { message, content } of codewhaleRequestMessages(request.body.messages)) {
+    if (!isObject(message) || message.role !== 'user')
+      continue
+    const event = readCodewhaleRuntimeEvent(content)
+    if (event?.kind === 'operate_contract'
+      && event.text.includes('Orchestrate by default:')
+      && event.text.includes('`workflow`')
+      && event.text.includes('parallel')) {
+      return true
+    }
+  }
+  return false
 }
