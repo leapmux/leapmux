@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,23 +85,36 @@ func TestAntigravityAcceptEditsResolvesSymlinksBeforeParentSegments(t *testing.T
 				link := filepath.Join(workspace, "link")
 				require.NoError(t, os.Symlink(target, link))
 				raw := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "secret.txt"
-				actual := filepath.Join(outside, "secret.txt")
+				outsideTarget := filepath.Join(outside, "secret.txt")
 				if existing {
-					require.NoError(t, os.WriteFile(actual, []byte("original"), 0o600))
+					require.NoError(t, os.WriteFile(outsideTarget, []byte("original"), 0o600))
 				}
-				assert.False(t, pathWithinWorkspace(workspace, raw), "the raw path reaches the outside directory")
+				assert.False(t, pathWithinWorkspace(workspace, raw), "the unresolved path is not eligible for automatic approval")
 				a, _ := testAgent(t)
 				a.workspace = workspace
 				permission := &permissionInteraction{}
 				permission.Resource.Action = contracts.AntigravityPermissionActionWriteFile
 				permission.Resource.Target = raw
 				assert.False(t, a.autoAnswerLocked(contracts.AntigravityModeAcceptEdits, permission))
-				require.NoError(t, os.WriteFile(raw, []byte("outside marker"), 0o600))
-				content, err := os.ReadFile(actual)
+				writtenTarget := outsideTarget
+				untouchedTarget := filepath.Join(workspace, "secret.txt")
+				if runtime.GOOS == "windows" {
+					// Win32 normalizes parent segments before following the symlink.
+					// Permission checks still reject the unresolved path on every OS.
+					writtenTarget, untouchedTarget = untouchedTarget, writtenTarget
+				}
+				require.NoError(t, os.WriteFile(raw, []byte("native write marker"), 0o600))
+				content, err := os.ReadFile(writtenTarget)
 				require.NoError(t, err)
-				assert.Equal(t, "outside marker", string(content))
-				_, err = os.Stat(filepath.Join(workspace, "secret.txt"))
-				assert.ErrorIs(t, err, os.ErrNotExist)
+				assert.Equal(t, "native write marker", string(content))
+				if runtime.GOOS == "windows" && existing {
+					content, err = os.ReadFile(untouchedTarget)
+					require.NoError(t, err)
+					assert.Equal(t, "original", string(content))
+				} else {
+					_, err = os.Stat(untouchedTarget)
+					assert.ErrorIs(t, err, os.ErrNotExist)
+				}
 			})
 		}
 	}
@@ -257,14 +271,23 @@ func TestAntigravityControlReplyRechecksRetirement(t *testing.T) {
 }
 
 func TestAntigravityPlanReadUsesCheckedDescriptor(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "plan.md")
-	require.NoError(t, os.WriteFile(path, []byte("checked plan"), 0o600))
+	directory := t.TempDir()
+	original := filepath.Join(directory, "original.md")
+	replacement := filepath.Join(directory, "replacement.md")
+	path := filepath.Join(directory, "plan.md")
+	require.NoError(t, os.WriteFile(original, []byte("checked plan"), 0o600))
+	require.NoError(t, os.WriteFile(replacement, []byte("replacement plan"), 0o600))
+	require.NoError(t, os.Symlink(original, path))
 	file, err := os.Open(path)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, file.Close()) }()
-	replacement := path + ".replacement"
-	require.NoError(t, os.WriteFile(replacement, []byte("replacement plan"), 0o600))
-	require.NoError(t, os.Rename(replacement, path))
+	// Replacing the alias works on Windows, where an ordinary open handle
+	// prevents replacing its target. Reopening the alias must read other bytes.
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(replacement, path))
+	current, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "replacement plan", string(current))
 	content, err := readPlanContent(file)
 	require.NoError(t, err)
 	assert.Equal(t, "checked plan", string(content))
