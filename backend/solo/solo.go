@@ -31,6 +31,7 @@ import (
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/lifecycle"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
 
 	"github.com/leapmux/leapmux/util/drain"

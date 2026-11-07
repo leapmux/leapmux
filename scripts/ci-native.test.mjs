@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
+import { GO_TOOL_NAMES } from './go-tools.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
@@ -41,6 +42,21 @@ function commands(tasks, name, visited = new Set()) {
 }
 
 describe('native CI validation', () => {
+  it('runs every isolated Go tool through its module runner', () => {
+    const directTool = new RegExp(`\\bgo\\s+tool\\s+(?:${GO_TOOL_NAMES.join('|')})\\b`)
+    const directCommands = []
+    for (const [name, task] of Object.entries(readYaml('Taskfile.yaml').tasks)) {
+      for (const entry of task.cmds ?? []) {
+        const command = typeof entry === 'string'
+          ? entry
+          : entry.cmd
+        if (typeof command === 'string' && directTool.test(command))
+          directCommands.push(`${name}: ${command}`)
+      }
+    }
+    expect(directCommands).toEqual([])
+  })
+
   it('serializes SQL generators that compile the same Go tool on a cold cache', () => {
     const task = readYaml('Taskfile.yaml').tasks['generate-sqlc']
     expect(task.deps ?? []).toEqual([])

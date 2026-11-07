@@ -301,7 +301,7 @@ func TestServeRenewsTheLeaseDuringTheDrain(t *testing.T) {
 		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
 		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
 	}
-	srv, err := NewServer(cfg, withRevocationWatcherOptions(200*time.Millisecond))
+	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir), withRevocationWatcherOptions(200*time.Millisecond))
 	require.NoError(t, err)
 
 	// The drain holder: a CRDT manager whose goroutine parks until the
@@ -367,7 +367,7 @@ func TestServeEndsServingCtxWhenTheLeaseIsRefused(t *testing.T) {
 		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
 		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
 	}
-	srv, err := NewServer(cfg)
+	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir))
 	require.NoError(t, err)
 	_, err = srv.store.RevocationEvents().AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
 		HolderID: "rival-holder", LeaseDuration: time.Hour,
@@ -421,7 +421,8 @@ func newShutdownTestServer(t *testing.T, opts ...ServerOption) *Server {
 			return &shutdownTestListener{closed: make(chan struct{})}, nil
 		}
 	})
-	srv, err := NewServer(&config.Config{DataDir: t.TempDir(), Listen: []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")}, Storage: config.StorageConfig{Type: config.StorageTypeSQLite}}, opts...)
+	cfg := &config.Config{DataDir: t.TempDir(), Listen: []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")}, Storage: config.StorageConfig{Type: config.StorageTypeSQLite}}
+	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir), opts...)
 	require.NoError(t, err)
 	return srv
 }
@@ -465,10 +466,12 @@ func TestNewServerClosesLocalListenersAfterBindFailure(t *testing.T) {
 			}
 			listener := &shutdownTestListener{closed: make(chan struct{}), closeErr: tc.closeErr}
 			var calls []string
-			srv, err := NewServer(&config.Config{
+			cfg := &config.Config{
 				DataDir: t.TempDir(), Listen: entries,
 				Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
-			}, func(options *serverOptions) {
+			}
+			lease := testHubLease(t, cfg.DataDir)
+			srv, err := NewServer(cfg, lease, func(options *serverOptions) {
 				options.listenLocal = func(entry string) (net.Listener, error) {
 					calls = append(calls, entry)
 					if len(calls) > tc.failAfter {
@@ -485,6 +488,7 @@ func TestNewServerClosesLocalListenersAfterBindFailure(t *testing.T) {
 				})
 			}
 			require.ErrorIs(t, err, bindErr)
+			assert.True(t, lease.Closed(), "construction failure must release the directory lease")
 			assert.Nil(t, srv)
 			assert.Equal(t, entries[:tc.failAfter+1], calls)
 			if tc.failAfter > 0 {

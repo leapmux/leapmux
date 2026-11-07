@@ -66,7 +66,8 @@ func startOutputCapture(attempt io.Writer, cancel context.CancelFunc, execution 
 	for index, read := range readers {
 		destination := attempt
 		if execution == lifecycle.ExecutionForeground {
-			destination = io.MultiWriter(capture.original[index], attempt)
+			// Keep diagnostics even when the console reader disappears.
+			destination = io.MultiWriter(attempt, consoleMirror{capture.original[index]})
 		}
 		go func() {
 			_, copyErr := io.Copy(destination, read)
@@ -97,4 +98,16 @@ func (c *outputCapture) Close() error {
 		}
 	})
 	return c.err
+}
+
+// consoleMirror tolerates a closed pipe while retaining every other write
+// failure. The attempt log remains the required output destination.
+type consoleMirror struct{ io.Writer }
+
+func (w consoleMirror) Write(data []byte) (int, error) {
+	n, err := w.Writer.Write(data)
+	if isClosedConsolePipe(err) {
+		return len(data), nil
+	}
+	return n, err
 }
