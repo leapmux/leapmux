@@ -35,9 +35,9 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			coordinator := &registrationOverlap{
 				firstInserted: make(chan struct{}), secondReady: make(chan struct{}), release: make(chan struct{}),
 			}
-			env := regKeyEnvFromStore(t, st, testConfig(), maxWorkersPerUser(1), func(st store.Store) store.Store {
+			env := regKeyEnvFromStore(t, st, testConfig(), maxWorkersPerUser(1), regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 				return registrationOverlapStore{Store: st, coordinator: coordinator}
-			}, nil)
+			}}, nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			owner := userid.MustNew(env.adminID(t))
@@ -104,9 +104,9 @@ func TestConcurrentRegistrationOfOneAttemptReturnsRecoverableConflict(t *testing
 			decorate := func(st store.Store) store.Store { return registrationKeyReadStore{Store: st, barrier: barrier} }
 			var env *regKeyEnv
 			if backend == "sqlite" {
-				env = newRegKeyEnv(t, testConfig(), nil, decorate)
+				env = newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{connectorStore: decorate})
 			} else {
-				env = regKeyEnvFromStore(t, registrationStore(t, backend), testConfig(), nil, decorate, nil)
+				env = regKeyEnvFromStore(t, registrationStore(t, backend), testConfig(), nil, regKeyEnvOptions{connectorStore: decorate}, nil)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -355,7 +355,7 @@ func (env *regKeyEnv) registerCall(t *testing.T, ctx context.Context, key string
 // transaction commits, and recovers the same worker and token through
 // the challenge protocol with exactly one row.
 func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
-	env := newRegKeyEnv(t, testConfig(), nil, nil)
+	env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
 	ctx := context.Background()
 	admin := userid.MustNew(env.adminID(t))
 	key := id.Generate()
@@ -433,7 +433,7 @@ func recoverThroughChallenge(t *testing.T, ctx context.Context, env *regKeyEnv, 
 // from its pending data (a fresh process state) and the Hub (an empty
 // challenge store): a fresh challenge recovers the committed identity.
 func TestRegistrationRecoveryAcrossClientAndHubRestart(t *testing.T) {
-	env := newRegKeyEnv(t, testConfig(), nil, nil)
+	env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
 	ctx := context.Background()
 	admin := userid.MustNew(env.adminID(t))
 	key := id.Generate()
@@ -480,7 +480,7 @@ func TestRecoveryRechecksWorkerAndOwner(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := newRegKeyEnv(t, testConfig(), nil, nil)
+			env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
 			ctx := context.Background()
 			admin := userid.MustNew(env.adminID(t))
 			key := id.Generate()

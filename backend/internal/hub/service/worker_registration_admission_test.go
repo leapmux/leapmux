@@ -43,9 +43,9 @@ func TestRegisterRefusesADeletedRegistrationKeyCreator(t *testing.T) {
 func TestRegisterLocksTheOwnerBeforeItConsumesCountsAndCreates(t *testing.T) {
 	t.Parallel()
 	var calls []string
-	env := newRegKeyEnv(t, testConfig(), maxWorkersPerUser(1), func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), maxWorkersPerUser(1), regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return admissionStore{Store: st, calls: &calls}
-	})
+	}})
 	ctx := context.Background()
 	owner := userid.MustNew(env.adminID(t))
 	key := id.Generate()
@@ -65,9 +65,9 @@ func TestRegisterRefusesAConsumedKeyWithAnotherCreator(t *testing.T) {
 	t.Parallel()
 	for _, creator := range []string{"", "another-owner"} {
 		t.Run(map[bool]string{false: "different creator", true: "blank creator"}[creator == ""], func(t *testing.T) {
-			env := newRegKeyEnv(t, testConfig(), maxWorkersPerUser(1), func(st store.Store) store.Store {
+			env := newRegKeyEnv(t, testConfig(), maxWorkersPerUser(1), regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 				return changedKeyCreatorStore{Store: st, creator: creator}
-			})
+			}})
 			ctx := context.Background()
 			owner := userid.MustNew(env.adminID(t))
 			key := id.Generate()

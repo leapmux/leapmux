@@ -15,7 +15,7 @@ var ErrUnsupportedPlatform = errors.New("servicelaunch: this platform has no nat
 // supplies. Every operation states the unsupported platform, so a
 // controller never mistakes "no adapter" for "not installed".
 type UnsupportedManager struct {
-	// Platform names the running platform, for the error.
+	// Platform identifies the running platform, for the error.
 	Platform string
 }
 

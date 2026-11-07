@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os/signal"
 	"syscall"
@@ -55,7 +53,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 
 	// --hub defaults to the loopback hub in the configuration layer, so
 	// its PRESENCE is what the register command requires: registering
-	// against a default the operator never named would burn the key on
+	// against a default the operator never specified would burn the key on
 	// the wrong hub.
 	if !commandOptions.explicitHub {
 		return fmt.Errorf("--hub is required: the hub this worker registers with")
@@ -91,7 +89,14 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	// record did not get cleaned up: the registered state wins, the
 	// pending record must agree, and the cleanup finishes without a new
 	// registration.
-	if state, stateErr := files.LoadState(); stateErr == nil && state != nil && state.Registered() {
+	state, stateErr := files.LoadState()
+	if stateErr != nil {
+		return fmt.Errorf("load state: %w", stateErr)
+	}
+	if state != nil && !state.Registered() {
+		return fmt.Errorf("the saved registration is incomplete; preserve %s and recover its registration before registering again", cfg.StatePath())
+	}
+	if state != nil {
 		pending, pendingErr := files.LoadPendingRegistration()
 		if pendingErr != nil {
 			return pendingErr
@@ -121,8 +126,6 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 			return nil
 		}
 		return alreadyRegisteredError(cfg.StatePath())
-	} else if stateErr != nil {
-		return fmt.Errorf("load state: %w", stateErr)
 	}
 
 	// Load or durably publish the pending attempt record. A record from
@@ -133,7 +136,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 		return err
 	}
 	if pending == nil {
-		attemptID, err := newAttemptID()
+		attemptID, err := lifecycle.NewAttemptID()
 		if err != nil {
 			return err
 		}
@@ -181,7 +184,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	// Publish the complete registered state BEFORE removing the pending
 	// record: a crash between the two leaves both, and the branch above
 	// finishes the cleanup on the next run.
-	state := &config.State{
+	state = &config.State{
 		HubURL:      pending.HubURL,
 		WorkerID:    result.WorkerID,
 		AuthToken:   result.AuthToken,
@@ -212,7 +215,7 @@ func printWorkerRegistration(cfg *config.Config) {
 // the same pinned keys. A disagreement is never silently resolved.
 func pendingAgreesWithState(cfg *config.Config, pending *config.PendingRegistration, state *config.State) error {
 	if pending.HubURL != state.HubURL {
-		return fmt.Errorf("the pending registration names hub %s but the saved registration names %s; delete %s only if you know the saved one is yours",
+		return fmt.Errorf("the pending registration identifies hub %s but the saved registration identifies %s; delete %s only if you know the saved one is yours",
 			pending.HubURL, state.HubURL, cfg.PendingPath())
 	}
 	pendingKey, err := pending.CompositeKeypair()
@@ -235,14 +238,4 @@ func pendingAgreesWithState(cfg *config.Config, pending *config.PendingRegistrat
 		return fmt.Errorf("the pending registration's keys differ from the saved registration's keys; delete %s only if you know the saved one is yours", cfg.PendingPath())
 	}
 	return nil
-}
-
-// newAttemptID mints the durable attempt identity: 32 lowercase
-// hexadecimal characters.
-func newAttemptID() (string, error) {
-	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("mint an attempt identity: %w", err)
-	}
-	return hex.EncodeToString(buf[:]), nil
 }

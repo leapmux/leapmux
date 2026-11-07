@@ -98,23 +98,28 @@ func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 // SMTP so EmailRegistrationInstructions can run.
 func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *regKeyEnv {
 	t.Helper()
-	return newRegKeyEnv(t, cfg, seed, nil)
+	return newRegKeyEnv(t, cfg, seed, regKeyEnvOptions{})
 }
 
-// newRegKeyEnv builds a registration-key test env. connectorStore, when not
-// nil, wraps the store that the connector service alone reads, so a test can
+// newRegKeyEnv builds a registration-key test env. Its connectorStore option
+// wraps the store that the connector service alone reads, so a test can
 // act inside one of Connect's store calls; every other service reads the
 // store unwrapped.
-func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
+type regKeyEnvOptions struct {
+	connectorStore    func(store.Store) store.Store
+	deregisterEffects func(*notifier.Notifier, *crdt.Registry) *service.WorkerDeregisterEffects
+}
+
+func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, options regKeyEnvOptions) *regKeyEnv {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
-	return regKeyEnvFromStore(t, st, cfg, seed, connectorStore, nil)
+	return regKeyEnvFromStore(t, st, cfg, seed, options, nil)
 }
 
 // regKeyEnvFromStore exercises registration through the same services on a
 // caller-supplied backend, including databases with concurrent writers.
 // clock drives the connector's deadlines; nil gives the real clock.
-func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store, clock quartz.Clock) *regKeyEnv {
+func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, options regKeyEnvOptions, clock quartz.Clock) *regKeyEnv {
 	t.Helper()
 	if clock == nil {
 		clock = quartz.NewReal()
@@ -152,10 +157,24 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	// workers-changed notification goes through the CRDT registry, as there.
 	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() }, registry.BroadcastWorkersChanged)
 	connectorSt := st
-	if connectorStore != nil {
-		connectorSt = connectorStore(st)
+	if options.connectorStore != nil {
+		connectorSt = options.connectorStore(st)
 	}
-	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, pendingReqs, notif, registry, sendq.NewMaxBytesPoolForTest(), clock)
+	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), notif, registry.BroadcastWorkersChanged)
+	if options.deregisterEffects != nil {
+		effects = options.deregisterEffects(notif, registry)
+	}
+	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             connectorSt,
+		WorkerManager:     wMgr,
+		ChannelManager:    cMgr,
+		PendingRequests:   pendingReqs,
+		Notifier:          notif,
+		Registry:          registry,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             clock,
+		DeregisterEffects: effects,
+	})
 	// Both halves of max_workers_per_user, wired from one value exactly as
 	// hub/server.go does: the service caps registered ROWS, the registry caps
 	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
@@ -1057,7 +1076,7 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 	var renamed atomic.Bool
 	var connector atomic.Pointer[service.WorkerConnectorService]
 	redelivered := make(chan struct{})
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return renameAfterFirstReadStore{
 			Store: st, renamed: &renamed, username: "admin-raced",
 			// The rename's user-info observer, which runs on another goroutine
@@ -1069,7 +1088,7 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 				}()
 			},
 		}
-	})
+	}})
 	connector.Store(env.connector)
 	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-race")
 	require.Equal(t, "admin", greeting.GetRegisteredByUsername(), "the greeting holds the name read before the rename")
@@ -1092,9 +1111,9 @@ func TestConnect_ReadsTheUsernameOnce(t *testing.T) {
 		t.Skip("unix sockets are not available on Windows")
 	}
 	var reads atomic.Int64
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return userReadCountingStore{Store: st, reads: &reads}
-	})
+	}})
 	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-one-read")
 
 	renameUser(t, env.store, owner, "admin-counted-once")
@@ -1112,9 +1131,9 @@ func TestRedeliverWorkerIdentity_SendsNothingWhenTheAccountCannotBeRead(t *testi
 		t.Skip("unix sockets are not available on Windows")
 	}
 	var failReads atomic.Bool
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return userReadFailStore{Store: st, fail: &failReads}
-	})
+	}})
 	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-read-fails")
 
 	failReads.Store(true)
@@ -1140,9 +1159,9 @@ func TestConnect_GreetsWithNoUsernameWhenTheAccountCannotBeRead(t *testing.T) {
 	}
 	var failReads atomic.Bool
 	failReads.Store(true)
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return userReadFailStore{Store: st, fail: &failReads}
-	})
+	}})
 	stream, owner, greeting := connectAdminWorker(t, env, "hub-identity-unreadable")
 	assert.Equal(t, owner, greeting.GetRegisteredBy(), "the greeting still identifies the owner")
 	assert.Empty(t, greeting.GetRegisteredByUsername(), "an unread username is sent as none")
@@ -1168,9 +1187,9 @@ func TestRedeliverWorkerIdentity_ReadsNothingForAnOwnerWithNoConnectedWorker(t *
 		t.Skip("unix sockets are not available on Windows")
 	}
 	var reads atomic.Int64
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return userReadCountingStore{Store: st, reads: &reads}
-	})
+	}})
 	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-no-conn")
 
 	reads.Store(0)
@@ -1196,9 +1215,9 @@ func TestWorkerIdentityReadsHoldTheOwnersDeliveryLock(t *testing.T) {
 	}
 	var connector atomic.Pointer[service.WorkerConnectorService]
 	var held lockObservations
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return lockObservingStore{Store: st, connector: &connector, held: &held}
-	})
+	}})
 	connector.Store(env.connector)
 	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-lock")
 
@@ -1224,9 +1243,9 @@ func TestConnect_AStalledGreetingReadReleasesTheOwnersDeliveryLock(t *testing.T)
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
 	stalled := make(chan struct{})
-	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return stallUserReadStore{Store: st, reads: new(atomic.Int64), stallRead: 1, stalled: stalled}
-	}, clock)
+	}}, clock)
 	stream, worker := openAdminWorkerStream(t, env, "hub-identity-stall")
 	owner := worker.RegisteredBy
 
@@ -1282,10 +1301,10 @@ func TestRedeliverWorkerIdentity_AStalledReadEndsAtTheReadTimeout(t *testing.T) 
 	ctx := testutil.DeadlineContext(t)
 	clock := testutil.NewQuartzMock(t)
 	stalled := make(chan struct{})
-	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		// The first read is Connect's; the second is the re-delivery's.
 		return stallUserReadStore{Store: st, reads: new(atomic.Int64), stallRead: 2, stalled: stalled}
-	}, clock)
+	}}, clock)
 	stream, owner, _ := connectAdminWorker(t, env, "hub-identity-redeliver-stall")
 
 	redelivered := make(chan struct{})
@@ -1321,9 +1340,9 @@ func TestConnect_APanicInTheGreetingReadUnlocks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return panicUserReadStore{Store: st, reads: new(atomic.Int64), panicRead: 1}
-	})
+	}})
 	stream, worker := openAdminWorkerStream(t, env, "hub-identity-panic")
 
 	_, err := stream.Receive()
@@ -1341,9 +1360,9 @@ func TestConnect_APanicAfterTheRegistrationUnregisters(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return panicWorkerReadStore{Store: st}
-	})
+	}})
 	stream, worker := openAdminWorkerStream(t, env, "hub-worker-read-panic")
 
 	// The teardown can still write the queued greeting before the stream
@@ -1750,7 +1769,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 
 			var env *regKeyEnv
 			var once sync.Once
-			env = newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+			env = newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 				return authReadHookStore{Store: st, afterAuthRead: func(worker *store.Worker) {
 					once.Do(func() {
 						ctx := context.Background()
@@ -1762,7 +1781,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 						assert.NoError(t, env.notifier.SendDeregister(ctx, worker.ID))
 					})
 				}}
-			})
+			}})
 			token := env.login(t, "admin", "admin123")
 			createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
 				&leapmuxv1.CreateRegistrationKeyRequest{}, token))
@@ -1834,9 +1853,9 @@ func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return workerReadFailStore{Store: st}
-	})
+	}})
 	token := env.login(t, "admin", "admin123")
 	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
 		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
@@ -2416,7 +2435,7 @@ func TestConnectTagsOnlyADeletedWorkerAsPermanent(t *testing.T) {
 	// A mock clock never fires the hello deadline by itself, so a refusal
 	// that waited for it would never come, and the deadline context below
 	// would fail the subtest instead.
-	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, nil, testutil.NewQuartzMock(t))
+	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, regKeyEnvOptions{}, testutil.NewQuartzMock(t))
 	token := env.login(t, "admin", "admin123")
 	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
 		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
@@ -2513,9 +2532,9 @@ func TestConnectAnswersAStoreFaultInTheTokenReadAsInternal(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return workerFaultStore{Store: st}
-	})
+	}})
 
 	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 		env.serveOverUnixSocket(t, "hub-token-fault"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))

@@ -114,6 +114,7 @@ func reconcileNativeStatus(ctx context.Context, role lifecycle.Role, root string
 			status.Process.State = lifecycle.ProcessFailed
 			status.Readiness = new(lifecycle.ReadinessFailed)
 			status.Diagnostics = append(status.Diagnostics, lifecycle.Diagnostic{Kind: "native", Title: "Native startup failure", Body: native.Failure})
+			return status, fmt.Errorf("%w: %s", errNativeStartupFailed, native.Failure)
 		}
 	}
 	return status, nil
@@ -122,8 +123,9 @@ func reconcileNativeStatus(ctx context.Context, role lifecycle.Role, root string
 // errStoppedExit and errUnresponsiveExit carry the status exit codes
 // through runCLI's error path.
 var (
-	errStoppedExit      = fmt.Errorf("\x00stopped")
-	errUnresponsiveExit = fmt.Errorf("\x00unresponsive")
+	errNativeStartupFailed = errors.New("native startup failed")
+	errStoppedExit         = fmt.Errorf("\x00stopped")
+	errUnresponsiveExit    = fmt.Errorf("\x00unresponsive")
 )
 
 // executeModeStatusWithController reports process state and relevant diagnostics.
@@ -154,4 +156,19 @@ func executeModeStatusWithController(mode string, args []string, newController n
 		return errStoppedExit
 	}
 	return nil
+}
+
+// observeNativeStartupWithController observes application startup, including
+// native evidence before the application publishes its control interface.
+func observeNativeStartupWithController(ctx context.Context, configuration *lifecycleConfiguration, newController nativeControllerFactory) (lifecycle.Status, error) {
+	if err := validateLifecycleSelection(configuration); err != nil {
+		return lifecycle.Status{}, err
+	}
+	status, err := lifecycle.Observe(ctx, configuration.dataDirectory)
+	if status.Process.State == lifecycle.ProcessStopped || status.Process.State == lifecycle.ProcessFailed {
+		var nativeErr error
+		status, nativeErr = reconcileNativeStatus(ctx, configuration.role, configuration.dataDirectory, status, newController)
+		err = errors.Join(err, nativeErr)
+	}
+	return status, err
 }

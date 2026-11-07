@@ -48,7 +48,7 @@ type RegistrationOptions struct {
 	// caller cannot recover (nothing is lost by trying: a hub that never
 	// answers AlreadyExists never calls it).
 	Signer func(message []byte) ([]byte, error)
-	// Deadline bounds the WHOLE registration run, retries included.
+	// Deadline limits the WHOLE registration run, retries included.
 	// Zero applies DefaultRegistrationDeadline.
 	Deadline time.Duration
 }
@@ -71,7 +71,7 @@ func RegistrationOptionsFromKeypair(attemptID, registrationKey string, ck *noise
 	}, nil
 }
 
-// DefaultRegistrationDeadline bounds one registration command: five
+// DefaultRegistrationDeadline limits one registration command: five
 // minutes of retries with visible progress, then a failure the operator
 // can read.
 const DefaultRegistrationDeadline = 5 * time.Minute

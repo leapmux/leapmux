@@ -30,7 +30,11 @@ func managedRun(mode string, selection managedRunSelection) (*lifecycle.ServiceS
 	if err != nil {
 		return nil, nil, fmt.Errorf("managed launch cannot read its service specification: %w", err)
 	}
-	if _, err := servicelaunch.LaunchSpecFromService(spec); err != nil {
+	launch, err := servicelaunch.LaunchSpecFromService(spec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("managed launch has an invalid specification: %w", err)
+	}
+	if _, err := launch.LoadEnvironment(); err != nil {
 		return nil, nil, fmt.Errorf("managed launch has an invalid specification: %w", err)
 	}
 	canonical, err := lifecycle.CanonicalDir(spec.DataDirectory)

@@ -112,10 +112,10 @@ func TestWindowsSessionNativeAccountQueries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"username:1", "domain:1", "sid:user"}, reader.calls)
 	monitor := &windowsSessionMonitor{enumerate: func() ([]windowsSessionEntry, error) { return entries, nil }}
-	sessions, err := monitor.Sessions(AccountRef{ID: "S-1-5-21-1", Name: "user"})
+	sessions, err := monitor.Sessions(t.Context(), AccountRef{ID: "S-1-5-21-1", Name: "user"})
 	require.NoError(t, err)
 	assert.Empty(t, sessions, "equal usernames do not prove equal accounts")
-	_, err = monitor.Sessions(AccountRef{ID: "invalid"})
+	_, err = monitor.Sessions(t.Context(), AccountRef{ID: "invalid"})
 	require.Error(t, err)
 	_, err = translateWindowsSessions([]windowsSessionSnapshot{{ID: 1, State: wtsActive}, {ID: 2, State: 99}}, reader)
 	require.Error(t, err, "unknown native states cannot prove logout")
@@ -211,7 +211,7 @@ func TestWindowsSessionMonitorMatchesVerifiedAccount(t *testing.T) {
 			{ID: 6, Kind: SessionBatch},
 		}, nil
 	}}
-	sessions, err := monitor.Sessions(AccountRef{ID: "S-1-5-21-1", Name: "DOMAIN\\user"})
+	sessions, err := monitor.Sessions(t.Context(), AccountRef{ID: "S-1-5-21-1", Name: "DOMAIN\\user"})
 	require.NoError(t, err)
 	assert.Equal(t, []Session{{ID: "1", Kind: SessionInteractive}, {ID: "2", Kind: SessionDisconnected}}, sessions)
 }
@@ -221,9 +221,32 @@ func TestWindowsSessionMonitorNeverTreatsIdentityFailureAsLogout(t *testing.T) {
 		monitor := &windowsSessionMonitor{enumerate: func() ([]windowsSessionEntry, error) {
 			return []windowsSessionEntry{{ID: 1, Kind: SessionInteractive}}, enumerationErr
 		}}
-		sessions, err := monitor.Sessions(AccountRef{ID: "S-1-5-21-1"})
+		sessions, err := monitor.Sessions(t.Context(), AccountRef{ID: "S-1-5-21-1"})
 		require.Error(t, err)
 		stop, _ := LastSessionRule(sessions, err)
 		assert.False(t, stop)
 	}
+}
+
+func TestWindowsEnumerationSharesOnePendingCall(t *testing.T) {
+	entered := make(chan int32, 2)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	monitor := &windowsSessionMonitor{enumerate: func() ([]windowsSessionEntry, error) {
+		entered <- calls.Add(1)
+		<-release
+		return []windowsSessionEntry{{ID: 1, Kind: SessionInteractive, SID: "S-1-5-21-1"}}, nil
+	}}
+	first := monitor.enumeration()
+	require.EqualValues(t, 1, <-entered)
+	for range 32 {
+		require.Same(t, first, monitor.enumeration())
+	}
+	assert.EqualValues(t, 1, calls.Load())
+	close(release)
+	<-first.done
+	sessions, err := monitor.Sessions(t.Context(), AccountRef{ID: "S-1-5-21-1"})
+	require.NoError(t, err)
+	assert.Equal(t, []Session{{ID: "1", Kind: SessionInteractive}}, sessions)
+	assert.EqualValues(t, 2, calls.Load())
 }

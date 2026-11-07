@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 // pendingRecordName is the durable registration attempt record: the
@@ -33,7 +34,7 @@ func (c *Config) PendingPath() string {
 // LoadPendingRegistration reads the durable attempt record. A missing
 // record is (nil, nil): nothing is in flight.
 func (c *Config) LoadPendingRegistration() (*PendingRegistration, error) {
-	data, err := os.ReadFile(c.PendingPath())
+	data, err := useronly.ReadFile(c.PendingPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

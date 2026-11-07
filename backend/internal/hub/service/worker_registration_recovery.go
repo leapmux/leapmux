@@ -47,7 +47,7 @@ func recoverySignedMessage(attemptID, challengeID string, nonce, keyDigest []byt
 func mustHexDecode(s string) []byte {
 	raw, err := hex.DecodeString(s)
 	if err != nil {
-		// Unreachable behind validation; the panic names a programming
+		// Unreachable behind validation; the panic identifies a programming
 		// error rather than corrupting a refusal.
 		panic(fmt.Sprintf("service: registration identity %q failed its earlier validation: %v", s, err))
 	}

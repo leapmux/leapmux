@@ -27,7 +27,7 @@ type controlClient struct {
 }
 
 // newControlClient builds a client for the endpoint at url, reachable
-// through the local transport the URL names.
+// through the local transport the URL identifies.
 func newControlClient(url, token string) (*controlClient, error) {
 	dial, err := locallisten.Dialer(url)
 	if err != nil {
@@ -101,7 +101,7 @@ func (c *controlClient) do(ctx context.Context, method, path string, body, out a
 // never evidence that a process stopped.
 //
 // dataDirectory is the instance's canonical root. The returned Status
-// names the process state the evidence supports, and holds
+// identifies the process state the evidence supports, and holds
 // ProcessUnresponsive with ErrUnresponsive when the lock is held and
 // the endpoint stays silent.
 func Observe(ctx context.Context, dataDirectory string) (Status, error) {

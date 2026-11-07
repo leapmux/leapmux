@@ -9,7 +9,7 @@ func SyncDirectory(path string) error { return ops.syncDir(path) }
 // WriteFileDurable writes data to path with the same all-or-nothing
 // replacement WriteFile provides, and additionally reports success only
 // after the platform's documented persistence operations complete: the
-// file's bytes, the replacement, and the directory entry that names it.
+// file's bytes, the replacement, and the directory entry that identifies it.
 //
 // A caller that must survive power loss -- a pending registration record,
 // saved credentials -- uses this rather than WriteFile. Callers whose

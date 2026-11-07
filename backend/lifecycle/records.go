@@ -14,20 +14,20 @@ import (
 )
 
 // OwnershipConflict reports a data directory whose ownership record
-// names another instance. It is a conflict even when the prior instance
+// identifies another instance. It is a conflict even when the prior instance
 // is stopped: the record is the directory's identity, not its liveness.
 type OwnershipConflict struct {
-	// OwningMode is the instance mode the record names.
+	// OwningMode is the instance mode the record identifies.
 	OwningMode Role
-	// OwningRoot is the canonical containing root the record names.
+	// OwningRoot is the canonical containing root the record identifies.
 	OwningRoot string
-	// Component is the storage component the record names.
+	// Component is the storage component the record identifies.
 	Component Role
 	// Path is the directory the record sits in.
 	Path string
 }
 
-// Error names the owning mode and recommends the command or a separate
+// Error identifies the owning mode and recommends the command or a separate
 // data directory.
 func (c *OwnershipConflict) Error() string {
 	return fmt.Sprintf(
@@ -77,7 +77,7 @@ func readOwnershipRecord(path string) (ownershipRecord, error) {
 	}
 	for _, mode := range []Role{rec.Mode, rec.OwnerMode} {
 		if _, modeErr := ParseRole(string(mode)); modeErr != nil {
-			return rec, fmt.Errorf("the ownership record %s names an unknown mode %q", path, mode)
+			return rec, fmt.Errorf("the ownership record %s identifies an unknown mode %q", path, mode)
 		}
 	}
 	if rec.AccountID == "" || rec.DataDirectory == "" || rec.OwnerDataDir == "" {

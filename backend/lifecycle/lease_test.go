@@ -1,7 +1,9 @@
 package lifecycle
 
 import (
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -103,4 +105,43 @@ func TestCombinedAcquisitionReleasesPartialComponents(t *testing.T) {
 	held, err := ProbeLockAt(PathsOf(canonical).DataLock)
 	require.NoError(t, err)
 	assert.False(t, held, "the refused acquisition must release the root lease too")
+}
+
+func TestLeaseCloseRetainsNativeFailuresAndReleasesComponents(t *testing.T) {
+	for _, targetRole := range []Role{RoleSolo, RoleHub, RoleWorker} {
+		t.Run(targetRole.String(), func(t *testing.T) {
+			rootPath := mustCanonical(t, t.TempDir())
+			owner := NewDirectoryOwner(RoleSolo, rootPath)
+			root, err := AcquireDirectory(owner, RoleSolo, rootPath)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = root.Close() })
+			target := root
+			if targetRole != RoleSolo {
+				target = root.components[targetRole]
+			}
+			require.NoError(t, target.file.Close())
+			start := make(chan struct{})
+			results := make(chan error, 32)
+			var callers sync.WaitGroup
+			for range 32 {
+				callers.Go(func() { <-start; results <- root.Close() })
+			}
+			close(start)
+			callers.Wait()
+			close(results)
+			var retained error
+			for result := range results {
+				require.ErrorIs(t, result, os.ErrClosed)
+				if retained == nil {
+					retained = result
+				} else {
+					assert.Same(t, retained, result)
+				}
+			}
+			assert.Same(t, retained, root.Close())
+			replacement, err := AcquireDirectory(owner, RoleSolo, rootPath)
+			require.NoError(t, err, "all retained component locks must release despite a native close failure")
+			require.NoError(t, replacement.Close())
+		})
+	}
 }

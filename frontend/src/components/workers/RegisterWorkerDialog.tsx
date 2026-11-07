@@ -36,6 +36,7 @@ const EXTEND_TICK_MS = 30_000
 const EXTEND_THRESHOLD_MS = 2 * 60 * 1000
 
 export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props) => {
+  let disposed = false
   const auth = useAuth()
   const [registrationKey, setRegistrationKey] = createSignal<string | null>(null)
   const [expiresAt, setExpiresAt] = createSignal<Date | null>(null)
@@ -67,12 +68,18 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
 
   const canEmail = createMemo(() => Boolean(auth.user()?.emailVerified))
 
-  // Revoke the key on close. This discards the errors because the
-  // dialog closes regardless — the key expires on its own.
+  function revokeKey(key: string) {
+    // A disconnected Hub can refuse revocation; expiry still releases the key.
+    void workerClient.revokeRegistrationKey({ registrationKey: key }).catch(() => {})
+  }
+
+  // Cleanup owns a published key. A creation response arriving afterward
+  // retains ownership in its continuation and revokes that exact key there.
   onCleanup(() => {
+    disposed = true
     const k = registrationKey()
     if (k)
-      workerClient.revokeRegistrationKey({ registrationKey: k }).catch(() => {})
+      revokeKey(k)
   })
 
   // Single onMount with a synchronous timer setup followed by a
@@ -104,7 +111,7 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
       if (remaining > 0 && remaining < EXTEND_THRESHOLD_MS) {
         try {
           const resp = await workerClient.extendRegistrationKey({ registrationKey: k })
-          if (resp.expiresAt)
+          if (!disposed && resp.expiresAt)
             setExpiresAt(timestampDate(resp.expiresAt))
         }
         catch {
@@ -118,6 +125,11 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
     void (async () => {
       try {
         const resp = await workerClient.createRegistrationKey({})
+        if (disposed) {
+          if (resp.registrationKey)
+            revokeKey(resp.registrationKey)
+          return
+        }
         if (!resp.registrationKey) {
           setError('The Hub did not return a registration key. Close this dialog and try again.')
           return
@@ -127,7 +139,8 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
           setExpiresAt(timestampDate(resp.expiresAt))
       }
       catch (e) {
-        setError(`Failed to create registration key: ${e}`)
+        if (!disposed)
+          setError(`Failed to create registration key: ${e}`)
       }
     })()
   })
@@ -161,9 +174,8 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
           Run the command below on the machine where the worker should run.
         </p>
         <p>
-          This registration key is only valid while this dialog stays open.
-          If you close the dialog, the key is destroyed and you'll need to
-          start over.
+          Closing this dialog asks the Hub to revoke the key.
+          If the Hub cannot be reached, the key expires automatically.
         </p>
 
         <Show when={registrationKey()} fallback={<Show when={!error()}><p>Generating registration key…</p></Show>}>

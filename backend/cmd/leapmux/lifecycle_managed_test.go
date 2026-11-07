@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/servicelaunch"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
@@ -62,12 +63,15 @@ func TestManagedRunRejectsInvalidIdentityBeforeRuntime(t *testing.T) {
 				other := filepath.Join(t.TempDir(), "service.yaml")
 				data, err := os.ReadFile(path)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(other, data, 0o600))
+				require.NoError(t, atomicfile.WriteFileDurable(other, data, 0o600))
 				path = other
 			}
 			result := invokeLifecycleCLI(t, t.TempDir(), "hub", "run", "--service-spec", path)
 			require.Equal(t, 1, result.exitCode)
 			require.Contains(t, result.stderr, "managed launch")
+			if field == "path" {
+				require.Contains(t, result.stderr, "does not match the selected account, mode, or data directory")
+			}
 			require.NoFileExists(t, lifecycle.PathsOf(spec.DataDirectory).RuntimeRecord)
 		})
 	}

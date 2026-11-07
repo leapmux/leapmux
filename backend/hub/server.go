@@ -48,6 +48,7 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten"
@@ -690,7 +691,25 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// subscribers that its worker list changed.
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, crdtRegistry.BroadcastWorkersChanged)
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, pendingReqs, notifierSvc, crdtRegistry, workerQueuePool, quartz.NewReal())
+	// One delegation-scope cache shared by SubmitOps (resolve) and worker
+	// deregistration (evict); see auth.DelegationScopeCache.
+	scopeCache := auth.NewDelegationScopeCache(st)
+	// The post-deregister effects, shared by the per-user and admin surfaces,
+	// the user-deletion cascade and Server.RetireLocalWorker -- so a worker
+	// torn down by any of the four is told to stop, loses its memoized
+	// delegation scope, and leaves its owner's client informed.
+	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
+	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     wMgr,
+		ChannelManager:    cMgr,
+		PendingRequests:   pendingReqs,
+		Notifier:          notifierSvc,
+		Registry:          crdtRegistry,
+		QueuePool:         workerQueuePool,
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: workerEffects,
+	})
 	// The worker pool's count term. Its members take no lease, so the per-user
 	// connection cap cannot see them, and nothing else keeps the floors this
 	// pool guarantees from summing without limit.
@@ -736,17 +755,6 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		}
 	})
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
-	// One delegation-scope cache shared by SubmitOps (resolve) and worker
-	// deregistration (evict); see auth.DelegationScopeCache.
-	scopeCache := auth.NewDelegationScopeCache(st)
-	// The post-deregister effects, shared by the per-user and admin surfaces,
-	// the user-deletion cascade and Server.RetireLocalWorker -- so a worker
-	// torn down by any of the four is told to stop, loses its memoized
-	// delegation scope, and leaves its owner's client informed.
-	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
-	// The worker's own self-deregistration runs the same effects the four
-	// operator surfaces run; the connector binds the one shared instance.
-	connectorSvc.SetDeregisterEffects(workerEffects)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
@@ -1376,18 +1384,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
 		watcherCloseErr := s.revocationWatcher.Close(watcherCloseCtx)
 		cancelWatcherClose()
-		// A cancel landing here is an exit somebody ASKED for, not a failure to
-		// report. NewServer binds BOTH listeners before Serve runs, so a caller's
-		// connect-and-close readiness probe succeeds -- and its Stop can arrive --
-		// while this seed is still in flight. Reporting it made `leapmux hub` and
-		// `leapmux solo` exit NON-ZERO on an ordinary Ctrl-C during startup,
-		// printing "seed revocation watcher: ... context canceled" -- or, when the
-		// store aborted first, modernc sqlite's "interrupted (9)", which wraps no
-		// context error and so slips through every errors.Is(err, context.Canceled)
-		// filter downstream. The teardown below still runs, and a genuine failure
-		// in it is still reported.
+		// Cancellation during lease seeding is a requested exit. SQLite can
+		// report a typed SQLITE_INTERRUPT instead of wrapping context.Canceled.
+		// Suppress only cancellation causes; retain independent storage and
+		// teardown failures even when a stop request arrives concurrently.
 		primary := fmt.Errorf("seed revocation watcher: %w", err)
-		if serveCtx.Err() != nil {
+		if errors.Is(serveCtx.Err(), context.Canceled) && errwrap.IsCancellationWith(err, sqlitedb.IsInterruption) {
 			primary = nil
 		}
 		return serverTeardownErrors{

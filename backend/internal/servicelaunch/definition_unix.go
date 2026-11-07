@@ -77,9 +77,7 @@ func removeNativeDefinition(ctx context.Context, spec LaunchSpec, path string) e
 func validateSystemDefinitionPath(spec LaunchSpec, path string) error {
 	// Removal must remain possible when the provider environment file is
 	// missing. Its contents do not participate in native definition identity.
-	identity := spec
-	identity.EnvironmentFile = nil
-	if err := ValidateLaunchSpec(identity); err != nil {
+	if err := ValidateLaunchSpec(spec); err != nil {
 		return err
 	}
 	if spec.Startup != lifecycle.StartupBoot {

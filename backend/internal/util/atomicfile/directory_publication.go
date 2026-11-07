@@ -156,7 +156,7 @@ func walkExistingPrefixes(target string) (firstMissing string, records []string,
 }
 
 // loadRecordAt reads and validates the record at path. A record that
-// belongs to another account, names another directory, escapes its own
+// belongs to another account, identifies another directory, escapes its own
 // directory with its target, holds malformed fields, or is not a
 // regular file is a conflict, reported rather than overwritten.
 func loadRecordAt(path string) (*publicationRecord, error) {
@@ -185,7 +185,7 @@ func loadRecordAt(path string) (*publicationRecord, error) {
 		return nil, fmt.Errorf("atomicfile: %s belongs to account %q, not this account", path, rec.AccountID)
 	}
 	if dir := filepath.Clean(filepath.Dir(path)); rec.Directory != dir {
-		return nil, fmt.Errorf("atomicfile: %s names directory %q, not %q", path, rec.Directory, dir)
+		return nil, fmt.Errorf("atomicfile: %s identifies directory %q, not %q", path, rec.Directory, dir)
 	}
 	rel, relErr := filepath.Rel(rec.Directory, filepath.Clean(rec.TargetDirectory))
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -229,3 +229,30 @@ func yamlMarshalRecord(rec *publicationRecord) ([]byte, error) {
 
 // recordPathAt returns the record path inside dir.
 func recordPathAt(dir string) string { return filepath.Join(dir, publicationRecordName) }
+
+// writeRecordCommitted replaces a record with its committed form
+// durably.
+func writeRecordCommitted(path string, rec *publicationRecord) error {
+	data, err := yamlMarshalRecord(rec)
+	if err != nil {
+		return err
+	}
+	return WriteFileDurable(path, data, 0o600)
+}
+
+// missingBelow returns the chain of directories between firstMissing
+// and target (exclusive of firstMissing, inclusive of target), each as
+// a path relative to firstMissing, with native separators. target is below
+// firstMissing by construction.
+func missingBelow(firstMissing, target string) []string {
+	rel, err := filepath.Rel(firstMissing, target)
+	if err != nil || rel == "." {
+		return nil
+	}
+	segments := strings.Split(rel, string(filepath.Separator))
+	chain := make([]string, 0, len(segments))
+	for i := 1; i <= len(segments); i++ {
+		chain = append(chain, filepath.Join(segments[:i]...))
+	}
+	return chain
+}

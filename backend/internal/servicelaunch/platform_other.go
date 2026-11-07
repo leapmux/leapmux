@@ -3,6 +3,7 @@
 package servicelaunch
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 )
@@ -12,12 +13,12 @@ func newPlatformManager() Manager {
 	return &UnsupportedManager{Platform: runtime.GOOS}
 }
 
-// nativeMechanismLabel names the mechanism generically.
+// nativeMechanismLabel identifies the mechanism generically.
 func nativeMechanismLabel() string { return "native startup mechanism" }
 
 type unsupportedSessionMonitor struct{}
 
-func (unsupportedSessionMonitor) Sessions(AccountRef) ([]Session, error) {
+func (unsupportedSessionMonitor) Sessions(context.Context, AccountRef) ([]Session, error) {
 	return nil, fmt.Errorf("%w: login-session monitoring on %s", ErrUnsupportedPlatform, runtime.GOOS)
 }
 

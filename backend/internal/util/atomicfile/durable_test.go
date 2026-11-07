@@ -1,6 +1,7 @@
 package atomicfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -57,10 +58,7 @@ func (f *failingOps) sync(file *os.File) error {
 }
 
 func (f *failingOps) close(file *os.File) error {
-	if err := f.maybe("close"); err != nil {
-		return err
-	}
-	return f.defaultFileOps.close(file)
+	return errors.Join(f.defaultFileOps.close(file), f.maybe("close"))
 }
 
 func (f *failingOps) rename(oldpath, newpath string) error {

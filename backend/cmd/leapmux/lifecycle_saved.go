@@ -53,7 +53,11 @@ func commandServiceSpec(configuration *lifecycleConfiguration, options lifecycle
 			return lifecycle.ServiceSpec{}, err
 		}
 	}
-	if _, err := servicelaunch.LaunchSpecFromService(spec); err != nil {
+	launch, err := servicelaunch.LaunchSpecFromService(spec)
+	if err != nil {
+		return lifecycle.ServiceSpec{}, err
+	}
+	if _, err := launch.LoadEnvironment(); err != nil {
 		return lifecycle.ServiceSpec{}, err
 	}
 	return spec, nil

@@ -34,12 +34,25 @@ func sessionAccountField(sessionID, field uint32) (string, error) {
 
 // enumerateSessions reads the machine's sessions through WTS.
 func enumerateSessions() ([]windowsSessionEntry, error) {
+	return enumerateSessionsWith(windowsSessionCalls{enumerate: windows.WTSEnumerateSessions, free: windows.WTSFreeMemory})
+}
+
+// windowsSessionCalls keeps native enumeration and its buffer release together.
+type windowsSessionCalls struct {
+	enumerate func(windows.Handle, uint32, uint32, **windows.WTS_SESSION_INFO, *uint32) error
+	free      func(uintptr)
+}
+
+func enumerateSessionsWith(calls windowsSessionCalls) ([]windowsSessionEntry, error) {
 	var info *windows.WTS_SESSION_INFO
 	var count uint32
-	if err := windows.WTSEnumerateSessions(windows.InvalidHandle, 0, 1, &info, &count); err != nil {
+	// WTS_CURRENT_SERVER_HANDLE is NULL, not INVALID_HANDLE_VALUE.
+	if err := calls.enumerate(0, 0, 1, &info, &count); err != nil {
 		return nil, fmt.Errorf("enumerate sessions: %w", err)
 	}
-	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
+	if info != nil {
+		defer calls.free(uintptr(unsafe.Pointer(info)))
+	}
 	if count == 0 {
 		return nil, nil
 	}

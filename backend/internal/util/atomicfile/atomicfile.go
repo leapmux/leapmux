@@ -98,7 +98,7 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 // the publication step: the atomic writer passes the platform replace,
 // the durable one passes its write-through variant. The operations run
 // through the package's seam in one order for both.
-func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) error {
+func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func(oldpath, newpath string) error) (err error) {
 	f, err := ops.createTemp(filepath.Dir(path), filepath.Base(path)+tempSuffix, mode)
 	if err != nil {
 		return err
@@ -109,12 +109,17 @@ func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func
 	// holds the same secret the destination holds, at the same mode,
 	// under a name no listing of the destination shows.
 	committed := false
+	closeAttempted := false
 	defer func() {
 		if committed {
 			return
 		}
-		_ = ops.close(f)
-		_ = ops.remove(tmp)
+		if !closeAttempted {
+			err = errors.Join(err, ops.close(f))
+		}
+		if removeErr := ops.remove(tmp); !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
 	}()
 
 	// os.CreateTemp always creates at 0600, so WriteFile applies a mode
@@ -129,6 +134,7 @@ func writeFileSequenced(path string, data []byte, mode os.FileMode, replace func
 	if err := ops.sync(f); err != nil {
 		return err
 	}
+	closeAttempted = true
 	if err := ops.close(f); err != nil {
 		return err
 	}

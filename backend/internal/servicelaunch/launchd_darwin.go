@@ -75,7 +75,7 @@ func runNativeLaunchctl(ctx context.Context, path string, args []string) ([]byte
 	return out.Bytes(), err
 }
 
-// definitionPath names the plist: ~/Library/LaunchAgents for login
+// definitionPath identifies the plist: ~/Library/LaunchAgents for login
 // startup, /Library/LaunchDaemons for boot startup.
 func (m *launchdManager) definitionPath(spec LaunchSpec) (string, error) {
 	label := launchdLabel(spec)
@@ -98,9 +98,10 @@ func launchdLabel(spec LaunchSpec) string {
 	return "com.leapmux." + string(spec.Mode) + "." + spec.InstanceID
 }
 
-// definitionPlist renders the property list. Every string value is
-// XML-escaped by the encoder; executable paths stay absolute; the job
-// runs the mode's run command, never start.
+// definitionPlist renders the property list:
+//   - The encoder XML-escapes every string value.
+//   - Executable paths stay absolute.
+//   - The job runs the mode's run command, never start.
 func (m *launchdManager) definitionPlist(spec LaunchSpec) []byte {
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -214,8 +215,14 @@ func (*launchdManager) AuthorizeStart(ctx context.Context, spec LaunchSpec) erro
 }
 
 func (m *launchdManager) Install(ctx context.Context, spec LaunchSpec) error {
+	if err := ValidateLaunchSpec(spec); err != nil {
+		return err
+	}
 	path, err := m.definitionPath(spec)
 	if err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
 		return err
 	}
 	// The definition is written WITHOUT loading it: `enable` configures
@@ -229,7 +236,7 @@ func (m *launchdManager) Install(ctx context.Context, spec LaunchSpec) error {
 	return err
 }
 
-// launchdDomain names the target domain of the job.
+// launchdDomain identifies the target domain of the job.
 func launchdDomain(spec LaunchSpec) string {
 	if spec.Startup == lifecycle.StartupBoot {
 		return "system"
@@ -238,6 +245,12 @@ func launchdDomain(spec LaunchSpec) string {
 }
 
 func (m *launchdManager) Start(ctx context.Context, spec LaunchSpec) error {
+	if err := ValidateLaunchSpec(spec); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
+		return err
+	}
 	status, err := m.Inspect(ctx, spec)
 	if err != nil {
 		return err
@@ -302,7 +315,7 @@ func mustDefinitionPath(m *launchdManager, spec LaunchSpec) string {
 	return path
 }
 
-// firstLines bounds a diagnostic excerpt.
+// firstLines limits a diagnostic excerpt.
 func firstLines(text string, n int) []string {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) > n {

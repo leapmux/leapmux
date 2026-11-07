@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 func TestServiceRuntimeRequiresSavedSpecification(t *testing.T) {
@@ -131,7 +133,7 @@ func runtimeEnv(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		base = t.TempDir()
 	}
-	dir, err := os.MkdirTemp(base, "lmrt-")
+	dir, err := useronly.MkdirTemp(base, "lmrt-")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	t.Setenv("LEAPMUX_RUNTIME_DIR", dir)
@@ -208,7 +210,7 @@ func TestEmbeddedAndStandaloneStorageCannotOverlap(t *testing.T) {
 		workerDir := filepath.Join(root, "worker")
 
 		// A direct worker owned the directory and stopped; its record
-		// stays and names it.
+		// stays and identifies it.
 		direct := NewDirectoryOwner(RoleWorker, mustCanonical(t, workerDir))
 		lease, err := AcquireDirectory(direct, RoleWorker, workerDir)
 		require.NoError(t, err)
@@ -240,10 +242,10 @@ func TestEmbeddedAndStandaloneStorageCannotOverlap(t *testing.T) {
 		first := startTestRuntime(t, RoleSolo, root)
 		second, err := StartRuntime(RuntimeConfig{Mode: RoleSolo, DataDir: root, Execution: ExecutionForeground})
 		require.Error(t, err, "one instance runs per account and configuration")
-		// The refusal names whichever lock the second start reached:
+		// The refusal identifies whichever lock the second start reached:
 		// the data lease while the first still holds it.
 		assert.True(t, errors.Is(err, ErrInstanceRunning) || errors.Is(err, ErrDirectoryInUse),
-			"the refusal names a held lock: %v", err)
+			"the refusal identifies a held lock: %v", err)
 		assert.Nil(t, second)
 		require.NoError(t, first.Shutdown())
 	})
@@ -279,7 +281,7 @@ func TestConcurrentRunsHaveOneOwner(t *testing.T) {
 			require.NotNil(t, results[i])
 			t.Cleanup(func() { _ = results[i].Shutdown() })
 		} else {
-			assert.ErrorIs(t, errs[i], ErrDirectoryInUse, "the loser's refusal names the held directory")
+			assert.ErrorIs(t, errs[i], ErrDirectoryInUse, "the loser's refusal identifies the held directory")
 		}
 	}
 	assert.Equal(t, 1, owners, "exactly one start owns the runtime")

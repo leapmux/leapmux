@@ -17,6 +17,8 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
@@ -49,7 +51,10 @@ func registerSelfDeregisterableWorker(t *testing.T, env *regKeyEnv, ctx context.
 }
 
 func TestSelfDeregisterRepairsEffectsAfterCommittedDeletion(t *testing.T) {
-	env := setupRegKeyEnv(t)
+	notifications := make(chan string, 2)
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{deregisterEffects: func(*notifier.Notifier, *crdt.Registry) *service.WorkerDeregisterEffects {
+		return service.NewWorkerDeregisterEffects(nil, nil, func(userID string) { notifications <- userID })
+	}})
 	ctx := context.Background()
 	_, token := registerSelfDeregisterableWorker(t, env, ctx)
 	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
@@ -59,10 +64,6 @@ func TestSelfDeregisterRepairsEffectsAfterCommittedDeletion(t *testing.T) {
 	// represents a Hub exit between the commit and the first effect.
 	require.NoError(t, env.store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		return tx.Workers().MarkDeleted(ctx, worker.ID)
-	}))
-	notifications := make(chan string, 2)
-	env.connector.SetDeregisterEffects(service.NewWorkerDeregisterEffects(nil, nil, func(userID string) {
-		notifications <- userID
 	}))
 	for range 2 {
 		require.NoError(t, env.deregisterSelfCall(t, ctx, token))
@@ -83,7 +84,7 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	read := make(chan struct{})
 	release := make(chan struct{})
 	var paused atomic.Bool
-	env := newRegKeyEnv(t, testConfig(), nil, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return authReadHookStore{Store: st, afterAuthRead: func(*store.Worker) {
 			if paused.CompareAndSwap(false, true) {
 				close(read)
@@ -93,11 +94,10 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 				}
 			}
 		}}
-	})
+	}})
 	_, token := registerSelfDeregisterableWorker(t, env, ctx)
 	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
 	require.NoError(t, err)
-	env.connector.SetDeregisterEffects(service.NewWorkerDeregisterEffects(nil, env.notifier, env.registry.BroadcastWorkersChanged))
 	server := httptest.NewUnstartedServer(env.mux)
 	server.Config.Protocols = &http.Protocols{}
 	server.Config.Protocols.SetHTTP1(true)

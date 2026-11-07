@@ -1,9 +1,10 @@
 package servicelaunch
 
 import (
+	"bytes"
 	"fmt"
 	"io"
-	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -18,19 +19,13 @@ func (s LaunchSpec) LoadEnvironment() (map[string]string, error) {
 }
 
 func (s LaunchSpec) loadEnvironment(caseInsensitive bool) (map[string]string, error) {
-	keyOf := func(name string) string {
-		if caseInsensitive {
-			return strings.ToUpper(name)
-		}
-		return name
-	}
 	values := make(map[string]string)
 	if s.EnvironmentFile != nil {
 		path := *s.EnvironmentFile
-		if !strings.HasPrefix(path, "/") && !windowsAbsolute(path) {
+		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("servicelaunch: the environment file must have an absolute path")
 		}
-		file, err := os.Open(path)
+		file, err := openEnvironmentFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("servicelaunch: open the environment file %q: %w", path, err)
 		}
@@ -43,7 +38,14 @@ func (s LaunchSpec) loadEnvironment(caseInsensitive bool) (map[string]string, er
 		if !info.Mode().IsRegular() || info.Size() > maxEnvironmentBytes {
 			return nil, fmt.Errorf("servicelaunch: the environment file %q must be a regular file of at most %d bytes", path, maxEnvironmentBytes)
 		}
-		decoder := yaml.NewDecoder(io.LimitReader(file, maxEnvironmentBytes+1))
+		data, err := io.ReadAll(io.LimitReader(file, maxEnvironmentBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("servicelaunch: read the environment file %q: %w", path, err)
+		}
+		if len(data) > maxEnvironmentBytes {
+			return nil, fmt.Errorf("servicelaunch: the environment file %q exceeds %d bytes", path, maxEnvironmentBytes)
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
 		var document yaml.Node
 		if err := decoder.Decode(&document); err != nil {
 			// Parser errors can contain secret values from the input.
@@ -58,7 +60,7 @@ func (s LaunchSpec) loadEnvironment(caseInsensitive bool) (map[string]string, er
 			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
 				return nil, fmt.Errorf("servicelaunch: each environment entry in %q must have a string key and a string value", path)
 			}
-			name := keyOf(key.Value)
+			name := environmentKey(key.Value, caseInsensitive)
 			if _, exists := values[name]; exists {
 				return nil, fmt.Errorf("servicelaunch: the environment file %q contains a duplicate key", path)
 			}
@@ -72,17 +74,12 @@ func (s LaunchSpec) loadEnvironment(caseInsensitive bool) (map[string]string, er
 			return nil, fmt.Errorf("servicelaunch: the environment file %q must contain exactly one YAML document", path)
 		}
 	}
-	runtimeKeys := make(map[string]bool)
-	for key, value := range s.RuntimeEnvironment {
-		name := keyOf(key)
-		if runtimeKeys[name] {
-			return nil, fmt.Errorf("the runtime environment contains duplicate variable names")
-		}
-		runtimeKeys[name] = true
-		if err := validateEnvironmentEntry(key, value); err != nil {
-			return nil, err
-		}
-		values[name] = value
+	overrides, err := normalizedRuntimeEnvironment(s.RuntimeEnvironment, caseInsensitive)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range overrides {
+		values[key] = value
 	}
 	return values, nil
 }
@@ -103,4 +100,26 @@ func validateEnvironmentEntry(key, value string) error {
 		return fmt.Errorf("the environment value for %s contains a null character", key)
 	}
 	return nil
+}
+
+func environmentKey(key string, caseInsensitive bool) string {
+	if caseInsensitive {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+func normalizedRuntimeEnvironment(overrides map[string]string, caseInsensitive bool) (map[string]string, error) {
+	values := make(map[string]string, len(overrides))
+	for key, value := range overrides {
+		name := environmentKey(key, caseInsensitive)
+		if _, duplicate := values[name]; duplicate {
+			return nil, fmt.Errorf("the runtime environment contains duplicate variable names")
+		}
+		if err := validateEnvironmentEntry(key, value); err != nil {
+			return nil, err
+		}
+		values[name] = value
+	}
+	return values, nil
 }

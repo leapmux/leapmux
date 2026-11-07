@@ -2219,3 +2219,75 @@ func TestSoloStart_DevModeReportsReadyForSetup(t *testing.T) {
 	assert.True(t, snap.WorkerPendingSetup, "a fresh dev instance reports ready for setup")
 	assert.False(t, snap.WorkerReady, "the worker waits for the administrator")
 }
+
+func TestStartupSnapshotDerivesOneWorkerPhase(t *testing.T) {
+	instance := &Instance{failureCh: make(chan struct{})}
+	registration := lifecycle.RegistrationStatus{State: lifecycle.RegistrationRegistered, WorkerID: new("worker")}
+	failure := errors.New("worker startup failed")
+	for _, step := range []struct {
+		transition               func()
+		ready, pending, starting bool
+	}{
+		{func() {}, false, false, false},
+		{instance.markWorkerPendingSetup, false, true, false},
+		{func() { instance.markWorkerStarting(registration) }, false, false, true},
+		{instance.markWorkerReady, true, false, false},
+		{func() { instance.failWorker(failure) }, false, false, false},
+	} {
+		_, changed := instance.ObserveStartup()
+		step.transition()
+		snapshot := instance.Startup()
+		assert.Equal(t, step.ready, snapshot.WorkerReady)
+		assert.Equal(t, step.pending, snapshot.WorkerPendingSetup)
+		assert.Equal(t, step.starting, snapshot.WorkerStarting)
+		if step.ready || step.pending || step.starting || snapshot.Failure != nil {
+			select {
+			case <-changed:
+			default:
+				t.Fatal("state transition did not notify observers")
+			}
+		}
+	}
+	instance.markWorkerReady()
+	instance.markWorkerPendingSetup()
+	instance.markWorkerStarting(registration)
+	instance.failWorker(assert.AnError)
+	instance.markHubReady()
+	instance.updateWorkerConnection(worker.ConnectionState{Connected: false, Err: assert.AnError})
+	snapshot := instance.Startup()
+	assert.True(t, snapshot.HubReady)
+	assert.False(t, snapshot.WorkerReady)
+	assert.False(t, snapshot.WorkerPendingSetup)
+	assert.False(t, snapshot.WorkerStarting)
+	assert.ErrorIs(t, snapshot.Failure, failure)
+	assert.ErrorIs(t, instance.workerError(), failure)
+	assert.Equal(t, lifecycle.ConnectionDisconnected, snapshot.Connection.State)
+	*snapshot.Registration.WorkerID = "changed"
+	*snapshot.Connection.LastError = "changed"
+	fresh := instance.Startup()
+	assert.Equal(t, "worker", *fresh.Registration.WorkerID)
+	assert.Equal(t, assert.AnError.Error(), *fresh.Connection.LastError)
+}
+
+func TestConcurrentStartupCallbacksCannotReviveFailedWorker(t *testing.T) {
+	instance := &Instance{failureCh: make(chan struct{})}
+	failure := errors.New("independent worker failure")
+	start := make(chan struct{})
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Go(func() { <-start; instance.markWorkerReady() })
+	}
+	callers.Go(func() { <-start; instance.failWorker(failure) })
+	close(start)
+	callers.Wait()
+	snapshot := instance.Startup()
+	assert.ErrorIs(t, snapshot.Failure, failure)
+	assert.False(t, snapshot.WorkerReady)
+	assert.False(t, snapshot.WorkerPendingSetup)
+	assert.False(t, snapshot.WorkerStarting)
+	select {
+	case <-instance.failureCh:
+	default:
+		t.Fatal("worker failure was not published")
+	}
+}

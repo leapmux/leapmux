@@ -10,22 +10,26 @@ import (
 	"os"
 	"sync"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-func executeForegroundAttempt(ctx context.Context, cancel context.CancelFunc, mode string, runtime *lifecycle.Runtime, args []string) error {
+type foregroundExecution func(context.Context, *lifecycle.Runtime) error
+
+func executeForegroundAttempt(ctx context.Context, cancel context.CancelFunc, runtime *lifecycle.Runtime, execute foregroundExecution) error {
 	writer, err := lifecycle.AttemptLog(runtime.Paths(), runtime.Record().AttemptID)
 	if err != nil {
 		err = fmt.Errorf("open the attempt log: %w", err)
 		return errors.Join(err, runtime.Finish(err))
 	}
-	capture, err := startOutputCapture(writer, cancel, runtime.Record().Execution)
+	capture, err := startOutputCapture(ctx, writer, cancel, runtime.Record().Execution)
 	if err != nil {
 		err = errors.Join(err, writer.Close())
 		return errors.Join(err, runtime.Finish(err))
 	}
-	err = foregroundResult(ctx, dispatchModeForeground(ctx, mode, runtime, args))
+	err = foregroundResult(ctx, execute(ctx, runtime))
 	err = errors.Join(err, capture.Close())
 	if err != nil {
 		_, writeErr := fmt.Fprintf(writer, "error: %v\n", err)
@@ -43,11 +47,12 @@ type outputCapture struct {
 	done     [2]chan error
 	logger   *slog.Logger
 	logOut   io.Writer
+	console  *consoleRelay
 	once     sync.Once
 	err      error
 }
 
-func startOutputCapture(attempt io.Writer, cancel context.CancelFunc, execution lifecycle.ExecutionKind) (*outputCapture, error) {
+func startOutputCapture(ctx context.Context, attempt io.Writer, cancel context.CancelFunc, execution lifecycle.ExecutionKind) (*outputCapture, error) {
 	capture := &outputCapture{
 		original: [2]*os.File{os.Stdout, os.Stderr}, logger: slog.Default(), logOut: log.Writer(),
 	}
@@ -63,18 +68,24 @@ func startOutputCapture(attempt io.Writer, cancel context.CancelFunc, execution 
 		readers[index], capture.writers[index] = read, write
 		capture.done[index] = make(chan error, 1)
 	}
-	for index, read := range readers {
-		destination := attempt
-		if execution == lifecycle.ExecutionForeground {
-			// Keep diagnostics even when the console reader disappears.
-			destination = io.MultiWriter(attempt, consoleMirror{capture.original[index]})
+	if execution == lifecycle.ExecutionForeground {
+		console, err := startConsoleRelay(ctx, cancel, capture.original, quartz.NewReal())
+		if err != nil {
+			for index, reader := range readers {
+				err = errors.Join(err, reader.Close(), capture.writers[index].Close())
+			}
+			return nil, err
 		}
+		capture.console = console
+	}
+	for index, read := range readers {
+		destination := capturedOutput{attempt: attempt, console: capture.console, stream: byte(index), cancel: cancel}
 		go func() {
 			_, copyErr := io.Copy(destination, read)
 			if copyErr != nil {
 				cancel()
-				// Writers must still finish when a destination failed. Continue
-				// reading until teardown closes this pipe's writing side.
+				// A required log failure ends the attempt. Drain pending writes
+				// so application cleanup can still finish.
 				_, _ = io.Copy(io.Discard, read)
 			}
 			capture.done[index] <- errors.Join(copyErr, read.Close())
@@ -87,17 +98,47 @@ func startOutputCapture(attempt io.Writer, cancel context.CancelFunc, execution 
 
 func (c *outputCapture) Close() error {
 	c.once.Do(func() {
-		os.Stdout, os.Stderr = c.original[0], c.original[1]
-		slog.SetDefault(c.logger)
-		log.SetOutput(c.logOut)
+		if c.console != nil {
+			c.console.BeginDrain()
+		}
 		for _, writer := range c.writers {
 			c.err = errors.Join(c.err, writer.Close())
 		}
 		for _, done := range c.done {
 			c.err = errors.Join(c.err, <-done)
 		}
+		if c.console != nil {
+			c.err = errors.Join(c.err, c.console.Close())
+		}
+		os.Stdout, os.Stderr = c.original[0], c.original[1]
+		slog.SetDefault(c.logger)
+		log.SetOutput(c.logOut)
 	})
 	return c.err
+}
+
+type capturedOutput struct {
+	attempt io.Writer
+	console *consoleRelay
+	stream  byte
+	cancel  context.CancelFunc
+}
+
+func (w capturedOutput) Write(data []byte) (int, error) {
+	n, err := w.attempt.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return n, err
+	}
+	if w.console != nil {
+		if err := w.console.Write(w.stream, data); err != nil {
+			w.cancel()
+		}
+	}
+	// Console failure must not stop subsequent required log writes.
+	return len(data), nil
 }
 
 // consoleMirror tolerates a closed pipe while retaining every other write

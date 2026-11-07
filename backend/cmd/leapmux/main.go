@@ -74,9 +74,6 @@ func topLevelCommandNames() []string {
 }
 
 type cliRunners struct {
-	runHub     func([]string) error
-	runWorker  func([]string) error
-	runSolo    func([]string, bool) error
 	runMode    func(mode string, args []string) error
 	runRecover func([]string) error
 	runControl func([]string) error
@@ -84,6 +81,9 @@ type cliRunners struct {
 }
 
 func main() {
+	if code, handled := runConsoleHelper(os.Args[1:], os.Stdin, [2]io.Writer{os.Stdout, os.Stderr}); handled {
+		os.Exit(code)
+	}
 	// A provider's CLI can start this executable as a helper, with no argument
 	// (see worker.RunAgentHelper). The check comes before logging.Setup: the
 	// helper's stderr reaches that CLI as a message, and a log line must not.
@@ -104,9 +104,6 @@ func main() {
 	}
 	logging.Setup()
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, cliRunners{
-		runHub:     runHub,
-		runWorker:  runWorker,
-		runSolo:    runSolo,
 		runMode:    runModeCommand,
 		runRecover: runRecover,
 		runControl: runControl,

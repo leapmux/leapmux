@@ -18,7 +18,7 @@ import (
 )
 
 // waitBudget is the duration type of the lifecycle verbs' --timeout
-// flags; a named type keeps the budget's meaning at each call site.
+// flags.
 type waitBudget = time.Duration
 
 // newTicker builds the readiness poll's ticker.
@@ -111,7 +111,11 @@ func serviceSpecFromConfiguration(configuration *lifecycleConfiguration, options
 			return lifecycle.ServiceSpec{}, err
 		}
 	}
-	if _, err := servicelaunch.LaunchSpecFromService(spec); err != nil {
+	launch, err := servicelaunch.LaunchSpecFromService(spec)
+	if err != nil {
+		return lifecycle.ServiceSpec{}, err
+	}
+	if _, err := launch.LoadEnvironment(); err != nil {
 		return lifecycle.ServiceSpec{}, err
 	}
 	return spec, nil
@@ -142,31 +146,11 @@ func runModeEnableWithController(mode string, newController nativeControllerFact
 		if err != nil {
 			return err
 		}
-		existing, readErr := controller.ReadSpec()
-		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-			return readErr
+		selection, err := selectNativeStartup(controller, options.startup, options.yes)
+		if err != nil {
+			return err
 		}
-		startup := options.startup
-		if startup == "" && readErr == nil {
-			startup = existing.Startup
-		}
-		if startup == "" {
-			if options.yes {
-				return fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
-			}
-			if err := requireInteractiveInput("--startup=login or --startup=boot", "--yes"); err != nil {
-				return err
-			}
-			startup, err = promptStartupChoice(os.Stdout, os.Stdin)
-			if err != nil {
-				return err
-			}
-		}
-		var saved *lifecycle.ServiceSpec
-		if readErr == nil {
-			saved = &existing
-		}
-		spec, err := commandServiceSpec(configuration, options, startup, saved, true)
+		spec, err := commandServiceSpec(configuration, options, selection.startup, selection.saved, true)
 		if err != nil {
 			return err
 		}
@@ -174,7 +158,7 @@ func runModeEnableWithController(mode string, newController nativeControllerFact
 		if err != nil {
 			return err
 		}
-		if held && (readErr != nil || !specMatchesSaved(existing, spec)) {
+		if held && (selection.saved == nil || !specMatchesSaved(*selection.saved, spec)) {
 			return fmt.Errorf("the instance is running or starting; stop it before changing its startup configuration")
 		}
 		if !held {
@@ -207,7 +191,7 @@ func runModeEnableWithController(mode string, newController nativeControllerFact
 		if err := controller.Apply(context.Background(), spec); err != nil {
 			return err
 		}
-		fmt.Printf("Configured. %s starts automatically at %s.\n", capitalize(mode), startup)
+		fmt.Printf("Configured. %s starts automatically at %s.\n", capitalize(mode), selection.startup)
 		return nil
 	}
 }
@@ -329,35 +313,15 @@ func executeNativeStartWithController(mode, verb string, args []string, newContr
 	if err != nil {
 		return err
 	}
-	existing, readErr := controller.ReadSpec()
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return readErr
-	}
-	startup := options.startup
-	if startup == "" && readErr == nil {
-		startup = existing.Startup
-	}
-	if startup == "" {
-		if options.yes {
-			return fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
-		}
-		if err := requireInteractiveInput("--startup=login or --startup=boot", "--yes"); err != nil {
-			return err
-		}
-		startup, err = promptStartupChoice(os.Stdout, os.Stdin)
-		if err != nil {
-			return err
-		}
-	}
-	var saved *lifecycle.ServiceSpec
-	if readErr == nil {
-		saved = &existing
-	}
-	spec, err := commandServiceSpec(configuration, options, startup, saved, false)
+	selection, err := selectNativeStartup(controller, options.startup, options.yes)
 	if err != nil {
 		return err
 	}
-	needsConfiguration := readErr != nil || !specMatchesSaved(existing, spec)
+	spec, err := commandServiceSpec(configuration, options, selection.startup, selection.saved, false)
+	if err != nil {
+		return err
+	}
+	needsConfiguration := selection.saved == nil || !specMatchesSaved(*selection.saved, spec)
 	if !needsConfiguration {
 		launch, convertErr := servicelaunch.LaunchSpecFromService(spec)
 		if convertErr != nil {
@@ -425,6 +389,9 @@ func executeNativeStartWithController(mode, verb string, args []string, newContr
 	if err != nil {
 		return err
 	}
+	if _, err := launch.LoadEnvironment(); err != nil {
+		return err
+	}
 	if authorizer, ok := controller.Manager.(servicelaunch.StartAuthorizer); ok {
 		if err := authorizer.AuthorizeStart(context.Background(), launch); err != nil {
 			return err
@@ -454,7 +421,7 @@ func executeNativeStartWithController(mode, verb string, args []string, newContr
 		return fmt.Errorf("native startup exhausted the wait budget: %w", context.DeadlineExceeded)
 	}
 	return waitForReadinessObserved(mode, configuration.dataDirectory, remaining, previous.AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
-		return observeLifecycleModeWithController(ctx, configuration, newController)
+		return observeNativeStartupWithController(ctx, configuration, newController)
 	})
 }
 
@@ -471,16 +438,19 @@ func waitForReadinessObserved(mode, canonical string, timeout waitBudget, previo
 	paths := lifecycle.PathsOf(canonical)
 	tick := newTicker(100 * time.Millisecond)
 	defer tick.Stop()
-	var latest lifecycle.Status
 	for {
 		status, err := observe(ctx)
-		latest = status
-		for _, diagnostic := range status.Diagnostics {
-			if diagnostic.Title == "Native startup failure" {
-				return reportStartupFailure(mode, paths, status)
+		freshAttempt := status.Attempt.ID != nil && *status.Attempt.ID != previousAttempt
+		if errors.Is(err, errNativeStartupFailed) {
+			if freshAttempt {
+				return errors.Join(reportStartupFailure(mode, paths, status), err)
 			}
+			// A child that never published has no new application attempt.
+			// Historical logs and errors belong to the previous process.
+			fmt.Printf("%s failed to start: %v\n", capitalize(mode), err)
+			return fmt.Errorf("%s failed to start: %w", mode, err)
 		}
-		if err == nil && (previousAttempt == "" || status.Attempt.ID != nil && *status.Attempt.ID != previousAttempt) {
+		if err == nil && (previousAttempt == "" || freshAttempt) {
 			switch {
 			case status.Process.State == lifecycle.ProcessRunning && (status.Readiness != nil && (*status.Readiness == lifecycle.ReadinessReady || *status.Readiness == lifecycle.ReadinessReadyForSetup)):
 				actualExecution := "unknown"
@@ -503,11 +473,11 @@ func waitForReadinessObserved(mode, canonical string, timeout waitBudget, previo
 		select {
 		case <-ctx.Done():
 			fmt.Printf("Startup wait expired after %s; startup may continue. See `leapmux %s status`.\n", timeout, mode)
-			if latest.Attempt.LogPath != nil {
-				if excerpt, excerptErr := lifecycle.ReadExcerpt(*latest.Attempt.LogPath); excerptErr == nil && excerpt != "" {
+			if freshAttempt && status.Attempt.LogPath != nil {
+				if excerpt, excerptErr := lifecycle.ReadExcerpt(*status.Attempt.LogPath); excerptErr == nil && excerpt != "" {
 					fmt.Printf("\nRecent startup logs:\n%s\n", excerpt)
 				}
-				fmt.Printf("Full log: %s\n", *latest.Attempt.LogPath)
+				fmt.Printf("Full log: %s\n", *status.Attempt.LogPath)
 			}
 			return fmt.Errorf("startup readiness wait ended: %w", ctx.Err())
 		case <-tick.C:
@@ -516,7 +486,7 @@ func waitForReadinessObserved(mode, canonical string, timeout waitBudget, previo
 }
 
 // reportStartupFailure prints the attempt's failure reason with its
-// bounded log excerpt and the complete log location.
+// limited log excerpt and the complete log location.
 func reportStartupFailure(mode string, paths lifecycle.Paths, status lifecycle.Status) error {
 	fmt.Printf("%s failed to start.\n", capitalize(mode))
 	if status.Attempt.LogPath != nil {
@@ -544,28 +514,6 @@ func specMatchesSaved(saved, desired lifecycle.ServiceSpec) bool {
 	return saved.Equal(desired)
 }
 
-// parseStartupFlag reads --startup=login|boot from the args.
-func parseStartupFlag(args []string) (lifecycle.StartupKind, []string, error) {
-	rest := make([]string, 0, len(args))
-	var chosen lifecycle.StartupKind
-	for _, arg := range args {
-		switch {
-		case arg == "--startup" || arg == "-startup":
-			return "", nil, fmt.Errorf("--startup takes the form --startup=login or --startup=boot")
-		case strings.HasPrefix(arg, "--startup="):
-			value := strings.TrimPrefix(arg, "--startup=")
-			kind, err := lifecycle.ParseStartupKind(value)
-			if err != nil {
-				return "", nil, err
-			}
-			chosen = kind
-		default:
-			rest = append(rest, arg)
-		}
-	}
-	return chosen, rest, nil
-}
-
 // printChangePreview renders the change the controller proposes.
 func printChangePreview(out io.Writer, mode string, change servicelaunch.ConfigurationChange) error {
 	var text strings.Builder
@@ -577,4 +525,34 @@ func printChangePreview(out io.Writer, mode string, change servicelaunch.Configu
 		fmt.Fprintf(&text, "\nAdministrator authorization is required: %s\n", change.ElevationReason)
 	}
 	return writeSetupText(out, text.String())
+}
+
+type nativeStartupSelection struct {
+	saved   *lifecycle.ServiceSpec
+	startup lifecycle.StartupKind
+}
+
+func selectNativeStartup(controller *servicelaunch.Controller, requested lifecycle.StartupKind, yes bool) (nativeStartupSelection, error) {
+	existing, err := controller.ReadSpec()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nativeStartupSelection{}, err
+	}
+	selection := nativeStartupSelection{startup: requested}
+	if err == nil {
+		selection.saved = &existing
+		if selection.startup == "" {
+			selection.startup = existing.Startup
+		}
+	}
+	if selection.startup != "" {
+		return selection, nil
+	}
+	if yes {
+		return nativeStartupSelection{}, fmt.Errorf("--startup is required: no startup mode is configured for this instance yet")
+	}
+	if err := requireInteractiveInput("--startup=login or --startup=boot", "--yes"); err != nil {
+		return nativeStartupSelection{}, err
+	}
+	selection.startup, err = promptStartupChoice(os.Stdout, os.Stdin)
+	return selection, err
 }

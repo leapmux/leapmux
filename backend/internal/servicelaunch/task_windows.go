@@ -37,14 +37,17 @@ func newWindowsTaskManager(credential credentialProvider) *windowsTaskManager {
 func taskName(spec LaunchSpec) string { return "leapmux-" + spec.Mode.String() + "-" + spec.InstanceID }
 
 func (m *windowsTaskManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeStatus, error) {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
 		return NativeStatus{}, err
 	}
 	return m.inspectTask(ctx, spec)
 }
 
 func (m *windowsTaskManager) Install(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin, true); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
 		return err
 	}
 	return withAccountPassword(ctx, spec.AccountName, m.credential, func(password []byte) error {
@@ -63,14 +66,17 @@ func (m *windowsTaskManager) Install(ctx context.Context, spec LaunchSpec) error
 }
 
 func (m *windowsTaskManager) Start(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin, true); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
 		return err
 	}
 	return m.startTask(ctx, spec)
 }
 
 func (m *windowsTaskManager) Stop(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -102,7 +108,7 @@ func (m *windowsTaskManager) Stop(ctx context.Context, spec LaunchSpec) error {
 }
 
 func (m *windowsTaskManager) Remove(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
 		return err
 	}
 	err := m.removeTask(ctx, spec)

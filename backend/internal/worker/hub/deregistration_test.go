@@ -61,7 +61,7 @@ func TestDeregistrationKeepsCredentialsOnUncertainOutcomes(t *testing.T) {
 	})
 }
 
-// errConfirmedDeletion names the sentinel that does not exist: the
+// errConfirmedDeletion identifies the sentinel that does not exist: the
 // client never treats any failure as a confirmed deletion.
 type errConfirmedDeletion struct{}
 

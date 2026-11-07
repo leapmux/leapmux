@@ -2,6 +2,7 @@ package solo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
@@ -82,15 +83,17 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 // lease, is rejected before any component lease, state access,
 // registration, or listener creation runs.
 func StartPrepared(ctx context.Context, prepared *PreparedConfig, root *lifecycle.DirectoryLease) (*Instance, error) {
+	return startPrepared(ctx, prepared, root, defaultDeps())
+}
+
+func startPrepared(ctx context.Context, prepared *PreparedConfig, root *lifecycle.DirectoryLease, d deps) (*Instance, error) {
 	if prepared == nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("solo: StartPrepared requires a prepared configuration")
+		return nil, errors.Join(fmt.Errorf("solo: StartPrepared requires a prepared configuration"), closeDirectoryLease(root, d.closeDirectory))
 	}
 	if err := validateRootLease(prepared, root); err != nil {
-		_ = root.Close()
-		return nil, err
+		return nil, errors.Join(err, closeDirectoryLease(root, d.closeDirectory))
 	}
-	return start(ctx, prepared.config, defaultDeps(), prepared, root)
+	return start(ctx, prepared.config, d, prepared, root)
 }
 
 // validateRootLease states what StartPrepared accepts as its root lease.

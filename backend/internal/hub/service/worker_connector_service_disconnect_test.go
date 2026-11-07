@@ -162,7 +162,7 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 			// store, which the connector-only wrapper never reaches.
 			real := hubtestutil.OpenTestStore(t)
 			park := &parkingMarkStore{Store: real, release: release, entered: make(chan struct{})}
-			env := regKeyEnvFromStore(t, park, testConfig(), seedSMTP, nil, nil)
+			env := regKeyEnvFromStore(t, park, testConfig(), seedSMTP, regKeyEnvOptions{}, nil)
 
 			token := env.login(t, "admin", "admin123")
 			createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),

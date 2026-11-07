@@ -21,9 +21,7 @@ func plantRecord(t *testing.T, dir, target string, phase publicationPhase) {
 		TargetDirectory: target,
 		Phase:           phase,
 	}
-	data, err := yamlMarshalRecord(rec)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(recordPathAt(dir), data, 0o600))
+	require.NoError(t, writeRecord(recordPathAt(dir), rec))
 }
 
 // TestUnconfirmedWindowsPublicationFailsClosed pins the fail-closed
@@ -43,7 +41,7 @@ func TestUnconfirmedWindowsPublicationFailsClosed(t *testing.T) {
 
 	err = MkdirAllDurable(filepath.Join(target, "cache"))
 	require.ErrorIs(t, err, ErrDirectoryPublicationUncertain)
-	assert.Contains(t, err.Error(), root, "the error names the unconfirmed prefix")
+	assert.Contains(t, err.Error(), root, "the error identifies the unconfirmed prefix")
 
 	// The subtree is untouched: no rename, no removal, no deeper
 	// creation, and the record's bytes are unchanged.

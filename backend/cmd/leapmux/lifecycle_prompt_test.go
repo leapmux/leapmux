@@ -195,7 +195,7 @@ func TestConsentAndNoninteractiveSetup(t *testing.T) {
 		assert.Contains(t, err.Error(), "1 or 2")
 	})
 
-	t.Run("end of input on the startup choice names the flags", func(t *testing.T) {
+	t.Run("end of input on the startup choice identifies the flags", func(t *testing.T) {
 		_, err := promptStartupChoice(&bytes.Buffer{}, strings.NewReader(""))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "--startup")

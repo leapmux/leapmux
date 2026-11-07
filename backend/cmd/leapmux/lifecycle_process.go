@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
@@ -18,14 +17,10 @@ import (
 // The foreground implementations the lifecycle `run` verb dispatches
 // to. Each takes the COMMON runtime's root lease through TakeLease --
 // the transfer the plan's ownership contract states -- and the mode's
-// own flags.
+// prepared configuration.
 
 // runHubForeground runs the Hub under the started runtime.
-func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, args []string) error {
-	cfg, _, err := hubconfig.Load(args)
-	if err != nil {
-		return err
-	}
+func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *hubconfig.Config) error {
 	level, err := logging.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		return fmt.Errorf("invalid log level: %w", err)
@@ -60,10 +55,9 @@ func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, args []st
 // runWorkerForeground runs the worker under the started runtime. The
 // saved registration is the only credential source; registration lives
 // in `leapmux worker register`.
-func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args []string) error {
-	cfg, _, err := workerconfig.Load(args)
-	if err != nil {
-		return err
+func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *workerconfig.Config) (result error) {
+	if err := cfg.ValidateRuntime(); err != nil {
+		return fmt.Errorf("validate runtime configuration: %w", err)
 	}
 	level, err := logging.ParseLevel(cfg.LogLevel)
 	if err != nil {
@@ -74,11 +68,14 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args [
 	// The runtime's root lease transfers into worker.Run, which
 	// releases it after the database closes.
 	lease := runtime.TakeLease()
-	defer func() { _ = lease.Close() }()
-	if lease.Mode() != lifecycle.RoleWorker {
+	defer func() {
+		if err := lease.Close(); err != nil && !errors.Is(result, err) {
+			result = errors.Join(result, err)
+		}
+	}()
+	if lease == nil || lease.Mode() != lifecycle.RoleWorker {
 		// The runtime acquired the directory under the worker role by
 		// construction; this guards a future mode mix-up.
-		_ = lease.Close()
 		return errors.New("the runtime's lease is not the worker component's")
 	}
 	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
@@ -89,11 +86,11 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args [
 		return fmt.Errorf("the worker configuration does not match its held data directory")
 	}
 
-	state, err := cfg.UsableRegistration()
+	state, err := cfg.LoadState()
 	if err != nil {
-		return err
+		return fmt.Errorf("load state: %w", err)
 	}
-	compositeKey, err := state.CompositeKeypair()
+	compositeKey, err := state.UsableKeypair()
 	if err != nil {
 		return err
 	}
@@ -104,6 +101,7 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args [
 		HubURL:   new(state.HubURL),
 	})
 	runtime.SetReadiness(lifecycle.ReadinessStarting)
+	runtime.SetConnection(lifecycle.ConnectionStatus{State: lifecycle.ConnectionConnecting})
 
 	err = worker.Run(ctx, worker.RunConfig{
 		HubURL:    state.HubURL,
@@ -137,37 +135,20 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, args [
 		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
 		EncryptionMode:          cfg.EncryptionModeProto(),
 		UseLoginShell:           cfg.UseLoginShell,
-		OnDeregister: func() {
-			if err := clearDeletedWorkerState(cfg); err != nil {
-				fmt.Fprintf(os.Stderr, "failed to clear the worker state: %v\n", err)
-			}
-		},
+		OnDeregister:            func() error { return clearDeletedWorkerState(cfg) },
 	})
 	return reregistrationAdvice(err, cfg.StatePath())
 }
 
 // runSoloForeground runs the combined instance under the started
 // runtime: the prepared entry receives the runtime's root lease.
-func runSoloForeground(ctx context.Context, devMode bool, runtime *lifecycle.Runtime, args []string) error {
-	mode := lifecycle.RoleSolo
-	if devMode {
-		mode = lifecycle.RoleDev
-	}
-	cfg := solo.Config{Args: args, SkipBanner: false, DevMode: devMode}
-
-	prepared, err := solo.Prepare(cfg)
-	if err != nil {
-		return err
-	}
-	if prepared.Role() != mode {
-		return fmt.Errorf("the prepared launch runs as %s, not %s", prepared.Role(), mode)
-	}
+func runSoloForeground(ctx context.Context, runtime *lifecycle.Runtime, prepared *solo.PreparedConfig) error {
+	mode := prepared.Role()
 	// The runtime's root lease IS the combined root lease: transfer it
 	// into the prepared startup, which owns it through the shutdown.
 	root := runtime.TakeLease()
-	if root.Mode() != mode || root.Path() != prepared.DataDirectory() {
-		_ = root.Close()
-		return fmt.Errorf("the runtime's lease does not match the prepared %s launch", mode)
+	if root == nil || root.Mode() != mode || root.Path() != prepared.DataDirectory() {
+		return errors.Join(fmt.Errorf("the runtime's lease does not match the prepared %s launch", mode), root.Close())
 	}
 
 	runtime.SetRegistration(lifecycle.RegistrationStatus{State: lifecycle.RegistrationPending})
@@ -176,14 +157,29 @@ func runSoloForeground(ctx context.Context, devMode bool, runtime *lifecycle.Run
 	if err != nil {
 		return err
 	}
+	return waitCombinedForeground(ctx, runtime, inst)
+}
+
+type combinedForegroundInstance interface {
+	ObserveStartup() (solo.StartupSnapshot, <-chan struct{})
+	Startup() solo.StartupSnapshot
+	WaitDone() <-chan struct{}
+	Stop() error
+}
+
+func waitCombinedForeground(ctx context.Context, runtime *lifecycle.Runtime, inst combinedForegroundInstance) error {
 	for {
 		snapshot, changed := inst.ObserveStartup()
 		reportCombinedStartup(runtime, snapshot)
 		select {
 		case <-changed:
+			continue
+		case <-ctx.Done():
 		case <-inst.WaitDone():
-			return inst.Stop()
 		}
+		err := inst.Stop()
+		reportCombinedStartup(runtime, inst.Startup())
+		return err
 	}
 }
 

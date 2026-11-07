@@ -11,7 +11,7 @@ import (
 type NativeStatus struct {
 	// Installed reports whether the native definition exists.
 	Installed bool
-	// Running reports whether the native mechanism currently runs it.
+	// Running includes execution and queued, starting, or stopping transitions.
 	Running bool
 	// State is the native state string, for diagnostics.
 	State string
@@ -83,7 +83,7 @@ type Elevation struct {
 	Required bool
 	// Reason states WHY, in the terms the platform's own tools report.
 	Reason string
-	// Mechanism names the authorization mechanism ("sudo", "UAC").
+	// Mechanism identifies the authorization mechanism ("sudo", "UAC").
 	Mechanism string
 }
 
@@ -108,7 +108,7 @@ func DescribeElevation(startup lifecycle.StartupKind, platform string) Elevation
 	}
 }
 
-// elevationMechanismOf names the platform's authorization tool.
+// elevationMechanismOf identifies the platform's authorization tool.
 func elevationMechanismOf(platform string) string {
 	switch platform {
 	case "darwin":

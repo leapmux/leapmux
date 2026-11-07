@@ -15,7 +15,7 @@ import (
 func TestOwnershipRecordRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "record")
 	paths := pathsFor(mustCanonical(t, root))
-	require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
+	require.NoError(t, preparePrivateDir(paths.Dir))
 	rec := ownershipRecord{
 		AccountID:     "501",
 		Mode:          RoleWorker,
@@ -43,7 +43,7 @@ func TestOwnershipRecordRoundTrip(t *testing.T) {
 func TestServiceSpecRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "spec")
 	paths := pathsFor(mustCanonical(t, root))
-	require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
+	require.NoError(t, preparePrivateDir(paths.Dir))
 
 	_, err := ReadServiceSpec(paths.ServiceSpec)
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -78,20 +78,21 @@ func TestServiceSpecRoundTrip(t *testing.T) {
 	assert.Equal(t, envFile, *stored.EnvironmentFile)
 }
 
-// Paths names every file the plan's layout states.
+// Paths identifies every file the plan's layout states.
 func TestPathsLayout(t *testing.T) {
-	paths := pathsFor("/data/worker")
-	assert.Equal(t, "/data/worker", paths.DataDir)
-	assert.Equal(t, "/data/worker/.lifecycle", paths.Dir)
-	assert.Equal(t, "/data/worker/.lifecycle/directory.yaml", paths.OwnershipRecord)
-	assert.Equal(t, "/data/worker/.lifecycle/data.lock", paths.DataLock)
-	assert.Equal(t, "/data/worker/.lifecycle/service.yaml", paths.ServiceSpec)
-	assert.Equal(t, "/data/worker/.lifecycle/runtime.yaml", paths.RuntimeRecord)
-	assert.Equal(t, "/data/worker/.lifecycle/control.token", paths.ControlToken)
-	assert.Equal(t, "/data/worker/.lifecycle/operation.lock", paths.OperationLock)
-	assert.Equal(t, "/data/worker/.lifecycle/runtime.lock", paths.RuntimeLock)
-	assert.Equal(t, "/data/worker/.lifecycle/logs", paths.Logs)
-	assert.Equal(t, "/data/worker/.lifecycle/logs/a9a0425886d148f68a8f94716ed47a78.log",
+	root := mustCanonical(t, filepath.Join(t.TempDir(), "worker"))
+	paths := pathsFor(root)
+	assert.Equal(t, root, paths.DataDir)
+	assert.Equal(t, filepath.Join(root, ".lifecycle"), paths.Dir)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "directory.yaml"), paths.OwnershipRecord)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "data.lock"), paths.DataLock)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "service.yaml"), paths.ServiceSpec)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "runtime.yaml"), paths.RuntimeRecord)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "control.token"), paths.ControlToken)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "operation.lock"), paths.OperationLock)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "runtime.lock"), paths.RuntimeLock)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "logs"), paths.Logs)
+	assert.Equal(t, filepath.Join(root, ".lifecycle", "logs", "a9a0425886d148f68a8f94716ed47a78.log"),
 		paths.AttemptLogPath("a9a0425886d148f68a8f94716ed47a78"))
 }
 

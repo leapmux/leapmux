@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"path/filepath"
@@ -14,11 +15,13 @@ import (
 )
 
 type lifecycleConfiguration struct {
+	executeForeground foregroundExecution
 	role              lifecycle.Role
 	dataDirectory     string
 	configurationFile string
 	runtimeArguments  []string
 	explicitFlags     map[string]bool
+	validateRuntime   func() error
 	checkStartup      func(*lifecycle.DirectoryLease) error
 	readRegistration  func() (lifecycle.RegistrationStatus, error)
 }
@@ -41,7 +44,7 @@ func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfigura
 	}
 	configuration, err := loadLifecycleConfiguration(mode, args, func(fs *flag.FlagSet) {
 		switch verb {
-		case "start", "restart", "stop", "status", "disable":
+		case "start", "restart", "stop", "status":
 			fs.Var(internalconfig.NewDurationFlag(&options.timeout, options.timeout), "timeout", "maximum wait for the operation")
 		}
 		if verb == "status" {
@@ -80,6 +83,7 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 		}
 	}
 	configuration := &lifecycleConfiguration{role: role, checkStartup: func(*lifecycle.DirectoryLease) error { return nil }}
+	configuration.validateRuntime = func() error { return nil }
 	configuration.readRegistration = func() (lifecycle.RegistrationStatus, error) {
 		return lifecycle.RegistrationStatus{State: lifecycle.RegistrationNotApplicable}, nil
 	}
@@ -92,7 +96,14 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 		if version {
 			return nil, internalconfig.ErrVersionRequested
 		}
+		cfg.DataDir, loadErr = lifecycle.CanonicalDir(cfg.DataDir)
+		if loadErr != nil {
+			return nil, loadErr
+		}
 		configuration.dataDirectory = cfg.DataDir
+		configuration.executeForeground = func(ctx context.Context, runtime *lifecycle.Runtime) error {
+			return runHubForeground(ctx, runtime, cfg)
+		}
 	case lifecycle.RoleWorker:
 		cfg, version, loadErr := workerconfig.LoadWithOptions(args, workerconfig.LoadOptions{ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed})
 		if loadErr != nil {
@@ -108,7 +119,15 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 				return nil, fmt.Errorf("--%s belongs to `leapmux worker register`; execution uses the saved registration", name)
 			}
 		}
+		cfg.DataDir, loadErr = lifecycle.CanonicalDir(cfg.DataDir)
+		if loadErr != nil {
+			return nil, loadErr
+		}
 		configuration.dataDirectory = cfg.DataDir
+		configuration.executeForeground = func(ctx context.Context, runtime *lifecycle.Runtime) error {
+			return runWorkerForeground(ctx, runtime, cfg)
+		}
+		configuration.validateRuntime = cfg.ValidateRuntime
 		configuration.checkStartup = func(directory *lifecycle.DirectoryLease) error {
 			if directory == nil || directory.Closed() || directory.Mode() != lifecycle.RoleWorker || directory.Path() != configuration.dataDirectory {
 				return fmt.Errorf("worker startup requires its held data directory lease")
@@ -131,7 +150,7 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 				}
 				return lifecycle.RegistrationStatus{State: lifecycle.RegistrationUnregistered}, nil
 			}
-			if _, stateErr := cfg.UsableRegistration(); stateErr != nil {
+			if _, stateErr := state.UsableKeypair(); stateErr != nil {
 				return lifecycle.RegistrationStatus{State: lifecycle.RegistrationInvalid}, stateErr
 			}
 			return lifecycle.RegistrationStatus{
@@ -144,6 +163,9 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 			return nil, prepareErr
 		}
 		configuration.dataDirectory = prepared.DataDirectory()
+		configuration.executeForeground = func(ctx context.Context, runtime *lifecycle.Runtime) error {
+			return runSoloForeground(ctx, runtime, prepared)
+		}
 	}
 	configuration.dataDirectory, err = lifecycle.CanonicalDir(configuration.dataDirectory)
 	if err != nil {

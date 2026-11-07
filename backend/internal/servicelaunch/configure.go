@@ -19,7 +19,7 @@ import (
 type Controller struct {
 	// Manager is the platform adapter.
 	Manager Manager
-	// Platform names the platform, for the summaries and the elevation
+	// Platform identifies the platform, for the summaries and the elevation
 	// description.
 	Platform string
 	// NativeMechanism is the platform's own name for what gets
@@ -39,7 +39,11 @@ type Controller struct {
 // nothing: the caller shows Changes and the elevation, and applies only
 // after consent.
 func (c *Controller) Preview(ctx context.Context, desired lifecycle.ServiceSpec) (ConfigurationChange, error) {
-	if _, err := LaunchSpecFromService(desired); err != nil {
+	launch, err := LaunchSpecFromService(desired)
+	if err != nil {
+		return ConfigurationChange{}, err
+	}
+	if _, err := launch.LoadEnvironment(); err != nil {
 		return ConfigurationChange{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -142,6 +146,9 @@ func (c *Controller) Apply(ctx context.Context, desired lifecycle.ServiceSpec) e
 	if err != nil {
 		return err
 	}
+	if _, err := launch.LoadEnvironment(); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -150,7 +157,7 @@ func (c *Controller) Apply(ctx context.Context, desired lifecycle.ServiceSpec) e
 		return fmt.Errorf("servicelaunch: read the previous specification: %w", readErr)
 	}
 	if readErr == nil && !current.Equal(desired) {
-		previous, err := launchSpecForRemoval(current)
+		previous, err := LaunchSpecFromService(current)
 		if err != nil {
 			// Runtime fields may need repair. The valid desired launch can
 			// inspect the same native identity under the previous startup mode.
@@ -167,7 +174,7 @@ func (c *Controller) Apply(ctx context.Context, desired lifecycle.ServiceSpec) e
 		if err != nil {
 			return err
 		}
-		if native.Running || native.State == "activating" || native.State == "start-pending" || native.State == "stop-pending" {
+		if native.Running {
 			return fmt.Errorf("servicelaunch: stop the instance before changing its startup configuration")
 		}
 		// Keep the old specification until its mechanism is removed. If
@@ -220,7 +227,7 @@ func (c *Controller) Remove(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	launch, err := launchSpecForRemoval(spec)
+	launch, err := LaunchSpecFromService(spec)
 	if err != nil {
 		return err
 	}

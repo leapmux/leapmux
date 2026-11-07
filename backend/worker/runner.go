@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -77,10 +79,11 @@ type RunConfig struct {
 	Drained func()
 	// OnDeregister, when non-nil, is called when the Hub tells this worker to
 	// stop for good: a deregistration notification on the stream, or a Connect
-	// refusal that says the worker was deleted. It runs before the shutdown, so
-	// a caller that must forget this worker does so before anything can stop it.
-	// Run then shuts down, calls Drained and returns nil, with ctx still live.
-	OnDeregister func()
+	// refusal that says the worker was deleted. The Hub-directed path calls it
+	// before requesting drain. Cancellation can begin draining concurrently;
+	// Run still joins the callback before closing storage.
+	// Run drains, calls Drained, and returns callback or cleanup failures.
+	OnDeregister func() error
 	// OnReady, when non-nil, runs after local database initialization
 	// and runtime wiring complete: the point at which the worker is
 	// locally ready whatever its Hub connection is doing. It runs at
@@ -105,6 +108,11 @@ type ConnectionState struct {
 	Err error
 }
 
+type runCleanup struct {
+	closeDatabase  func(*sql.DB) error
+	closeDirectory func(*lifecycle.DirectoryLease) error
+}
+
 // Run starts the worker and blocks until ctx is cancelled, the Hub stops this
 // worker for good, or a local failure ends it, such as a database that does not
 // open. The Hub stops a worker by deregistering it, reporting it deleted, or
@@ -127,6 +135,10 @@ type ConnectionState struct {
 // cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
 // solo, dev and the desktop app all reach, and the `leapmux worker` command.
 func Run(ctx context.Context, cfg RunConfig) error {
+	return run(ctx, cfg, runCleanup{closeDatabase: (*sql.DB).Close, closeDirectory: (*lifecycle.DirectoryLease).Close})
+}
+
+func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) {
 	// The lease is required, held for the worker component, and not
 	// already released: every storage path below derives from it, and
 	// its lock is what makes this process the directory's only worker.
@@ -135,7 +147,11 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	}
 	// Every supplied lease transfers at entry. The database's later close
 	// defer runs first, so even rejection keeps the ownership contract.
-	defer func() { _ = cfg.Directory.Close() }()
+	defer func() {
+		if err := cleanup.closeDirectory(cfg.Directory); err != nil {
+			result = errors.Join(result, fmt.Errorf("close worker data directory %s: %w", cfg.Directory.Path(), err))
+		}
+	}()
 	if cfg.Directory.Mode() != lifecycle.RoleWorker {
 		return fmt.Errorf("worker: RunConfig.Directory must hold the worker component's lease, not %s", cfg.Directory.Mode())
 	}
@@ -147,7 +163,8 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	// workerkeys.Of refuses a nil keypair too. Checking here, before anything
 	// opens, also keeps bootstrap.Wire from panicking on a keypair it cannot
 	// describe, on a goroutine that solo does not recover.
-	if _, err := workerkeys.Of(cfg.CompositeKey); err != nil {
+	publicKeys, err := workerkeys.Of(cfg.CompositeKey)
+	if err != nil {
 		return fmt.Errorf("worker: RunConfig.CompositeKey must hold a complete key set, because the Hub pins the keys a Worker registers with: %w", err)
 	}
 	if cfg.AuthToken == "" {
@@ -155,6 +172,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	}
 	if cfg.EncryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 		return errors.New("worker: RunConfig.EncryptionMode is required: the Hub refuses a Worker hello with no encryption mode")
+	}
+	if err := channelwire.ValidateConfiguredMaxMessageSize(cfg.MaxMessageSize); err != nil {
+		return fmt.Errorf("worker: validate runtime configuration: %w", err)
 	}
 
 	// Report the periods in which this process did not run. A standalone Worker
@@ -178,8 +198,8 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		return fmt.Errorf("open worker db: %w", err)
 	}
 	defer func() {
-		if closeErr := sqlDB.Close(); closeErr != nil {
-			slog.Error("failed to close worker db", "error", closeErr)
+		if closeErr := cleanup.closeDatabase(sqlDB); closeErr != nil {
+			result = errors.Join(result, fmt.Errorf("close worker database %s: %w", dbPath, closeErr))
 		}
 	}()
 
@@ -197,6 +217,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
 		}
 	}
+	slog.Info("worker initialized",
+		"worker_id", cfg.WorkerID,
+		"hub", hubEndpoint.URL(),
+		"key_fingerprint", workerkeys.Fingerprint(publicKeys),
+		"encryption_mode", cfg.EncryptionMode,
+	)
 	client := hub.New(hubEndpoint)
 	// wiring is nil on every return before Wire succeeds, and WaitHandlers
 	// tolerates nil. The closure is required: `defer wiring.WaitHandlers()`
@@ -302,9 +328,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		})
 	}
 
+	var deregisterErr error
 	client.OnDeregister = func() {
 		if cfg.OnDeregister != nil {
-			cfg.OnDeregister()
+			if err := cfg.OnDeregister(); err != nil {
+				deregisterErr = errors.Join(deregisterErr, err)
+			}
 		}
 		stopGracefully()
 	}
@@ -335,5 +364,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: cfg.HubURL, Err: err})
 		}
 	}
-	return client.ConnectWithReconnect(runCtx, cfg.AuthToken)
+	connectionErr := client.ConnectWithReconnect(runCtx, cfg.AuthToken)
+	if deregisterErr != nil {
+		return errors.Join(connectionErr, deregisterErr)
+	}
+	return connectionErr
 }

@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/leapmux/leapmux/util/useronly"
 )
@@ -83,7 +82,7 @@ func publishStaged(firstMissing, target string) error {
 // the write-through publication of an earlier invocation was never
 // confirmed to have completed its record, and nothing here may rename,
 // remove, or guess the persistence of the already-visible subtree. The
-// error names the unconfirmed prefix for operator inspection or a
+// error identifies the unconfirmed prefix for operator inspection or a
 // different data location.
 func repairRecord(path string) error {
 	rec, err := loadRecordAt(path)
@@ -94,30 +93,4 @@ func repairRecord(path string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", ErrDirectoryPublicationUncertain, rec.Directory)
-}
-
-// writeRecordCommitted replaces a record with its committed form
-// through the write-through publication.
-func writeRecordCommitted(path string, rec *publicationRecord) error {
-	data, err := yamlMarshalRecord(rec)
-	if err != nil {
-		return err
-	}
-	return WriteFileDurable(path, data, 0o600)
-}
-
-// missingBelow returns the chain of directories between firstMissing
-// and target (exclusive of firstMissing, inclusive of target), each as
-// a slash-separated path relative to firstMissing.
-func missingBelow(firstMissing, target string) []string {
-	rel, err := filepath.Rel(firstMissing, target)
-	if err != nil || rel == "." {
-		return nil
-	}
-	segments := strings.Split(rel, string(filepath.Separator))
-	chain := make([]string, 0, len(segments))
-	for i := 1; i <= len(segments); i++ {
-		chain = append(chain, filepath.Join(segments[:i]...))
-	}
-	return chain
 }

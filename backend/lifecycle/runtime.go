@@ -22,10 +22,10 @@ var ErrInstanceRunning = errors.New("an instance already runs for this configura
 // lease, the runtime lock, the published records, the private control
 // endpoint, and the status the mode runtime reports into it.
 //
-// The sequence StartRuntime runs is the one the contract states: the
-// root lease is acquired before any runtime record, token, or endpoint
-// exists; the lease transfers to the mode runtime when dispatch begins;
-// a failure before that transfer releases the lease here.
+// StartRuntime follows the contract's sequence:
+//   - The root lease is acquired before any runtime record, token, or endpoint exists.
+//   - The lease transfers to the mode runtime when dispatch begins.
+//   - A failure before that transfer releases the lease here.
 type Runtime struct {
 	record  RuntimeRecord
 	paths   Paths
@@ -69,10 +69,10 @@ type RuntimeConfig struct {
 	Execution ExecutionKind
 }
 
-// NewAttemptID mints a random 128-bit attempt identity, encoded as 32
-// lowercase hexadecimal characters. The identity names one process
-// attempt in every record, log, and stop request, so a client that
-// inspected an earlier attempt cannot act on this process.
+// NewAttemptID mints a random 128-bit identity as 32 lowercase hexadecimal
+// characters. Runtime and durable registration attempts call it independently.
+// Each identity identifies one attempt, so observing an earlier attempt cannot
+// authorize a request against another process or registration.
 func NewAttemptID() (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {

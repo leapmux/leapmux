@@ -275,3 +275,40 @@ func TestServerRejectionConsumesLeaseBeforeConfigWrites(t *testing.T) {
 		require.NoError(t, listener.Close())
 	})
 }
+
+type cancelledReadinessEvents struct {
+	store.RevocationEventStore
+	entered chan struct{}
+	failure error
+}
+
+func (s cancelledReadinessEvents) AcquireHubRuntimeLease(ctx context.Context, _ store.AcquireHubRuntimeLeaseParams) (int64, error) {
+	close(s.entered)
+	<-ctx.Done()
+	return 0, s.failure
+}
+
+func TestHubCancellationPreservesIndependentLeaseFailure(t *testing.T) {
+	failure := errors.New("independent lease storage failure")
+	for _, cause := range []error{failure, errors.Join(context.Canceled, failure)} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			srv := newLeasedTestServer(t)
+			require.NoError(t, srv.revocationWatcher.Close(t.Context()))
+			events := cancelledReadinessEvents{RevocationEventStore: srv.store.RevocationEvents(), entered: make(chan struct{}), failure: cause}
+			srv.revocationWatcher = revocationwatcher.New(readinessStore{srv.store, events}, auth.NewCredentialLifecycleEffects(nil, nil, nil))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- srv.Serve(ctx) }()
+			<-events.entered
+			cancel()
+			require.ErrorIs(t, <-done, failure)
+			assert.True(t, srv.directory.Closed())
+			select {
+			case <-srv.Ready():
+				t.Fatal("failed lease acquisition signalled readiness")
+			default:
+			}
+		})
+	}
+}

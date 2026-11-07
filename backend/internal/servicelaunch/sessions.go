@@ -59,13 +59,14 @@ type SessionMonitor interface {
 	// Sessions lists the account's sessions now. An enumeration error
 	// is NEVER "zero sessions": the caller must not stop an instance on
 	// a failed lookup.
-	Sessions(account AccountRef) ([]Session, error)
+	Sessions(ctx context.Context, account AccountRef) ([]Session, error)
 }
 
 // NewSessionMonitor builds this operating system's account-session monitor.
 func NewSessionMonitor() SessionMonitor { return newPlatformSessionMonitor() }
 
 const loginSessionPollTag = "service-login-sessions"
+const sessionQueryTimeout = 5 * time.Second
 
 // WatchLoginSessions returns after the account's final desktop session ends.
 // Enumeration failures are reported and retried without ending the instance.
@@ -73,7 +74,13 @@ func WatchLoginSessions(ctx context.Context, monitor SessionMonitor, account Acc
 	ticker := clock.NewTicker(time.Second, loginSessionPollTag)
 	defer ticker.Stop()
 	for {
-		sessions, err := monitor.Sessions(account)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		sessions, err := monitor.Sessions(ctx, account)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			if report != nil {
 				report(err)
@@ -90,9 +97,10 @@ func WatchLoginSessions(ctx context.Context, monitor SessionMonitor, account Acc
 }
 
 // LastSessionRule decides whether a login-mode instance may stop, from
-// the account's session list. One instance serves every applicable
-// session; opening another creates no second instance; the instance
-// stops only after the last applicable session ends.
+// the account's session list:
+//   - One instance serves every applicable session.
+//   - Opening another session creates no second instance.
+//   - The instance stops only after the last applicable session ends.
 func LastSessionRule(sessions []Session, enumerateErr error) (mayStop bool, reason string) {
 	if enumerateErr != nil {
 		return false, fmt.Sprintf("the session list could not be read (%v); an unreadable list is never an empty one", enumerateErr)

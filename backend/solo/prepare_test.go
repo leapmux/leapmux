@@ -217,7 +217,7 @@ func snapshotTree(t *testing.T, root string) string {
 	return out.String()
 }
 
-// uniqueTestListenURL names one local IPC endpoint for this test.
+// uniqueTestListenURL identifies one local IPC endpoint for this test.
 func uniqueTestListenURL(t *testing.T) string {
 	return locallistentest.UniqueListenURL(t, "leapmux-solo-prepare")
 }

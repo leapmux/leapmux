@@ -1,8 +1,11 @@
 package config
 
 import (
+	"encoding/base64"
+	"os"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,4 +70,61 @@ func TestRegisteredAndUsableRegistration(t *testing.T) {
 		_, err := cfg.UsableRegistration()
 		require.Error(t, err)
 	})
+}
+
+func TestUsableKeypairValidatesOneSnapshotWithoutWrites(t *testing.T) {
+	cfg := registeredState(t, func(state *State) {
+		state.HubURL, state.WorkerID, state.AuthToken = "http://hub.example", "worker", "token"
+	})
+	snapshot, err := cfg.LoadState()
+	require.NoError(t, err)
+	original, err := snapshot.CompositeKeypair()
+	require.NoError(t, err)
+	replacement := *snapshot
+	replacement.KeyMaterial = KeyMaterial{}
+	require.NoError(t, cfg.SaveState(&replacement))
+	before, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	restored, err := snapshot.UsableKeypair()
+	require.NoError(t, err, "validation must use its loaded snapshot even if the disk now differs")
+	originalPublic, err := workerkeys.Of(original)
+	require.NoError(t, err)
+	restoredPublic, err := workerkeys.Of(restored)
+	require.NoError(t, err)
+	assert.True(t, workerkeys.Equal(originalPublic, restoredPublic))
+	assert.Equal(t, original.Fingerprint(), restored.Fingerprint())
+	_, err = cfg.UsableRegistration()
+	require.ErrorIs(t, err, ErrUnusableRegisteredKeypair)
+	after, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+}
+
+func TestUsableKeypairRefusesIncompleteAndCorruptSnapshots(t *testing.T) {
+	var absent *State
+	_, err := absent.UsableKeypair()
+	require.ErrorContains(t, err, "worker register")
+	_, err = (&State{}).UsableKeypair()
+	require.ErrorContains(t, err, "worker register")
+	cfg := registeredState(t, func(state *State) {
+		state.HubURL, state.WorkerID, state.AuthToken = "http://hub.example", "worker", "token"
+	})
+	complete, err := cfg.LoadState()
+	require.NoError(t, err)
+	for _, mutate := range []func(*State){
+		func(state *State) { state.X25519PrivateKey = "" },
+		func(state *State) { state.MlkemPrivateKey = "" },
+		func(state *State) { state.SlhdsaPrivateKey = "" },
+		func(state *State) {
+			key, err := base64.StdEncoding.DecodeString(state.SlhdsaPrivateKey)
+			require.NoError(t, err)
+			key[len(key)-1] ^= 1
+			state.SlhdsaPrivateKey = base64.StdEncoding.EncodeToString(key)
+		},
+	} {
+		snapshot := *complete
+		mutate(&snapshot)
+		_, err := snapshot.UsableKeypair()
+		require.ErrorIs(t, err, ErrUnusableRegisteredKeypair)
+	}
 }

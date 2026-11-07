@@ -28,7 +28,7 @@ func TestOutputCaptureFailureCancelsAndPreservesCause(t *testing.T) {
 			defer cancel()
 			failure := errors.New("attempt log write failed")
 			stdout, stderr := os.Stdout, os.Stderr
-			capture, err := startOutputCapture(failingAttemptWriter{err: failure}, cancel, execution)
+			capture, err := startOutputCapture(ctx, failingAttemptWriter{err: failure}, cancel, execution)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = capture.Close() })
 			_, err = fmt.Fprintln(os.Stderr, "capture failure test")
@@ -69,7 +69,9 @@ func TestManagedOutputDoesNotRequireConsoleHandles(t *testing.T) {
 	}()
 	os.Stdout, os.Stderr = closed, closed
 	args := append([]string{"--config", spec.ConfigFile, "--data-dir", spec.DataDirectory}, spec.RuntimeArguments...)
-	result := executeForegroundAttempt(ctx, cancel, "hub", runtime, args)
+	result := executeForegroundAttempt(ctx, cancel, runtime, func(ctx context.Context, runtime *lifecycle.Runtime) error {
+		return runHubForeground(ctx, runtime, preparedHubConfig(t, args))
+	})
 	<-readyDone
 	os.Stdout, os.Stderr = stdout, stderr
 	require.NoError(t, result)
@@ -83,7 +85,7 @@ func TestManagedOutputDoesNotRequireConsoleHandles(t *testing.T) {
 // console failures still cancel the attempt and retain their cause.
 func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
 	for _, brokenPipe := range []bool{true, false} {
-		name := "closed file"
+		name := "read-only file"
 		if brokenPipe {
 			name = "broken pipe"
 		}
@@ -94,6 +96,10 @@ func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
 			t.Cleanup(func() { _ = console.Close() })
 			if !brokenPipe {
 				require.NoError(t, console.Close())
+				path := filepath.Join(t.TempDir(), "read-only-console")
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+				console, err = os.Open(path)
+				require.NoError(t, err)
 			}
 			stdout, stderr := os.Stdout, os.Stderr
 			t.Cleanup(func() { os.Stdout, os.Stderr = stdout, stderr })
@@ -101,24 +107,91 @@ func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
 			ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
 			defer cancel()
 			var attempt testutil.LogBuffer
-			capture, err := startOutputCapture(&attempt, cancel, lifecycle.ExecutionForeground)
+			capture, err := startOutputCapture(ctx, &attempt, cancel, lifecycle.ExecutionForeground)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = capture.Close() })
 			_, err = fmt.Fprintln(os.Stdout, "stdout after console failure")
 			require.NoError(t, err)
 			_, err = fmt.Fprintln(os.Stderr, "stderr after console failure")
 			require.NoError(t, err)
+			if !brokenPipe {
+				<-ctx.Done()
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+				_, err = fmt.Fprintln(os.Stdout, "preserve output after the console error")
+				require.NoError(t, err)
+			}
 			closeErr := capture.Close()
 			os.Stdout, os.Stderr = stdout, stderr
 			if !brokenPipe {
-				require.ErrorIs(t, closeErr, os.ErrClosed)
+				require.ErrorContains(t, closeErr, "mirror console output")
 				require.ErrorIs(t, ctx.Err(), context.Canceled)
-				return
+				assert.Contains(t, attempt.String(), "preserve output after the console error")
+			} else {
+				require.NoError(t, closeErr)
+				require.NoError(t, ctx.Err())
 			}
-			require.NoError(t, closeErr)
-			require.NoError(t, ctx.Err())
 			assert.Contains(t, attempt.String(), "stdout after console failure")
 			assert.Contains(t, attempt.String(), "stderr after console failure")
 		})
 	}
+}
+
+func TestForegroundShutdownWithBlockedConsolePreservesAttemptLog(t *testing.T) {
+	reader, console, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reader.Close(); _ = console.Close() })
+	fillConsolePipe(t, reader, console)
+	stdout, stderr := os.Stdout, os.Stderr
+	cfg := writeRegisteredStateAgainst(t, "http://127.0.0.1:1")
+	configuration := filepath.Join(t.TempDir(), "worker.yaml")
+	require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
+	waitCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(waitCtx)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	completed := false
+	os.Stdout = console
+	go func() {
+		done <- runModeRunWithInvocation("worker", runInvocation{Context: ctx, OnReady: func() { close(ready) }})(
+			cmdCtx{}, []string{"--config", configuration, "--data-dir", cfg.DataDir})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = reader.Close()
+		if !completed {
+			if cleanupErr := <-done; cleanupErr != nil {
+				t.Errorf("finish the cancelled worker: %v", cleanupErr)
+			}
+		}
+		os.Stdout, os.Stderr = stdout, stderr
+	})
+	select {
+	case <-ready:
+	case err := <-done:
+		completed = true
+		t.Fatalf("the worker did not reach readiness: %v", err)
+	case <-waitCtx.Done():
+		t.Fatal("the worker did not reach readiness before its test deadline")
+	}
+	const marker = "preserve this output while the console is blocked"
+	_, err = fmt.Fprintln(os.Stdout, marker)
+	require.NoError(t, err)
+	cancel()
+	select {
+	case err := <-done:
+		completed = true
+		require.NoError(t, err)
+	case <-waitCtx.Done():
+		t.Fatal("a non-consuming console prevented completed worker shutdown")
+	}
+	os.Stdout, os.Stderr = stdout, stderr
+	paths := lifecycle.PathsOf(mustCanonicalDir(t, cfg.DataDir))
+	record, err := lifecycle.ReadRuntimeRecord(paths.RuntimeRecord)
+	require.NoError(t, err)
+	require.NotNil(t, record.Status)
+	require.Equal(t, lifecycle.ProcessStopped, record.Status.Process.State)
+	require.False(t, lockHeld(paths))
+	output, err := os.ReadFile(paths.AttemptLogPath(record.AttemptID))
+	require.NoError(t, err)
+	require.Contains(t, string(output), marker)
 }

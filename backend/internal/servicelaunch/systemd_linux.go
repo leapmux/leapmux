@@ -74,7 +74,7 @@ func systemdUnitName(spec LaunchSpec) string {
 	return fmt.Sprintf("leapmux-%s-%s", spec.Mode, spec.InstanceID)
 }
 
-// definitionPath names the unit file: ~/.config/systemd/user for a
+// definitionPath identifies the unit file: ~/.config/systemd/user for a
 // login service, /etc/systemd/system for a boot one.
 func (m *systemdManager) definitionPath(spec LaunchSpec) (string, error) {
 	name := systemdUnitName(spec) + ".service"
@@ -175,7 +175,7 @@ func (m *systemdManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeSt
 	status.Running = status.State == "active" || status.State == "activating" || status.State == "deactivating"
 	status.DefinitionMatches = status.DefinitionMatches && properties["LoadState"] == "loaded" && properties["UnitFileState"] == "enabled" && properties["NeedDaemonReload"] == "no" && properties["FragmentPath"] == path
 	if result := properties["Result"]; result != "" && result != "success" {
-		status.Failure = fmt.Sprintf("systemd result: %s; process code: %s; process status: %s", result, properties["ExecMainCode"], properties["ExecMainStatus"])
+		status.Failure = fmt.Sprintf("- systemd result: %s\n- process code: %s\n- process status: %s", result, properties["ExecMainCode"], properties["ExecMainStatus"])
 	}
 	if pid := properties["MainPID"]; pid != "" {
 		status.PID, err = strconv.Atoi(pid)
@@ -191,6 +191,16 @@ func (*systemdManager) AuthorizeStart(ctx context.Context, spec LaunchSpec) erro
 }
 
 func (m *systemdManager) Install(ctx context.Context, spec LaunchSpec) error {
+	if err := ValidateLaunchSpec(spec); err != nil {
+		return err
+	}
+	path, err := m.definitionPath(spec)
+	if err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
+		return err
+	}
 	if spec.Startup == lifecycle.StartupLogin {
 		out, err := m.runSystemctl(ctx, []string{"show", "graphical-session.target", "--property=LoadState", "--property=ActiveState"}, true, false)
 		if err != nil {
@@ -200,10 +210,6 @@ func (m *systemdManager) Install(ctx context.Context, spec LaunchSpec) error {
 		if properties["LoadState"] != "loaded" || properties["ActiveState"] != "active" {
 			return fmt.Errorf("this desktop does not expose an active graphical-session.target; choose boot startup for headless use")
 		}
-	}
-	path, err := m.definitionPath(spec)
-	if err != nil {
-		return err
 	}
 	if spec.Startup == lifecycle.StartupBoot && m.groupOf(spec.AccountName) == "" {
 		return fmt.Errorf("cannot resolve the selected account's primary group")
@@ -222,6 +228,12 @@ func (m *systemdManager) Install(ctx context.Context, spec LaunchSpec) error {
 }
 
 func (m *systemdManager) Start(ctx context.Context, spec LaunchSpec) error {
+	if err := ValidateLaunchSpec(spec); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
+		return err
+	}
 	user := spec.Startup == lifecycle.StartupLogin
 	if _, err := m.runSystemctl(ctx, []string{"daemon-reload"}, user, !user); err != nil {
 		return err
@@ -265,7 +277,7 @@ func (m *systemdManager) Diagnose(ctx context.Context, spec LaunchSpec) ([]strin
 	return notes, nil
 }
 
-// systemdFirstLines bounds a diagnostic excerpt.
+// systemdFirstLines limits a diagnostic excerpt.
 func systemdFirstLines(text string, n int) []string {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) > n {

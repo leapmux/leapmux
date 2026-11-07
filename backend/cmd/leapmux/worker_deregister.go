@@ -113,15 +113,9 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 
 	// The Hub confirmed deletion. Remove every local credential copy and
 	// preserve the worker database.
-	if err := files.RemovePendingRegistration(); err != nil {
-		return fmt.Errorf("the hub removed this worker, but the pending record %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
-			cfg.PendingPath(), err)
-	}
-	// Retain the token until recovery-material cleanup succeeds, so a retry
-	// can authenticate against the Hub's retained deletion record.
-	if err := files.ClearState(); err != nil {
-		return fmt.Errorf("the hub removed this worker, but its local credentials at %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
-			cfg.StatePath(), err)
+	if err := config.ClearRegistration(files); err != nil {
+		return fmt.Errorf("the hub removed this worker, but its registration at %s and %s could not be cleared: %w; rerun `leapmux worker deregister` to finish",
+			cfg.StatePath(), cfg.PendingPath(), err)
 	}
 
 	fmt.Println("Worker deregistered.")

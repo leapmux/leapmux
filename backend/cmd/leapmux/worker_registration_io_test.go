@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -244,4 +247,45 @@ func TestDeregisterCancellationAndRunningPreserveState(t *testing.T) {
 		assert.Equal(t, before, after)
 		assert.Zero(t, env.deregisterCalls.Load())
 	})
+}
+
+func TestHubDeletionClearsAllRegistrationMaterial(t *testing.T) {
+	for _, refusePending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending removal refused=%v", refusePending), func(t *testing.T) {
+			env, cfg := registerThroughEnv(t)
+			state, err := cfg.LoadState()
+			require.NoError(t, err)
+			database := []byte("retain application data")
+			require.NoError(t, os.WriteFile(cfg.DBPath(), database, 0o600))
+			require.NoError(t, cfg.SavePendingRegistration(&config.PendingRegistration{AttemptID: "interrupted-attempt", HubURL: env.url, RegKey: env.key, KeyMaterial: state.KeyMaterial}))
+			for _, path := range []string{cfg.StatePath(), cfg.PendingPath()} {
+				require.NoError(t, atomicfile.WriteFileDurable(path+".tmp-interrupted", []byte("credential copy"), 0o600))
+			}
+			if refusePending {
+				require.NoError(t, os.Remove(cfg.PendingPath()))
+				require.NoError(t, os.MkdirAll(filepath.Join(cfg.PendingPath(), "prevent-removal"), 0o700))
+			}
+			err = clearDeletedWorkerState(cfg)
+			if refusePending {
+				require.Error(t, err)
+				assert.FileExists(t, cfg.StatePath(), "retain the token until recovery material is removed")
+				require.NoError(t, os.RemoveAll(cfg.PendingPath()))
+				require.NoError(t, clearDeletedWorkerState(cfg))
+			} else {
+				require.NoError(t, err)
+			}
+			for _, path := range []string{cfg.StatePath(), cfg.PendingPath(), cfg.StatePath() + ".tmp-interrupted", cfg.PendingPath() + ".tmp-interrupted"} {
+				assert.NoFileExists(t, path)
+			}
+			after, err := os.ReadFile(cfg.DBPath())
+			require.NoError(t, err)
+			assert.Equal(t, database, after)
+			key := mintRegistrationFixtureKey(t, env.store)
+			require.NoError(t, runWorkerRegister([]string{"--hub", env.url, "--registration-key", key, "--data-dir", cfg.DataDir}))
+			replacement, err := cfg.LoadState()
+			require.NoError(t, err)
+			require.True(t, replacement.Registered())
+			assert.NotEqual(t, state.WorkerID, replacement.WorkerID)
+		})
+	}
 }

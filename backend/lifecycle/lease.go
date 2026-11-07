@@ -193,7 +193,7 @@ func (l *DirectoryLease) acquireComponents() error {
 
 // ensureOwnershipRecord creates or verifies the private ownership
 // record under the data lock, before any application state or
-// credential write. A record that names any other instance is a
+// credential write. A record that identifies any other instance is a
 // conflict, even when that instance is stopped: it is not permission to
 // overwrite the marker.
 func ensureOwnershipRecord(paths Paths, owner DirectoryOwner, componentMode Role, canonical string) error {

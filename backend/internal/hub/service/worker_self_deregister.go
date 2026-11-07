@@ -67,7 +67,7 @@ func (s *WorkerConnectorService) DeregisterSelf(
 	owner, ownerOK := s.ownerOfWorker(worker)
 	if !ownerOK {
 		return nil, wrappedConnectError(connect.CodeInternal,
-			errors.New("the worker row names an unusable owner"))
+			errors.New("the worker row identifies an unusable owner"))
 	}
 	if err := s.store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		// Re-read under the owner's lock: a concurrent deregistration or

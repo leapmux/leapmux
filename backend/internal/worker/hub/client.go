@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/errwrap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -793,15 +794,22 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 	for {
 		start := c.clock.Now(hubReconnectTimeTag)
 		err := connectToHub(ctx, authToken)
-		if ctx.Err() != nil {
-			return nil
+		connectionErr := err
+		if ctx.Err() != nil && errwrap.IsCancellationWith(err, func(cause error) bool {
+			transport, ok := cause.(*connect.Error)
+			return ok && transport.Code() == connect.CodeCanceled
+		}) {
+			connectionErr = nil
 		}
 
 		// The stream ended, whatever the cause: report the
 		// disconnection with it. The connection transition reports from
 		// the identity greeting, the moment the Hub admits the worker.
 		if c.OnConnectionState != nil {
-			c.OnConnectionState(false, err)
+			c.OnConnectionState(false, connectionErr)
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 
 		// Only a refusal whose detail says reconnecting cannot help stops the

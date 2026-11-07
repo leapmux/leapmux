@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/servicelaunch"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
@@ -76,7 +77,7 @@ func TestForegroundWorkerCancellationBeforeReadiness(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Finish(nil) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err = runWorkerForeground(ctx, runtime, []string{"--data-dir", cfg.DataDir})
+	err = runWorkerForeground(ctx, runtime, preparedWorkerConfig(t, cfg.DataDir))
 	require.ErrorIs(t, err, context.Canceled, "startup must return its actual cancellation cause")
 	require.NoError(t, foregroundResult(ctx, err))
 	require.NoError(t, runtime.Finish(foregroundResult(ctx, err)))
@@ -93,7 +94,7 @@ func TestWorkerForegroundRefusesDifferentConfigurationDirectory(t *testing.T) {
 	other := t.TempDir()
 	state := []byte("invalid credentials that must not be read")
 	require.NoError(t, os.WriteFile(filepath.Join(other, "state.json"), state, 0o600))
-	err = runWorkerForeground(t.Context(), runtime, []string{"--data-dir", other})
+	err = runWorkerForeground(t.Context(), runtime, preparedWorkerConfig(t, other))
 	require.ErrorContains(t, err, "held data directory")
 	unchanged, err := os.ReadFile(filepath.Join(other, "state.json"))
 	require.NoError(t, err)
@@ -298,21 +299,20 @@ func TestForegroundNeverConfiguresOrElevates(t *testing.T) {
 func TestInvalidTimeoutsAndMissingRegistration(t *testing.T) {
 	t.Run("zero and negative durations fail", func(t *testing.T) {
 		for _, value := range []string{"0", "0s", "-1s", "-"} {
-			_, _, err := parseTimeoutFlag([]string{"--timeout", value}, defaultStartTimeout)
+			_, _, err := loadLifecycleCommand("hub", "start", []string{"--data-dir", t.TempDir(), "--timeout", value})
 			require.Error(t, err, "timeout %q must fail validation", value)
 		}
 	})
 
 	t.Run("an overflowing duration fails", func(t *testing.T) {
-		_, _, err := parseTimeoutFlag([]string{"--timeout", "999999999999999999999s"}, defaultStartTimeout)
+		_, _, err := loadLifecycleCommand("hub", "start", []string{"--data-dir", t.TempDir(), "--timeout", "999999999999999999999s"})
 		require.Error(t, err)
 	})
 
 	t.Run("a very large representable duration succeeds", func(t *testing.T) {
-		got, rest, err := parseTimeoutFlag([]string{"--timeout", "87600h"}, defaultStartTimeout)
+		_, options, err := loadLifecycleCommand("hub", "start", []string{"--data-dir", t.TempDir(), "--timeout", "87600h"})
 		require.NoError(t, err)
-		assert.Equal(t, 87600*time.Hour, got)
-		assert.Empty(t, rest)
+		assert.Equal(t, 87600*time.Hour, options.timeout)
 	})
 
 	t.Run("an unregistered worker's stop succeeds as not running", func(t *testing.T) {
@@ -336,7 +336,7 @@ func TestInvalidTimeoutsAndMissingRegistration(t *testing.T) {
 func TestWaitTimeoutDoesNotChangeRuntimeOutcome(t *testing.T) {
 	t.Run("a readiness wait past its budget reports and returns", func(t *testing.T) {
 		// A directory nothing serves: the wait expires, the verdict
-		// names status, and no replacement launched.
+		// identifies status, and no replacement launched.
 		dataDir := t.TempDir()
 		err := waitForReadiness("worker", mustCanonicalDir(t, dataDir), 150*time.Millisecond)
 		require.ErrorIs(t, err, context.DeadlineExceeded, "the command must fail when its readiness wait expires")
@@ -346,7 +346,7 @@ func TestWaitTimeoutDoesNotChangeRuntimeOutcome(t *testing.T) {
 		dataDir := t.TempDir()
 		canonical := mustCanonicalDir(t, dataDir)
 		paths := lifecycle.PathsOf(canonical)
-		require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
+		require.NoError(t, atomicfile.MkdirAllDurable(paths.Dir))
 		// Write a record and hold the runtime lock in this process.
 		require.NoError(t, lifecycle.WriteControlToken(paths.ControlToken, "token-material"))
 		require.NoError(t, lifecycle.WriteRuntimeRecord(paths.RuntimeRecord, lifecycle.RuntimeRecord{
@@ -366,7 +366,7 @@ func TestWaitTimeoutDoesNotChangeRuntimeOutcome(t *testing.T) {
 		err := runMode(t, "worker", "stop", "--timeout", "200ms", "--data-dir", dataDir)
 		require.Error(t, err, "an unresponsive instance is an error, never a silent success")
 		assert.True(t, strings.Contains(err.Error(), "did not accept") || strings.Contains(err.Error(), "unresponsive") || strings.Contains(err.Error(), "operation lock"),
-			"the refusal names what happened: %v", err)
+			"the refusal identifies what happened: %v", err)
 	})
 }
 
@@ -412,30 +412,42 @@ func mustCanonicalDir(t *testing.T, dir string) string {
 	return canonical
 }
 
-func TestParseStartupFlag(t *testing.T) {
-	t.Run("the = form parses and the rest survives", func(t *testing.T) {
-		kind, rest, err := parseStartupFlag([]string{"--startup=boot", "--yes", "--data-dir", "/d"})
-		require.NoError(t, err)
-		assert.Equal(t, lifecycle.StartupBoot, kind)
-		assert.Equal(t, []string{"--yes", "--data-dir", "/d"}, rest)
-	})
+func TestLifecycleStartupOptions(t *testing.T) {
+	for _, verb := range []string{"enable", "start", "restart"} {
+		for _, args := range [][]string{{"--startup=boot"}, {"--startup", "boot"}, {"--startup", "login"}, {}} {
+			configuration, options, err := loadLifecycleCommand("hub", verb, append([]string{"--data-dir", t.TempDir(), "--log-level", "debug", "--yes"}, args...))
+			require.NoError(t, err)
+			want := lifecycle.StartupBoot
+			if len(args) == 0 {
+				want = ""
+			} else if args[len(args)-1] == "login" {
+				want = lifecycle.StartupLogin
+			}
+			assert.Equal(t, want, options.startup)
+			assert.True(t, options.yes)
+			assert.Contains(t, configuration.runtimeArguments, "debug")
+			assert.NotContains(t, configuration.runtimeArguments, "--startup")
+			assert.NotContains(t, configuration.runtimeArguments, "--yes")
+		}
+		for _, args := range [][]string{{"--startup=whenever"}, {"--startup="}, {"--startup"}} {
+			_, _, err := loadLifecycleCommand("hub", verb, append([]string{"--data-dir", t.TempDir()}, args...))
+			require.Error(t, err)
+		}
+	}
+}
 
-	t.Run("an unknown kind refuses with the value named", func(t *testing.T) {
-		_, _, err := parseStartupFlag([]string{"--startup=whenever"})
-		require.ErrorContains(t, err, "whenever")
-	})
-
-	t.Run("the bare form names its corrected spelling", func(t *testing.T) {
-		_, _, err := parseStartupFlag([]string{"--startup"})
-		require.ErrorContains(t, err, "--startup=")
-	})
-
-	t.Run("no flag leaves the rest alone", func(t *testing.T) {
-		kind, rest, err := parseStartupFlag([]string{"--yes"})
-		require.NoError(t, err)
-		assert.Empty(t, kind)
-		assert.Equal(t, []string{"--yes"}, rest)
-	})
+func TestLifecycleTimeoutOptions(t *testing.T) {
+	for _, verb := range []string{"start", "restart", "stop", "status"} {
+		for _, args := range [][]string{{"--timeout=2"}, {"--timeout", "2"}, {"--timeout=2s"}, {"--timeout", "2s"}} {
+			_, options, err := loadLifecycleCommand("hub", verb, append([]string{"--data-dir", t.TempDir()}, args...))
+			require.NoError(t, err)
+			assert.Equal(t, 2*time.Second, options.timeout)
+		}
+		for _, args := range [][]string{{"--timeout"}, {"--timeout="}} {
+			_, _, err := loadLifecycleCommand("hub", verb, append([]string{"--data-dir", t.TempDir()}, args...))
+			require.Error(t, err)
+		}
+	}
 }
 
 // An unresponsive instance -- the runtime lock held, the endpoint
@@ -445,7 +457,7 @@ func TestStatusReportsUnresponsiveAsFailureNotStopped(t *testing.T) {
 	dataDir := t.TempDir()
 	canonical := mustCanonicalDir(t, dataDir)
 	paths := lifecycle.PathsOf(canonical)
-	require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
+	require.NoError(t, atomicfile.MkdirAllDurable(paths.Dir))
 	require.NoError(t, lifecycle.WriteControlToken(paths.ControlToken, "token-material"))
 	require.NoError(t, lifecycle.WriteRuntimeRecord(paths.RuntimeRecord, lifecycle.RuntimeRecord{
 		InstanceID: "unre0000000000001",

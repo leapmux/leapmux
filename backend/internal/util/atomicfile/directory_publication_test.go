@@ -111,7 +111,7 @@ func TestPublicationRecordValidationAndConcurrency(t *testing.T) {
 
 		err := MkdirAllDurable(filepath.Join(root, "worker"))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "names directory")
+		assert.Contains(t, err.Error(), "identifies directory")
 	})
 
 	t.Run("a target outside its directory is rejected", func(t *testing.T) {

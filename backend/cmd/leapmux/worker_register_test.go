@@ -30,6 +30,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -87,14 +88,24 @@ func serveRegisterEnv(t *testing.T, st store.Store, address string) *registerEnv
 	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return 30 * time.Second }, nil)
-	connector := service.NewWorkerConnectorService(st, wMgr, cMgr, pendingReqs, notif, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     wMgr,
+		ChannelManager:    cMgr,
+		PendingRequests:   pendingReqs,
+		Notifier:          notif,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: service.NewWorkerDeregisterEffects(nil, notif, nil),
+	})
 
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, connector)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	env := &registerEnv{store: st, registrationCommitted: make(chan struct{}, 1), releaseResponse: make(chan struct{}), deregisterReceived: make(chan struct{}, 1)}
-	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	connectorHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == registerPath {
 			env.registerCalls.Add(1)
 			if env.dropRegisterResponse.Load() {
@@ -139,7 +150,7 @@ func serveRegisterEnv(t *testing.T, st store.Store, address string) *registerEnv
 		}
 		mux.ServeHTTP(w, r)
 	})
-	httpServer := httptest.NewUnstartedServer(gated)
+	httpServer := httptest.NewUnstartedServer(connectorHandler)
 	if address != "" {
 		require.NoError(t, httpServer.Listener.Close())
 		listener, err := net.Listen("tcp", address)
@@ -282,7 +293,7 @@ func TestWorkerRegisterFinishesInterruptedCleanup(t *testing.T) {
 func TestWorkerRegisterReportsMalformedPendingData(t *testing.T) {
 	env, cfg := registerThroughEnv(t)
 	data := []byte("{invalid pending JSON")
-	require.NoError(t, os.WriteFile(cfg.PendingPath(), data, 0o600))
+	require.NoError(t, atomicfile.WriteFileDurable(cfg.PendingPath(), data, 0o600))
 	calls := env.registerCalls.Load()
 	err := runWorkerRegister([]string{"--hub", env.url, "--registration-key", env.key, "--data-dir", cfg.DataDir})
 	require.ErrorContains(t, err, "parse the pending registration")

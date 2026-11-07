@@ -4,8 +4,9 @@ import { delimiter, join } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { spawnWindowsCommandJob } from '../../scripts/windowsCommandJob'
+import { deferred } from '../../src/test-support/async'
 import { test } from './fixtures'
-import { deregisterWorkerViaAPI, listWorkersViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
+import { deregisterWorkerViaAPI, hubRequest, listWorkersViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
 import { finishCleanup, withCleanup } from './helpers/cleanup'
 import { captureClipboardText } from './helpers/clipboardCapture'
 import { spawnWorkerProcess } from './helpers/nativeWorker'
@@ -21,6 +22,86 @@ import { expandSidebarSection, openAppAs, sidebarSectionHeader } from './helpers
 // the shell pills switch the quoting, and the register command never
 // starts the worker by itself.
 test.describe('registration dialog CLI', () => {
+  test('revokes a real key returned after close before the CLI can use it', async ({ page, leapmuxServer }) => {
+    await openAppAs(page, leapmuxServer.adminToken)
+    const section = sidebarSectionHeader(page, 'workers')
+    await expandSidebarSection(section)
+    const previous = new Set((await listWorkersViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(worker => worker.id))
+    const created = deferred<string>()
+    const release = deferred<void>()
+    const directory = createTestDirectory('late-registration-')
+    const output = createServerOutput()
+    let key: string | undefined
+    let registration: ChildProcess | undefined
+    await withCleanup(async () => {
+      await page.route('**/leapmux.v1.WorkerManagementService/CreateRegistrationKey', async (route) => {
+        const response = await route.fetch()
+        const payload = await response.json() as { registrationKey?: unknown }
+        if (typeof payload.registrationKey !== 'string' || payload.registrationKey === '') {
+          created.reject(new Error('The Hub did not mint a registration key.'))
+          await route.fulfill({ response })
+          return
+        }
+        key = payload.registrationKey
+        created.resolve(key)
+        await release.promise
+        await route.fulfill({ response })
+      })
+      await page.locator('[data-testid="sidebar-register-worker"]:visible').first().click()
+      const minted = await created.promise
+      const revoked = page.waitForResponse((response) => {
+        return response.url().endsWith('/leapmux.v1.WorkerManagementService/RevokeRegistrationKey')
+          && response.request().postDataJSON()?.registrationKey === minted
+      })
+      await page.getByRole('dialog', { name: 'Register worker' }).getByRole('button', { name: 'Close', exact: true }).click()
+      await expect(page.getByRole('dialog', { name: 'Register worker' })).toHaveCount(0)
+      release.resolve()
+      expect((await revoked).ok()).toBe(true)
+      registration = spawnTestProcess(getGlobalState().binaryPath, [
+        'worker',
+        'register',
+        '--hub',
+        leapmuxServer.hubUrl,
+        '--registration-key',
+        minted,
+        '--data-dir',
+        directory,
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: hubSpawnEnv(leapmuxServer.agentEnv),
+      })
+      const completion = new Promise<{ code: number | null, signal: NodeJS.Signals | null }>((resolve, reject) => {
+        registration!.once('error', reject)
+        registration!.once('close', (code, signal) => resolve({ code, signal }))
+      })
+      output.capture(registration, 'revoked registration')
+      expect(await completion, output.since(0)).toEqual({ code: 1, signal: null })
+      expect(existsSync(join(directory, 'state.json'))).toBe(false)
+      expect(existsSync(join(directory, 'worker.db'))).toBe(false)
+      expect(new Set((await listWorkersViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)).map(worker => worker.id))).toEqual(previous)
+    }, async () => {
+      release.resolve()
+      await finishCleanup([
+        registration
+          ? stopProcess(registration)
+          : Promise.resolve(),
+        (async () => {
+          if (key) {
+            const response = await hubRequest(leapmuxServer.hubUrl, 'WorkerManagementService/RevokeRegistrationKey', { registrationKey: key }, { cookie: leapmuxServer.adminToken })
+            await response.arrayBuffer()
+            if (!response.ok && response.status !== 404)
+              throw new Error(`Registration key cleanup returned HTTP ${response.status}.`)
+          }
+          for (const worker of await listWorkersViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken)) {
+            if (!previous.has(worker.id))
+              await deregisterWorkerViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, worker.id)
+          }
+        })(),
+      ])
+      rmSync(directory, { recursive: true, force: true })
+    })
+  })
+
   test('executes copied registration to completion before a separate worker comes online', async ({ page, leapmuxServer }) => {
     await openAppAs(page, leapmuxServer.adminToken)
     const section = sidebarSectionHeader(page, 'workers')

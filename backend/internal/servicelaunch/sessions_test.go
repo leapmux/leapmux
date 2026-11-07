@@ -3,10 +3,12 @@ package servicelaunch
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,9 +63,11 @@ func TestLastSessionControlsShutdown(t *testing.T) {
 	})
 }
 
-type sessionMonitorFunc func(AccountRef) ([]Session, error)
+type sessionMonitorFunc func(context.Context, AccountRef) ([]Session, error)
 
-func (f sessionMonitorFunc) Sessions(account AccountRef) ([]Session, error) { return f(account) }
+func (f sessionMonitorFunc) Sessions(ctx context.Context, account AccountRef) ([]Session, error) {
+	return f(ctx, account)
+}
 
 func TestLoginSupervisorWaitsForLastSession(t *testing.T) {
 	clock := testutil.NewQuartzMock(t)
@@ -72,7 +76,7 @@ func TestLoginSupervisorWaitsForLastSession(t *testing.T) {
 	defer created.Close()
 	observed := make(chan int, 8)
 	var calls atomic.Int32
-	monitor := sessionMonitorFunc(func(account AccountRef) ([]Session, error) {
+	monitor := sessionMonitorFunc(func(_ context.Context, account AccountRef) ([]Session, error) {
 		require.Equal(t, AccountRef{ID: "501", Name: "user"}, account)
 		call := int(calls.Add(1))
 		observed <- call
@@ -133,7 +137,7 @@ func TestLoginSupervisorCancellation(t *testing.T) {
 	defer created.Close()
 	done := make(chan error, 1)
 	go func() {
-		done <- WatchLoginSessions(ctx, sessionMonitorFunc(func(AccountRef) ([]Session, error) {
+		done <- WatchLoginSessions(ctx, sessionMonitorFunc(func(context.Context, AccountRef) ([]Session, error) {
 			return []Session{{Kind: SessionInteractive}}, nil
 		}), AccountRef{}, clock, nil)
 	}()
@@ -158,5 +162,37 @@ func TestSessionKindApplicable(t *testing.T) {
 		SessionListener:     false,
 	} {
 		assert.Equal(t, want, kind.Applicable(), string(kind))
+	}
+}
+
+func TestLoginSupervisorCancelsDuringNativeEnumeration(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	var enteredOnce, returnedOnce sync.Once
+	monitor := &windowsSessionMonitor{enumerate: func() ([]windowsSessionEntry, error) {
+		enteredOnce.Do(func() { close(entered) })
+		defer returnedOnce.Do(func() { close(returned) })
+		<-release
+		return []windowsSessionEntry{{ID: 1, Kind: SessionInteractive, SID: "S-1-5-21-1"}}, nil
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- WatchLoginSessions(ctx, monitor, AccountRef{ID: "S-1-5-21-1"}, quartz.NewReal(), nil) }()
+	<-entered
+	cancel()
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+		close(release)
+		<-returned
+	case <-deadline.C:
+		close(release)
+		<-returned
+		require.ErrorIs(t, <-done, context.Canceled)
+		t.Fatal("session supervision could not cancel during native enumeration")
 	}
 }

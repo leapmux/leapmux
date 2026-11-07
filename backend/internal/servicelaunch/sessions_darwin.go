@@ -4,6 +4,7 @@ package servicelaunch
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -14,13 +15,13 @@ import (
 // login. A locked desktop retains its console login record.
 type darwinSessionMonitor struct {
 	// runWho runs the who command; a test substitutes it.
-	runWho func() ([]byte, error)
+	runWho func(context.Context) ([]byte, error)
 }
 
 func newDarwinSessionMonitor() *darwinSessionMonitor {
-	return &darwinSessionMonitor{runWho: func() ([]byte, error) {
+	return &darwinSessionMonitor{runWho: func(ctx context.Context) ([]byte, error) {
 		var out bytes.Buffer
-		cmd := exec.Command("/usr/bin/who")
+		cmd := exec.CommandContext(ctx, "/usr/bin/who")
 		cmd.Stdout = &out
 		cmd.Stderr = &out
 		if err := cmd.Run(); err != nil {
@@ -31,8 +32,16 @@ func newDarwinSessionMonitor() *darwinSessionMonitor {
 }
 
 // Sessions lists the account's interactive sessions.
-func (m *darwinSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
-	out, err := m.runWho()
+func (m *darwinSessionMonitor) Sessions(ctx context.Context, account AccountRef) ([]Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, sessionQueryTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if account.Name == "" {
+		return nil, fmt.Errorf("the session account name is required")
+	}
+	out, err := m.runWho(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +50,6 @@ func (m *darwinSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
-		}
-		if account.Name == "" {
-			return nil, fmt.Errorf("the session account name is required")
 		}
 		if fields[0] != account.Name || fields[1] != "console" {
 			continue

@@ -41,15 +41,11 @@ func windowsServiceArguments(spec LaunchSpec) []string {
 	return append([]string{WindowsServiceEntryFlag, serviceName(spec)}, spec.RunArguments()...)
 }
 
-func validateWindowsLaunch(ctx context.Context, spec LaunchSpec, startup lifecycle.StartupKind, environment bool) error {
+func validateWindowsLaunch(ctx context.Context, spec LaunchSpec, startup lifecycle.StartupKind) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	identity := spec
-	if !environment {
-		identity.EnvironmentFile = nil
-	}
-	if err := ValidateLaunchSpec(identity); err != nil {
+	if err := ValidateLaunchSpec(spec); err != nil {
 		return err
 	}
 	if spec.Startup != startup {
@@ -66,14 +62,17 @@ func validateWindowsLaunch(ctx context.Context, spec LaunchSpec, startup lifecyc
 }
 
 func (m *windowsServiceManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeStatus, error) {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot); err != nil {
 		return NativeStatus{}, err
 	}
 	return m.inspectService(ctx, spec)
 }
 
 func (m *windowsServiceManager) Install(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, true); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
 		return err
 	}
 	return withAccountPassword(ctx, spec.AccountName, m.credential, func(password []byte) error {
@@ -82,14 +81,17 @@ func (m *windowsServiceManager) Install(ctx context.Context, spec LaunchSpec) er
 }
 
 func (m *windowsServiceManager) Start(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, true); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot); err != nil {
+		return err
+	}
+	if _, err := spec.LoadEnvironment(); err != nil {
 		return err
 	}
 	return m.startService(ctx, spec)
 }
 
 func (m *windowsServiceManager) Stop(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot); err != nil {
 		return err
 	}
 	err := m.stopService(ctx, spec)
@@ -100,7 +102,7 @@ func (m *windowsServiceManager) Stop(ctx context.Context, spec LaunchSpec) error
 }
 
 func (m *windowsServiceManager) Remove(ctx context.Context, spec LaunchSpec) error {
-	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot, false); err != nil {
+	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupBoot); err != nil {
 		return err
 	}
 	return m.elevate(ctx, nativeOperationRequest{Operation: nativeRemoveService, Spec: spec})

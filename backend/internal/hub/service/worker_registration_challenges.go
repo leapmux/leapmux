@@ -18,7 +18,7 @@ import (
 const (
 	// registrationChallengeTTL is how long one challenge stays usable.
 	registrationChallengeTTL = 60 * time.Second
-	// maxOutstandingRegistrationChallenges bounds the in-memory store.
+	// maxOutstandingRegistrationChallenges limits the in-memory store.
 	maxOutstandingRegistrationChallenges = 4096
 )
 
@@ -75,10 +75,12 @@ func (s *registrationChallengeStore) Issue(attemptID string) (id string, nonce [
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.evictExpiredLocked(now)
 	previous := s.byAttempt[attemptID]
 	if previous == nil && len(s.byID) >= maxOutstandingRegistrationChallenges {
-		return "", nil, time.Time{}, errChallengeCapacity
+		s.evictExpiredLocked(now)
+		if len(s.byID) >= maxOutstandingRegistrationChallenges {
+			return "", nil, time.Time{}, errChallengeCapacity
+		}
 	}
 	challenge := &registrationChallenge{attemptID: attemptID, id: id, nonce: nonce, expiresAt: expiresAt}
 	if previous != nil {
@@ -97,15 +99,16 @@ func (s *registrationChallengeStore) Consume(id, attemptID string) ([]byte, bool
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.evictExpiredLocked(now)
 	challenge, ok := s.byID[id]
 	if !ok || challenge.attemptID != attemptID {
 		return nil, false
 	}
-	nonce := challenge.nonce
 	delete(s.byID, challenge.id)
 	delete(s.byAttempt, challenge.attemptID)
-	return nonce, true
+	if !now.Before(challenge.expiresAt) {
+		return nil, false
+	}
+	return challenge.nonce, true
 }
 
 // evictExpiredLocked drops expired challenges; the caller holds mu.

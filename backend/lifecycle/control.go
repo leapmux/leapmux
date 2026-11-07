@@ -50,7 +50,7 @@ type controlServer struct {
 	token    string
 
 	// liveID is the identity this server's process runs as; a stop
-	// request that names any other instance or attempt is stale, and
+	// request that identifies any other instance or attempt is stale, and
 	// refusing it makes zero shutdown calls.
 	liveID RuntimeRecord
 

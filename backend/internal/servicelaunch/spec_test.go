@@ -1,6 +1,7 @@
 package servicelaunch
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -19,10 +21,10 @@ func testSpec() lifecycle.ServiceSpec {
 		Startup:          lifecycle.StartupLogin,
 		AccountID:        "501",
 		AccountName:      "trustin",
-		Executable:       "/opt/homebrew/bin/leapmux",
-		WorkingDirectory: "/Users/trustin",
-		ConfigFile:       "/Users/trustin/.config/leapmux/worker/worker.yaml",
-		DataDirectory:    "/Users/trustin/.config/leapmux/worker",
+		Executable:       testutil.NativeAbsPath("/opt/homebrew/bin/leapmux"),
+		WorkingDirectory: testutil.NativeAbsPath("/Users/trustin"),
+		ConfigFile:       testutil.NativeAbsPath("/Users/trustin/.config/leapmux/worker/worker.yaml"),
+		DataDirectory:    testutil.NativeAbsPath("/Users/trustin/.config/leapmux/worker"),
 	}
 }
 
@@ -36,7 +38,7 @@ func TestEnvironmentCannotOverrideIdentity(t *testing.T) {
 		spec.RuntimeEnvironment = map[string]string{name: "/elsewhere"}
 		launch, err := LaunchSpecFromService(spec)
 		require.Error(t, err, "%s must not be overridable", name)
-		assert.Contains(t, err.Error(), name, "the refusal names the variable")
+		assert.Contains(t, err.Error(), name, "the refusal identifies the variable")
 		assert.Contains(t, err.Error(), "identity", "the refusal states why")
 		_ = launch
 	}
@@ -103,7 +105,8 @@ func TestEnvironmentFileIsValidatedBeforeConfiguration(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte(test.data), 0o600))
 			spec := testSpec()
 			spec.EnvironmentFile = &path
-			_, err := LaunchSpecFromService(spec)
+			controller, _ := newTestController(t, &recordingManager{})
+			_, err := controller.Preview(t.Context(), spec)
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), "another/account", "validation must not print environment values")
 		})
@@ -111,7 +114,8 @@ func TestEnvironmentFileIsValidatedBeforeConfiguration(t *testing.T) {
 	for _, path := range []string{"relative.yaml", filepath.Join(t.TempDir(), "missing.yaml")} {
 		spec := testSpec()
 		spec.EnvironmentFile = &path
-		_, err := LaunchSpecFromService(spec)
+		controller, _ := newTestController(t, &recordingManager{})
+		_, err := controller.Preview(t.Context(), spec)
 		require.Error(t, err)
 	}
 }
@@ -172,4 +176,39 @@ func TestWindowsEnvironmentNamesAreCaseInsensitive(t *testing.T) {
 	spec.RuntimeEnvironment = map[string]string{"PATH": "first", "Path": "second"}
 	_, err = spec.loadEnvironment(true)
 	require.ErrorContains(t, err, "duplicate")
+}
+
+func TestEnvironmentFileSizeLimit(t *testing.T) {
+	for _, size := range []int{0, 16<<20 - 1, 16 << 20, 16<<20 + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "environment.yaml")
+			var data []byte
+			if size > 0 {
+				data = []byte("TOKEN: value\n#" + strings.Repeat("x", size-len("TOKEN: value\n#")))
+			}
+			require.NoError(t, os.WriteFile(path, data, 0o600))
+			values, err := (LaunchSpec{EnvironmentFile: &path}).LoadEnvironment()
+			if size == 0 || size > 16<<20 {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, map[string]string{"TOKEN": "value"}, values)
+			}
+		})
+	}
+}
+
+func TestNativeStructurePreservesRuntimeSelectorForExplicitLoading(t *testing.T) {
+	for kind, path := range invalidEnvironmentFiles(t) {
+		t.Run(kind, func(t *testing.T) {
+			spec := testSpec()
+			spec.EnvironmentFile = &path
+			launch, err := LaunchSpecFromService(spec)
+			require.NoError(t, err)
+			require.NotNil(t, launch.EnvironmentFile)
+			assert.Equal(t, path, *launch.EnvironmentFile)
+			_, err = launch.LoadEnvironment()
+			require.Error(t, err)
+		})
+	}
 }

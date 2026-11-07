@@ -46,5 +46,5 @@ func newPlatformManager() Manager {
 
 func newPlatformSessionMonitor() SessionMonitor { return newWindowsSessionMonitor() }
 
-// nativeMechanismLabel names what Windows configuration writes.
+// nativeMechanismLabel identifies what Windows configuration writes.
 func nativeMechanismLabel() string { return "scheduled task / Windows service" }

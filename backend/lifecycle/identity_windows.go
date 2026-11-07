@@ -21,6 +21,3 @@ func currentAccount() string {
 	}
 	return user.User.Sid.String()
 }
-
-// accountNumber is unused on Windows; the SID is the identity.
-func accountNumber() int { return 0 }

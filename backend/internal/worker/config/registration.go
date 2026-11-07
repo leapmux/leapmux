@@ -1,6 +1,10 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/leapmux/leapmux/internal/noise"
+)
 
 // Registered reports whether the state holds a complete registration:
 // the endpoint, the identity, and the token. A state that fails this
@@ -20,14 +24,24 @@ func (c *Config) UsableRegistration() (*State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
-	if state == nil || !state.Registered() {
-		return nil, fmt.Errorf("worker is unregistered: run `leapmux worker register` first")
-	}
-	if !state.HasKeypair() {
-		return nil, fmt.Errorf("%w: the keypair is missing", ErrUnusableRegisteredKeypair)
-	}
-	if _, err := state.CompositeKeypair(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrUnusableRegisteredKeypair, err)
+	if _, err := state.UsableKeypair(); err != nil {
+		return nil, err
 	}
 	return state, nil
+}
+
+// UsableKeypair validates this registration snapshot and returns its restored
+// keypair. It never reloads or writes saved credentials.
+func (s *State) UsableKeypair() (*noise.CompositeKeypair, error) {
+	if !s.Registered() {
+		return nil, fmt.Errorf("worker is unregistered: run `leapmux worker register` first")
+	}
+	if !s.HasKeypair() {
+		return nil, fmt.Errorf("%w: the keypair is missing", ErrUnusableRegisteredKeypair)
+	}
+	keypair, err := s.CompositeKeypair()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnusableRegisteredKeypair, err)
+	}
+	return keypair, nil
 }

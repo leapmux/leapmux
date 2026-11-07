@@ -209,7 +209,7 @@ The fingerprints are **4 dash-joined English words** derived from a hash of the 
 ### When to accept and when to reject
 
 - **Reject by default.** No ordinary action causes a harmless key change on the same Worker ID: a Worker keeps its keys for as long as it stays registered, and a re-registered Worker arrives as a new Worker with no dialog.
-- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. Each entry point logs it as `key_fingerprint`: the standalone `leapmux worker run` in its "starting worker" line, and solo mode and dev mode in the "solo worker registered" and "dev worker registered" lines.
+- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. The Worker runtime logs it as `key_fingerprint` in its "worker initialized" line for every entry point, including `leapmux worker run`, solo mode, dev mode, and the desktop app.
 
 The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. The desktop app's own local Worker runs in the same process as its Hub, so a key change for it cannot come from the network: it means the app's stored pins or data changed.
 

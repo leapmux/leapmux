@@ -12,81 +12,31 @@ package servicelaunch
 
 import (
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-// LaunchSpec is the native launch definition the controller derives
-// from the saved service specification. Every path is absolute: a
-// service must not depend on the directory the user ran `enable` from.
-type LaunchSpec struct {
-	InstanceID       string
-	Mode             lifecycle.Role
-	Startup          lifecycle.StartupKind
-	AccountID        string
-	AccountName      string
-	Executable       string
-	WorkingDirectory string
-	ConfigFile       string
-	DataDirectory    string
-	RuntimeArguments []string
-	// RuntimeEnvironment holds EXPLICIT overrides only, never the
-	// calling shell's whole environment, and never a registration key.
-	RuntimeEnvironment map[string]string
-	// EnvironmentFile is an absolute path or nil.
-	EnvironmentFile *string
-}
+// LaunchSpec derives a native definition from the saved service specification.
+// The executable, working directory, configuration file, and data directory
+// use absolute paths, independent of the directory the user ran enable from.
+// LoadEnvironment validates the runtime environment selector and file.
+type LaunchSpec lifecycle.ServiceSpec
 
-// LaunchSpecFromService reads the saved specification into a launch
-// definition.
+// LaunchSpecFromService validates the saved specification as a native launch.
 func LaunchSpecFromService(spec lifecycle.ServiceSpec) (LaunchSpec, error) {
-	if err := ValidateLaunchSpec(LaunchSpec{
-		InstanceID:         spec.InstanceID,
-		Mode:               spec.Mode,
-		Startup:            spec.Startup,
-		AccountID:          spec.AccountID,
-		AccountName:        spec.AccountName,
-		Executable:         spec.Executable,
-		WorkingDirectory:   spec.WorkingDirectory,
-		ConfigFile:         spec.ConfigFile,
-		DataDirectory:      spec.DataDirectory,
-		RuntimeArguments:   spec.RuntimeArguments,
-		RuntimeEnvironment: spec.RuntimeEnvironment,
-		EnvironmentFile:    spec.EnvironmentFile,
-	}); err != nil {
+	launch := LaunchSpec(spec)
+	if err := ValidateLaunchSpec(launch); err != nil {
 		return LaunchSpec{}, err
 	}
-	return LaunchSpec{
-		InstanceID:         spec.InstanceID,
-		Mode:               spec.Mode,
-		Startup:            spec.Startup,
-		AccountID:          spec.AccountID,
-		AccountName:        spec.AccountName,
-		Executable:         spec.Executable,
-		WorkingDirectory:   spec.WorkingDirectory,
-		ConfigFile:         spec.ConfigFile,
-		DataDirectory:      spec.DataDirectory,
-		RuntimeArguments:   spec.RuntimeArguments,
-		RuntimeEnvironment: spec.RuntimeEnvironment,
-		EnvironmentFile:    spec.EnvironmentFile,
-	}, nil
+	return launch, nil
 }
 
-// launchSpecForRemoval validates the definition identity without requiring
-// runtime-only environment contents that may need repair or removal.
-func launchSpecForRemoval(spec lifecycle.ServiceSpec) (LaunchSpec, error) {
-	environment := spec.EnvironmentFile
-	spec.EnvironmentFile = nil
-	launch, err := LaunchSpecFromService(spec)
-	launch.EnvironmentFile = environment
-	return launch, err
-}
-
-// ValidateLaunchSpec states what a native definition accepts: absolute
-// paths, the four mode names, the two startup kinds, and no identity
-// variable under an environment override.
+// ValidateLaunchSpec checks native structure and explicit environment overrides.
+// LoadEnvironment validates the runtime file when the operation needs it.
 func ValidateLaunchSpec(spec LaunchSpec) error {
 	if spec.InstanceID == "" {
 		return fmt.Errorf("servicelaunch: the specification needs its instance identity")
@@ -128,7 +78,7 @@ func ValidateLaunchSpec(spec LaunchSpec) error {
 		return err
 	}
 	if spec.AccountID == "" || spec.AccountName == "" {
-		return fmt.Errorf("servicelaunch: the specification names the account it runs as")
+		return fmt.Errorf("servicelaunch: the specification identifies the account it runs as")
 	}
 	for name, path := range map[string]string{
 		"executable":        spec.Executable,
@@ -136,17 +86,12 @@ func ValidateLaunchSpec(spec LaunchSpec) error {
 		"config file":       spec.ConfigFile,
 		"data directory":    spec.DataDirectory,
 	} {
-		if path == "" || !strings.HasPrefix(path, "/") && !windowsAbsolute(path) {
+		if !filepath.IsAbs(path) {
 			return fmt.Errorf("servicelaunch: the %s must be an absolute path, got %q", name, path)
 		}
 	}
-	_, err := spec.LoadEnvironment()
+	_, err := normalizedRuntimeEnvironment(spec.RuntimeEnvironment, runtime.GOOS == "windows")
 	return err
-}
-
-// windowsAbsolute reports the Windows absolute-path spelling.
-func windowsAbsolute(path string) bool {
-	return len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\')
 }
 
 // protectedIdentityVariables are the environment names that state the
@@ -185,32 +130,4 @@ func ProtectedIdentityVariables() []string {
 // into the controller could recurse.
 func (s LaunchSpec) RunArguments() []string {
 	return []string{string(s.Mode), "run", "--data-dir", s.DataDirectory, "--service-spec", lifecycle.PathsOf(s.DataDirectory).ServiceSpec}
-}
-
-// Environment composes the runtime environment of the definition:
-// explicit overrides, resolved. The platform adapter may add the
-// environment file beside them.
-func (s LaunchSpec) Environment() []string {
-	names := make([]string, 0, len(s.RuntimeEnvironment))
-	for name := range s.RuntimeEnvironment {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		out = append(out, name+"="+s.RuntimeEnvironment[name])
-	}
-	return out
-}
-
-// SpecMatches states whether a saved specification and a launch
-// definition describe the same launch, for drift detection.
-func SpecMatches(spec lifecycle.ServiceSpec, launch LaunchSpec) bool {
-	return spec.InstanceID == launch.InstanceID &&
-		spec.Mode == launch.Mode &&
-		spec.Startup == launch.Startup &&
-		spec.AccountID == launch.AccountID &&
-		spec.Executable == launch.Executable &&
-		spec.ConfigFile == launch.ConfigFile &&
-		spec.DataDirectory == launch.DataDirectory
 }

@@ -317,8 +317,10 @@ func TestLaunchdDefinitionPaths(t *testing.T) {
 	assert.Equal(t, "/Library/LaunchDaemons/com.leapmux.worker."+spec.InstanceID+".plist", bootPath)
 }
 
-// Install writes the definition without starting it; Start bootstraps;
-// Stop removes the active job while the definition file stays.
+// The operations preserve these behaviors:
+//   - Install writes the definition without starting it.
+//   - Start bootstraps.
+//   - Stop removes the active job while the definition file stays.
 func TestLaunchdInstallStartStopRemove(t *testing.T) {
 	spec := launchdTestSpec()
 	s := newStubbedLaunchd()

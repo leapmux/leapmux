@@ -202,13 +202,13 @@ func (s *Suite) testWorkers(t *testing.T) {
 		}
 		require.NoError(t, st.Workers().Create(ctx, mk()))
 		err := st.Workers().Create(ctx, mk())
-		require.Error(t, err, "one attempt identity names one worker")
+		require.Error(t, err, "one attempt identity identifies one worker")
 
 		// A second row reusing the digest alone is refused the same way.
 		other := mk()
 		other.RegistrationAttemptID = "c9a0425886d148f68a8f94716ed47a78"
 		err = st.Workers().Create(ctx, other)
-		require.Error(t, err, "one key digest names one attempt")
+		require.Error(t, err, "one key digest identifies one attempt")
 	})
 
 	t.Run("create refuses an incomplete key set", func(t *testing.T) {

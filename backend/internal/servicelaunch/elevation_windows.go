@@ -178,7 +178,6 @@ func pipePeerProcess(connection net.Conn, client bool) (uint32, error) {
 
 func validateNativeOperation(request nativeOperationRequest, account string) error {
 	spec := request.Spec
-	spec.EnvironmentFile = nil // The helper does not read provider secrets.
 	if err := ValidateLaunchSpec(spec); err != nil {
 		return err
 	}

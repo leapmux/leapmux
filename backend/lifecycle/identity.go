@@ -8,12 +8,11 @@ package lifecycle
 import (
 	"crypto/sha256"
 	"fmt"
-	"strconv"
 
 	"github.com/leapmux/leapmux/internal/util/canonicalpath"
 )
 
-// Role is one of LeapMux's four CLI modes. The same vocabulary names a
+// Role is one of LeapMux's four CLI modes. The same vocabulary identifies a
 // combined instance's containing mode (solo, dev) and a component's
 // storage mode (hub, worker): a directory's ownership record states
 // both, which is what keeps a direct Hub and a combined instance's Hub
@@ -37,11 +36,11 @@ func ParseRole(s string) (Role, error) {
 	}
 }
 
-// Combined reports whether the role names a mode that contains
+// Combined reports whether the role identifies a mode that contains
 // components rather than being one.
 func (r Role) Combined() bool { return r == RoleSolo || r == RoleDev }
 
-// Component reports whether the role names a storage component a
+// Component reports whether the role identifies a storage component a
 // combined instance or a direct launcher can own.
 func (r Role) Component() bool { return r == RoleHub || r == RoleWorker }
 
@@ -50,16 +49,10 @@ func (r Role) String() string { return string(r) }
 
 // InstanceID identifies one instance: the account, the mode, and the
 // canonical data directory, hashed into one stable short token. It
-// names the native service definition, the control endpoint, and the
+// identifies the native service definition, the control endpoint, and the
 // log attempt prefix, so two configurations that resolve to the same
 // account, mode, and directory share one instance identity.
 type InstanceID string
-
-// DirectoryID identifies one canonical storage directory, with no mode
-// and no account in it. Storage locks are directory-scoped: two modes
-// that compute the same DirectoryID contend for the same directory, and
-// neither the mode nor the account in InstanceID can lift that.
-type DirectoryID string
 
 // hashID derives a short hex identity from its parts.
 func hashID(parts ...string) string {
@@ -77,16 +70,8 @@ func NewInstanceID(accountID string, role Role, canonicalDir string) InstanceID 
 	return InstanceID(hashID(accountID, string(role), canonicalDir))
 }
 
-// NewDirectoryID derives the directory identity for one canonical path.
-func NewDirectoryID(canonicalDir string) DirectoryID {
-	return DirectoryID(hashID(canonicalDir))
-}
-
 // String spells the identity.
 func (id InstanceID) String() string { return string(id) }
-
-// String spells the identity.
-func (id DirectoryID) String() string { return string(id) }
 
 // CurrentAccountID reports the current account's identifier: the numeric
 // uid on Unix, the account SID on Windows. An identity a directory's
@@ -128,7 +113,3 @@ type DirectoryOwner struct {
 func NewDirectoryOwner(role Role, canonicalDir string) DirectoryOwner {
 	return DirectoryOwner{AccountID: CurrentAccountID(), Mode: role, Root: canonicalDir}
 }
-
-// NumericAccountOf exposes the account spelling for tests that plant
-// records.
-func NumericAccountOf() string { return strconv.Itoa(accountNumber()) }

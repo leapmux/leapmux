@@ -405,7 +405,7 @@ func localWorkerManagementClient(t *testing.T, listenURL string) leapmuxv1connec
 		endpoint.HTTP2OnlyClient(), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0))))
 }
 
-// requireRegisteredFingerprint reads a launch's "solo worker registered" JSON line
+// requireRegisteredFingerprint reads a launch's "worker initialized" JSON line
 // and returns its key_fingerprint.
 func requireRegisteredFingerprint(t *testing.T, out string) string {
 	t.Helper()
@@ -418,14 +418,14 @@ func requireRegisteredFingerprint(t *testing.T, out string) string {
 		if json.Unmarshal([]byte(line), &record) != nil {
 			continue
 		}
-		if record["msg"] != "solo worker registered" {
+		if record["msg"] != "worker initialized" {
 			continue
 		}
 		fingerprint, _ := record["key_fingerprint"].(string)
 		require.NotEmpty(t, fingerprint, "the registration log line must carry key_fingerprint")
 		return fingerprint
 	}
-	t.Fatalf("no \"solo worker registered\" line in the captured stderr:\n%s", out)
+	t.Fatalf("no \"worker initialized\" line in the captured stderr:\n%s", out)
 	return ""
 }
 

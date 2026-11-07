@@ -15,10 +15,6 @@ import (
 
 type taskMethodCaller func(*ole.IDispatch, string, ...interface{}) (*ole.VARIANT, error)
 
-func readTaskSecurityDescriptor(task *ole.IDispatch) (string, error) {
-	return readTaskSecurityDescriptorWith(task, oleutil.CallMethod)
-}
-
 func readTaskSecurityDescriptorWith(task *ole.IDispatch, call taskMethodCaller) (sddl string, result error) {
 	value, err := call(task, "GetSecurityDescriptor", int32(windows.DACL_SECURITY_INFORMATION))
 	if value != nil {
@@ -38,7 +34,7 @@ func readTaskSecurityDescriptorWith(task *ole.IDispatch, call taskMethodCaller) 
 }
 
 func readTaskAccess(task *ole.IDispatch) (windowsTaskAccess, error) {
-	sddl, err := readTaskSecurityDescriptor(task)
+	sddl, err := readTaskSecurityDescriptorWith(task, oleutil.CallMethod)
 	if err != nil {
 		return windowsTaskAccess{}, err
 	}

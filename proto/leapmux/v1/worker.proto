@@ -157,7 +157,7 @@ message RegisterResponse {
   string auth_token = 2;
 }
 
-// GetRegistrationChallengeRequest names the committed registration
+// GetRegistrationChallengeRequest identifies the committed registration
 // attempt to recover. The original registration key travels in the
 // Authorization: Bearer header and is authenticated through its saved
 // digest.

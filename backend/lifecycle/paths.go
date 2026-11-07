@@ -31,7 +31,7 @@ const (
 	logsDirName         = "logs"
 )
 
-// Paths names every lifecycle resource of one data directory.
+// Paths identifies every lifecycle resource of one data directory.
 type Paths struct {
 	// DataDir is the canonical data directory the resources belong to.
 	DataDir string
@@ -48,7 +48,7 @@ type Paths struct {
 	Logs            string
 }
 
-// pathsFor names the lifecycle resources of one canonical data
+// pathsFor identifies the lifecycle resources of one canonical data
 // directory.
 func pathsFor(canonicalDataDir string) Paths {
 	dir := filepath.Join(canonicalDataDir, lifecycleDirName)
@@ -66,7 +66,7 @@ func pathsFor(canonicalDataDir string) Paths {
 	}
 }
 
-// AttemptLogPath names one process attempt's log file.
+// AttemptLogPath identifies one process attempt's log file.
 func (p Paths) AttemptLogPath(attemptID string) string {
 	return filepath.Join(p.Logs, attemptID+".log")
 }
@@ -82,13 +82,13 @@ func ControlURL(id InstanceID) string {
 }
 
 // controlSocketPathError guards the Unix socket path length: the bind
-// fails at a limit the kernel states, and the error names the path so an
+// fails at a limit the kernel states, and the error identifies the path so an
 // operator can move the runtime directory rather than guess.
 func controlSocketPathError(path string) error {
 	return fmt.Errorf("lifecycle: the control socket path %s is too long for the kernel; set LEAPMUX_RUNTIME_DIR to a shorter directory", path)
 }
 
-// PathsOf names the lifecycle resources of one canonical data
+// PathsOf identifies the lifecycle resources of one canonical data
 // directory, for callers that already canonicalized it.
 func PathsOf(canonical string) Paths { return pathsFor(canonical) }
 

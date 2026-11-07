@@ -19,6 +19,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 const (
@@ -413,7 +414,7 @@ func (c *Config) Validate() error {
 
 	// Ensure data dir exists, durably: the directory that will hold
 	// registration credentials must be published before any write below
-	// names a file inside it.
+	// identifies a file inside it.
 	if err := atomicfile.MkdirAllDurable(c.DataDir); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -422,6 +423,16 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateRuntime checks execution settings without reading credentials or
+// creating directories. Runtime commands use the saved registration instead
+// of accepting another registration key.
+func (c *Config) ValidateRuntime() error {
+	if c.RegistrationKey != "" {
+		return fmt.Errorf("a registration key belongs to `leapmux worker register`; execution uses the saved registration")
+	}
+	return channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize)
 }
 
 // StatePath returns the path to the state file.
@@ -445,7 +456,7 @@ func (c *Config) DBConfig() sqlitedb.Config {
 
 // LoadState loads persisted state from disk. Returns nil if no state file exists.
 func (c *Config) LoadState() (*State, error) {
-	data, err := os.ReadFile(c.StatePath())
+	data, err := useronly.ReadFile(c.StatePath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -490,6 +501,21 @@ func removeSensitiveRecord(path string, remove func(string) error, removeCopies 
 	return errors.Join(removeErr, copiesErr, syncErr)
 }
 
+// ClearRegistration removes recovery material before credentials. Keeping the
+// token until recovery cleanup succeeds permits an authenticated deletion retry.
+func ClearRegistration(files interface {
+	RemovePendingRegistration() error
+	ClearState() error
+}) error {
+	if err := files.RemovePendingRegistration(); err != nil {
+		return fmt.Errorf("clear the pending registration: %w", err)
+	}
+	if err := files.ClearState(); err != nil {
+		return fmt.Errorf("clear the worker credentials: %w", err)
+	}
+	return nil
+}
+
 // ClearState removes the persisted credentials and every interrupted
 // copy beside them.
 func (c *Config) ClearState() error {
@@ -498,7 +524,7 @@ func (c *Config) ClearState() error {
 
 // SaveState durably persists the credentials: a reader never sees a
 // half-written file, the mode 0600 survives the replacement, and the
-// directory entry that names the file is published before success is
+// directory entry that identifies the file is published before success is
 // reported.
 func (c *Config) SaveState(s *State) error {
 	data, err := json.MarshalIndent(s, "", "  ")

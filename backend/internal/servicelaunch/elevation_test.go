@@ -27,7 +27,7 @@ func TestDescribeElevation(t *testing.T) {
 }
 
 // The unsupported manager refuses every operation with the sentinel,
-// and its diagnose output names the foreground alternative.
+// and its diagnose output identifies the foreground alternative.
 func TestUnsupportedManager(t *testing.T) {
 	mgr := &UnsupportedManager{Platform: "plan9"}
 	ctx := context.Background()

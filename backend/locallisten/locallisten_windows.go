@@ -21,8 +21,8 @@ const pipePrefix = `\\.\pipe\`
 
 // closeRetryInterval is how long Close waits for one winio close before it
 // starts another, and closeAttempts is how many closes it starts. Together they
-// bound how long Close can hold up the caller. See Close for why a retry is
-// necessary and why a bound is.
+// set the maximum time Close can hold up the caller.
+// See Close for why the caller's wait has a maximum.
 const (
 	closeRetryInterval = 250 * time.Millisecond
 	closeAttempts      = 8
@@ -87,22 +87,17 @@ type npipeListener struct {
 // https://github.com/microsoft/go-winio/issues/85. The wrapper still caps the
 // wait for the underlying listener and tracks accepted connections, including
 // listeners supplied by callers and test doubles.
-// See pipe.go lines 440 to 485 of go-winio v0.6.2.
+// go-winio closes closeCh once to broadcast shutdown, then waits for doneCh.
+// Its listener routine observes closeCh directly or aborts a pending connect
+// with net.ErrClosed. Repeated Close calls send no additional notification.
 //
-// A later token stops the routine from either state that it parks in. The
-// routine's own select receives the token and sets closed. Alternatively
-// makeConnectedServerPipe receives it and aborts a connect that no client
-// satisfied, which does map to ErrPipeListenerClosed.
-//
-// Close must RETURN, which is why the attempts are bounded and a stuck listener
-// is reported instead of waited out. http.Server.Shutdown closes its listeners
-// while it holds srv.mu, so a close that blocks also blocks every Serve that
-// returns and every connection that ends, and the whole http.Server deadlocks:
-// Shutdown never reaches its own context deadline, because it blocks before it
-// reads the context. The bound also covers a hang no token can release --
-// https://github.com/microsoft/go-winio/issues/357, where the routine parks on
-// the connect result itself rather than on a select. Close reports that listener
-// and lets the caller continue.
+// Close must return within a maximum wait. http.Server.Shutdown closes its
+// listeners while it holds its mutex. A blocked close prevents Serve and
+// connection cleanup from acquiring that mutex. Shutdown cannot reach its
+// context deadline because it checks the context only after closing listeners.
+// The maximum wait also protects callers if the listener routine cannot finish
+// a pending connect. go-winio still waits for the connect result after it closes
+// the pipe. Close reports a stuck listener and lets the caller continue.
 func (l *npipeListener) Close() error {
 	// One slot for each attempt: an attempt that returns late, after the routine
 	// finally stops, must not park forever on its send.

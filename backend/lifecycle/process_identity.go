@@ -10,7 +10,7 @@ import (
 type processIdent = procutil.ProcessIdentity
 
 // currentProcessIdentity identifies this process. The start time is
-// what tells a reused pid from the process a record named.
+// what tells a reused pid from the process a record specified.
 func currentProcessIdentity() (processIdent, bool) {
 	return procutil.IdentifyProcess(os.Getpid())
 }

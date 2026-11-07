@@ -157,8 +157,10 @@ func TestSystemdInspectionReconcilesNativeProcessWithoutDefinitionFile(t *testin
 	}
 }
 
-// Install enables WITHOUT --now; Start starts; Stop preserves the
-// enabled definition.
+// The operations preserve these behaviors:
+//   - Install enables without --now.
+//   - Start starts.
+//   - Stop preserves the enabled definition.
 func TestSystemdInstallStartStop(t *testing.T) {
 	spec, err := LaunchSpecFromService(testSpec())
 	require.NoError(t, err)

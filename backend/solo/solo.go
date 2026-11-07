@@ -175,11 +175,12 @@ func waitForPreviousHub(ctx context.Context, urls []string, deadline time.Time) 
 // WRAPS bringUpLocalWorker rather than replacing it, so the token accounting under
 // the gate is exercised against the Worker goroutine production actually launches.
 type deps struct {
-	clock         quartz.Clock
-	serveHub      func(ctx context.Context, s *hub.Server) error
-	waitReady     func(ctx context.Context, server *hub.Server, listenURL string) error
-	bringUpWorker func(ctx context.Context, p workerBringUp) error
-	runWorker     func(ctx context.Context, cfg worker.RunConfig) error
+	clock          quartz.Clock
+	serveHub       func(ctx context.Context, s *hub.Server) error
+	waitReady      func(ctx context.Context, server *hub.Server, listenURL string) error
+	bringUpWorker  func(ctx context.Context, p workerBringUp) error
+	runWorker      func(ctx context.Context, cfg worker.RunConfig) error
+	closeDirectory func(*lifecycle.DirectoryLease) error
 }
 
 func defaultDeps() deps {
@@ -194,8 +195,9 @@ func defaultDeps() deps {
 				return ctx.Err()
 			}
 		},
-		bringUpWorker: bringUpLocalWorker,
-		runWorker:     worker.Run,
+		bringUpWorker:  bringUpLocalWorker,
+		runWorker:      worker.Run,
+		closeDirectory: (*lifecycle.DirectoryLease).Close,
 	}
 }
 
@@ -301,6 +303,8 @@ type Instance struct {
 	// "all instance work is joined before releasing the combined root
 	// lease".
 	rootLease *lifecycle.DirectoryLease
+	// closeDirectory is immutable for this instance; nil selects the real close.
+	closeDirectory func(*lifecycle.DirectoryLease) error
 	// workerLease is the worker component's lease while the worker has
 	// not started. bringUpLocalWorker TRANSFERS it into worker.Run when
 	// the worker goroutine launches; a worker that never starts leaves
@@ -311,9 +315,8 @@ type Instance struct {
 	// Instance exposes; usable at the zero value, as the fields above
 	// are, for the half-built instances the failure paths drive.
 	startupMu      sync.Mutex
-	startupState   StartupSnapshot
+	startupState   combinedStartupState
 	startupChanged chan struct{}
-	workerFailure  error
 	failureOnce    sync.Once
 	failureCh      chan struct{}
 	// watcherDone closes when the goroutine that turns a cancelled parent
@@ -321,6 +324,24 @@ type Instance struct {
 	// finished. join waits for it so no report or teardown step can still be in
 	// flight after Stop returns.
 	watcherDone chan struct{}
+}
+
+type workerStartupPhase uint8
+
+const (
+	workerStartupInitial workerStartupPhase = iota
+	workerStartupPendingSetup
+	workerStartupStarting
+	workerStartupReady
+	workerStartupFailed
+)
+
+type combinedStartupState struct {
+	hubReady     bool
+	workerPhase  workerStartupPhase
+	registration lifecycle.RegistrationStatus
+	connection   lifecycle.ConnectionStatus
+	failure      error
 }
 
 // StartupSnapshot states where a combined startup stands. It is the
@@ -358,10 +379,16 @@ func (i *Instance) ObserveStartup() (StartupSnapshot, <-chan struct{}) {
 	if i.startupChanged == nil {
 		i.startupChanged = make(chan struct{})
 	}
-	snapshot := i.startupState
-	snapshot.Registration = snapshot.Registration.Clone()
-	snapshot.Connection = snapshot.Connection.Clone()
-	return snapshot, i.startupChanged
+	state := i.startupState
+	return StartupSnapshot{
+		HubReady:           state.hubReady,
+		WorkerReady:        state.workerPhase == workerStartupReady,
+		WorkerPendingSetup: state.workerPhase == workerStartupPendingSetup,
+		WorkerStarting:     state.workerPhase == workerStartupStarting,
+		Registration:       state.registration.Clone(),
+		Connection:         state.connection.Clone(),
+		Failure:            state.failure,
+	}, i.startupChanged
 }
 
 func (i *Instance) publishStartupLocked() {
@@ -375,12 +402,10 @@ func (i *Instance) publishStartupLocked() {
 func (i *Instance) markWorkerReady() {
 	i.startupMu.Lock()
 	defer i.startupMu.Unlock()
-	if i.workerFailure != nil {
+	if i.startupState.failure != nil {
 		return
 	}
-	i.startupState.WorkerReady = true
-	i.startupState.WorkerPendingSetup = false
-	i.startupState.WorkerStarting = false
+	i.startupState.workerPhase = workerStartupReady
 	i.publishStartupLocked()
 }
 
@@ -388,20 +413,19 @@ func (i *Instance) markWorkerReady() {
 func (i *Instance) markWorkerPendingSetup() {
 	i.startupMu.Lock()
 	defer i.startupMu.Unlock()
-	if i.workerFailure != nil {
+	if i.startupState.failure != nil {
 		return
 	}
-	i.startupState.WorkerPendingSetup = true
-	i.startupState.WorkerStarting = false
-	i.startupState.Registration = lifecycle.RegistrationStatus{State: lifecycle.RegistrationPending}
-	i.startupState.Connection = lifecycle.ConnectionStatus{State: lifecycle.ConnectionPendingSetup}
+	i.startupState.workerPhase = workerStartupPendingSetup
+	i.startupState.registration = lifecycle.RegistrationStatus{State: lifecycle.RegistrationPending}
+	i.startupState.connection = lifecycle.ConnectionStatus{State: lifecycle.ConnectionPendingSetup}
 	i.publishStartupLocked()
 }
 
 // markHubReady records the hub's readiness.
 func (i *Instance) markHubReady() {
 	i.startupMu.Lock()
-	i.startupState.HubReady = true
+	i.startupState.hubReady = true
 	i.publishStartupLocked()
 	i.startupMu.Unlock()
 }
@@ -409,13 +433,12 @@ func (i *Instance) markHubReady() {
 func (i *Instance) markWorkerStarting(registration lifecycle.RegistrationStatus) {
 	i.startupMu.Lock()
 	defer i.startupMu.Unlock()
-	if i.workerFailure != nil {
+	if i.startupState.failure != nil {
 		return
 	}
-	i.startupState.WorkerStarting = true
-	i.startupState.WorkerPendingSetup = false
-	i.startupState.Registration = registration.Clone()
-	i.startupState.Connection = lifecycle.ConnectionStatus{State: lifecycle.ConnectionConnecting}
+	i.startupState.workerPhase = workerStartupStarting
+	i.startupState.registration = registration.Clone()
+	i.startupState.connection = lifecycle.ConnectionStatus{State: lifecycle.ConnectionConnecting}
 	i.publishStartupLocked()
 }
 
@@ -428,7 +451,7 @@ func (i *Instance) updateWorkerConnection(state worker.ConnectionState) {
 		}
 	}
 	i.startupMu.Lock()
-	i.startupState.Connection = connection
+	i.startupState.connection = connection
 	i.publishStartupLocked()
 	i.startupMu.Unlock()
 }
@@ -467,17 +490,14 @@ func (i *Instance) Wait() error {
 func (i *Instance) workerError() error {
 	i.startupMu.Lock()
 	defer i.startupMu.Unlock()
-	return i.workerFailure
+	return i.startupState.failure
 }
 
 func (i *Instance) failWorker(cause error) {
 	i.failureOnce.Do(func() {
 		i.startupMu.Lock()
-		i.workerFailure = cause
-		i.startupState.WorkerReady = false
-		i.startupState.WorkerStarting = false
-		i.startupState.WorkerPendingSetup = false
-		i.startupState.Failure = cause
+		i.startupState.workerPhase = workerStartupFailed
+		i.startupState.failure = cause
 		i.publishStartupLocked()
 		i.startupMu.Unlock()
 		if i.failureCh != nil {
@@ -542,11 +562,15 @@ func (i *Instance) shutdown() {
 // underneath it. A Worker that overran the drain budget has already cost the Hub
 // nothing further by this point -- the Hub is stopped.
 //
-// It returns the same combined cause as Wait after all local teardown finishes.
+// Wait may complete before local cleanup. Stop includes cleanup failures in its result.
 // A drain deadline remains a warning; Stop still joins the full Worker exit.
 func (i *Instance) Stop() error {
-	i.join()
-	return i.Wait()
+	cleanupErr := i.join()
+	outcome := i.Wait()
+	if cleanupErr != nil {
+		return errors.Join(outcome, cleanupErr)
+	}
+	return outcome
 }
 
 // join runs the ordered teardown and waits out both halves. It is the ONE
@@ -559,7 +583,7 @@ func (i *Instance) Stop() error {
 // still in flight would let the next ConnectSolo reopen the same file underneath
 // it. By this point the Hub is already stopped, so a slow Worker costs it
 // nothing further.
-func (i *Instance) join() {
+func (i *Instance) join() error {
 	i.shutdown()
 	<-i.hubDone
 	<-i.workerWork.DoneChan()
@@ -573,8 +597,12 @@ func (i *Instance) join() {
 	// combined root lease release here, after every component's work
 	// joined. Idempotent Close keeps the double release with a
 	// transferred worker lease a no-op.
-	_ = i.workerLease.Close()
-	_ = i.rootLease.Close()
+	workerCloseErr := closeDirectoryLease(i.workerLease, i.closeDirectory)
+	if workerCloseErr != nil && errors.Is(i.workerError(), workerCloseErr) {
+		workerCloseErr = nil
+	}
+	rootCloseErr := closeDirectoryLease(i.rootLease, i.closeDirectory)
+	return errors.Join(errwrap.Wrap(workerCloseErr, "close worker lease"), errwrap.Wrap(rootCloseErr, "close combined root lease"))
 }
 
 // startupFailure reports the error to attribute to a startup that is already
@@ -642,13 +670,16 @@ func (i *Instance) startupFailure(ctx context.Context, stage string) error {
 // Do not call startupFailure again after the join: hubDone is always closed,
 // so its fallback would report an unexpected exit caused by requested cleanup.
 func (i *Instance) failStartup(cause error) error {
-	i.join()
+	cleanupErr := i.join()
 	outcome := cause
 	if failure := i.workerError(); failure != nil && !errors.Is(outcome, failure) {
 		outcome = errors.Join(outcome, failure)
 	}
 	if i.hubErr != nil && !errwrap.IsCancellation(i.hubErr) && !errors.Is(outcome, i.hubErr) {
 		outcome = errors.Join(outcome, fmt.Errorf("hub serve: %w", i.hubErr))
+	}
+	if cleanupErr != nil {
+		outcome = errors.Join(outcome, cleanupErr)
 	}
 	return outcome
 }
@@ -714,7 +745,7 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 // start is the one body every entry shares: the prepared launch, the
 // supplied root lease (ownership already validated by StartPrepared),
 // and the per-call dependency seams.
-func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, root *lifecycle.DirectoryLease) (*Instance, error) {
+func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, root *lifecycle.DirectoryLease) (instance *Instance, result error) {
 	logging.Setup()
 
 	hubCfg := prepared.hubCfg
@@ -722,8 +753,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 
 	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {
-		_ = root.Close()
-		return nil, fmt.Errorf("invalid log level: %w", err)
+		return nil, errors.Join(fmt.Errorf("invalid log level: %w", err), closeDirectoryLease(root, d.closeDirectory))
 	}
 	logging.SetLevel(level)
 
@@ -740,7 +770,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	if hubLease == nil || workerLease == nil {
 		return nil, errors.Join(
 			errors.New("solo: the root lease must retain both component leases until startup"),
-			hubLease.Close(), workerLease.Close(), root.Close())
+			closeDirectoryLease(hubLease, d.closeDirectory), closeDirectoryLease(workerLease, d.closeDirectory), closeDirectoryLease(root, d.closeDirectory))
 	}
 	// Release bookkeeping: until the Instance below owns them, this
 	// frame releases every lease it received on the failure paths. The
@@ -752,9 +782,11 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 		if committed {
 			return
 		}
-		_ = hubLease.Close()
-		_ = workerLease.Close()
-		_ = root.Close()
+		for _, lease := range []*lifecycle.DirectoryLease{hubLease, workerLease, root} {
+			if err := closeDirectoryLease(lease, d.closeDirectory); err != nil && !errors.Is(result, err) {
+				result = errors.Join(result, err)
+			}
+		}
 	}()
 	hubCfg.DataDir = hubLease.Path()
 
@@ -844,19 +876,19 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	workerCtx, cancelWorker := context.WithCancel(detached)
 	hubCtx, cancelHub := context.WithCancel(detached)
 	inst := &Instance{
-		cancelWorker: cancelWorker,
-		cancelHub:    cancelHub,
-		listenURL:    listenURL,
-		hubDone:      make(chan struct{}),
-		watcherDone:  make(chan struct{}),
-		rootLease:    root,
-		workerLease:  workerLease,
-		failureCh:    make(chan struct{}),
+		cancelWorker:   cancelWorker,
+		cancelHub:      cancelHub,
+		listenURL:      listenURL,
+		hubDone:        make(chan struct{}),
+		watcherDone:    make(chan struct{}),
+		rootLease:      root,
+		closeDirectory: d.closeDirectory,
+		workerLease:    workerLease,
+		failureCh:      make(chan struct{}),
 	}
 	// The Instance owns the root and worker leases now; its join()
-	// releases them after the work joins. The deferred cleanup above
-	// still releases the HUB lease should this frame fail before the
-	// server's own teardown can (a no-op when it already ran).
+	// releases them after the work joins. The server already owns the Hub
+	// lease and releases it when Serve completes.
 	committed = true
 
 	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers, and
@@ -883,7 +915,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	// It deliberately REPORTS NOTHING. Every way the Hub can fail already has
 	// one caller path: Start returns a failure during startup, and after Start
 	// succeeds the error reaches its caller through Wait and Stop -- which
-	// waitSolo documents itself as the single reporter of. A log here would be a
+	// the combined CLI runner reports once. A log here would be a
 	// second one for whichever of those the watcher happened to observe, which
 	// is the duplicate report this shutdown work exists to remove, not a shape
 	// of it to keep.
@@ -901,7 +933,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	// fails before publishing Ready. A bound listener alone cannot prove that
 	// application initialization completed.
 	//
-	// The select is a pure wait -- the same division waitSolo draws: both cases
+	// The select is a pure wait: both cases
 	// choose WHEN to stop, never WHAT to report. That matters because both can be
 	// ready at once for exactly the reason above, and Go picks between ready cases
 	// arbitrarily; putting the verdict AFTER the select is what makes the pick
@@ -942,7 +974,6 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 			workerLease:  workerLease,
 			hubCfg:       hubCfg,
 			listenURL:    listenURL,
-			modeName:     modeName,
 			runWorker:    d.runWorker,
 			onExit:       func(cause error) { inst.workerExited(workerCtx, cause) },
 			onStarting:   inst.markWorkerStarting,
@@ -1092,14 +1123,8 @@ func (i *Instance) pollForDeferredWorkerSetup(ctx context.Context, setupWorker f
 
 const workerSetupPollTag = "solo-deferred-worker-setup"
 
-// workerBringUp is the production wiring bringUpLocalWorker needs.
-//
-// A struct rather than nine positional parameters because two adjacent pairs
-// shared a type -- statePath/workerDataDir and listenURL/modeName -- so a
-// transposition compiled silently and wrote the state file into the data dir, or
-// logged the listen URL as the mode name. Named fields make that a compile error,
-// and the seam var, the call site and the test stubs stop restating a signature
-// they can each get wrong independently.
+// workerBringUp groups the dependencies for registration and worker startup.
+// Named fields keep the injected runner and its call sites on one signature.
 type workerBringUp struct {
 	work, drained *drain.Counter
 	server        *hub.Server
@@ -1110,7 +1135,6 @@ type workerBringUp struct {
 	workerLease  *lifecycle.DirectoryLease
 	hubCfg       *hubconfig.Config
 	listenURL    string
-	modeName     string
 	runWorker    func(ctx context.Context, cfg worker.RunConfig) error
 	onExit       func(error)
 	onStarting   func(lifecycle.RegistrationStatus)
@@ -1137,14 +1161,6 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 	// running hub's settings snapshot rather than the launcher's config.
 	snap := p.server.SettingsManager().Snapshot(ctx)
 	workerTimeouts := settings.KeyTimeouts
-
-	slog.Info(p.modeName+" worker registered",
-		"worker_id", state.WorkerID,
-		"local", p.listenURL,
-		// The same field the standalone Worker logs, so a desktop or solo user
-		// can check the key-change dialog's Actual fingerprint.
-		"key_fingerprint", compositeKey.Fingerprint(),
-	)
 
 	// readiness carries the worker's own verdict to this bring-up: nil
 	// after local initialization and Hub identity acceptance, or its failure
@@ -1614,4 +1630,16 @@ func parseBool(s string, defaultVal bool) bool {
 	default:
 		return defaultVal
 	}
+}
+
+// closeDirectoryLease keeps the per-start close dependency usable by incomplete
+// instances. A missing lease has no release operation or cleanup failure.
+func closeDirectoryLease(lease *lifecycle.DirectoryLease, operation func(*lifecycle.DirectoryLease) error) error {
+	if lease == nil {
+		return nil
+	}
+	if operation != nil {
+		return operation(lease)
+	}
+	return lease.Close()
 }

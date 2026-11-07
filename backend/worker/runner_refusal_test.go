@@ -114,9 +114,10 @@ func (trace *deregisterTrace) runConfig(t *testing.T, logs *testutil.LogBuffer, 
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-		OnDeregister: func() {
+		OnDeregister: func() error {
 			trace.deregistered.Add(1)
 			trace.shutdownAtDeregister.Store(strings.Contains(logs.String(), shutdownStartedLog))
+			return nil
 		},
 		Drained: func() {
 			trace.drained.Add(1)
@@ -329,7 +330,7 @@ func TestRunEndsWhatItStartedWhenTheHubRefusesItsKeys(t *testing.T) {
 		WorkerID:       "worker-1",
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 		Drained:        func() { drained.Add(1) },
-		OnDeregister:   func() { deregistered.Add(1) },
+		OnDeregister:   func() error { deregistered.Add(1); return nil },
 	})
 	require.ErrorIs(t, err, hub.ErrKeysRefused)
 	assert.Zero(t, deregistered.Load(), "a key refusal must keep the worker's state")
@@ -343,7 +344,7 @@ func TestRunEndsWhatItStartedWhenTheHubRefusesItsKeys(t *testing.T) {
 
 	// Ending the context now must reach nothing of the Run that already returned.
 	cancel()
-	require.Eventually(t, func() bool { return !goroutinesRunning("worker.Run.func") },
+	require.Eventually(t, func() bool { return !goroutinesRunning("worker.run.func") },
 		30*time.Second, 10*time.Millisecond, "a goroutine of Run outlived it")
 	assert.Zero(t, drained.Load(), "Drained ran after Run returned")
 }

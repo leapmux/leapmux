@@ -2,6 +2,9 @@ package service
 
 import (
 	"crypto/rand"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -130,4 +133,80 @@ func TestRecoverySignedMessageShape(t *testing.T) {
 	assert.Equal(t, recoveryContextPrefix, string(message[:len(recoveryContextPrefix)]))
 	assert.Equal(t, nonce, message[len(recoveryContextPrefix)+32:len(recoveryContextPrefix)+32+32])
 	assert.Equal(t, digest, message[len(message)-32:])
+}
+
+func BenchmarkRegistrationChallengeOperations(b *testing.B) {
+	for _, count := range []int{0, 256, 4096} {
+		for _, operation := range []string{"replace", "reject"} {
+			b.Run(fmt.Sprintf("%s/%d", operation, count), func(b *testing.B) {
+				store := newRegistrationChallengeStore(quartz.NewMock(b).WithLogger(quartz.NoOpLogger))
+				for index := 0; index < count; index++ {
+					_, _, _, err := store.Issue(fmt.Sprint(index))
+					require.NoError(b, err)
+				}
+				if operation == "replace" {
+					_, _, _, err := store.Issue("0")
+					require.NoError(b, err)
+				}
+				b.ResetTimer()
+				for index := 0; index < b.N; index++ {
+					if operation == "replace" {
+						_, _, _, err := store.Issue("0")
+						if err != nil {
+							b.Fatal(err)
+						}
+					} else {
+						if _, ok := store.Consume("unknown", "unknown"); ok {
+							b.Fatal("unknown challenge accepted")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestChallengeConsumptionAtExpiryAndConcurrentUse(t *testing.T) {
+	for _, advance := range []time.Duration{registrationChallengeTTL - time.Nanosecond, registrationChallengeTTL} {
+		clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+		store := newRegistrationChallengeStore(clock)
+		id, _, _, err := store.Issue("attempt")
+		require.NoError(t, err)
+		clock.Advance(advance).MustWait(t.Context())
+		_, ok := store.Consume(id, "attempt")
+		assert.Equal(t, advance < registrationChallengeTTL, ok)
+		assert.Empty(t, store.byID)
+		assert.Empty(t, store.byAttempt)
+	}
+	store := newRegistrationChallengeStore(nil)
+	id, _, _, err := store.Issue("attempt")
+	require.NoError(t, err)
+	var winners atomic.Int32
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Go(func() {
+			if _, ok := store.Consume(id, "attempt"); ok {
+				winners.Add(1)
+			}
+		})
+	}
+	callers.Wait()
+	assert.EqualValues(t, 1, winners.Load())
+}
+
+func TestChallengeAdmissionReclaimsExpiredCapacity(t *testing.T) {
+	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	store := newRegistrationChallengeStore(clock)
+	for index := 0; index < maxOutstandingRegistrationChallenges; index++ {
+		_, _, _, err := store.Issue(fmt.Sprint(index))
+		require.NoError(t, err)
+	}
+	clock.Advance(registrationChallengeTTL).MustWait(t.Context())
+	id, nonce, _, err := store.Issue("new-attempt")
+	require.NoError(t, err)
+	assert.Len(t, store.byID, 1)
+	assert.Len(t, store.byAttempt, 1)
+	got, ok := store.Consume(id, "new-attempt")
+	require.True(t, ok)
+	assert.Equal(t, nonce, got)
 }

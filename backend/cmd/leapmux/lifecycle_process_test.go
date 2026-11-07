@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
@@ -92,7 +93,7 @@ func TestApplicationOwnershipConflictPreservesStoredDataInBothOrders(t *testing.
 							state, err := os.ReadFile(cfg.StatePath())
 							require.NoError(t, err)
 							require.NoError(t, os.MkdirAll(firstRoot, 0o700))
-							require.NoError(t, os.WriteFile(filepath.Join(firstRoot, "state.json"), state, 0o600))
+							require.NoError(t, atomicfile.WriteFileDurable(filepath.Join(firstRoot, "state.json"), state, 0o600))
 						}
 						arguments := []string{firstMode, "run", "--data-dir", firstRoot}
 						if firstMode != "worker" {
@@ -378,6 +379,16 @@ func TestDevForegroundStatusAdvancesAfterAdministratorSetup(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the dev process did not join after stop")
 	}
+	status, err := lifecycle.Observe(ctx, canonical)
+	require.NoError(t, err)
+	assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
+	assert.Equal(t, lifecycle.ConnectionDisconnected, status.Connection.State)
+	if status.Connection.LastError != nil {
+		t.Logf("final connection error: %s", *status.Connection.LastError)
+	}
+	assert.Nil(t, status.Connection.LastError)
+	assert.Equal(t, lifecycle.RegistrationRegistered, status.Registration.State)
+
 }
 
 func TestForegroundVersionDoesNotStartRuntime(t *testing.T) {
@@ -620,7 +631,7 @@ func TestStopControlsForegroundProcess(t *testing.T) {
 	// Move the state into the lifecycle data dir the run verb uses.
 	stateBytes, err := os.ReadFile(cfg.StatePath())
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "state.json"), stateBytes, 0o600))
+	require.NoError(t, atomicfile.WriteFileDurable(filepath.Join(dataDir, "state.json"), stateBytes, 0o600))
 
 	cmd := exec.Command(os.Args[0], "worker", "run", "--data-dir", dataDir, "--log-level", "info")
 	cmd.Env = append(os.Environ(), runMainEnv+"=1")
@@ -643,6 +654,11 @@ func TestStopControlsForegroundProcess(t *testing.T) {
 		return held
 	}, 30*time.Second, 100*time.Millisecond, "the foreground runtime never took its lock")
 
+	require.Eventually(t, func() bool {
+		status, err := lifecycle.Observe(t.Context(), canonical)
+		return err == nil && status.Readiness != nil && *status.Readiness == lifecycle.ReadinessReady
+	}, 30*time.Second, 50*time.Millisecond)
+
 	// The stop verb from THIS process stops the child.
 	require.NoError(t, runModeCommand("worker", []string{"stop", "--data-dir", dataDir}))
 
@@ -653,6 +669,25 @@ func TestStopControlsForegroundProcess(t *testing.T) {
 		t.Fatalf("the runtime did not exit after the stop: %s", output.String())
 	}
 	assert.False(t, lockHeld(paths), "the runtime lock released before the stop verb returned")
+	state, err := cfg.LoadState()
+	require.NoError(t, err)
+	keys, err := state.CompositeKeypair()
+	require.NoError(t, err)
+	fingerprintLogs := 0
+	for _, line := range strings.Split(output.String(), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil {
+			continue
+		}
+		fingerprint, exists := record["key_fingerprint"]
+		if !exists {
+			continue
+		}
+		fingerprintLogs++
+		assert.Equal(t, keys.Fingerprint(), fingerprint)
+		assert.Equal(t, state.WorkerID, record["worker_id"])
+	}
+	assert.Equal(t, 1, fingerprintLogs, "each worker runtime must log its actual key fingerprint once")
 }
 
 // lockHeld probes a lock path.
@@ -671,7 +706,7 @@ func TestConcurrentLifecycleCommands(t *testing.T) {
 	paths := lifecycle.PathsOf(canonical)
 
 	// A saved specification: disable must defend it.
-	require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
+	require.NoError(t, atomicfile.MkdirAllDurable(paths.Dir))
 	require.NoError(t, lifecycle.WriteServiceSpec(paths.ServiceSpec, lifecycle.ServiceSpec{
 		InstanceID:    lifecycle.NewInstanceID(lifecycle.CurrentAccountID(), lifecycle.RoleWorker, canonical).String(),
 		Mode:          lifecycle.RoleWorker,
@@ -700,7 +735,7 @@ func TestConcurrentLifecycleCommands(t *testing.T) {
 	// disable refuses while the instance runs.
 	err := runModeCommand("worker", []string{"disable", "--data-dir", dataDir})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stop it", "disable names the stop requirement")
+	assert.Contains(t, err.Error(), "stop it", "disable identifies the stop requirement")
 
 	// Two concurrent stops: both answer, exactly one instance existed,
 	// and the second reports the lock held by the first stop's wait.
@@ -729,4 +764,71 @@ func TestConcurrentLifecycleCommands(t *testing.T) {
 	}
 	// The holder still owns the lock: no stop killed another process.
 	assert.True(t, lockHeld(paths))
+}
+
+func TestWorkerReportsConnectingDuringFirstHandshake(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = listener.Close() }()
+	accepted := make(chan net.Conn, 1)
+	var held net.Conn
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	cfg := writeRegisteredStateAgainst(t, "http://"+listener.Addr().String())
+	runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: lifecycle.RoleWorker, DataDir: cfg.DataDir, Execution: lifecycle.ExecutionForeground})
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	done := make(chan error, 1)
+	go func() { done <- runWorkerForeground(ctx, runtime, preparedWorkerConfig(t, cfg.DataDir)) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = listener.Close()
+		<-acceptDone
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+		require.NoError(t, <-done)
+		if held != nil {
+			_ = held.Close()
+		}
+		require.NoError(t, runtime.Shutdown())
+		status, err := lifecycle.Observe(context.Background(), mustCanonicalDir(t, cfg.DataDir))
+		require.NoError(t, err)
+		assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
+		assert.Equal(t, lifecycle.ConnectionDisconnected, status.Connection.State)
+		if status.Connection.LastError != nil {
+			t.Logf("final connection error: %s", *status.Connection.LastError)
+		}
+		assert.Nil(t, status.Connection.LastError)
+		assert.Equal(t, lifecycle.RegistrationRegistered, status.Registration.State)
+		assert.FileExists(t, cfg.StatePath())
+	})
+	select {
+	case <-runtime.Ready():
+	case <-ctx.Done():
+		t.Fatal("local worker initialization did not finish")
+	}
+	select {
+	case conn := <-accepted:
+		held = conn
+	case <-ctx.Done():
+		t.Fatal("first connection did not begin")
+	}
+	status := runtime.Status()
+	assert.Equal(t, lifecycle.ConnectionConnecting, status.Connection.State)
+	if status.Connection.LastError != nil {
+		t.Logf("final connection error: %s", *status.Connection.LastError)
+	}
+	assert.Nil(t, status.Connection.LastError)
+	require.NotNil(t, status.Readiness)
+	assert.Equal(t, lifecycle.ReadinessReady, *status.Readiness)
+	assert.Equal(t, lifecycle.RegistrationRegistered, status.Registration.State)
 }

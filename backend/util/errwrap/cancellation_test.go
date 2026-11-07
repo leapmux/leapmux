@@ -29,3 +29,23 @@ func TestIsCancellationPreservesIndependentCauses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) { assert.Equal(t, test.want, IsCancellation(test.err)) })
 	}
 }
+
+func TestIsCancellationWithPreservesEveryIndependentLeaf(t *testing.T) {
+	interrupted := errors.New("native interruption")
+	independent := errors.New("independent failure")
+	for _, test := range []struct {
+		err  error
+		want bool
+	}{
+		{interrupted, true},
+		{fmt.Errorf("query: %w", interrupted), true},
+		{errors.Join(interrupted, sql.ErrTxDone), true},
+		{errors.Join(interrupted, independent), false},
+		{errors.Join(independent, interrupted), false},
+		{errors.Join(context.Canceled, interrupted, independent), false},
+		{sql.ErrTxDone, false},
+		{nil, false},
+	} {
+		assert.Equal(t, test.want, IsCancellationWith(test.err, func(err error) bool { return err == interrupted }))
+	}
+}

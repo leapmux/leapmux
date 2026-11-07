@@ -13,42 +13,28 @@ import (
 )
 
 type cliCall struct {
-	command  string
-	args     []string
-	soloMode bool
+	command string
+	args    []string
 }
 
 func testCLIRunners(calls *[]cliCall) cliRunners {
-	record := func(command string, args []string, soloMode bool) {
+	record := func(command string, args []string) {
 		*calls = append(*calls, cliCall{
-			command:  command,
-			args:     append([]string(nil), args...),
-			soloMode: soloMode,
+			command: command,
+			args:    append([]string(nil), args...),
 		})
 	}
 	return cliRunners{
 		runMode: func(mode string, args []string) error {
-			record(mode, args, false)
-			return nil
-		},
-		runHub: func(args []string) error {
-			record("hub", args, false)
-			return nil
-		},
-		runWorker: func(args []string) error {
-			record("worker", args, false)
-			return nil
-		},
-		runSolo: func(args []string, soloMode bool) error {
-			record("solo", args, soloMode)
+			record(mode, args)
 			return nil
 		},
 		runRecover: func(args []string) error {
-			record("recover", args, false)
+			record("recover", args)
 			return nil
 		},
 		runControl: func(args []string) error {
-			record("control", args, false)
+			record("control", args)
 			return nil
 		},
 		version: func() string {
@@ -104,13 +90,13 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			}},
 		},
 		{
-			name:       "bare solo names the required verb",
+			name:       "bare solo identifies the required verb",
 			args:       []string{"solo", "-dev-frontend", "http://localhost:4328"},
 			wantCode:   1,
 			wantStderr: "the solo command is required before any flags",
 		},
 		{
-			name:       "a flag before the verb names the corrected command",
+			name:       "a flag before the verb identifies the corrected command",
 			args:       []string{"solo", "--version"},
 			wantCode:   1,
 			wantStderr: "run",
@@ -258,7 +244,7 @@ func TestRunCLISubcommandErrorReportsPlainly(t *testing.T) {
 	var stderr bytes.Buffer
 	runners := testCLIRunners(&[]cliCall{})
 
-	// The lifecycle tree requires a verb; a bare mode names it.
+	// The lifecycle tree requires a verb; a bare mode identifies it.
 	code := runCLI([]string{"hub"}, &stdout, &stderr, runners)
 
 	assert.Equal(t, 1, code)
@@ -456,7 +442,7 @@ func usageCommandRows(t *testing.T) map[string]string {
 }
 
 func TestRunSoloRejectsUnknownFlag(t *testing.T) {
-	err := runSolo([]string{"--unknown-flag"}, true)
+	err := runModeCommand("solo", []string{"run", "--unknown-flag"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown-flag")
 }

@@ -71,13 +71,13 @@ func (s *stopCountingReporter) RequestStop() <-chan struct{} {
 	return s.runtime.RequestStop()
 }
 
-// The endpoint authenticates every request, bounds every body, and
+// The endpoint authenticates every request, limits every body, and
 // matches the stop request's instance and attempt identities against
 // the live runtime before any shutdown call happens. A stale client --
 // one that inspected an earlier attempt -- is refused with zero
 // shutdown calls.
 func TestControlAuthenticationAndGeneration(t *testing.T) {
-	socketDir := runtimeEnv(t)
+	runtimeEnv(t)
 	root := t.TempDir()
 	r := startTestRuntime(t, RoleWorker, root)
 	reporter := &stopCountingReporter{runtime: r}
@@ -89,7 +89,8 @@ func TestControlAuthenticationAndGeneration(t *testing.T) {
 	// test drives the HANDLER shapes through a second endpoint whose
 	// reporter it owns.
 	record := r.Record()
-	record.ControlURL = "unix:" + socketDir + "/test-auth.sock"
+	record.ControlURL = ControlURL(InstanceID(hashID(record.InstanceID, "test-auth")))
+	require.NotEqual(t, r.Record().ControlURL, record.ControlURL)
 	server, err := serveControl(record, token, reporter)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = server.Close() })
@@ -159,7 +160,7 @@ func TestControlAuthenticationAndGeneration(t *testing.T) {
 	})
 }
 
-// postRaw posts an arbitrary body the handler must bound.
+// postRaw posts an arbitrary body the handler must limit.
 func postRaw(ctx context.Context, c *controlClient, body string, out *StopResponse) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://leapmux.local"+controlStopPath, bytes.NewReader([]byte(body)))

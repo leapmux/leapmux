@@ -32,7 +32,7 @@ func replaceFileDurable(oldpath, newpath string) error {
 	return ops.rename(oldpath, newpath)
 }
 
-// publishFileEntry flushes the directory entry that names a replaced
+// publishFileEntry flushes the directory entry that identifies a replaced
 // file. It runs through the seam so the observed order of a durable
 // write ends file sync, rename, directory sync.
 func publishFileEntry(path string) error {

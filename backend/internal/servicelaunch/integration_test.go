@@ -204,7 +204,7 @@ func parseServiceAccountFixture(data []byte, current *user.User, platform string
 	return fixture, nil
 }
 
-// testBinaryPath names the just-built CLI the tests install.
+// testBinaryPath identifies the just-built CLI the tests install.
 func testBinaryPath(t *testing.T) string {
 	t.Helper()
 	path := os.Getenv("LEAPMUX_SERVICE_TEST_BINARY")

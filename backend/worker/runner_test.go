@@ -3,17 +3,35 @@ package worker_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/worker"
 )
+
+func TestRunRejectsInvalidMessageSize(t *testing.T) {
+	for _, size := range []int{1, contracts.MaxConfigurableMessageSize + 1} {
+		lease := workerLeaseForTest(t)
+		key, err := noiseutil.GenerateCompositeKeypair()
+		require.NoError(t, err)
+		require.NoError(t, os.Mkdir(filepath.Join(lease.Path(), "worker.db"), 0o700))
+		err = worker.Run(context.Background(), worker.RunConfig{
+			HubURL: "http://127.0.0.1:1", Directory: lease, AuthToken: "token",
+			CompositeKey: key, WorkerID: "worker-1", MaxMessageSize: size,
+			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		})
+		require.ErrorContains(t, err, "max_message_size")
+		assert.True(t, lease.Closed(), "rejected execution still releases its supplied lease")
+	}
+}
 
 // A Worker with no keypair cannot connect once the Hub pins keys, so Run refuses
 // it before it opens anything -- no database, no socket.
@@ -114,7 +132,7 @@ func workerLeaseForTest(t *testing.T) *lifecycle.DirectoryLease {
 
 // assertNoWorkerDB proves Run returned before it opened the database.
 // The lease's lifecycle metadata legitimately exists in the directory,
-// so the assertion names the database and the sockets, not the tree.
+// so the assertion identifies the database and the sockets, not the tree.
 func assertNoWorkerDB(t *testing.T, lease *lifecycle.DirectoryLease) {
 	t.Helper()
 	entries, err := os.ReadDir(lease.Path())

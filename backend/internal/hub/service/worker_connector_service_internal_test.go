@@ -170,7 +170,17 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          reg,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
@@ -219,7 +229,17 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          reg,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 
 	var sent atomic.Int32
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
@@ -253,7 +273,17 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          newRecordingRegistry(t, journal),
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
@@ -299,7 +329,17 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 
 	logs := testutil.CaptureDefaultLogger(t)
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          newRecordingRegistry(t, journal),
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 	sent := 0
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
 		sent++
@@ -344,7 +384,17 @@ func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) st
 // the channels go, whatever else is happening to the process.
 func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             nil,
+		WorkerManager:     nil,
+		ChannelManager:    cMgr,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 
 	cMgr.RegisterWithAuthInfo("ch1", "w1", "u1", channelmgr.AuthInfo{}, nil)
 	cMgr.RegisterWithAuthInfo("ch2", "w1", "u1", channelmgr.AuthInfo{}, nil)
@@ -361,7 +411,17 @@ func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 // shutdown, and they must leave no trace: nothing to close means nothing to say.
 func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             nil,
+		WorkerManager:     nil,
+		ChannelManager:    cMgr,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 	buf := testutil.CaptureDefaultLogger(t)
 
 	svc.closeWorkerChannels("w-with-no-channels")
@@ -481,10 +541,30 @@ func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
 	t.Parallel()
 
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a queue pool", func() {
-		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, nil, quartz.NewReal())
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+			Store:             nil,
+			WorkerManager:     nil,
+			ChannelManager:    nil,
+			PendingRequests:   nil,
+			Notifier:          nil,
+			Registry:          nil,
+			QueuePool:         nil,
+			Clock:             quartz.NewReal(),
+			DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+		})
 	})
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a clock", func() {
-		NewWorkerConnectorService(nil, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), nil)
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+			Store:             nil,
+			WorkerManager:     nil,
+			ChannelManager:    nil,
+			PendingRequests:   nil,
+			Notifier:          nil,
+			Registry:          nil,
+			QueuePool:         sendq.NewMaxBytesPoolForTest(),
+			Clock:             nil,
+			DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+		})
 	})
 }
 
@@ -620,7 +700,17 @@ func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
 func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	st := hubtestutil.OpenTestStore(t)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 	ctx, cancel := context.WithCancelCause(t.Context())
 	cancel(context.DeadlineExceeded)
 
@@ -629,4 +719,20 @@ func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
 	assert.False(t, ok)
 	assert.Empty(t, username)
 	assert.Contains(t, logs.String(), "cause=\"context deadline exceeded\"")
+}
+
+func TestNewWorkerConnectorServiceRequiresDeregisterEffects(t *testing.T) {
+	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires deregistration effects", func() {
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+			Store:             nil,
+			WorkerManager:     nil,
+			ChannelManager:    nil,
+			PendingRequests:   nil,
+			Notifier:          nil,
+			Registry:          nil,
+			QueuePool:         sendq.NewMaxBytesPoolForTest(),
+			Clock:             quartz.NewReal(),
+			DeregisterEffects: nil,
+		})
+	})
 }

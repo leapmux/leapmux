@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 // currentAccountID reports the current account's numeric identifier, the
@@ -123,31 +122,4 @@ func repairRecord(path string) error {
 		return fmt.Errorf("atomicfile: commit the publication record of %s: %w", rec.Directory, err)
 	}
 	return nil
-}
-
-// writeRecordCommitted replaces a record with its committed form
-// durably.
-func writeRecordCommitted(path string, rec *publicationRecord) error {
-	data, err := yamlMarshalRecord(rec)
-	if err != nil {
-		return err
-	}
-	return WriteFileDurable(path, data, 0o600)
-}
-
-// missingBelow returns the chain of directories between firstMissing
-// and target (exclusive of firstMissing, inclusive of target), each as
-// a slash-separated path relative to firstMissing. target is below
-// firstMissing by construction.
-func missingBelow(firstMissing, target string) []string {
-	rel, err := filepath.Rel(firstMissing, target)
-	if err != nil || rel == "." {
-		return nil
-	}
-	segments := strings.Split(rel, string(filepath.Separator))
-	chain := make([]string, 0, len(segments))
-	for i := 1; i <= len(segments); i++ {
-		chain = append(chain, filepath.Join(segments[:i]...))
-	}
-	return chain
 }

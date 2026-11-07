@@ -85,7 +85,7 @@ type AttemptStatus struct {
 type Diagnostic struct {
 	// Kind states where the excerpt came from: log, native, or error.
 	Kind string `json:"kind" yaml:"kind"`
-	// Title names what the excerpt shows.
+	// Title identifies what the excerpt shows.
 	Title string `json:"title" yaml:"title"`
 	// Body is the excerpt, limited to the automatic diagnostic caps.
 	Body string `json:"body" yaml:"body"`

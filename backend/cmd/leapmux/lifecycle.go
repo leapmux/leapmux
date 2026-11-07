@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/quartz"
@@ -23,7 +24,7 @@ import (
 
 // The lifecycle tree every mode requires. The seven verbs share one
 // group per mode; exact matches win and abbreviations resolve as far
-// as they stay unambiguous (`worker sta` names both start and status,
+// as they stay unambiguous (`worker sta` identifies both start and status,
 // so the CLI lists both).
 //
 // `run` is the only verb that starts a foreground process, and it never
@@ -167,37 +168,31 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 				return err
 			}
 		}
+		if err := configuration.validateRuntime(); err != nil {
+			return fmt.Errorf("validate runtime configuration: %w", err)
+		}
 		// Survive a lost console reader so the attempt can finish its shutdown.
 		// The Go handler preserves the default SIGPIPE behavior in child processes.
 		procutil.KeepRunningOnBrokenPipe()
 		ctx, cancel := context.WithCancel(invocation.Context)
 		defer cancel()
+		var monitor servicelaunch.SessionMonitor
+		var account servicelaunch.AccountRef
 		if managed != nil && managed.Startup == lifecycle.StartupLogin {
-			monitor := servicelaunch.NewSessionMonitor()
-			account := servicelaunch.AccountRef{ID: managed.AccountID, Name: managed.AccountName}
-			initial, err := monitor.Sessions(account)
+			monitor = servicelaunch.NewSessionMonitor()
+			account = servicelaunch.AccountRef{ID: managed.AccountID, Name: managed.AccountName}
+			initial, err := monitor.Sessions(ctx, account)
 			if err != nil {
 				return fmt.Errorf("managed login launch cannot read desktop sessions: %w", err)
 			}
 			if stop, _ := servicelaunch.LastSessionRule(initial, nil); stop {
 				return fmt.Errorf("managed login launch requires an active desktop session; choose boot startup for use without a desktop login")
 			}
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				if err := servicelaunch.WatchLoginSessions(ctx, monitor, account, quartz.NewReal(), func(err error) {
-					log.Printf("Cannot read desktop sessions; keeping the instance running: %v", err)
-				}); err == nil {
-					cancel()
-				}
-			}()
-			defer func() { cancel(); <-done }()
 		}
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, procutil.ShutdownSignals()...)
 		defer signal.Stop(signals)
 		dataDir := configuration.dataDirectory
-		cfgArgs := append([]string{"--config", configuration.configurationFile, "--data-dir", dataDir}, configuration.runtimeArguments...)
 		var runtime *lifecycle.Runtime
 		if managed != nil {
 			runtime, err = lifecycle.StartServiceRuntime(*managed)
@@ -207,49 +202,45 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 		if err != nil {
 			return err
 		}
-		if invocation.OnReady != nil {
-			readyDone := make(chan struct{})
-			go func() {
-				defer close(readyDone)
-				select {
-				case <-runtime.Ready():
-					invocation.OnReady()
-				case <-ctx.Done():
-				}
-			}()
-			defer func() { cancel(); <-readyDone }()
-		}
-		watcherDone := make(chan struct{})
-		go func() {
-			defer close(watcherDone)
-			select {
-			case <-ctx.Done():
-			case <-signals:
-				log.Printf("shutdown signal received")
-				cancel()
-			case <-runtime.StopSignal():
-				cancel()
+		execute := func(ctx context.Context, runtime *lifecycle.Runtime) error {
+			watchCtx, cancelWatchers := context.WithCancel(ctx)
+			var watchers sync.WaitGroup
+			// Observers start after capture and join before it closes. Their
+			// final diagnostics therefore use the required attempt log.
+			defer func() { cancelWatchers(); watchers.Wait() }()
+			if invocation.OnReady != nil {
+				watchers.Go(func() {
+					select {
+					case <-runtime.Ready():
+						invocation.OnReady()
+					case <-watchCtx.Done():
+					}
+				})
 			}
-		}()
-		defer func() {
-			cancel()
-			<-watcherDone
-		}()
-
-		return executeForegroundAttempt(ctx, cancel, mode, runtime, cfgArgs)
-	}
-}
-
-// dispatchModeForeground hands the started runtime and the remaining
-// flags to the mode's foreground implementation.
-func dispatchModeForeground(ctx context.Context, mode string, runtime *lifecycle.Runtime, args []string) error {
-	switch mode {
-	case "hub":
-		return runHubForeground(ctx, runtime, args)
-	case "worker":
-		return runWorkerForeground(ctx, runtime, args)
-	default:
-		return runSoloForeground(ctx, mode == "dev", runtime, args)
+			if monitor != nil {
+				watchers.Go(func() {
+					if err := servicelaunch.WatchLoginSessions(watchCtx, monitor, account, quartz.NewReal(), func(err error) {
+						if watchCtx.Err() == nil {
+							log.Printf("Cannot read desktop sessions; keeping the instance running: %v", err)
+						}
+					}); err == nil {
+						cancel()
+					}
+				})
+			}
+			watchers.Go(func() {
+				select {
+				case <-watchCtx.Done():
+				case <-signals:
+					cancel()
+					log.Printf("shutdown signal received")
+				case <-runtime.StopSignal():
+					cancel()
+				}
+			})
+			return configuration.executeForeground(ctx, runtime)
+		}
+		return executeForegroundAttempt(ctx, cancel, runtime, execute)
 	}
 }
 
@@ -272,45 +263,6 @@ const (
 	defaultStopTimeout   = 30 * time.Second
 	defaultStatusTimeout = 3 * time.Second
 )
-
-// parseTimeoutFlag reads --timeout from args with the shared duration
-// parser. Zero, negative, and overflowing durations fail; a very large
-// representable duration is accepted.
-func parseTimeoutFlag(args []string, fallback time.Duration) (time.Duration, []string, error) {
-	rest := make([]string, 0, len(args))
-	timeout := fallback
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--timeout" || arg == "-timeout":
-			if i+1 >= len(args) {
-				return 0, nil, fmt.Errorf("--timeout needs a duration value")
-			}
-			parsed, err := internalconfig.ParseDuration(args[i+1])
-			if err != nil {
-				return 0, nil, fmt.Errorf("--timeout: %w", err)
-			}
-			if parsed <= 0 {
-				return 0, nil, fmt.Errorf("--timeout must be positive, got %s", args[i+1])
-			}
-			timeout = parsed
-			i++
-		case strings.HasPrefix(arg, "--timeout="):
-			value := strings.TrimPrefix(arg, "--timeout=")
-			parsed, err := internalconfig.ParseDuration(value)
-			if err != nil {
-				return 0, nil, fmt.Errorf("--timeout: %w", err)
-			}
-			if parsed <= 0 {
-				return 0, nil, fmt.Errorf("--timeout must be positive, got %s", value)
-			}
-			timeout = parsed
-		default:
-			rest = append(rest, arg)
-		}
-	}
-	return timeout, rest, nil
-}
 
 // runModeStopWithController stops the running instance and waits for the FULL
 // shutdown, including the database close. An already stopped instance
@@ -369,7 +321,6 @@ func stopLifecycleEvidence(ctx context.Context, configuration *lifecycleConfigur
 	}
 	// Environment contents do not affect the public native definition.
 	// Stopping must remain possible when that file needs repair.
-	spec.EnvironmentFile = nil
 	launch, err := servicelaunch.LaunchSpecFromService(spec)
 	if err != nil {
 		return active, err
@@ -472,7 +423,7 @@ func runModeCommand(mode string, args []string) error {
 		)
 		group.Subgroups = []cmdGroup{workerPinsGroup()}
 	}
-	// A flag where the verb belongs names the corrected command in the
+	// A flag where the verb belongs identifies the corrected command in the
 	// hint rather than dispatching.
 	if len(args) > 0 && strings.HasPrefix(args[0], "-") && !internalconfig.IsHelpArg(args[0]) {
 		return fmt.Errorf("the %s command is required before any flags; run `leapmux %s run` for the foreground command", mode, mode)
@@ -487,7 +438,7 @@ func workerPinsGroup() cmdGroup {
 		Summary: "Manage the worker-local TOFU pin store",
 		Commands: []cmdLeaf{
 			{Name: "list", Summary: "List pinned cross-worker keys", Run: func(c cmdCtx, args []string) error {
-				return runWorkerCrossWorkerPins([]string{"list"})
+				return runWorkerCrossWorkerPins(append([]string{"list"}, args...))
 			}},
 			{Name: "show", Summary: "Show one pinned worker's keys", Run: func(c cmdCtx, args []string) error {
 				return runWorkerCrossWorkerPins(append([]string{"show"}, args...))
@@ -542,7 +493,7 @@ func walkModeArgs(group cmdGroup, mode string, args []string, stdout, stderr io.
 		}
 		// A flag before the verb is the dispatcher's error, printed
 		// here with the exact corrected command.
-		_, _ = fmt.Fprintf(stderr, "error: the %s command is required before any flags; run `leapmux %s run` for the foreground command\\n", mode, mode)
+		_, _ = fmt.Fprintf(stderr, "error: the %s command is required before any flags; run `leapmux %s run` for the foreground command\n", mode, mode)
 		return 1, true
 	}
 	return walkGroupArgs(group, []string{mode}, args, stdout, stderr)

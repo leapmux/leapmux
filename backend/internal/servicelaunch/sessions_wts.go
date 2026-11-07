@@ -1,8 +1,10 @@
 package servicelaunch
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // windowsSessionMonitor lists the account's logon sessions from the WTS
@@ -11,6 +13,34 @@ import (
 // on count, and service, listener, and batch contexts never do.
 type windowsSessionMonitor struct {
 	enumerate func() ([]windowsSessionEntry, error)
+	mu        sync.Mutex
+	pending   *windowsSessionCall
+}
+
+type windowsSessionCall struct {
+	done    chan struct{}
+	entries []windowsSessionEntry
+	err     error
+}
+
+// WTS calls cannot be canceled. Keep one owned call in progress while canceled
+// or timed-out callers leave; another poll must not start another blocked call.
+func (m *windowsSessionMonitor) enumeration() *windowsSessionCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pending != nil {
+		return m.pending
+	}
+	call := &windowsSessionCall{done: make(chan struct{})}
+	m.pending = call
+	go func() {
+		call.entries, call.err = m.enumerate()
+		m.mu.Lock()
+		m.pending = nil
+		close(call.done)
+		m.mu.Unlock()
+	}()
+	return call
 }
 
 // windowsSessionEntry is a translated session with a verified account SID.
@@ -97,14 +127,28 @@ func translateWindowsSessions(snapshots []windowsSessionSnapshot, accounts windo
 // Sessions lists the account's applicable sessions. A session the
 // enumeration cannot attribute to an account returns an error, so the
 // supervisor cannot mistake an unreadable list for final logout.
-func (m *windowsSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
+func (m *windowsSessionMonitor) Sessions(ctx context.Context, account AccountRef) ([]Session, error) {
 	if !strings.HasPrefix(account.ID, "S-") {
 		return nil, fmt.Errorf("the session account requires a security identifier")
 	}
-	all, err := m.enumerate()
-	if err != nil {
+	ctx, cancel := context.WithTimeout(ctx, sessionQueryTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	call := m.enumeration()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-call.done:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if call.err != nil {
+		return nil, call.err
+	}
+	all := call.entries
 	var out []Session
 	for _, entry := range all {
 		if entry.ID == 0 || !entry.Kind.Applicable() {

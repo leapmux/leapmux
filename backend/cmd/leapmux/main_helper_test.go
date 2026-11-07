@@ -21,7 +21,7 @@ import (
 const runMainEnv = "LEAPMUX_TEST_RUN_MAIN"
 
 func TestMain(m *testing.M) {
-	if os.Getenv(runMainEnv) == "1" {
+	if os.Getenv(runMainEnv) == "1" || len(os.Args) > 1 && os.Args[1] == consoleHelperFlag {
 		// main ends the process with its own exit code.
 		main()
 	}
@@ -84,4 +84,21 @@ func TestMainRunsTheCLIWhenItHasAnArgument(t *testing.T) {
 	assert.Zero(t, code)
 	assert.Equal(t, version.Format()+"\n", stdout)
 	assert.NotContains(t, stderr, "LeapMux helper")
+}
+
+func TestInternalConsoleHelperDoesNotExposeHelp(t *testing.T) {
+	for _, help := range []string{"--help", "-help", "-h"} {
+		code, stdout, stderr := runMain(t, []string{consoleHelperFlag, help})
+		assert.Equal(t, 2, code)
+		assert.Empty(t, stdout)
+		assert.Empty(t, stderr)
+	}
+}
+
+func TestTopLevelHelpOmitsTheConsoleHelper(t *testing.T) {
+	code, stdout, stderr := runMain(t, []string{"--help"})
+	assert.Zero(t, code)
+	assert.Empty(t, stderr)
+	assert.NotContains(t, stdout, "--console-relay")
+	assert.NotContains(t, stdout, "Internal options:")
 }

@@ -3,6 +3,7 @@ package servicelaunch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,7 +153,7 @@ func TestConfigurationFailureIsRepairable(t *testing.T) {
 		assert.False(t, native.DefinitionMatches, "a changed definition is drift, not a complete configuration")
 	})
 
-	t.Run("Preview names the change and the elevation", func(t *testing.T) {
+	t.Run("Preview identifies the change and the elevation", func(t *testing.T) {
 		mgr := &recordingManager{}
 		c, _ := newTestController(t, mgr)
 
@@ -366,5 +367,83 @@ func TestPreviewDescribesSelectedNativeMechanism(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeInspectionDoesNotLoadRuntimeEnvironment(t *testing.T) {
+	malformed := filepath.Join(t.TempDir(), "malformed.yaml")
+	require.NoError(t, os.WriteFile(malformed, []byte("TOKEN: [invalid"), 0o600))
+	for _, path := range []string{filepath.Join(t.TempDir(), "missing.yaml"), malformed, "relative.yaml"} {
+		t.Run(path, func(t *testing.T) {
+			manager := &recordingManager{inspectResult: NativeStatus{Installed: true, DefinitionMatches: true}}
+			controller, _ := newTestController(t, manager)
+			spec := testSpec()
+			spec.EnvironmentFile = &path
+			require.NoError(t, controller.SaveSpec(spec))
+			actual, native, err := controller.Inspect(t.Context())
+			require.NoError(t, err, "native inspection must remain usable when a runtime file needs repair")
+			assert.Equal(t, []string{"inspect"}, manager.recorded())
+			assert.True(t, native.Installed)
+			assert.True(t, spec.Equal(actual))
+		})
+	}
+}
+
+func invalidEnvironmentFiles(t *testing.T) map[string]string {
+	t.Helper()
+	malformed := filepath.Join(t.TempDir(), "malformed.yaml")
+	require.NoError(t, os.WriteFile(malformed, []byte("TOKEN: [invalid"), 0o600))
+	return map[string]string{"missing": filepath.Join(t.TempDir(), "missing.yaml"), "malformed": malformed, "relative": "relative.yaml"}
+}
+
+func TestRuntimeEnvironmentIsValidatedBeforeDesiredMutations(t *testing.T) {
+	for kind, path := range invalidEnvironmentFiles(t) {
+		for _, operation := range []string{"preview", "apply"} {
+			t.Run(kind+"/"+operation, func(t *testing.T) {
+				manager := &recordingManager{inspectResult: NativeStatus{Installed: true, DefinitionMatches: true}}
+				controller, stored := newTestController(t, manager)
+				previous := testSpec()
+				require.NoError(t, controller.SaveSpec(previous))
+				desired := previous
+				desired.Startup = lifecycle.StartupBoot
+				desired.EnvironmentFile = &path
+				var err error
+				if operation == "preview" {
+					_, err = controller.Preview(t.Context(), desired)
+				} else {
+					err = controller.Apply(t.Context(), desired)
+				}
+				require.Error(t, err)
+				assert.Empty(t, manager.recorded(), "invalid runtime data must precede native inspection, removal, and installation")
+				assert.True(t, previous.Equal(*stored), "a failed desired validation must preserve the saved specification")
+			})
+		}
+	}
+}
+
+func TestNativeRemovalIgnoresBrokenRuntimeSelectors(t *testing.T) {
+	for kind, path := range invalidEnvironmentFiles(t) {
+		for _, running := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/running=%v", kind, running), func(t *testing.T) {
+				manager := &recordingManager{inspectResult: NativeStatus{Installed: true, DefinitionMatches: true, Running: running}}
+				controller, _ := newTestController(t, manager)
+				spec := testSpec()
+				spec.EnvironmentFile = &path
+				require.NoError(t, controller.SaveSpec(spec))
+				err := controller.Remove(t.Context())
+				if running {
+					require.ErrorContains(t, err, "running")
+					assert.Equal(t, []string{"inspect"}, manager.recorded())
+					saved, err := controller.ReadSpec()
+					require.NoError(t, err)
+					assert.True(t, spec.Equal(saved))
+				} else {
+					require.NoError(t, err)
+					assert.Equal(t, []string{"inspect", "remove"}, manager.recorded())
+					_, err = controller.ReadSpec()
+					assert.ErrorIs(t, err, os.ErrNotExist)
+				}
+			})
+		}
 	}
 }

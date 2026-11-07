@@ -4,6 +4,7 @@ import { timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 
 import { RegisterWorkerDialog } from './RegisterWorkerDialog'
 
@@ -107,6 +108,63 @@ function renderDialog(onClose = vi.fn()) {
 // Tests ----------------------------------------------------------------
 
 describe('RegisterWorkerDialog', () => {
+  it('revokes a key that arrives after the dialog unmounts', async () => {
+    const creation = deferred<Awaited<ReturnType<typeof mockCreate>>>()
+    mockCreate.mockReturnValueOnce(creation.promise)
+    const { unmount } = renderDialog()
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+    unmount()
+    creation.resolve({
+      registrationKey: 'LATE-KEY',
+      expiresAt: timestampFromDate(new Date(Date.now() + 300_000)),
+    })
+    await waitFor(() => expect(mockRevoke).toHaveBeenCalledExactlyOnceWith({ registrationKey: 'LATE-KEY' }))
+  })
+
+  it('handles a rejected late revocation without an unhandled promise', async () => {
+    const creation = deferred<Awaited<ReturnType<typeof mockCreate>>>()
+    mockCreate.mockReturnValueOnce(creation.promise)
+    mockRevoke.mockRejectedValueOnce(new ConnectError('revocation unavailable', Code.Unavailable))
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const { unmount } = renderDialog()
+      await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+      unmount()
+      creation.resolve({
+        registrationKey: 'LATE-REFUSAL',
+        expiresAt: timestampFromDate(new Date(Date.now() + 300_000)),
+      })
+      await waitFor(() => expect(mockRevoke).toHaveBeenCalledExactlyOnceWith({ registrationKey: 'LATE-REFUSAL' }))
+      await new Promise(resolve => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    }
+    finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('keeps a reopened dialog independent of an earlier pending key', async () => {
+    const creation = deferred<Awaited<ReturnType<typeof mockCreate>>>()
+    mockCreate.mockReturnValueOnce(creation.promise)
+    const previous = renderDialog()
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+    previous.unmount()
+    mockCreate.mockResolvedValueOnce({
+      registrationKey: 'NEW-DIALOG-KEY',
+      expiresAt: timestampFromDate(new Date(Date.now() + 300_000)),
+    })
+    renderDialog()
+    await screen.findByTestId('registration-command')
+    creation.resolve({
+      registrationKey: 'OLD-DIALOG-KEY',
+      expiresAt: timestampFromDate(new Date(Date.now() + 300_000)),
+    })
+    await waitFor(() => expect(mockRevoke).toHaveBeenCalledExactlyOnceWith({ registrationKey: 'OLD-DIALOG-KEY' }))
+    expect(screen.getByTestId('registration-command')).toHaveTextContent('NEW-DIALOG-KEY')
+  })
+
   it('refuses email and clipboard actions when command validation fails', async () => {
     mockWorkerHubUrl.mockReturnValue('https://hub.test/unsafe\nendpoint')
     renderDialog()

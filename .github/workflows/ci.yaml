@@ -133,6 +133,10 @@ jobs:
       - name: Check the unchanged native build
         run: task check-build-cache
 
+      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
+      - name: Verify native CLI service configuration (temporary)
+        run: node scripts/temporary-native-cli-ci.mjs
+
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
@@ -256,6 +260,10 @@ jobs:
       - name: Check the unchanged native build
         run: task check-build-cache
 
+      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
+      - name: Verify native CLI service configuration (temporary)
+        run: node scripts/temporary-native-cli-ci.mjs
+
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
@@ -359,6 +367,10 @@ jobs:
       - name: Check the unchanged native build
         shell: pwsh
         run: task check-build-cache
+
+      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
+      - name: Verify native CLI service configuration (temporary)
+        run: node scripts/temporary-native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to

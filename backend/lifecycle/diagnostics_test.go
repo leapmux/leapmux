@@ -118,7 +118,7 @@ func TestStartupDiagnosticsAreAttemptSpecific(t *testing.T) {
 		assert.Empty(t, got)
 	})
 
-	t.Run("a huge log keeps only its bounded tail", func(t *testing.T) {
+	t.Run("a huge log keeps only its limited tail", func(t *testing.T) {
 		dir := t.TempDir()
 		huge := filepath.Join(dir, "huge.log")
 		var sb strings.Builder
@@ -164,7 +164,7 @@ func TestStartupDiagnosticsAreAttemptSpecific(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "rot-root")
 		paths := pathsFor(mustCanonical(t, root))
 		current := "cccccccccccccccccccccccccccccccc"
-		require.NoError(t, os.MkdirAll(paths.Logs, 0o700))
+		require.NoError(t, preparePrivateDir(paths.Logs))
 		for i := range maxRetainedAttempts + 4 {
 			id := fmt.Sprintf("%032x", i)
 			// Distinct modification times, so the retirement order is

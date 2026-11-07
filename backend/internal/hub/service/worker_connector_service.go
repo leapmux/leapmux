@@ -72,7 +72,7 @@ type WorkerConnectorService struct {
 	challenges *registrationChallengeStore
 	// deregisterEffects runs the out-of-database half of the worker's
 	// self-deregistration, exactly as every other removal surface runs
-	// it. Nil in unit tests that exercise only the store half.
+	// it. Store-only tests pass an explicit empty effects object.
 	deregisterEffects *WorkerDeregisterEffects
 	// maxWorkersPerUser bounds how many ACTIVE worker rows one account may hold,
 	// so a machine is turned away at registration -- where the operator can be
@@ -90,45 +90,37 @@ type WorkerConnectorService struct {
 	maxWorkersPerUser atomic.Int64
 }
 
-// NewWorkerConnectorService creates a new WorkerConnectorService.
-// `registry` may be nil in unit tests; production deployments wire in
-// the user-CRDT registry so worker tab-sync can drive manager-side
-// tombstones for orphaned tabs the worker no longer hosts.
-func NewWorkerConnectorService(
-	st store.Store,
-	mgr *workermgr.Manager,
-	cMgr *channelmgr.Manager,
-	pr *workermgr.PendingRequests,
-	n *notifier.Notifier,
-	registry CRDTRegistry,
-	queuePool *sendq.Pool,
-	clock quartz.Clock,
-) *WorkerConnectorService {
-	if queuePool == nil {
-		panic("service: NewWorkerConnectorService requires a queue pool")
-	}
-	if clock == nil {
-		panic("service: NewWorkerConnectorService requires a clock")
-	}
-	return &WorkerConnectorService{
-		store:        st,
-		workerMgr:    mgr,
-		channelMgr:   cMgr,
-		pending:      pr,
-		notifier:     n,
-		crdtRegistry: registry,
-		queuePool:    queuePool,
-		clock:        clock,
-		challenges:   newRegistrationChallengeStore(clock),
-	}
+// WorkerConnectorServiceDeps holds the connector's construction dependencies.
+// Registry can be nil for store-only tests. DeregisterEffects is always explicit.
+type WorkerConnectorServiceDeps struct {
+	Store             store.Store
+	WorkerManager     *workermgr.Manager
+	ChannelManager    *channelmgr.Manager
+	PendingRequests   *workermgr.PendingRequests
+	Notifier          *notifier.Notifier
+	Registry          CRDTRegistry
+	QueuePool         *sendq.Pool
+	Clock             quartz.Clock
+	DeregisterEffects *WorkerDeregisterEffects
 }
 
-// SetDeregisterEffects binds the out-of-database deregistration
-// effects. Production wires the same instance every other removal
-// surface uses; the setter keeps the constructor stable for the test
-// environments that exercise only one half.
-func (s *WorkerConnectorService) SetDeregisterEffects(effects *WorkerDeregisterEffects) {
-	s.deregisterEffects = effects
+// NewWorkerConnectorService constructs the connector with its required effects.
+func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorService {
+	if d.QueuePool == nil {
+		panic("service: NewWorkerConnectorService requires a queue pool")
+	}
+	if d.Clock == nil {
+		panic("service: NewWorkerConnectorService requires a clock")
+	}
+	if d.DeregisterEffects == nil {
+		panic("service: NewWorkerConnectorService requires deregistration effects")
+	}
+	return &WorkerConnectorService{
+		store: d.Store, workerMgr: d.WorkerManager, channelMgr: d.ChannelManager,
+		pending: d.PendingRequests, notifier: d.Notifier, crdtRegistry: d.Registry,
+		queuePool: d.QueuePool, clock: d.Clock, challenges: newRegistrationChallengeStore(d.Clock),
+		deregisterEffects: d.DeregisterEffects,
+	}
 }
 
 // workerIdleTimeout is how long a Connect stream may stay silent: before the
@@ -146,7 +138,7 @@ const (
 // once; 0 (the zero value) is unlimited. Updates may run concurrently with
 // registration.
 //
-// A setter rather than a tenth positional constructor argument, matching
+// A live setting separate from fixed construction dependencies, matching
 // AuthContextRegistry.SetMaxConnectionsPerUser: the services this package builds
 // directly in tests must come out unlimited, which the zero value gives for free.
 //

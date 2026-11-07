@@ -7,19 +7,17 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
+	"strconv"
 )
 
 // linuxSessionMonitor reads graphical sessions from systemd-logind.
 // SSH, greeter and batch sessions do not extend desktop login lifetime.
 type linuxSessionMonitor struct {
-	runLoginctl func([]string) ([]byte, error)
+	runLoginctl func(context.Context, []string) ([]byte, error)
 }
 
 func newLinuxSessionMonitor() *linuxSessionMonitor {
-	return &linuxSessionMonitor{runLoginctl: func(args []string) ([]byte, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	return &linuxSessionMonitor{runLoginctl: func(ctx context.Context, args []string) ([]byte, error) {
 		output, err := exec.CommandContext(ctx, "/usr/bin/loginctl", args...).CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("read desktop sessions: %w", err)
@@ -28,11 +26,17 @@ func newLinuxSessionMonitor() *linuxSessionMonitor {
 	}}
 }
 
-func (m *linuxSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
-	if account.ID == "" {
-		return nil, fmt.Errorf("the session account identifier is required")
+func (m *linuxSessionMonitor) Sessions(ctx context.Context, account AccountRef) ([]Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, sessionQueryTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	output, err := m.runLoginctl([]string{"list-sessions", "--no-legend", "--no-pager"})
+	accountUID, err := strconv.ParseUint(account.ID, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("the session account requires a numeric identifier")
+	}
+	output, err := m.runLoginctl(ctx, []string{"list-sessions", "--no-legend", "--no-pager"})
 	if err != nil {
 		return nil, err
 	}
@@ -42,18 +46,29 @@ func (m *linuxSessionMonitor) Sessions(account AccountRef) ([]Session, error) {
 		if len(fields) == 0 {
 			continue
 		}
-		if strings.HasPrefix(fields[0], "-") {
-			return nil, fmt.Errorf("the session list contains an invalid identifier")
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "-") {
+			return nil, fmt.Errorf("the session list contains an invalid row")
 		}
-		details, err := m.runLoginctl([]string{"show-session", fields[0], "--no-pager", "--property=User", "--property=Type", "--property=Class", "--property=State"})
+		uid, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("the session list contains an invalid account identifier")
+		}
+		if uid != accountUID {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		details, err := m.runLoginctl(ctx, []string{"show-session", fields[0], "--no-pager", "--property=User", "--property=Type", "--property=Class", "--property=State"})
 		if err != nil {
 			return nil, err
 		}
 		properties := nativeProperties(details)
-		if properties["User"] == "" {
+		ownerUID, ownerErr := strconv.ParseUint(properties["User"], 10, 32)
+		if ownerErr != nil {
 			return nil, fmt.Errorf("the session owner could not be identified")
 		}
-		if properties["User"] != account.ID {
+		if ownerUID != accountUID {
 			continue
 		}
 		if properties["Type"] == "" || properties["Class"] == "" || properties["State"] == "" {

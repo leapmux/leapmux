@@ -8,4 +8,3 @@ import (
 )
 
 func currentAccount() string { return strconv.Itoa(os.Getuid()) }
-func accountNumber() int     { return os.Getuid() }

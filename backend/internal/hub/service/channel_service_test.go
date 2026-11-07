@@ -89,7 +89,17 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
-		service.NewWorkerConnectorService(st, wMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), clock))
+		service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+			Store:             st,
+			WorkerManager:     wMgr,
+			ChannelManager:    nil,
+			PendingRequests:   nil,
+			Notifier:          nil,
+			Registry:          nil,
+			QueuePool:         sendq.NewMaxBytesPoolForTest(),
+			Clock:             clock,
+			DeregisterEffects: service.NewWorkerDeregisterEffects(nil, nil, nil),
+		}))
 
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer,
 		service.NewWorkerManagementService(st, wMgr, nil, mail.NewStubSender(), mail.Renderer{}, set))
@@ -528,9 +538,9 @@ func TestConnectHeartbeatUpdatesLastSeen(t *testing.T) {
 	// Connect itself stamps last_seen, so comparing timestamps cannot tell a
 	// heartbeat that writes from one that does not. Count the writes instead.
 	var writes atomic.Int64
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
 		return lastSeenCountingStore{Store: st, writes: &writes}
-	})
+	}})
 	stream, _, _ := connectAdminWorker(t, env, "hub-heartbeat")
 
 	writes.Store(0)

@@ -1830,3 +1830,48 @@ func TestHeartbeatLoopStopsWhenTheSendFails(t *testing.T) {
 	_, running := clock.Peek()
 	assert.False(t, running, "a loop that gave up must stop its ticker")
 }
+
+func TestCancelledConnectionPublishesDisconnectedState(t *testing.T) {
+	independent := errors.New("independent connection failure")
+	for _, test := range []struct {
+		name     string
+		failure  error
+		preserve bool
+	}{
+		{"nil", nil, false},
+		{"cancelled", context.Canceled, false},
+		{"wrapped", fmt.Errorf("transport ended: %w", context.Canceled), false},
+		{"transport", connect.NewError(connect.CodeCanceled, "request cancelled"), false},
+		{"transport close cause", connect.NewError(connect.CodeCanceled, "request cancelled").WithCause(errors.New("response body closed")), false},
+		{"independent", independent, true},
+		{"joined", errors.Join(context.Canceled, independent), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestClient(t, "http://localhost:0")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var transitions []bool
+			var finalCause error
+			client.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool { return true }
+			client.OnConnectionState = func(connected bool, err error) {
+				transitions = append(transitions, connected)
+				finalCause = err
+			}
+			attempts := 0
+			err := client.connectWithReconnect(ctx, "token", func(context.Context, string) error {
+				attempts++
+				client.handleMessage(&leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}})
+				cancel()
+				return test.failure
+			}, newFastBackoff(), time.Second)
+			require.NoError(t, err)
+			assert.Equal(t, 1, attempts)
+			assert.Equal(t, []bool{true, false}, transitions)
+			if test.preserve {
+				assert.ErrorIs(t, finalCause, independent)
+			} else {
+				assert.NoError(t, finalCause)
+			}
+		})
+	}
+}

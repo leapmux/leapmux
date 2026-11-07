@@ -38,14 +38,10 @@ func TestIdentityUsesCanonicalModeAndDirectory(t *testing.T) {
 	assert.Equal(t, beforeCreation, afterCreation,
 		"the identity of a not-yet-created directory does not change when it appears")
 
-	// The same directory under two modes yields two instance identities
-	// and ONE directory identity.
+	// The same directory under two modes yields two instance identities.
 	hub := NewInstanceID("501", RoleHub, canonical)
 	worker := NewInstanceID("501", RoleWorker, canonical)
 	assert.NotEqual(t, hub, worker, "the mode separates instances")
-	assert.Equal(t, NewDirectoryID(canonical), NewDirectoryID(canonical))
-	assert.NotEqual(t, NewDirectoryID(canonical), NewDirectoryID(base),
-		"two directories hold two directory identities")
 
 	// Two configurations that resolve to the same mode and directory
 	// identify the same instance: the alias and the deep path contend.
@@ -85,9 +81,12 @@ func TestCanonicalDirExpandsHome(t *testing.T) {
 	}
 
 	// A ~ that is not the account's home marker stays literal: only a
-	// lone ~ or a ~/ prefix names the home.
-	got, err := CanonicalDir("~/leapmux")
+	// lone ~ or a ~/ prefix identifies the home.
+	got, err := CanonicalDir("~other/leapmux")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, "leapmux"), got)
-	_ = got
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	cwd, err = filepath.EvalSymlinks(cwd)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(cwd, "~other", "leapmux"), got)
 }
