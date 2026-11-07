@@ -1235,6 +1235,10 @@ func TestAnswerProviderRuntimeHeaders_RequestIDReuseKeepsTheNewerAnswer(t *testi
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
 	second, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
 		"server-2", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
+	a.runtimeHeaderMu.Lock()
+	secondAnswer := a.runtimeHeaderAnswers[logical]
+	a.runtimeHeaderMu.Unlock()
+	require.NotNil(t, secondAnswer)
 	first()
 	assert.Empty(t, stdin.Frames(), "the cancelled first answer writes nothing")
 
@@ -1242,8 +1246,9 @@ func TestAnswerProviderRuntimeHeaders_RequestIDReuseKeepsTheNewerAnswer(t *testi
 	replies := zcodeAwaitReplies(t, stdin, 1)
 	require.Len(t, replies, 1, "the newer answer of a reused request id keeps its reply")
 	assert.Equal(t, `"server-2"`, string(replies[0].ID))
+	zcodeTestReceive(t, secondAnswer.ctx.Done())
 
-	// The first answer's entry must not linger: the id is free for the next use.
+	// The completed replacement frees the logical ID for its next registration.
 	third, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
 		"server-3", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
 	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
