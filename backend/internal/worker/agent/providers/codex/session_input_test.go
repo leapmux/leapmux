@@ -139,6 +139,7 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
 	held := make(chan func(agenttest.RPCReply), 1)
+	unsubscribed := make(chan struct{})
 	a, _, requests := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) {
 		switch request.Method {
 		case "turn/start":
@@ -146,6 +147,9 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 			case held <- reply:
 			default:
 			}
+		case "thread/unsubscribe":
+			reply(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
+			close(unsubscribed)
 		case "thread/start":
 			reply(agenttest.RPCReply{Result: json.RawMessage(
 				`{"thread":{"id":"new-thread","historyMode":"paginated","ephemeral":false},"model":"gpt-5.4"}`)})
@@ -185,6 +189,14 @@ func TestCodexLateTurnStartRejectionMarksTheSharedProcess(t *testing.T) {
 	})
 	assert.True(t, recoveryRequired(a), "the same physical process still holds the rejected login")
 	assert.Equal(t, "new-thread", a.currentThreadID(), "the retired request cannot replace the current thread")
+	// Retired-thread cleanup runs independently of the completed clear. Wait
+	// for its unsubscribe before counting, so the count cannot grow under the
+	// assertion below.
+	select {
+	case <-unsubscribed:
+	case <-ctx.Done():
+		t.Fatal("the clear did not unsubscribe the retired thread")
+	}
 	before := len(requests())
 	require.ErrorIs(t, a.SendInput("new input", nil), agent.ErrInputProcessRestartRequired)
 	assert.Len(t, requests(), before, "the new thread cannot send input through the stale process")
