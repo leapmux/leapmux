@@ -5,6 +5,7 @@ package servicelaunch
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,4 +22,9 @@ func assertNativeCLIPrerequisites(t *testing.T) {
 
 func nativeCLIFixturePassword(serviceAccountFixture) func(context.Context) ([]byte, error) {
 	return nil
+}
+
+func nativeCLIDefinitionDiagnostic(ctx context.Context, manager Manager, spec LaunchSpec) (string, error) {
+	notes, err := manager.Diagnose(ctx, spec)
+	return strings.Join(notes, "\n"), err
 }

@@ -4,8 +4,9 @@ package servicelaunch
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var credentialDLL = windows.NewLazySystemDLL("advapi32.dll")

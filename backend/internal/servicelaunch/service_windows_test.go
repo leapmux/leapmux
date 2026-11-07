@@ -180,3 +180,8 @@ func TestTaskRequestsOnlyTheRequiredAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsServiceExitCodesMatchSDK(t *testing.T) {
+	assert.Equal(t, uint32(windows.ERROR_SERVICE_NEVER_STARTED), windowsServiceNeverStarted)
+	assert.Equal(t, uint32(windows.ERROR_SERVICE_SPECIFIC_ERROR), windowsServiceSpecificError)
+}

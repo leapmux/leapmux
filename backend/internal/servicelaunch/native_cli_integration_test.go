@@ -3,8 +3,11 @@
 package servicelaunch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -87,6 +90,7 @@ func TestNativeServiceCLIConfiguration(t *testing.T) {
 				assert.Equal(t, expected.AccountID, saved.AccountID)
 				assert.Equal(t, expected.AccountName, saved.AccountName)
 				assert.Equal(t, expected.Executable, saved.Executable)
+				assert.Equal(t, expected.WorkingDirectory, saved.WorkingDirectory)
 				assert.Equal(t, expected.ConfigFile, saved.ConfigFile)
 				assert.Equal(t, expected.DataDirectory, saved.DataDirectory)
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -94,9 +98,26 @@ func TestNativeServiceCLIConfiguration(t *testing.T) {
 				native, err := manager.Inspect(ctx, launch)
 				require.NoError(t, err)
 				assert.True(t, native.Installed)
+				if !native.DefinitionMatches {
+					diagnostic, diagnosticErr := nativeCLIDefinitionDiagnostic(ctx, manager, launch)
+					t.Logf("native definition evidence: %s (diagnostic error: %v)", diagnostic, diagnosticErr)
+				}
 				assert.True(t, native.DefinitionMatches)
 				assert.False(t, native.Running, "enable must not start the application")
+				assert.Empty(t, native.Failure, "fresh configuration must not report an application failure")
 				assert.NoFileExists(t, lifecycle.PathsOf(root).RuntimeRecord)
+				statusCommand := exec.CommandContext(ctx, binary, mode.String(), "status", "--config", configuration, "--data-dir", root, "--json")
+				statusCommand.Dir, statusCommand.Env = root, environment
+				var statusOutput, statusDiagnostic bytes.Buffer
+				statusCommand.Stdout, statusCommand.Stderr = &statusOutput, &statusDiagnostic
+				statusErr := statusCommand.Run()
+				var exit *exec.ExitError
+				require.ErrorAs(t, statusErr, &exit, statusDiagnostic.String())
+				assert.Equal(t, 3, exit.ExitCode(), "fresh enabled configuration reports the stopped exit code: %s", statusDiagnostic.String())
+				var status lifecycle.Status
+				require.NoError(t, json.Unmarshal(statusOutput.Bytes(), &status), statusOutput.String())
+				assert.True(t, status.Configured)
+				assert.Equal(t, lifecycle.ProcessStopped, status.Process.State)
 				run("disable")
 				run("disable")
 				native, err = manager.Inspect(ctx, launch)

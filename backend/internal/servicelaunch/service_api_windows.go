@@ -67,9 +67,9 @@ func inspectWindowsService(ctx context.Context, spec LaunchSpec) (NativeStatus, 
 			status.Running, status.State = true, "stop-pending"
 		case svc.Stopped:
 			status.State = "stopped"
-			if current.Win32ExitCode != 0 || current.ServiceSpecificExitCode != 0 {
+			status.Failure = windowsServiceExitFailure(current.Win32ExitCode, current.ServiceSpecificExitCode)
+			if status.Failure != "" {
 				status.State = "failed"
-				status.Failure = fmt.Sprintf("the service exited with Windows code %d and service code %d", current.Win32ExitCode, current.ServiceSpecificExitCode)
 			}
 		default:
 			status.Running, status.State = true, "pending"
