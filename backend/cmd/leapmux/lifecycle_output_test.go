@@ -78,3 +78,47 @@ func TestManagedOutputDoesNotRequireConsoleHandles(t *testing.T) {
 	assert.Contains(t, string(data), "managed stdout marker")
 	assert.Contains(t, string(data), "managed logger marker")
 }
+
+// Losing a console reader must not discard the private attempt log. Other
+// console failures still cancel the attempt and retain their cause.
+func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
+	for _, brokenPipe := range []bool{true, false} {
+		name := "closed file"
+		if brokenPipe {
+			name = "broken pipe"
+		}
+		t.Run(name, func(t *testing.T) {
+			reader, console, err := os.Pipe()
+			require.NoError(t, err)
+			require.NoError(t, reader.Close())
+			t.Cleanup(func() { _ = console.Close() })
+			if !brokenPipe {
+				require.NoError(t, console.Close())
+			}
+			stdout, stderr := os.Stdout, os.Stderr
+			t.Cleanup(func() { os.Stdout, os.Stderr = stdout, stderr })
+			os.Stdout, os.Stderr = console, console
+			ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+			defer cancel()
+			var attempt testutil.LogBuffer
+			capture, err := startOutputCapture(&attempt, cancel, lifecycle.ExecutionForeground)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = capture.Close() })
+			_, err = fmt.Fprintln(os.Stdout, "stdout after console failure")
+			require.NoError(t, err)
+			_, err = fmt.Fprintln(os.Stderr, "stderr after console failure")
+			require.NoError(t, err)
+			closeErr := capture.Close()
+			os.Stdout, os.Stderr = stdout, stderr
+			if !brokenPipe {
+				require.ErrorIs(t, closeErr, os.ErrClosed)
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+				return
+			}
+			require.NoError(t, closeErr)
+			require.NoError(t, ctx.Err())
+			assert.Contains(t, attempt.String(), "stdout after console failure")
+			assert.Contains(t, attempt.String(), "stderr after console failure")
+		})
+	}
+}

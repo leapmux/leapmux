@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/coder/quartz"
@@ -19,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/errwrap"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // The lifecycle tree every mode requires. The seven verbs share one
@@ -167,6 +167,9 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 				return err
 			}
 		}
+		// Survive a lost console reader so the attempt can finish its shutdown.
+		// The Go handler preserves the default SIGPIPE behavior in child processes.
+		procutil.KeepRunningOnBrokenPipe()
 		ctx, cancel := context.WithCancel(invocation.Context)
 		defer cancel()
 		if managed != nil && managed.Startup == lifecycle.StartupLogin {
@@ -191,7 +194,7 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 			defer func() { cancel(); <-done }()
 		}
 		signals := make(chan os.Signal, 1)
-		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(signals, procutil.ShutdownSignals()...)
 		defer signal.Stop(signals)
 		dataDir := configuration.dataDirectory
 		cfgArgs := append([]string{"--config", configuration.configurationFile, "--data-dir", dataDir}, configuration.runtimeArguments...)
