@@ -207,9 +207,11 @@ func snapshotTree(t *testing.T, root string) string {
 			return err
 		}
 		fmt.Fprintf(&out, "%s %s %d", relative, entry.Type(), info.Size())
-		// Windows denies reads of the locked byte. The lock file has no payload;
-		// its path, type and size still participate in the preservation check.
-		if entry.Type().IsRegular() && path != lifecycle.PathsOf(root).DataLock {
+		// Windows denies reads of the locked byte. Empty root and component
+		// locks still contribute their paths, types and sizes to the snapshot.
+		componentRoot := filepath.Dir(filepath.Dir(path))
+		emptyLock := path == lifecycle.PathsOf(componentRoot).DataLock && info.Size() == 0
+		if entry.Type().IsRegular() && !emptyLock {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err
@@ -233,4 +235,25 @@ func mustCanonicalTest(t *testing.T, dir string) string {
 	canonical, err := lifecycle.CanonicalDir(dir)
 	require.NoError(t, err)
 	return canonical
+}
+
+func TestSnapshotTreePreservesNestedLeaseMetadataAndPayloadBytes(t *testing.T) {
+	root := mustCanonicalTest(t, t.TempDir())
+	lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleSolo, root), lifecycle.RoleSolo, root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lease.Close()) })
+	payload := filepath.Join(root, "hub", "application.bin")
+	require.NoError(t, os.WriteFile(payload, []byte("before"), 0600))
+	before := snapshotTree(t, root)
+	for _, component := range []string{root, filepath.Join(root, "hub"), filepath.Join(root, "worker")} {
+		lock := lifecycle.PathsOf(component).DataLock
+		assert.FileExists(t, lock)
+		relative, err := filepath.Rel(root, lock)
+		require.NoError(t, err)
+		assert.Contains(t, before, relative+" ---------- 0\n", "the snapshot retains each lock's metadata")
+	}
+	require.NoError(t, lease.Close())
+	assert.Equal(t, before, snapshotTree(t, root), "closing leases preserves all snapshot data")
+	require.NoError(t, os.WriteFile(payload, []byte("after!"), 0600))
+	assert.NotEqual(t, before, snapshotTree(t, root), "equal-size application payload changes must remain visible")
 }

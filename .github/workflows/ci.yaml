@@ -349,6 +349,10 @@ jobs:
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
 
+      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
+      - name: Verify native CLI service configuration (temporary)
+        run: node scripts/temporary-native-cli-ci.mjs
+
       - name: Test native modules
         # Run under pwsh to preserve the MSVC PATH. Git Bash prepends /usr/bin, whose link.exe
         # shadows the MSVC linker. That prevents task test-native from running Cargo tests
@@ -367,10 +371,6 @@ jobs:
       - name: Check the unchanged native build
         shell: pwsh
         run: task check-build-cache
-
-      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
-      - name: Verify native CLI service configuration (temporary)
-        run: node scripts/temporary-native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
