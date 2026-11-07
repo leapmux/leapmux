@@ -39,7 +39,11 @@ func TestLinuxSessionMonitor(t *testing.T) {
 }
 
 func TestLinuxSessionDetailsExcludeForeignAccounts(t *testing.T) {
-	for _, test := range []struct { rows string; own bool; failure bool }{
+	for _, test := range []struct {
+		rows    string
+		own     bool
+		failure bool
+	}{
 		{"1 1001 other\n2 1002 another\n", false, false},
 		{"1 1001 other\n2 0 root\n", true, false},
 		{" \n\t\n", false, false},
@@ -54,15 +58,27 @@ func TestLinuxSessionDetailsExcludeForeignAccounts(t *testing.T) {
 			var operation context.Context
 			monitor.runLoginctl = func(ctx context.Context, args []string) ([]byte, error) {
 				calls++
-				if args[0] == "list-sessions" { operation = ctx; return []byte(test.rows), nil }
+				if args[0] == "list-sessions" {
+					operation = ctx
+					return []byte(test.rows), nil
+				}
 				require.Same(t, operation, ctx, "all queries share one deadline")
 				require.Equal(t, "2", args[1], "foreign session details must not be queried")
 				return []byte("User=0\nType=wayland\nClass=user\nState=active\n"), nil
 			}
 			sessions, err := monitor.Sessions(t.Context(), AccountRef{ID: "0", Name: "root"})
-			if test.failure { require.Error(t, err); return }
+			if test.failure {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
-			if test.own { assert.Len(t, sessions, 1); assert.Equal(t, 2, calls) } else { assert.Empty(t, sessions); assert.Equal(t, 1, calls) }
+			if test.own {
+				assert.Len(t, sessions, 1)
+				assert.Equal(t, 2, calls)
+			} else {
+				assert.Empty(t, sessions)
+				assert.Equal(t, 1, calls)
+			}
 		})
 	}
 }

@@ -94,11 +94,7 @@ func renameNoReplace(oldpath, newpath string) error {
 // currentAccountID reports the current account's security identifier, the
 // Windows spelling of the identity a publication record pins.
 func currentAccountID() string {
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return ""
-	}
-	defer token.Close()
+	token := windows.GetCurrentProcessToken()
 	sid, err := token.GetTokenUser()
 	if err != nil {
 		return ""

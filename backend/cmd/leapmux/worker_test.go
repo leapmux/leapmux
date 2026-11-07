@@ -366,7 +366,7 @@ func TestWorkerCommandReportsDeregistrationCleanupFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, lifecycle.ProcessFailed, status.Process.State)
 	require.NotNil(t, status.Attempt.Error)
-	assert.Contains(t, *status.Attempt.Error, cfg.PendingPath())
+	assert.Contains(t, *status.Attempt.Error, filepath.Join(canonical, filepath.Base(cfg.PendingPath())))
 	after, err := os.ReadFile(cfg.StatePath())
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "retain the token until pending material cleanup succeeds")

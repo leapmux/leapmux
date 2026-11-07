@@ -54,7 +54,7 @@ func withTaskFolder(ctx context.Context, use func(*ole.IDispatch) error) (result
 	}
 	folder := folderValue.ToIDispatch()
 	if folder == nil {
-		return fmt.Errorf("Windows returned no task folder")
+		return fmt.Errorf("the Windows call returned no task folder")
 	}
 	if err := use(folder); err != nil {
 		return err
@@ -75,7 +75,7 @@ func withRegisteredTask(folder *ole.IDispatch, spec LaunchSpec, use func(*ole.ID
 	}
 	task := value.ToIDispatch()
 	if task == nil {
-		return fmt.Errorf("Windows returned no registered task")
+		return fmt.Errorf("the Windows call returned no registered task")
 	}
 	return use(task)
 }
@@ -94,7 +94,7 @@ func taskScalar(object *ole.IDispatch, name string) (value any, result error) {
 	case ole.VT_BSTR, ole.VT_BOOL, ole.VT_I4, ole.VT_UI4, ole.VT_I2, ole.VT_UI2:
 		return property.Value(), nil
 	default:
-		return nil, fmt.Errorf("Windows returned an invalid task property %s", name)
+		return nil, fmt.Errorf("the Windows call returned an invalid task property %s", name)
 	}
 }
 
@@ -113,7 +113,7 @@ func taskNumber(object *ole.IDispatch, name string) (int64, error) {
 	case uint16:
 		return int64(number), nil
 	default:
-		return 0, fmt.Errorf("Windows returned an invalid numeric task property %s", name)
+		return 0, fmt.Errorf("the Windows call returned an invalid numeric task property %s", name)
 	}
 }
 
@@ -135,10 +135,10 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 	}
 	definition, ok := raw.(string)
 	if !ok {
-		return snapshot, fmt.Errorf("Windows returned no task XML")
+		return snapshot, fmt.Errorf("the Windows call returned no task XML")
 	}
 	if err := xml.Unmarshal([]byte(definition), &snapshot.Definition); err != nil {
-		return snapshot, fmt.Errorf("Windows returned invalid task XML")
+		return snapshot, fmt.Errorf("the Windows call returned invalid task XML")
 	}
 	enabled, err := taskScalar(task, "Enabled")
 	if err != nil {
@@ -146,14 +146,14 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 	}
 	snapshot.Enabled, ok = enabled.(bool)
 	if !ok {
-		return snapshot, fmt.Errorf("Windows returned an invalid task enabled state")
+		return snapshot, fmt.Errorf("the Windows call returned an invalid task enabled state")
 	}
 	state, err := taskNumber(task, "State")
 	if err != nil {
 		return snapshot, err
 	}
 	if state < 0 || state > 4 {
-		return snapshot, fmt.Errorf("Windows returned an unknown task state")
+		return snapshot, fmt.Errorf("the Windows call returned an unknown task state")
 	}
 	snapshot.State = int32(state)
 	lastResult, err := taskNumber(task, "LastTaskResult")
@@ -161,7 +161,7 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 		return snapshot, err
 	}
 	if lastResult < -1<<31 || lastResult > 1<<32-1 {
-		return snapshot, fmt.Errorf("Windows returned an invalid task result")
+		return snapshot, fmt.Errorf("the Windows call returned an invalid task result")
 	}
 	snapshot.LastResult = uint32(lastResult)
 	instances, err := oleutil.CallMethod(task, "GetInstances", 0)
@@ -173,14 +173,14 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 	}
 	collection := instances.ToIDispatch()
 	if collection == nil {
-		return snapshot, fmt.Errorf("Windows returned no task instance collection")
+		return snapshot, fmt.Errorf("the Windows call returned no task instance collection")
 	}
 	count, err := taskNumber(collection, "Count")
 	if err != nil {
 		return snapshot, err
 	}
 	if count < 0 || count > 1<<20 {
-		return snapshot, fmt.Errorf("Windows returned an invalid task instance count")
+		return snapshot, fmt.Errorf("the Windows call returned an invalid task instance count")
 	}
 	snapshot.Instances = int32(count)
 	if len(snapshot.Definition.Principals.Items) == 1 {
@@ -201,7 +201,7 @@ func readTaskSnapshot(task *ole.IDispatch) (snapshot windowsTaskSnapshot, result
 			return snapshot, err
 		}
 		if len(arguments) == 0 {
-			return snapshot, fmt.Errorf("Windows returned no task arguments")
+			return snapshot, fmt.Errorf("the Windows call returned no task arguments")
 		}
 		snapshot.Identity.Arguments = arguments[1:]
 	}

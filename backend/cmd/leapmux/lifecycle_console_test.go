@@ -207,6 +207,9 @@ func TestOutputCaptureRejectsClosedConsolesBeforeDispatch(t *testing.T) {
 	console, err := os.Create(filepath.Join(t.TempDir(), "closed-console"))
 	require.NoError(t, err)
 	require.NoError(t, console.Close())
+	_, statErr := console.Stat()
+	var native *os.PathError
+	require.ErrorAs(t, statErr, &native)
 	stdout := os.Stdout
 	os.Stdout = console
 	t.Cleanup(func() { os.Stdout = stdout })
@@ -214,7 +217,7 @@ func TestOutputCaptureRejectsClosedConsolesBeforeDispatch(t *testing.T) {
 	defer cancel()
 	var attempt bytes.Buffer
 	capture, err := startOutputCapture(ctx, &attempt, cancel, lifecycle.ExecutionForeground)
-	require.ErrorIs(t, err, os.ErrClosed)
+	require.ErrorIs(t, err, native.Err)
 	assert.Nil(t, capture)
 	assert.Empty(t, attempt.String())
 	require.NoError(t, ctx.Err())

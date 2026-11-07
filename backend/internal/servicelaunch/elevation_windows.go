@@ -416,7 +416,7 @@ func launchElevatedHelper(executable, pipe string, parent int) (windows.Handle, 
 		return 0, fmt.Errorf("administrator authorization failed: %w", windowsCallFailure(nativeErr))
 	}
 	if info.Process == 0 {
-		return 0, fmt.Errorf("Windows returned no elevated helper process")
+		return 0, fmt.Errorf("the Windows authorization returned no elevated helper process")
 	}
 	return info.Process, nil
 }
@@ -446,7 +446,7 @@ func waitNativeHelper(ctx context.Context, process windows.Handle) error {
 			return nil
 		}
 		if state != uint32(windows.WAIT_TIMEOUT) {
-			return fmt.Errorf("Windows returned an invalid helper process state")
+			return fmt.Errorf("the Windows helper returned an invalid process state")
 		}
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("the native helper did not finish: %w", err)

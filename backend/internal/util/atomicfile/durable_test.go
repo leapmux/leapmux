@@ -103,23 +103,6 @@ func withOps(t *testing.T, replacement fileOps) {
 	})
 }
 
-// swapOps replaces the seam for a test that already holds it through
-// withOps or lockOpsForTest; the hold's cleanup restores the original.
-func swapOps(replacement fileOps) { ops = replacement }
-
-// lockOpsForTest takes the seam lock for a test whose first
-// substitution is not the only one: the test swaps freely afterwards,
-// and the cleanup restores the original seam and releases the lock.
-func lockOpsForTest(t *testing.T) {
-	t.Helper()
-	opsLock.Lock()
-	original := ops
-	t.Cleanup(func() {
-		ops = original
-		opsLock.Unlock()
-	})
-}
-
 // TestDurablePublicationFailures injects a failure at each publication
 // stage separately. Every stage reports its error, and the destination
 // never holds a partial document: before the rename it keeps the old

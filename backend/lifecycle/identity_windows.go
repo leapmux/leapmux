@@ -7,14 +7,10 @@ import (
 )
 
 // currentAccount reports the current account's security identifier. An
-// empty string (a token the system would not open) fails every
+// empty string (a token the system could not query) fails every
 // ownership comparison rather than silently matching.
 func currentAccount() string {
-	token, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return ""
-	}
-	defer token.Close()
+	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
 	if err != nil {
 		return ""

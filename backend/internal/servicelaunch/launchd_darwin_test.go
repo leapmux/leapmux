@@ -19,7 +19,7 @@ import (
 func TestLaunchctlWrapperClassifiesOriginalOperation(t *testing.T) {
 	for _, escalated := range []bool{false, true} {
 		for _, operation := range []string{"print", "bootout", "bootstrap"} {
-			for _, code := range []int{113, 5} {
+			for _, code := range []int{113, 3, 5} {
 				t.Run(fmt.Sprintf("%s/elevated=%t/exit=%d", operation, escalated, code), func(t *testing.T) {
 					var nativeError error
 					output, err := runLaunchctlCommandWith(t.Context(), []string{operation, "system/test-job"}, escalated, func(ctx context.Context, path string, args []string) ([]byte, error) {
@@ -36,7 +36,7 @@ func TestLaunchctlWrapperClassifiesOriginalOperation(t *testing.T) {
 					require.Error(t, err)
 					assert.ErrorIs(t, err, nativeError)
 					assert.Equal(t, "native diagnostic", string(output))
-					if code == 113 && operation != "bootstrap" {
+					if code == 113 && operation != "bootstrap" || code == 3 && operation == "bootout" {
 						assert.ErrorIs(t, err, os.ErrNotExist)
 					} else {
 						assert.NotErrorIs(t, err, os.ErrNotExist)

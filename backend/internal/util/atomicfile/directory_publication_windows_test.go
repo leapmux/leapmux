@@ -31,7 +31,7 @@ func plantRecord(t *testing.T, dir, target string, phase publicationPhase) {
 // application state may follow. A committed record is plain reusable
 // storage.
 func TestUnconfirmedWindowsPublicationFailsClosed(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	root := filepath.Join(base, "leapmux")
 	target := filepath.Join(root, "worker")
 	require.NoError(t, os.MkdirAll(target, 0o700))

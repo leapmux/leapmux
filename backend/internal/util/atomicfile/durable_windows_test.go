@@ -57,7 +57,7 @@ func TestDurableWindowsPublicationFlags(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, calls, 2, "the sharing conflict is retried exactly once")
 	for _, c := range calls {
-		assert.Equal(t, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH, c.flags,
+		assert.Equal(t, uint32(windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH), c.flags,
 			"the durable replace publishes write-through on the same volume")
 	}
 	data, err := os.ReadFile(path)

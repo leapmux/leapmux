@@ -12,8 +12,14 @@ import (
 
 func windowsRuntimeValidationManager(startup lifecycle.StartupKind) (Manager, *[]string) {
 	var calls []string
-	credential := func(context.Context, string) ([]byte, error) { calls = append(calls, "credential"); return nil, assert.AnError }
-	inspect := func(context.Context, LaunchSpec) (NativeStatus, error) { calls = append(calls, "inspect"); return NativeStatus{}, nil }
+	credential := func(context.Context, string) ([]byte, error) {
+		calls = append(calls, "credential")
+		return nil, assert.AnError
+	}
+	inspect := func(context.Context, LaunchSpec) (NativeStatus, error) {
+		calls = append(calls, "inspect")
+		return NativeStatus{}, nil
+	}
 	elevate := func(context.Context, nativeOperationRequest) error { calls = append(calls, "elevate"); return nil }
 	start := func(context.Context, LaunchSpec) error { calls = append(calls, "start"); return nil }
 	if startup == lifecycle.StartupBoot {
@@ -26,7 +32,10 @@ func windowsRuntimeValidationManager(startup lifecycle.StartupKind) (Manager, *[
 	manager.inspectTask, manager.elevate, manager.startTask = inspect, elevate, start
 	manager.upsertTask = func(context.Context, LaunchSpec, []byte) error { calls = append(calls, "upsert"); return nil }
 	manager.removeTask = func(context.Context, LaunchSpec) error { calls = append(calls, "remove"); return nil }
-	manager.stopRuntime = func(context.Context, lifecycle.Role, string) (bool, error) { calls = append(calls, "stop runtime"); return false, nil }
+	manager.stopRuntime = func(context.Context, lifecycle.Role, string) (bool, error) {
+		calls = append(calls, "stop runtime")
+		return false, nil
+	}
 	return manager, &calls
 }
 

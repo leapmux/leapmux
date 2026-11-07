@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/leapmux/leapmux/internal/util/canonicalpath"
 	"github.com/leapmux/leapmux/util/useronly"
 )
 
@@ -21,6 +22,38 @@ var publishExclusive = renameNoReplace
 // publishes the staging root through the write-through exclusive move,
 // and commits the record only after that publication succeeded.
 func publishStaged(firstMissing, target string) error {
+	restart := false
+	err := withPublicationMutex(firstMissing, func() error {
+		canonical, err := canonicalpath.Directory(firstMissing)
+		if err != nil {
+			return err
+		}
+		if canonical != firstMissing {
+			restart = true
+			return nil
+		}
+		if _, err := os.Lstat(firstMissing); err == nil {
+			restart = true
+			return nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		err = publishWindowsStaged(firstMissing, target)
+		if errors.Is(err, fs.ErrExist) {
+			restart = true
+			return nil
+		}
+		return err
+	})
+	if err == nil && restart {
+		// Restart only after releasing this prefix's mutex. The new walk
+		// may encounter another prefix that needs its own mutex.
+		return MkdirAllDurable(target)
+	}
+	return err
+}
+
+func publishWindowsStaged(firstMissing, target string) error {
 	parent := filepath.Dir(firstMissing)
 
 	stage, err := useronly.MkdirTemp(parent, stagePrefix)
@@ -58,12 +91,6 @@ func publishStaged(firstMissing, target string) error {
 	// contract: the system returns only after the subtree's new name
 	// reached the disk.
 	if err := publishExclusive(stage, firstMissing); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			// The winner published first. Its record decides what this
-			// invocation does next; re-walking reads it without
-			// publishing anything.
-			return MkdirAllDurable(target)
-		}
 		return fmt.Errorf("atomicfile: publish %s: %w", firstMissing, err)
 	}
 	published = true
@@ -85,12 +112,16 @@ func publishStaged(firstMissing, target string) error {
 // error identifies the unconfirmed prefix for operator inspection or a
 // different data location.
 func repairRecord(path string) error {
-	rec, err := loadRecordAt(path)
-	if err != nil {
-		return err
-	}
-	if rec.Phase == phaseCommitted {
-		return nil
-	}
-	return fmt.Errorf("%w: %s", ErrDirectoryPublicationUncertain, rec.Directory)
+	return withPublicationMutex(filepath.Dir(path), func() error {
+		// A live publisher can commit while this command waits. An abandoned
+		// prepared receipt still supplies no evidence of confirmed publication.
+		rec, err := loadRecordAt(path)
+		if err != nil {
+			return err
+		}
+		if rec.Phase == phaseCommitted {
+			return nil
+		}
+		return fmt.Errorf("%w: %s", ErrDirectoryPublicationUncertain, rec.Directory)
+	})
 }

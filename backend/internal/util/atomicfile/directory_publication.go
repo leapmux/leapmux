@@ -91,7 +91,8 @@ const stagePrefix = ".leapmux-stage-"
 // idempotent. On Windows a prepared record cannot be repaired locally,
 // so MkdirAllDurable reports ErrDirectoryPublicationUncertain instead of
 // renaming, removing, or guessing the persistence of the visible
-// subtree.
+// subtree. Concurrent Windows commands wait for the active publisher before
+// reloading the receipt. A receipt that remains prepared still fails closed.
 func MkdirAllDurable(target string) error {
 	target = filepath.Clean(target)
 	if !filepath.IsAbs(target) {

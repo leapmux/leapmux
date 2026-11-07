@@ -72,13 +72,13 @@ func TestPrivateResourcesUseProtectedACLs(t *testing.T) {
 	})
 
 	t.Run("a directory another account owns is refused", func(t *testing.T) {
-		// The public profile directory is owned by SYSTEM or another
-		// well-known account rather than the test user.
-		foreign := `C:\\Windows\\Temp`
-		err := verifyPrivateDir(foreign)
-		if err == nil {
-			t.Skip("the CI account owns the foreign probe; the ownership check still ran")
-		}
+		foreign, err := windows.GetWindowsDirectory()
+		require.NoError(t, err)
+		owned, err := useronly.OwnedByCurrentUser(foreign)
+		require.NoError(t, err)
+		require.False(t, owned, "the Windows directory must provide a foreign-owner fixture")
+		err = verifyPrivateDir(foreign)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "another account")
 	})
 

@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 // linuxSessionMonitor reads graphical sessions from systemd-logind.

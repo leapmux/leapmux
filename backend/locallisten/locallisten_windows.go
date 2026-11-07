@@ -123,9 +123,6 @@ func (l *npipeListener) Close() error {
 
 func (l *npipeListener) Accept() (net.Conn, error) {
 	raw, err := l.Listener.Accept()
-	if errors.Is(err, winio.ErrPipeListenerClosed) {
-		return nil, fmt.Errorf("%w: %w", net.ErrClosed, err)
-	}
 	if err != nil {
 		return nil, err
 	}

@@ -24,11 +24,11 @@ func readTaskSecurityDescriptorWith(task *ole.IDispatch, call taskMethodCaller) 
 		return "", fmt.Errorf("read the scheduled task access permissions: %w", err)
 	}
 	if value == nil || value.VT != ole.VT_BSTR {
-		return "", fmt.Errorf("Windows returned an invalid scheduled task security descriptor")
+		return "", fmt.Errorf("the Windows call returned an invalid scheduled task security descriptor")
 	}
 	sddl = value.ToString()
 	if sddl == "" {
-		return "", fmt.Errorf("Windows returned an empty scheduled task security descriptor")
+		return "", fmt.Errorf("the Windows call returned an empty scheduled task security descriptor")
 	}
 	return sddl, nil
 }
@@ -76,7 +76,7 @@ func parseTaskAccess(sddl string) (windowsTaskAccess, error) {
 			return windowsTaskAccess{}, fmt.Errorf("read a scheduled task access entry: %w", err)
 		}
 		if native == nil {
-			return windowsTaskAccess{}, fmt.Errorf("Windows returned an empty scheduled task access entry")
+			return windowsTaskAccess{}, fmt.Errorf("the Windows call returned an empty scheduled task access entry")
 		}
 		entry := windowsTaskAccessEntry{Kind: native.Header.AceType, Flags: native.Header.AceFlags}
 		if native.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE {
@@ -84,15 +84,15 @@ func parseTaskAccess(sddl string) (windowsTaskAccess, error) {
 			const minimumSIDSize = 8
 			sidOffset := unsafe.Offsetof(native.SidStart)
 			if uintptr(native.Header.AceSize) < sidOffset+minimumSIDSize {
-				return windowsTaskAccess{}, fmt.Errorf("Windows returned a truncated scheduled task access entry")
+				return windowsTaskAccess{}, fmt.Errorf("the Windows call returned a truncated scheduled task access entry")
 			}
 			sid := (*windows.SID)(unsafe.Pointer(&native.SidStart))
 			if !sid.IsValid() || uintptr(sid.Len()) > uintptr(native.Header.AceSize)-sidOffset {
-				return windowsTaskAccess{}, fmt.Errorf("Windows returned an invalid scheduled task access account")
+				return windowsTaskAccess{}, fmt.Errorf("the Windows call returned an invalid scheduled task access account")
 			}
 			entry.SID = sid.String()
 			if entry.SID == "" {
-				return windowsTaskAccess{}, fmt.Errorf("Windows returned an invalid scheduled task access account")
+				return windowsTaskAccess{}, fmt.Errorf("the Windows call returned an invalid scheduled task access account")
 			}
 			entry.Mask = uint32(native.Mask)
 		}

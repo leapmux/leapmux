@@ -58,8 +58,13 @@ func runLaunchctlCommandWith(ctx context.Context, args []string, escalated bool,
 	output, err := run(ctx, path, args)
 	if err != nil {
 		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 113 && (operation == "print" || operation == "bootout") {
-			return output, fmt.Errorf("launchctl: %w", errors.Join(os.ErrNotExist, err))
+		if errors.As(err, &exit) {
+			missing := exit.ExitCode() == 113 && (operation == "print" || operation == "bootout")
+			// bootout reports ESRCH for a definition that was never loaded.
+			missing = missing || exit.ExitCode() == 3 && operation == "bootout"
+			if missing {
+				return output, fmt.Errorf("launchctl: %w", errors.Join(os.ErrNotExist, err))
+			}
 		}
 		return output, fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, output)
 	}

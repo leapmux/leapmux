@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -225,7 +226,7 @@ func TestConfigurationValidationPrecedesPublication(t *testing.T) {
 		original := testSpec()
 		require.NoError(t, controller.SaveSpec(original))
 		changed := original
-		changed.Executable = "/another/leapmux"
+		changed.Executable = testutil.NativeAbsPath("/another/leapmux")
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		require.ErrorIs(t, controller.Apply(ctx, changed), context.Canceled)

@@ -67,3 +67,14 @@ func MkdirTemp(parent, pattern string) (string, error) { return os.MkdirTemp(par
 
 // CreateTemp creates an account-private temporary file.
 func CreateTemp(parent, pattern string) (*os.File, error) { return os.CreateTemp(parent, pattern) }
+
+func regularFile(file *os.File, path string) (os.FileInfo, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular private file", path)
+	}
+	return info, nil
+}

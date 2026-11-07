@@ -23,11 +23,11 @@ func sessionAccountField(sessionID, field uint32) (string, error) {
 		return "", fmt.Errorf("read session account information: %w", windowsCallFailure(nativeErr))
 	}
 	if buffer == nil {
-		return "", fmt.Errorf("Windows returned no session account information")
+		return "", fmt.Errorf("the Windows call returned no session account information")
 	}
 	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(buffer)))
 	if size < 2 || size%2 != 0 {
-		return "", fmt.Errorf("Windows returned invalid session account information")
+		return "", fmt.Errorf("the Windows call returned invalid session account information")
 	}
 	return windows.UTF16ToString(unsafe.Slice(buffer, int(size/2))), nil
 }
@@ -57,7 +57,7 @@ func enumerateSessionsWith(calls windowsSessionCalls) ([]windowsSessionEntry, er
 		return nil, nil
 	}
 	if info == nil || count > 1<<20 {
-		return nil, fmt.Errorf("Windows returned an unreadable session list")
+		return nil, fmt.Errorf("the Windows call returned an unreadable session list")
 	}
 	sessions := unsafe.Slice(info, int(count))
 	snapshots := make([]windowsSessionSnapshot, 0, len(sessions))

@@ -93,7 +93,6 @@ func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
 			reader, console, err := os.Pipe()
 			require.NoError(t, err)
 			require.NoError(t, reader.Close())
-			t.Cleanup(func() { _ = console.Close() })
 			if !brokenPipe {
 				require.NoError(t, console.Close())
 				path := filepath.Join(t.TempDir(), "read-only-console")
@@ -101,6 +100,7 @@ func TestOutputCaptureHandlesConsoleFailure(t *testing.T) {
 				console, err = os.Open(path)
 				require.NoError(t, err)
 			}
+			t.Cleanup(func() { _ = console.Close() })
 			stdout, stderr := os.Stdout, os.Stderr
 			t.Cleanup(func() { os.Stdout, os.Stderr = stdout, stderr })
 			os.Stdout, os.Stderr = console, console

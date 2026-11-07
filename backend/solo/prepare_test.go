@@ -202,8 +202,14 @@ func snapshotTree(t *testing.T, root string) string {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&out, "%s %s", relative, entry.Type())
-		if entry.Type().IsRegular() {
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&out, "%s %s %d", relative, entry.Type(), info.Size())
+		// Windows denies reads of the locked byte. The lock file has no payload;
+		// its path, type and size still participate in the preservation check.
+		if entry.Type().IsRegular() && path != lifecycle.PathsOf(root).DataLock {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err

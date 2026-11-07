@@ -3,7 +3,6 @@ package useronly
 import (
 	"fmt"
 	"io"
-	"os"
 )
 
 const maxPrivateRecordBytes = 16 << 20
@@ -32,15 +31,4 @@ func VerifyFile(path string) error {
 		return err
 	}
 	return file.Close()
-}
-
-func regularFile(file *os.File, path string) (os.FileInfo, error) {
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular private file", path)
-	}
-	return info, nil
 }
