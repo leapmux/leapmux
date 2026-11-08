@@ -76,7 +76,7 @@ runs:
           --key "$LEAPMUX_CACHE_KEY" \
           --writer "${LEAPMUX_CACHE_WRITER:-false}" \
           --exact-hit "${LEAPMUX_CACHE_EXACT_HIT:-false}" \
-          --matched "$([ -n "$LEAPMUX_CACHE_MATCHED_KEY" ] && printf true || printf false)"
+          --matched-key "${LEAPMUX_CACHE_MATCHED_KEY:-}"
 
     - name: Clean the restored staging payload
       if: always() && steps.activate.outputs.outcome != 'writer-empty'

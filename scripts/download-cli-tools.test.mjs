@@ -356,9 +356,61 @@ describe('downloadReleaseAsset', () => {
 
   it('reports the URL and the status when the download fails', async () => {
     const dir = fixture()
+    let calls = 0
     await expect(downloadReleaseAsset('https://example.invalid/asset', join(dir, 'asset'), {
-      fetchImpl: async () => new Response('missing', { status: 404 }),
+      fetchImpl: async () => {
+        calls++
+        return new Response('missing', { status: 404 })
+      },
+      sleep: async () => {},
     })).rejects.toThrow('Downloading https://example.invalid/asset failed with HTTP 404.')
+    expect(calls).toBe(1)
+  })
+
+  it('retries a transient gateway failure and writes the body', async () => {
+    const dir = fixture()
+    const destination = join(dir, 'asset')
+    const responses = [
+      new Response('gateway timeout', { status: 504 }),
+      new Response('binary-bytes'),
+    ]
+    const delays = []
+    await downloadReleaseAsset('https://example.invalid/asset', destination, {
+      fetchImpl: async () => responses.shift(),
+      sleep: async ms => delays.push(ms),
+    })
+    expect(readFileSync(destination, 'utf8')).toBe('binary-bytes')
+    expect(delays).toEqual([2000])
+  })
+
+  it('retries a network failure and writes the body', async () => {
+    const dir = fixture()
+    const destination = join(dir, 'asset')
+    let calls = 0
+    await downloadReleaseAsset('https://example.invalid/asset', destination, {
+      fetchImpl: async () => {
+        calls++
+        if (calls === 1)
+          throw new Error('socket hang up')
+        return new Response('binary-bytes')
+      },
+      sleep: async () => {},
+    })
+    expect(readFileSync(destination, 'utf8')).toBe('binary-bytes')
+    expect(calls).toBe(2)
+  })
+
+  it('fails after the download attempts when every one is transient', async () => {
+    const dir = fixture()
+    let calls = 0
+    await expect(downloadReleaseAsset('https://example.invalid/asset', join(dir, 'asset'), {
+      fetchImpl: async () => {
+        calls++
+        return new Response('gateway timeout', { status: 504 })
+      },
+      sleep: async () => {},
+    })).rejects.toThrow('Downloading https://example.invalid/asset failed with HTTP 504.')
+    expect(calls).toBe(3)
   })
 })
 

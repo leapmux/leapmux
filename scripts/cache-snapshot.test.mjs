@@ -288,7 +288,7 @@ describe('cache snapshot core', () => {
         key: cacheKey('go-modules', { hash }, env),
         writer: false,
         exactHit: false,
-        matchedKey: false,
+        matchedKey: null,
         workspace: dir,
         env,
       })
@@ -302,12 +302,13 @@ describe('cache snapshot core', () => {
       const { payloadRoot } = snapshotPaths('native-go', dir)
       writeTree(join(payloadRoot, 'gocache'), { 'fallback-entry': 'fallback\n' })
       const key = cacheKey('native-go', { hash, week: '2027-W01' }, env)
+      const fallbackKey = cacheKey('native-go', { hash: recipeHash, week: '2026-W44' }, env)
       const reader = await activateCacheSnapshot({
         kind: 'native-go',
         key,
         writer: false,
         exactHit: false,
-        matchedKey: true,
+        matchedKey: fallbackKey,
         workspace: dir,
         env,
       })
@@ -322,10 +323,62 @@ describe('cache snapshot core', () => {
         key,
         writer: true,
         exactHit: false,
-        matchedKey: true,
+        matchedKey: fallbackKey,
         workspace: writerDir,
         env: writerEnv,
       })).rejects.toThrow('must not restore a fallback')
+    })
+
+    it('ignores a restored archive whose key predates a key-shape change', async () => {
+      // The tauri-tools keys carried a weekly epoch before this kind became
+      // content-addressed. Every old key starts with the new key, so the
+      // cache transport reports the old archive as a match; it is not a
+      // snapshot of the current key shape and must not become a fallback.
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      const key = cacheKey('tauri-tools', { hash }, env)
+      const stale = `${key}-2026-W45`
+      const { payloadRoot } = snapshotPaths('tauri-tools', dir)
+      writeTree(join(payloadRoot, 'tauri'), { 'linuxdeploy-x86_64.AppImage': 'stale\n' })
+      const logs = []
+      const activated = await activateCacheSnapshot({
+        kind: 'tauri-tools',
+        key,
+        writer: true,
+        exactHit: false,
+        matchedKey: stale,
+        workspace: dir,
+        env,
+        log: message => logs.push(message),
+      })
+      expect(activated.outcome).toBe('writer-empty')
+      expect(activated.saveRequired).toBe(true)
+      expect(logs.join('\n')).toContain('does not match the current tauri-tools key shape')
+      // The stale payload is gone and the writer starts from empty roots.
+      expect(readdirSafe(snapshotPaths('tauri-tools', dir).payloadRoot)).toEqual([])
+      expect(readdirSafe(activeRootsFor('tauri-tools', env, dir)[0].active)).toEqual([])
+    })
+
+    it('reports a stale-shape restore as a miss for a reader', async () => {
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      const key = cacheKey('tauri-tools', { hash }, env)
+      writeTree(join(snapshotPaths('tauri-tools', dir).payloadRoot, 'tauri'), { stale: 'stale\n' })
+      const activated = await activateCacheSnapshot({
+        kind: 'tauri-tools',
+        key,
+        writer: false,
+        exactHit: false,
+        matchedKey: `${key}-2026-W45`,
+        workspace: dir,
+        env,
+      })
+      expect(activated.outcome).toBe('miss')
+      expect(activated.cacheHit).toBe(false)
     })
 
     it('treats a partial restore as a miss even when the transport reported an exact hit', async () => {
@@ -1026,8 +1079,8 @@ describe('cache snapshot CLI', () => {
       'true',
       '--exact-hit',
       'true',
-      '--matched',
-      'true',
+      '--matched-key',
+      key,
     ], dir, { ...env, GITHUB_OUTPUT: output })
     expect(result.status, result.stderr).toBe(0)
     expect(outputRecords(output)).toMatchObject({ 'outcome': 'writer-empty', 'cache-hit': 'false', 'save-required': 'false' })

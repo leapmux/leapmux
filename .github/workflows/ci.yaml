@@ -497,6 +497,19 @@ jobs:
           echo "PR_MERGE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git checkout --quiet --detach HEAD^1
 
+      - name: Keep the tool plumbing of the merge commit
+        # The tool installer and its cache scripts come from the merge
+        # commit: the base commit need not define them, they install the
+        # base's pinned versions (Load tool versions runs below), and they
+        # judge no lockfile.
+        if: steps.scope.outputs.checked == 'true'
+        run: |
+          git restore --source="$PR_MERGE_SHA" -- \
+            .github/actions/setup-cli-tools \
+            scripts/download-cli-tools.mjs \
+            scripts/cache-policy.mjs \
+            scripts/cache-snapshot.mjs
+
       # The check needs only Bun, Go, and Task. setup-build would also install Rust and buf,
       # and download every dependency of the lockfiles that the PR changes.
       - name: Load tool versions

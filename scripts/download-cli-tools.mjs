@@ -142,15 +142,48 @@ export function toolRelease(name, { version, os, arch }) {
   }
 }
 
-/** Download one release asset to a file. The fetch follows GitHub's redirect. */
-export async function downloadReleaseAsset(url, destination, { fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(5 * 60 * 1000),
-  })
-  if (!response.ok)
-    throw new Error(`Downloading ${url} failed with HTTP ${response.status}.`)
-  writeFileSync(destination, Buffer.from(await response.arrayBuffer()))
+// A release CDN occasionally answers a download with a gateway error; the
+// installer actions that this script replaced retried such failures too.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+const DOWNLOAD_ATTEMPTS = 3
+
+function transientDelay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Download one release asset to a file, retrying transient failures. The
+ * fetch follows GitHub's redirect to the release CDN.
+ */
+export async function downloadReleaseAsset(url, destination, {
+  fetchImpl = fetch,
+  sleep = transientDelay,
+  attempts = DOWNLOAD_ATTEMPTS,
+} = {}) {
+  for (let attempt = 1; ; attempt++) {
+    let error
+    let retryable = false
+    try {
+      const response = await fetchImpl(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(5 * 60 * 1000),
+      })
+      if (response.ok) {
+        writeFileSync(destination, Buffer.from(await response.arrayBuffer()))
+        return
+      }
+      error = new Error(`Downloading ${url} failed with HTTP ${response.status}.`)
+      retryable = RETRYABLE_STATUSES.has(response.status)
+    }
+    catch (thrown) {
+      error = new Error(`Downloading ${url} failed: ${thrown?.message ?? thrown}`)
+      retryable = true
+    }
+    if (!retryable || attempt === attempts)
+      throw error
+    console.log(`${error.message} Retrying (${attempt + 1}/${attempts}).`)
+    await sleep(2000 * attempt)
+  }
 }
 
 function runOrFail(run, command, args) {

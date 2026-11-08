@@ -1180,6 +1180,52 @@ describe('renovate workflow and protection', () => {
     expect(git(directory, ['rev-parse', 'HEAD'])).toBe(base)
     expect(outputFile(directory, 'environment').trim()).toBe(`PR_MERGE_SHA=${merge}`)
   })
+  it('restores the tool plumbing of the merge commit after the base checkout', () => {
+    // uses: ./.github/actions/... resolves against the checked-out tree, and
+    // the base commit need not define a new local action or script.
+    const steps = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps
+    const checkoutBase = steps.find(entry => entry.name === 'Check out the base commit')
+    const restore = steps.find(entry => entry.name === 'Keep the tool plumbing of the merge commit')
+    const plumbing = [
+      '.github/actions/setup-cli-tools/action.yaml',
+      'scripts/download-cli-tools.mjs',
+      'scripts/cache-policy.mjs',
+      'scripts/cache-snapshot.mjs',
+    ]
+    const directory = fixture()
+    gitRepository(directory, {
+      files: {
+        file: 'base\n',
+        ...Object.fromEntries(plumbing.map(path => [path, 'base plumbing\n'])),
+      },
+    })
+    git(directory, ['checkout', '-q', '-b', 'renovate/x'])
+    for (const path of plumbing) writeFileSync(join(directory, path), 'merge plumbing\n')
+    writeFileSync(join(directory, 'file'), 'head\n')
+    git(directory, ['add', '--all'])
+    git(directory, ['commit', '-q', '-m', 'head'])
+    git(directory, ['checkout', '-q', 'main'])
+    git(directory, [
+      'merge',
+      '-q',
+      '--no-ff',
+      '-m',
+      'merge',
+      'renovate/x',
+    ])
+    const merge = git(directory, ['rev-parse', 'HEAD'])
+    const first = runShell(checkoutBase.run, directory)
+    expect(first.status, first.stderr).toBe(0)
+    expect(readFileSync(join(directory, 'scripts', 'cache-snapshot.mjs'), 'utf8')).toBe('base plumbing\n')
+    const second = runShell(restore.run, directory, { PR_MERGE_SHA: merge })
+    expect(second.status, second.stderr).toBe(0)
+    // The tool plumbing comes from the merge commit while the judge code and
+    // the pinned versions stay those of the base commit.
+    for (const path of plumbing)
+      expect(readFileSync(join(directory, path), 'utf8'), path).toBe('merge plumbing\n')
+    expect(readFileSync(join(directory, 'file'), 'utf8')).toBe('base\n')
+    expect(git(directory, ['rev-parse', 'HEAD'])).not.toBe(merge)
+  })
   it('keeps the administrator credential in the release environment and atomic push only', () => {
     const release = yaml('.github/workflows/release.yaml').jobs.release
     expect(release.environment).toBe('release-admin')

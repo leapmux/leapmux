@@ -313,6 +313,25 @@ function clearOwnedRoots(roots, log) {
 }
 
 /**
+ * A restored archive is a usable fallback only when its key matches the
+ * current key shape of the kind. A key that predates a shape change (the
+ * weekly tauri-tools keys that the content-addressed keys replaced) arrives
+ * only through prefix matching, and is not a snapshot of this kind at all.
+ */
+function usableFallbackKey(kind, matchedKey, env, log) {
+  if (!matchedKey)
+    return null
+  try {
+    validateCacheKey(kind, matchedKey, env)
+    return matchedKey
+  }
+  catch {
+    log(`Ignoring the restored ${kind} archive ${matchedKey}: its key does not match the current ${kind} key shape.`)
+    return null
+  }
+}
+
+/**
  * Validate a restored payload and activate it, or start a writer from empty
  * owned roots. A reader may activate a fallback payload, but the caller
  * never saves after a fallback. A writer must not receive a fallback at all.
@@ -322,7 +341,7 @@ export async function activateCacheSnapshot({
   key,
   writer = false,
   exactHit = false,
-  matchedKey = false,
+  matchedKey = null,
   workspace = process.cwd(),
   env = process.env,
   log = () => {},
@@ -330,7 +349,8 @@ export async function activateCacheSnapshot({
 }) {
   const policy = cachePolicy(kind)
   validateCacheKey(kind, key, env)
-  if (writer && matchedKey && !exactHit)
+  const fallbackKey = usableFallbackKey(kind, matchedKey, env, log)
+  if (writer && fallbackKey && !exactHit)
     throw new Error(`A ${kind} writer must not restore a fallback snapshot. Writers start from empty owned roots.`)
   const roots = activeRootsFor(kind, env, workspace)
   const { payloadRoot } = snapshotPaths(kind, workspace)
@@ -340,7 +360,7 @@ export async function activateCacheSnapshot({
   const usableExact = exactHit && validation.valid
   if (exactHit && !validation.valid)
     log(`An exact hit restored an unusable payload: ${validation.reason} Rebuilding active data without replacing the occupied archive key.`)
-  if (usableExact || (!exactHit && matchedKey && validation.valid)) {
+  if (usableExact || (!exactHit && fallbackKey && validation.valid)) {
     log(`${usableExact ? 'Activating an exact' : 'Activating a fallback'} ${kind} snapshot.`)
     for (const root of roots) {
       // An optional root that the payload does not carry stays untouched.
@@ -896,7 +916,7 @@ async function main(argv) {
         key: args.key,
         writer: args.writer === 'true',
         exactHit: args['exact-hit'] === 'true',
-        matchedKey: args.matched === 'true',
+        matchedKey: args['matched-key'] || null,
         log,
       })
       writeOutputs({
