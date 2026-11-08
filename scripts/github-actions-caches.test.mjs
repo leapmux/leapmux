@@ -1290,13 +1290,13 @@ describe('cache native setup', () => {
         expect(step.with?.['save-build-caches']).toBeUndefined()
       }
     }
-    // Every workflow's save-build-caches input belongs to a CI platform job on main.
+    // Only main CI platform jobs may enable compiled-cache saves. Other jobs may explicitly disable them.
     const savers = []
     for (const file of workflowFiles) {
       for (const { jobName, step } of jobSteps(yaml(file))) {
         if (step.uses !== './.github/actions/setup-build')
           continue
-        if ('save-build-caches' in (step.with ?? {}))
+        if (step.with?.['save-build-caches'] !== undefined && step.with['save-build-caches'] !== 'false')
           savers.push(`${file}:${jobName}`)
       }
     }

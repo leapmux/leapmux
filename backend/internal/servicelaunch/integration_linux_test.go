@@ -2,8 +2,12 @@
 
 package servicelaunch
 
-import "testing"
+import (
+	"testing"
 
-func nativeIntegrationManager(*testing.T, serviceAccountFixture, string) Manager {
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
+)
+
+func nativeIntegrationManager(*testing.T, servicefixture.Account, string) Manager {
 	return newSystemdManager()
 }

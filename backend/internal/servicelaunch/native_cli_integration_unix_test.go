@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +21,7 @@ func assertNativeCLIPrerequisites(t *testing.T) {
 	require.NoError(t, err, "prepare sudo authorization for the disposable account before running native CLI acceptance: %s", output)
 }
 
-func nativeCLIFixturePassword(serviceAccountFixture) func(context.Context) ([]byte, error) {
+func nativeCLIFixturePassword(servicefixture.Account) func(context.Context) ([]byte, error) {
 	return nil
 }
 

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/leapmux/leapmux/util/useronly"
@@ -28,15 +29,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 )
-
-// serviceAccountFixture is the exact YAML shape the private
-// SERVICE_ACCOUNT_FILE holds. It contains NO password.
-type serviceAccountFixture struct {
-	AccountID             string  `yaml:"account_id"`
-	AccountName           string  `yaml:"account_name"`
-	CredentialReference   *string `yaml:"credential_reference"`
-	DisposableEnvironment bool    `yaml:"disposable_environment"`
-}
 
 // TestNativeServiceLifecycle is reached only by the explicit, fixture-guarded
 // native target. Each case owns a unique data root and derived definition.
@@ -125,7 +117,7 @@ func TestNativeServiceLifecycle(t *testing.T) {
 // readServiceAccountFixture loads and validates the fixture. A missing
 // fixture, a non-disposable one, or one naming another account than the
 // test process runs as is refused BEFORE any native state changes.
-func readServiceAccountFixture(t *testing.T) serviceAccountFixture {
+func readServiceAccountFixture(t *testing.T) servicefixture.Account {
 	t.Helper()
 	path := os.Getenv("LEAPMUX_SERVICE_TEST_ACCOUNT_FILE")
 	require.NotEmpty(t, path,
@@ -140,8 +132,8 @@ func readServiceAccountFixture(t *testing.T) serviceAccountFixture {
 	return fixture
 }
 
-func parseServiceAccountFixture(data []byte, current *user.User, platform string) (serviceAccountFixture, error) {
-	var fixture serviceAccountFixture
+func parseServiceAccountFixture(data []byte, current *user.User, platform string) (servicefixture.Account, error) {
+	var fixture servicefixture.Account
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var document yaml.Node
 	if err := decoder.Decode(&document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {

@@ -12,13 +12,14 @@ import (
 	"unsafe"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-func nativeIntegrationManager(_ *testing.T, fixture serviceAccountFixture, binary string) Manager {
+func nativeIntegrationManager(_ *testing.T, fixture servicefixture.Account, binary string) Manager {
 	provider := func(context.Context, string) ([]byte, error) {
 		if fixture.CredentialReference == nil {
 			return nil, fmt.Errorf("the Windows fixture requires an OS credential reference")

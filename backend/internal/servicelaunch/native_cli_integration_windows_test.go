@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	ole "github.com/go-ole/go-ole"
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
@@ -21,7 +22,7 @@ func assertNativeCLIPrerequisites(t *testing.T) {
 	require.True(t, windows.GetCurrentProcessToken().IsElevated(), "run native CLI acceptance from the prepared disposable account's elevated shell")
 }
 
-func nativeCLIFixturePassword(fixture serviceAccountFixture) func(context.Context) ([]byte, error) {
+func nativeCLIFixturePassword(fixture servicefixture.Account) func(context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err

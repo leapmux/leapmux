@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
@@ -21,7 +22,7 @@ import (
 func TestServiceFixtureAcceptsMatchingAccountDeclaration(t *testing.T) {
 	current, err := user.Current()
 	require.NoError(t, err)
-	expected := serviceAccountFixture{AccountID: current.Uid, AccountName: current.Username, DisposableEnvironment: true}
+	expected := servicefixture.Account{AccountID: current.Uid, AccountName: current.Username, DisposableEnvironment: true}
 	if runtime.GOOS == "windows" {
 		expected.CredentialReference = new("fixture-credential-reference")
 	}

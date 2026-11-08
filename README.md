@@ -363,6 +363,19 @@ Linux amd64 covers all frontend tests, repository script tests, and schema valid
 Both Linux architectures run Go lint and vet checks for all three operating systems.
 The native jobs retain filesystem, process, interprocess communication, and desktop test coverage.
 
+The **Native CLI services** workflow verifies native service registration and removal
+weekly on Monday at 18:43 UTC. It also accepts manual runs through GitHub Actions.
+It covers Linux amd64 and arm64, macOS, and Windows on disposable hosted runners.
+Each run builds the CLI and exercises `enable`, `status`, and repeated `disable`
+for Hub, Worker, Solo, and Dev. Boot cases run on every platform. Login cases run
+when the runner has a desktop session; headless Linux runners run boot cases only.
+The workflow creates a private account fixture and removes it after verification.
+On Windows, it resets only the disposable runner account password and keeps the
+credential in the session credential store. It refuses workstation and self-hosted
+execution. Run `task test-cli-services` with an explicitly prepared disposable
+account fixture for native acceptance outside this workflow.
+
+
 Run specific tests by passing arguments after `--`:
 ```bash
 # Backend tests: -run <regex> <packages>

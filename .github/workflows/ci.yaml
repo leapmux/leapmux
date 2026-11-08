@@ -11,6 +11,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Remove this caller after the reusable weekly matrix passes on this PR.
+  verify-native-cli-weekly:
+    name: Verify weekly native CLI workflow (temporary)
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/native-cli.yaml
+
   linux:
     # RUNNER IMAGES: UBUNTU_RUNNER, MACOS_RUNNER and WINDOWS_RUNNER in
     # versions.env own every runs-on label in the workflows. GitHub evaluates
@@ -132,10 +140,6 @@ jobs:
 
       - name: Check the unchanged native build
         run: task check-build-cache
-
-      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
-      - name: Verify native CLI service configuration (temporary)
-        run: node scripts/temporary-native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
@@ -260,10 +264,6 @@ jobs:
       - name: Check the unchanged native build
         run: task check-build-cache
 
-      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
-      - name: Verify native CLI service configuration (temporary)
-        run: node scripts/temporary-native-cli-ci.mjs
-
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
@@ -348,10 +348,6 @@ jobs:
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
           monitor-resources: ${{ vars.CI_RESOURCE_MONITOR == 'true' }}
-
-      # Temporary native CLI acceptance; remove after the PR validates all OS jobs.
-      - name: Verify native CLI service configuration (temporary)
-        run: node scripts/temporary-native-cli-ci.mjs
 
       - name: Test native modules
         # Run under pwsh to preserve the MSVC PATH. Git Bash prepends /usr/bin, whose link.exe
