@@ -26,6 +26,13 @@ lint:
     # convention, but UserCRDT reads as a noun referring to the data
     # type the service operates on. Carve it out specifically.
     - SERVICE_SUFFIX
+    # RecoverRegistration deliberately returns RegisterResponse: recovery
+    # hands back the SAME credentials Register minted (worker_id +
+    # auth_token), never a second identity, and sharing the message keeps
+    # that contract visible on the wire. RPC_REQUEST_RESPONSE_UNIQUE
+    # would force a duplicate RecoverRegistrationResponse with identical
+    # fields.
+    - RPC_REQUEST_RESPONSE_UNIQUE
 breaking:
   use:
     - FILE

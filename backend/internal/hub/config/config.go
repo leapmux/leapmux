@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
@@ -28,7 +28,7 @@ const (
 	defaultLogLevel   = "info"
 )
 
-// Default timeout values (in seconds).
+// Queue memory sizing constants.
 const (
 	// The Hub's outbound queues are budgeted in THREE pools -- browser channel
 	// relays, worker Connect streams, and user-event subscribers -- rather than
@@ -128,7 +128,7 @@ type Config struct {
 	// from its own predecessor wait, and `leapmux hub` leaves it at zero,
 	// because on a shared database a second Hub is a real misconfiguration.
 	RuntimeLeaseWait time.Duration
-	DevMode          bool              // Dev mode: non-solo but with auto-bootstrapped admin
+	DevMode          bool              // Non-solo development mode. The first administrator completes setup.
 	Extras           map[string]string // Extra flag values not in the hub Config struct
 }
 
@@ -599,14 +599,17 @@ type ExtraFlagDef struct {
 
 // LoadOptions parameterizes differences between hub and solo/dev mode config loading.
 type LoadOptions struct {
-	DefaultListen     string         // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
-	DefaultConfigDir  string         // for data_dir resolution (e.g. "~/.config/leapmux/solo")
-	DefaultConfigFile string         // default config file path
-	FlagSetName       string         // flag.NewFlagSet name ("hub" vs "leapmux")
-	Description       string         // short command description for help output
-	CLIFlags          []string       // if non-nil, only register these flags (solo exposes a subset)
-	ExtraFlags        []ExtraFlagDef // additional flags not in the hub's allFlags list
-	SoloMode          bool           // set on resulting Config
+	DefaultListen     string              // default TCP listen address (hub: ":4327", solo: "127.0.0.1:4327")
+	DefaultConfigDir  string              // for data_dir resolution (e.g. "~/.config/leapmux/solo")
+	DefaultConfigFile string              // default config file path
+	FlagSetName       string              // flag.NewFlagSet name ("hub" vs "leapmux")
+	Description       string              // short command description for help output
+	CLIFlags          []string            // if non-nil, only register these flags (solo exposes a subset)
+	ExtraFlags        []ExtraFlagDef      // additional flags not in the hub's allFlags list
+	SoloMode          bool                // set on resulting Config
+	ConfigureFlags    func(*flag.FlagSet) // register caller-owned flags before parsing
+	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
+	AfterFlagsParsed func(*flag.FlagSet) error
 }
 
 // Load parses hub configuration from defaults, config file, env vars, and CLI flags.
@@ -638,9 +641,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	if description == "" && fsName == "leapmux hub" {
 		description = "Run the Hub service."
 	}
-
-	// Pre-scan for -config flag.
-	configPath := internalconfig.ExtractConfigFlag(args, configFile)
 
 	// prefixFlags creates flagDefs by prepending a CLI and koanf prefix to
 	// a set of base definitions, replacing "{name}" in usage strings.
@@ -680,7 +680,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	allFlags := []flagDef{
-		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so `leapmux control` keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
+		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so that leapmux control keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
 		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
@@ -752,6 +752,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 	showVersion := fs.Bool("version", false, "print version and exit")
 	usageCategories["version"] = "Common options"
+	if opts.ConfigureFlags != nil {
+		opts.ConfigureFlags(fs)
+	}
 
 	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, hubFlagCategoryOrder); err != nil {
 		return nil, false, err
@@ -760,6 +763,12 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	if *showVersion {
 		return nil, true, nil
 	}
+	if opts.AfterFlagsParsed != nil {
+		if err := opts.AfterFlagsParsed(fs); err != nil {
+			return nil, false, err
+		}
+	}
+	configPath := fs.Lookup("config").Value.String()
 
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
@@ -826,8 +835,11 @@ var hubFlagCategoryOrder = []string{
 
 // Validate checks the configuration values and ensures required directories exist.
 func (c *Config) Validate() error {
-	// Ensure data dir exists.
-	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
+	// Ensure data dir exists, durably: the directory that will hold the
+	// hub's database must be published before anything writes into it.
+	// Offline commands keep the same creation this validation always
+	// performed for them.
+	if err := atomicfile.MkdirAllDurable(c.DataDir); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 

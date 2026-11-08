@@ -2,7 +2,7 @@
 title: "Configuration"
 description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
 type: docs
-weight: 2
+weight: 3
 ---
 
 This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
@@ -66,7 +66,9 @@ Each mode looks for a YAML config file in its own directory under `~/.config/lea
 Override the path with the `--config` (or `-config`) flag, which accepts `--config=PATH`, `--config PATH`, `-config=PATH`, or `-config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
 
 ```bash
-leapmux hub --config /etc/leapmux/hub.yaml
+# Pass the same path to every command of the instance.
+leapmux hub start --config /etc/leapmux/hub.yaml
+leapmux hub status --config /etc/leapmux/hub.yaml
 ```
 
 ### Data directory resolution
@@ -97,18 +99,30 @@ This means flat, top-level keys map cleanly:
 | `LEAPMUX_HUB_LISTEN`                  | `listen` (comma-delimited) |
 | `LEAPMUX_HUB_LOG_LEVEL`              | `log_level`            |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`   | `encryption_key_path`  |
-| `LEAPMUX_WORKER_HUB`                | `hub`                  |
+| `LEAPMUX_WORKER_NAME`               | `name`                 |
 | `LEAPMUX_WORKER_ENCRYPTION_MODE`   | `encryption_mode`      |
 
 {{< callout type="warning" >}}
 Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because the env mapping does not convert underscores to dots, you **cannot** reliably set storage settings via simple env vars. Configure storage through the **YAML config file** or the dedicated **CLI flags** instead (for example `--storage-type postgres --storage-postgres-dsn ...`).
 {{< /callout >}}
 
+A service that `start` creates does not inherit the variables of your shell. Give it the variables in an environment file:
+
+```yaml
+# /etc/leapmux/hub-environment.yaml
+LEAPMUX_HUB_LISTEN: ":8080,unix:/run/leapmux/hub.sock"
+LEAPMUX_HUB_LOG_LEVEL: "debug"
+```
+
 ```bash
-# Flat keys work cleanly as env vars:
-export LEAPMUX_HUB_LISTEN=":8080,unix:/run/leapmux/hub.sock"
-export LEAPMUX_HUB_LOG_LEVEL="debug"
-leapmux hub
+leapmux hub start --environment-file /etc/leapmux/hub-environment.yaml
+```
+
+A container reads the variables from its own environment:
+
+```bash
+docker run -d -p 4327:4327 -e LEAPMUX_MODE=hub -e LEAPMUX_HUB_LOG_LEVEL=debug \
+  -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
 ## Duration values
@@ -418,7 +432,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 
 ### Solo and dev extras (worker-scoped)
 
-`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. They are rejected by `leapmux hub`, which has no Worker to configure.
+`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. Hub mode rejects them, because it has no Worker to configure.
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
@@ -428,7 +442,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 | `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
 
 {{< callout type="info" >}}
-`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
+`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless in hub mode. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
 {{< /callout >}}
 
 ### Connections per user
@@ -474,8 +488,6 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `hub` | `http://127.0.0.1:4327` | Hub server URL: `http[s]://...`, `unix:<socket-path>`, or `npipe:<pipe-name>`. Required. |
-| `registration_key` | *(empty)* | Registration key from the Hub UI; required on first run. Never persisted to disk. |
 | `name` | *(empty → hostname)* | Worker display name; defaults to the OS hostname when empty. |
 | `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
 | `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
@@ -483,7 +495,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
 {{< callout type="info" >}}
-`registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/admin/managing-workers/).
+The Hub URL and the registration key are not configuration keys. Both are flags of `leapmux worker register` only, and the Worker saves the Hub URL with its credentials. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 {{< /callout >}}
 
 ### Timeout and limit options
@@ -524,7 +536,7 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Worker ID, Hub auth token, and its private E2EE keypairs (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+`leapmux worker register` saves the Worker's identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs, which the command generates. For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 {{< callout type="warning" >}}
 `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
@@ -685,7 +697,8 @@ storage:
 ```
 
 ```bash
-leapmux hub --config /etc/leapmux/hub.yaml
+# Start the Hub as a background service.
+leapmux hub start --config /etc/leapmux/hub.yaml
 
 # Behavioral settings live in the database now — set once, then they
 # survive and can change under the running Hub:
@@ -702,7 +715,6 @@ leapmux control admin settings set session_duration_seconds 86400     # sign an 
 
 ```yaml
 # ~/.config/leapmux/worker/worker.yaml
-hub: "https://hub.example.com"
 name: "build-box-01"
 encryption_mode: post-quantum
 log_level: info
@@ -711,20 +723,25 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```
 
 ```bash
-# First run only: pass the registration key minted in the Hub UI
-leapmux worker --registration-key "<key-from-hub-ui>"
-# Subsequent runs: the key is already saved in state.json
-leapmux worker
+# Once: register with the Hub, using a key from its Register worker dialog.
+leapmux worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
+# Then: start the Worker as a background service. It reads worker.yaml, and
+# it connects to the Hub URL that the registration saved.
+leapmux worker start
 ```
+
+## Configuration of a service
+
+A service reads the configuration file at the path that it saved, each time it starts. It does not inherit the environment of the shell that started it, so a `LEAPMUX_*` variable in that shell does not reach it. The service saves the runtime flags that you give to `start`, `restart`, or `enable`, and the path of the configuration file. [Change the configuration of a service](/docs/admin/starting-and-stopping/#change-the-configuration-of-a-service) explains how to change each of them, and how to give the service environment variables.
 
 ## Help and version
 
-Every mode supports the standard help tokens, and each mode honors `--version`:
+Every mode supports the standard help tokens, and each mode command honors `--version`:
 
-- `-h`, `-help`, or `--help` prints categorized usage to stdout. The bare `help` token works only at the top level (`leapmux help`).
-- `--version` (or `-version`) prints the build version and exits.
+- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub <command> --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
+- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub <command> --version`).
 
-The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. LeapMux rejects an unexpected positional argument, identifies it, and points you at `--help`.
+The bare `version` subcommand is a **top-level** command (`leapmux version`), not a mode command. `leapmux hub version` fails with `unknown hub command: version` and prints the commands of the mode. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 

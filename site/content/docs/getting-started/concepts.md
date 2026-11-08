@@ -31,7 +31,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 ### Solo mode
 
-`leapmux solo` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. There is **no login** at first — the UI opens straight into your workspace, because the single account starts with no password. Give it one and every network address asks for it.
+Solo mode (`leapmux solo`) is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. The desktop app uses credential-free local inter-process communication (IPC). A browser connecting over TCP sets the first password before opening the workspace. Later TCP access requires that password.
 
 ```text
                  LeapMux (127.0.0.1:4327)
@@ -39,7 +39,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 │                                                       │
 │  ┌─────────────┐  in-process   ┌──────────────────┐   │
 │  │     Hub     │◄─────────────►│     Worker       │   │
-│  │  (no auth)  │               │  ┌────────────┐  │   │
+│  │ (1 account) │               │  ┌────────────┐  │   │
 │  │  + SQLite   │               │  │   Agents   │  │   │
 │  │             │               │  │ (multiple) │  │   │
 │  └─────────────┘               │  └────────────┘  │   │
@@ -62,7 +62,7 @@ If solo mode answers on a non-loopback address, it logs a warning. Another machi
 
 ### Distributed mode
 
-For multi-user and remote setups, run `leapmux hub` and `leapmux worker` as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
+For multi-user and remote setups, run a Hub (`leapmux hub`) and Workers (`leapmux worker`) as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
 
 ```text
 ┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
@@ -82,7 +82,7 @@ For multi-user and remote setups, run `leapmux hub` and `leapmux worker` as sepa
 
 One Hub coordinates one-or-more Workers. Each Worker is a separate process, usually on its own machine (a dev box, a build server, your laptop), running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
 
-There is also `leapmux dev` — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
+There is also dev mode (`leapmux dev`) — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
 
 | Aspect | Solo (`leapmux solo`) | Distributed (`leapmux hub` + `leapmux worker`) |
 |---|---|---|
@@ -148,7 +148,7 @@ Key properties:
 
 - Workers keep their own **local SQLite database**. Agent and terminal state lives there, not in the Hub, so your work survives reconnects and restarts (see [Persistence](#persistence) below).
 - Workers **dial out** to the Hub and re-establish the connection automatically after a drop, so they work behind NATs and firewalls without inbound ports.
-- In distributed mode a Worker must be **registered** before it can connect: an authenticated user mints a registration key in the Hub UI and passes it to `leapmux worker --registration-key <key>` on first run. Once registered, the Worker saves its credentials and reconnects on its own.
+- In distributed mode a Worker must be **registered** before it can connect: an authenticated user mints a registration key in the Hub UI and passes it to `leapmux worker register --hub https://hub.example.com --registration-key <key>` before running the Worker. Once registered, the Worker saves its credentials and reconnects on its own.
 
 For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/admin/managing-workers/).
 

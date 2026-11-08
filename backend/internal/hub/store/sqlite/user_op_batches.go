@@ -15,7 +15,7 @@ type userOpBatchesStore struct {
 var _ store.UserOpBatchesStore = (*userOpBatchesStore)(nil)
 
 func (s *userOpBatchesStore) Insert(ctx context.Context, p store.InsertUserOpBatchParams) error {
-	return mapErr(s.conn.q.InsertUserOpBatch(ctx, gendb.InsertUserOpBatchParams{
+	return s.conn.queryError(s.conn.q.InsertUserOpBatch(ctx, gendb.InsertUserOpBatchParams{
 		UserID:             p.UserID.String(),
 		PhysicalMs:         p.PhysicalMs,
 		Logical:            p.Logical,
@@ -40,7 +40,7 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 		RowLimit:        int64(p.Limit),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, toUserOpBatchRow), nil
 }
@@ -64,7 +64,7 @@ func (s *userOpBatchesStore) DeleteThrough(ctx context.Context, p store.DeleteUs
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return nil
 	}
-	return mapErr(s.conn.q.DeleteUserOpBatchesThrough(ctx, gendb.DeleteUserOpBatchesThroughParams{
+	return s.conn.queryError(s.conn.q.DeleteUserOpBatchesThrough(ctx, gendb.DeleteUserOpBatchesThroughParams{
 		UserID:            owner,
 		ThroughPhysicalMs: p.ThroughPhysicalMs,
 		ThroughLogical:    p.ThroughLogical,
@@ -79,5 +79,5 @@ func (s *userOpBatchesStore) Count(ctx context.Context, userID userid.UserID) (i
 		return 0, nil
 	}
 	n, err := s.conn.q.CountUserOpBatches(ctx, owner)
-	return n, mapErr(err)
+	return n, s.conn.queryError(err)
 }

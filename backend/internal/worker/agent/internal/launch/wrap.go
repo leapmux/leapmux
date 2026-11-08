@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -174,12 +175,12 @@ func Wrap(ctx context.Context, spec WrapSpec) (*exec.Cmd, string, string) {
 func buildPosixCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = posixQuote(arg)
+		quotedBase[i] = shellquote.POSIX.Quote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
 	clearEnvPrefix := posixClearEnv(spec.StripEnvKeys) + posixSetEnv(spec.SetEnv)
-	program := posixQuote(spec.Launch.Program)
+	program := shellquote.POSIX.Quote(spec.Launch.Program)
 
 	// Simple path: no env gate. When the gate is set but its Args are empty (Claude's
 	// default-model launch), the conditional path below still runs: both branches exec
@@ -193,7 +194,7 @@ func buildPosixCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	// Conditional path: check env vars at runtime.
 	quotedGated := make([]string, len(gate.Args))
 	for i, arg := range gate.Args {
-		quotedGated[i] = posixQuote(arg)
+		quotedGated[i] = shellquote.POSIX.Quote(arg)
 	}
 	gatedArgsStr := strings.Join(quotedGated, " ")
 
@@ -298,10 +299,10 @@ func pwshInvocation(program string, arguments []string) string {
 	original := make([]string, len(arguments))
 	native := make([]string, len(arguments))
 	for index, argument := range arguments {
-		original[index] = pwshQuote(argument)
-		native[index] = pwshQuote(legacyNativeArgument(argument))
+		original[index] = shellquote.PowerShell.Quote(argument)
+		native[index] = shellquote.PowerShell.Quote(legacyNativeArgument(argument))
 	}
-	command := pwshQuote(program)
+	command := shellquote.PowerShell.Quote(program)
 	// Metadata lookup parses filesystem paths as wildcard patterns. Read an
 	// existing literal file directly instead. Namespace-only GetCommands keeps
 	// loaded aliases, functions and cmdlets ahead of files without importing a
@@ -371,17 +372,17 @@ func legacyNativeArgument(argument string) string {
 // line's variables before it evaluates that line, so a guard and the read it guards
 // cannot share one line.
 //
-// The program word and the arguments use posixQuote. Both csh and tcsh accept
+// The program word and the arguments use shellquote.POSIX.Quote. Both csh and tcsh accept
 // its concatenation of quoted segments and escaped literal single quotes.
 func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	quotedBase := make([]string, len(spec.BaseArgs))
 	for i, arg := range spec.BaseArgs {
-		quotedBase[i] = posixQuote(arg)
+		quotedBase[i] = shellquote.POSIX.Quote(arg)
 	}
 
 	baseArgsStr := strings.Join(quotedBase, " ")
 	clearEnvPrefix := cshClearEnv(spec.StripEnvKeys) + cshSetEnv(spec.SetEnv)
-	program := posixQuote(spec.Launch.Program)
+	program := shellquote.POSIX.Quote(spec.Launch.Program)
 
 	// Simple path: no env gate. See buildPosixCommand.
 	gate := spec.EnvGated
@@ -393,7 +394,7 @@ func buildCshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	// Conditional path: check env vars at runtime.
 	quotedGated := make([]string, len(gate.Args))
 	for i, arg := range gate.Args {
-		quotedGated[i] = posixQuote(arg)
+		quotedGated[i] = shellquote.POSIX.Quote(arg)
 	}
 	gatedArgsStr := strings.Join(quotedGated, " ")
 
@@ -430,7 +431,7 @@ func posixSetEnv(entries []string) string {
 	var b strings.Builder
 	for _, entry := range entries {
 		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("export " + name + "=" + posixQuote(value) + " && ")
+		b.WriteString("export " + name + "=" + shellquote.POSIX.Quote(value) + " && ")
 	}
 	return b.String()
 }
@@ -441,7 +442,7 @@ func cshSetEnv(entries []string) string {
 	var b strings.Builder
 	for _, entry := range entries {
 		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("setenv " + name + " " + posixQuote(value) + "; ")
+		b.WriteString("setenv " + name + " " + shellquote.POSIX.Quote(value) + "; ")
 	}
 	return b.String()
 }
@@ -459,7 +460,7 @@ func pwshSetEnv(entries []string) string {
 	var b strings.Builder
 	for _, entry := range entries {
 		name, value, _ := strings.Cut(entry, "=")
-		b.WriteString("$env:" + name + " = " + pwshQuote(value) + "; ")
+		b.WriteString("$env:" + name + " = " + shellquote.PowerShell.Quote(value) + "; ")
 	}
 	return b.String()
 }
@@ -563,32 +564,10 @@ func pwshEnvCondition(vars []string) string {
 	return strings.Join(parts, " -or ")
 }
 
-// posixQuote wraps a string in single quotes for POSIX shells.
-// It closes the quoted segment, emits a backslash-escaped single quote, and
-// starts another quoted segment for each single quote in the input.
-func posixQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // nuQuote wraps a string in double quotes for Nushell.
 // In Nushell double-quoted strings, only \ and " need escaping.
 var nuReplacer = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
 func nuQuote(s string) string {
 	return `"` + nuReplacer.Replace(s) + `"`
-}
-
-// pwshQuoteReplacer escapes every single-quote delimiter PowerShell accepts.
-var pwshQuoteReplacer = strings.NewReplacer(
-	"'", "''",
-	"\u2018", "\u2018\u2018",
-	"\u2019", "\u2019\u2019",
-	"\u201a", "\u201a\u201a",
-	"\u201b", "\u201b\u201b",
-)
-
-// pwshQuote wraps a string in single quotes for PowerShell. Its parser treats
-// ASCII and typographic single quotes as delimiters, so double each delimiter.
-func pwshQuote(s string) string {
-	return "'" + pwshQuoteReplacer.Replace(s) + "'"
 }

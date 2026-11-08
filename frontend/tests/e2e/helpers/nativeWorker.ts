@@ -14,7 +14,7 @@ import { createServerOutput } from './serverOutput'
 
 /** The command line, the environment, and the output capture of one Worker process. */
 export interface WorkerProcessOptions {
-  /** The Hub that the Worker connects to. */
+  /** The Hub endpoint saved by registration. Runtime takes no endpoint flag. */
   hubUrl: string
   /** The Worker name. The Worker reads it from `LEAPMUX_WORKER_NAME`, and the output capture uses it as the label. */
   name: string
@@ -22,7 +22,7 @@ export interface WorkerProcessOptions {
   dataDir: string
   /** The environment of the Worker, on top of `hubSpawnEnv`. */
   env?: NodeJS.ProcessEnv
-  /** The arguments after `--hub` and `--data-dir`, such as `['--encryption-mode', 'post-quantum']`. */
+  /** The runtime arguments after `--data-dir`, such as `['--encryption-mode', 'post-quantum']`. */
   extraArgs?: readonly string[]
   /** The buffer that captures the stdout and the stderr of the Worker. */
   output: ServerOutput
@@ -35,13 +35,14 @@ export interface WorkerProcessOptions {
 
 /**
  * Spawn one Worker process and capture its output.
- * With no registration key in `extraArgs`, the Worker uses the registration that its data directory holds.
+ * The Worker uses the registration that its data directory holds. Runtime arguments cannot include a registration key.
  */
 export function spawnWorkerProcess(options: WorkerProcessOptions): ChildProcess {
+  // Runtime execution: the saved registration in the data directory is
+  // the only credential source, so this process RUNS the worker.
   const proc = spawnTestProcess(getGlobalState().binaryPath, [
     'worker',
-    '--hub',
-    options.hubUrl,
+    'run',
     '--data-dir',
     options.dataDir,
     ...options.extraArgs ?? [],
@@ -66,6 +67,10 @@ export interface RegisteredWorkerOptions extends Omit<WorkerProcessOptions, 'hub
    * fails.
    */
   onSpawn?: (proc: ChildProcess) => void
+  /** Receive the short-lived registration child before waiting for its completion. */
+  onRegistrationSpawn?: (proc: ChildProcess) => void
+  /** Cancel registration or the online wait and join the current child. */
+  signal?: AbortSignal | undefined
 }
 
 /** A Worker process that the Hub lists online, with the Worker ID that the Hub assigned. */
@@ -75,69 +80,142 @@ export interface RegisteredWorker {
 }
 
 /**
- * Register a new Worker with `hub`: mint a registration key, spawn the Worker with it, and wait for the Hub to list
- * the new Worker online.
+ * Register a new Worker with `hub`, wait for the registration child to exit successfully, and start the Worker.
+ * Wait until the Hub lists the new Worker online.
  * The wait fails at once when the process fails or exits. After the spawn, a failure stops the process.
  *
  * The new Worker is the one online Worker ID that the Hub did not list before the spawn. Two concurrent
  * registrations with one Hub can therefore select the same Worker, so a caller must serialize them.
  */
 export async function spawnRegisteredWorker(hub: WorkerHub, options: RegisteredWorkerOptions): Promise<RegisteredWorker> {
+  // Registration is its OWN process now: mint the key, run
+  // `worker register` to completion, and only then run the worker.
+  // The registration process is tracked with the worker so a suite
+  // cleanup stops both.
+  options.signal?.throwIfAborted()
   const registrationKey = await mintRegistrationKeyViaAPI(hub.hubUrl, hub.adminToken)
   const previousWorkers = new Set(await listOnlineWorkerIDsViaAPI(hub.hubUrl, hub.adminToken))
-  const { onSpawn, extraArgs = [], ...processOptions } = options
-  const proc = spawnWorkerProcess({
-    ...processOptions,
-    hubUrl: hub.hubUrl,
-    extraArgs: ['--registration-key', registrationKey, ...extraArgs],
-  })
-  const subject = `The Worker ${options.name}`
-  return cleanupOnFailure(async () => {
-    onSpawn?.(proc)
-    const exit = watchProcessExit(proc, subject)
-    const online = new AbortController()
-    void exit.failure.catch((error: unknown) => online.abort(error))
+  options.signal?.throwIfAborted()
+  const cancellation = watchCancellation(options.signal)
+  try {
+    const { onSpawn, onRegistrationSpawn, signal, extraArgs = [], ...processOptions } = options
+    const registerProc = spawnTestProcess(getGlobalState().binaryPath, [
+      'worker',
+      'register',
+      '--hub',
+      hub.hubUrl,
+      '--registration-key',
+      registrationKey,
+      '--data-dir',
+      options.dataDir,
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: hubSpawnEnv(options.env),
+    })
+    const registrationExit = watchProcessExit(registerProc, `The registration of Worker ${options.name}`)
     try {
-      requireRunning(proc, subject)
-      const workerId = await Promise.race([
-        waitForNewOnlineWorkerViaAPI(hub.hubUrl, hub.adminToken, previousWorkers, undefined, online.signal),
-        exit.failure,
-      ])
-      requireRunning(proc, subject)
-      return { proc, workerId }
+      await cleanupOnFailure(async () => {
+        options.output.capture(registerProc, `${options.name} registration`)
+        onRegistrationSpawn?.(registerProc)
+        const outcome = await Promise.race([registrationExit.completion, cancellation.failure])
+        if (outcome.code !== 0 || outcome.signal !== null)
+          throw new Error(`The registration of Worker ${options.name} exited: code ${outcome.code}, signal ${outcome.signal}.`)
+      }, () => stopProcess(registerProc))
     }
     finally {
-      exit.dispose()
-      online.abort(new Error(`The online wait of ${subject} ended.`))
+      registrationExit.dispose()
     }
-  }, () => stopProcess(proc))
+
+    signal?.throwIfAborted()
+    const proc = spawnWorkerProcess({
+      ...processOptions,
+      hubUrl: hub.hubUrl,
+      extraArgs,
+    })
+    const subject = `The Worker ${options.name}`
+    return await cleanupOnFailure(async () => {
+      onSpawn?.(proc)
+      const exit = watchProcessExit(proc, subject)
+      const online = new AbortController()
+      void exit.failure.catch((error: unknown) => online.abort(error))
+      void cancellation.failure.catch((error: unknown) => online.abort(error))
+      try {
+        requireRunning(proc, subject)
+        const workerId = await Promise.race([
+          waitForNewOnlineWorkerViaAPI(hub.hubUrl, hub.adminToken, previousWorkers, undefined, online.signal),
+          exit.failure,
+          cancellation.failure,
+        ])
+        requireRunning(proc, subject)
+        return { proc, workerId }
+      }
+      finally {
+        exit.dispose()
+        online.abort(new Error(`The online wait of ${subject} ended.`))
+      }
+    }, () => stopProcess(proc))
+  }
+  finally {
+    cancellation.dispose()
+  }
 }
 
 /** A promise that rejects when a process fails or exits, until `dispose` removes its listeners. */
 interface ProcessExitWatch {
   failure: Promise<never>
+  completion: Promise<{ code: number | null, signal: NodeJS.Signals | null }>
   dispose: () => void
 }
 
 function watchProcessExit(proc: ChildProcess, subject: string): ProcessExitWatch {
   let rejectFailure!: (error: Error) => void
+  let rejectCompletion!: (error: Error) => void
+  let resolveCompletion!: (outcome: { code: number | null, signal: NodeJS.Signals | null }) => void
   const failure = new Promise<never>((_, reject) => {
     rejectFailure = reject
   })
   // A failure that no race reads any more must not become an unhandled rejection.
   failure.catch(() => {})
-  const onError = (error: Error) => rejectFailure(error)
+  const completion = new Promise<{ code: number | null, signal: NodeJS.Signals | null }>((resolve, reject) => {
+    resolveCompletion = resolve
+    rejectCompletion = reject
+  })
+  completion.catch(() => {})
+  const onError = (error: Error) => {
+    rejectFailure(error)
+    rejectCompletion(error)
+  }
   const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
     rejectFailure(new Error(`${subject} exited: code ${code}, signal ${signal}.`))
+    resolveCompletion({ code, signal })
   }
   proc.on('error', onError)
   proc.on('exit', onExit)
+  if (proc.exitCode !== null || proc.signalCode !== null)
+    onExit(proc.exitCode, proc.signalCode)
   return {
     failure,
+    completion,
     dispose: () => {
       proc.off('error', onError)
       proc.off('exit', onExit)
     },
+  }
+}
+
+function watchCancellation(signal?: AbortSignal): Pick<ProcessExitWatch, 'failure' | 'dispose'> {
+  let rejectFailure!: (reason: unknown) => void
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject
+  })
+  failure.catch(() => {})
+  const onAbort = () => rejectFailure(signal?.reason ?? new Error('Worker startup was cancelled.'))
+  signal?.addEventListener('abort', onAbort, { once: true })
+  if (signal?.aborted)
+    onAbort()
+  return {
+    failure,
+    dispose: () => signal?.removeEventListener('abort', onAbort),
   }
 }
 
@@ -157,6 +235,7 @@ export interface NativeWorker<Server extends NativeWorkerServer> {
 }
 
 export interface NativeWorkerOptions {
+  signal?: AbortSignal | undefined
   dataDirPrefix: string
   workerName: string
   env?: NodeJS.ProcessEnv
@@ -195,7 +274,7 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
   const dataDir = createTestDirectory(`${options.dataDirPrefix}-`)
   const output = createServerOutput()
   // The registration sets these from its callback, which the control flow analysis of TypeScript cannot follow.
-  const worker: { proc?: ChildProcess, id?: string } = {}
+  const worker: { proc?: ChildProcess, registration?: ChildProcess, id?: string } = {}
   try {
     await withCleanup(async () => {
       const registered = await spawnRegisteredWorker(server, {
@@ -206,6 +285,12 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
           ...options.env,
         },
         output,
+        signal: options.signal,
+        onRegistrationSpawn: (registration) => {
+          worker.registration = registration
+          // Registration has a separate stream lifetime. Its output stays in
+          // diagnostic capture; ending it must not close runtime consumers.
+        },
         onSpawn: (proc) => {
           worker.proc = proc
           forwardStdio(proc, options)
@@ -228,15 +313,17 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
         exit.dispose()
       }
     }, async () => {
-      const { proc, id } = worker
-      if (!proc)
+      const { proc, registration, id } = worker
+      const current = proc ?? registration
+      if (!current)
         return
       // The registration stops a Worker that it could not register, and a second stop of an exited process returns
       // at once. This stop still runs, because the physical exit check must see each stopped Worker.
       await finishCleanup([
         (async () => {
-          await stopProcess(proc)
-          requirePhysicalExit(proc)
+          if (proc || (current.exitCode === null && current.signalCode === null))
+            await stopProcess(current)
+          requirePhysicalExit(current)
         })(),
         id
           ? deregisterWorkerViaAPI(server.hubUrl, server.adminToken, id)
@@ -249,8 +336,9 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
   }
   finally {
     // Keep a live Worker's files if stop fails. Process cleanup can still need those files.
-    const { proc } = worker
-    if (!proc || exited(proc))
+    const { proc, registration } = worker
+    const current = proc ?? registration
+    if (!current || exited(current))
       removeDirectories([dataDir, ...privateDirectories])
   }
 }

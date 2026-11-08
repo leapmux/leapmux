@@ -34,11 +34,12 @@ func expectedVerificationBody(formattedCode, link, hubURL string) string {
 func expectedRegistrationBody(command, hubURL string) string {
 	var b strings.Builder
 	b.WriteString("Here's the worker registration command you asked LeapMux to send.\n\n")
-	b.WriteString("Run it on the machine where the worker should run:\n\n    ")
+	b.WriteString("Register on the machine where the worker should run:\n\n    ")
 	b.WriteString(command)
 	b.WriteString("\n\n")
+	b.WriteString("After registration succeeds, start the worker:\n\n    leapmux worker start\n\n")
 	b.WriteString("The registration key only works while the dialog stays open in your browser, ")
-	b.WriteString("so keep that tab open until the command finishes.\n\n")
+	b.WriteString("so keep that tab open until registration completes.\n\n")
 	b.WriteString(verificationFooterTrailingSpace + "\n")
 	b.WriteString("This is an automated message from your LeapMux hub at " + hubURL + ".\n")
 	b.WriteString("Please do not reply.\n")
@@ -112,7 +113,7 @@ func TestRenderer_AccountRecoveryEmail_Bytes(t *testing.T) {
 // TestRenderer_RegistrationInstructions_Bytes pins the worker
 // registration email's body byte-for-byte.
 func TestRenderer_RegistrationInstructions_Bytes(t *testing.T) {
-	const command = "leapmux worker --hub https://hub.example.com --registration-key abc123"
+	const command = "leapmux worker register --hub https://hub.example.com --registration-key abc123"
 	const hubURL = "https://hub.example.com"
 
 	r := mail.Renderer{BaseURL: func() string { return hubURL }}
@@ -170,7 +171,7 @@ func ExampleRenderer_RegistrationInstructions() {
 	r := mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }}
 	msg := r.RegistrationInstructions(
 		"bob@example.test",
-		"leapmux worker --hub https://hub.example.com --registration-key abc123",
+		"leapmux worker register --hub 'https://hub.example.com' --registration-key 'abc123'",
 	)
 	fmt.Print(printForExample(msg))
 	// Output:
@@ -178,11 +179,15 @@ func ExampleRenderer_RegistrationInstructions() {
 	//
 	// Here's the worker registration command you asked LeapMux to send.
 	//
-	// Run it on the machine where the worker should run:
+	// Register on the machine where the worker should run:
 	//
-	//     leapmux worker --hub https://hub.example.com --registration-key abc123
+	//     leapmux worker register --hub 'https://hub.example.com' --registration-key 'abc123'
 	//
-	// The registration key only works while the dialog stays open in your browser, so keep that tab open until the command finishes.
+	// After registration succeeds, start the worker:
+	//
+	//     leapmux worker start
+	//
+	// The registration key only works while the dialog stays open in your browser, so keep that tab open until registration completes.
 	//
 	// -- ␠
 	// This is an automated message from your LeapMux hub at https://hub.example.com.

@@ -32,7 +32,7 @@ func fromDBOAuthAuthorizationCode(c gendb.OauthAuthorizationCode) store.OAuthAut
 }
 
 func (s *oauthAuthorizationCodeStore) Create(ctx context.Context, p store.CreateOAuthAuthorizationCodeParams) error {
-	return mapErr(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
+	return s.conn.queryError(s.conn.q.CreateOAuthAuthorizationCode(ctx, gendb.CreateOAuthAuthorizationCodeParams{
 		Code:             p.Code,
 		UserID:           p.UserID.String(),
 		ClientID:         p.ClientID,
@@ -50,7 +50,7 @@ func (s *oauthAuthorizationCodeStore) GetActive(ctx context.Context, code string
 		Now:  sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBOAuthAuthorizationCode(row)
 	return &out, nil
@@ -62,7 +62,7 @@ func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, 
 		Now:  sqltime.NewSQLiteTime(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBOAuthAuthorizationCode(row)
 	return &out, nil
@@ -74,7 +74,7 @@ func (s *oauthAuthorizationCodeStore) Consume(ctx context.Context, code string, 
 func (s *oauthAuthorizationCodeStore) Get(ctx context.Context, code string) (*store.OAuthAuthorizationCode, error) {
 	row, err := s.conn.q.GetOAuthAuthorizationCode(ctx, code)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBOAuthAuthorizationCode(row)
 	return &out, nil
@@ -84,7 +84,7 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 	if user.IsZero() {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.ConsumeActiveAuthorizationCodesForUserClient(ctx, gendb.ConsumeActiveAuthorizationCodesForUserClientParams{
+	return s.conn.rowsAffected(s.conn.q.ConsumeActiveAuthorizationCodesForUserClient(ctx, gendb.ConsumeActiveAuthorizationCodesForUserClientParams{
 		ClientID: clientID,
 		UserID:   user.String(),
 		Now:      sqltime.NewSQLiteTime(now),
@@ -92,7 +92,7 @@ func (s *oauthAuthorizationCodeStore) ConsumeActiveForUserClient(ctx context.Con
 }
 
 func (s *oauthAuthorizationCodeStore) MarkMinted(ctx context.Context, code, tokenID string) error {
-	return mapErr(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
+	return s.conn.queryError(s.conn.q.MarkOAuthAuthorizationCodeMinted(ctx, gendb.MarkOAuthAuthorizationCodeMintedParams{
 		Code:          code,
 		MintedTokenID: sqlutil.NullNonEmpty(tokenID),
 	}))

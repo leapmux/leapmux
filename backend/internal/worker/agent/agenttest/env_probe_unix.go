@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -71,7 +72,7 @@ func NewEnvProbe(t *testing.T, binary string, answers map[string]string) EnvProb
 	script.WriteString("#!/bin/sh\n")
 	// The environment file is renamed into place last, so a reader that sees it
 	// sees the whole record.
-	fmt.Fprintf(&script, "d=%s\n", posixQuote(dir))
+	fmt.Fprintf(&script, "d=%s\n", shellquote.POSIX.Quote(dir))
 	script.WriteString(`printf '%s\n' "$@" > "$d/args.$$.tmp" && mv "$d/args.$$.tmp" "$d/args.$$"` + "\n")
 	script.WriteString(`env > "$d/env.$$.tmp" && mv "$d/env.$$.tmp" "$d/env.$$"` + "\n")
 	keys := make([]string, 0, len(answers))
@@ -80,7 +81,7 @@ func NewEnvProbe(t *testing.T, binary string, answers map[string]string) EnvProb
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		fmt.Fprintf(&script, "if [ \"$1\" = %s ]; then printf '%%s\\n' %s; exit 0; fi\n", posixQuote(key), posixQuote(answers[key]))
+		fmt.Fprintf(&script, "if [ \"$1\" = %s ]; then printf '%%s\\n' %s; exit 0; fi\n", shellquote.POSIX.Quote(key), shellquote.POSIX.Quote(answers[key]))
 	}
 	script.WriteString("exit 3\n")
 	testutil.WriteExecutable(t, probe.Program, script.String())
@@ -170,7 +171,7 @@ func RunLaunch(t *testing.T, launch LaunchProbe) []ProbeRun {
 	probe := NewEnvProbe(t, launch.Binary, launch.Answers)
 
 	var profile strings.Builder
-	fmt.Fprintf(&profile, "export PATH=%s:\"$PATH\"\n", posixQuote(filepath.Dir(probe.Program)))
+	fmt.Fprintf(&profile, "export PATH=%s:\"$PATH\"\n", shellquote.POSIX.Quote(filepath.Dir(probe.Program)))
 	for _, pin := range launch.Pins {
 		name, _, found := strings.Cut(pin, "=")
 		require.True(t, found, "pin %q must be NAME=VALUE", pin)
@@ -218,9 +219,4 @@ func RequireLaunchPins(t *testing.T, launch LaunchProbe) []ProbeRun {
 		}
 	}
 	return runs
-}
-
-// posixQuote quotes one word for a POSIX shell.
-func posixQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/logging"
+	"github.com/leapmux/leapmux/internal/servicelaunch"
 	"github.com/leapmux/leapmux/util/version"
 	"github.com/leapmux/leapmux/worker"
 )
@@ -26,16 +27,13 @@ type topLevelCommand struct {
 // topLevelCommands holds every `leapmux <command>`, in the order the usage
 // prints them.
 //
-// A command that owns a command tree takes its name and its summary from
-// that tree, so `leapmux --help` and `leapmux <command> --help` cannot
-// disagree — they did, and the top-level row was the stale copy. The other
-// commands are daemons and one built-in; they have no tree to read from, so
-// their summary lives here, which is the only place that prints it.
+// Administrative commands read metadata from their trees. Mode commands
+// share modeSummary with their lifecycle trees, so their summaries cannot drift.
 var topLevelCommands = []topLevelCommand{
-	{Name: "solo", Summary: "Run Hub + Worker locally for single-user use"},
-	{Name: "hub", Summary: "Run the Hub service"},
-	{Name: "worker", Summary: "Run a Worker connected to a Hub"},
-	{Name: "dev", Summary: "Run Hub + Worker for development"},
+	{Name: "solo", Summary: modeSummary("solo")},
+	{Name: "hub", Summary: modeSummary("hub")},
+	{Name: "worker", Summary: modeSummary("worker")},
+	{Name: "dev", Summary: modeSummary("dev")},
 	{Name: recoverTree.Name, Summary: recoverTree.Summary},
 	{Name: controlTree.Name, Summary: controlTree.Summary},
 	{Name: "version", Summary: "Print version and exit"},
@@ -76,26 +74,37 @@ func topLevelCommandNames() []string {
 }
 
 type cliRunners struct {
-	runHub     func([]string) error
-	runWorker  func([]string) error
-	runSolo    func([]string, bool) error
+	runMode    func(mode string, args []string) error
 	runRecover func([]string) error
 	runControl func([]string) error
 	version    func() string
 }
 
 func main() {
+	if code, handled := runConsoleHelper(os.Args[1:], os.Stdin, [2]io.Writer{os.Stdout, os.Stderr}); handled {
+		os.Exit(code)
+	}
 	// A provider's CLI can start this executable as a helper, with no argument
 	// (see worker.RunAgentHelper). The check comes before logging.Setup: the
 	// helper's stderr reaches that CLI as a message, and a log line must not.
 	if code, handled := worker.RunAgentHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
+	if handled, err := servicelaunch.RunNativeHelper(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(handleRunError(os.Stderr, err))
+		}
+		os.Exit(0)
+	}
+	if handled, err := runNativeServiceEntry(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(handleRunError(os.Stderr, err))
+		}
+		os.Exit(0)
+	}
 	logging.Setup()
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, cliRunners{
-		runHub:     runHub,
-		runWorker:  runWorker,
-		runSolo:    runSolo,
+		runMode:    runModeCommand,
 		runRecover: runRecover,
 		runControl: runControl,
 		version:    version.Format,
@@ -105,7 +114,7 @@ func main() {
 func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "error: command is required")
-		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo" to run solo mode`)
+		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo start" to start solo mode`)
 		printUsage(stderr)
 		return 1
 	}
@@ -124,7 +133,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	// Reject anything that looks like a flag — it can't be a command name.
 	if len(args[0]) > 0 && args[0][0] == '-' {
 		_, _ = fmt.Fprintf(stderr, "error: %s is not a top-level flag\n", args[0])
-		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo %s\" to pass solo-mode flags\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo start %s\" to pass solo-mode flags\n", args[0])
 		printUsage(stderr)
 		return 1
 	}
@@ -145,24 +154,16 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	}
 
 	switch matched {
-	case "solo":
-		if err := runners.runSolo(args[1:], true); err != nil {
-			return handleRunError(stderr, err)
+	case "solo", "hub", "worker", "dev":
+		// The group walk validates and prints help; only a resolved
+		// leaf reaches the runner, so help never starts a process.
+		if code, handled := walkModeArgs(modeCommandGroup(matched), matched, args[1:], stdout, stderr); handled {
+			return code
 		}
-		return 0
-	case "hub":
-		if err := runners.runHub(args[1:]); err != nil {
-			return handleRunError(stderr, err)
-		}
-		return 0
-	case "worker":
-		if err := runners.runWorker(args[1:]); err != nil {
-			return handleRunError(stderr, err)
-		}
-		return 0
-	case "dev":
-		if err := runners.runSolo(args[1:], false); err != nil {
-			return handleRunError(stderr, err)
+		if err := runners.runMode(matched, args[1:]); err != nil {
+			// The status exit codes ride their own marker; everything
+			// else is a failure or invalid use.
+			return modeExitCode(stderr, err)
 		}
 		return 0
 	case "recover":

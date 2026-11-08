@@ -677,7 +677,7 @@ Login rules:
 - A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
 
 ```bash
-leapmux hub &
+# With a Hub that runs on this machine (leapmux hub start):
 leapmux control auth login --hub unix:$HOME/.config/leapmux/hub/hub.sock --device-code
 leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.sock
 ```

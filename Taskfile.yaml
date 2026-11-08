@@ -1178,6 +1178,25 @@ tasks:
       # lint-backend already runs vet for each supported operating system.
       - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
 
+  test-cli-services:
+    desc: Install REAL CLI startup definitions against a disposable service account (requires SERVICE_ACCOUNT_FILE)
+    deps: [build-backend, assert-service-account-file]
+    env:
+      # The tests install THE JUST-BUILT BINARY, never a leapmux found
+      # on PATH; the .exe suffix is part of the name on Windows.
+      LEAPMUX_SERVICE_TEST_BINARY:
+        sh: echo "{{.ROOT_DIR}}/leapmux{{if eq OS "windows"}}.exe{{end}}"
+      LEAPMUX_SERVICE_TEST_ACCOUNT_FILE:
+        '{{.SERVICE_ACCOUNT_FILE}}'
+    cmds:
+      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off ./internal/servicelaunch/... {{.CLI_ARGS}}
+
+  assert-service-account-file:
+    internal: true
+    desc: Verify the private native-account fixture is an absolute existing path
+    cmds:
+      - bun scripts/assert-service-account-file.mjs {{.SERVICE_ACCOUNT_FILE | default "" | shellQuote}}
+
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
     cmds:

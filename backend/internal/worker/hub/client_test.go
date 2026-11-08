@@ -508,7 +508,8 @@ func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *te
 			}
 			assert.Equal(t, 1, strings.Count(logged, "does not know this worker"), logged)
 			assert.Contains(t, logged, "level=ERROR")
-			assert.Contains(t, logged, "--hub")
+			assert.Contains(t, logged, "saved Hub endpoint")
+			assert.NotContains(t, logged, "Check --hub")
 			assert.Contains(t, logged, "state.json")
 			assert.Contains(t, logged, "more than 7 days ago")
 			for i, records := range recordsBefore {
@@ -804,6 +805,33 @@ func TestHandleMessage_WorkerIdentity_InvokesCallback(t *testing.T) {
 	require.NotNil(t, captured, "OnWorkerIdentity should receive the Hub's identity")
 	assert.Equal(t, "owner-1", captured.GetRegisteredBy(), "the callback receives the Hub's owner")
 	assert.Equal(t, "alice", captured.GetRegisteredByUsername(), "the callback receives the owner's username")
+}
+
+func TestConnectionStateRequiresAcceptedIdentityAndReportsDisconnection(t *testing.T) {
+	for _, accept := range []bool{false, true} {
+		t.Run(fmt.Sprint(accept), func(t *testing.T) {
+			client := newTestClient(t, "http://localhost:0")
+			var transitions []bool
+			var causes []error
+			client.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool { return accept }
+			client.OnConnectionState = func(connected bool, err error) {
+				transitions = append(transitions, connected)
+				causes = append(causes, err)
+			}
+			identity := &leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}}
+			failure := refusalReasonError(t, connect.CodePermissionDenied, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+			err := client.connectWithReconnect(t.Context(), "token", func(context.Context, string) error { client.handleMessage(identity); return failure }, newFastBackoff(), time.Second)
+			require.ErrorIs(t, err, ErrKeysRefused)
+			if accept {
+				assert.Equal(t, []bool{true, false}, transitions)
+				assert.Nil(t, causes[0])
+			} else {
+				assert.Equal(t, []bool{false}, transitions)
+			}
+			assert.ErrorIs(t, causes[len(causes)-1], failure)
+			assert.Equal(t, accept, client.identityReceived.Load())
+		})
+	}
 }
 
 // The Hub sends the identity again on a live stream when the owner's account
@@ -1801,4 +1829,49 @@ func TestHeartbeatLoopStopsWhenTheSendFails(t *testing.T) {
 	require.NoError(t, ctx.Err(), "the loop must have ended on the send, not on the context")
 	_, running := clock.Peek()
 	assert.False(t, running, "a loop that gave up must stop its ticker")
+}
+
+func TestCancelledConnectionPublishesDisconnectedState(t *testing.T) {
+	independent := errors.New("independent connection failure")
+	for _, test := range []struct {
+		name     string
+		failure  error
+		preserve bool
+	}{
+		{"nil", nil, false},
+		{"cancelled", context.Canceled, false},
+		{"wrapped", fmt.Errorf("transport ended: %w", context.Canceled), false},
+		{"transport", connect.NewError(connect.CodeCanceled, "request cancelled"), false},
+		{"transport close cause", connect.NewError(connect.CodeCanceled, "request cancelled").WithCause(errors.New("response body closed")), false},
+		{"independent", independent, true},
+		{"joined", errors.Join(context.Canceled, independent), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestClient(t, "http://localhost:0")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var transitions []bool
+			var finalCause error
+			client.OnWorkerIdentity = func(*leapmuxv1.WorkerIdentity) bool { return true }
+			client.OnConnectionState = func(connected bool, err error) {
+				transitions = append(transitions, connected)
+				finalCause = err
+			}
+			attempts := 0
+			err := client.connectWithReconnect(ctx, "token", func(context.Context, string) error {
+				attempts++
+				client.handleMessage(&leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}})
+				cancel()
+				return test.failure
+			}, newFastBackoff(), time.Second)
+			require.NoError(t, err)
+			assert.Equal(t, 1, attempts)
+			assert.Equal(t, []bool{true, false}, transitions)
+			if test.preserve {
+				assert.ErrorIs(t, finalCause, independent)
+			} else {
+				assert.NoError(t, finalCause)
+			}
+		})
+	}
 }

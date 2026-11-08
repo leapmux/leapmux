@@ -139,7 +139,7 @@ The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a revers
 
 ### Running a Worker container
 
-A `worker` container connects out to a Hub. It must be registered with a registration key minted in the Hub UI. The container's start script passes no Hub URL or key for you. Supply them via the Worker config (`/data/worker/worker.yaml`), or via the `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/admin/managing-workers/) for the full registration flow.
+A `worker` container connects out to a Hub. Register it once with a key from the Hub's **Register worker** dialog, in a temporary container that mounts the same volume, then run the Worker container. [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container) gives both commands.
 
 ### Upgrading
 
@@ -166,8 +166,11 @@ Download the archive for your platform, extract it, and run the `leapmux` execut
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
 cd leapmux_<version>_linux_amd64
-./leapmux hub          # or: solo, worker, dev
+./leapmux hub start        # Start a Hub in the background as a service.
+./leapmux hub stop         # Stop it.
 ```
+
+The same commands work for `solo` and `dev`. A service keeps running after you log out, and starts again after a restart of the computer; see [Starting and Stopping](/docs/admin/starting-and-stopping/). Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 The macOS package is signed with a Developer ID and notarized.
 

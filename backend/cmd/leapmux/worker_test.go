@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -22,10 +23,54 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/lifecycle"
 )
+
+func TestRejectedStandaloneWorkerReleasesDirectory(t *testing.T) {
+	for _, launcher := range []string{"standalone", "foreground"} {
+		for _, scenario := range []string{"missing", "malformed", "missing keys", "invalid keys", "invalid endpoint"} {
+			t.Run(launcher+"/"+scenario, func(t *testing.T) {
+				dataDir := t.TempDir()
+				switch scenario {
+				case "malformed":
+					require.NoError(t, atomicfile.WriteFileDurable(filepath.Join(dataDir, "state.json"), []byte("invalid JSON"), 0o600))
+				case "missing keys", "invalid keys", "invalid endpoint":
+					cfg := writeRegisteredStateAgainst(t, "http://127.0.0.1:1")
+					dataDir = cfg.DataDir
+					state, err := cfg.LoadState()
+					require.NoError(t, err)
+					switch scenario {
+					case "missing keys":
+						state.KeyMaterial = config.KeyMaterial{}
+					case "invalid keys":
+						state.X25519PrivateKey = "not-valid-base64!"
+					case "invalid endpoint":
+						state.HubURL = "unsupported:hub"
+					}
+					require.NoError(t, cfg.SaveState(state))
+				}
+				if launcher == "standalone" {
+					require.Error(t, runWorkerCommandForTest(t, []string{"--data-dir", dataDir}))
+				} else {
+					runtime, err := lifecycle.StartRuntime(lifecycle.RuntimeConfig{Mode: lifecycle.RoleWorker, DataDir: dataDir, Execution: lifecycle.ExecutionForeground})
+					require.NoError(t, err)
+					t.Cleanup(func() { _ = runtime.Finish(nil) })
+					require.Error(t, runWorkerForeground(t.Context(), runtime, preparedWorkerConfig(t, dataDir)))
+					require.NoError(t, runtime.Finish(nil))
+				}
+				canonical, err := lifecycle.CanonicalDir(dataDir)
+				require.NoError(t, err)
+				lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+				require.NoError(t, err, "the launcher must retain cleanup until Run consumes its lease")
+				require.NoError(t, lease.Close())
+			})
+		}
+	}
+}
 
 // fakeConnector answers the Worker's Connect stream with connect.
 type fakeConnector struct {
@@ -84,13 +129,15 @@ func startRefusingHub(t *testing.T, code connect.Code, reason leapmuxv1.WorkerCo
 	}})
 }
 
-// writeRegisteredState writes the state of a Worker that already registered, and
-// returns the data directory that holds it.
-func writeRegisteredState(t *testing.T) *config.Config {
+// writeRegisteredState writes the state of a Worker that already
+// registered against hubURL, and returns the configuration that reads
+// it. The saved endpoint is the one the runtime dials: a --hub flag on
+// a runtime command never redirects saved credentials.
+func writeRegisteredStateAgainst(t *testing.T, hubURL string) *config.Config {
 	t.Helper()
 	cfg := &config.Config{DataDir: t.TempDir()}
 	// The keypair comes first: a state that holds a token refuses to generate one.
-	state := &config.State{}
+	state := &config.State{HubURL: hubURL}
 	_, _, err := state.EnsureCompositeKeypair()
 	require.NoError(t, err)
 	state.WorkerID = "worker-1"
@@ -101,13 +148,13 @@ func writeRegisteredState(t *testing.T) *config.Config {
 
 // A Worker that the Hub deleted forgets its registration and exits cleanly.
 //
-// Not parallel: runWorker sets the process-global log level.
+// Not parallel: the worker command sets the process-global log level.
 func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
-	cfg := writeRegisteredState(t)
 	hubURL := startRefusingHub(t, connect.CodeUnauthenticated,
 		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+	cfg := writeRegisteredStateAgainst(t, hubURL)
 
-	require.NoError(t, runWorker([]string{"--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "error"}))
+	require.NoError(t, runWorkerCommandForTest(t, []string{"--data-dir", cfg.DataDir, "--log-level", "error"}))
 
 	_, err := os.Stat(cfg.StatePath())
 	assert.ErrorIs(t, err, os.ErrNotExist, "a deleted worker must forget its registration")
@@ -116,16 +163,16 @@ func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
 // A Worker whose keys the Hub refuses keeps its state, because the deregistration
 // of the old row needs it, and reports the remedy.
 //
-// Not parallel: runWorker sets the process-global log level.
+// Not parallel: the worker command sets the process-global log level.
 func TestRunWorkerKeepsTheStateAndAdvisesWhenTheHubRefusesItsKeys(t *testing.T) {
-	cfg := writeRegisteredState(t)
 	hubURL := startRefusingHub(t, connect.CodePermissionDenied,
 		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+	cfg := writeRegisteredStateAgainst(t, hubURL)
 
-	err := runWorker([]string{"--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "error"})
+	err := runWorkerCommandForTest(t, []string{"--data-dir", cfg.DataDir, "--log-level", "error"})
 
 	require.ErrorIs(t, err, hub.ErrKeysRefused)
-	assert.Contains(t, err.Error(), reregistrationSteps(cfg.StatePath()))
+	assert.Contains(t, err.Error(), reregistrationSteps)
 	_, statErr := os.Stat(cfg.StatePath())
 	assert.NoError(t, statErr, "a key refusal must keep the worker's state")
 }
@@ -144,9 +191,9 @@ func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			hubURL, connected := startReceivingHub(t)
-			cfg := writeRegisteredState(t)
+			cfg := writeRegisteredStateAgainst(t, hubURL)
 
-			cmd := exec.Command(os.Args[0], "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
+			cmd := exec.Command(os.Args[0], "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
 			cmd.Env = append(os.Environ(), runMainEnv+"=1")
 			var output testutil.LogBuffer
 			cmd.Stdout, cmd.Stderr = &output, &output
@@ -189,42 +236,54 @@ func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 // fix, and every other error is returned unchanged.
 func TestReregistrationAdvice(t *testing.T) {
 	t.Parallel()
-	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	keysRefused := reregistrationAdvice(
-		errors.Join(errors.New("connect"), hub.ErrKeysRefused), statePath)
+	keysRefused := reregistrationAdvice(errors.Join(errors.New("connect"), hub.ErrKeysRefused))
 	require.Error(t, keysRefused)
-	assert.Equal(t, 1, strings.Count(keysRefused.Error(), reregistrationSteps(statePath)),
+	require.ErrorIs(t, keysRefused, hub.ErrKeysRefused, "the advice must keep the cause")
+	assert.Equal(t, 1, strings.Count(keysRefused.Error(), reregistrationSteps),
 		"the advice must appear exactly once")
-	assert.Contains(t, keysRefused.Error(), statePath)
 
-	unusable := reregistrationAdvice(
-		errors.Join(errors.New("restore"), config.ErrUnusableRegisteredKeypair), statePath)
+	unusable := reregistrationAdvice(errors.Join(errors.New("restore"), config.ErrUnusableRegisteredKeypair))
 	require.Error(t, unusable)
-	assert.Equal(t, 1, strings.Count(unusable.Error(), reregistrationSteps(statePath)),
+	require.ErrorIs(t, unusable, config.ErrUnusableRegisteredKeypair, "the advice must keep the cause")
+	assert.Equal(t, 1, strings.Count(unusable.Error(), reregistrationSteps),
 		"the advice must appear exactly once")
-	assert.Contains(t, unusable.Error(), statePath)
 
 	other := errors.New("the hub is unreachable")
-	assert.Equal(t, other, reregistrationAdvice(other, statePath),
+	assert.Equal(t, other, reregistrationAdvice(other),
 		"an error a reconnect can fix gets no advice")
-	assert.NoError(t, reregistrationAdvice(nil, statePath))
+	assert.NoError(t, reregistrationAdvice(nil))
 }
 
-// An already-registered worker is told to deregister and register again. Wiping
-// the state alone would leave the old row ACTIVE -- counting against
-// max_workers_per_user and keeping its token valid for any copy of the file.
+// The re-registration steps use `worker deregister`, which removes the saved
+// credentials itself once the Hub confirms. A step that deletes state.json by
+// hand would be redundant after it, and before it would leave the old row
+// ACTIVE -- counting against max_workers_per_user and keeping its token valid
+// for any copy of the file.
+func TestReregistrationStepsDeleteNoFileByHand(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, reregistrationSteps, "leapmux worker deregister")
+	assert.Contains(t, reregistrationSteps, "leapmux worker register")
+	assert.NotContains(t, reregistrationSteps, "state.json")
+	assert.NotContains(t, reregistrationSteps, "delete")
+}
+
+// An already-registered worker is told how to start it, and how to register it
+// again. The register command requires the key, so the refusal never tells the
+// operator to drop it.
 func TestAlreadyRegisteredError(t *testing.T) {
 	t.Parallel()
-	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	err := alreadyRegisteredError(statePath)
+	err := alreadyRegisteredError(&config.State{HubURL: "https://hub.example", WorkerID: "worker-1"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remove --registration-key")
-	assert.Equal(t, 1, strings.Count(err.Error(), reregistrationSteps(statePath)),
+	assert.Contains(t, err.Error(), "https://hub.example", "the refusal must identify the saved Hub")
+	assert.Contains(t, err.Error(), "leapmux worker start")
+	assert.Contains(t, err.Error(), "leapmux worker run")
+	assert.NotContains(t, err.Error(), "--registration-key",
+		"the register command requires the key, so dropping it is no remedy")
+	assert.Equal(t, 1, strings.Count(err.Error(), reregistrationSteps),
 		"the steps must appear exactly once")
-	assert.NotContains(t, err.Error(), "wipe",
-		"wiping the state would leave the old row ACTIVE")
 }
 
 // The deregistration callback's clear must report a failure it cannot undo, so a
@@ -260,4 +319,70 @@ func TestClearDeletedWorkerState(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), cfg.StatePath())
 	})
+}
+
+func TestWorkerCommandReportsDeregistrationCleanupFailure(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var released sync.Once
+	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
+		if _, err := stream.Receive(); err != nil {
+			return err
+		}
+		close(arrived)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED})
+		if err != nil {
+			return err
+		}
+		return connect.NewError(connect.CodeUnauthenticated, "worker deleted").WithDetail(detail)
+	}})
+	cfg := writeRegisteredStateAgainst(t, hubURL)
+	before, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	command := exec.Command(os.Args[0], "worker", "run", "--data-dir", cfg.DataDir)
+	command.Env = append(os.Environ(), runMainEnv+"=1")
+	var output testutil.LogBuffer
+	command.Stdout, command.Stderr = &output, &output
+	require.NoError(t, command.Start())
+	done := make(chan struct{})
+	var commandErr error
+	go func() { commandErr = command.Wait(); close(done) }()
+	t.Cleanup(func() { released.Do(func() { close(release) }); _ = command.Process.Kill(); <-done })
+	guard, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-arrived:
+	case <-done:
+		t.Fatalf("worker exited before the held refusal: %v\n%s", commandErr, output.String())
+	case <-guard.Done():
+		t.Fatal("worker never attempted the Hub connection")
+	}
+	canonical := mustCanonicalDir(t, cfg.DataDir)
+	require.Eventually(t, func() bool {
+		status, err := lifecycle.Observe(guard, canonical)
+		return err == nil && status.Readiness != nil && *status.Readiness == lifecycle.ReadinessReady
+	}, 30*time.Second, 10*time.Millisecond)
+	require.NoError(t, os.MkdirAll(filepath.Join(cfg.PendingPath(), "prevent-removal"), 0o700))
+	released.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-guard.Done():
+		t.Fatal("worker did not join after the deletion refusal")
+	}
+	assert.Error(t, commandErr, output.String())
+	status, err := lifecycle.Observe(guard, canonical)
+	require.NoError(t, err)
+	assert.Equal(t, lifecycle.ProcessFailed, status.Process.State)
+	require.NotNil(t, status.Attempt.Error)
+	assert.Contains(t, *status.Attempt.Error, filepath.Join(canonical, filepath.Base(cfg.PendingPath())))
+	after, err := os.ReadFile(cfg.StatePath())
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "retain the token until pending material cleanup succeeds")
+	lease, err := lifecycle.AcquireDirectory(lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+	require.NoError(t, err)
+	require.NoError(t, lease.Close())
 }

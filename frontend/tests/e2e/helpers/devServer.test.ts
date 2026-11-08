@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import type { DevServerHandle } from './devServer'
+import { Buffer } from 'node:buffer'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +12,9 @@ const state = vi.hoisted(() => ({
   tmpDir: '',
   args: [] as string[],
   waitedURL: '',
+  missingStreams: false,
+  streams: undefined as Pick<ChildProcess, 'stdout' | 'stderr'> | undefined,
+  onReadiness: undefined as ((proc: ChildProcess) => void) | undefined,
 }))
 
 vi.mock('./server', async (importOriginal) => {
@@ -22,6 +26,7 @@ vi.mock('./server', async (importOriginal) => {
     findFreePort: () => { throw new Error('the hub must assign its own port') },
     // The state file is real. No server answers the readiness request, so the mock records its URL instead.
     waitForHubStart: async (statePath: string, proc: ChildProcess, browserHost?: string) => {
+      state.onReadiness?.(proc)
       const raw = await actual.waitForHubStateFile(statePath, proc)
       const hubUrl = actual.hubUrlFromStateJson(raw, browserHost)
       state.waitedURL = hubUrl
@@ -51,6 +56,7 @@ vi.mock('./process', () => ({
 
 vi.mock('./processRegistry', async (importOriginal) => {
   const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
   const { mkdirSync, writeFileSync } = await import('node:fs')
   const { join } = await import('node:path')
   return {
@@ -67,16 +73,18 @@ vi.mock('./processRegistry', async (importOriginal) => {
       writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
         listen: [`${host}:49123`],
       }))
-      return Object.assign(new EventEmitter(), {
-        stdout: {
-          resume() {},
-        },
-        stderr: {
-          resume() {},
-        },
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: state.missingStreams
+          ? null
+          : new PassThrough(),
+        stderr: state.missingStreams
+          ? null
+          : new PassThrough(),
         exitCode: null,
         signalCode: null,
       })
+      state.streams = proc
+      return proc
     },
   }
 })
@@ -96,6 +104,11 @@ afterEach(() => {
   state.tmpDir = ''
   state.args = []
   state.waitedURL = ''
+  state.streams?.stdout?.destroy()
+  state.streams?.stderr?.destroy()
+  state.streams = undefined
+  state.missingStreams = false
+  state.onReadiness = undefined
 })
 
 describe('startUnseededDevServer', () => {
@@ -104,7 +117,7 @@ describe('startUnseededDevServer', () => {
 
     const server = await startUnseededDevServer()
 
-    expect(state.args.slice(0, 3)).toEqual(['dev', '-listen', '127.0.0.1:0'])
+    expect(state.args.slice(0, 4)).toEqual(['dev', 'run', '-listen', '127.0.0.1:0'])
     expect(server.hubUrl).toBe('http://localhost:49123')
     expect(state.waitedURL).toBe(server.hubUrl)
   })
@@ -114,7 +127,7 @@ describe('startUnseededDevServer', () => {
 
     const server = await startSoloServer({ listenHost: '0.0.0.0' })
 
-    expect(state.args.slice(0, 3)).toEqual(['solo', '-listen', '0.0.0.0:0'])
+    expect(state.args.slice(0, 4)).toEqual(['solo', 'run', '-listen', '0.0.0.0:0'])
     expect(server.listen).toBe('0.0.0.0:49123')
     expect(server.hubUrl).toBe('http://127.0.0.1:49123')
     expect(state.waitedURL).toBe(server.hubUrl)
@@ -170,4 +183,49 @@ describe('withAdminConfiguredDevServer', () => {
     await expect(withAdminConfiguredDevServer('captcha-test', async () => {}, async () => {})).rejects.toThrow('The mint was refused.')
     expect(stopProcess).toHaveBeenCalledTimes(1)
   })
+})
+
+describe('consumes server output', () => {
+  for (const [mode, start] of [
+    ['dev', startUnseededDevServer],
+    ['solo', startSoloServer],
+  ] as const) {
+    it(`forwards both ${mode} streams before readiness`, async () => {
+      createScratchRoot()
+      const output: [Buffer, string][] = []
+      const stdout = Buffer.from('startup stdout')
+      const stderr = Buffer.from('startup stderr')
+      state.onReadiness = (proc) => {
+        proc.stdout?.emit('data', stdout)
+        proc.stderr?.emit('data', stderr)
+      }
+      await start({
+        onStdio: (chunk, stream) => output.push([chunk, stream]),
+      })
+      expect(output).toEqual([
+        [stdout, 'stdout'],
+        [stderr, 'stderr'],
+      ])
+      expect(output[0]?.[0]).toBe(stdout)
+      expect(output[1]?.[0]).toBe(stderr)
+    })
+
+    it(`drains both ${mode} streams without a receiver`, async () => {
+      createScratchRoot()
+      state.onReadiness = (proc) => {
+        expect(proc.stdout?.readableFlowing).toBe(true)
+        expect(proc.stderr?.readableFlowing).toBe(true)
+      }
+      await start()
+    })
+
+    it(`accepts absent ${mode} streams with and without a receiver`, async () => {
+      createScratchRoot()
+      state.missingStreams = true
+      await start({
+        onStdio: () => { throw new Error('absent streams cannot emit data') },
+      })
+      await start()
+    })
+  }
 })

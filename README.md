@@ -109,6 +109,17 @@ The binary runs in several modes:
 | `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
+Each mode requires a command. Start an instance with `start`, which runs it as a service of the operating system and waits until it is ready, and stop it with `stop`. `restart` and `status` act on a running instance. `enable` configures automatic startup without starting the instance, and `disable` removes that configuration from a stopped instance. `run` keeps an instance in the foreground; the container image uses it.
+
+Register a standalone Worker before you start it:
+
+```sh
+leapmux worker register --hub https://hub.example.com --registration-key YOUR_KEY
+leapmux worker start
+```
+
+Solo and dev register their embedded Worker automatically. A fresh dev instance reports `ready_for_setup` until an administrator completes `/setup`.
+
 The connections use these protocols:
 
 - Frontend↔Hub uses ConnectRPC.
@@ -250,8 +261,8 @@ It then runs `dekit mprocs` to start the processes concurrently:
 
 | Command | Processes | Description |
 |---------|-----------|-------------|
-| `task dev` | Go backend (`leapmux dev`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
-| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
+| `task dev` | Go backend (`leapmux dev run`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
+| `task dev-solo` | Go backend (`leapmux solo run`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development
@@ -351,6 +362,27 @@ It reports cold-writer and warm-reader durations as observed measurements.
 Linux amd64 covers all frontend tests, repository script tests, and schema validation.
 Both Linux architectures run Go lint and vet checks for all three operating systems.
 The native jobs retain filesystem, process, interprocess communication, and desktop test coverage.
+
+The native CI jobs verify service registration and removal on every pull request
+update and every push to `main`. The Linux amd64 and arm64, macOS, and Windows jobs
+reuse their built CLI for these checks. The tests exercise `enable`, `status`, and
+repeated `disable` for Hub, Worker, Solo, and Dev. They also start and stop Solo
+through the native service manager and verify local control access restrictions.
+Boot cases run on every platform. macOS and Windows also cover login cases.
+The macOS job fails if the runner's GUI domain is unavailable. Linux login cases
+run when a graphical session is active; headless Linux runners run boot cases only.
+
+Native tests need no Go build tag. Ordinary test runs skip native installation
+when no disposable-account fixture is supplied. A supplied fixture must pass all
+account and privacy checks. `task test-cli-services` requires the fixture, so CI
+cannot silently skip native verification when its preparation fails.
+
+The CI check creates a private account fixture and removes it after verification.
+On Windows, it resets only the disposable runner account password and keeps the
+credential in the session credential store. It refuses workstation and self-hosted
+execution. Run `task test-cli-services` with an explicitly prepared disposable
+account fixture for native acceptance outside this workflow.
+
 
 Run specific tests by passing arguments after `--`:
 ```bash

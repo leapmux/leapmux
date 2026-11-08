@@ -40,6 +40,10 @@ function fixture(change = () => {}) {
         cmds: ['cp generated artifact', 'echo compiled >> executions'],
       },
       'check-build-cache': production.tasks['check-build-cache'],
+      'locate-task-executable': {
+        silent: true,
+        cmds: ['printf \'%s\\n\' {{.TASK_EXE | shellQuote}}'],
+      },
     },
   }
   change(config)
@@ -112,7 +116,11 @@ describe('native build cache check', () => {
     const executable = join(dir, process.platform === 'win32'
       ? 'task executable.exe'
       : 'task executable')
-    copyFileSync(taskExecutable, executable)
+    const located = run(dir, 'locate-task-executable')
+    expectSuccess(located)
+    const nativeTask = located.stdout.trim()
+    expect(nativeTask).not.toBe('')
+    copyFileSync(nativeTask, executable)
     chmodSync(executable, 0o755)
     expectSuccess(spawnSync(executable, ['check-build-cache'], {
       cwd: dir,

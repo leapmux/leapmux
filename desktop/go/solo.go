@@ -55,8 +55,7 @@ func (rt *soloRuntime) silenceWatcher() {
 // Release builds leave the env unset and keep the embedded SPA.
 func desktopSoloConfig(devFrontend string) solo.Config {
 	cfg := solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
+		NoTCP: true,
 	}
 	if devFrontend != "" {
 		cfg.Args = []string{"-dev-frontend", devFrontend}

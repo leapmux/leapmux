@@ -3,52 +3,71 @@ package worker_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/worker"
 )
+
+func TestRunRejectsInvalidMessageSize(t *testing.T) {
+	for _, size := range []int{1, contracts.MaxConfigurableMessageSize + 1} {
+		lease := workerLeaseForTest(t)
+		key, err := noiseutil.GenerateCompositeKeypair()
+		require.NoError(t, err)
+		require.NoError(t, os.Mkdir(filepath.Join(lease.Path(), "worker.db"), 0o700))
+		err = worker.Run(context.Background(), worker.RunConfig{
+			HubURL: "http://127.0.0.1:1", Directory: lease, AuthToken: "token",
+			CompositeKey: key, WorkerID: "worker-1", MaxMessageSize: size,
+			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		})
+		require.ErrorContains(t, err, "max_message_size")
+		assert.True(t, lease.Closed(), "rejected execution still releases its supplied lease")
+	}
+}
 
 // A Worker with no keypair cannot connect once the Hub pins keys, so Run refuses
 // it before it opens anything -- no database, no socket.
 func TestRunRefusesAMissingKeypair(t *testing.T) {
 	t.Parallel()
-	dataDir := t.TempDir()
+	lease := workerLeaseForTest(t)
 
 	err := worker.Run(context.Background(), worker.RunConfig{
 		HubURL:    "http://127.0.0.1:1",
-		DataDir:   dataDir,
+		Directory: lease,
 		AuthToken: "token",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "CompositeKey")
 
-	assertNoWorkerDB(t, dataDir)
+	assertNoWorkerDB(t, lease)
 }
 
 // An empty auth token sends "Bearer ", which the Hub refuses with a bare code the
 // worker would retry for ever, so Run refuses it up front too.
 func TestRunRefusesAMissingAuthToken(t *testing.T) {
 	t.Parallel()
-	dataDir := t.TempDir()
+	lease := workerLeaseForTest(t)
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
 	err = worker.Run(context.Background(), worker.RunConfig{
 		HubURL:         "http://127.0.0.1:1",
-		DataDir:        dataDir,
+		Directory:      lease,
 		CompositeKey:   key,
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AuthToken")
 
-	assertNoWorkerDB(t, dataDir)
+	assertNoWorkerDB(t, lease)
 }
 
 // A keypair that is present but cannot yield a complete key set cannot connect
@@ -57,13 +76,13 @@ func TestRunRefusesAMissingAuthToken(t *testing.T) {
 // nothing, so that panic would end the whole process.
 func TestRunRefusesAKeypairWithoutACompleteKeySet(t *testing.T) {
 	t.Parallel()
-	dataDir := t.TempDir()
+	lease := workerLeaseForTest(t)
 
 	var err error
 	require.NotPanics(t, func() {
 		err = worker.Run(context.Background(), worker.RunConfig{
 			HubURL:         "http://127.0.0.1:1",
-			DataDir:        dataDir,
+			Directory:      lease,
 			AuthToken:      "token",
 			CompositeKey:   &noiseutil.CompositeKeypair{},
 			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
@@ -73,14 +92,14 @@ func TestRunRefusesAKeypairWithoutACompleteKeySet(t *testing.T) {
 	assert.Contains(t, err.Error(), "CompositeKey")
 	assert.Contains(t, err.Error(), "ML-KEM", "the error states what the keypair lacks")
 
-	assertNoWorkerDB(t, dataDir)
+	assertNoWorkerDB(t, lease)
 }
 
 // The Hub refuses a hello with no encryption mode, with a bare code the worker
 // would retry for ever, so Run refuses the zero mode up front too.
 func TestRunRefusesAnUnspecifiedEncryptionMode(t *testing.T) {
 	t.Parallel()
-	dataDir := t.TempDir()
+	lease := workerLeaseForTest(t)
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
@@ -88,20 +107,37 @@ func TestRunRefusesAnUnspecifiedEncryptionMode(t *testing.T) {
 	// returns before it opens anything.
 	err = worker.Run(testutil.DeadlineContext(t), worker.RunConfig{
 		HubURL:       "http://127.0.0.1:1",
-		DataDir:      dataDir,
+		Directory:    lease,
 		AuthToken:    "token",
 		CompositeKey: key,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "EncryptionMode")
 
-	assertNoWorkerDB(t, dataDir)
+	assertNoWorkerDB(t, lease)
 }
 
-// assertNoWorkerDB proves Run returned before it opened anything.
-func assertNoWorkerDB(t *testing.T, dataDir string) {
+// workerLeaseForTest acquires a worker-component lease for a Run a test
+// drives, the way the launcher does. The lease releases when the test
+// ends; Run's own release is idempotent beside it.
+func workerLeaseForTest(t *testing.T) *lifecycle.DirectoryLease {
 	t.Helper()
-	entries, err := os.ReadDir(dataDir)
+	canonical, err := lifecycle.CanonicalDir(t.TempDir())
 	require.NoError(t, err)
-	assert.Empty(t, entries, "Run must refuse before it creates a database")
+	lease, err := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
+	require.NoError(t, err)
+	return lease
+}
+
+// assertNoWorkerDB proves Run returned before it opened the database.
+// The lease's lifecycle metadata legitimately exists in the directory,
+// so the assertion identifies the database and the sockets, not the tree.
+func assertNoWorkerDB(t *testing.T, lease *lifecycle.DirectoryLease) {
+	t.Helper()
+	entries, err := os.ReadDir(lease.Path())
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "worker.db", e.Name(), "Run must refuse before it creates a database")
+	}
 }

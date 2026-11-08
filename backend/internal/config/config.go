@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/v2"
@@ -57,12 +56,35 @@ func ConfigureAndParse(fs *flag.FlagSet, args []string, description string, cate
 	return RejectPositionalArgs(fs)
 }
 
+// HiddenFunc defines a string flag that help output omits; fn receives each
+// value. A hidden flag serves a caller other than a person: the service
+// definition that LeapMux writes passes one, and a command can accept a flag
+// that belongs to another command only to state that command in its error.
+func HiddenFunc(fs *flag.FlagSet, name, usage string, fn func(string) error) {
+	fs.Var(hiddenValue{funcValue(fn)}, name, usage)
+}
+
+// hiddenValue marks a flag that PrintFlagUsage omits.
+type hiddenValue struct{ flag.Value }
+
+// funcValue adapts a function to flag.Value, as flag.Func does internally.
+type funcValue func(string) error
+
+func (f funcValue) Set(s string) error { return f(s) }
+func (f funcValue) String() string     { return "" }
+
+func isHidden(f *flag.Flag) bool {
+	_, hidden := f.Value.(hiddenValue)
+	return hidden
+}
+
 // PrintFlagUsage writes a help message for fs to fs.Output(). When categories
 // is nil, flags are printed in a single "Options" section using the standard
 // flag package format. Otherwise, flags are grouped by their category from the
 // map (flag name -> category name); empty/missing categories fall under
 // "Options". Categories listed in categoryOrder appear in that order;
-// categories not listed are appended after.
+// categories not listed are appended after. Neither form prints a flag that
+// HiddenFunc defined.
 func PrintFlagUsage(fs *flag.FlagSet, description string, categories map[string]string, categoryOrder []string) {
 	if description != "" {
 		_, _ = fmt.Fprintf(fs.Output(), "%s\n\n", description)
@@ -70,7 +92,7 @@ func PrintFlagUsage(fs *flag.FlagSet, description string, categories map[string]
 	_, _ = fmt.Fprintf(fs.Output(), "Usage: %s [flags]\n", fs.Name())
 	if categories == nil {
 		_, _ = fmt.Fprint(fs.Output(), "\nOptions:\n")
-		fs.PrintDefaults()
+		visibleFlags(fs).PrintDefaults()
 		return
 	}
 	seen := make(map[string]bool, len(categoryOrder))
@@ -81,7 +103,7 @@ func PrintFlagUsage(fs *flag.FlagSet, description string, categories map[string]
 	printFlagCategory(fs, categories, "")
 	fs.VisitAll(func(f *flag.Flag) {
 		category := categories[f.Name]
-		if category == "" || seen[category] {
+		if isHidden(f) || category == "" || seen[category] {
 			return
 		}
 		seen[category] = true
@@ -89,10 +111,27 @@ func PrintFlagUsage(fs *flag.FlagSet, description string, categories map[string]
 	})
 }
 
+// visibleFlags copies the flags that help output shows into a new set, so the
+// standard formatter prints them in its own format without the hidden ones.
+// Each copy keeps the default recorded at definition time, because a parse that
+// failed part way, or that reached --help, has already changed some values.
+func visibleFlags(fs *flag.FlagSet) *flag.FlagSet {
+	visible := flag.NewFlagSet(fs.Name(), flag.ContinueOnError)
+	visible.SetOutput(fs.Output())
+	fs.VisitAll(func(f *flag.Flag) {
+		if isHidden(f) {
+			return
+		}
+		visible.Var(f.Value, f.Name, f.Usage)
+		visible.Lookup(f.Name).DefValue = f.DefValue
+	})
+	return visible
+}
+
 func printFlagCategory(fs *flag.FlagSet, categories map[string]string, category string) {
 	var flags []*flag.Flag
 	fs.VisitAll(func(f *flag.Flag) {
-		if categories[f.Name] == category {
+		if !isHidden(f) && categories[f.Name] == category {
 			flags = append(flags, f)
 		}
 	})
@@ -133,23 +172,6 @@ func defaultValueString(f *flag.Flag) string {
 		}
 	}
 	return f.DefValue
-}
-
-// ExtractConfigFlag pre-scans args for -config/--config before full flag parsing.
-// Returns the config file path found, or defaultPath if not specified.
-func ExtractConfigFlag(args []string, defaultPath string) string {
-	for i, arg := range args {
-		// Handle -config=value or --config=value
-		if strings.HasPrefix(arg, "-config=") || strings.HasPrefix(arg, "--config=") {
-			_, val, _ := strings.Cut(arg, "=")
-			return val
-		}
-		// Handle -config value or --config value
-		if (arg == "-config" || arg == "--config") && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return defaultPath
 }
 
 // Delim is the koanf path separator. Every koanf instance in this repo takes

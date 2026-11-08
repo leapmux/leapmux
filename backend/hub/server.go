@@ -48,7 +48,9 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/clockjump"
 	"github.com/leapmux/leapmux/util/drain"
@@ -281,32 +283,60 @@ type Server struct {
 	// the per-user and admin surfaces, the user-deletion cascade and
 	// RetireLocalWorker.
 	workerEffects *service.WorkerDeregisterEffects
+	// directory is the data-directory lease this server owns. Serve
+	// releases it with the rest of its teardown, after the store closes;
+	// a construction that fails releases it through acquiredResources.
+	directory *lifecycle.DirectoryLease
+	// ready closes when required Hub initialization has completed and
+	// serving has begun: the point a caller's readiness wait may treat
+	// as "the Hub answers". A bound socket alone does not close it.
+	ready chan struct{}
+}
+
+// Ready reports when required Hub initialization completes and serving
+// begins: database, runtime lease, listeners, and the seeded revocation
+// cursor. A socket that accepts connections does not by itself mean any
+// of that finished.
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
 }
 
 // NewServer creates a new Hub server. It binds every address of the bind set
 // (to fail fast on conflicts), opens the database, runs migrations,
 // bootstraps defaults, and wires all services. Call Serve() to start listening.
-func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
+//
+// directory is the held, ownership-validated lease of the Hub's data
+// directory. NewServer takes ownership of it: it validates the lease
+// against cfg.DataDir and the Hub component before anything opens, a
+// construction failure releases it through acquiredResources, and a
+// successful construction hands it to the returned Server, whose Serve
+// releases it after the store and listener cleanup.
+func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...ServerOption) (*Server, error) {
+	// Record each resource as it is acquired, so every failure closes
+	// exactly what is open without restating the subset (see acquiredResources).
+	// Retain the supplied lease from entry. Every rejection releases it,
+	// including validation that must precede configuration writes.
+	acquired := acquiredResources{directory: directory}
+	if cfg == nil {
+		return nil, acquired.close(errors.New("hub: NewServer requires a configuration"))
+	}
+	if err := validateHubLease(cfg, directory); err != nil {
+		return nil, acquired.close(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, acquired.close(fmt.Errorf("validate config: %w", err))
+	}
+
 	so := serverOptions{listenLocal: locallisten.Listen}
 	for _, opt := range opts {
 		opt(&so)
 	}
 
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("validate config: %w", err)
-	}
-
-	// Records each resource as it is acquired, so every failure below closes
-	// exactly what is open without restating the subset (see acquiredResources).
-	var acquired acquiredResources
-
 	// Bind the whole bind set before any database work so that concurrent
 	// instances (e.g. solo + CLI, or two desktop apps sharing the per-user
 	// pipe name) fail fast on conflict without a TOCTOU window. Binding
-	// the local listeners here also avoids a race where solo.Start's
-	// dial-based readiness probe could connect to a foreign listener on
-	// the same name (e.g. another running Solo instance) while our own
-	// Serve goroutine still propagates the bind failure.
+	// local listeners here also reports same-name conflicts during
+	// construction, before serving or application readiness.
 	// The extra listen addresses do NOT join here, although they are bound
 	// the same way. They live in a settings row, which is unreadable until
 	// the store opens below, and moving this bind after the store would give
@@ -661,7 +691,25 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// subscribers that its worker list changed.
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, crdtRegistry.BroadcastWorkersChanged)
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, pendingReqs, notifierSvc, crdtRegistry, workerQueuePool, quartz.NewReal())
+	// One delegation-scope cache shared by SubmitOps (resolve) and worker
+	// deregistration (evict); see auth.DelegationScopeCache.
+	scopeCache := auth.NewDelegationScopeCache(st)
+	// The post-deregister effects, shared by the per-user and admin surfaces,
+	// the user-deletion cascade and Server.RetireLocalWorker -- so a worker
+	// torn down by any of the four is told to stop, loses its memoized
+	// delegation scope, and leaves its owner's client informed.
+	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
+	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     wMgr,
+		ChannelManager:    cMgr,
+		PendingRequests:   pendingReqs,
+		Notifier:          notifierSvc,
+		Registry:          crdtRegistry,
+		QueuePool:         workerQueuePool,
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: workerEffects,
+	})
 	// The worker pool's count term. Its members take no lease, so the per-user
 	// connection cap cannot see them, and nothing else keeps the floors this
 	// pool guarantees from summing without limit.
@@ -707,14 +755,6 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		}
 	})
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
-	// One delegation-scope cache shared by SubmitOps (resolve) and worker
-	// deregistration (evict); see auth.DelegationScopeCache.
-	scopeCache := auth.NewDelegationScopeCache(st)
-	// The post-deregister effects, shared by the per-user and admin surfaces,
-	// the user-deletion cascade and Server.RetireLocalWorker -- so a worker
-	// torn down by any of the four is told to stop, loses its memoized
-	// delegation scope, and leaves its owner's client informed.
-	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
@@ -1085,7 +1125,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		})
 	}
 
-	return &Server{
+	hubServer := &Server{
 		cfg:               cfg,
 		store:             st,
 		keystore:          ks,
@@ -1109,7 +1149,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
-	}, nil
+		directory:         directory,
+		ready:             make(chan struct{}),
+	}
+	// The lease is the Server's now; a failure below this point goes
+	// through Serve's teardown, not the construction close.
+	acquired.directory = nil
+	return hubServer, nil
 }
 
 // Store returns the Hub's store for direct database access
@@ -1136,14 +1182,15 @@ func (s *Server) PrimaryListenAddr() string {
 	return s.listeners.PrimaryListenAddr()
 }
 
-// PrintBannerURL prints the address an operator should open, to stderr.
+// AccessURL is the address an operator should open: the public_url setting
+// when it is set, otherwise one derived from the address this hub answers
+// on. It is empty for a hub that binds no TCP address.
 //
-// The two launchers gathered the same two arguments -- the public_url setting
-// and the primary listen address -- and both are facts this server owns, so a
-// third launcher would have copied the gather rather than called it. The RULE
-// that public_url wins still lives once, in logging.PrintBannerURL.
-func (s *Server) PrintBannerURL() {
-	logging.PrintBannerURL(
+// The launchers print it and report it in the lifecycle status. Both inputs
+// are facts this server owns, so a launcher calls this rather than gathering
+// them again. The RULE that public_url wins lives once, in logging.AccessURL.
+func (s *Server) AccessURL() string {
+	return logging.AccessURL(
 		settings.KeyPublicURL.Of(s.settings.Snapshot(context.Background())),
 		s.PrimaryListenAddr())
 }
@@ -1313,9 +1360,9 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 
 // LeaseHeld reports the moment the Hub runtime lease was acquired: the channel
 // closes directly after a successful acquire, before Serve accepts on its
-// listeners. solo.Start waits on it, because a bound socket proves nothing:
-// NewServer binds before Serve runs, and the lease is the one signal that the
-// previous Hub is gone.
+// listeners. NewServer binds before Serve runs, so a bound socket alone does
+// not prove that this Hub acquired its runtime lease. Solo waits for Ready,
+// which also includes listener startup.
 func (s *Server) LeaseHeld() <-chan struct{} {
 	return s.leaseHeld
 }
@@ -1338,28 +1385,23 @@ func (s *Server) Serve(ctx context.Context) error {
 		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
 		watcherCloseErr := s.revocationWatcher.Close(watcherCloseCtx)
 		cancelWatcherClose()
-		// A cancel landing here is an exit somebody ASKED for, not a failure to
-		// report. NewServer binds BOTH listeners before Serve runs, so a caller's
-		// connect-and-close readiness probe succeeds -- and its Stop can arrive --
-		// while this seed is still in flight. Reporting it made `leapmux hub` and
-		// `leapmux solo` exit NON-ZERO on an ordinary Ctrl-C during startup,
-		// printing "seed revocation watcher: ... context canceled" -- or, when the
-		// store aborted first, modernc sqlite's "interrupted (9)", which wraps no
-		// context error and so slips through every errors.Is(err, context.Canceled)
-		// filter downstream. The teardown below still runs, and a genuine failure
-		// in it is still reported.
+		// Cancellation during lease seeding is a requested exit. SQLite can
+		// report a typed SQLITE_INTERRUPT instead of wrapping context.Canceled.
+		// Suppress only cancellation causes; retain independent storage and
+		// teardown failures even when a stop request arrives concurrently.
 		primary := fmt.Errorf("seed revocation watcher: %w", err)
-		if serveCtx.Err() != nil {
+		if errors.Is(serveCtx.Err(), context.Canceled) && errwrap.IsCancellationWith(err, sqlitedb.IsInterruption) {
 			primary = nil
 		}
 		return serverTeardownErrors{
-			primary:       primary,
-			tcpListener:   s.listeners.Close(),
-			localListener: closeServerListeners(s.localLns),
-			stateFile:     removeStateFile(s.statePath),
-			httpClose:     s.server.Close(),
-			watcherClose:  watcherCloseErr,
-			storeClose:    s.store.Close(),
+			primary:        primary,
+			tcpListener:    s.listeners.Close(),
+			localListener:  closeServerListeners(s.localLns),
+			stateFile:      removeStateFile(s.statePath),
+			httpClose:      s.server.Close(),
+			watcherClose:   watcherCloseErr,
+			storeClose:     s.store.Close(),
+			directoryLease: s.directory.Close(),
 		}.finalize()
 	}
 
@@ -1459,8 +1501,10 @@ func (s *Server) Serve(ctx context.Context) error {
 			"hub: websocket handler drain timed out during shutdown; abandoning hijacked handlers")
 
 		shutdownDone <- serverTeardownErrors{
-			httpShutdown: httpShutdownErr,
-			httpClose:    httpCloseErr,
+			httpShutdown:   httpShutdownErr,
+			httpClose:      httpCloseErr,
+			storeClose:     nil,
+			directoryLease: nil,
 		}
 	}()
 
@@ -1485,6 +1529,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else {
 		slog.Info("hub listening", "local", s.localListenURLs)
 	}
+
+	// Required initialization is complete and serving has begun: the
+	// database is open and migrated, the runtime lease is held, every
+	// listener of the bind set answers, and the revocation cursor is
+	// seeded. This -- not the bound socket a probe can reach earlier --
+	// is the Hub's readiness.
+	close(s.ready)
 
 	var teardownErrs serverTeardownErrors
 	localsHeard := 0
@@ -1563,6 +1614,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	teardownErrs.foldPendingListenerError(s.listenerErrs)
 	teardownErrs.foldPendingWatcherError(s.revocationWatcher.Errors())
 	teardownErrs.storeClose = s.store.Close()
+	// The lease releases after the store it guards closed, exactly as
+	// the construction-failure path orders it.
+	teardownErrs.directoryLease = s.directory.Close()
 	return teardownErrs.finalize()
 }
 
@@ -1628,14 +1682,15 @@ func (e *serverTeardownErrors) foldPendingWatcherError(watcherErrors <-chan erro
 // runtime shutdown all populate the resources they owned so no cleanup error
 // is silently dropped.
 type serverTeardownErrors struct {
-	primary       error
-	tcpListener   error
-	localListener error
-	stateFile     error
-	httpShutdown  error
-	httpClose     error
-	watcherClose  error
-	storeClose    error
+	primary        error
+	tcpListener    error
+	localListener  error
+	stateFile      error
+	httpShutdown   error
+	httpClose      error
+	watcherClose   error
+	storeClose     error
+	directoryLease error
 }
 
 func (e serverTeardownErrors) finalize() error {
@@ -1648,6 +1703,7 @@ func (e serverTeardownErrors) finalize() error {
 		errwrap.Wrap(e.httpClose, "force-close HTTP server"),
 		errwrap.Wrap(e.watcherClose, "close revocation watcher"),
 		errwrap.Wrap(e.storeClose, "close store"),
+		errwrap.Wrap(e.directoryLease, "release the data directory lease"),
 	)
 }
 
@@ -1683,6 +1739,10 @@ type acquiredResources struct {
 	crdtRegistry   *crdt.Registry
 	cancelHandlers context.CancelFunc
 	cancelServing  context.CancelFunc
+	// directory is the data-directory lease the construction owns until
+	// it succeeds. The SERVER owns it afterwards, so a successful
+	// construction clears it here and Serve releases it instead.
+	directory *lifecycle.DirectoryLease
 }
 
 // close releases the acquired resources, joining the primary construction
@@ -1710,7 +1770,33 @@ func (r acquiredResources) close(primary error) error {
 		localListener: closeServerListeners(r.localLns),
 		stateFile:     removeStateFile(r.statePath),
 		tcpListener:   errors.Join(closeServerListeners(r.tcpLns), closeListenerSet(r.listeners)),
+		// The lease releases after the storage it guards closed.
+		directoryLease: r.directory.Close(),
 	}.finalize()
+}
+
+// validateHubLease states what NewServer accepts as its directory lease:
+// a live lease for the Hub component over this configuration's data
+// directory. Anything else is refused before a listener binds or a store
+// opens, so no half-constructed server ever holds a foreign lease.
+func validateHubLease(cfg *config.Config, directory *lifecycle.DirectoryLease) error {
+	if directory == nil {
+		return errors.New("hub: NewServer requires the data directory's lease")
+	}
+	if directory.Closed() {
+		return errors.New("hub: NewServer received a closed lease; acquire a fresh one")
+	}
+	if directory.Mode() != lifecycle.RoleHub {
+		return fmt.Errorf("hub: NewServer requires the hub component's lease, not %s", directory.Mode())
+	}
+	canonical, err := lifecycle.CanonicalDir(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	if directory.Path() != canonical {
+		return fmt.Errorf("hub: the lease holds %s, not the configured data directory %s", directory.Path(), canonical)
+	}
+	return nil
 }
 
 func closeListenerSet(set *listenerSet) error {

@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -15,38 +13,28 @@ import (
 )
 
 type cliCall struct {
-	command  string
-	args     []string
-	soloMode bool
+	command string
+	args    []string
 }
 
 func testCLIRunners(calls *[]cliCall) cliRunners {
-	record := func(command string, args []string, soloMode bool) {
+	record := func(command string, args []string) {
 		*calls = append(*calls, cliCall{
-			command:  command,
-			args:     append([]string(nil), args...),
-			soloMode: soloMode,
+			command: command,
+			args:    append([]string(nil), args...),
 		})
 	}
 	return cliRunners{
-		runHub: func(args []string) error {
-			record("hub", args, false)
-			return nil
-		},
-		runWorker: func(args []string) error {
-			record("worker", args, false)
-			return nil
-		},
-		runSolo: func(args []string, soloMode bool) error {
-			record("solo", args, soloMode)
+		runMode: func(mode string, args []string) error {
+			record(mode, args)
 			return nil
 		},
 		runRecover: func(args []string) error {
-			record("recover", args, false)
+			record("recover", args)
 			return nil
 		},
 		runControl: func(args []string) error {
-			record("control", args, false)
+			record("control", args)
 			return nil
 		},
 		version: func() string {
@@ -72,13 +60,13 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			name:       "bare command is rejected",
 			args:       nil,
 			wantCode:   1,
-			wantStderr: `hint: use "leapmux solo"`,
+			wantStderr: `hint: use "leapmux solo start" to start solo mode`,
 		},
 		{
 			name:       "top-level solo flag is rejected",
 			args:       []string{"-dev-frontend", "http://localhost:4328"},
 			wantCode:   1,
-			wantStderr: `hint: use "leapmux solo -dev-frontend"`,
+			wantStderr: `hint: use "leapmux solo start -dev-frontend" to pass solo-mode flags`,
 		},
 		{
 			name:       "top-level help flag prints help",
@@ -93,51 +81,51 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			wantStdout: usageText,
 		},
 		{
-			name:     "solo dispatches to solo mode",
-			args:     []string{"solo", "-dev-frontend", "http://localhost:4328"},
+			name:     "solo run dispatches through the lifecycle group",
+			args:     []string{"solo", "run", "-dev-frontend", "http://localhost:4328"},
 			wantCode: 0,
 			wantCalls: []cliCall{{
-				command:  "solo",
-				args:     []string{"-dev-frontend", "http://localhost:4328"},
-				soloMode: true,
+				command: "solo",
+				args:    []string{"run", "-dev-frontend", "http://localhost:4328"},
 			}},
 		},
 		{
-			name:     "solo version flag dispatches through solo",
-			args:     []string{"solo", "--version"},
+			name:       "bare solo identifies the required verb",
+			args:       []string{"solo", "-dev-frontend", "http://localhost:4328"},
+			wantCode:   1,
+			wantStderr: "the solo command is required before any flags",
+		},
+		{
+			name:       "a flag before the verb identifies the corrected command",
+			args:       []string{"solo", "--version"},
+			wantCode:   1,
+			wantStderr: "`leapmux solo start [flags]`",
+		},
+		{
+			name:     "dev run dispatches through the lifecycle group",
+			args:     []string{"dev", "run", "-dev-frontend", "http://localhost:4328"},
 			wantCode: 0,
 			wantCalls: []cliCall{{
-				command:  "solo",
-				args:     []string{"--version"},
-				soloMode: true,
+				command: "dev",
+				args:    []string{"run", "-dev-frontend", "http://localhost:4328"},
 			}},
 		},
 		{
-			name:     "dev dispatches to dev mode",
-			args:     []string{"dev", "-dev-frontend", "http://localhost:4328"},
-			wantCode: 0,
-			wantCalls: []cliCall{{
-				command:  "solo",
-				args:     []string{"-dev-frontend", "http://localhost:4328"},
-				soloMode: false,
-			}},
-		},
-		{
-			name:     "hub dispatches unchanged",
-			args:     []string{"hub", "-listen", ":4327"},
+			name:     "hub run dispatches through the lifecycle group",
+			args:     []string{"hub", "run", "-listen", ":4327"},
 			wantCode: 0,
 			wantCalls: []cliCall{{
 				command: "hub",
-				args:    []string{"-listen", ":4327"},
+				args:    []string{"run", "-listen", ":4327"},
 			}},
 		},
 		{
-			name:     "worker dispatches unchanged",
-			args:     []string{"worker", "--hub", "https://hub.example.com"},
+			name:     "worker register dispatches through the lifecycle group",
+			args:     []string{"worker", "register", "--hub", "https://hub.example.com"},
 			wantCode: 0,
 			wantCalls: []cliCall{{
 				command: "worker",
-				args:    []string{"--hub", "https://hub.example.com"},
+				args:    []string{"register", "--hub", "https://hub.example.com"},
 			}},
 		},
 		{
@@ -255,31 +243,25 @@ func TestRunCLISubcommandErrorReportsPlainly(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	runners := testCLIRunners(&[]cliCall{})
-	runners.runHub = func([]string) error {
-		return fmt.Errorf("simulated startup failure")
-	}
 
+	// The lifecycle tree requires a verb; a bare mode identifies it.
 	code := runCLI([]string{"hub"}, &stdout, &stderr, runners)
 
 	assert.Equal(t, 1, code)
 	assert.Equal(t, "", stdout.String())
-	assert.Equal(t, "error: simulated startup failure\n", stderr.String())
+	assert.Contains(t, stderr.String(), "command is required")
 }
 
 func TestRunCLISubcommandHelpReturnsSuccess(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	runners := testCLIRunners(&[]cliCall{})
-	runners.runHub = func([]string) error {
-		_, _ = stdout.WriteString("hub help\n")
-		return flag.ErrHelp
-	}
 
-	code := runCLI([]string{"hub", "--help"}, &stdout, &stderr, runners)
+	// The mode group's help prints its verbs without starting anything.
+	code := runCLI([]string{"hub", "--help"}, &stdout, &stderr, testCLIRunners(&[]cliCall{}))
 
 	assert.Equal(t, 0, code)
-	assert.Equal(t, "", stderr.String())
-	assert.Contains(t, stdout.String(), "hub help")
+	assert.Contains(t, stdout.String(), "run")
+	assert.Contains(t, stdout.String(), "enable")
 }
 
 func TestRunCLIRecoverLeafHelpIncludesDescription(t *testing.T) {
@@ -460,7 +442,7 @@ func usageCommandRows(t *testing.T) map[string]string {
 }
 
 func TestRunSoloRejectsUnknownFlag(t *testing.T) {
-	err := runSolo([]string{"--unknown-flag"}, true)
+	err := runModeCommand("solo", []string{"run", "--unknown-flag"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown-flag")
 }

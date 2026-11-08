@@ -29,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/leapmux/leapmux/worker"
@@ -377,6 +378,22 @@ func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
 // reaches this budget has already failed.
 const soloTestTimeout = 60 * time.Second
 
+// startForTest drives the production entry the way Start does -- the
+// same preparation, the same root-lease acquisition -- so the tests
+// exercise the lease-transfer contract every caller lives under.
+func startForTest(ctx context.Context, cfg Config, d deps) (*Instance, error) {
+	prepared, err := Prepare(cfg)
+	if err != nil {
+		return nil, err
+	}
+	root, err := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(prepared.role, prepared.dataDir), prepared.role, prepared.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	return start(ctx, cfg, d, prepared, root)
+}
+
 // serveFailsImmediately stubs serveHub with a failure after releasing the Hub's
 // resources through Serve with an already-cancelled context. That Serve never
 // holds the lease, so only the Hub's exit can end Start's readiness wait.
@@ -395,6 +412,12 @@ func serveFailsImmediately(t *testing.T, d *testDeps, serveErr error) {
 		_ = s.Serve(dead)
 		return serveErr
 	})
+	// A successful connect can race Hub exit. Release readiness after the exit
+	// is published so the startup verdict must detect it independently.
+	d.waitReady = func(ctx context.Context, _ *hub.Server, _ string) error {
+		<-ctx.Done()
+		return nil
+	}
 }
 
 // testDeps accumulates the seam substitutions for one test. It is passed to
@@ -517,7 +540,7 @@ func startUntilTornDown(t *testing.T, ctx context.Context, d *testDeps, cfg Conf
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		inst, err = start(ctx, cfg, d.deps)
+		inst, err = startForTest(ctx, cfg, d.deps)
 	}()
 
 	select {
@@ -562,9 +585,8 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 	t.Helper()
 	locallistentest.SandboxHome(t)
 	return Config{
-		SkipBanner: true,
-		NoTCP:      true,
-		DevMode:    devMode,
+		NoTCP:   true,
+		DevMode: devMode,
 		// One local entry is the whole bind set; NoTCP drops the TCP half of
 		// any default anyway.
 		Args: []string{"--listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
@@ -586,7 +608,7 @@ func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, err := start(ctx, cfg, d.deps)
+	inst, err := startForTest(ctx, cfg, d.deps)
 
 	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	require.Error(t, err)
@@ -612,7 +634,7 @@ func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
-		_, err = start(ctx, cfg, d.deps)
+		_, err = startForTest(ctx, cfg, d.deps)
 		assert.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	})
 
@@ -646,7 +668,7 @@ func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *te
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
 		var err error
-		inst, err = start(ctx, cfg, d.deps)
+		inst, err = startForTest(ctx, cfg, d.deps)
 		require.NoError(t, err, "the Hub must come up before this test can kill it")
 
 		<-serving
@@ -682,7 +704,7 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
-		inst, err := start(ctx, cfg, d.deps)
+		inst, err := startForTest(ctx, cfg, d.deps)
 		require.NoError(t, err)
 		stopErr = inst.Stop()
 	})
@@ -817,7 +839,7 @@ func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testin
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, err := start(ctx, cfg, d.deps)
+	inst, err := startForTest(ctx, cfg, d.deps)
 
 	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
 	require.Error(t, err)
@@ -849,7 +871,44 @@ func TestSoloStart_ReadinessFailureStopsBeforeWorkerBringUp(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, err := start(ctx, cfg, d.deps)
+	inst, err := startForTest(ctx, cfg, d.deps)
+	if inst != nil {
+		t.Cleanup(func() { _ = inst.Stop() })
+	}
+
+	require.NoError(t, ctx.Err(), "the caller must remain live through the startup verdict")
+	require.ErrorIs(t, err, wantErr)
+	require.Nil(t, inst)
+	assert.False(t, broughtUp.Load(), "readiness failure must stop Worker bring-up")
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("startup returned before the Hub finished cleanup")
+	}
+}
+
+// A failed application-readiness wait stops Worker bring-up and joins Hub cleanup.
+func TestSoloStart_ReadinessWaitFailureStopsBeforeWorkerBringUp(t *testing.T) {
+	cfg := startFailureEnv(t)
+	d := newTestDeps()
+	wantErr := errors.New("application readiness failed")
+	d.waitReady = func(context.Context, *hub.Server, string) error { return wantErr }
+
+	stopped := make(chan struct{})
+	serve := d.serveHub
+	d.stubServeHub(func(ctx context.Context, server *hub.Server) error {
+		defer close(stopped)
+		return serve(ctx, server)
+	})
+	var broughtUp atomic.Bool
+	d.stubWorkerBringUp(func(context.Context) error {
+		broughtUp.Store(true)
+		return nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	defer cancel()
+	inst, err := startForTest(ctx, cfg, d.deps)
 	if inst != nil {
 		t.Cleanup(func() { _ = inst.Stop() })
 	}
@@ -972,7 +1031,7 @@ func TestHubServe_ACancelDuringItsOwnStartupIsACleanExit(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, _ := start(ctx, cfg, d.deps)
+	inst, _ := startForTest(ctx, cfg, d.deps)
 	// Whether Start notices is deliberately NOT asserted: a clean exit is exactly
 	// what its gates cannot distinguish from a Hub still coming up, and Serve's
 	// unwind can outlast the whole launch. Start's own doc says as much -- the
@@ -1018,7 +1077,7 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
-		inst, err = start(ctx, cfg, d.deps)
+		inst, err = startForTest(ctx, cfg, d.deps)
 	})
 	// Unconditional, and BEFORE the requires below: workerCtx is detached from the
 	// caller's, so nothing but Stop ever cancels the poller. A require that fired
@@ -1116,9 +1175,86 @@ func TestSoloStart_ACallerCancelDuringBringUpIsNotBlamedOnTheWorker(t *testing.T
 		"a cancelled startup must say so; got: "+err.Error())
 }
 
-// A genuine cleanup failure during the teardown Start itself triggers has no other
-// reporter: Start returns a nil Instance, so Wait and Stop are unreachable and the
-// watcher is deliberately silent. It has to ride out with the cause.
+func TestInitialBringUpCancellationPreservesJoinedIndependentFailure(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	serveUntilKilled(t, d, nil)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	defer cancel()
+	entered := make(chan struct{})
+	failure := errors.New("initial worker database failed independently")
+	d.stubWorkerBringUp(func(ctx context.Context) error {
+		close(entered)
+		<-ctx.Done()
+		return errors.Join(ctx.Err(), failure)
+	})
+	inst, err := startUntilTornDown(t, ctx, d, cfg, entered, cancel)
+	require.Nil(t, inst)
+	require.ErrorIs(t, err, failure)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestStartupJoinPreservesLateIndependentWorkerFailure(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	deadline := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(deadline)
+	defer cancel()
+	entered, releaseWorker, hubStopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseWorker) }) }
+	failure := errors.New("worker failed during startup join")
+	serve := d.serveHub
+	d.serveHub = func(ctx context.Context, server *hub.Server) error {
+		err := serve(ctx, server)
+		close(hubStopped)
+		return err
+	}
+	d.runWorker = func(ctx context.Context, cfg worker.RunConfig) error {
+		defer func() { _ = cfg.Directory.Close() }()
+		close(entered)
+		<-ctx.Done()
+		cfg.Drained()
+		<-releaseWorker
+		return failure
+	}
+	var inst *Instance
+	var outcome error
+	done := make(chan struct{})
+	go func() { inst, outcome = startForTest(ctx, cfg, d.deps); close(done) }()
+	t.Cleanup(func() {
+		cancel()
+		release()
+		<-done
+		if inst != nil {
+			_ = inst.Stop()
+		}
+	})
+	select {
+	case <-entered:
+	case <-deadline.Done():
+		t.Fatal("worker initialization did not begin")
+	}
+	cancel()
+	// The Hub cannot stop until startup releases its bring-up token. The
+	// worker still holds its completion, so the startup cause predates it.
+	select {
+	case <-hubStopped:
+	case <-deadline.Done():
+		t.Fatal("startup cleanup did not stop the Hub")
+	}
+	release()
+	select {
+	case <-done:
+	case <-deadline.Done():
+		t.Fatal("startup cleanup did not join the worker")
+	}
+	require.Nil(t, inst)
+	require.ErrorIs(t, outcome, failure)
+}
+
+// A cleanup failure during failed startup has no returned Instance through which
+// callers could retrieve it. Start must preserve the cause after joining cleanup.
 func TestSoloStart_ReportsACleanupFailureFromTheTeardownItTriggered(t *testing.T) {
 	cfg := soloStartEnv(t, false)
 	d := newTestDeps()
@@ -1132,7 +1268,7 @@ func TestSoloStart_ReportsACleanupFailureFromTheTeardownItTriggered(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, err := start(ctx, cfg, d.deps)
+	inst, err := startForTest(ctx, cfg, d.deps)
 
 	require.Error(t, err)
 	require.Nil(t, inst)
@@ -1156,7 +1292,7 @@ func TestSoloStart_DoesNotReportTheCancellationItsOwnTeardownCaused(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
-	inst, err := start(ctx, cfg, d.deps)
+	inst, err := startForTest(ctx, cfg, d.deps)
 
 	require.Error(t, err)
 	require.Nil(t, inst)
@@ -1175,34 +1311,36 @@ func TestSoloStart_TheDeferredPollerStaysQuietWhenTheTeardownCancelsIt(t *testin
 	d := newTestDeps()
 	serveUntilKilled(t, d, nil)
 
-	// First call defers (no admin yet); every later call is the poller's, and it
-	// parks until the teardown cancels it -- the window the guard covers.
+	clock := testutil.NewQuartzMock(t)
+	d.clock = clock
+	created := clock.Trap().NewTicker(workerSetupPollTag)
+	defer created.Close()
+	entered := make(chan struct{})
+	// The initial call defers. The next call waits for requested shutdown.
 	var calls atomic.Int32
 	d.stubWorkerBringUp(func(ctx context.Context) error {
 		if calls.Add(1) == 1 {
 			return errNoAdminYet
 		}
+		close(entered)
 		<-ctx.Done()
 		return fmt.Errorf("look up saved worker owner: %w", ctx.Err())
 	})
-
-	orig := workerSetupPollInterval
-	workerSetupPollInterval = time.Millisecond
-	t.Cleanup(func() { workerSetupPollInterval = orig })
 
 	var inst *Instance
 	var err error
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
-		inst, err = start(ctx, cfg, d.deps)
+		inst, err = startForTest(ctx, cfg, d.deps)
 		require.NoError(t, err)
 		require.NotNil(t, inst)
-		// Wait for the poller to be parked inside setupWorker, so Stop's cancel
-		// lands mid-call rather than on the ticker select -- an explicit signal,
-		// not a sleep.
-		for calls.Load() < 2 {
-			runtime.Gosched()
+		created.MustWait(ctx).MustRelease(ctx)
+		clock.Advance(workerSetupPollInterval).MustWait(ctx)
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("the deferred setup did not begin")
 		}
 		_ = inst.Stop()
 	})
@@ -1246,98 +1384,42 @@ func TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied(t *testing.T
 	assert.NotContains(t, err.Error(), "auto-register worker", "got: "+err.Error())
 }
 
-// A local Worker that the Hub stops for good ends while solo keeps running, and
-// nothing restarts it, so the log must state the remedy. A local failure ends the
-// Worker the same way, but the next launch fails again, so it logs only its own
-// error. A Worker that ends because solo stops is an ordinary shutdown and logs
-// no remedy.
-func TestBringUpLocalWorker_StatesTheRemedyWhenTheWorkerStopsForGood(t *testing.T) {
-	const remedy = "the local worker stopped and will not reconnect; restart LeapMux to register a new local worker"
+// Worker completion reaches the caller through startup or the combined outcome.
+// An ordinary stop stays successful; an independent failure during stop survives.
+func TestCombinedWorkerCompletionReportsItsCause(t *testing.T) {
 	keysRefused := fmt.Errorf("%w: permission denied", workerhub.ErrKeysRefused)
 	localFailure := errors.New("open worker db: disk I/O error")
-
-	for _, tc := range []struct {
+	for _, test := range []struct {
 		name string
-		run  func(ctx context.Context) error
-		// stopsAlone marks a Run that returns with its context live.
-		stopsAlone bool
-		wantRemedy bool
-		wantLogged string
+		run  func(context.Context) error
+		want error
 	}{
-		{
-			name:       "a deleted worker returns nil with a live context",
-			run:        func(context.Context) error { return nil },
-			stopsAlone: true,
-			wantRemedy: true,
-		},
-		{
-			name:       "a key refusal returns an error with a live context",
-			run:        func(context.Context) error { return keysRefused },
-			stopsAlone: true,
-			wantRemedy: true,
-			wantLogged: keysRefused.Error(),
-		},
-		{
-			// The next launch fails the same way, so a restart is no remedy.
-			name:       "a local failure returns an error with a live context",
-			run:        func(context.Context) error { return localFailure },
-			stopsAlone: true,
-			wantLogged: localFailure.Error(),
-		},
-		{
-			name: "a canceled context is an ordinary shutdown",
-			run: func(ctx context.Context) error {
-				<-ctx.Done()
-				return nil
-			},
-		},
-		{
-			name: "a failure during a shutdown states no remedy",
-			run: func(ctx context.Context) error {
-				<-ctx.Done()
-				return localFailure
-			},
-			wantLogged: localFailure.Error(),
-		},
+		{"key refusal", func(context.Context) error { return keysRefused }, keysRefused},
+		{"local failure", func(context.Context) error { return localFailure }, localFailure},
+		{"ordinary cancellation", func(ctx context.Context) error { <-ctx.Done(); return nil }, nil},
+		{"independent failure during cancellation", func(ctx context.Context) error { <-ctx.Done(); return localFailure }, localFailure},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			cfg := soloStartEnv(t, false)
 			d := newTestDeps()
-			workerID := make(chan string, 1)
 			d.runWorker = func(ctx context.Context, rc worker.RunConfig) error {
-				workerID <- rc.WorkerID
-				return tc.run(ctx)
+				defer func() { _ = rc.Directory.Close() }()
+				defer rc.Drained()
+				rc.OnReady()
+				rc.OnConnectionState(worker.ConnectionState{Connected: true})
+				return test.run(ctx)
 			}
-
-			// Stderr, not slog.Default(): Start's own logging.Setup installs a
-			// fresh default logger.
-			logged := testutil.CaptureStderr(t, func() {
-				ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
-				defer cancel()
-				inst, err := start(ctx, cfg, d.deps)
-				require.NoError(t, err)
-				// A Worker that stops by itself must finish before Stop cancels
-				// its context, or this test would read as an ordinary shutdown.
-				if tc.stopsAlone {
-					inst.workerWork.Wait(soloTestTimeout, "the worker goroutine did not end")
-				}
-				require.NoError(t, inst.Stop())
-			})
-
-			if tc.wantLogged != "" {
-				assert.Contains(t, logged, tc.wantLogged)
+			ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+			defer cancel()
+			inst, startErr := startForTest(ctx, cfg, d.deps)
+			if inst != nil {
+				t.Cleanup(func() { _ = inst.Stop() })
+				startErr = inst.Stop()
 			}
-			if !tc.wantRemedy {
-				assert.NotContains(t, logged, remedy)
-				return
-			}
-			assert.Equal(t, 1, strings.Count(logged, remedy), logged)
-			id := <-workerID
-			for line := range strings.SplitSeq(logged, "\n") {
-				if strings.Contains(line, remedy) {
-					assert.Contains(t, line, `"level":"ERROR"`)
-					assert.Contains(t, line, `"worker_id":"`+id+`"`)
-				}
+			if test.want == nil {
+				require.NoError(t, startErr)
+			} else {
+				require.ErrorIs(t, startErr, test.want)
 			}
 		})
 	}
@@ -1370,7 +1452,7 @@ func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 			defer cancel()
-			inst, err := start(ctx, cfg, d.deps)
+			inst, err := startForTest(ctx, cfg, d.deps)
 
 			require.Error(t, err)
 			require.Nil(t, inst)
@@ -1466,7 +1548,7 @@ func TestSoloStart_TheLocalWorkerDialsTheIPCSocket(t *testing.T) {
 		return nil
 	}
 
-	inst, err := start(context.Background(), cfg, d.deps)
+	inst, err := startForTest(context.Background(), cfg, d.deps)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = inst.Stop() })
 
@@ -1693,7 +1775,7 @@ func TestSoloStart_CancelDuringTheLeaseWaitEndsPromptly(t *testing.T) {
 	}
 	startErr := make(chan error, 1)
 	startDone := make(chan struct{})
-	go func() { defer close(startDone); _, err := start(ctx, cfg, d); startErr <- err }()
+	go func() { defer close(startDone); _, err := startForTest(ctx, cfg, d); startErr <- err }()
 	t.Cleanup(func() { cancel(); <-startDone })
 	// Cancel only after the actual runtime-lease acquisition was refused.
 	select {
@@ -1727,7 +1809,7 @@ func heldLeaseFixture(t *testing.T, socketPrefix string) (Config, string, store.
 	sandbox := locallistentest.SandboxHome(t)
 	listen := locallistentest.UniqueListenURL(t, socketPrefix)
 	dataDir := filepath.Join(sandbox, "data")
-	cfg := Config{SkipBanner: true, NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
+	cfg := Config{NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
 	hubDB := filepath.Join(dataDir, "hub", "hub.db")
 	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
 	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})
@@ -1741,4 +1823,470 @@ func heldLeaseFixture(t *testing.T, socketPrefix string) (Config, string, store.
 	_, err = hubStore.RevocationEvents().AcquireHubRuntimeLease(t.Context(), store.AcquireHubRuntimeLeaseParams{HolderID: "rival-holder", LeaseDuration: time.Hour})
 	require.NoError(t, err)
 	return cfg, listen, hubStore
+}
+
+// An embedded Worker whose database never opens must fail the STARTUP,
+// not merely log after it. The base launched worker.Run in a goroutine,
+// returned a healthy Instance, and reported "open worker db" only to the
+// log -- a startup that said success and immediately had no local
+// Worker. This regression records that: Start must still be waiting for
+// the Worker's own readiness when the failure lands, and must return it
+// as the startup verdict.
+func TestSoloStart_WaitsForWorkerInitializationFailure(t *testing.T) {
+	cfg := startFailureEnv(t)
+	d := newTestDeps()
+	kill := serveUntilKilled(t, d, nil)
+	t.Cleanup(kill)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	wantErr := errors.New("open worker db: permission denied")
+	d.runWorker = func(ctx context.Context, rc worker.RunConfig) error {
+		defer func() { _ = rc.Directory.Close() }()
+		close(entered)
+		// The failure lands only when the test says so, and a teardown
+		// that cancelled the context must not wait on the gate either.
+		// OnReady is never called: this worker's database never opens.
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return wantErr
+	}
+	// unrelease runs BEFORE any Stop the test registers, because a Stop
+	// that joins the Worker must not wait on a stub the test still holds.
+	var unreleaseOnce sync.Once
+	unrelease := func() { unreleaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unrelease)
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	t.Cleanup(cancel)
+
+	type outcome struct {
+		inst *Instance
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		inst, err := startForTest(ctx, cfg, d.deps)
+		done <- outcome{inst: inst, err: err}
+	}()
+
+	// Wait until the Worker entry is PAUSED inside its initialization, then
+	// release it with the failure. A start that returned early -- the defect
+	// this regression records -- is caught by the verdict below, not here.
+	select {
+	case <-entered:
+	case got := <-done:
+		// The base returns here with a healthy Instance in hand while its
+		// Worker has not even opened its database. Finish the assertions on
+		// that verdict; the goroutine park is already released by cleanup.
+		require.Error(t, got.err, "a worker database that never opens must fail the startup")
+		assert.ErrorIs(t, got.err, wantErr)
+		assert.Nil(t, got.inst, "a failed worker initialization must not produce an Instance")
+		if got.inst != nil {
+			_ = got.inst.Stop()
+		}
+		t.Fatal("Start returned before the embedded Worker finished initializing")
+	case <-time.After(soloTestTimeout):
+		t.Fatal("Start never reached the embedded Worker entry")
+	}
+	unrelease()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(soloTestTimeout):
+		t.Fatal("Start never returned after the Worker's initialization failed")
+	}
+	require.Error(t, got.err, "a worker database that never opens must fail the startup")
+	assert.ErrorIs(t, got.err, wantErr)
+	assert.Nil(t, got.inst, "a failed worker initialization must not produce an Instance")
+	if got.inst != nil {
+		t.Cleanup(func() { _ = got.inst.Stop() })
+	}
+}
+
+// A locally initialized worker does not complete combined readiness
+// until the local Hub ACCEPTS its identity: the embedded pair is ready
+// as a pair, not as a hub plus a dialing worker.
+func TestSoloReadyWaitsForAcceptedWorkerIdentity(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	kill := serveUntilKilled(t, d, nil)
+	t.Cleanup(kill)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	initialized := make(chan worker.RunConfig, 1)
+	d.runWorker = func(ctx context.Context, rc worker.RunConfig) error {
+		defer func() { _ = rc.Directory.Close() }()
+		rc.OnReady()
+		initialized <- rc
+		<-ctx.Done()
+		return nil
+	}
+	type outcome struct {
+		inst *Instance
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		inst, err := startForTest(ctx, cfg, d.deps)
+		done <- outcome{inst, err}
+	}()
+	var rc worker.RunConfig
+	select {
+	case rc = <-initialized:
+	case <-time.After(soloTestTimeout):
+		t.Fatal("worker initialization did not begin")
+	}
+	if !assert.NotNil(t, rc.OnConnectionState, "combined readiness must observe the accepted Hub identity") {
+		cancel()
+		got := <-done
+		if got.inst != nil {
+			_ = got.inst.Stop()
+		}
+		return
+	}
+	select {
+	case got := <-done:
+		cancel()
+		if got.inst != nil {
+			_ = got.inst.Stop()
+		}
+		t.Fatal("startup completed before the Hub accepted the worker identity")
+	default:
+	}
+	rc.OnConnectionState(worker.ConnectionState{Connected: true})
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.inst)
+		require.NoError(t, got.inst.Stop())
+	case <-time.After(soloTestTimeout):
+		t.Fatal("startup did not finish after identity acceptance")
+	}
+}
+
+// The full Stop joins the worker's database close after the drain: the
+// hub outlives only the outbound drain, never the worker's local
+// teardown.
+func TestShutdownJoinsDatabaseAfterDrain(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	drained := make(chan struct{})
+	releaseDatabase := make(chan struct{})
+	databaseClosed := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseDatabase) }) }
+	t.Cleanup(release)
+	d.runWorker = func(ctx context.Context, rc worker.RunConfig) error {
+		defer func() { _ = rc.Directory.Close() }()
+		if rc.OnReady != nil {
+			rc.OnReady()
+			if rc.OnConnectionState != nil {
+				rc.OnConnectionState(worker.ConnectionState{Connected: true})
+			}
+		}
+		<-ctx.Done()
+		// Hold database teardown after drain, without a timing window.
+		if rc.Drained != nil {
+			rc.Drained()
+		}
+		close(drained)
+		<-releaseDatabase
+		close(databaseClosed)
+		return nil
+	}
+
+	inst, err := startForTest(context.Background(), cfg, d.deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { release(); _ = inst.Stop() })
+	stopped := make(chan error, 1)
+	go func() { stopped <- inst.Stop() }()
+	select {
+	case <-drained:
+	case <-time.After(soloTestTimeout):
+		t.Fatal("worker shutdown did not reach its drain")
+	}
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned while database teardown was held: %v", err)
+	default:
+	}
+	assert.False(t, inst.rootLease.Closed())
+	release()
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(soloTestTimeout):
+		t.Fatal("Stop did not finish after database close")
+	}
+	<-databaseClosed
+	assert.True(t, inst.rootLease.Closed())
+}
+
+func TestUnexpectedWorkerExitEndsCombinedInstance(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		for _, workerErr := range []error{nil, errors.New("worker database failed")} {
+			t.Run(fmt.Sprintf("ready=%t/error=%v", ready, workerErr), func(t *testing.T) {
+				cfg := soloStartEnv(t, false)
+				d := newTestDeps()
+				ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+				defer cancel()
+				entered, releaseWorker := make(chan struct{}), make(chan struct{})
+				d.runWorker = func(workerCtx context.Context, rc worker.RunConfig) error {
+					defer func() { _ = rc.Directory.Close() }()
+					defer rc.Drained()
+					if ready {
+						rc.OnReady()
+						rc.OnConnectionState(worker.ConnectionState{Connected: true})
+					}
+					close(entered)
+					select {
+					case <-releaseWorker:
+						return workerErr
+					case <-workerCtx.Done():
+						return workerCtx.Err()
+					}
+				}
+				type result struct {
+					inst *Instance
+					err  error
+				}
+				var started result
+				startDone := make(chan struct{})
+				go func() {
+					started.inst, started.err = startForTest(ctx, cfg, d.deps)
+					close(startDone)
+				}()
+				t.Cleanup(func() {
+					cancel()
+					<-startDone
+					if started.inst != nil {
+						_ = started.inst.Stop()
+					}
+				})
+				select {
+				case <-entered:
+				case <-ctx.Done():
+					t.Fatal("worker startup was not reached")
+				}
+				if ready {
+					select {
+					case <-startDone:
+						require.NoError(t, started.err)
+					case <-ctx.Done():
+						t.Fatal("startup did not report worker readiness")
+					}
+				}
+				close(releaseWorker)
+				var outcome error
+				if ready {
+					done := make(chan error, 1)
+					go func() { done <- started.inst.Wait() }()
+					select {
+					case outcome = <-done:
+					case <-ctx.Done():
+						t.Fatal("unexpected worker exit did not end the combined instance")
+					}
+				} else {
+					select {
+					case <-startDone:
+						outcome = started.err
+					case <-ctx.Done():
+						t.Fatal("worker exit before readiness left startup waiting")
+					}
+				}
+				if workerErr != nil {
+					require.ErrorIs(t, outcome, workerErr)
+				} else {
+					require.ErrorContains(t, outcome, "unexpected")
+				}
+				require.NotErrorIs(t, outcome, context.Canceled)
+				require.NotErrorIs(t, outcome, context.DeadlineExceeded)
+			})
+		}
+	}
+}
+
+func TestDeferredDevSetupPublishesCompletionAndFailure(t *testing.T) {
+	for _, failure := range []error{nil, errors.New("deferred worker database failed")} {
+		t.Run(fmt.Sprint(failure), func(t *testing.T) {
+			cfg := soloStartEnv(t, true)
+			d := newTestDeps()
+			clock := testutil.NewQuartzMock(t)
+			d.clock = clock
+			ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+			defer cancel()
+			created := clock.Trap().NewTicker(workerSetupPollTag)
+			defer created.Close()
+			var attempts atomic.Int32
+			completed := make(chan struct{})
+			d.stubWorkerBringUp(func(context.Context) error {
+				if attempts.Add(1) == 1 {
+					return errNoAdminYet
+				}
+				close(completed)
+				return failure
+			})
+			inst, err := startForTest(ctx, cfg, d.deps)
+			require.NoError(t, err)
+			t.Cleanup(func() { cancel(); _ = inst.Stop() })
+			require.True(t, inst.Startup().WorkerPendingSetup)
+			created.MustWait(ctx).MustRelease(ctx)
+			clock.Advance(workerSetupPollInterval).MustWait(ctx)
+			select {
+			case <-completed:
+			case <-ctx.Done():
+				t.Fatal("the deferred setup attempt did not run")
+			}
+			if failure == nil {
+				testutil.AssertEventually(t, func() bool {
+					snapshot := inst.Startup()
+					return snapshot.WorkerReady && !snapshot.WorkerPendingSetup
+				})
+			} else {
+				done := make(chan error, 1)
+				go func() { done <- inst.Wait() }()
+				select {
+				case err := <-done:
+					require.ErrorIs(t, err, failure)
+				case <-ctx.Done():
+					t.Fatal("deferred setup failure did not end the combined instance")
+				}
+			}
+		})
+	}
+}
+
+func TestDeferredDevSetupPreservesIndependentFailureDuringStop(t *testing.T) {
+	cfg := soloStartEnv(t, true)
+	d := newTestDeps()
+	clock := testutil.NewQuartzMock(t)
+	d.clock = clock
+	ctx := testutil.DeadlineContext(t)
+	created := clock.Trap().NewTicker(workerSetupPollTag)
+	defer created.Close()
+	entered := make(chan struct{})
+	failure := errors.New("deferred database cleanup failed")
+	var attempts atomic.Int32
+	d.stubWorkerBringUp(func(ctx context.Context) error {
+		if attempts.Add(1) == 1 {
+			return errNoAdminYet
+		}
+		close(entered)
+		<-ctx.Done()
+		return errors.Join(ctx.Err(), failure)
+	})
+	inst, err := startForTest(ctx, cfg, d.deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inst.Stop() })
+	created.MustWait(ctx).MustRelease(ctx)
+	clock.Advance(workerSetupPollInterval).MustWait(ctx)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("deferred setup did not begin")
+	}
+	require.ErrorIs(t, inst.Stop(), failure)
+}
+
+// A fresh dev instance reports ready-for-setup while its worker waits
+// for the first administrator, and the deferred worker's failure stays
+// observable.
+func TestSoloStart_DevModeReportsReadyForSetup(t *testing.T) {
+	cfg := soloStartEnv(t, true)
+	d := newTestDeps()
+	kill := serveUntilKilled(t, d, nil)
+	t.Cleanup(kill)
+
+	d.stubWorkerBringUp(func(ctx context.Context) error {
+		if ctx.Err() == nil {
+			return errNoAdminYet
+		}
+		return ctx.Err()
+	})
+
+	inst, err := startForTest(context.Background(), cfg, d.deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inst.Stop() })
+
+	snap := inst.Startup()
+	assert.True(t, snap.HubReady, "the hub serves /setup")
+	assert.True(t, snap.WorkerPendingSetup, "a fresh dev instance reports ready for setup")
+	assert.False(t, snap.WorkerReady, "the worker waits for the administrator")
+}
+
+func TestStartupSnapshotDerivesOneWorkerPhase(t *testing.T) {
+	instance := &Instance{failureCh: make(chan struct{})}
+	registration := lifecycle.RegistrationStatus{State: lifecycle.RegistrationRegistered, WorkerID: new("worker")}
+	failure := errors.New("worker startup failed")
+	for _, step := range []struct {
+		transition               func()
+		ready, pending, starting bool
+	}{
+		{func() {}, false, false, false},
+		{instance.markWorkerPendingSetup, false, true, false},
+		{func() { instance.markWorkerStarting(registration) }, false, false, true},
+		{instance.markWorkerReady, true, false, false},
+		{func() { instance.failWorker(failure) }, false, false, false},
+	} {
+		_, changed := instance.ObserveStartup()
+		step.transition()
+		snapshot := instance.Startup()
+		assert.Equal(t, step.ready, snapshot.WorkerReady)
+		assert.Equal(t, step.pending, snapshot.WorkerPendingSetup)
+		assert.Equal(t, step.starting, snapshot.WorkerStarting)
+		if step.ready || step.pending || step.starting || snapshot.Failure != nil {
+			select {
+			case <-changed:
+			default:
+				t.Fatal("state transition did not notify observers")
+			}
+		}
+	}
+	instance.markWorkerReady()
+	instance.markWorkerPendingSetup()
+	instance.markWorkerStarting(registration)
+	instance.failWorker(assert.AnError)
+	instance.markHubReady()
+	instance.updateWorkerConnection(worker.ConnectionState{Connected: false, Err: assert.AnError})
+	snapshot := instance.Startup()
+	assert.True(t, snapshot.HubReady)
+	assert.False(t, snapshot.WorkerReady)
+	assert.False(t, snapshot.WorkerPendingSetup)
+	assert.False(t, snapshot.WorkerStarting)
+	assert.ErrorIs(t, snapshot.Failure, failure)
+	assert.ErrorIs(t, instance.workerError(), failure)
+	assert.Equal(t, lifecycle.ConnectionDisconnected, snapshot.Connection.State)
+	*snapshot.Registration.WorkerID = "changed"
+	*snapshot.Connection.LastError = "changed"
+	fresh := instance.Startup()
+	assert.Equal(t, "worker", *fresh.Registration.WorkerID)
+	assert.Equal(t, assert.AnError.Error(), *fresh.Connection.LastError)
+}
+
+func TestConcurrentStartupCallbacksCannotReviveFailedWorker(t *testing.T) {
+	instance := &Instance{failureCh: make(chan struct{})}
+	failure := errors.New("independent worker failure")
+	start := make(chan struct{})
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Go(func() { <-start; instance.markWorkerReady() })
+	}
+	callers.Go(func() { <-start; instance.failWorker(failure) })
+	close(start)
+	callers.Wait()
+	snapshot := instance.Startup()
+	assert.ErrorIs(t, snapshot.Failure, failure)
+	assert.False(t, snapshot.WorkerReady)
+	assert.False(t, snapshot.WorkerPendingSetup)
+	assert.False(t, snapshot.WorkerStarting)
+	select {
+	case <-instance.failureCh:
+	default:
+		t.Fatal("worker failure was not published")
+	}
 }

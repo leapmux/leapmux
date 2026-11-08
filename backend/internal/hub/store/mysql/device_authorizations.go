@@ -35,7 +35,7 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 }
 
 func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
-	return mapErr(s.conn.q.CreateDeviceAuthorization(ctx, gendb.CreateDeviceAuthorizationParams{
+	return s.conn.queryError(s.conn.q.CreateDeviceAuthorization(ctx, gendb.CreateDeviceAuthorizationParams{
 		DeviceCode:      p.DeviceCode,
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
@@ -50,7 +50,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 func (s *deviceAuthorizationStore) Get(ctx context.Context, deviceCode string) (*store.DeviceAuthorization, error) {
 	d, err := s.conn.q.GetDeviceAuthorization(ctx, deviceCode)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBDeviceAuthorization(d)
 	return &out, nil
@@ -59,7 +59,7 @@ func (s *deviceAuthorizationStore) Get(ctx context.Context, deviceCode string) (
 func (s *deviceAuthorizationStore) GetByUserCode(ctx context.Context, userCode string) (*store.DeviceAuthorization, error) {
 	d, err := s.conn.q.GetDeviceAuthorizationByUserCode(ctx, userCode)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBDeviceAuthorization(d)
 	return &out, nil
@@ -75,7 +75,7 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 	if p.UserID.IsZero() {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
+	return s.conn.rowsAffected(s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
 		UserID:        sqlutil.NullUserID(p.UserID),
 		DeviceCode:    p.DeviceCode,
 		GrantedScopes: p.GrantedScopes,
@@ -95,7 +95,7 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 	if p.UserID.IsZero() {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
+	return s.conn.rowsAffected(s.conn.q.ApproveDeviceAuthorizationByUserCode(ctx, gendb.ApproveDeviceAuthorizationByUserCodeParams{
 		UserID:        sqlutil.NullUserID(p.UserID),
 		UserCode:      p.UserCode,
 		GrantedScopes: p.GrantedScopes,
@@ -106,7 +106,7 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 }
 
 func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode string) (int64, error) {
-	return rowsAffected(s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, gendb.DenyDeviceAuthorizationByUserCodeParams{
+	return s.conn.rowsAffected(s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, gendb.DenyDeviceAuthorizationByUserCodeParams{
 		UserCode:     userCode,
 		DeniedState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED,
 		PendingState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
@@ -114,7 +114,7 @@ func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode 
 }
 
 func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
+	return s.conn.rowsAffected(s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
 		DeviceCode:    deviceCode,
 		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
 		Now:           sqltime.NewMySQLTime(now),
@@ -122,7 +122,7 @@ func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode strin
 }
 
 func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string, now time.Time) error {
-	return mapErr(s.conn.q.TouchDeviceAuthorizationPoll(ctx, gendb.TouchDeviceAuthorizationPollParams{
+	return s.conn.queryError(s.conn.q.TouchDeviceAuthorizationPoll(ctx, gendb.TouchDeviceAuthorizationPollParams{
 		DeviceCode: deviceCode,
 		Now:        sqltime.NewMySQLNullTime(&now),
 	}))
@@ -132,7 +132,7 @@ func (s *deviceAuthorizationStore) ConsumeApprovedForUserClient(ctx context.Cont
 	if user.IsZero() {
 		return 0, store.ErrInvalidArgument
 	}
-	return rowsAffected(s.conn.q.ConsumeApprovedDeviceAuthorizationsForUserClient(ctx, gendb.ConsumeApprovedDeviceAuthorizationsForUserClientParams{
+	return s.conn.rowsAffected(s.conn.q.ConsumeApprovedDeviceAuthorizationsForUserClient(ctx, gendb.ConsumeApprovedDeviceAuthorizationsForUserClientParams{
 		ClientID:      clientID,
 		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
 		UserID:        sqlutil.NullNonEmpty(user.String()),

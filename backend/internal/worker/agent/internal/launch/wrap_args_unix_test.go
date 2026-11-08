@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -68,10 +69,10 @@ func TestPowerShellPreservesNativeArguments(t *testing.T) {
 			script := filepath.Join(home, "arguments [script].ps1")
 			require.NoError(t, os.WriteFile(script, []byte(argumentsReportScript), 0o600))
 			require.NoError(t, os.WriteFile(filepath.Join(home, "leapmux-script-wrapper.ps1"), []byte(argumentsReportScript), 0o600))
-			appendPowerShellProfile(t, home, "Set-Alias -Name leapmux-arguments-alias -Value "+pwshQuote(executable)+"\n"+
+			appendPowerShellProfile(t, home, "Set-Alias -Name leapmux-arguments-alias -Value "+shellquote.PowerShell.Quote(executable)+"\n"+
 				"function leapmux-arguments-function { "+argumentsReportScript+" }\n"+
 				"Set-Alias -Name leapmux-function-alias -Value leapmux-arguments-function\n"+
-				"Set-Alias -Name leapmux-script-alias -Value "+pwshQuote(script)+"\n")
+				"Set-Alias -Name leapmux-script-alias -Value "+shellquote.PowerShell.Quote(script)+"\n")
 			arguments := []string{"", "plain", "a path with spaces", `a"b`, `a "quoted" path`, `a\"b`, `a\\"b`, `C:\a path\`, `C:\a path\\`, "one\ttwo", "one\ntwo", "it's $HOME; `literal`", "*.txt", "~", "日本語", "a\u2018b", "a\u2019b", "a\u201ab", "a\u201bb", strings.Repeat("x", 16384)}
 			for _, target := range []struct {
 				program string
@@ -153,7 +154,7 @@ func TestPowerShellPreservesNativeExitStatus(t *testing.T) {
 			appendPowerShellProfile(t, home,
 				"Set-Alias -Name leapmux-cycle-first -Value leapmux-cycle-second\n"+
 					"Set-Alias -Name leapmux-cycle-second -Value LEAPMUX-CYCLE-FIRST\n"+
-					"Set-Alias -Name leapmux-unresolved-alias -Value "+pwshQuote(filepath.Join(home, "missing-target"))+"\n")
+					"Set-Alias -Name leapmux-unresolved-alias -Value "+shellquote.PowerShell.Quote(filepath.Join(home, "missing-target"))+"\n")
 			for _, tc := range []struct {
 				name     string
 				program  string

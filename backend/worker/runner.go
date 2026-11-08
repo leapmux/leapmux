@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -21,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/hub"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/clockjump"
 )
 
@@ -33,7 +36,12 @@ type RunConfig struct {
 	// connection pool per protocol and one h2c verdict.
 	HubEndpoint *hubtransport.Endpoint
 
-	DataDir              string                      // Directory for persistent state
+	// Directory is the held, ownership-validated lease of the worker's
+	// data directory. Run takes ownership of it: it validates the lease
+	// before anything opens, derives every storage path from
+	// Directory.Path(), and releases it after the database closes on
+	// every return path.
+	Directory            *lifecycle.DirectoryLease
 	AuthToken            string                      // Pre-provisioned auth token Run connects with
 	CompositeKey         *noiseutil.CompositeKeypair // Worker's composite keypair for E2EE channels
 	WorkerID             string                      // Worker ID (from registration)
@@ -71,10 +79,38 @@ type RunConfig struct {
 	Drained func()
 	// OnDeregister, when non-nil, is called when the Hub tells this worker to
 	// stop for good: a deregistration notification on the stream, or a Connect
-	// refusal that says the worker was deleted. It runs before the shutdown, so
-	// a caller that must forget this worker does so before anything can stop it.
-	// Run then shuts down, calls Drained and returns nil, with ctx still live.
-	OnDeregister func()
+	// refusal that says the worker was deleted. The Hub-directed path calls it
+	// before requesting drain. Cancellation can begin draining concurrently;
+	// Run still joins the callback before closing storage.
+	// Run drains, calls Drained, and returns callback or cleanup failures.
+	OnDeregister func() error
+	// OnReady, when non-nil, runs after local database initialization
+	// and runtime wiring complete: the point at which the worker is
+	// locally ready whatever its Hub connection is doing. It runs at
+	// most once, and never on a startup that fails before it.
+	OnReady func()
+	// OnConnectionState, when non-nil, reports the Hub connection's
+	// transitions: the accepted Hub identity once the first stream is
+	// admitted, and each later disconnection. A worker whose Hub is
+	// unavailable becomes locally ready and reports reconnecting through
+	// this hook, so a launcher can distinguish "registered and ready"
+	// from "registered and connected".
+	OnConnectionState func(state ConnectionState)
+}
+
+// ConnectionState is one Hub-connection transition a launcher observes.
+type ConnectionState struct {
+	// Connected is true when the Hub accepted this worker's identity.
+	Connected bool
+	// HubURL is the endpoint the transition concerns.
+	HubURL string
+	// Err states the disconnection's cause when Connected is false.
+	Err error
+}
+
+type runCleanup struct {
+	closeDatabase  func(*sql.DB) error
+	closeDirectory func(*lifecycle.DirectoryLease) error
 }
 
 // Run starts the worker and blocks until ctx is cancelled, the Hub stops this
@@ -99,10 +135,36 @@ type RunConfig struct {
 // cannot work. Its two callers always pass them: solo.bringUpLocalWorker, which
 // solo, dev and the desktop app all reach, and the `leapmux worker` command.
 func Run(ctx context.Context, cfg RunConfig) error {
+	return run(ctx, cfg, runCleanup{closeDatabase: (*sql.DB).Close, closeDirectory: (*lifecycle.DirectoryLease).Close})
+}
+
+func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) {
+	// The lease is required, held for the worker component, and not
+	// already released: every storage path below derives from it, and
+	// its lock is what makes this process the directory's only worker.
+	if cfg.Directory == nil {
+		return errors.New("worker: RunConfig.Directory is required: Run owns the worker data directory's lease")
+	}
+	// Every supplied lease transfers at entry. The database's later close
+	// defer runs first, so even rejection keeps the ownership contract.
+	defer func() {
+		if err := cleanup.closeDirectory(cfg.Directory); err != nil {
+			result = errors.Join(result, fmt.Errorf("close worker data directory %s: %w", cfg.Directory.Path(), err))
+		}
+	}()
+	if cfg.Directory.Mode() != lifecycle.RoleWorker {
+		return fmt.Errorf("worker: RunConfig.Directory must hold the worker component's lease, not %s", cfg.Directory.Mode())
+	}
+	if cfg.Directory.Closed() {
+		return errors.New("worker: RunConfig.Directory is a closed lease: acquire a fresh one for this run")
+	}
+	dataDir := cfg.Directory.Path()
+
 	// workerkeys.Of refuses a nil keypair too. Checking here, before anything
 	// opens, also keeps bootstrap.Wire from panicking on a keypair it cannot
 	// describe, on a goroutine that solo does not recover.
-	if _, err := workerkeys.Of(cfg.CompositeKey); err != nil {
+	publicKeys, err := workerkeys.Of(cfg.CompositeKey)
+	if err != nil {
 		return fmt.Errorf("worker: RunConfig.CompositeKey must hold a complete key set, because the Hub pins the keys a Worker registers with: %w", err)
 	}
 	if cfg.AuthToken == "" {
@@ -110,6 +172,9 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	}
 	if cfg.EncryptionMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 		return errors.New("worker: RunConfig.EncryptionMode is required: the Hub refuses a Worker hello with no encryption mode")
+	}
+	if err := channelwire.ValidateConfiguredMaxMessageSize(cfg.MaxMessageSize); err != nil {
+		return fmt.Errorf("worker: validate runtime configuration: %w", err)
 	}
 
 	// Report the periods in which this process did not run. A standalone Worker
@@ -123,7 +188,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	clockjump.StartLoop(clockCtx)
 
 	// Open the Worker-local database for persistent state.
-	dbPath := filepath.Join(cfg.DataDir, "worker.db")
+	dbPath := filepath.Join(dataDir, "worker.db")
 	sqlDB, err := workerdb.Open(dbPath, sqlitedb.Config{
 		MaxConns:  cfg.DBMaxConns,
 		CacheSize: cfg.DBCacheSize,
@@ -133,8 +198,8 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		return fmt.Errorf("open worker db: %w", err)
 	}
 	defer func() {
-		if closeErr := sqlDB.Close(); closeErr != nil {
-			slog.Error("failed to close worker db", "error", closeErr)
+		if closeErr := cleanup.closeDatabase(sqlDB); closeErr != nil {
+			result = errors.Join(result, fmt.Errorf("close worker database %s: %w", dbPath, closeErr))
 		}
 	}()
 
@@ -152,6 +217,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			return fmt.Errorf("hub URL %q: %w", cfg.HubURL, err)
 		}
 	}
+	slog.Info("worker initialized",
+		"worker_id", cfg.WorkerID,
+		"hub", hubEndpoint.URL(),
+		"key_fingerprint", workerkeys.Fingerprint(publicKeys),
+		"encryption_mode", cfg.EncryptionMode,
+	)
 	client := hub.New(hubEndpoint)
 	// wiring is nil on every return before Wire succeeds, and WaitHandlers
 	// tolerates nil. The closure is required: `defer wiring.WaitHandlers()`
@@ -197,7 +268,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		WorkerID:             cfg.WorkerID,
 		Name:                 workerName,
 		HomeDir:              homeDir,
-		DataDir:              cfg.DataDir,
+		DataDir:              dataDir,
 		AuthToken:            cfg.AuthToken,
 		SeedRegisteredBy:     cfg.RegisteredBy,
 		AgentStartupTimeout:  cfg.AgentStartupTimeout,
@@ -208,6 +279,14 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		UseLoginShell:           cfg.UseLoginShell,
 		WakeLock:                wakeLockTracker,
 	})
+
+	// Local readiness: the database is open, migrated, and wired. A
+	// registered worker with an unavailable Hub is ready HERE, and its
+	// connection state says reconnecting -- local readiness and Hub
+	// connectivity are separate facts and both hooks report them.
+	if cfg.OnReady != nil {
+		cfg.OnReady()
+	}
 
 	// runShutdown drains service state. It must run BEFORE the bidi
 	// stream is torn down, not merely before client.Stop(): Client.Connect
@@ -249,9 +328,12 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		})
 	}
 
+	var deregisterErr error
 	client.OnDeregister = func() {
 		if cfg.OnDeregister != nil {
-			cfg.OnDeregister()
+			if err := cfg.OnDeregister(); err != nil {
+				deregisterErr = errors.Join(deregisterErr, err)
+			}
 		}
 		stopGracefully()
 	}
@@ -275,5 +357,16 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		watcher.Wait()
 	}()
 
-	return client.ConnectWithReconnect(runCtx, cfg.AuthToken)
+	// The connection transitions reach the launcher before the stream
+	// loop takes over.
+	if cfg.OnConnectionState != nil {
+		client.OnConnectionState = func(connected bool, err error) {
+			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: cfg.HubURL, Err: err})
+		}
+	}
+	connectionErr := client.ConnectWithReconnect(runCtx, cfg.AuthToken)
+	if deregisterErr != nil {
+		return errors.Join(connectionErr, deregisterErr)
+	}
+	return connectionErr
 }

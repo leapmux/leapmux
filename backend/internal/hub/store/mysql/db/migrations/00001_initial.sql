@@ -185,8 +185,30 @@ CREATE TABLE workers (
     -- just register a fresh worker, and the running worker would stop until
     -- that launch.
     auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Registration recovery metadata. attempt_id is the worker-side
+    -- durable attempt identity (32 lowercase hex chars, validated at
+    -- the application boundary); key_hash is the SHA-256 digest of the
+    -- registration key. Both are NULL together on every row a
+    -- registration attempt did not create. Each UNIQUE index admits
+    -- multiple NULLs and rejects duplicate non-NULL values.
+    registration_attempt_id VARCHAR(32) COLLATE utf8mb4_bin DEFAULT NULL UNIQUE,
+    registration_key_hash VARBINARY(32) DEFAULT NULL UNIQUE,
     deleted_at    DATETIME(3),
-    FOREIGN KEY (registered_by) REFERENCES users(id)
+    FOREIGN KEY (registered_by) REFERENCES users(id),
+    CONSTRAINT workers_registration_attempt CHECK (
+        (registration_attempt_id IS NULL AND registration_key_hash IS NULL)
+        OR (
+            registration_attempt_id IS NOT NULL
+            AND CHAR_LENGTH(registration_attempt_id) = 32
+            AND registration_key_hash IS NOT NULL
+            AND OCTET_LENGTH(registration_key_hash) = 32
+        )
+    ),
+    -- The solo launcher's in-process bypass creates no registration
+    -- attempt, so a bundled row can never carry one.
+    CONSTRAINT workers_auto_registration_attempt CHECK (
+        auto_registered = FALSE OR registration_attempt_id IS NULL
+    )
 ) COLLATE=utf8mb4_bin;
 -- The ordinary owner index serves foreign-key checks and the hard-delete probe.
 CREATE INDEX idx_workers_registered_by ON workers(registered_by);

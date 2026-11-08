@@ -17,7 +17,7 @@ type lifecycleOutboxStore struct {
 var _ store.LifecycleOutboxStore = (*lifecycleOutboxStore)(nil)
 
 func (s *lifecycleOutboxStore) Insert(ctx context.Context, p store.InsertLifecycleOutboxParams) error {
-	return mapErr(s.conn.q.InsertLifecycleOutbox(ctx, gendb.InsertLifecycleOutboxParams{
+	return s.conn.queryError(s.conn.q.InsertLifecycleOutbox(ctx, gendb.InsertLifecycleOutboxParams{
 		UserID:  p.UserID.String(),
 		OpType:  p.OpType,
 		Payload: p.Payload,
@@ -36,7 +36,7 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 		Limit:  p.Limit,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := make([]store.LifecycleOutboxRow, len(rows))
 	for i, r := range rows {
@@ -52,12 +52,12 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 }
 
 func (s *lifecycleOutboxStore) MarkConsumed(ctx context.Context, p store.MarkLifecycleOutboxConsumedParams) error {
-	return mapErr(s.conn.q.MarkLifecycleOutboxConsumed(ctx, gendb.MarkLifecycleOutboxConsumedParams{
+	return s.conn.queryError(s.conn.q.MarkLifecycleOutboxConsumed(ctx, gendb.MarkLifecycleOutboxConsumedParams{
 		ID:         p.ID,
 		ConsumedAt: sqltime.MySQLNullTimeOf(p.ConsumedAt),
 	}))
 }
 
 func (s *lifecycleOutboxStore) DeleteConsumedBefore(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, sqltime.MySQLNullTimeOf(before)))
+	return s.conn.rowsAffected(s.conn.q.DeleteConsumedLifecycleOutboxBefore(ctx, sqltime.MySQLNullTimeOf(before)))
 }

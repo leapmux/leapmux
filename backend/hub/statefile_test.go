@@ -93,7 +93,7 @@ func TestServer_NoStateFileWhenABindFails(t *testing.T) {
 	}
 	cfg.DataDir = dataDir
 
-	_, err := NewServer(cfg)
+	_, err := NewServer(cfg, testHubLease(t, cfg.DataDir))
 	require.Error(t, err, "a local IPC URL under a missing directory must fail the bind")
 	assert.NoFileExists(t, stateFilePath(dataDir),
 		"a failed bind must leave no state file claiming a running hub")

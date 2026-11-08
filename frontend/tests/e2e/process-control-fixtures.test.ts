@@ -133,6 +133,7 @@ describe('process restart cleanup', () => {
     if (field === 'hubProc') {
       expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', [
         'hub',
+        'run',
         '-listen',
         ':12345',
         '-data-dir',
@@ -141,11 +142,10 @@ describe('process restart cleanup', () => {
       expect(loginViaAPI).toHaveBeenCalledWith(server.hubUrl, 'admin', 'password')
     }
     else {
-      // The restarted Worker keeps the registration in its data directory, and it takes the same flags as the first start.
+      // The restarted Worker keeps the registration in its data directory; the run process takes no endpoint flag.
       expect(spawnTestProcess).toHaveBeenCalledWith('private-leapmux', [
         'worker',
-        '--hub',
-        server.hubUrl,
+        'run',
         '--data-dir',
         join(server.dataDir, 'worker'),
       ], expect.objectContaining({
@@ -252,7 +252,18 @@ describe('initial process fixture port ownership', () => {
     vi.mocked(findFreePort).mockResolvedValue(12345)
     vi.mocked(waitForHubStart).mockResolvedValue({ hubUrl: 'http://localhost:24680', listen: '127.0.0.1:24680' })
     vi.mocked(waitForNewOnlineWorkerViaAPI).mockResolvedValue('assigned-worker')
-    vi.mocked(spawnTestProcess).mockImplementation((_command, _args) => {
+    vi.mocked(spawnTestProcess).mockImplementation((_command, args) => {
+      // The registration command is its own short-lived process.
+      if (args[0] === 'worker' && args[1] === 'register') {
+        const registerStub = createProcessStub({ pid: 9000 + children.length })
+        queueMicrotask(() => {
+          registerStub.emitter.exitCode = 0
+          registerStub.emitter.emit('exit', 0, null)
+        })
+        return Object.assign(registerStub.proc, {
+          unref: vi.fn(),
+        })
+      }
       const stub = createProcessStub({ pid: 1000 + children.length })
       children.push(stub)
       return Object.assign(stub.proc, {
@@ -272,6 +283,7 @@ describe('initial process fixture port ownership', () => {
     expect(findFreePort).not.toHaveBeenCalled()
     expect(spawnTestProcess).toHaveBeenNthCalledWith(1, 'private-leapmux', [
       'hub',
+      'run',
       '-listen',
       '127.0.0.1:0',
       '-data-dir',
@@ -286,10 +298,18 @@ describe('initial process fixture port ownership', () => {
       workerProc: children[1]?.proc,
     }))
     expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'private-leapmux', expect.arrayContaining([
+      'worker',
+      'register',
       '--hub',
       'http://localhost:24680',
       '--registration-key',
       'private-registration',
+    ]), expect.objectContaining({
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+    expect(spawnTestProcess).toHaveBeenNthCalledWith(3, 'private-leapmux', expect.arrayContaining([
+      'worker',
+      'run',
     ]), expect.objectContaining({
       detached: true,
       env: { LEAPMUX_WORKER_NAME: SEPARATE_WORKER_NAME },

@@ -77,6 +77,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 
   const proc = spawnTestProcess(binaryPath, [
     'dev',
+    'run',
     '-listen',
     '127.0.0.1:0',
     '-data-dir',
@@ -86,14 +87,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
     env: hubSpawnEnv(opts.env),
   })
 
-  if (opts.onStdio) {
-    proc.stdout?.on('data', c => opts.onStdio!(c, 'stdout'))
-    proc.stderr?.on('data', c => opts.onStdio!(c, 'stderr'))
-  }
-  else {
-    proc.stdout?.resume()
-    proc.stderr?.resume()
-  }
+  consumeServerOutput(proc, opts.onStdio)
 
   const handle = { hubUrl: '', proc, dataDir }
   return cleanupOnFailure(async () => {
@@ -164,6 +158,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const proc = spawnTestProcess(binaryPath, [
     'solo',
+    'run',
     '-listen',
     requestedListen,
     '-data-dir',
@@ -173,14 +168,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     env: hubSpawnEnv(opts.env),
   })
 
-  if (opts.onStdio) {
-    proc.stdout?.on('data', c => opts.onStdio!(c, 'stdout'))
-    proc.stderr?.on('data', c => opts.onStdio!(c, 'stderr'))
-  }
-  else {
-    proc.stdout?.resume()
-    proc.stderr?.resume()
-  }
+  consumeServerOutput(proc, opts.onStdio)
 
   const handle = {
     hubUrl: '',
@@ -208,4 +196,15 @@ export async function stopSoloServer(handle: SoloServerHandle | undefined): Prom
     stopProcess(handle.proc),
   ])
   rmSync(handle.dataDir, { recursive: true, force: true })
+}
+
+function consumeServerOutput(proc: ChildProcess, onStdio: StartDevServerOptions['onStdio']): void {
+  if (onStdio) {
+    proc.stdout?.on('data', (chunk: Buffer) => onStdio(chunk, 'stdout'))
+    proc.stderr?.on('data', (chunk: Buffer) => onStdio(chunk, 'stderr'))
+  }
+  else {
+    proc.stdout?.resume()
+    proc.stderr?.resume()
+  }
 }

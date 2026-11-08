@@ -28,7 +28,7 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 }
 
 func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistrationKeyParams) error {
-	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
+	return s.conn.queryError(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy.String(),
 		ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
@@ -38,7 +38,7 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 func (s *registrationKeyStore) GetByID(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
 	r, err := s.conn.q.GetRegistrationKeyByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBRegistrationKey(r), nil
 }
@@ -56,7 +56,7 @@ func (s *registrationKeyStore) GetOwned(ctx context.Context, p store.GetOwnedReg
 		CreatedBy: owner,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBRegistrationKey(r), nil
 }
@@ -66,7 +66,7 @@ func (s *registrationKeyStore) Extend(ctx context.Context, p store.ExtendRegistr
 	if !ok {
 		return 0, nil // an unminted caller owns nothing; see OwnerFilter
 	}
-	return rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
+	return s.conn.rowsAffected(s.conn.q.ExtendRegistrationKey(ctx, gendb.ExtendRegistrationKeyParams{
 		ID:           p.ID,
 		CreatedBy:    owner,
 		NewExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
@@ -80,7 +80,7 @@ func (s *registrationKeyStore) SoftDelete(ctx context.Context, p store.SoftDelet
 		return 0, nil // an unminted caller owns nothing; see OwnerFilter
 	}
 	now := time.Now()
-	return rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
+	return s.conn.rowsAffected(s.conn.q.SoftDeleteRegistrationKey(ctx, gendb.SoftDeleteRegistrationKeyParams{
 		ID:        p.ID,
 		CreatedBy: owner,
 		ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
@@ -107,7 +107,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 			if errors.Is(err, sql.ErrNoRows) {
 				return store.ErrNotFound
 			}
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		// Internal soft-delete: ownership is already enforced by the row
 		// lock above, so this UPDATE skips the created_by filter that the
@@ -116,7 +116,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 			ID:        id,
 			ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
 		}); err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		consumed = fromDBRegistrationKey(r)
 		return nil
@@ -126,7 +126,7 @@ func (s *registrationKeyStore) Consume(ctx context.Context, id string) (*store.W
 
 func (s *registrationKeyStore) AdminSoftDelete(ctx context.Context, id string) (int64, error) {
 	now := time.Now()
-	return rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
+	return s.conn.rowsAffected(s.conn.q.AdminSoftDeleteRegistrationKey(ctx, gendb.AdminSoftDeleteRegistrationKeyParams{
 		ID:        id,
 		ExpiresAt: sqltime.NewMySQLTime(now.Add(store.RegistrationKeySoftDeleteOffset)),
 		Now:       sqltime.NewMySQLTime(now),
@@ -142,12 +142,12 @@ func (s *registrationKeyStore) ListAdmin(ctx context.Context, p store.ListRegist
 	if !p.IncludeExpired {
 		now = sqltime.MySQLNullTimeOf(time.Now())
 	}
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListRegistrationKeysAdminParams, error) {
 			return listRegistrationKeysAdminParams(p.Cursor, p.Limit, now)
 		},
 		s.conn.q.ListRegistrationKeysAdmin,
-		fromDBListRegistrationKeysAdminRow)
+		fromDBListRegistrationKeysAdminRow, s.conn.queryError)
 }
 
 func fromDBListRegistrationKeysAdminRow(r gendb.ListRegistrationKeysAdminRow) store.WorkerRegistrationKeyWithCreator {

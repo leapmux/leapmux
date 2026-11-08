@@ -37,7 +37,7 @@ func startTestServer(t *testing.T, cfg *config.Config, opts ...ServerOption) *Se
 	cfg.Listen = append(cfg.Listen, locallistentest.UniqueListenURL(t, "lmx-hub-test"))
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
-	srv, err := NewServer(cfg, opts...)
+	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir), opts...)
 	require.NoError(t, err)
 
 	serveCtx, cancel := context.WithCancel(context.Background())

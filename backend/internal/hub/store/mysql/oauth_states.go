@@ -29,7 +29,7 @@ func fromDBOAuthState(s gendb.OauthState) *store.OAuthState {
 }
 
 func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStateParams) error {
-	return mapErr(s.conn.q.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
+	return s.conn.queryError(s.conn.q.CreateOAuthState(ctx, gendb.CreateOAuthStateParams{
 		State:        p.State,
 		ProviderID:   p.ProviderID,
 		PkceVerifier: p.PkceVerifier,
@@ -44,11 +44,11 @@ func (s *oauthStateStore) Create(ctx context.Context, p store.CreateOAuthStatePa
 func (s *oauthStateStore) Get(ctx context.Context, state string) (*store.OAuthState, error) {
 	row, err := s.conn.q.GetOAuthState(ctx, state)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthState(row), nil
 }
 
 func (s *oauthStateStore) Delete(ctx context.Context, state string) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteOAuthState(ctx, state))
+	return s.conn.rowsAffected(s.conn.q.DeleteOAuthState(ctx, state))
 }

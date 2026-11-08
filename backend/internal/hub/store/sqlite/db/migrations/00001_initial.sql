@@ -161,7 +161,30 @@ CREATE TABLE workers (
     -- just register a fresh worker, and the running worker would stop until
     -- that launch.
     auto_registered INTEGER NOT NULL DEFAULT 0,
-    deleted_at    DATETIME
+    -- Registration recovery metadata. attempt_id is the worker-side
+    -- durable attempt identity (32 lowercase hex chars, validated at
+    -- the application boundary); key_hash is the SHA-256 digest of the
+    -- registration key. Both are NULL together on every row a
+    -- registration attempt did not create. Each UNIQUE index admits
+    -- multiple NULLs and rejects duplicate non-NULL values.
+    registration_attempt_id TEXT DEFAULT NULL UNIQUE,
+    registration_key_hash BLOB DEFAULT NULL UNIQUE,
+    deleted_at    DATETIME,
+    CONSTRAINT workers_registration_attempt CHECK (
+        (registration_attempt_id IS NULL AND registration_key_hash IS NULL)
+        OR (
+            registration_attempt_id IS NOT NULL
+            AND length(registration_attempt_id) = 32
+            AND registration_key_hash IS NOT NULL
+            AND typeof(registration_key_hash) = 'blob'
+            AND length(registration_key_hash) = 32
+        )
+    ),
+    -- The solo launcher's in-process bypass creates no registration
+    -- attempt, so a bundled row can never carry one.
+    CONSTRAINT workers_auto_registration_attempt CHECK (
+        auto_registered = 0 OR registration_attempt_id IS NULL
+    )
 );
 -- Every row: the HardDeleteUsersBefore NOT EXISTS (workers.registered_by =
 -- users.id) point probe must see soft-deleted rows too, and so must the

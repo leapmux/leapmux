@@ -129,7 +129,7 @@ A pseudo-terminal — the operating-system primitive behind a terminal tab. Each
 
 ### Registration key
 
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog, then pass it to `leapmux worker register --registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/admin/managing-workers/).
 
 ### Control CLI
 
@@ -146,6 +146,10 @@ A shell that slides over the centre of the app for one working DIRECTORY, toggle
 ### Session (agent session)
 
 The persistent state of a running coding agent — its conversation history and process — kept in the Worker's local database so the agent survives browser reloads, Worker reconnects, and restarts. Reopening the agent's tab reattaches to the same session. (Distinct from a user **login session** in [Accounts & Authentication](/docs/using/accounts/).) See [Coding Agents](/docs/using/coding-agents/).
+
+### Service
+
+An entry in the service manager of the operating system — launchd, systemd, or Task Scheduler and the Service Control Manager on Windows — that `leapmux <mode> start` or `enable` creates. It keeps LeapMux running in the background, and starts it when you log in or when the computer starts. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ### Solo mode
 

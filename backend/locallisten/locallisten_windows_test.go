@@ -286,10 +286,9 @@ func TestCloseAccepted_FreesPipeNameForRelisten(t *testing.T) {
 	_ = relisten.Close()
 }
 
-// TestNpipeListener_AcceptTranslatesClose verifies that closing the pipe
-// listener surfaces an error satisfying errors.Is(net.ErrClosed) — so shared
-// accept loops can check a single sentinel rather than winio.ErrPipeListenerClosed.
-func TestNpipeListener_AcceptTranslatesClose(t *testing.T) {
+// TestNpipeListener_AcceptReportsClose verifies that shared accept loops can
+// recognize a closed native listener through net.ErrClosed.
+func TestNpipeListener_AcceptReportsClose(t *testing.T) {
 	ln, err := Listen("npipe:" + uniqueTestPipeName(t))
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -303,22 +302,12 @@ func TestNpipeListener_AcceptTranslatesClose(t *testing.T) {
 	if !errors.Is(acceptErr, net.ErrClosed) {
 		t.Errorf("Accept error %v does not wrap net.ErrClosed", acceptErr)
 	}
-	if !errors.Is(acceptErr, winio.ErrPipeListenerClosed) {
-		t.Errorf("Accept error %v should still wrap winio.ErrPipeListenerClosed for debugging", acceptErr)
-	}
 }
 
-// stuckListener stands in for a winio listener whose close blocks. Every close
-// before releaseAfter waits; the one AT releaseAfter releases them all. That is
-// the go-winio state npipeListener.Close retries out of: the first close token
-// reaches an accept that is in flight, leaves the listener routine running, and
-// only a later token stops it. See
-// https://github.com/microsoft/go-winio/issues/85.
-//
-// A hand-written fake rather than a real pipe, because the winio path that
-// swallows the first token needs an unmapped error from an aborted connect, and
-// no test can make Windows produce that on demand. The race against a real pipe
-// is covered by TestNpipeListener_CloseReturnsWithAnAcceptInFlight.
+// stuckListener simulates a native listener whose Close blocks. Calls before
+// releaseAfter wait; the selected call releases them all. This checks the
+// defensive retry and deadline policy independently of go-winio internals.
+// TestNpipeListener_CloseReturnsWithAnAcceptInFlight covers a real pipe.
 type stuckListener struct {
 	releaseAfter int64
 	closeErr     error

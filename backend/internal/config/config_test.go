@@ -1,73 +1,16 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestExtractConfigFlag(t *testing.T) {
-	tests := []struct {
-		name     string
-		args     []string
-		def      string
-		expected string
-	}{
-		{
-			name:     "no flag uses default",
-			args:     []string{"-listen", ":9999"},
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-		{
-			name:     "-config with space",
-			args:     []string{"-config", "/custom/path.yaml", "-listen", ":9999"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "--config with space",
-			args:     []string{"--config", "/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "-config=value",
-			args:     []string{"-config=/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "--config=value",
-			args:     []string{"--config=/custom/path.yaml"},
-			def:      "/default/path.yaml",
-			expected: "/custom/path.yaml",
-		},
-		{
-			name:     "-config at end without value uses default",
-			args:     []string{"-listen", ":9999", "-config"},
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-		{
-			name:     "empty args uses default",
-			args:     nil,
-			def:      "/default/path.yaml",
-			expected: "/default/path.yaml",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ExtractConfigFlag(tt.args, tt.def)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
 
 func TestFlagProvider(t *testing.T) {
 	t.Run("only loads explicitly set flags", func(t *testing.T) {
@@ -279,5 +222,69 @@ func TestResolveDataDir(t *testing.T) {
 	t.Run("tilde in data dir expanded", func(t *testing.T) {
 		result := ResolveDataDir("~/custom/data", "/some/config.yaml", "/default/dir")
 		assert.Equal(t, filepath.Join(home, "custom/data"), result)
+	})
+}
+
+func TestHiddenFunc(t *testing.T) {
+	newFlags := func(received *[]string) *flag.FlagSet {
+		fs := flag.NewFlagSet("leapmux probe", flag.ContinueOnError)
+		fs.String("visible", "shown", "a visible flag")
+		fs.Int("count", 3, "a visible count")
+		HiddenFunc(fs, "secret", "a hidden flag", func(value string) error {
+			*received = append(*received, value)
+			return nil
+		})
+		return fs
+	}
+
+	t.Run("the flag parses and reaches its function", func(t *testing.T) {
+		var received []string
+		fs := newFlags(&received)
+		require.NoError(t, fs.Parse([]string{"--secret", "one", "-secret=two"}))
+		assert.Equal(t, []string{"one", "two"}, received)
+	})
+
+	t.Run("an error from the function fails the parse", func(t *testing.T) {
+		fs := flag.NewFlagSet("leapmux probe", flag.ContinueOnError)
+		fs.SetOutput(&strings.Builder{})
+		HiddenFunc(fs, "secret", "", func(string) error { return errors.New("refused") })
+		require.ErrorContains(t, fs.Parse([]string{"--secret", "x"}), "refused")
+	})
+
+	for _, tc := range []struct {
+		name       string
+		categories map[string]string
+	}{
+		{"uncategorized help", nil},
+		{"categorized help", map[string]string{"visible": "Probe options", "count": "Probe options", "secret": "Probe options"}},
+	} {
+		t.Run(tc.name+" omits the flag", func(t *testing.T) {
+			var received []string
+			fs := newFlags(&received)
+			var output strings.Builder
+			fs.SetOutput(&output)
+			// Change a value first: help prints the default from definition
+			// time, not the parsed value.
+			require.NoError(t, fs.Parse([]string{"--count", "9"}))
+			PrintFlagUsage(fs, "Probe.", tc.categories, []string{"Probe options"})
+			text := output.String()
+			assert.Contains(t, text, "Usage: leapmux probe [flags]")
+			assert.Contains(t, text, "-visible")
+			assert.Contains(t, text, `(default "shown")`)
+			assert.Contains(t, text, "(default 3)")
+			assert.NotContains(t, text, "(default 9)")
+			assert.NotContains(t, text, "secret")
+			assert.NotContains(t, text, "a hidden flag")
+		})
+	}
+
+	t.Run("a category that holds only hidden flags prints no header", func(t *testing.T) {
+		var received []string
+		fs := newFlags(&received)
+		var output strings.Builder
+		fs.SetOutput(&output)
+		PrintFlagUsage(fs, "", map[string]string{"visible": "Probe options", "count": "Probe options", "secret": "Internal options"}, nil)
+		assert.Contains(t, output.String(), "Probe options:")
+		assert.NotContains(t, output.String(), "Internal options")
 	})
 }

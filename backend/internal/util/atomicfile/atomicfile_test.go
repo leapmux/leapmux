@@ -1,4 +1,4 @@
-package atomicfile_test
+package atomicfile
 
 import (
 	"os"
@@ -10,15 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 )
 
 func TestWriteFile_WritesTheContentAtTheRequestedMode(t *testing.T) {
-	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "creds.json")
-	require.NoError(t, atomicfile.WriteFile(path, []byte(`{"a":1}`), 0o600))
+	require.NoError(t, WriteFile(path, []byte(`{"a":1}`), 0o600))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -35,12 +32,11 @@ func TestWriteFile_WritesTheContentAtTheRequestedMode(t *testing.T) {
 // TestWriteFile_LeavesNoTemporaryFileBehind pins the ordinary path: the
 // rename is the only file that remains.
 func TestWriteFile_LeavesNoTemporaryFileBehind(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
-	require.NoError(t, atomicfile.WriteFile(path, []byte("one"), 0o600))
-	require.NoError(t, atomicfile.WriteFile(path, []byte("two"), 0o600))
+	require.NoError(t, WriteFile(path, []byte("one"), 0o600))
+	require.NoError(t, WriteFile(path, []byte("two"), 0o600))
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -59,13 +55,12 @@ func TestWriteFile_LeavesNoTemporaryFileBehind(t *testing.T) {
 // failure. Occupying that one name is what makes the difference visible: a
 // writer that composed it would fail here.
 func TestWriteFile_NeverUsesTheNameDerivedFromTheDestination(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
 	require.NoError(t, os.Mkdir(path+".tmp", 0o700))
 
-	require.NoError(t, atomicfile.WriteFile(path, []byte("one"), 0o600))
+	require.NoError(t, WriteFile(path, []byte("one"), 0o600))
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -82,7 +77,6 @@ func TestWriteFile_NeverUsesTheNameDerivedFromTheDestination(t *testing.T) {
 // that conflict; this case is what proves the retry lands a whole
 // document rather than leaving a sharing error for the caller.
 func TestWriteFile_ConcurrentWritersEachLandAWholeDocument(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
@@ -95,7 +89,7 @@ func TestWriteFile_ConcurrentWritersEachLandAWholeDocument(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 20 {
-				assert.NoError(t, atomicfile.WriteFile(path, []byte(payload), 0o600))
+				assert.NoError(t, WriteFile(path, []byte(payload), 0o600))
 			}
 		}()
 	}
@@ -117,15 +111,14 @@ func TestWriteFile_ConcurrentWritersEachLandAWholeDocument(t *testing.T) {
 // read-only destination is not. Unix rename replaces a 0400 file when
 // the directory is writable.
 func TestWriteFile_ReadOnlyDestination(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
-	require.NoError(t, atomicfile.WriteFile(path, []byte("one"), 0o600))
+	require.NoError(t, WriteFile(path, []byte("one"), 0o600))
 	require.NoError(t, os.Chmod(path, 0o400))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
-	err := atomicfile.WriteFile(path, []byte("two"), 0o600)
+	err := WriteFile(path, []byte("two"), 0o600)
 	if runtime.GOOS == "windows" {
 		require.Error(t, err, "Windows cannot replace a read-only file")
 		data, readErr := os.ReadFile(path)
@@ -148,7 +141,6 @@ func TestWriteFile_ReadOnlyDestination(t *testing.T) {
 // path. The temporary file holds the same secret the destination holds, so
 // a write that could not finish must not leave it on the disk.
 func TestWriteFile_RemovesTheTemporaryFileWhenTheRenameFails(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	// A DIRECTORY at the destination: the write succeeds and the rename
@@ -156,7 +148,7 @@ func TestWriteFile_RemovesTheTemporaryFileWhenTheRenameFails(t *testing.T) {
 	path := filepath.Join(dir, "creds.json")
 	require.NoError(t, os.Mkdir(path, 0o700))
 
-	require.Error(t, atomicfile.WriteFile(path, []byte("secret"), 0o600))
+	require.Error(t, WriteFile(path, []byte("secret"), 0o600))
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -165,10 +157,9 @@ func TestWriteFile_RemovesTheTemporaryFileWhenTheRenameFails(t *testing.T) {
 }
 
 func TestWriteFile_ReportsAMissingDirectory(t *testing.T) {
-	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "absent", "creds.json")
-	assert.Error(t, atomicfile.WriteFile(path, []byte("x"), 0o600),
+	assert.Error(t, WriteFile(path, []byte("x"), 0o600),
 		"WriteFile matches os.WriteFile: the caller creates the directory")
 }
 
@@ -178,7 +169,6 @@ func TestWriteFile_ReportsAMissingDirectory(t *testing.T) {
 // that holds a live secret under a name no listing of the destination
 // shows.
 func TestRemoveTempFiles_SweepsWhatACrashLeft(t *testing.T) {
-	t.Parallel()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
@@ -190,7 +180,7 @@ func TestRemoveTempFiles_SweepsWhatACrashLeft(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.json.tmp99"), []byte("other"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("keep"), 0o600))
 
-	require.NoError(t, atomicfile.RemoveTempFiles(path))
+	require.NoError(t, RemoveTempFiles(path))
 
 	var names []string
 	entries, err := os.ReadDir(dir)
@@ -203,13 +193,94 @@ func TestRemoveTempFiles_SweepsWhatACrashLeft(t *testing.T) {
 }
 
 func TestRemoveTempFiles_AcceptsAMissingDirectory(t *testing.T) {
-	t.Parallel()
 
-	assert.NoError(t, atomicfile.RemoveTempFiles(filepath.Join(t.TempDir(), "absent", "creds.json")))
+	assert.NoError(t, RemoveTempFiles(filepath.Join(t.TempDir(), "absent", "creds.json")))
 }
 
 func TestRemoveTempFiles_AcceptsADirectoryWithNothingToRemove(t *testing.T) {
-	t.Parallel()
 
-	assert.NoError(t, atomicfile.RemoveTempFiles(filepath.Join(t.TempDir(), "creds.json")))
+	assert.NoError(t, RemoveTempFiles(filepath.Join(t.TempDir(), "creds.json")))
+}
+
+// recordingOps records each operation it forwards to the real seam, so a
+// test observes the write path's actual order rather than inferring it.
+type recordingOps struct {
+	defaultFileOps
+	calls []string
+}
+
+func (r *recordingOps) createTemp(dir, pattern string, mode os.FileMode) (*os.File, error) {
+	r.calls = append(r.calls, "createTemp")
+	return r.defaultFileOps.createTemp(dir, pattern, mode)
+}
+
+func (r *recordingOps) chmod(f *os.File, mode os.FileMode) error {
+	r.calls = append(r.calls, "chmod")
+	return r.defaultFileOps.chmod(f, mode)
+}
+
+func (r *recordingOps) write(f *os.File, data []byte) error {
+	r.calls = append(r.calls, "write")
+	return r.defaultFileOps.write(f, data)
+}
+
+func (r *recordingOps) sync(f *os.File) error {
+	r.calls = append(r.calls, "sync")
+	return r.defaultFileOps.sync(f)
+}
+
+func (r *recordingOps) close(f *os.File) error {
+	r.calls = append(r.calls, "close")
+	return r.defaultFileOps.close(f)
+}
+
+func (r *recordingOps) rename(oldpath, newpath string) error {
+	r.calls = append(r.calls, "rename")
+	return r.defaultFileOps.rename(oldpath, newpath)
+}
+
+func (r *recordingOps) remove(path string) error {
+	r.calls = append(r.calls, "remove")
+	return r.defaultFileOps.remove(path)
+}
+
+func (r *recordingOps) syncDir(path string) error {
+	r.calls = append(r.calls, "syncDir:"+path)
+	return r.defaultFileOps.syncDir(path)
+}
+
+// TestWriteFilePublicationOrder observes the real write paths through
+// the package's operations seam. The atomic write stops at the rename;
+// the durable write orders file sync, rename, and parent-directory sync
+// exactly that way, so a machine that loses power right after the rename
+// cannot lose the new name even though its bytes reached the disk.
+func TestWriteFilePublicationOrder(t *testing.T) {
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "creds.json")
+
+	rec := &recordingOps{}
+	withOps(t, rec)
+
+	require.NoError(t, WriteFile(path, []byte("x"), 0o600))
+
+	// The atomic-only contract: this exact order, and no publication
+	// after the rename.
+	assert.Equal(t, []string{"createTemp", "chmod", "write", "sync", "close", "rename"},
+		rec.calls, "the atomic write sequence must keep its order and stop at the rename")
+
+	rec.calls = nil
+	observeDurableReplacement(t, func() { rec.calls = append(rec.calls, "rename") })
+	require.NoError(t, WriteFileDurable(path, []byte("y"), 0o600))
+
+	// The durable contract: the same sequence, then the parent
+	// directory's publication.
+	if runtime.GOOS != "windows" {
+		assert.Equal(t,
+			[]string{"createTemp", "chmod", "write", "sync", "close", "rename", "syncDir:" + dir},
+			rec.calls, "the durable write must publish the renamed file's directory")
+	} else {
+		assert.Equal(t, []string{"createTemp", "chmod", "write", "sync", "close", "rename"},
+			rec.calls, "on Windows the write-through replacement carries the publication")
+	}
 }

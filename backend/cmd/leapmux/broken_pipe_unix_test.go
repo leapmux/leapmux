@@ -125,15 +125,14 @@ func (p *lostStderrProcess) signalThenRequireCleanExit(t *testing.T, sig os.Sign
 	}
 }
 
-// An earlier log line is not enough as the readiness mark: signal handling
-// starts late on hub and worker, and a cancel during solo bring-up fails the
-// start. solo's readiness line is exact, because "hub listening" prints
-// earlier, during bring-up.
+// An earlier log line does not prove application readiness. Solo reports
+// readiness after its Worker starts; "hub listening" appears during bring-up.
+// Cancellation before bring-up completes can still fail the startup.
 func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 	t.Run("solo", func(t *testing.T) {
 		locallistentest.SandboxHome(t)
 		uniqueListenEnv(t)
-		p := startWithStderrPipe(t, "solo")
+		p := startWithStderrPipe(t, "solo", "run")
 		p.waitReadiness(t, "leapmux solo listening")
 		p.loseStderr(t)
 		p.signalThenRequireCleanExit(t, syscall.SIGTERM)
@@ -142,19 +141,18 @@ func TestCommandsSurviveALostStderrDuringShutdown(t *testing.T) {
 	t.Run("hub", func(t *testing.T) {
 		locallistentest.SandboxHome(t)
 		uniqueListenEnv(t)
-		p := startWithStderrPipe(t, "hub")
+		p := startWithStderrPipe(t, "hub", "run")
 		p.waitReadiness(t, "hub listening")
 		p.loseStderr(t)
 		p.signalThenRequireCleanExit(t, syscall.SIGTERM)
 	})
 
 	t.Run("worker", func(t *testing.T) {
-		// The readiness mark is the fake Hub's first received frame, not a
-		// log line: the worker installs its signal handling only after
-		// registration, and a cancel before that fails the start.
+		// The fake Hub's first received frame proves that the registered
+		// Worker reached its connection loop.
 		hubURL, connected := startReceivingHub(t)
-		cfg := writeRegisteredState(t)
-		p := startWithStderrPipe(t, "worker", "--hub", hubURL, "--data-dir", cfg.DataDir, "--log-level", "info")
+		cfg := writeRegisteredStateAgainst(t, hubURL)
+		p := startWithStderrPipe(t, "worker", "run", "--data-dir", cfg.DataDir, "--log-level", "info")
 		select {
 		case <-connected:
 		case err := <-p.exited:

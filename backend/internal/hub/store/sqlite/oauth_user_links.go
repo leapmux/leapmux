@@ -28,7 +28,7 @@ func fromDBOAuthUserLinks(rows []gendb.OauthUserLink) []store.OAuthUserLink {
 }
 
 func (s *oauthUserLinkStore) Create(ctx context.Context, p store.CreateOAuthUserLinkParams) error {
-	return mapErr(s.conn.q.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
+	return s.conn.queryError(s.conn.q.CreateOAuthUserLink(ctx, gendb.CreateOAuthUserLinkParams{
 		UserID:          p.UserID.String(),
 		ProviderID:      p.ProviderID,
 		ProviderSubject: p.ProviderSubject,
@@ -41,7 +41,7 @@ func (s *oauthUserLinkStore) Get(ctx context.Context, p store.GetOAuthUserLinkPa
 		ProviderSubject: p.ProviderSubject,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBOAuthUserLink(l)
 	return &out, nil
@@ -56,7 +56,7 @@ func (s *oauthUserLinkStore) ListByUser(ctx context.Context, userID userid.UserI
 	}
 	rows, err := s.conn.q.ListOAuthUserLinksByUser(ctx, owner)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthUserLinks(rows), nil
 }
@@ -71,20 +71,20 @@ func (s *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUser
 		// userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.DeleteOAuthUserLink(ctx, gendb.DeleteOAuthUserLinkParams{
+	return s.conn.queryError(s.conn.q.DeleteOAuthUserLink(ctx, gendb.DeleteOAuthUserLinkParams{
 		UserID:     owner,
 		ProviderID: p.ProviderID,
 	}))
 }
 
 func (s *oauthUserLinkStore) DeleteByProvider(ctx context.Context, providerID string) error {
-	return mapErr(s.conn.q.DeleteOAuthUserLinksByProvider(ctx, providerID))
+	return s.conn.queryError(s.conn.q.DeleteOAuthUserLinksByProvider(ctx, providerID))
 }
 
 func (s *oauthUserLinkStore) CountUsersOrphanedByProvider(ctx context.Context, providerID string) (int64, error) {
 	n, err := s.conn.q.CountUsersOrphanedByProvider(ctx, providerID)
 	if err != nil {
-		return 0, mapErr(err)
+		return 0, s.conn.queryError(err)
 	}
 	return n, nil
 }

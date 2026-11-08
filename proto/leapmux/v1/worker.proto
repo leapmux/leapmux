@@ -17,6 +17,29 @@ service WorkerConnectorService {
   rpc Register(RegisterRequest) returns (RegisterResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
+  // Obtain a one-time recovery challenge for a registration attempt the
+  // Hub already committed but whose response the worker lost. The
+  // original registration key travels in the Authorization: Bearer
+  // header; its digest must match the one stored on the worker row.
+  rpc GetRegistrationChallenge(GetRegistrationChallengeRequest)
+      returns (GetRegistrationChallengeResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Recover the credentials of a committed registration attempt by
+  // proving possession of the private keypair whose public halves the
+  // Hub pinned. Returns the original credentials; it never mints a
+  // second worker or token.
+  rpc RecoverRegistration(RecoverRegistrationRequest)
+      returns (RegisterResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Remove exactly the worker its token identifies. The empty request
+  // prevents a caller from choosing another worker's identity. Refuses
+  // bundled (auto-registered) workers and accepts a repeated call for
+  // the same retained deleted row.
+  rpc DeregisterSelf(DeregisterSelfRequest) returns (DeregisterSelfResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
   // Main bidirectional stream for lifecycle notifications and E2EE channel
   // management. The worker's first message is always a WorkerHello.
   rpc Connect(stream ConnectRequest) returns (stream ConnectResponse) {
@@ -121,12 +144,50 @@ service WorkerManagementService {
 // worker. New keys need a new registration, which creates a new worker.
 message RegisterRequest {
   WorkerPublicKeys keys = 1; // All three keys, each at its exact size.
+  // attempt_id identifies one durable registration attempt: 32 lowercase
+  // hexadecimal characters minted by the worker before its first network
+  // call. The hub stores it on the worker row, so a repeated Register with
+  // the same attempt, key digest, and public keys is recognized as the
+  // committed attempt it already served rather than a new worker.
+  string attempt_id = 2;
 }
 
 message RegisterResponse {
   string worker_id = 1;
   string auth_token = 2;
 }
+
+// GetRegistrationChallengeRequest identifies the committed registration
+// attempt to recover. The original registration key travels in the
+// Authorization: Bearer header and is authenticated through its saved
+// digest.
+message GetRegistrationChallengeRequest {
+  string attempt_id = 1;
+}
+
+// GetRegistrationChallengeResponse hands back one one-time challenge.
+message GetRegistrationChallengeResponse {
+  string challenge_id = 1;
+  bytes nonce = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+// RecoverRegistrationRequest proves possession of the private keypair
+// whose public halves the Hub pinned on the attempt's worker row. The
+// signature covers the exact byte sequence documented on the recovery
+// handler; the registration key again travels as the bearer.
+message RecoverRegistrationRequest {
+  string attempt_id = 1;
+  string challenge_id = 2;
+  bytes signature = 3;
+}
+
+// DeregisterSelfRequest is empty on purpose: the worker token in the
+// Authorization header is the only identity, so a caller cannot choose
+// another worker to remove.
+message DeregisterSelfRequest {}
+
+message DeregisterSelfResponse {}
 
 // WorkerStatus is the lifecycle state of a worker. The hub derives it from
 // workers.deregistering_at and workers.deleted_at; no column stores it.

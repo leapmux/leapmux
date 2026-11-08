@@ -25,7 +25,7 @@ func fromDBWorkspace(w gendb.Workspace) *store.Workspace {
 }
 
 func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspaceParams) error {
-	return mapErr(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
+	return s.conn.queryError(s.conn.q.CreateWorkspace(ctx, gendb.CreateWorkspaceParams{
 		ID:          p.ID,
 		OwnerUserID: p.OwnerUserID.String(),
 		Title:       p.Title,
@@ -35,7 +35,7 @@ func (s *workspaceStore) Create(ctx context.Context, p store.CreateWorkspacePara
 func (s *workspaceStore) GetByID(ctx context.Context, id string) (*store.Workspace, error) {
 	w, err := s.conn.q.GetWorkspaceByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorkspace(w), nil
 }
@@ -43,7 +43,7 @@ func (s *workspaceStore) GetByID(ctx context.Context, id string) (*store.Workspa
 func (s *workspaceStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Workspace, error) {
 	w, err := s.conn.q.GetWorkspaceByIDIncludeDeleted(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorkspace(w), nil
 }
@@ -54,7 +54,7 @@ func (s *workspaceStore) ListByIDs(ctx context.Context, ids []string) ([]store.W
 	}
 	rows, err := s.conn.q.ListWorkspacesByIDs(ctx, ids)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
 }
@@ -68,7 +68,7 @@ func (s *workspaceStore) ListAccessible(ctx context.Context, p store.ListAccessi
 	}
 	rows, err := s.conn.q.ListAccessibleWorkspaces(ctx, owner)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, func(w gendb.Workspace) store.Workspace { return *fromDBWorkspace(w) }), nil
 }
@@ -80,7 +80,7 @@ func (s *workspaceStore) Rename(ctx context.Context, p store.RenameWorkspacePara
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
+	return s.conn.rowsAffected(s.conn.q.RenameWorkspace(ctx, gendb.RenameWorkspaceParams{
 		Title:       p.Title,
 		ID:          p.ID,
 		OwnerUserID: owner,
@@ -94,7 +94,7 @@ func (s *workspaceStore) SoftDelete(ctx context.Context, p store.SoftDeleteWorks
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return 0, nil
 	}
-	return rowsAffected(s.conn.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
+	return s.conn.rowsAffected(s.conn.q.SoftDeleteWorkspace(ctx, gendb.SoftDeleteWorkspaceParams{
 		ID:          p.ID,
 		OwnerUserID: owner,
 	}))
@@ -108,5 +108,5 @@ func (s *workspaceStore) SoftDeleteAllByUser(ctx context.Context, ownerUserID us
 		// having changed nothing. See userid.OwnerFilter.
 		return store.ErrInvalidArgument
 	}
-	return mapErr(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, owner))
+	return s.conn.queryError(s.conn.q.SoftDeleteAllWorkspacesByUser(ctx, owner))
 }

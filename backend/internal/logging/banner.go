@@ -144,37 +144,19 @@ func addrToURL(addr string) string {
 	return "http://localhost:" + port
 }
 
-// PrintRegistrationURL prints a registration approval message with the URL
-// (or relative path for Unix sockets) to stderr, using colors when available.
-func PrintRegistrationURL(url string, isRelativePath bool) {
-	isTTY := isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
-
-	label := "Approve this worker at:"
-	if isRelativePath {
-		label = "Approve this worker at the Hub's web UI:"
-	}
-
-	if isTTY {
-		fmt.Fprintf(os.Stderr, "\n  %s%s%s\n\n  %s%s➜%s  %s%s%s\n\n", dim, label, reset, bold, green, reset, bold, url, reset)
-	} else {
-		fmt.Fprintf(os.Stderr, "\n  %s\n\n  ➜  %s\n\n", label, url)
-	}
-}
-
-// PrintAccessURL prints the full access URL to stderr, derived from a listen
-// address (e.g. ":4327" → "http://localhost:4327").
-func PrintAccessURL(addr string) {
-	PrintURL(addrToURL(addr))
-}
-
-// PrintBannerURL prints the public URL when set, otherwise derives one from
-// the listen address. This is the URL the operator should see at startup.
-func PrintBannerURL(publicURL, listen string) {
+// AccessURL is the address an operator opens in a browser: the public URL
+// when it is set, otherwise one derived from the primary TCP listen address
+// (":4327" → "http://localhost:4327"). It is empty when there is neither,
+// as for a Hub that listens on a local socket only: a URL derived from no
+// address would name a port that nothing answers on.
+func AccessURL(publicURL, listen string) string {
 	if publicURL != "" {
-		PrintURL(publicURL)
-		return
+		return publicURL
 	}
-	PrintAccessURL(listen)
+	if listen == "" {
+		return ""
+	}
+	return addrToURL(listen)
 }
 
 // PrintURL prints an already-normalized URL to stderr.

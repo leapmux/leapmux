@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -34,9 +35,10 @@ type sqliteShared struct {
 }
 
 type sqliteConn struct {
-	shared *sqliteShared
-	exec   gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
-	q      *gendb.Queries
+	transactionContext context.Context
+	shared             *sqliteShared
+	exec               gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
+	q                  *gendb.Queries
 }
 
 // Open opens a SQLite database, runs migrations, and returns a Store.
@@ -165,7 +167,7 @@ func (s *sqliteStore) RunInTransaction(ctx context.Context, fn func(tx store.Sto
 func (s *sqliteStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx store.Store) error) error {
 	return s.conn.withTransaction(ctx, func(conn *sqliteConn) error {
 		if _, err := conn.q.LockUserAuthState(ctx, userID.String()); err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		return fn(&sqliteStore{conn: conn})
 	})
@@ -197,14 +199,15 @@ func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn
 	defer func() { _ = tx.Rollback() }()
 
 	txConn := &sqliteConn{
-		shared: c.shared,
-		exec:   tx,
-		q:      c.q.WithTx(tx),
+		transactionContext: ctx,
+		shared:             c.shared,
+		exec:               tx,
+		q:                  c.q.WithTx(tx),
 	}
 	if err := fn(txConn); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return sqlutil.WithTransactionCancellation(ctx, tx.Commit())
 }
 
 func (s *sqliteStore) Close() error {

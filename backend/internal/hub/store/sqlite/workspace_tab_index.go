@@ -31,7 +31,7 @@ type workspaceTabIndexStore struct {
 var _ store.WorkspaceTabIndexStore = (*workspaceTabIndexStore)(nil)
 
 func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.UpsertTabParams) error {
-	return mapErr(s.conn.q.UpsertOwnedTab(ctx, gendb.UpsertOwnedTabParams{
+	return s.conn.queryError(s.conn.q.UpsertOwnedTab(ctx, gendb.UpsertOwnedTabParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
 		TabType:     p.TabType,
@@ -49,14 +49,14 @@ func (s *workspaceTabIndexStore) BulkUpsert(ctx context.Context, rows []store.Up
 	return sqlutil.BulkUpsertTabs(ctx, s.conn.exec, rows, sqlutil.BulkUpsertTabsConfig{
 		ConflictSuffix: " ON CONFLICT (user_id, tab_id) DO UPDATE SET workspace_id = excluded.workspace_id, tab_type = excluded.tab_type, worker_id = excluded.worker_id, tile_id = excluded.tile_id, position = excluded.position, rendered = excluded.rendered",
 		ChunkRows:      bulkUpsertChunkRows,
-	}, mapErr)
+	}, s.conn.queryError)
 }
 
 // BulkDelete runs each chunk as a single DELETE ... WHERE (user_id, tab_id)
 // IN ((?, ?), ...) statement. SQLite supports row-value IN since 3.15
 // (Oct 2016), which is well below our minimum.
 func (s *workspaceTabIndexStore) BulkDelete(ctx context.Context, keys []store.TabIndexKey) error {
-	return sqlutil.BulkDeleteTabs(ctx, s.conn.exec, keys, bulkDeleteChunkRows, mapErr)
+	return sqlutil.BulkDeleteTabs(ctx, s.conn.exec, keys, bulkDeleteChunkRows, s.conn.queryError)
 }
 
 func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.ListOwnedTabsByWorkerParams) ([]store.WorkerTabStateRow, error) {
@@ -74,7 +74,7 @@ func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.
 		WorkerID:             p.WorkerID,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, ownedTabStateRowFromDB), nil
 }
@@ -90,7 +90,7 @@ func (s *workspaceTabIndexStore) ListOwnedTabsByWorkspace(ctx context.Context, p
 		WorkspaceID: p.WorkspaceID,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, ownedTabRefFromDB), nil
 }
@@ -110,7 +110,7 @@ func (s *workspaceTabIndexStore) GetOwned(ctx context.Context, p store.GetOwnedT
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := tabRowFromDB(row)
 	return &out, nil
@@ -131,7 +131,7 @@ func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context,
 		WorkspaceIds: p.WorkspaceIDs,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, tabRowFromDB), nil
 }
@@ -152,7 +152,7 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := tabRowFromDB(row)
 	return &out, nil

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -65,6 +66,14 @@ type WorkerConnectorService struct {
 	// worker discards every user's channels on that machine where dropping a
 	// tab costs a reconnect. See sendq.Pool on membership as a blast radius.
 	queuePool *sendq.Pool
+	// challenges holds the outstanding registration-recovery
+	// challenges. In memory only: a Hub restart invalidates them, and a
+	// client obtains a fresh one through its durable attempt record.
+	challenges *registrationChallengeStore
+	// deregisterEffects runs the out-of-database half of the worker's
+	// self-deregistration, exactly as every other removal surface runs
+	// it. Store-only tests pass an explicit empty effects object.
+	deregisterEffects *WorkerDeregisterEffects
 	// maxWorkersPerUser bounds how many ACTIVE worker rows one account may hold,
 	// so a machine is turned away at registration -- where the operator can be
 	// told which key to raise -- rather than at its first Connect. Zero is
@@ -81,35 +90,36 @@ type WorkerConnectorService struct {
 	maxWorkersPerUser atomic.Int64
 }
 
-// NewWorkerConnectorService creates a new WorkerConnectorService.
-// `registry` may be nil in unit tests; production deployments wire in
-// the user-CRDT registry so worker tab-sync can drive manager-side
-// tombstones for orphaned tabs the worker no longer hosts.
-func NewWorkerConnectorService(
-	st store.Store,
-	mgr *workermgr.Manager,
-	cMgr *channelmgr.Manager,
-	pr *workermgr.PendingRequests,
-	n *notifier.Notifier,
-	registry CRDTRegistry,
-	queuePool *sendq.Pool,
-	clock quartz.Clock,
-) *WorkerConnectorService {
-	if queuePool == nil {
+// WorkerConnectorServiceDeps holds the connector's construction dependencies.
+// Registry can be nil for store-only tests. DeregisterEffects is always explicit.
+type WorkerConnectorServiceDeps struct {
+	Store             store.Store
+	WorkerManager     *workermgr.Manager
+	ChannelManager    *channelmgr.Manager
+	PendingRequests   *workermgr.PendingRequests
+	Notifier          *notifier.Notifier
+	Registry          CRDTRegistry
+	QueuePool         *sendq.Pool
+	Clock             quartz.Clock
+	DeregisterEffects *WorkerDeregisterEffects
+}
+
+// NewWorkerConnectorService constructs the connector with its required effects.
+func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorService {
+	if d.QueuePool == nil {
 		panic("service: NewWorkerConnectorService requires a queue pool")
 	}
-	if clock == nil {
+	if d.Clock == nil {
 		panic("service: NewWorkerConnectorService requires a clock")
 	}
+	if d.DeregisterEffects == nil {
+		panic("service: NewWorkerConnectorService requires deregistration effects")
+	}
 	return &WorkerConnectorService{
-		store:        st,
-		workerMgr:    mgr,
-		channelMgr:   cMgr,
-		pending:      pr,
-		notifier:     n,
-		crdtRegistry: registry,
-		queuePool:    queuePool,
-		clock:        clock,
+		store: d.Store, workerMgr: d.WorkerManager, channelMgr: d.ChannelManager,
+		pending: d.PendingRequests, notifier: d.Notifier, crdtRegistry: d.Registry,
+		queuePool: d.QueuePool, clock: d.Clock, challenges: newRegistrationChallengeStore(d.Clock),
+		deregisterEffects: d.DeregisterEffects,
 	}
 }
 
@@ -124,10 +134,11 @@ const (
 	workerIdleTimerTag  = "worker-idle"
 )
 
-// SetMaxWorkersPerUser bounds how many Workers one user may have registered at
-// once; 0 (the zero value) is unlimited. Call once at startup before serving.
+// SetMaxWorkersPerUser limits how many Workers one user may have registered at
+// once; 0 (the zero value) is unlimited. Updates may run concurrently with
+// registration.
 //
-// A setter rather than a tenth positional constructor argument, matching
+// A live setting separate from fixed construction dependencies, matching
 // AuthContextRegistry.SetMaxConnectionsPerUser: the services this package builds
 // directly in tests must come out unlimited, which the zero value gives for free.
 //
@@ -233,6 +244,25 @@ func (s *WorkerConnectorService) Register(
 	if err := workerkeys.Validate(req.GetKeys()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error())
 	}
+	// The durable attempt identity: 32 lowercase hexadecimal characters
+	// the worker minted and saved before its first network call. It is
+	// what turns a lost response into a recoverable attempt instead of a
+	// consumed key with no credentials.
+	attemptID := req.GetAttemptId()
+	if !validateAttemptIdentity(attemptID) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			"attempt_id must hold 32 lowercase hexadecimal characters")
+	}
+	keyDigest := registrationKeyDigest(regKey)
+
+	// A repeated Register with the same attempt is the committed attempt
+	// it already served, not a new worker. The digest and the pinned
+	// public keys must both agree; a disagreement on either is a
+	// different key or a different worker trying this attempt, and
+	// neither recovers anything.
+	if err := registeredAttemptRefusal(ctx, s.store.Workers(), req, keyDigest); err != nil {
+		return nil, err
+	}
 
 	workerID := id.Generate()
 	authToken := id.Generate()
@@ -243,6 +273,9 @@ func (s *WorkerConnectorService) Register(
 	key, err := s.store.RegistrationKeys().GetByID(ctx, regKey)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			if replayErr := registeredAttemptRefusal(ctx, s.store.Workers(), req, keyDigest); replayErr != nil {
+				return nil, replayErr
+			}
 			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read registration key: %w", err))
@@ -253,6 +286,11 @@ func (s *WorkerConnectorService) Register(
 		return nil, connect.NewError(connect.CodeInternal, "registration key has a blank creator")
 	}
 	err = s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
+		// The owner lock precedes this read. An overlapping request can have
+		// committed after the initial lookup but before this transaction.
+		if err := registeredAttemptRefusal(ctx, tx.Workers(), req, keyDigest); err != nil {
+			return err
+		}
 		// Atomic consume: returns the row only if expires_at > now and
 		// flips it into the soft-deleted state. Any concurrent caller
 		// loses the race and sees ErrNotFound.
@@ -274,10 +312,12 @@ func (s *WorkerConnectorService) Register(
 			return err
 		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:           workerID,
-			AuthToken:    authToken,
-			RegisteredBy: registrantUID,
-			PublicKeys:   store.WorkerPublicKeysFromProto(req.GetKeys()),
+			ID:                    workerID,
+			AuthToken:             authToken,
+			RegisteredBy:          registrantUID,
+			PublicKeys:            store.WorkerPublicKeysFromProto(req.GetKeys()),
+			RegistrationAttemptID: attemptID,
+			RegistrationKeyHash:   keyDigest,
 		}); err != nil {
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 		}
@@ -314,6 +354,22 @@ func (s *WorkerConnectorService) Register(
 		WorkerId:  workerID,
 		AuthToken: authToken,
 	}, nil
+}
+
+func registeredAttemptRefusal(ctx context.Context, workers store.WorkerStore, req *leapmuxv1.RegisterRequest, keyDigest []byte) error {
+	existing, err := workers.GetByRegistrationAttemptID(ctx, req.GetAttemptId())
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("read the registration attempt: %w", err))
+	}
+	if subtle.ConstantTimeCompare(existing.RegistrationKeyHash, keyDigest) == 1 &&
+		workerkeys.Equal(req.GetKeys(), existing.PublicKeys.Proto()) {
+		return connect.NewError(connect.CodeAlreadyExists,
+			"this registration attempt already created a worker; recover its credentials")
+	}
+	return connect.NewError(connect.CodeUnauthenticated, "registration attempt unknown or already consumed")
 }
 
 // workerIdentityReadTimeout caps each username read, because each one runs

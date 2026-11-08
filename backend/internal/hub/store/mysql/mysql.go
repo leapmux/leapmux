@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
+	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -34,9 +35,10 @@ type mysqlShared struct {
 }
 
 type mysqlConn struct {
-	shared *mysqlShared
-	exec   gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
-	q      *gendb.Queries
+	transactionContext context.Context
+	shared             *mysqlShared
+	exec               gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
+	q                  *gendb.Queries
 }
 
 // Open opens a MySQL database, runs migrations, and returns a Store.
@@ -345,7 +347,7 @@ func (s *mysqlStore) RunInTransaction(ctx context.Context, fn func(tx store.Stor
 func (s *mysqlStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(tx store.Store) error) error {
 	return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
 		if _, err := conn.q.LockUserAuthState(ctx, userID.String()); err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		return fn(&mysqlStore{conn: conn})
 	})
@@ -388,8 +390,9 @@ func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) e
 	defer func() { _ = tx.Rollback() }()
 
 	txConn := &mysqlConn{
-		shared: c.shared,
-		exec:   tx,
+		transactionContext: ctx,
+		shared:             c.shared,
+		exec:               tx,
 		// WithTx rebuilds Queries over the transaction, which deliberately
 		// drops the statement-level retry: inside a transaction the whole
 		// attempt is what repeats, and this function is what repeats it.
@@ -398,7 +401,7 @@ func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) e
 	if err := fn(txConn); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return sqlutil.WithTransactionCancellation(ctx, tx.Commit())
 }
 
 func (s *mysqlStore) Close() error {

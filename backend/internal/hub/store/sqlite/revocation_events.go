@@ -53,7 +53,7 @@ func insertRevocationEvent(
 	userID string,
 	userAuthGeneration int64,
 ) error {
-	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
+	return conn.queryError(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
 		ID:                 id.Generate(),
 		Kind:               kind,
 		SubjectID:          subjectID,
@@ -74,7 +74,7 @@ func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.Cred
 // token was already gone -- yields a nil event so the mutation commits zero
 // rows without publishing a spurious revocation. Shared by api_tokens and
 // delegation_tokens, whose Revoke bodies are otherwise identical.
-func revokedCredentialEvent(
+func (c *sqliteConn) revokedCredentialEvent(
 	subjectID, userID string,
 	kind leapmuxv1.RevocationEventKind,
 	err error,
@@ -83,7 +83,7 @@ func revokedCredentialEvent(
 		return nil, nil
 	}
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, c.queryError(err)
 	}
 	return &store.CredentialEvent{Kind: kind, SubjectID: subjectID, UserID: userID}, nil
 }
@@ -95,37 +95,37 @@ func newRevocationEventStore(conn *sqliteConn) *revocationEventStore {
 			InTransaction: conn.withTransaction,
 			HasPending: func(ctx context.Context, conn *sqliteConn) (bool, error) {
 				hasPending, err := conn.q.HasPendingRevocationEvents(ctx)
-				return hasPending, mapErr(err)
+				return hasPending, conn.queryError(err)
 			},
 			LockSequence: func(ctx context.Context, conn *sqliteConn) (int64, error) {
 				seq, err := conn.q.LockRevocationEventSequence(ctx)
-				return seq, mapErr(err)
+				return seq, conn.queryError(err)
 			},
 			PublishRows: func(ctx context.Context, conn *sqliteConn, limit int32, lastSeq int64) (int64, error) {
-				return rowsAffected(conn.exec.ExecContext(ctx, publishPendingRevocationEventsQuery, limit, lastSeq))
+				return conn.rowsAffected(conn.exec.ExecContext(ctx, publishPendingRevocationEventsQuery, limit, lastSeq))
 			},
 			SetSequence: func(ctx context.Context, conn *sqliteConn, sequence int64) error {
-				return mapErr(conn.q.SetRevocationEventSequence(ctx, sequence))
+				return conn.queryError(conn.q.SetRevocationEventSequence(ctx, sequence))
 			},
 			DeleteExpiredLease: func(ctx context.Context, conn *sqliteConn) error {
 				_, err := conn.q.DeleteExpiredHubRuntimeLease(ctx)
-				return mapErr(err)
+				return conn.queryError(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *sqliteConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
+				return conn.rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.SQLiteNullTimeOf(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *sqliteConn, lease store.RevocationLease) error {
-				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
+				return conn.queryError(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
 					HolderID: lease.HolderID, CursorSeq: lease.CursorSeq, LeaseMillis: float64(lease.LeaseMillis),
 				}))
 			},
 			RenewLease: func(ctx context.Context, conn *sqliteConn, lease store.RevocationLease) (int64, error) {
-				return rowsAffected(conn.q.RenewHubRuntimeLease(ctx, gendb.RenewHubRuntimeLeaseParams{
+				return conn.rowsAffected(conn.q.RenewHubRuntimeLease(ctx, gendb.RenewHubRuntimeLeaseParams{
 					HolderID: lease.HolderID, CursorSeq: lease.CursorSeq, LeaseMillis: float64(lease.LeaseMillis),
 				}))
 			},
 			ReleaseLease: func(ctx context.Context, conn *sqliteConn, holderID string) (int64, error) {
-				return rowsAffected(conn.q.DeleteHubRuntimeLease(ctx, holderID))
+				return conn.rowsAffected(conn.q.DeleteHubRuntimeLease(ctx, holderID))
 			},
 		}),
 	}
@@ -144,7 +144,7 @@ func (s *revocationEventStore) ListPublishedAfter(
 		Limit: int64(limit),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := make([]store.PublishedRevocationEvent, len(rows))
 	for i, row := range rows {
@@ -174,11 +174,11 @@ func (s *revocationEventStore) ListPublishedAfter(
 
 func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, error) {
 	seq, err := s.conn.q.MaxPublishedRevocationEventSeq(ctx)
-	return seq, mapErr(err)
+	return seq, s.conn.queryError(err)
 }
 
 // SessionWasRevoked implements store.RevocationEventStore.
 func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID string) (bool, error) {
 	revoked, err := s.conn.q.SessionRevokedEventExists(ctx, sessionID)
-	return revoked, mapErr(err)
+	return revoked, s.conn.queryError(err)
 }

@@ -64,7 +64,7 @@ func fromDBListAllOAuthProvidersRow(r gendb.ListAllOAuthProvidersRow) store.OAut
 }
 
 func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProviderParams) error {
-	return mapErr(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
+	return s.conn.queryError(s.conn.q.CreateOAuthProvider(ctx, gendb.CreateOAuthProviderParams{
 		ID:           p.ID,
 		ProviderType: p.ProviderType,
 		Name:         p.Name,
@@ -80,7 +80,7 @@ func (s *oauthProviderStore) Create(ctx context.Context, p store.CreateOAuthProv
 func (s *oauthProviderStore) GetByID(ctx context.Context, id string) (*store.OAuthProvider, error) {
 	p, err := s.conn.q.GetOAuthProviderByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthProvider(p), nil
 }
@@ -88,7 +88,7 @@ func (s *oauthProviderStore) GetByID(ctx context.Context, id string) (*store.OAu
 func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProviderSummary, error) {
 	rows, err := s.conn.q.ListEnabledOAuthProviders(ctx)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, fromDBListEnabledOAuthProvidersRow), nil
 }
@@ -96,7 +96,7 @@ func (s *oauthProviderStore) ListEnabled(ctx context.Context) ([]store.OAuthProv
 func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProviderSummary, error) {
 	rows, err := s.conn.q.ListAllOAuthProviders(ctx)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return store.MapSlice(rows, fromDBListAllOAuthProvidersRow), nil
 }
@@ -104,25 +104,25 @@ func (s *oauthProviderStore) ListAll(ctx context.Context) ([]store.OAuthProvider
 func (s *oauthProviderStore) ListAllWithSecrets(ctx context.Context) ([]store.OAuthProvider, error) {
 	rows, err := s.conn.q.ListAllOAuthProvidersWithSecrets(ctx)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	return fromDBOAuthProviders(rows), nil
 }
 
 func (s *oauthProviderStore) UpdateEnabled(ctx context.Context, p store.UpdateOAuthProviderEnabledParams) error {
-	return mapErr(s.conn.q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
+	return s.conn.queryError(s.conn.q.UpdateOAuthProviderEnabled(ctx, gendb.UpdateOAuthProviderEnabledParams{
 		ID:      p.ID,
 		Enabled: ptrconv.BoolToInt64(p.Enabled),
 	}))
 }
 
 func (s *oauthProviderStore) UpdateClientSecret(ctx context.Context, id string, clientSecret []byte) error {
-	return mapErr(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
+	return s.conn.queryError(s.conn.q.UpdateOAuthProviderClientSecret(ctx, gendb.UpdateOAuthProviderClientSecretParams{
 		ClientSecret: clientSecret,
 		ID:           id,
 	}))
 }
 
 func (s *oauthProviderStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.DeleteOAuthProvider(ctx, id))
+	return s.conn.queryError(s.conn.q.DeleteOAuthProvider(ctx, id))
 }

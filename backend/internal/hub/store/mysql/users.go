@@ -50,7 +50,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
+	return s.conn.queryError(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
 		ID:                    p.ID,
 		Username:              store.NormalizeUsername(p.Username),
 		PasswordHash:          p.PasswordHash,
@@ -66,7 +66,7 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByID(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -75,7 +75,7 @@ func (s *userStore) GetByID(ctx context.Context, id string) (*store.User, error)
 func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByIDIncludeDeleted(ctx, id)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -84,7 +84,7 @@ func (s *userStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*stor
 func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -93,7 +93,7 @@ func (s *userStore) GetByUsername(ctx context.Context, username string) (*store.
 func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, error) {
 	u, err := s.conn.q.GetUserByEmail(ctx, store.NormalizeEmail(email))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -102,7 +102,7 @@ func (s *userStore) GetByEmail(ctx context.Context, email string) (*store.User, 
 func (s *userStore) GetFirstAdmin(ctx context.Context) (*store.User, error) {
 	u, err := s.conn.q.GetFirstAdmin(ctx)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -111,7 +111,7 @@ func (s *userStore) GetFirstAdmin(ctx context.Context) (*store.User, error) {
 func (s *userStore) ExistsByUsername(ctx context.Context, username string) (bool, error) {
 	exists, err := s.conn.q.ExistsByUsername(ctx, store.NormalizeUsername(username))
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return exists, nil
 }
@@ -122,7 +122,7 @@ func (s *userStore) ExistsByEmail(ctx context.Context, email, excludeUserID stri
 		ExcludeUserID: excludeUserID,
 	})
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return exists, nil
 }
@@ -144,18 +144,18 @@ func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, n
 			MaxAttempts: int32(maxAttempts),
 		})
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		rows, err := res.RowsAffected()
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		if rows == 0 {
 			return store.ErrNotFound
 		}
 		u, err := conn.q.GetUserByID(ctx, id)
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		converted := fromDBUser(u)
 		out = &converted
@@ -166,7 +166,7 @@ func (s *userStore) ConsumeVerificationAttempt(ctx context.Context, id string, n
 
 func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	prefs, err := s.conn.q.GetUserPrefs(ctx, id)
-	return prefs, mapErr(err)
+	return prefs, s.conn.queryError(err)
 }
 
 // See store.ErrLockingReadOutsideTransaction for the rule and its reason.
@@ -175,32 +175,32 @@ func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, e
 		return "", store.ErrLockingReadOutsideTransaction
 	}
 	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
-	return prefs, mapErr(err)
+	return prefs, s.conn.queryError(err)
 }
 
 func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 	ok, err := s.conn.q.HasAnyUser(ctx)
 	if err != nil {
-		return false, mapErr(err)
+		return false, s.conn.queryError(err)
 	}
 	return ok, nil
 }
 
 func (s *userStore) Count(ctx context.Context) (int64, error) {
 	n, err := s.conn.q.CountUsers(ctx)
-	return n, mapErr(err)
+	return n, s.conn.queryError(err)
 }
 
 func (s *userStore) ListAll(ctx context.Context, p store.ListAllUsersParams) (store.Page[store.User], error) {
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.ListAllUsersParams, error) { return listAllUsersParams(p.Cursor, p.Limit) },
-		s.conn.q.ListAllUsers, fromDBUser)
+		s.conn.q.ListAllUsers, fromDBUser, s.conn.queryError)
 }
 
 func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (store.Page[store.User], error) {
-	return queryPage(ctx, p.Limit,
+	return store.QueryPage(ctx, p.Limit,
 		func() (gendb.SearchUsersParams, error) { return searchUsersParams(p.Query, p.Cursor, p.Limit) },
-		s.conn.q.SearchUsers, fromDBUser)
+		s.conn.q.SearchUsers, fromDBUser, s.conn.queryError)
 }
 
 // loadUserInfoCacheFields reads the current cached-UserInfo projection for id.
@@ -212,7 +212,7 @@ func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (s
 		return store.UserInfoCacheFields{}, false, nil
 	}
 	if err != nil {
-		return store.UserInfoCacheFields{}, false, mapErr(err)
+		return store.UserInfoCacheFields{}, false, conn.queryError(err)
 	}
 	return store.UserInfoCacheFieldsOf(fromDBUser(u)), true, nil
 }
@@ -251,7 +251,7 @@ func (s *userStore) runCachedUserMutation(
 	lockThenTx := func(ctx context.Context, fn func(*mysqlConn) error) error {
 		return s.conn.withTransaction(ctx, func(conn *mysqlConn) error {
 			if err := conn.q.LockUserRow(ctx, id); err != nil {
-				return mapErr(err)
+				return conn.queryError(err)
 			}
 			return fn(conn)
 		})
@@ -266,7 +266,7 @@ func (s *userStore) runCachedUserMutation(
 				return "", false, nil
 			}
 			if err != nil {
-				return "", false, mapErr(err)
+				return "", false, conn.queryError(err)
 			}
 			ok, err := update(ctx, conn, row.NowAt.UTC())
 			if err != nil || !ok {
@@ -305,10 +305,10 @@ func bumpUserAuthGenerationLocked(ctx context.Context, conn *mysqlConn, id strin
 		return nil, nil
 	}
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, conn.queryError(err)
 	}
 	nextGeneration := row.AuthGeneration + 1
-	changed, err := rowsAffected(conn.q.SetUserAuthGeneration(ctx, gendb.SetUserAuthGenerationParams{
+	changed, err := conn.rowsAffected(conn.q.SetUserAuthGeneration(ctx, gendb.SetUserAuthGenerationParams{
 		ID: row.ID, AuthGeneration: nextGeneration, UpdatedAt: sqltime.NewMySQLTime(row.NowAt.UTC()),
 	}))
 	if err != nil {
@@ -345,7 +345,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 		return err
 	}
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := rowsAffected(conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+		n, err := conn.rowsAffected(conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
 			Username:          store.NormalizeUsername(p.Username),
 			DisplayName:       p.DisplayName,
 			DisplayNameFolded: store.FoldSearchText(p.DisplayName),
@@ -357,7 +357,7 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 }
 
 func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswordParams) error {
-	return mapErr(s.conn.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
+	return s.conn.queryError(s.conn.q.UpdateUserPassword(ctx, gendb.UpdateUserPasswordParams{
 		PasswordHash: p.PasswordHash,
 		ID:           p.ID,
 	}))
@@ -373,7 +373,7 @@ func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswo
 // missing id is a no-op with no event.
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
 	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := rowsAffected(conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+		n, err := conn.rowsAffected(conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
 			Email:         store.NormalizeEmail(p.Email),
 			EmailVerified: p.EmailVerified,
 			UpdatedAt:     sqltime.NewMySQLTime(updatedAt),
@@ -389,7 +389,7 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 // on the soft user_info cache signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
 	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := rowsAffected(conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+		n, err := conn.rowsAffected(conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 			EmailVerified: p.EmailVerified,
 			UpdatedAt:     sqltime.NewMySQLTime(updatedAt),
 			ID:            p.ID,
@@ -404,7 +404,7 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 // signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
 	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+		n, err := conn.rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 			IsAdmin:   p.IsAdmin,
 			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
 			ID:        p.ID,
@@ -414,7 +414,7 @@ func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminPara
 }
 
 func (s *userStore) UpdatePrefs(ctx context.Context, p store.UpdateUserPrefsParams) error {
-	return mapErr(s.conn.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
+	return s.conn.queryError(s.conn.q.UpdateUserPrefs(ctx, gendb.UpdateUserPrefsParams{
 		Prefs: p.Prefs,
 		ID:    p.ID,
 	}))
@@ -424,7 +424,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 	if err := store.ValidatePendingUnblockedAt(p.PendingEmailUnblockedAt); err != nil {
 		return false, err
 	}
-	n, err := rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
+	n, err := s.conn.rowsAffected(s.conn.q.SetPendingEmail(ctx, gendb.SetPendingEmailParams{
 		PendingEmail:            store.NormalizeEmail(p.PendingEmail),
 		PendingEmailToken:       p.PendingEmailToken,
 		PendingEmailExpiresAt:   sqltime.NewMySQLNullTime(p.PendingEmailExpiresAt),
@@ -441,7 +441,7 @@ func (s *userStore) SetPendingEmail(ctx context.Context, p store.SetPendingEmail
 // ClearPendingEmailCode drops an undelivered code and keeps the pending
 // address; see the query comment for why the address must survive.
 func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPendingEmailCodeParams) error {
-	return mapErr(s.conn.q.ClearPendingEmailCode(ctx, gendb.ClearPendingEmailCodeParams{
+	return s.conn.queryError(s.conn.q.ClearPendingEmailCode(ctx, gendb.ClearPendingEmailCodeParams{
 		UnblockedAt: sqltime.NewMySQLNullTime(store.UnblockedAtPtr(p.UnblockedAt)),
 		ID:          p.ID,
 	}))
@@ -456,7 +456,7 @@ func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPend
 // auth gate and never fences.
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := rowsAffected(conn.q.PromotePendingEmail(ctx, gendb.PromotePendingEmailParams{
+		n, err := conn.rowsAffected(conn.q.PromotePendingEmail(ctx, gendb.PromotePendingEmailParams{
 			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
 			ID:        id,
 		}))
@@ -473,25 +473,25 @@ func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
 }
 
 func (s *userStore) ClearPendingEmail(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.ClearPendingEmail(ctx, id))
+	return s.conn.queryError(s.conn.q.ClearPendingEmail(ctx, id))
 }
 
 func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.ClearCompetingPendingEmailsParams) error {
-	return mapErr(s.conn.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
+	return s.conn.queryError(s.conn.q.ClearCompetingPendingEmails(ctx, gendb.ClearCompetingPendingEmailsParams{
 		PendingEmail: store.NormalizeEmail(p.PendingEmail),
 		ID:           p.ExcludeID,
 	}))
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.DeleteUser(ctx, id))
+	return s.conn.queryError(s.conn.q.DeleteUser(ctx, id))
 }
 
 func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
 	if err := store.ValidatePendingUnblockedAt(p.PendingRecoveryUnblockedAt); err != nil {
 		return false, err
 	}
-	n, err := rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
+	n, err := s.conn.rowsAffected(s.conn.q.SetPendingRecovery(ctx, gendb.SetPendingRecoveryParams{
 		PendingRecoveryToken:       p.PendingRecoveryToken,
 		PendingRecoveryExpiresAt:   sqltime.MySQLNullTimeOf(p.PendingRecoveryExpiresAt),
 		PendingRecoveryUnblockedAt: sqltime.MySQLNullTimeOf(p.PendingRecoveryUnblockedAt),
@@ -505,7 +505,7 @@ func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRe
 }
 
 func (s *userStore) ClearPendingRecovery(ctx context.Context, p store.ClearPendingRecoveryParams) error {
-	return mapErr(s.conn.q.ClearPendingRecovery(ctx, gendb.ClearPendingRecoveryParams{
+	return s.conn.queryError(s.conn.q.ClearPendingRecovery(ctx, gendb.ClearPendingRecoveryParams{
 		UnblockedAt: sqltime.NewMySQLNullTime(store.UnblockedAtPtr(p.UnblockedAt)),
 		ID:          p.ID,
 	}))
@@ -528,18 +528,18 @@ func (s *userStore) ConsumeRecoveryAttemptByToken(ctx context.Context, tokenHash
 			MaxAttempts:          int32(maxAttempts),
 		})
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		rows, err := res.RowsAffected()
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		if rows == 0 {
 			return store.ErrNotFound
 		}
 		u, err := conn.q.GetUserAfterRecoveryAttemptByToken(ctx, tokenHash)
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		converted := fromDBUser(u)
 		out = &converted
@@ -554,7 +554,7 @@ func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string
 		Now:   sqltime.MySQLNullTimeOf(now),
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := fromDBUser(u)
 	return &out, nil
@@ -572,10 +572,10 @@ func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecove
 			return store.ErrNotFound
 		}
 		if err != nil {
-			return mapErr(err)
+			return conn.queryError(err)
 		}
 		nextGeneration := row.AuthGeneration + 1
-		n, err := rowsAffected(conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
+		n, err := conn.rowsAffected(conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
 			PasswordHash:          p.PasswordHash,
 			FirstCredentialExempt: p.FirstCredentialExempt,
 			AuthGeneration:        nextGeneration,

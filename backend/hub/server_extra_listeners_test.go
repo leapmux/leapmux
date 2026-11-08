@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -29,7 +30,7 @@ func startTestServerIn(t *testing.T, cfg *config.Config, dataDir, localListen st
 	cfg.Listen = append(cfg.Listen, localListen)
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
-	srv, err := NewServer(cfg)
+	srv, err := NewServer(cfg, testHubLease(t, dataDir))
 	require.NoError(t, err)
 
 	serveCtx, cancel := context.WithCancel(context.Background())
@@ -297,4 +298,16 @@ func TestServer_AHubIgnoresASoloStoredAddress(t *testing.T) {
 	hub, _ := startTestServerIn(t, &config.Config{Listen: []string{base}, SoloMode: false}, dir, local)
 	assert.Equal(t, []string{base}, servingAddresses(hub),
 		"a hub must serve only what -listen gave it")
+}
+
+// testHubLease acquires the hub-component lease of dataDir for a test
+// server, the way the launcher does before NewServer.
+func testHubLease(t *testing.T, dataDir string) *lifecycle.DirectoryLease {
+	t.Helper()
+	canonical, err := lifecycle.CanonicalDir(dataDir)
+	require.NoError(t, err)
+	lease, err := lifecycle.AcquireDirectory(
+		lifecycle.NewDirectoryOwner(lifecycle.RoleHub, canonical), lifecycle.RoleHub, canonical)
+	require.NoError(t, err)
+	return lease
 }

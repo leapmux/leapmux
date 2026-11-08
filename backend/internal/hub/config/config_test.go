@@ -349,6 +349,9 @@ func TestHubHelpGroupsStorageOptions(t *testing.T) {
 	}
 	assert.Contains(t, output, "\nStorage common options:\n\n  -storage-type string")
 	assert.Contains(t, output, "\nSQLite storage options:\n\n  -storage-sqlite-cache-size int")
+	// The flag package reads a back-quoted word in a usage string as the name
+	// of the flag's value, so a quoted command in the text would replace it.
+	assert.Contains(t, output, "\n  -listen value\n", "the -listen usage must not rename its value")
 }
 
 func TestValidate(t *testing.T) {

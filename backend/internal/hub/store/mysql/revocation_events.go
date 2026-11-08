@@ -48,7 +48,7 @@ func insertRevocationEvent(
 	userID string,
 	userAuthGeneration int64,
 ) error {
-	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
+	return conn.queryError(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
 		ID:                 id.Generate(),
 		Kind:               kind,
 		SubjectID:          subjectID,
@@ -71,37 +71,37 @@ func newRevocationEventStore(conn *mysqlConn) *revocationEventStore {
 			InTransaction: conn.withTransaction,
 			HasPending: func(ctx context.Context, conn *mysqlConn) (bool, error) {
 				hasPending, err := conn.q.HasPendingRevocationEvents(ctx)
-				return hasPending, mapErr(err)
+				return hasPending, conn.queryError(err)
 			},
 			LockSequence: func(ctx context.Context, conn *mysqlConn) (int64, error) {
 				seq, err := conn.q.LockRevocationEventSequence(ctx)
-				return seq, mapErr(err)
+				return seq, conn.queryError(err)
 			},
 			PublishRows: func(ctx context.Context, conn *mysqlConn, limit int32, lastSeq int64) (int64, error) {
-				return rowsAffected(conn.exec.ExecContext(ctx, publishPendingRevocationEventsQuery, limit, lastSeq))
+				return conn.rowsAffected(conn.exec.ExecContext(ctx, publishPendingRevocationEventsQuery, limit, lastSeq))
 			},
 			SetSequence: func(ctx context.Context, conn *mysqlConn, sequence int64) error {
-				return mapErr(conn.q.SetRevocationEventSequence(ctx, sequence))
+				return conn.queryError(conn.q.SetRevocationEventSequence(ctx, sequence))
 			},
 			DeleteExpiredLease: func(ctx context.Context, conn *mysqlConn) error {
 				_, err := conn.q.DeleteExpiredHubRuntimeLease(ctx)
-				return mapErr(err)
+				return conn.queryError(err)
 			},
 			CompactPublished: func(ctx context.Context, conn *mysqlConn, cutoff time.Time) (int64, error) {
-				return rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.MySQLNullTimeOf(cutoff)))
+				return conn.rowsAffected(conn.q.DeleteCompactablePublishedRevocationEvents(ctx, sqltime.MySQLNullTimeOf(cutoff)))
 			},
 			InsertLease: func(ctx context.Context, conn *mysqlConn, lease store.RevocationLease) error {
-				return mapErr(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
+				return conn.queryError(conn.q.InsertHubRuntimeLease(ctx, gendb.InsertHubRuntimeLeaseParams{
 					HolderID: lease.HolderID, CursorSeq: lease.CursorSeq, LeaseMillis: lease.LeaseMillis,
 				}))
 			},
 			RenewLease: func(ctx context.Context, conn *mysqlConn, lease store.RevocationLease) (int64, error) {
-				return rowsAffected(conn.q.RenewHubRuntimeLease(ctx, gendb.RenewHubRuntimeLeaseParams{
+				return conn.rowsAffected(conn.q.RenewHubRuntimeLease(ctx, gendb.RenewHubRuntimeLeaseParams{
 					HolderID: lease.HolderID, CursorSeq: lease.CursorSeq, LeaseMillis: lease.LeaseMillis,
 				}))
 			},
 			ReleaseLease: func(ctx context.Context, conn *mysqlConn, holderID string) (int64, error) {
-				return rowsAffected(conn.q.DeleteHubRuntimeLease(ctx, holderID))
+				return conn.rowsAffected(conn.q.DeleteHubRuntimeLease(ctx, holderID))
 			},
 		}),
 	}
@@ -120,7 +120,7 @@ func (s *revocationEventStore) ListPublishedAfter(
 		Limit: limit,
 	})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, s.conn.queryError(err)
 	}
 	out := make([]store.PublishedRevocationEvent, len(rows))
 	for i, row := range rows {
@@ -150,13 +150,13 @@ func (s *revocationEventStore) ListPublishedAfter(
 
 func (s *revocationEventStore) MaxPublishedSeq(ctx context.Context) (int64, error) {
 	seq, err := s.conn.q.MaxPublishedRevocationEventSeq(ctx)
-	return seq, mapErr(err)
+	return seq, s.conn.queryError(err)
 }
 
 // SessionWasRevoked implements store.RevocationEventStore.
 func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID string) (bool, error) {
 	revoked, err := s.conn.q.SessionRevokedEventExists(ctx, sessionID)
-	return revoked, mapErr(err)
+	return revoked, s.conn.queryError(err)
 }
 
 // mysqlRevocationNow reads the transaction's clock via SELECT NOW(3). The
@@ -167,7 +167,7 @@ func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID 
 func mysqlRevocationNow(ctx context.Context, conn *mysqlConn) (time.Time, error) {
 	now, err := conn.q.RevocationNow(ctx)
 	if err != nil {
-		return time.Time{}, mapErr(err)
+		return time.Time{}, conn.queryError(err)
 	}
 	return now.UTC(), nil
 }

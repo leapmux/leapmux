@@ -27,7 +27,17 @@ import (
 // newOwnedTabsService builds the connector service ListOwnedTabsForWorker
 // lives on, with only the store it reads.
 func newOwnedTabsService(st store.Store) *service.WorkerConnectorService {
-	return service.NewWorkerConnectorService(st, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest(), quartz.NewReal())
+	return service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     nil,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             quartz.NewReal(),
+		DeregisterEffects: service.NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 }
 
 // TestListOwnedTabsForWorker_ScopedToRegistrant pins both halves of the

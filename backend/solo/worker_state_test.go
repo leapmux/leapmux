@@ -15,10 +15,12 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hub"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"github.com/leapmux/leapmux/lifecycle"
 )
 
 // fakeRegistrar stands in for *hub.Server, recording what the loader asked of it.
@@ -81,10 +83,15 @@ func workerKeyMaterial(x25519, mlkem, slhdsa string) config.KeyMaterial {
 	}
 }
 
-// writeState seeds a solo state file and returns its path.
+// writeState seeds a solo state file at the path a lease of dir derives
+// -- the canonical directory's state.json -- and returns that path. The
+// canonical form matters: a lease of a symlinked temporary directory
+// and the fixture must name one file, not two.
 func writeState(t *testing.T, dir string, s soloState) string {
 	t.Helper()
-	path := filepath.Join(dir, "worker-state.json")
+	canonical, err := lifecycle.CanonicalDir(dir)
+	require.NoError(t, err)
+	path := filepath.Join(canonical, "state.json")
 	data, err := json.MarshalIndent(s, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
@@ -129,6 +136,27 @@ func activeRegistration(owner string, keys *leapmuxv1.WorkerPublicKeys) hub.Work
 	}
 }
 
+// loadWithLease drives one loadOrCreateWorkerState call under a valid
+// containing-owner lease of stateDir, the way the launcher does. The
+// lease releases when the call returns; the saved-state fixtures live
+// at the path the lease derives.
+func loadWithLease(t *testing.T, reg workerRegistrar, stateDir string) (*soloState, *noiseutil.CompositeKeypair, error) {
+	t.Helper()
+	canonical, err := lifecycle.CanonicalDir(stateDir)
+	require.NoError(t, err)
+	owner := lifecycle.DirectoryOwner{
+		AccountID: lifecycle.CurrentAccountID(),
+		Mode:      lifecycle.RoleSolo,
+		Root:      filepath.Dir(canonical),
+	}
+	lease, err := lifecycle.AcquireDirectory(owner, lifecycle.RoleWorker, canonical)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = lease.Close() }()
+	return loadOrCreateWorkerState(context.Background(), reg, lease)
+}
+
 // A first launch generates the keypair, registers the Worker with its public
 // keys, and persists the private halves -- so a later launch restores exactly the
 // keys the Hub pinned.
@@ -140,7 +168,7 @@ func TestLoadOrCreateWorkerState_RegistersWithTheKeysItPersists(t *testing.T) {
 		newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	got, ck, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	got, ck, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 	require.Equal(t, 1, reg.registered)
 	require.Len(t, reg.registeredKeys, 1)
@@ -157,7 +185,7 @@ func TestLoadOrCreateWorkerState_RegistersWithTheKeysItPersists(t *testing.T) {
 
 	// A second launch with the pinned keys registers nothing and retires nothing.
 	reg.registration = activeRegistration("admin-1", reg.registeredKeys[0])
-	second, secondKey, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	second, secondKey, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 	assert.Equal(t, "w-new", second.WorkerID)
 	assert.Equal(t, 1, reg.registered, "a usable state must not register again")
@@ -210,7 +238,7 @@ func TestLoadOrCreateWorkerState_AnUnusableStateReRegisters(t *testing.T) {
 			reg.adminID = "admin-1"
 			reg.newWorker = hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"}
 
-			got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+			got, _, err := loadWithLease(t, reg, dir)
 			require.NoError(t, err)
 
 			assert.Equal(t, []string{"w-old"}, reg.retiredIDs, "the unusable row must be retired")
@@ -234,7 +262,7 @@ func TestLoadOrCreateWorkerState_ARetireFailureFailsTheLaunch(t *testing.T) {
 	t.Run("a store error fails the launch and keeps the file", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		path, _ := seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
+		seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
 		boom := errors.New("database is locked")
 		reg := &fakeRegistrar{
 			registration: activeRegistration("admin-1", workerkeystest.Keys(0x77)),
@@ -243,19 +271,20 @@ func TestLoadOrCreateWorkerState_ARetireFailureFailsTheLaunch(t *testing.T) {
 			newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 		}
 
-		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		_, _, err := loadWithLease(t, reg, dir)
 		require.ErrorIs(t, err, boom)
 		assert.Zero(t, reg.registered, "a failed retire must not proceed to register")
-		assert.Equal(t, "w-old", readState(t, path).WorkerID, "state.json must stay in place for a retry")
-		matches, err := filepath.Glob(path + ".corrupt-*")
-		require.NoError(t, err)
+		assert.Equal(t, "w-old", readState(t, filepath.Join(dir, "state.json")).WorkerID,
+			"state.json must stay in place for a retry")
+		matches, globErr := filepath.Glob(filepath.Join(dir, "state.json") + ".corrupt-*")
+		require.NoError(t, globErr)
 		assert.Empty(t, matches, "a failed retire must not preserve (and thus hide) the file")
 	})
 
 	t.Run("a non-bundled row is only logged", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		path, _ := seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
+		seedUsableState(t, dir, soloState{WorkerID: "w-old", AuthToken: "tok", RegisteredBy: "admin-1"})
 		reg := &fakeRegistrar{
 			registration: activeRegistration("admin-1", workerkeystest.Keys(0x77)),
 			retireErr:    hub.ErrNotAutoRegistered,
@@ -263,7 +292,7 @@ func TestLoadOrCreateWorkerState_ARetireFailureFailsTheLaunch(t *testing.T) {
 			newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 		}
 
-		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		_, _, err := loadWithLease(t, reg, dir)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"w-old"}, reg.retiredIDs)
 		assert.Equal(t, 1, reg.registered, "the refusal only logs, so the launch registers a fresh worker")
@@ -280,20 +309,20 @@ func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorker(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			// Its parent does not exist yet, so the read is os.ErrNotExist and the
-			// launch proceeds; RegisterWorker then creates a FILE at that path, so
-			// atomicfile.WriteFile cannot create its temp file in it.
-			blocked := filepath.Join(dir, "blocked")
-			path := filepath.Join(blocked, "state.json")
+			// Obstruct the lease-derived destination after registration, so
+			// the publisher fails on every platform and privilege level.
+			stateDir, stateDirErr := lifecycle.CanonicalDir(dir)
+			require.NoError(t, stateDirErr)
 			reg := &fakeRegistrar{
 				adminID:    "admin-1",
 				newWorker:  hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok"},
 				retireErr:  retireErr,
-				onRegister: func() { require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600)) },
+				onRegister: func() { require.NoError(t, os.Mkdir(filepath.Join(stateDir, "state.json"), 0o700)) },
 			}
 
-			_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+			_, _, err := loadWithLease(t, reg, dir)
 			require.Error(t, err, "a failed write must fail the launch")
+			require.ErrorContains(t, err, filepath.Join(stateDir, "state.json"))
 			assert.Equal(t, []string{"w-new"}, reg.retiredIDs, "the row whose keys were lost must be retired")
 			if retireErr != nil {
 				assert.ErrorIs(t, err, retireErr, "the retire failure must be reported too")
@@ -310,23 +339,41 @@ func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorker(t *testing.T) {
 func TestLoadOrCreateWorkerState_AFailedWriteRetiresTheNewWorkerAfterACancel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	blocked := filepath.Join(dir, "blocked")
-	path := filepath.Join(blocked, "state.json")
+	blocked, blockedErr := lifecycle.CanonicalDir(dir)
+	require.NoError(t, blockedErr)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reg := &fakeRegistrar{
 		adminID:   "admin-1",
 		newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok"},
 		onRegister: func() {
-			require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
+			// The destination becomes a directory only after registration.
+			require.NoError(t, os.Mkdir(filepath.Join(blocked, "state.json"), 0o700))
 			cancel()
 		},
 	}
 
-	_, _, err := loadOrCreateWorkerState(ctx, reg, path, filepath.Join(dir, "data"))
+	_, _, err := loadOrCreateWorkerStateCancelled(ctx, t, reg, blocked)
 	require.Error(t, err, "a failed write must fail the launch")
+	require.ErrorContains(t, err, filepath.Join(blocked, "state.json"))
 	require.Equal(t, []string{"w-new"}, reg.retiredIDs, "the row whose keys were lost must be retired")
 	assert.NoError(t, reg.retireCtxErrs[0], "the compensating retire must not inherit the launch's cancellation")
+}
+
+// loadOrCreateWorkerStateCancelled drives the call under a cancelled
+// caller and a valid lease, for the compensating-retire contract.
+func loadOrCreateWorkerStateCancelled(ctx context.Context, t *testing.T, reg workerRegistrar, stateDir string) (*soloState, *noiseutil.CompositeKeypair, error) {
+	t.Helper()
+	canonical, err := lifecycle.CanonicalDir(stateDir)
+	require.NoError(t, err)
+	lease, leaseErr := lifecycle.AcquireDirectory(
+		lifecycle.DirectoryOwner{AccountID: lifecycle.CurrentAccountID(), Mode: lifecycle.RoleSolo, Root: filepath.Dir(canonical)},
+		lifecycle.RoleWorker, canonical)
+	if leaseErr != nil {
+		return nil, nil, leaseErr
+	}
+	defer func() { _ = lease.Close() }()
+	return loadOrCreateWorkerState(ctx, reg, lease)
 }
 
 // The DB is the authority on worker ownership: workers.registered_by is NOT NULL and
@@ -337,7 +384,7 @@ func TestLoadOrCreateWorkerState_DBOwnerWinsOverStateFile(t *testing.T) {
 	path, keys := seedUsableState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok", RegisteredBy: "stale-user"})
 	reg := &fakeRegistrar{registration: activeRegistration("real-owner", keys)}
 
-	got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	got, _, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, "real-owner", got.RegisteredBy, "the DB's owner must win over the state file's")
@@ -354,10 +401,10 @@ func TestLoadOrCreateWorkerState_DBOwnerWinsOverStateFile(t *testing.T) {
 // changed.
 func TestLoadOrCreateWorkerState_MissingOwnerTakenFromDBNotAdmin(t *testing.T) {
 	dir := t.TempDir()
-	path, keys := seedUsableState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok"})
+	_, keys := seedUsableState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok"})
 	reg := &fakeRegistrar{registration: activeRegistration("real-owner", keys), adminID: "current-admin"}
 
-	got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	got, _, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, "real-owner", got.RegisteredBy,
@@ -378,7 +425,7 @@ func TestLoadOrCreateWorkerState_UnknownWorkerReRegisters(t *testing.T) {
 		newWorker:       hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	got, _, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, reg.registered, "an unknown worker must be re-registered")
@@ -404,7 +451,7 @@ func TestLoadOrCreateWorkerState_TransientLookupErrorDoesNotReRegister(t *testin
 		newWorker:       hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	_, _, err := loadWithLease(t, reg, dir)
 	require.Error(t, err, "a transient owner-lookup failure must fail the launch, not re-register")
 	assert.ErrorIs(t, err, transient, "the underlying store error must be surfaced")
 	assert.Zero(t, reg.registered, "a transient error must never trigger re-registration")
@@ -429,7 +476,7 @@ func TestLoadOrCreateWorkerState_OwnerlessRowReRegisters(t *testing.T) {
 		newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	got, _, err := loadWithLease(t, reg, dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, reg.registered, "an ownerless worker row must not be launched as-is")
@@ -457,7 +504,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoIdentityIsOnlyPreserved(t *testing.
 				newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 			}
 
-			got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+			got, _, err := loadWithLease(t, reg, dir)
 			require.NoError(t, err)
 
 			assert.Empty(t, reg.retiredIDs, "the file identifies no row to retire")
@@ -487,7 +534,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
 		path := writeState(t, dir, saved)
 		reg := newRegistrar()
 
-		got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		got, _, err := loadWithLease(t, reg, dir)
 		require.NoError(t, err)
 
 		assert.Equal(t, []string{"w-old"}, reg.retiredIDs)
@@ -502,7 +549,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
 		reg := newRegistrar()
 		reg.registrationErr = store.ErrNotFound
 
-		got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		got, _, err := loadWithLease(t, reg, dir)
 		require.NoError(t, err)
 
 		assert.Empty(t, reg.retiredIDs, "the store does not know this row")
@@ -518,7 +565,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
 		reg := newRegistrar()
 		reg.registrationErr = boom
 
-		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		_, _, err := loadWithLease(t, reg, dir)
 
 		require.ErrorIs(t, err, boom)
 		assert.Empty(t, reg.retiredIDs)
@@ -534,7 +581,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
 		reg := newRegistrar()
 		reg.retireErr = boom
 
-		_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+		_, _, err := loadWithLease(t, reg, dir)
 
 		require.ErrorIs(t, err, boom)
 		assert.Zero(t, reg.registered, "a failed retire must not proceed to register")
@@ -556,7 +603,7 @@ func TestLoadOrCreateWorkerState_ARetireFailureOnAnOwnerlessRowKeepsTheFile(t *t
 		newWorker:    hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	_, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
+	_, _, err := loadWithLease(t, reg, dir)
 
 	require.ErrorIs(t, err, boom)
 	assert.Zero(t, reg.registered, "a failed retire must not proceed to register")
@@ -574,15 +621,17 @@ func TestLoadOrCreateWorkerState_ARetireFailureOnAnOwnerlessRowKeepsTheFile(t *t
 // overwriting them.
 func TestLoadOrCreateWorkerState_CorruptStateReRegistersLoudlyAndPreserves(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "worker-state.json")
+	canonical, canonicalErr := lifecycle.CanonicalDir(dir)
+	require.NoError(t, canonicalErr)
+	path := filepath.Join(canonical, "state.json")
 	require.NoError(t, os.WriteFile(path, []byte("{not valid json"), 0o600))
 	reg := &fakeRegistrar{
 		adminID:   "admin-1",
 		newWorker: hub.WorkerCredentials{WorkerID: "w-new", AuthToken: "tok-new"},
 	}
 
-	got, _, err := loadOrCreateWorkerState(context.Background(), reg, path, filepath.Join(dir, "data"))
-	require.NoError(t, err, "a corrupt file has no recoverable identity, so re-register is the only path")
+	got, _, loadErr := loadWithLease(t, reg, dir)
+	require.NoError(t, loadErr, "a corrupt file has no recoverable identity, so re-register is the only path")
 
 	assert.Equal(t, 1, reg.registered, "the unreadable identity must be replaced with a fresh worker")
 	assert.Empty(t, reg.retiredIDs, "an unparseable file identifies no row to retire")
@@ -647,7 +696,8 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 	t.Run("a missing admin is deferrable", func(t *testing.T) {
 		t.Parallel()
 		reg := &fakeRegistrar{adminErr: store.ErrNotFound}
-		_, _, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(t.TempDir(), "state.json"), t.TempDir())
+		stateDir := t.TempDir()
+		_, _, err := loadWithLease(t, reg, stateDir)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, errNoAdminYet, "dev mode waits for /setup on exactly this")
 		assert.ErrorIs(t, err, store.ErrNotFound, "the underlying cause stays reachable")
@@ -656,7 +706,7 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 	t.Run("a not-found from registration is not", func(t *testing.T) {
 		t.Parallel()
 		reg := &fakeRegistrar{adminID: "u1", registerErr: store.ErrNotFound}
-		_, _, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(t.TempDir(), "state.json"), t.TempDir())
+		_, _, err := loadWithLease(t, reg, t.TempDir())
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, errNoAdminYet,
 			"the admin existed; a not-found here is a real failure, not something to wait out")
@@ -667,7 +717,7 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 		t.Parallel()
 		boom := errors.New("disk I/O error")
 		reg := &fakeRegistrar{adminErr: boom}
-		_, _, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(dir, "locked.json"), t.TempDir())
+		_, _, err := loadWithLease(t, reg, dir)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, boom)
 		assert.NotErrorIs(t, err, errNoAdminYet)

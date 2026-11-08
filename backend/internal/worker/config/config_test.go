@@ -26,7 +26,6 @@ func TestLoad(t *testing.T) {
 		cfg, showVersion, err := Load(nil)
 		require.NoError(t, err)
 		assert.False(t, showVersion)
-		assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL)
 		assert.Equal(t, filepath.Join(home, ".config/leapmux/worker"), cfg.DataDir)
 		assert.Equal(t, sqlitedb.DefaultMaxConns, cfg.DBMaxConns)
 		assert.Equal(t, "info", cfg.LogLevel)
@@ -35,7 +34,7 @@ func TestLoad(t *testing.T) {
 	t.Run("config file overrides defaults", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "worker.yaml")
-		yamlContent := `hub: "http://example.com:9999"
+		yamlContent := `name: "from-file"
 db_max_conns: 8
 log_level: "warn"
 `
@@ -43,7 +42,7 @@ log_level: "warn"
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, "http://example.com:9999", cfg.HubURL)
+		assert.Equal(t, "from-file", cfg.Name)
 		assert.Equal(t, 8, cfg.DBMaxConns)
 		assert.Equal(t, "warn", cfg.LogLevel)
 		assert.Equal(t, tmpDir, cfg.DataDir)
@@ -52,26 +51,35 @@ log_level: "warn"
 	t.Run("env vars override config file", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "worker.yaml")
-		yamlContent := `hub: "http://example.com:9999"
+		yamlContent := `name: "from-file"
 log_level: "warn"
 `
 		require.NoError(t, os.WriteFile(configPath, []byte(yamlContent), 0o644))
 
-		t.Setenv("LEAPMUX_WORKER_HUB", "http://override.com:1234")
+		t.Setenv("LEAPMUX_WORKER_NAME", "from-env")
 
 		cfg, _, err := Load([]string{"-config", configPath})
 		require.NoError(t, err)
-		assert.Equal(t, "http://override.com:1234", cfg.HubURL)
+		assert.Equal(t, "from-env", cfg.Name)
 		assert.Equal(t, "warn", cfg.LogLevel) // from config file
 	})
 
 	t.Run("CLI flags override env vars", func(t *testing.T) {
-		t.Setenv("LEAPMUX_WORKER_HUB", "http://override.com:1234")
+		t.Setenv("LEAPMUX_WORKER_NAME", "from-env")
 
-		cfg, _, err := Load([]string{"-hub", "http://flag.com:5555"})
+		cfg, _, err := Load([]string{"-name", "from-flag"})
 		require.NoError(t, err)
-		assert.Equal(t, "http://flag.com:5555", cfg.HubURL)
+		assert.Equal(t, "from-flag", cfg.Name)
 	})
+
+	// The Hub URL and the registration key belong to `leapmux worker register`,
+	// which takes both as its own flags. The shared loader defines neither.
+	for _, name := range []string{"hub", "registration-key"} {
+		t.Run("rejects the registration flag "+name, func(t *testing.T) {
+			_, _, err := Load([]string{"-" + name, "value"})
+			require.ErrorContains(t, err, "flag provided but not defined: -"+name)
+		})
+	}
 
 	t.Run("version flag", func(t *testing.T) {
 		_, showVersion, err := Load([]string{"-version"})
@@ -82,7 +90,7 @@ log_level: "warn"
 	t.Run("missing config file silently ignored", func(t *testing.T) {
 		cfg, _, err := Load([]string{"-config", "/nonexistent/worker.yaml"})
 		require.NoError(t, err)
-		assert.Equal(t, "http://127.0.0.1:4327", cfg.HubURL)
+		assert.Equal(t, "info", cfg.LogLevel)
 	})
 
 	t.Run("invalid YAML returns error", func(t *testing.T) {
@@ -251,7 +259,7 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	// sorting ahead of any of these.
 	for flagLine, section := range map[string]string{
 		"  -data-dir string":                "Worker options",
-		"  -hub string":                     "Worker options",
+		"  -name string":                    "Worker options",
 		"  -agent-startup-timeout duration": "Timeout and limit options",
 		"  -agent-startup-concurrency int":  "Timeout and limit options",
 		"  -api-timeout duration":           "Timeout and limit options",
@@ -259,6 +267,72 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	} {
 		assert.Equal(t, section, helpSectionOf(t, output, flagLine), "flag %q is in the wrong help section", flagLine)
 	}
+	assert.NotContains(t, output, "  -hub ", "the Hub URL belongs to `leapmux worker register`")
+	assert.NotContains(t, output, "  -registration-key ", "the key belongs to `leapmux worker register`")
+}
+
+// A command that selects only the data directory shows and accepts only that
+// flag, while the config file and the environment still reach every key.
+func TestLoadWithCLIFlagSubset(t *testing.T) {
+	opts := LoadOptions{
+		FlagSetName: "leapmux worker probe",
+		Description: "Probe the subset.",
+		CLIFlags:    []string{"data-dir"},
+	}
+
+	t.Run("help shows the header and only the selected flags", func(t *testing.T) {
+		output := testutil.CaptureStdout(t, func() {
+			_, _, err := LoadWithOptions([]string{"--help"}, opts)
+			require.True(t, errors.Is(err, flag.ErrHelp))
+		})
+		assert.True(t, strings.HasPrefix(output, "Probe the subset.\n\nUsage: leapmux worker probe [flags]\n"), output)
+		assert.Contains(t, output, "  -config string")
+		assert.Contains(t, output, "  -version")
+		assert.Contains(t, output, "  -data-dir string")
+		for _, absent := range []string{"  -name ", "  -log-level ", "  -db-max-conns ", "  -agent-startup-timeout "} {
+			assert.NotContains(t, output, absent)
+		}
+		assert.NotContains(t, output, "Timeout and limit options", "an empty section prints no header")
+	})
+
+	t.Run("a flag outside the subset is rejected", func(t *testing.T) {
+		_, _, err := LoadWithOptions([]string{"-log-level", "debug"}, opts)
+		require.ErrorContains(t, err, "flag provided but not defined: -log-level")
+	})
+
+	t.Run("the selected flag still sets its key", func(t *testing.T) {
+		dataDir := t.TempDir()
+		cfg, _, err := LoadWithOptions([]string{"-data-dir", dataDir}, opts)
+		require.NoError(t, err)
+		assert.Equal(t, dataDir, cfg.DataDir)
+	})
+
+	t.Run("the config file and the environment still reach every key", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte("log_level: warn\n"), 0o644))
+		t.Setenv("LEAPMUX_WORKER_DB_MAX_CONNS", "7")
+		cfg, _, err := LoadWithOptions([]string{"-config", configPath}, opts)
+		require.NoError(t, err)
+		assert.Equal(t, "warn", cfg.LogLevel)
+		assert.Equal(t, 7, cfg.DBMaxConns)
+	})
+
+	t.Run("an empty subset keeps config and version", func(t *testing.T) {
+		_, showVersion, err := LoadWithOptions([]string{"-version"}, LoadOptions{CLIFlags: []string{}})
+		require.NoError(t, err)
+		assert.True(t, showVersion)
+		_, _, err = LoadWithOptions([]string{"-data-dir", t.TempDir()}, LoadOptions{CLIFlags: []string{}})
+		require.ErrorContains(t, err, "flag provided but not defined: -data-dir")
+	})
+
+	t.Run("no subset and no header select the worker defaults", func(t *testing.T) {
+		output := testutil.CaptureStdout(t, func() {
+			_, _, err := LoadWithOptions([]string{"--help"}, LoadOptions{})
+			require.True(t, errors.Is(err, flag.ErrHelp))
+		})
+		assert.True(t, strings.HasPrefix(output, "Run a Worker connected to a Hub.\n\nUsage: leapmux worker [flags]\n"), output)
+		assert.Contains(t, output, "  -log-level string")
+	})
 }
 
 // helpSectionOf reports the section header a flag line appears under: the last
@@ -280,16 +354,11 @@ func helpSectionOf(t *testing.T, output, flagLine string) string {
 }
 
 func TestValidate(t *testing.T) {
-	t.Run("empty hub URL returns error", func(t *testing.T) {
-		cfg := &Config{HubURL: ""}
-		assert.Error(t, cfg.Validate())
-	})
-
 	t.Run("valid config creates data dir", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dataDir := filepath.Join(tmpDir, "data")
 
-		cfg := &Config{HubURL: "http://localhost:4327", DataDir: dataDir}
+		cfg := &Config{DataDir: dataDir}
 		require.NoError(t, cfg.Validate())
 
 		info, err := os.Stat(dataDir)
@@ -297,18 +366,26 @@ func TestValidate(t *testing.T) {
 		assert.True(t, info.IsDir())
 	})
 
+	t.Run("an empty name defaults to the hostname", func(t *testing.T) {
+		hostname, err := os.Hostname()
+		require.NoError(t, err)
+		cfg := &Config{DataDir: t.TempDir()}
+		require.NoError(t, cfg.Validate())
+		assert.Equal(t, hostname, cfg.Name)
+	})
+
 	t.Run("max_message_size zero is allowed", func(t *testing.T) {
-		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: 0}
+		cfg := &Config{DataDir: t.TempDir(), MaxMessageSize: 0}
 		require.NoError(t, cfg.Validate())
 	})
 
 	t.Run("max_message_size below floor is rejected", func(t *testing.T) {
-		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: 1}
+		cfg := &Config{DataDir: t.TempDir(), MaxMessageSize: 1}
 		assert.Error(t, cfg.Validate())
 	})
 
 	t.Run("max_message_size above ceiling is rejected", func(t *testing.T) {
-		cfg := &Config{HubURL: "http://localhost:4327", DataDir: t.TempDir(), MaxMessageSize: contracts.MaxConfigurableMessageSize + 1}
+		cfg := &Config{DataDir: t.TempDir(), MaxMessageSize: contracts.MaxConfigurableMessageSize + 1}
 		assert.Error(t, cfg.Validate())
 	})
 }

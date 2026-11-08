@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,10 +20,10 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/util/useronly"
 )
 
 const (
-	defaultHubURL     = "http://127.0.0.1:4327"
 	defaultConfigDir  = "~/.config/leapmux/worker"
 	defaultConfigFile = "~/.config/leapmux/worker/worker.yaml"
 	defaultLogLevel   = "info"
@@ -72,13 +73,11 @@ func ResolveStartupConcurrency(n int) int {
 }
 
 // Config holds the worker's runtime configuration.
+//
+// It holds no Hub URL and no registration key. The Hub URL belongs to the
+// registration: `leapmux worker register` takes it with the key, both as flags
+// only, and saves the URL in State, which execution and deregistration read.
 type Config struct {
-	HubURL string `koanf:"hub" json:"hub_url"`
-	// RegistrationKey is the bearer credential the worker presents to
-	// WorkerConnectorService.Register. Required on first run. A worker that
-	// already has saved credentials refuses to start while it is set. Not
-	// persisted.
-	RegistrationKey      string `koanf:"registration_key" json:"-"`
 	Name                 string `koanf:"name" json:"name"`
 	DataDir              string `koanf:"data_dir" json:"data_dir"`
 	DBMaxConns           int    `koanf:"db_max_conns" json:"db_max_conns"`
@@ -206,19 +205,22 @@ func decode64(field, s string) ([]byte, error) {
 	return b, nil
 }
 
-// State holds the worker's persistent state. runWorker writes it when it
-// generates the keypair and again after registration.
+// State holds the worker's persistent credentials. The register command
+// writes them; runtime execution reads them.
+//
+// hub_url is the Hub endpoint the registration succeeded against, and
+// the only endpoint execution and deregistration use: a runtime command
+// must never silently redirect saved credentials to another Hub.
+//
+// No PID and no registered_by: a process identifier in a credentials
+// file is never evidence of a running worker, and the Hub delivers the
+// worker's owner on every connect (leapmuxv1.WorkerIdentity), so a
+// persisted copy would be a second source of truth for the fact every
+// machine-scoped gate keys on.
 type State struct {
-	// PID is the process that wrote this file. It comes first in the JSON so
-	// a reader sees it before anything else, and it is stamped at write time
-	// by SaveState, never filled in by a caller.
-	PID       int    `json:"pid"`
+	HubURL    string `json:"hub_url"`
 	WorkerID  string `json:"worker_id"`
 	AuthToken string `json:"auth_token"`
-	// No registered_by: the Hub delivers the worker's owner on every connect
-	// (leapmuxv1.WorkerIdentity), so persisting a copy would be a second source of
-	// truth for the fact every machine-scoped gate keys on -- and a file that lost
-	// it left the worker denying its own legitimate owner, permanently.
 	KeyMaterial
 }
 
@@ -251,41 +253,75 @@ func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, err
 	return ck, true, nil
 }
 
+// LoadOptions supplies flags and configuration hooks for a command.
+type LoadOptions struct {
+	// FlagSetName and Description head the help output. Empty values give
+	// "leapmux worker" and the description of the worker mode.
+	FlagSetName string
+	Description string
+	// CLIFlags, when non-nil, lists the only worker flags the command accepts
+	// and shows; config and version are always registered. The config file and
+	// LEAPMUX_WORKER_* variables still reach every key.
+	CLIFlags []string
+	// ConfigureFlags registers caller-owned command flags.
+	ConfigureFlags func(*flag.FlagSet)
+	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
+	AfterFlagsParsed func(*flag.FlagSet) error
+}
+
 // Load parses worker configuration from defaults, config file, env vars, and CLI flags.
 // Returns the config, whether -version was requested, and any error.
 func Load(args []string) (*Config, bool, error) {
-	// Pre-scan for -config flag.
-	configPath := internalconfig.ExtractConfigFlag(args, defaultConfigFile)
+	return LoadWithOptions(args, LoadOptions{})
+}
 
-	// Define CLI flags.
-	fs := flag.NewFlagSet("leapmux worker", flag.ContinueOnError)
-	fs.String("config", defaultConfigFile, "path to config file")
-	fs.String("hub", defaultHubURL, "Hub server URL (http[s]://..., unix:<socket-path>, or npipe:<pipe-name>)")
-	fs.String("registration-key", "", "registration key from the hub UI (required on first run)")
-	fs.String("name", "", "worker display name (default: hostname)")
-	fs.String("data-dir", ".", "data directory")
-	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
-	fs.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
-	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
-	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
-	fs.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
-	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
+// LoadWithOptions parses mode flags and caller-owned command flags together.
+// Only mode flags enter the configuration values.
+func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
+	flagSetName := opts.FlagSetName
+	if flagSetName == "" {
+		flagSetName = "leapmux worker"
+	}
+	description := opts.Description
+	if description == "" {
+		description = "Run a Worker connected to a Hub."
+	}
+
+	// Define every worker flag on a scratch set, then copy the ones this
+	// command accepts. One definition list serves every subset, so a subset
+	// cannot carry a stale default or usage string of its own.
+	all := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
+	all.String("config", defaultConfigFile, "path to config file")
+	all.String("name", "", "worker display name (default: hostname)")
+	all.String("data-dir", ".", "data directory")
+	all.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
+	all.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
+	all.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
+	all.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
+	all.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
+	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
 		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
-	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
+	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
 		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
-	fs.Int("agent-startup-concurrency", 0,
+	all.Int("agent-startup-concurrency", 0,
 		fmt.Sprintf("how many agents to bring back at once after a restart "+
 			"(0 = %d, or the CPU count when that is lower); "+
 			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
-	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
-	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
-	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
-	showVersion := fs.Bool("version", false, "print version and exit")
+	all.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
+	all.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
+	all.Bool("use-login-shell", true, "wrap each agent invocation in the user's login shell")
+	showVersion := all.Bool("version", false, "print version and exit")
+
+	fs := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
+	all.VisitAll(func(f *flag.Flag) {
+		if opts.CLIFlags != nil && f.Name != "config" && f.Name != "version" && !slices.Contains(opts.CLIFlags, f.Name) {
+			return
+		}
+		fs.Var(f.Value, f.Name, f.Usage)
+	})
 	usageCategories := map[string]string{
 		"config":                    "Common options",
 		"version":                   "Common options",
-		"hub":                       "Worker options",
-		"registration-key":          "Worker options",
 		"name":                      "Worker options",
 		"data-dir":                  "Worker options",
 		"log-level":                 "Worker options",
@@ -300,18 +336,25 @@ func Load(args []string) (*Config, bool, error) {
 		"db-cache-size":             "SQLite database options",
 		"db-mmap-size":              "SQLite database options",
 	}
-	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
+	if opts.ConfigureFlags != nil {
+		opts.ConfigureFlags(fs)
+	}
+	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
 	}
 
 	if *showVersion {
 		return nil, true, nil
 	}
+	if opts.AfterFlagsParsed != nil {
+		if err := opts.AfterFlagsParsed(fs); err != nil {
+			return nil, false, err
+		}
+	}
+	configPath := fs.Lookup("config").Value.String()
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
-		"hub":                       "hub",
-		"registration-key":          "registration_key",
 		"name":                      "name",
 		"data-dir":                  "data_dir",
 		"db-max-conns":              "db_max_conns",
@@ -328,8 +371,6 @@ func Load(args []string) (*Config, bool, error) {
 	}
 
 	defaults := map[string]interface{}{
-		"hub":                    defaultHubURL,
-		"registration_key":       "",
 		"name":                   "",
 		"data_dir":               ".",
 		"db_max_conns":           sqlitedb.DefaultMaxConns,
@@ -379,18 +420,16 @@ var workerFlagCategoryOrder = []string{
 
 // Validate checks the configuration and ensures required directories exist.
 func (c *Config) Validate() error {
-	if c.HubURL == "" {
-		return fmt.Errorf("hub URL is required")
-	}
-
 	// Default name to hostname if not explicitly set.
 	if c.Name == "" {
 		hostname, _ := os.Hostname()
 		c.Name = hostname
 	}
 
-	// Ensure data dir exists.
-	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
+	// Ensure data dir exists, durably: the directory that will hold
+	// registration credentials must be published before any write below
+	// identifies a file inside it.
+	if err := atomicfile.MkdirAllDurable(c.DataDir); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
@@ -398,6 +437,12 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// ValidateRuntime checks execution settings without reading credentials or
+// creating directories.
+func (c *Config) ValidateRuntime() error {
+	return channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize)
 }
 
 // StatePath returns the path to the state file.
@@ -421,7 +466,7 @@ func (c *Config) DBConfig() sqlitedb.Config {
 
 // LoadState loads persisted state from disk. Returns nil if no state file exists.
 func (c *Config) LoadState() (*State, error) {
-	data, err := os.ReadFile(c.StatePath())
+	data, err := useronly.ReadFile(c.StatePath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -436,24 +481,65 @@ func (c *Config) LoadState() (*State, error) {
 	return &s, nil
 }
 
-// ClearState removes the persisted state file.
+// RemoveSensitiveRecord removes a credentials file and every temporary
+// copy an interrupted write left beside it. It always attempts both
+// removals -- even when one fails -- joins their failures, and succeeds
+// for files that are already gone, so a retry finishes a partial
+// cleanup without knowing which half failed.
 //
-// It does NOT remove the temp file an interrupted write left beside it, so a
-// deregistered worker leaves the same credentials on disk under a name with a
-// random suffix. `atomicfile.RemoveTempFiles` is the call that closes this;
-// https://github.com/leapmux/leapmux/issues/494 tracks it.
-func (c *Config) ClearState() error {
-	return os.Remove(c.StatePath())
+// These operations remove accessible files; they do not promise physical
+// secure erasure.
+func RemoveSensitiveRecord(path string) error {
+	return removeSensitiveRecord(path, os.Remove, atomicfile.RemoveTempFiles, atomicfile.SyncDirectory)
 }
 
-// SaveState persists state to disk: atomically (a reader never sees a
-// half-written credentials file), with mode 0600 surviving the rename, and
-// the pid stamped from this process as the first field.
+func removeSensitiveRecord(path string, remove func(string) error, removeCopies func(string) error, syncDirectory func(string) error) error {
+	removeErr := remove(path)
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = fmt.Errorf("remove %s: %w", path, removeErr)
+	} else if removeErr != nil {
+		removeErr = nil
+	}
+	copiesErr := removeCopies(path)
+	syncErr := syncDirectory(filepath.Dir(path))
+	if errors.Is(syncErr, os.ErrNotExist) {
+		syncErr = nil
+	}
+	if syncErr != nil {
+		syncErr = fmt.Errorf("confirm removal of %s: %w", path, syncErr)
+	}
+	return errors.Join(removeErr, copiesErr, syncErr)
+}
+
+// ClearRegistration removes recovery material before credentials. Keeping the
+// token until recovery cleanup succeeds permits an authenticated deletion retry.
+func ClearRegistration(files interface {
+	RemovePendingRegistration() error
+	ClearState() error
+}) error {
+	if err := files.RemovePendingRegistration(); err != nil {
+		return fmt.Errorf("clear the pending registration: %w", err)
+	}
+	if err := files.ClearState(); err != nil {
+		return fmt.Errorf("clear the worker credentials: %w", err)
+	}
+	return nil
+}
+
+// ClearState removes the persisted credentials and every interrupted
+// copy beside them.
+func (c *Config) ClearState() error {
+	return RemoveSensitiveRecord(c.StatePath())
+}
+
+// SaveState durably persists the credentials: a reader never sees a
+// half-written file, the mode 0600 survives the replacement, and the
+// directory entry that identifies the file is published before success is
+// reported.
 func (c *Config) SaveState(s *State) error {
-	s.PID = os.Getpid()
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicfile.WriteFile(c.StatePath(), data, 0o600)
+	return atomicfile.WriteFileDurable(c.StatePath(), data, 0o600)
 }
