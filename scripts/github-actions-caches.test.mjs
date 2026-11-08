@@ -1465,7 +1465,7 @@ describe('cache native setup', () => {
   it('keeps the patch fingerprint in every Tauri key and the spinner subtree in the clone directory', () => {
     const tauri = setupSteps().find(step => step.id === 'tauri-restore')
     const keys = setupSteps().find(step => step.id === 'tool-keys')
-    for (const file of ['patch-linuxdeploy.sh', 'linuxdeploy-wrapper.c']) expect(keys.env.TAURI_CACHE_HASH).toContain(file)
+    for (const file of ['patch-linuxdeploy.mjs', 'linuxdeploy-wrapper.c']) expect(keys.env.TAURI_CACHE_HASH).toContain(file)
     expect(tauri.with.key).toBe(expression('steps.tool-keys.outputs.tauri'))
     const spinners = setupSteps().find(step => step.id === 'spinners-restore')
     expect(spinners.with.kind).toBe('spinners')

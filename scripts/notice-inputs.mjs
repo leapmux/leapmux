@@ -45,6 +45,7 @@ export const NOTICE_INPUTS = [
   '.github/actions/load-versions/action.yaml',
   'scripts/cache-policy.mjs',
   'scripts/cache-snapshot.mjs',
+  'scripts/download.mjs',
   'scripts/download-cli-tools.mjs',
 ]
 

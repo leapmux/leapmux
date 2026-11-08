@@ -175,7 +175,7 @@ runs:
       shell: bash
       env:
         APT_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
-        TAURI_CACHE_HASH: ${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
+        TAURI_CACHE_HASH: ${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.mjs', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
       run: |
         echo "apt=$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
         echo "tauri=$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$TAURI_CACHE_HASH")" >> "$GITHUB_OUTPUT"

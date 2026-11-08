@@ -983,7 +983,7 @@ tasks:
     cmds:
       - *forget_artifacts
       # The build-backend dependency supplies ../../leapmux for tauri.linux.conf.json's deb.files entry.
-      - desktop/rust/scripts/patch-linuxdeploy.sh
+      - desktop/rust/scripts/patch-linuxdeploy.mjs
       - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
       # Place the AppImage binary beside the sidecar in /usr/lib/leapmux-desktop/, as the Debian package does.
       # Tauri starts with the Debian data tree, which places the app in usr/bin and the sidecar in usr/lib/leapmux-desktop/.
