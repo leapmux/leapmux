@@ -506,6 +506,7 @@ jobs:
         run: |
           git restore --source="$PR_MERGE_SHA" -- \
             .github/actions/setup-cli-tools \
+            scripts/download.mjs \
             scripts/download-cli-tools.mjs \
             scripts/cache-policy.mjs \
             scripts/cache-snapshot.mjs

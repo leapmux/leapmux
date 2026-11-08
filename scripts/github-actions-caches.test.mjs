@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, join, posix, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
@@ -1188,6 +1188,7 @@ describe('renovate workflow and protection', () => {
     const restore = steps.find(entry => entry.name === 'Keep the tool plumbing of the merge commit')
     const plumbing = [
       '.github/actions/setup-cli-tools/action.yaml',
+      'scripts/download.mjs',
       'scripts/download-cli-tools.mjs',
       'scripts/cache-policy.mjs',
       'scripts/cache-snapshot.mjs',
@@ -1225,6 +1226,27 @@ describe('renovate workflow and protection', () => {
       expect(readFileSync(join(directory, path), 'utf8'), path).toBe('merge plumbing\n')
     expect(readFileSync(join(directory, 'file'), 'utf8')).toBe('base\n')
     expect(git(directory, ['rev-parse', 'HEAD'])).not.toBe(merge)
+  })
+  it('restores every tool-plumbing module that the installer imports', () => {
+    // The base commit need not define the tool plumbing, and ESM imports
+    // resolve against the checked-out tree: a module that the installer
+    // reaches but the restore step does not list fails the job with
+    // ERR_MODULE_NOT_FOUND before it installs anything.
+    const steps = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps
+    const restore = steps.find(entry => entry.name === 'Keep the tool plumbing of the merge commit')
+    const closure = new Set()
+    const queue = ['scripts/download-cli-tools.mjs', 'scripts/cache-snapshot.mjs']
+    while (queue.length > 0) {
+      const file = queue.pop()
+      if (closure.has(file))
+        continue
+      closure.add(file)
+      for (const match of readFileSync(join(root, file), 'utf8').matchAll(/from '(\.[^']+)'/g))
+        queue.push(posix.join(posix.dirname(file), match[1]))
+    }
+    expect(closure.size).toBeGreaterThan(1)
+    for (const file of closure)
+      expect(restore.run, file).toContain(file)
   })
   it('keeps the administrator credential in the release environment and atomic push only', () => {
     const release = yaml('.github/workflows/release.yaml').jobs.release
