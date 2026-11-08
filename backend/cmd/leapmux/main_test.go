@@ -99,7 +99,7 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			name:       "a flag before the verb identifies the corrected command",
 			args:       []string{"solo", "--version"},
 			wantCode:   1,
-			wantStderr: "run",
+			wantStderr: "`leapmux solo start [flags]`",
 		},
 		{
 			name:     "dev run dispatches through the lifecycle group",

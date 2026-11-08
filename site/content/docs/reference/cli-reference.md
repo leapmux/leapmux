@@ -7,7 +7,7 @@ weight: 1
 
 This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, the commands that every mode shares, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and outlines of the three large command groups — `recover` (offline break-glass), `control` (user-facing scripting), and `control admin` (hub administration) — which have their own dedicated chapters.
 
-For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/admin/running-leapmux/) (run modes, ports, data dirs, Docker), [Running as a Service](/docs/admin/running-as-a-service/), [Configuration](/docs/admin/configuration/) (full config-key reference and storage backends), [Recovery](/docs/admin/recover/), and [Control CLI](/docs/using/control-cli/).
+For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/admin/running-leapmux/) (run modes, ports, data dirs, Docker), [Starting and Stopping](/docs/admin/starting-and-stopping/), [Configuration](/docs/admin/configuration/) (full config-key reference and storage backends), [Recovery](/docs/admin/recover/), and [Control CLI](/docs/using/control-cli/).
 
 ## Top-level usage
 
@@ -47,8 +47,8 @@ Notes on dispatch:
 
 - The default TCP port for every mode is **4327**.
 - `-h`, `-help`, and `--help` are recognized at every level (help prints to stdout, exit 0). The bare `help` token works only at the top level.
-- `-version`, `--version`, and the `version` command all print the same version string. `--version` works at the top level and after a mode command (`leapmux hub run --version`).
-- A mode needs a command, and flags follow the command: `leapmux solo run -listen ...`. `leapmux solo -listen ...` fails, and the error suggests `leapmux solo run`. LeapMux also rejects an unknown leading `-flag` such as `leapmux -listen ...`, because it is not a top-level flag.
+- `-version`, `--version`, and the `version` command all print the same version string. `--version` works at the top level and after a mode command (`leapmux hub <command> --version`).
+- A mode needs a command, and flags follow the command: `leapmux solo start -listen ...`. `leapmux solo -listen ...` fails, and the error shows the corrected command. LeapMux also rejects an unknown leading `-flag` such as `leapmux -listen ...`, because it is not a top-level flag.
 - LeapMux rejects an unexpected positional argument and points you at `--help`.
 
 {{< callout >}}
@@ -59,22 +59,22 @@ Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are 
 
 ## Mode commands
 
-Every mode requires a command. The seven commands below work in every mode, and the `worker` mode adds three. [Running as a Service](/docs/admin/running-as-a-service/) explains the service that `start` and `enable` create.
+Every mode requires a command. The seven commands below work in every mode, and the `worker` mode adds three. Start and stop an instance with `start` and `stop`; use `run` only in a container. [Starting and Stopping](/docs/admin/starting-and-stopping/) explains the service that `start` and `enable` create.
 
 | Command | What it does |
 | --- | --- |
-| `<mode> run` | Runs in the foreground. Never creates a service. |
 | `<mode> start` | Creates the service when necessary, starts it, and waits until it is ready. |
-| `<mode> stop` | Stops the instance, whether `run` or `start` started it, and waits until its shutdown completes. |
+| `<mode> stop` | Stops the instance, whether `start` or `run` started it, and waits until its shutdown completes. |
 | `<mode> restart` | Stops the instance, then starts it as a service. |
 | `<mode> status` | Reports the process state, readiness, registration, and the last failure. |
 | `<mode> enable` | Creates the service for startup at login or boot, without starting it, and prints the `start` and `status` commands of the instance. |
 | `<mode> disable` | Removes the service. Requires a stopped instance. |
+| `<mode> run` | Runs in the foreground until the process stops, and never creates a service. The container image uses it. |
 | `worker register` | Registers the Worker with a Hub and saves its credentials. Never starts it. See [below](#worker-register). |
 | `worker deregister` | Deletes the Worker on the Hub, then its credentials. Requires a stopped Worker. See [below](#worker-deregister). |
 | `worker cross-worker-pins` | Manages the Worker's pin store. See [below](#worker-cross-worker-pins). |
 
-`run`, `start`, `restart`, and `enable` also take the runtime flags of the mode, which its section below lists. A service saves the runtime flags that you give it. `stop`, `status`, and `disable` take only `--data-dir` and `--config` from the mode, plus their own options below.
+`start`, `restart`, `enable`, and `run` also take the runtime flags of the mode, which its section below lists. A service saves the runtime flags that you give it. `stop`, `status`, and `disable` take only `--data-dir` and `--config` from the mode, plus their own options below.
 
 **Options of the mode commands**
 
@@ -116,11 +116,11 @@ The `state` fields take these values:
 Run a Hub and a Worker in one process on loopback. Local IPC needs no credential. A TCP browser sets the first `solo` password, then every TCP address asks for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) and [Network access](/docs/admin/configuration/#network-access).
 
 ```bash
-leapmux solo run [flags]
+leapmux solo start [flags]
 # then open http://127.0.0.1:4327
 ```
 
-`start`, `restart`, and `enable` take the same flags.
+`restart`, `enable`, and `run` take the same flags.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -150,10 +150,10 @@ The `public_url` setting applies in solo: it sets the URL in the startup banner,
 Run only the Hub: authentication, workspace management, Worker registration, and the encrypted relay. Binds all interfaces by default and requires a real login. See [Running LeapMux](/docs/admin/running-leapmux/#hub-mode) and [Configuration](/docs/admin/configuration/) for the complete key reference.
 
 ```bash
-leapmux hub run [flags]
+leapmux hub start [flags]
 ```
 
-`start`, `restart`, and `enable` take the same flags.
+`restart`, `enable`, and `run` take the same flags.
 
 This table lists the most common flags. The full set — including all PostgreSQL/MySQL/CockroachDB/YugabyteDB/TiDB pool-tuning flags — is in [Configuration](/docs/admin/configuration/).
 
@@ -202,16 +202,17 @@ One hub config key has **no** CLI flag and is set only via YAML or env var: `enc
 
 ## worker
 
-Run a Worker that connects out to a Hub. Workers do not serve an inbound HTTP port. Register a Worker once with `worker register` before you run or start it. See [Managing Workers](/docs/admin/managing-workers/).
+Run a Worker that connects out to a Hub. Workers do not serve an inbound HTTP port. Register a Worker once with `worker register` before you start it. See [Managing Workers](/docs/admin/managing-workers/).
 
 ```bash
 # Once: register, with a key from the Register worker dialog of the Hub.
 leapmux worker register --hub https://hub.example.com --registration-key <key>
 
-# Then run it in the foreground, or start it as a service.
-leapmux worker run [flags]
+# Then start it as a background service.
 leapmux worker start [flags]
 ```
+
+`restart`, `enable`, and `run` take the same flags.
 
 The Worker connects to the Hub URL that its registration saved, so the runtime commands take no `--hub` and no `--registration-key`. They refuse both flags.
 
@@ -298,14 +299,14 @@ leapmux worker cross-worker-pins list|show|remove [--target-worker-id=<id>] [--d
 | `show` | `--target-worker-id` | Print one pin (errors `no pin recorded for target_worker_id=<id>` if absent) |
 | `remove` | `--target-worker-id` | Remove the pin; prints `{"removed_target_worker_id": <id>}` |
 
-When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches what `leapmux worker run` would use: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
+When `--data-dir` is omitted, the data directory is resolved through the standard Worker config loader, so it matches the data directory of the other Worker commands: default `~/.config/leapmux/worker`, overridable with `LEAPMUX_WORKER_DATA_DIR` (or a `data_dir` entry in `worker.yaml`).
 
 ## dev
 
 Run a Hub and a Worker in one process with **real** password authentication — the same program as `solo` but with login enabled, binding all interfaces, and the first admin bootstrapped through the `/setup` flow. See [Running LeapMux](/docs/admin/running-leapmux/#dev-mode).
 
 ```bash
-leapmux dev run [flags]
+leapmux dev start [flags]
 ```
 
 Dev mode uses the **same flag set as solo**.
@@ -377,7 +378,7 @@ LeapMux reads configuration and credentials from these environment variables.
 
 ### Daemon configuration (hub / solo / dev and worker)
 
-Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; the Worker reads `LEAPMUX_WORKER_`. The variable name after the prefix is lowercased to form the config key — for example `LEAPMUX_HUB_LISTEN` sets `listen`, `LEAPMUX_WORKER_NAME` sets `name`. A service does not inherit these variables from the shell that starts it; see [Environment variables](/docs/admin/running-as-a-service/#environment-variables).
+Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; the Worker reads `LEAPMUX_WORKER_`. The variable name after the prefix is lowercased to form the config key — for example `LEAPMUX_HUB_LISTEN` sets `listen`, `LEAPMUX_WORKER_NAME` sets `name`. A service does not inherit these variables from the shell that starts it; see [Environment variables](/docs/admin/starting-and-stopping/#environment-variables).
 
 | Variable | Sets | Example |
 |----------|------|---------|

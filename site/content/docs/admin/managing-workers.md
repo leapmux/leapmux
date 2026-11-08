@@ -7,7 +7,7 @@ weight: 4
 
 A **Worker** is the long-running daemon that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a powerful desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register one, and how the UI shows Worker status. It also covers TOFU key pinning and how you pick which Worker hosts a new tab.
 
-If you only ever run `leapmux solo run`, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
+If you only ever use solo mode, a Worker is started for you in-process and most of this chapter is informational — see [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Concepts & Architecture](/docs/getting-started/concepts/) for how the Hub, Worker, and Frontend fit together.
 
 ## How a Worker reaches a Hub
 
@@ -97,7 +97,7 @@ Start the Worker as a service, so it runs in the background and starts again at 
 leapmux worker start
 ```
 
-The first `start` asks when the Worker should start automatically. See [Running as a Service](/docs/admin/running-as-a-service/). To run the Worker in your terminal instead, run `leapmux worker run`.
+The first `start` asks when the Worker should start automatically. See [Starting and Stopping](/docs/admin/starting-and-stopping/). In a container, the image runs the Worker for you; see [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container).
 
 The Worker appears in the sidebar **Workers** section as soon as it connects.
 
@@ -379,7 +379,7 @@ Leave this at the default unless you have a specific reason to change it; both e
 ## See also
 
 - [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
-- [Running as a Service](/docs/admin/running-as-a-service/) — keep a Worker running in the background at login or at boot.
+- [Starting and Stopping](/docs/admin/starting-and-stopping/) — keep a Worker running in the background at login or at boot.
 - [Configuration](/docs/admin/configuration/) — Worker flags, env vars, and config-file precedence.
 - [Security & Threat Model](/docs/admin/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
 - [Control CLI](/docs/using/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/admin/admin-cli/) and registration-key reference.

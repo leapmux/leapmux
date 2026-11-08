@@ -13,7 +13,7 @@ Most "nothing works" problems trace back to one of three things: the Worker isn'
 
 ## Background service
 
-These entries cover an instance that `leapmux <mode> start` runs as a service. Start with `leapmux <mode> status`, with the same `--data-dir` or `--config` as the instance. It states the process state, the reason for the last failure, and the path of its log. For how the service works, see [Running as a Service](/docs/admin/running-as-a-service/).
+These entries cover an instance that `leapmux <mode> start` runs as a service. Start with `leapmux <mode> status`, with the same `--data-dir` or `--config` as the instance. It states the process state, the reason for the last failure, and the path of its log. For how the service works, see [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ### `start` reports that the startup wait expired
 
@@ -115,7 +115,7 @@ A data directory belongs to one instance: one mode and one operating-system acco
 - Another account uses the directory.
 - A `hub` or `worker` directory moved out of its solo or dev data directory, without the rest of it.
 
-A directory that moved as a whole, or a backup restored at another path, is not a conflict: the first command at the new path adopts it. See [Move an instance to another directory](/docs/admin/running-as-a-service/#move-an-instance-to-another-directory).
+A directory that moved as a whole, or a backup restored at another path, is not a conflict: the first command at the new path adopts it. See [Move an instance to another directory](/docs/admin/starting-and-stopping/#move-an-instance-to-another-directory).
 
 **Fix**
 Give each instance its own data directory, and pass that instance's `--data-dir` or `--config` to every command. Run each instance as the account that created it.
@@ -166,7 +166,7 @@ If the earlier command could have succeeded, run that same command again to comp
 The data directory already holds credentials. The command refuses, so that it does not use up a fresh key on a machine that is already set up.
 
 **Fix**
-Start the Worker with `leapmux worker start` or `leapmux worker run`. To register it with another Hub or as a new Worker, see [Register a Worker again](/docs/admin/managing-workers/#register-a-worker-again).
+Start the Worker with `leapmux worker start`. To register it with another Hub or as a new Worker, see [Register a Worker again](/docs/admin/managing-workers/#register-a-worker-again).
 
 ### A Worker command refuses `--hub` or `--registration-key`
 
@@ -317,15 +317,13 @@ The hub/solo/dev process fails to start because something is already bound to `4
 Another process — often a previously launched LeapMux instance — already holds the port.
 
 **Fix**
-Either stop the conflicting process or change the listen address with `--listen`:
+Either stop the conflicting process, or restart LeapMux on another port. The service saves the new port:
 
 ```bash
-# Bind a different port
-leapmux hub run --listen :4400
-
-# Solo on a different loopback port
-leapmux solo run --listen 127.0.0.1:4400
+leapmux hub restart --listen :4400
 ```
+
+For solo mode, pass a loopback address such as `--listen 127.0.0.1:4400`, so that it stays unreachable from other machines.
 
 In Docker, the container always listens on `4327` internally; remap the host side of the port publish instead:
 
@@ -346,7 +344,7 @@ Solo mode binds **`127.0.0.1:4327`** by default, so another machine cannot reach
 **Fix**
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
-  - Run `leapmux hub run` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
+  - Use hub mode or dev mode, which use real authentication and bind `:4327` (all interfaces) by default; or
   - To expose solo mode, set the `solo` password first and add the address in **Preferences → Administration → Network access**. Every TCP address then asks for that password. Restrict access with a firewall, VPN, or SSH tunnel. Solo mode warns on a non-loopback address because another machine can win first-password setup before the password exists. See [Security & Threat Model](/docs/admin/security/).
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for binding and listen-address options.
@@ -612,7 +610,7 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 **Fix**
 - Read the error text shown in the pane — it comes straight from the Worker and usually identifies the cause.
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
-- If startup is legitimately slow, raise the timeout: `leapmux worker run --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
+- If startup is legitimately slow, raise the timeout: set `agent_startup_timeout: 10m` in `worker.yaml` and run `leapmux worker restart`, or run `leapmux worker restart --agent-startup-timeout 10m`, which saves the flag. The setting exists on the standalone Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
 ### The Cline agent does not start

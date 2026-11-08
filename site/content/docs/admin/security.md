@@ -209,7 +209,7 @@ The fingerprints are **4 dash-joined English words** derived from a hash of the 
 ### When to accept and when to reject
 
 - **Reject by default.** No ordinary action causes a harmless key change on the same Worker ID: a Worker keeps its keys for as long as it stays registered, and a re-registered Worker arrives as a new Worker with no dialog.
-- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. The Worker runtime logs it as `key_fingerprint` in its "worker initialized" line for every entry point, including `leapmux worker run`, solo mode, dev mode, and the desktop app.
+- **Accept** only after you confirm, out of band, that the Actual fingerprint matches the one the Worker logs when it starts. The Worker runtime logs it as `key_fingerprint` in its "worker initialized" line for every entry point: a standalone Worker, solo mode, dev mode, and the desktop app.
 
 The desktop app writes its Worker's line to standard error, prefixed with `desktop-sidecar: `. To see it, start the app from a terminal: on macOS, run `"/Applications/LeapMux Desktop.app/Contents/MacOS/LeapMux Desktop"`; on Linux, run the AppImage, or `leapmux-desktop`, the program the `.deb` package installs. A Windows release build has no console. The desktop app's own local Worker runs in the same process as its Hub, so a key change for it cannot come from the network: it means the app's stored pins or data changed.
 
@@ -250,7 +250,7 @@ The app shows only the password-setup screen on every passwordless TCP connectio
 
 The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
 
-The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and `leapmux solo run` on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
+The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and solo mode on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
 
 ## Trusted reverse proxies
 
@@ -411,7 +411,7 @@ Protect these files as credentials:
 - A Worker's `state.json`, and its `pending-registration.json` while a registration is unfinished
 - A service's environment file, when it holds a secret
 
-See [Running as a Service](/docs/admin/running-as-a-service/).
+See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
 ## Recommendations for administrators
 
@@ -421,7 +421,7 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Running LeapMux](/docs/admin/running-leapmux/).
 3. **Guard the `encryption.key` file like a top-grade secret.** It is base64 key material in a plain text file at mode `0600` — there is no master password, KMS, or HSM wrapping, so filesystem permissions are the only thing protecting it. It holds both the encryption key ring and the token pepper, so whoever reads it can decrypt the OAuth columns *and* forge the hash of any API or delegation token. Back it up with the database, store both encrypted, and restrict access.
 4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before the re-encryption migrated every row. The exact runbook is in [Encryption & Data](/docs/admin/encryption-and-data/).
-5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Run `leapmux hub run` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
+5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Use hub mode (`leapmux hub`) for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/admin/managing-workers/).
 7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject a changed key, and accept only after the 4-word fingerprint matches the one the Worker logs when it starts.
 8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux control admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).

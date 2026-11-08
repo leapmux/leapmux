@@ -102,20 +102,20 @@ The binary runs in several modes:
 
 | Command | Description |
 |---------|-------------|
-| `leapmux solo run` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
-| `leapmux hub run` | Central service only (auth, relay, database) |
-| `leapmux worker run` | Connects to a remote Hub |
-| `leapmux dev run` | Hub + Worker on all interfaces, login required |
+| `leapmux solo` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
+| `leapmux hub` | Central service only (auth, relay, database) |
+| `leapmux worker` | Connects to a remote Hub |
+| `leapmux dev` | Hub + Worker on all interfaces, login required |
 | `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
 | `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
-Each mode requires a lifecycle subcommand. `run` stays in the foreground. `start` uses the operating system's service mechanism and waits for readiness. Use `stop`, `restart`, or `status` to control either execution mode. `enable` configures automatic startup without starting the process; `disable` removes that configuration after the process stops.
+Each mode requires a command. Start an instance with `start`, which runs it as a service of the operating system and waits until it is ready, and stop it with `stop`. `restart` and `status` act on a running instance. `enable` configures automatic startup without starting the instance, and `disable` removes that configuration from a stopped instance. `run` keeps an instance in the foreground; the container image uses it.
 
-Register a standalone Worker before running it:
+Register a standalone Worker before you start it:
 
 ```sh
 leapmux worker register --hub https://hub.example.com --registration-key YOUR_KEY
-leapmux worker run
+leapmux worker start
 ```
 
 Solo and dev register their embedded Worker automatically. A fresh dev instance reports `ready_for_setup` until an administrator completes `/setup`.

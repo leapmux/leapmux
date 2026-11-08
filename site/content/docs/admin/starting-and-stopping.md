@@ -1,11 +1,11 @@
 ---
-title: "Running as a Service"
-description: "Keep LeapMux running in the background: start it as a service at login or at boot, check its status, change its settings, and remove it."
+title: "Starting and Stopping"
+description: "Start and stop LeapMux as a service of your operating system: choose login or boot startup, check its status, change its settings, and remove it."
 type: docs
 weight: 2
 ---
 
-`leapmux <mode> run` keeps LeapMux in your terminal until you press Ctrl+C. To keep it running after you close the terminal, log out, or restart the computer, run it as a **service** instead. A service is an entry in the service manager of your operating system:
+Start LeapMux with `leapmux <mode> start`, and stop it with `leapmux <mode> stop`. This is the recommended way to run every mode outside a container. `start` runs LeapMux in the background as a **service**, so it keeps running after you close the terminal or log out, and it starts again after a restart of the computer. A service is an entry in the service manager of your operating system:
 
 - launchd on macOS
 - systemd on Linux
@@ -14,26 +14,22 @@ weight: 2
 LeapMux creates and removes the service for you. This page applies to every mode: `solo`, `hub`, `worker`, and `dev`. The examples use `solo`. Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 {{< callout >}}
-In a container, the container is the service. The LeapMux image runs `leapmux <mode> run` in the foreground, and Docker restarts it. Do not use `start` or `enable` inside a container. See [Running under Docker](/docs/admin/running-leapmux/#running-under-docker).
+In a container, the container is the service, so use `leapmux <mode> run` there. It runs LeapMux in the foreground, without a service, until the process stops. The LeapMux image runs it for you, and Docker restarts the container. Do not use `start` or `enable` inside a container. See [Running under Docker](/docs/admin/running-leapmux/#running-under-docker).
 {{< /callout >}}
 
 ## The commands
 
 | Command | What it does |
 | --- | --- |
-| `leapmux <mode> run` | Runs in the foreground. It never creates a service. |
 | `leapmux <mode> start` | Creates the service when necessary, starts it, and waits until LeapMux is ready. |
 | `leapmux <mode> stop` | Stops the instance and waits until its shutdown completes. The service remains, so LeapMux starts again at the next login or boot. |
 | `leapmux <mode> restart` | Stops the instance, then starts it as a service. |
 | `leapmux <mode> status` | Reports whether the instance runs, whether it is ready, and why it failed. |
 | `leapmux <mode> enable` | Creates the service for automatic startup, but does not start LeapMux now. It prints the commands that start the instance and report its status. |
 | `leapmux <mode> disable` | Removes the service. The instance must be stopped. |
+| `leapmux <mode> run` | Runs in the foreground until the process stops, and never creates a service. Use it in a container. |
 
-`stop`, `restart`, and `status` also work on an instance that `run` started in a terminal.
-
-## Start LeapMux in the background
-
-If LeapMux runs in a terminal, press Ctrl+C to stop it. Then run:
+## Start LeapMux
 
 ```bash
 leapmux solo start
@@ -118,6 +114,18 @@ On Linux, login startup follows the graphical desktop session. A session over SS
 On **Windows**, both kinds need your account password, because Windows starts LeapMux while you are not at the keyboard. LeapMux reads the password without showing it and does not save it. Windows stores it for the service. Windows can also ask for administrator rights to grant your account the right to run the task or the service.
 
 After you change your Windows password, the service cannot start. Run `leapmux <mode> enable` again, and type the new password when it asks.
+
+### Service names
+
+Each service name ends with a 16-digit hexadecimal ID. LeapMux derives the ID from the operating-system account, the mode, and the data directory. So each instance has its own service, and every command for one instance finds the same service. `start` and `enable` print the exact name in their preview, after `Definition:`.
+
+| Platform | Login startup | Boot startup |
+| --- | --- | --- |
+| macOS | LaunchAgent `com.leapmux.<mode>.<id>`, in `~/Library/LaunchAgents/` | LaunchDaemon `com.leapmux.<mode>.<id>`, in `/Library/LaunchDaemons/` |
+| Linux | User unit `leapmux-<mode>-<id>.service`, in `~/.config/systemd/user/` | System unit `leapmux-<mode>-<id>.service`, in `/etc/systemd/system/` |
+| Windows | Scheduled task `leapmux-<mode>-<id>`, in the root folder of Task Scheduler | Windows service `leapmux-<mode>-<id>` |
+
+Use the name to find the service in the tools of your operating system, such as `launchctl`, `systemctl`, Task Scheduler, or Services. Manage the service with `leapmux <mode>` commands, though: they keep the saved settings and the service in step.
 
 ## Check the status
 

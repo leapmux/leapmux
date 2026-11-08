@@ -7,9 +7,9 @@ weight: 1
 
 Use the `leapmux` command to run a personal workspace, a shared Hub, or a Worker that connects to a Hub. This guide covers choosing a mode, starting it, keeping its data, and making it accessible through Docker or a reverse proxy.
 
-If you only want to try LeapMux on your own machine, the desktop app or `leapmux solo run` is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
+If you only want to try LeapMux on your own machine, the desktop app or solo mode is all you need. To set up a shared service for a team, run a `hub` plus one or more `worker` processes. For the full list of configuration keys and storage backends, see [Configuration](/docs/admin/configuration/).
 
-Every example on this page runs LeapMux in your terminal with `run`. To keep an instance running after you log out or restart the computer, start it as a service with `leapmux <mode> start`. [Running as a Service](/docs/admin/running-as-a-service/) covers login and boot startup, status, logs, and removal.
+Start each mode with `leapmux <mode> start`, and stop it with `leapmux <mode> stop`. `start` runs LeapMux in the background as a service, which keeps running after you log out and starts again after a restart of the computer. [Starting and Stopping](/docs/admin/starting-and-stopping/) covers login and boot startup, status, logs, and removal. In a container, the image runs `leapmux <mode> run` instead, in the foreground; see [Running under Docker](#running-under-docker).
 
 ## Run modes at a glance
 
@@ -38,14 +38,14 @@ Set the `solo` account's password and add the address in **Preferences → Admin
 
 Session settings apply to solo mode when you sign in over the network. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
 
-A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub run` (with separate Workers) or `leapmux dev run` instead.
+A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, use hub mode (with separate Workers) or dev mode instead.
 
 ## Solo mode
 
 Solo mode runs a personal Hub and Worker with no required configuration. By default, only your own machine can connect. Set the first password when you open it in a browser. The desktop app connects without a sign-in.
 
 ```bash
-leapmux solo run
+leapmux solo start
 # Then open http://127.0.0.1:4327
 ```
 
@@ -67,10 +67,10 @@ The desktop app runs solo mode without opening a network port by default. See [I
 
 ## Hub mode
 
-`leapmux hub run` runs only the Hub: authentication, workspace management, Worker registration, and the encrypted relay between Frontends and Workers. It does **not** run a Worker — Workers connect separately (see [Running Workers](#running-workers)). The Hub binds `:4327` on all interfaces by default and requires real authentication.
+Hub mode runs only the Hub: authentication, workspace management, Worker registration, and the encrypted relay between Frontends and Workers. It does **not** run a Worker — Workers connect separately (see [Running Workers](#running-workers)). The Hub binds `:4327` on all interfaces by default and requires real authentication.
 
 ```bash
-leapmux hub run -listen :4327
+leapmux hub start
 ```
 
 A fresh Hub has no users and (by default) sign-up disabled. Open it in a browser and every path shows the `/setup` form — the first person to register becomes the administrator (see [Accounts & Authentication](/docs/using/accounts/)). You can also create that first admin offline with [`leapmux recover bootstrap create-admin`](/docs/admin/recover/), which refuses once any admin exists. Then log in as that administrator.
@@ -102,18 +102,17 @@ For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse proxy an
 
 Run a Worker on each machine where you want to run agents and terminals. A Worker connects out to the Hub and accepts no connections, so it needs no open port and no port forwarding.
 
-Register a Worker once, then run it:
+Register a Worker once, then start it:
 
 ```bash
 # 1. Register, with a key from the Register worker dialog of the Hub.
 leapmux worker register --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
 
-# 2. Run it in this terminal, or start it as a service.
-leapmux worker run
+# 2. Start it as a background service.
 leapmux worker start
 ```
 
-The registration saves the Hub URL and the Worker's credentials in its data directory, and every later command reads them. So `run` and `start` take no `--hub` and no `--registration-key`. [Register a Worker](/docs/admin/managing-workers/#register-a-worker) covers the key, the failures, and how to register a Worker again.
+The registration saves the Hub URL and the Worker's credentials in its data directory, and every later command reads them. So `start` takes no `--hub` and no `--registration-key`. [Register a Worker](/docs/admin/managing-workers/#register-a-worker) covers the key, the failures, and how to register a Worker again.
 
 These flags customize a running Worker:
 
@@ -130,10 +129,10 @@ For approving Workers, verifying their identities, and choosing a Worker for a t
 
 ## Dev mode
 
-Use `leapmux dev run` to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
+Use dev mode to run a Hub and Worker together with multiple user accounts. It listens on all interfaces and requires sign-in. Choose this mode when you want both services in one container.
 
 ```bash
-leapmux dev run -listen :4327
+leapmux dev start
 ```
 
 Open the Hub in your browser and complete `/setup` to create the first administrator. The bundled Worker becomes available after setup.
@@ -269,7 +268,7 @@ Configure the proxy to accept HTTPS and forward cleartext HTTP/2 (`h2c`) to the 
 LeapMux runs database migrations automatically on startup, for both the Hub and each Worker, so there is no separate migration command to run during a routine upgrade.
 
 - **Docker:** Pull a newer image tag (a pinned `:<version>`, `:<major>`, or `:latest`) and recreate the container against the same `/data` volume. Migrations run on the next start.
-- **CLI binary:** Replace the `leapmux` binary from the newer server tarball or zip on the [Releases page](https://github.com/leapmux/leapmux/releases) and restart. An instance that runs as a service runs the binary at the path that its service saved, so replace the file at that path, then run `leapmux <mode> restart`.
+- **CLI binary:** Download the newer server tarball or zip from the [Releases page](https://github.com/leapmux/leapmux/releases). Replace the `leapmux` binary at the path that the service runs, then run `leapmux <mode> restart`.
 - **Desktop app:** Download and install the newer artifact from the Releases page.
 
 {{< callout >}}
@@ -287,7 +286,7 @@ leapmux --version
 
 ## See also
 
-- [Running as a Service](/docs/admin/running-as-a-service/) — keep an instance running in the background at login or at boot.
+- [Starting and Stopping](/docs/admin/starting-and-stopping/) — keep an instance running in the background at login or at boot.
 - [Configuration](/docs/admin/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
 - [Managing Workers](/docs/admin/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
 - [Recovery](/docs/admin/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.

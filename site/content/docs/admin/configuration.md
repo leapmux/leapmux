@@ -66,7 +66,9 @@ Each mode looks for a YAML config file in its own directory under `~/.config/lea
 Override the path with the `--config` (or `-config`) flag, which accepts `--config=PATH`, `--config PATH`, `-config=PATH`, or `-config PATH`. It is scanned out of the arguments before normal flag parsing, so it works regardless of position.
 
 ```bash
-leapmux hub run --config /etc/leapmux/hub.yaml
+# Pass the same path to every command of the instance.
+leapmux hub start --config /etc/leapmux/hub.yaml
+leapmux hub status --config /etc/leapmux/hub.yaml
 ```
 
 ### Data directory resolution
@@ -104,11 +106,23 @@ This means flat, top-level keys map cleanly:
 Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgres.dsn`, `storage.sqlite.path`, …). Because the env mapping does not convert underscores to dots, you **cannot** reliably set storage settings via simple env vars. Configure storage through the **YAML config file** or the dedicated **CLI flags** instead (for example `--storage-type postgres --storage-postgres-dsn ...`).
 {{< /callout >}}
 
+A service that `start` creates does not inherit the variables of your shell. Give it the variables in an environment file:
+
+```yaml
+# /etc/leapmux/hub-environment.yaml
+LEAPMUX_HUB_LISTEN: ":8080,unix:/run/leapmux/hub.sock"
+LEAPMUX_HUB_LOG_LEVEL: "debug"
+```
+
 ```bash
-# Flat keys work cleanly as env vars:
-export LEAPMUX_HUB_LISTEN=":8080,unix:/run/leapmux/hub.sock"
-export LEAPMUX_HUB_LOG_LEVEL="debug"
-leapmux hub run
+leapmux hub start --environment-file /etc/leapmux/hub-environment.yaml
+```
+
+A container reads the variables from its own environment:
+
+```bash
+docker run -d -p 4327:4327 -e LEAPMUX_MODE=hub -e LEAPMUX_HUB_LOG_LEVEL=debug \
+  -v leapmux-data:/data ghcr.io/leapmux/leapmux:latest
 ```
 
 ## Duration values
@@ -418,7 +432,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 
 ### Solo and dev extras (worker-scoped)
 
-`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. They are rejected by `leapmux hub run`, which has no Worker to configure.
+`solo` and `dev` embed a Worker, but `solo.yaml` / `dev.yaml` is the only config file they read. These keys therefore live in the Hub-family config file yet configure the **bundled Worker**, not the Hub. Hub mode rejects them, because it has no Worker to configure.
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
@@ -683,7 +697,8 @@ storage:
 ```
 
 ```bash
-leapmux hub run --config /etc/leapmux/hub.yaml
+# Start the Hub as a background service.
+leapmux hub start --config /etc/leapmux/hub.yaml
 
 # Behavioral settings live in the database now — set once, then they
 # survive and can change under the running Hub:
@@ -710,21 +725,21 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```bash
 # Once: register with the Hub, using a key from its Register worker dialog.
 leapmux worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
-# Then: run the Worker. It reads worker.yaml, and it connects to the Hub URL
-# that the registration saved.
-leapmux worker run
+# Then: start the Worker as a background service. It reads worker.yaml, and
+# it connects to the Hub URL that the registration saved.
+leapmux worker start
 ```
 
 ## Configuration of a service
 
-An instance that runs as a service reads the same configuration file as `run`. It does not inherit the environment of the shell that started it, so a `LEAPMUX_*` variable in that shell does not reach it. The service saves the runtime flags that you give to `start`, `restart`, or `enable`, and the path of the configuration file. [Change the configuration of a service](/docs/admin/running-as-a-service/#change-the-configuration-of-a-service) explains how to change each of them, and how to give the service environment variables.
+A service reads the configuration file at the path that it saved, each time it starts. It does not inherit the environment of the shell that started it, so a `LEAPMUX_*` variable in that shell does not reach it. The service saves the runtime flags that you give to `start`, `restart`, or `enable`, and the path of the configuration file. [Change the configuration of a service](/docs/admin/starting-and-stopping/#change-the-configuration-of-a-service) explains how to change each of them, and how to give the service environment variables.
 
 ## Help and version
 
 Every mode supports the standard help tokens, and each mode command honors `--version`:
 
-- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub run --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
-- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub run --version`).
+- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub <command> --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
+- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub <command> --version`).
 
 The bare `version` subcommand is a **top-level** command (`leapmux version`), not a mode command. `leapmux hub version` fails with `unknown hub command: version` and prints the commands of the mode. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
 

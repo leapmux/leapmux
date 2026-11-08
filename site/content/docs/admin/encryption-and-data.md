@@ -89,7 +89,7 @@ Treat `encryption.key` as a top-grade secret. There is no master-password or HSM
 There is nothing to configure to turn encryption on. Running the Hub once is enough:
 
 ```bash
-leapmux hub run
+leapmux hub start
 # On first start, the Hub generates ~/.config/leapmux/hub/encryption.key
 # and logs that it loaded the keystore, with the active version and the
 # number of retained versions.
@@ -298,7 +298,7 @@ A correct, restorable backup of a single-machine Hub is: a consistent copy of `h
 4. Restore each Worker's `state.json` to its data dir.
 5. Start the Hub. It will apply any pending migrations automatically on open, then load the keystore.
 
-You can restore a whole data directory at another path, as the same operating-system account. The first command at the new path adopts it; see [Move an instance to another directory](/docs/admin/running-as-a-service/#move-an-instance-to-another-directory).
+You can restore a whole data directory at another path, as the same operating-system account. The first command at the new path adopts it; see [Move an instance to another directory](/docs/admin/starting-and-stopping/#move-an-instance-to-another-directory).
 
 A Worker that registered after the backup the database came from has no row in the restored Hub, so its token is unknown there and it keeps retrying. Stop it, delete its `state.json`, and register it again. See [Troubleshooting](/docs/reference/troubleshooting/).
 

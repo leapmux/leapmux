@@ -13,7 +13,7 @@ This chapter is for administrators who run a LeapMux **Hub** and want to offer s
 If you only want to know what the sign-in experience looks like as an end user (the "Sign in with…" buttons, completing a first OAuth sign-up, linking and unlinking accounts), see [Accounts & Authentication](/docs/using/accounts/). This chapter stays on the administrator side: how providers are defined, how callback URLs are derived, and how to troubleshoot setup.
 
 {{< callout type="info" >}}
-OAuth providers only apply to **Hub** deployments (`leapmux hub run`, and `leapmux dev run`). **Solo mode** has one account and signs in with a password or with nothing at all, so providers do nothing there. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
+OAuth providers only apply to **Hub** deployments: hub mode and dev mode. **Solo mode** has one account and signs in with a password or with nothing at all, so providers do nothing there. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
 {{< /callout >}}
 
 ## What you can configure
@@ -37,7 +37,7 @@ You configure every provider with the `leapmux control admin idp` command group.
 These commands take no `--data-dir` and no `--config`; the flags do not exist, and the CLI refuses them. Run the commands from any machine, and select the Hub with `--hub <url>` or the `LEAPMUX_HUB` environment variable.
 {{< /callout >}}
 
-Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A `leapmux dev run` instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
+Authorize the CLI first with `leapmux control auth login --hub <url>`, and use an administrator account: the Hub answers `permission_denied` for every other caller. A dev-mode instance is a separate Hub, so point `--hub` at its own address. See [Authentication](/docs/using/control-cli/#authentication) for the credential rules.
 
 ## Prerequisites
 

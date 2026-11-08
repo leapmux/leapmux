@@ -47,7 +47,7 @@ func TestMissingModeVerbDiagnosticEndsWithANewline(t *testing.T) {
 		}})
 		assert.Equal(t, 1, code)
 		assert.Empty(t, stdout.String())
-		assert.Equal(t, fmt.Sprintf("error: the %s command is required before any flags; run `leapmux %s run` for the foreground command\n", mode, mode), stderr.String())
+		assert.Equal(t, fmt.Sprintf("error: the %s command is required before any flags, as in `leapmux %s start [flags]`\n", mode, mode), stderr.String())
 	}
 }
 

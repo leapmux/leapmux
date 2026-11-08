@@ -31,7 +31,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 ### Solo mode
 
-`leapmux solo run` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. The desktop app uses credential-free local inter-process communication (IPC). A browser connecting over TCP sets the first password before opening the workspace. Later TCP access requires that password.
+Solo mode (`leapmux solo`) is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. The desktop app uses credential-free local inter-process communication (IPC). A browser connecting over TCP sets the first password before opening the workspace. Later TCP access requires that password.
 
 ```text
                  LeapMux (127.0.0.1:4327)
@@ -62,7 +62,7 @@ If solo mode answers on a non-loopback address, it logs a warning. Another machi
 
 ### Distributed mode
 
-For multi-user and remote setups, run `leapmux hub run` and `leapmux worker run` as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
+For multi-user and remote setups, run a Hub (`leapmux hub`) and Workers (`leapmux worker`) as separate processes — often on different machines. The Hub requires real login (sign-up, passwords, sessions, OAuth, API tokens) and relays end-to-end encrypted traffic between Frontends and Workers. **Workers initiate outbound connections to the Hub**, so they can sit behind a NAT or firewall with no inbound ports open.
 
 ```text
 ┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
@@ -80,11 +80,11 @@ For multi-user and remote setups, run `leapmux hub run` and `leapmux worker run`
                                                                └──────────────────┘
 ```
 
-One Hub coordinates one-or-more Workers. Each Worker is a separate process, usually on its own machine (a dev box, a build server, your laptop), running `leapmux worker run`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
+One Hub coordinates one-or-more Workers. Each Worker is a separate process, usually on its own machine (a dev box, a build server, your laptop), running `leapmux worker`. You pick which Worker hosts each tab, so you can keep an agent's filesystem and git operations local to the machine that holds the repo.
 
-There is also `leapmux dev run` — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
+There is also dev mode (`leapmux dev`) — the same Hub+Worker-in-one-process runner as solo, but it binds all interfaces (`:4327`), requires real password auth, and bootstraps the first admin through the `/setup` flow. It is meant for development, not production.
 
-| Aspect | Solo (`leapmux solo run`) | Distributed (`leapmux hub run` + `leapmux worker run`) |
+| Aspect | Solo (`leapmux solo`) | Distributed (`leapmux hub` + `leapmux worker`) |
 |---|---|---|
 | Processes | One (Hub + Worker together) | Two or more (one Hub, one-or-more Workers) |
 | Default listen | `127.0.0.1:4327` (loopback) | Hub `:4327` (all interfaces); Workers dial out |

@@ -281,12 +281,12 @@ func TestForegroundNeverConfiguresOrElevates(t *testing.T) {
 					return nil, errors.New("forbidden native access")
 				},
 			})
-			require.Equal(t, "run", commands.Commands[0].Name)
-			require.NoError(t, commands.Commands[0].Run(cmdCtx{}, args))
+			run := commandNamed(t, commands, "run")
+			require.NoError(t, run.Run(cmdCtx{}, args))
 			require.True(t, ready, "exercise successful foreground execution")
 			specPath := lifecycle.PathsOf(mustCanonicalDir(t, root)).ServiceSpec
 			assert.NoFileExists(t, specPath, "foreground startup never configures native startup")
-			require.Error(t, commands.Commands[0].Run(cmdCtx{}, append(args, "--unknown-foreground-option")))
+			require.Error(t, run.Run(cmdCtx{}, append(args, "--unknown-foreground-option")))
 			assert.NoFileExists(t, specPath, "foreground failure never configures native startup")
 		})
 	}
@@ -402,6 +402,19 @@ func TestReadinessAndShutdownContinueAfterWaitTimeout(t *testing.T) {
 	held, err = lifecycle.ProbeRuntimeLock(runtime.Paths())
 	require.NoError(t, err)
 	require.False(t, held)
+}
+
+// commandNamed returns the command of a group by its name, so a test does not
+// depend on the order in which help lists the commands.
+func commandNamed(t *testing.T, group cmdGroup, name string) cmdLeaf {
+	t.Helper()
+	for _, command := range group.Commands {
+		if command.Name == name {
+			return command
+		}
+	}
+	require.FailNow(t, "the group has no command "+name)
+	return cmdLeaf{}
 }
 
 // mustCanonicalDir canonicalizes for assertions.
@@ -539,7 +552,7 @@ func TestModeCommandGroupListsEachCommandOnce(t *testing.T) {
 			require.NotNil(t, command.Run, "%s %s has no runner", mode, command.Name)
 			require.NotEmpty(t, command.Summary)
 		}
-		want := []string{"run", "start", "stop", "restart", "status", "enable", "disable"}
+		want := []string{"start", "stop", "restart", "status", "enable", "disable", "run"}
 		if mode == "worker" {
 			want = append(want, "register", "deregister")
 			require.Len(t, group.Subgroups, 1)

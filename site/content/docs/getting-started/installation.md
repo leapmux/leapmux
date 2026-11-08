@@ -166,10 +166,11 @@ Download the archive for your platform, extract it, and run the `leapmux` execut
 ```bash
 tar -xzf leapmux_<version>_linux_amd64.tar.gz
 cd leapmux_<version>_linux_amd64
-./leapmux hub run          # or: solo run, dev run
+./leapmux hub start        # Start a Hub in the background as a service.
+./leapmux hub stop         # Stop it.
 ```
 
-To keep an instance running after you log out or restart the computer, start it as a service with `leapmux hub start` instead of `run`. See [Running as a Service](/docs/admin/running-as-a-service/). Register a standalone Worker before you run or start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
+The same commands work for `solo` and `dev`. A service keeps running after you log out, and starts again after a restart of the computer; see [Starting and Stopping](/docs/admin/starting-and-stopping/). Register a standalone Worker before you start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 The macOS package is signed with a Developer ID and notarized.
 

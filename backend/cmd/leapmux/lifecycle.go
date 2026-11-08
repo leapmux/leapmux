@@ -49,8 +49,9 @@ func lifecycleCommandsWithDependencies(mode string, dependencies lifecycleDepend
 	return cmdGroup{
 		Name:    mode,
 		Summary: modeSummary(mode),
+		// start and stop come first: they are the recommended way to run an
+		// instance. run comes last, for a container.
 		Commands: []cmdLeaf{
-			leaf("run", runModeRunWithInvocation(mode, dependencies.foreground)),
 			leaf("start", func(_ cmdCtx, args []string) error {
 				return executeNativeStartWithController(mode, "start", args, dependencies.controller)
 			}),
@@ -63,6 +64,7 @@ func lifecycleCommandsWithDependencies(mode string, dependencies lifecycleDepend
 			}),
 			leaf("enable", runModeEnableWithController(mode, dependencies.controller)),
 			leaf("disable", runModeDisableWithController(mode, dependencies.controller)),
+			leaf("run", runModeRunWithInvocation(mode, dependencies.foreground)),
 		},
 	}
 }
@@ -76,13 +78,13 @@ func lifecycleSummary(mode, verb string) string {
 	case "run":
 		switch mode {
 		case "hub":
-			return "Run the Hub in the foreground (never installs a service)"
+			return "Run the Hub in the foreground, for a container (never installs a service)"
 		case "worker":
-			return "Run a registered Worker in the foreground (never installs a service)"
+			return "Run a registered Worker in the foreground, for a container (never installs a service)"
 		case "solo":
-			return "Run Hub + Worker in the foreground (never installs a service)"
+			return "Run Hub + Worker in the foreground, for a container (never installs a service)"
 		default:
-			return "Run Hub + Worker for development in the foreground (never installs a service)"
+			return "Run Hub + Worker for development in the foreground, for a container (never installs a service)"
 		}
 	case "start":
 		return "Start as a background service and wait until it is ready"
@@ -453,6 +455,13 @@ func modeCommandGroup(mode string) cmdGroup {
 	return group
 }
 
+// commandBeforeFlagsError refuses a flag where the mode's command belongs. It
+// shows the recommended command with the flags after it; the dispatcher and
+// the help walk print the same refusal.
+func commandBeforeFlagsError(mode string) error {
+	return fmt.Errorf("the %s command is required before any flags, as in `leapmux %s start [flags]`", mode, mode)
+}
+
 // runModeCommand walks one mode's command tree. A command is required: a
 // flag where the command belongs gets the exact corrected command in the
 // hint.
@@ -460,7 +469,7 @@ func runModeCommand(mode string, args []string) error {
 	// A flag where the verb belongs identifies the corrected command in the
 	// hint rather than dispatching.
 	if len(args) > 0 && strings.HasPrefix(args[0], "-") && !internalconfig.IsHelpArg(args[0]) {
-		return fmt.Errorf("the %s command is required before any flags; run `leapmux %s run` for the foreground command", mode, mode)
+		return commandBeforeFlagsError(mode)
 	}
 	return dispatchGroup(modeCommandGroup(mode), args, []string{mode})
 }
@@ -519,7 +528,7 @@ func walkModeArgs(group cmdGroup, mode string, args []string, stdout, stderr io.
 		}
 		// A flag before the verb is the dispatcher's error, printed
 		// here with the exact corrected command.
-		_, _ = fmt.Fprintf(stderr, "error: the %s command is required before any flags; run `leapmux %s run` for the foreground command\n", mode, mode)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", commandBeforeFlagsError(mode))
 		return 1, true
 	}
 	return walkGroupArgs(group, []string{mode}, args, stdout, stderr)
