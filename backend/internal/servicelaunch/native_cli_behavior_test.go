@@ -5,17 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/term"
-
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
+
+const nativeCLITestSecret = "synthetic-private-value"
 
 func TestNativeCLITranscriptMatchesFragmentedPrompts(t *testing.T) {
 	prompt := "\x1b[32m" + nativePasswordStart + "fixture-account" + nativePasswordEnd + "\x1b[0m"
@@ -101,14 +104,15 @@ func TestHelperNativeCLI(t *testing.T) {
 		if _, err := fmt.Fprint(os.Stdout, "\x1b[32mPassword for fixture-account (LeapMux does not store it): \x1b[0m"); err != nil {
 			exit(4)
 		}
-		secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+		secret, err := readNativeCLIHelperPassword(os.Stdin)
 		if err != nil {
 			exit(4)
 		}
 		if err := term.Restore(int(os.Stdin.Fd()), state); err != nil {
+			clear(secret)
 			exit(4)
 		}
-		correct := bytes.Equal(secret, []byte("synthetic-private-value"))
+		correct := bytes.Equal(secret, []byte(nativeCLITestSecret))
 		if mode == "echo" {
 			if _, err := os.Stdout.Write(secret); err != nil {
 				clear(secret)
@@ -147,15 +151,15 @@ func nativeCLIHelperCommand(t *testing.T, mode string) nativeCLICommand {
 }
 
 func TestNativeCLICommandRunsAndRetainsFailureDiagnostics(t *testing.T) {
-	result := runNativeCLICommand(testutil.DeadlineContext(t), nativeCLIHelperCommand(t, "success"))
+	result := runNativeCLICommand(nativeCLIProcessDeadline(t), nativeCLIHelperCommand(t, "success"))
 	require.NoError(t, result.err)
 	assert.Contains(t, result.output, "native CLI completed")
-	result = runNativeCLICommand(testutil.DeadlineContext(t), nativeCLIHelperCommand(t, "failure"))
+	result = runNativeCLICommand(nativeCLIProcessDeadline(t), nativeCLIHelperCommand(t, "failure"))
 	require.Error(t, result.err)
 	assert.Contains(t, result.output, "partial native CLI diagnostic")
 	command := nativeCLIHelperCommand(t, "success")
 	command.program = filepath.Join(t.TempDir(), "absent-program")
-	result = runNativeCLICommand(testutil.DeadlineContext(t), command)
+	result = runNativeCLICommand(nativeCLIProcessDeadline(t), command)
 	require.Error(t, result.err)
 }
 
@@ -166,7 +170,7 @@ func TestNativeCLICommandUsesProtectedInputAndClearsItsBuffer(t *testing.T) {
 			command := nativeCLIHelperCommand(t, mode)
 			command.account = "fixture-account"
 			command.password = func(context.Context) ([]byte, error) { return secret, nil }
-			result := runNativeCLICommand(testutil.DeadlineContext(t), command)
+			result := runNativeCLICommand(nativeCLIProcessDeadline(t), command)
 			if mode == "echo" {
 				require.ErrorContains(t, result.err, "echoed protected input")
 			} else {
@@ -179,11 +183,11 @@ func TestNativeCLICommandUsesProtectedInputAndClearsItsBuffer(t *testing.T) {
 }
 
 func TestNativeCLICommandCancellationAndCredentialFailure(t *testing.T) {
-	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	ctx, cancel := context.WithCancel(nativeCLIProcessDeadline(t))
 	cancel()
 	result := runNativeCLICommand(ctx, nativeCLIHelperCommand(t, "wait"))
 	require.ErrorIs(t, result.err, context.Canceled)
-	ctx, cancel = context.WithCancel(testutil.DeadlineContext(t))
+	ctx, cancel = context.WithCancel(nativeCLIProcessDeadline(t))
 	defer cancel()
 	command := nativeCLIHelperCommand(t, "password")
 	command.account = "fixture-account"
@@ -205,9 +209,52 @@ func TestNativeCLICommandRejectsUnexpectedOutput(t *testing.T) {
 			command := nativeCLIHelperCommand(t, test.mode)
 			command.account = "fixture-account"
 			command.password = func(context.Context) ([]byte, error) { return []byte("synthetic-private-value"), nil }
-			result := runNativeCLICommand(testutil.DeadlineContext(t), command)
+			result := runNativeCLICommand(nativeCLIProcessDeadline(t), command)
 			require.ErrorContains(t, result.err, test.failure)
 			assert.LessOrEqual(t, len(result.output), nativeCLITailBytes)
 		})
 	}
+}
+
+func readNativeCLIHelperPassword(input io.Reader) ([]byte, error) {
+	// The helper establishes raw mode before its ready prompt. Keep that mode
+	// while reading: changing to canonical mode afterward can leave prequeued
+	// input waiting for another line-ending event on macOS.
+	ending := nativeCLIEnter()
+	frame := make([]byte, len(nativeCLITestSecret)+len(ending))
+	if _, err := io.ReadFull(input, frame); err != nil {
+		clear(frame)
+		return nil, err
+	}
+	if !bytes.Equal(frame[len(nativeCLITestSecret):], ending) {
+		clear(frame)
+		return nil, errors.New("the native CLI helper received an incomplete input frame")
+	}
+	clear(frame[len(nativeCLITestSecret):])
+	return frame[:len(nativeCLITestSecret)], nil
+}
+
+func nativeCLIProcessDeadline(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func TestNativeCLIHelperValidatesInputFrames(t *testing.T) {
+	frame := append([]byte(nativeCLITestSecret), nativeCLIEnter()...)
+	defer clear(frame)
+	secret, err := readNativeCLIHelperPassword(iotest.OneByteReader(bytes.NewReader(frame)))
+	require.NoError(t, err)
+	assert.Equal(t, nativeCLITestSecret, string(secret))
+	assert.Equal(t, make([]byte, len(nativeCLIEnter())), secret[len(secret):cap(secret)])
+	clear(secret)
+	for _, data := range [][]byte{nil, frame[:len(frame)-1], append([]byte(nativeCLITestSecret), '!')} {
+		value, err := readNativeCLIHelperPassword(bytes.NewReader(data))
+		require.Error(t, err)
+		assert.Nil(t, value)
+		assert.NotContains(t, err.Error(), nativeCLITestSecret)
+	}
+	_, err = readNativeCLIHelperPassword(iotest.ErrReader(assert.AnError))
+	require.ErrorIs(t, err, assert.AnError)
 }
