@@ -157,7 +157,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	case "solo", "hub", "worker", "dev":
 		// The group walk validates and prints help; only a resolved
 		// leaf reaches the runner, so help never starts a process.
-		if code, handled := walkModeArgs(lifecycleCommands(matched), matched, args[1:], stdout, stderr); handled {
+		if code, handled := walkModeArgs(modeCommandGroup(matched), matched, args[1:], stdout, stderr); handled {
 			return code
 		}
 		if err := runners.runMode(matched, args[1:]); err != nil {

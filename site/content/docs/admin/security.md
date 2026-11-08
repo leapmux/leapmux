@@ -2,7 +2,7 @@
 title: "Security & Threat Model"
 description: "LeapMux trust model and end-to-end encryption: how browser-to-agent traffic is protected, how Worker identity is pinned, and the steps to operate it safely."
 type: docs
-weight: 7
+weight: 8
 ---
 
 This chapter is the security reference for administrators and for security-conscious users. It describes the trust model, the end-to-end encryption (E2EE) of Frontend↔Worker traffic, and Worker identity pinning. It also covers what changes in solo mode. The last section lists the steps to operate LeapMux safely.
@@ -174,7 +174,7 @@ The Worker's check is defence in depth. The Hub already authorizes a channel to 
 
 ## Worker identity and TOFU pinning
 
-Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated on first run and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.
+Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated when the Worker registers and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.
 
 The Frontend pins this identity **TOFU** ("trust on first use"). On the first connection to a Worker, the browser records the Worker's composite public key. On every later connection it compares the key the Hub hands over against the pinned one:
 
@@ -399,11 +399,19 @@ The `encryption.key` file holds more than the encryption key ring. It also carri
 Sessions, Worker auth tokens, and registration keys do not use the pepper and survive a rotation. Losing the file is therefore not only an OAuth-data loss; it takes every issued token with it.
 {{< /callout >}}
 
-## Local lifecycle control and service accounts
+## Local control and service accounts
 
-Each instance exposes a private local control endpoint. Unix sockets permit the selected account only; Windows named pipes restrict access to its SID. Requests also require the instance's private control token and exact process attempt identity. Local lifecycle control does not replace network authentication. Protect the data directory and registration recovery material as credentials.
+`leapmux <mode> stop`, `restart`, and `status` talk to a running instance through a private local endpoint: a Unix socket, or a named pipe on Windows. Only the operating-system account that runs the instance can open it. On Windows, the pipe admits only that account's security identifier (SID). Each request must also carry the identity of the running process, and a token from the instance's data directory that only that account can read. This endpoint controls the process only; it does not replace the sign-in that the Hub requires over the network.
 
-Native services run as the selected user account even in boot mode. Administrator authorization configures the native mechanism and required logon rights. It does not make the application run as administrator. Keep service environment files private and use `enable` to repair native credentials after an account password change.
+A service runs LeapMux as your own account, for boot startup too, never as `root` or `SYSTEM`. The administrator rights that LeapMux asks for create the service and, on Windows, grant your account the right to run it. They do not make LeapMux run as an administrator.
+
+Protect these files as credentials:
+
+- The data directory of each instance, which holds the control token
+- A Worker's `state.json`, and its `pending-registration.json` while a registration is unfinished
+- A service's environment file, when it holds a secret
+
+See [Running as a Service](/docs/admin/running-as-a-service/).
 
 ## Recommendations for administrators
 

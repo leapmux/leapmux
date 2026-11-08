@@ -2,7 +2,7 @@
 title: "Encryption & Data"
 description: "What LeapMux stores and encrypts at rest, how to rotate encryption keys, how database migrations work, and how to back up and restore a Hub safely."
 type: docs
-weight: 6
+weight: 7
 ---
 
 This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode instance). It explains what data is stored and what is encrypted at rest. It also covers key rotation, database migrations, and backup and restore.
@@ -287,7 +287,7 @@ For each Worker:
 4. `worker.db` is transient agent/session state. It is not a secret, but back it up if you want to preserve agent transcripts and terminal history across a rebuild.
 
 {{< callout >}}
-A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json` and any `pending-registration.json`. The pending file holds private key material needed to recover a registration after a lost response. Keep it until registration succeeds.
+A correct, restorable backup of a single-machine Hub is: a consistent copy of `hub.db` (Hub stopped) **plus** `encryption.key`, both taken at the same time. For a distributed deployment, add each Worker's `state.json`, and its `pending-registration.json` while a registration is unfinished. The registration command needs that file to complete the registration. See [Files in the Worker's data directory](/docs/admin/managing-workers/#files-in-the-workers-data-directory).
 {{< /callout >}}
 
 ### Restore
@@ -297,6 +297,8 @@ A correct, restorable backup of a single-machine Hub is: a consistent copy of `h
 3. Restore `encryption.key` to its original path (or set `encryption_key_path` to wherever you placed it).
 4. Restore each Worker's `state.json` to its data dir.
 5. Start the Hub. It will apply any pending migrations automatically on open, then load the keystore.
+
+You can restore a whole data directory at another path, as the same operating-system account. The first command at the new path adopts it; see [Move an instance to another directory](/docs/admin/running-as-a-service/#move-an-instance-to-another-directory).
 
 A Worker that registered after the backup the database came from has no row in the restored Hub, so its token is unknown there and it keeps retrying. Stop it, delete its `state.json`, and register it again. See [Troubleshooting](/docs/reference/troubleshooting/).
 

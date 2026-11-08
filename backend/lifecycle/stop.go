@@ -23,7 +23,12 @@ func ValidateDirectorySelection(role Role, canonical string) error {
 	if err != nil {
 		return err
 	}
-	if owner.AccountID != CurrentAccountID() || owner.Mode != role || owner.DataDirectory != canonical || owner.OwnerMode != role || owner.OwnerDataDir != canonical {
+	expected := NewDirectoryOwner(role, canonical)
+	if owner.movedTo(expected, role, canonical) {
+		// The next command that takes the data lock adopts the directory.
+		return nil
+	}
+	if owner.AccountID != expected.AccountID || owner.Mode != role || owner.DataDirectory != canonical || owner.OwnerMode != role || owner.OwnerDataDir != canonical {
 		return &OwnershipConflict{OwningMode: owner.OwnerMode, OwningRoot: owner.OwnerDataDir, Component: owner.Mode, Path: canonical}
 	}
 	return nil

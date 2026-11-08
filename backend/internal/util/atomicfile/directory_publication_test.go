@@ -102,16 +102,37 @@ func TestPublicationRecordValidationAndConcurrency(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("a record naming another directory is rejected", func(t *testing.T) {
-		base := t.TempDir()
+	t.Run("a committed record that moved with its directory is relocated", func(t *testing.T) {
+		base := canonicalTempDir(t)
 		root := filepath.Join(base, "leapmux")
 		require.NoError(t, os.MkdirAll(root, 0o700))
 		writeRawRecord(t, recordPathAt(root), "account_id: \""+currentAccountID()+"\"\ndirectory: "+filepath.Join(base, "other")+
 			"\ntarget_directory: "+filepath.Join(base, "other", "x")+"\nphase: committed\n")
 
+		require.NoError(t, MkdirAllDurable(filepath.Join(root, "worker")))
+		assert.DirExists(t, filepath.Join(root, "worker"))
+		record, err := loadRecordAt(recordPathAt(root))
+		require.NoError(t, err)
+		assert.Equal(t, root, record.Directory)
+		assert.Equal(t, filepath.Join(root, "x"), record.TargetDirectory, "the target keeps its place relative to the directory")
+		assert.Equal(t, phaseCommitted, record.Phase)
+	})
+
+	t.Run("a prepared record that moved is rejected as uncertain", func(t *testing.T) {
+		base := canonicalTempDir(t)
+		root := filepath.Join(base, "leapmux")
+		require.NoError(t, os.MkdirAll(root, 0o700))
+		raw := "account_id: \"" + currentAccountID() + "\"\ndirectory: " + filepath.Join(base, "other") +
+			"\ntarget_directory: " + filepath.Join(base, "other", "x") + "\nphase: prepared\n"
+		writeRawRecord(t, recordPathAt(root), raw)
+
 		err := MkdirAllDurable(filepath.Join(root, "worker"))
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrDirectoryPublicationUncertain)
 		assert.Contains(t, err.Error(), "identifies directory")
+		assert.NoDirExists(t, filepath.Join(root, "worker"))
+		data, readErr := os.ReadFile(recordPathAt(root))
+		require.NoError(t, readErr)
+		assert.Equal(t, raw, string(data), "a refused record must stay as it was")
 	})
 
 	t.Run("a target outside its directory is rejected", func(t *testing.T) {

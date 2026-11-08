@@ -41,7 +41,6 @@ func TestPendingPersistenceAndPartialCleanup(t *testing.T) {
 		_, err := pending.GenerateKeypair()
 		require.NoError(t, err)
 
-		cfg.HubURL = pending.HubURL
 		require.NoError(t, cfg.Validate())
 		require.NoError(t, cfg.SavePendingRegistration(pending))
 

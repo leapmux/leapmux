@@ -172,7 +172,7 @@ func TestRunWorkerKeepsTheStateAndAdvisesWhenTheHubRefusesItsKeys(t *testing.T) 
 	err := runWorkerCommandForTest(t, []string{"--data-dir", cfg.DataDir, "--log-level", "error"})
 
 	require.ErrorIs(t, err, hub.ErrKeysRefused)
-	assert.Contains(t, err.Error(), reregistrationSteps(filepath.Join(mustCanonicalDir(t, cfg.DataDir), "state.json")))
+	assert.Contains(t, err.Error(), reregistrationSteps)
 	_, statErr := os.Stat(cfg.StatePath())
 	assert.NoError(t, statErr, "a key refusal must keep the worker's state")
 }
@@ -236,42 +236,54 @@ func TestWorkerExitsCleanlyOnShutdownSignals(t *testing.T) {
 // fix, and every other error is returned unchanged.
 func TestReregistrationAdvice(t *testing.T) {
 	t.Parallel()
-	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	keysRefused := reregistrationAdvice(
-		errors.Join(errors.New("connect"), hub.ErrKeysRefused), statePath)
+	keysRefused := reregistrationAdvice(errors.Join(errors.New("connect"), hub.ErrKeysRefused))
 	require.Error(t, keysRefused)
-	assert.Equal(t, 1, strings.Count(keysRefused.Error(), reregistrationSteps(statePath)),
+	require.ErrorIs(t, keysRefused, hub.ErrKeysRefused, "the advice must keep the cause")
+	assert.Equal(t, 1, strings.Count(keysRefused.Error(), reregistrationSteps),
 		"the advice must appear exactly once")
-	assert.Contains(t, keysRefused.Error(), statePath)
 
-	unusable := reregistrationAdvice(
-		errors.Join(errors.New("restore"), config.ErrUnusableRegisteredKeypair), statePath)
+	unusable := reregistrationAdvice(errors.Join(errors.New("restore"), config.ErrUnusableRegisteredKeypair))
 	require.Error(t, unusable)
-	assert.Equal(t, 1, strings.Count(unusable.Error(), reregistrationSteps(statePath)),
+	require.ErrorIs(t, unusable, config.ErrUnusableRegisteredKeypair, "the advice must keep the cause")
+	assert.Equal(t, 1, strings.Count(unusable.Error(), reregistrationSteps),
 		"the advice must appear exactly once")
-	assert.Contains(t, unusable.Error(), statePath)
 
 	other := errors.New("the hub is unreachable")
-	assert.Equal(t, other, reregistrationAdvice(other, statePath),
+	assert.Equal(t, other, reregistrationAdvice(other),
 		"an error a reconnect can fix gets no advice")
-	assert.NoError(t, reregistrationAdvice(nil, statePath))
+	assert.NoError(t, reregistrationAdvice(nil))
 }
 
-// An already-registered worker is told to deregister and register again. Wiping
-// the state alone would leave the old row ACTIVE -- counting against
-// max_workers_per_user and keeping its token valid for any copy of the file.
+// The re-registration steps use `worker deregister`, which removes the saved
+// credentials itself once the Hub confirms. A step that deletes state.json by
+// hand would be redundant after it, and before it would leave the old row
+// ACTIVE -- counting against max_workers_per_user and keeping its token valid
+// for any copy of the file.
+func TestReregistrationStepsDeleteNoFileByHand(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, reregistrationSteps, "leapmux worker deregister")
+	assert.Contains(t, reregistrationSteps, "leapmux worker register")
+	assert.NotContains(t, reregistrationSteps, "state.json")
+	assert.NotContains(t, reregistrationSteps, "delete")
+}
+
+// An already-registered worker is told how to start it, and how to register it
+// again. The register command requires the key, so the refusal never tells the
+// operator to drop it.
 func TestAlreadyRegisteredError(t *testing.T) {
 	t.Parallel()
-	statePath := filepath.Join(t.TempDir(), "state.json")
 
-	err := alreadyRegisteredError(statePath)
+	err := alreadyRegisteredError(&config.State{HubURL: "https://hub.example", WorkerID: "worker-1"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remove --registration-key")
-	assert.Equal(t, 1, strings.Count(err.Error(), reregistrationSteps(statePath)),
+	assert.Contains(t, err.Error(), "https://hub.example", "the refusal must identify the saved Hub")
+	assert.Contains(t, err.Error(), "leapmux worker start")
+	assert.Contains(t, err.Error(), "leapmux worker run")
+	assert.NotContains(t, err.Error(), "--registration-key",
+		"the register command requires the key, so dropping it is no remedy")
+	assert.Equal(t, 1, strings.Count(err.Error(), reregistrationSteps),
 		"the steps must appear exactly once")
-	assert.NotContains(t, err.Error(), "wipe",
-		"wiping the state would leave the old row ACTIVE")
 }
 
 // The deregistration callback's clear must report a failure it cannot undo, so a

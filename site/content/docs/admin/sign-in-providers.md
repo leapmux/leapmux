@@ -2,7 +2,7 @@
 title: "Sign-in Providers"
 description: "Configure OAuth/OIDC single sign-on for a LeapMux Hub so users can log in with GitHub, Google, Apple, or any standards-compliant OpenID Connect provider."
 type: docs
-weight: 4
+weight: 5
 ---
 
 > **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/admin/app-authorization/).
@@ -45,7 +45,7 @@ Before you add a provider, get two things in order.
 
 ### 1. Sign-up must be enabled for new OAuth users
 
-When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path requires the **`signup_enabled`** setting (default **false** on a `leapmux hub run`; `leapmux dev run` enables it unless you set it explicitly; `leapmux control admin settings set signup_enabled true`).
+When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path requires the **`signup_enabled`** setting. It defaults to **false** in hub mode, and dev mode enables it unless you set it explicitly. Turn it on with `leapmux control admin settings set signup_enabled true`.
 
 - With `signup_enabled=false`, LeapMux rejects an OAuth sign-in for an unknown identity, and the error says that sign-up is disabled. Only users whose OAuth identity is already linked (or auto-linked by verified email — see [Trusting the provider's email](#trusting-the-providers-email)) can sign in.
 - With `signup_enabled=true`, new OAuth users can self-register through the completion page.

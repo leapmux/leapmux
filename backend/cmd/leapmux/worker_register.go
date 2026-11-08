@@ -20,6 +20,7 @@ import (
 //
 // The durable order is the whole design:
 //
+//  0. The Hub URL parses, so a URL the transport cannot use writes nothing.
 //  1. The data directory exists and is owned by this instance.
 //  2. The operation lock serializes this command against every other
 //     lifecycle command of the same directory.
@@ -38,7 +39,7 @@ func runWorkerRegister(args []string) error {
 }
 
 func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
-	cfg, commandOptions, err := loadWorkerCredentialCommand(args, hub.DefaultRegistrationDeadline)
+	cfg, commandOptions, err := loadWorkerRegisterCommand(args)
 	if handleVersionQuery(err) {
 		return nil
 	}
@@ -51,16 +52,16 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	logging.Setup()
 	files := filesFor(cfg)
 
-	// --hub defaults to the loopback hub in the configuration layer, so
-	// its PRESENCE is what the register command requires: registering
-	// against a default the operator never specified would burn the key on
-	// the wrong hub.
-	if !commandOptions.explicitHub {
-		return fmt.Errorf("--hub is required: the hub this worker registers with")
+	// Parse the endpoint before anything is written. A pending record for a
+	// URL that the transport cannot use would block the corrected command as
+	// a conflicting attempt. Every later request goes to this endpoint: a
+	// reused pending record must name the same URL (checked below).
+	endpoint, err := hubtransport.New(commandOptions.hubURL)
+	if err != nil {
+		return fmt.Errorf("hub URL %q: %w", commandOptions.hubURL, err)
 	}
-	if cfg.RegistrationKey == "" {
-		return fmt.Errorf("--registration-key is required: mint one in the hub UI")
-	}
+	defer endpoint.CloseIdleConnections()
+
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
@@ -125,7 +126,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 			printWorkerRegistration(cfg)
 			return nil
 		}
-		return alreadyRegisteredError(cfg.StatePath())
+		return alreadyRegisteredError(state)
 	}
 
 	// Load or durably publish the pending attempt record. A record from
@@ -142,8 +143,8 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 		}
 		pending = &config.PendingRegistration{
 			AttemptID: attemptID,
-			HubURL:    cfg.HubURL,
-			RegKey:    cfg.RegistrationKey,
+			HubURL:    commandOptions.hubURL,
+			RegKey:    commandOptions.registrationKey,
 		}
 		if _, err := pending.GenerateKeypair(); err != nil {
 			return fmt.Errorf("generate the worker keypair: %w", err)
@@ -153,7 +154,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 		if err := files.SavePendingRegistration(pending); err != nil {
 			return fmt.Errorf("publish the pending registration: %w", err)
 		}
-	} else if pending.HubURL != cfg.HubURL || pending.RegKey != cfg.RegistrationKey {
+	} else if pending.HubURL != commandOptions.hubURL || pending.RegKey != commandOptions.registrationKey {
 		// Never silently replace a conflicting pending identity: the
 		// operator must decide whether the old attempt is abandoned.
 		return fmt.Errorf(
@@ -170,11 +171,6 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 		return err
 	}
 
-	endpoint, err := hubtransport.New(pending.HubURL)
-	if err != nil {
-		return fmt.Errorf("hub URL %q: %w", pending.HubURL, err)
-	}
-	defer endpoint.CloseIdleConnections()
 	opts.Deadline = commandOptions.timeout
 	result, err := hub.Register(ctx, endpoint, opts)
 	if err != nil {

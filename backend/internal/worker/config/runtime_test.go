@@ -14,7 +14,6 @@ func TestValidateRuntime(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		size    int
-		key     string
 		failure string
 	}{
 		{name: "default"},
@@ -23,11 +22,10 @@ func TestValidateRuntime(t *testing.T) {
 		{name: "maximum", size: contracts.MaxConfigurableMessageSize},
 		{name: "below minimum", size: 1, failure: "max_message_size"},
 		{name: "above maximum", size: contracts.MaxConfigurableMessageSize + 1, failure: "max_message_size"},
-		{name: "registration key", key: "registration-only", failure: "leapmux worker register"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "not-created")
-			cfg := Config{DataDir: path, MaxMessageSize: test.size, RegistrationKey: test.key}
+			cfg := Config{DataDir: path, MaxMessageSize: test.size}
 			err := cfg.ValidateRuntime()
 			if test.failure == "" {
 				require.NoError(t, err)

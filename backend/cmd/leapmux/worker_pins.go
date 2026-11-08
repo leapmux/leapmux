@@ -25,13 +25,13 @@ func runWorkerCrossWorkerPins(args []string) error {
 	fs := flag.NewFlagSet("leapmux worker cross-worker-pins "+sub, flag.ContinueOnError)
 	var targetWorkerID, dataDir string
 	fs.StringVar(&targetWorkerID, "target-worker-id", "", "sibling worker id (required for show/remove)")
-	fs.StringVar(&dataDir, "data-dir", "", "worker data directory (defaults to LEAPMUX_DATA_DIR or platform default)")
+	fs.StringVar(&dataDir, "data-dir", "", "worker data directory (defaults to the worker configuration: LEAPMUX_WORKER_DATA_DIR, data_dir in worker.yaml, or ~/.config/leapmux/worker)")
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
 	if dataDir == "" {
 		// Reuse the standard config loader so the resolved data dir
-		// matches what `leapmux worker` would use.
+		// matches what `leapmux worker run` would use.
 		cfg, _, err := config.Load([]string{})
 		if err != nil {
 			return fmt.Errorf("resolve data dir: %w", err)

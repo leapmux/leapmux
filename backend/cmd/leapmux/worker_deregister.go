@@ -29,7 +29,7 @@ func runWorkerDeregister(args []string) error {
 }
 
 func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
-	cfg, options, err := loadWorkerCredentialCommand(args, defaultStopTimeout)
+	cfg, timeout, err := loadWorkerDeregisterCommand(args)
 	if handleVersionQuery(err) {
 		return nil
 	}
@@ -41,7 +41,7 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 	}
 	logging.Setup()
 	files := filesFor(cfg)
-	ctx, cancel := context.WithTimeout(ctx, options.timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	if err := cfg.Validate(); err != nil {

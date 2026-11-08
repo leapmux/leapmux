@@ -2,7 +2,7 @@
 title: "Configuration"
 description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
 type: docs
-weight: 2
+weight: 3
 ---
 
 This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
@@ -97,7 +97,7 @@ This means flat, top-level keys map cleanly:
 | `LEAPMUX_HUB_LISTEN`                  | `listen` (comma-delimited) |
 | `LEAPMUX_HUB_LOG_LEVEL`              | `log_level`            |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`   | `encryption_key_path`  |
-| `LEAPMUX_WORKER_HUB`                | `hub`                  |
+| `LEAPMUX_WORKER_NAME`               | `name`                 |
 | `LEAPMUX_WORKER_ENCRYPTION_MODE`   | `encryption_mode`      |
 
 {{< callout type="warning" >}}
@@ -428,7 +428,7 @@ On that last metric, the `phase` label says what the drop cost: `phase="park"` a
 | `agent_startup_concurrency` | `0` | How many agents the bundled Worker brings back at once after a restart (`0` = 4, or the CPU count when that is lower). |
 
 {{< callout type="info" >}}
-`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless on `leapmux hub run`. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
+`max_incomplete_chunked` caps the bundled Worker's chunk-reassembly budget; a peer that exceeds it gets `RESOURCE_EXHAUSTED`. There is no Hub-side equivalent — the Hub admits only one in-flight chunked sequence per channel and direction, which is a stricter rule than any count, so the key is meaningless in hub mode. The standalone Worker sets the same limit through its own `max_incomplete_chunked` key (see [Worker configuration reference](#worker-configuration-reference)).
 {{< /callout >}}
 
 ### Connections per user
@@ -474,8 +474,6 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `hub` | `http://127.0.0.1:4327` | Hub server URL: `http[s]://...`, `unix:<socket-path>`, or `npipe:<pipe-name>`. Required. |
-| `registration_key` | *(empty)* | Registration key for `worker register`; held privately in the pending record until registration completes. |
 | `name` | *(empty → hostname)* | Worker display name; defaults to the OS hostname when empty. |
 | `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
 | `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
@@ -483,7 +481,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
 {{< callout type="info" >}}
-`registration_key` belongs to `worker register`. Registration saves it temporarily in private `pending-registration.json` so retries can recover a lost response. Successful registration removes that record after durable credential publication. Runtime commands use `state.json` and take no registration key. For the registration flow, see [Managing Workers](/docs/admin/managing-workers/).
+The Hub URL and the registration key are not configuration keys. Both are flags of `leapmux worker register` only, and the Worker saves the Hub URL with its credentials. See [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 {{< /callout >}}
 
 ### Timeout and limit options
@@ -524,7 +522,7 @@ The Worker keeps its own SQLite database (`<data_dir>/worker.db`) for transient 
 
 ### Worker state file
 
-After registration, a Worker persists its identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs (auto-generated on first run). For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+`leapmux worker register` saves the Worker's identity to `<data_dir>/state.json` (mode `0600`): its Hub URL, Worker ID, Hub auth token, and its private E2EE keypairs, which the command generates. For the underlying key primitives, see [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 {{< callout type="warning" >}}
 `state.json` holds the Worker's private E2EE keys and Hub auth token, and it is **not encrypted**. Treat it as a secret and back it up. Losing it forces re-registration with a new registration key and a new key identity.
@@ -702,7 +700,6 @@ leapmux control admin settings set session_duration_seconds 86400     # sign an 
 
 ```yaml
 # ~/.config/leapmux/worker/worker.yaml
-hub: "https://hub.example.com"
 name: "build-box-01"
 encryption_mode: post-quantum
 log_level: info
@@ -711,30 +708,25 @@ agent_startup_concurrency: 0   # 0 = 4, or the CPU count when that is lower
 ```
 
 ```bash
-# First run only: pass the registration key minted in the Hub UI
+# Once: register with the Hub, using a key from its Register worker dialog.
 leapmux worker register --hub https://hub.example.com --registration-key "<key-from-hub-ui>"
-# Registration exits after credentials are durably saved.
+# Then: run the Worker. It reads worker.yaml, and it connects to the Hub URL
+# that the registration saved.
 leapmux worker run
 ```
 
-## Saved native service configuration
+## Configuration of a service
 
-`run` reads the normal configuration precedence. `enable`, `start`, and `restart` save explicit runtime overrides in `<data-dir>/.lifecycle/service.yaml`. A plain subsequent start preserves that specification. An explicitly supplied repeatable flag replaces that flag's complete saved list. The saved configuration path is absolute; changes to that source file still apply when the service reads it.
-
-Services do not inherit the entire calling shell environment. LeapMux saves the provider `PATH` and accepts `--environment-file /absolute/path/environment.yaml` on `enable`, `start`, or `restart`. The file contains one YAML map of string keys and string values. Explicit saved environment overrides win over file entries. A file-provided `PATH` replaces the automatically captured shell `PATH`. Windows compares variable names without case sensitivity and rejects duplicates in either source. Use `--environment-file=` to clear a saved file.
-
-Account identity and home variables remain under LeapMux's control. The environment cannot replace `HOME`, `USER`, `LOGNAME`, `USERNAME`, `USERPROFILE`, `HOMEDRIVE`, or `HOMEPATH`. Protect environment files that contain secrets. Native command lines contain the private service specification path rather than its environment values.
-
-A Worker's Hub endpoint belongs to its registration. `--hub` selects the endpoint for `worker register` only. Neither a runtime flag nor `LEAPMUX_WORKER_HUB` can redirect registered credentials. The remote `control --hub` option continues to select the remote API independently.
+An instance that runs as a service reads the same configuration file as `run`. It does not inherit the environment of the shell that started it, so a `LEAPMUX_*` variable in that shell does not reach it. The service saves the runtime flags that you give to `start`, `restart`, or `enable`, and the path of the configuration file. [Change the configuration of a service](/docs/admin/running-as-a-service/#change-the-configuration-of-a-service) explains how to change each of them, and how to give the service environment variables.
 
 ## Help and version
 
-Every mode supports the standard help tokens, and each mode honors `--version`:
+Every mode supports the standard help tokens, and each mode command honors `--version`:
 
-- `-h`, `-help`, or `--help` prints categorized usage to stdout. The bare `help` token works only at the top level (`leapmux help`).
-- `--version` (or `-version`) prints the build version and exits.
+- `-h`, `-help`, or `--help` prints help to stdout. After a mode (`leapmux hub --help`), it lists the commands of the mode. After a command (`leapmux hub run --help`), it prints the flags of that command, grouped by category. The bare `help` token works only at the top level (`leapmux help`).
+- `--version` (or `-version`) prints the build version and exits. It works at the top level (`leapmux --version`) and after a command (`leapmux hub run --version`).
 
-The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. LeapMux rejects an unexpected positional argument, identifies it, and points you at `--help`.
+The bare `version` subcommand is a **top-level** command (`leapmux version`), not a mode command. `leapmux hub version` fails with `unknown hub command: version` and prints the commands of the mode. A command rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 

@@ -118,8 +118,8 @@ func Observe(ctx context.Context, dataDirectory string) (Status, error) {
 		Diagnostics:  []Diagnostic{},
 	}
 
-	record, recordErr := ReadRuntimeRecord(paths.RuntimeRecord)
-	spec, specErr := ReadServiceSpec(paths.ServiceSpec)
+	record, recordErr := readRuntimeRecordOf(paths)
+	spec, specErr := ReadServiceSpecOf(paths)
 	if specErr == nil {
 		status.Startup = &spec.Startup
 		status.Configured = true

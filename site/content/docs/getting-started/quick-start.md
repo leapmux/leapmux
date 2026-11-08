@@ -64,7 +64,7 @@ If you change `-listen` to a non-loopback address before setup, the first TCP ca
 `leapmux solo run` writes its database and keys under `~/.config/leapmux/solo`, so your workspaces and sessions persist across restarts.
 {{< /callout >}}
 
-To keep LeapMux running in the background, stop the foreground process and run `leapmux solo start`. The first start asks when it should start automatically, explains the native configuration, and asks for `y` or `yes`. Use `leapmux solo status` to inspect it and `leapmux solo stop` to stop it.
+To keep LeapMux running after you close the terminal, press Ctrl+C, then run `leapmux solo start`. It asks whether LeapMux should start when you log in or when the computer starts, and runs it in the background. `leapmux solo status` reports its state, and `leapmux solo stop` stops it. See [Running as a Service](/docs/admin/running-as-a-service/).
 
 ## The walkthrough
 

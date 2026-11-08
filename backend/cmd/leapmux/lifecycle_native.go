@@ -14,6 +14,7 @@ import (
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -49,7 +50,7 @@ func nativeController(mode string, dataDir string) (*servicelaunch.Controller, e
 			return lifecycle.WriteServiceSpec(paths.ServiceSpec, spec)
 		},
 		ReadSpec: func() (lifecycle.ServiceSpec, error) {
-			return lifecycle.ReadServiceSpec(paths.ServiceSpec)
+			return lifecycle.ReadServiceSpecOf(paths)
 		},
 		RemoveSpec: func() error {
 			return os.Remove(paths.ServiceSpec)
@@ -192,8 +193,47 @@ func runModeEnableWithController(mode string, newController nativeControllerFact
 			return err
 		}
 		fmt.Printf("Configured. %s starts automatically at %s.\n", capitalize(mode), selection.startup)
+		printInstanceCommands(os.Stdout, spec, shellquote.ForOS(runtime.GOOS), exec.LookPath)
 		return nil
 	}
+}
+
+// printInstanceCommands prints the exact commands that start the configured
+// instance now and report its status. Both select the instance by the
+// configuration file and the data directory that its service saved, so they
+// act on this instance whatever the working directory, the defaults, or the
+// environment of the shell that runs them later. They go through LeapMux, not
+// through the native service manager, so they keep its validation and its
+// readiness wait. The configuration is already applied, so a failed write is
+// no failure of the command, as for the confirmation line before it.
+func printInstanceCommands(w io.Writer, spec lifecycle.ServiceSpec, shell shellquote.Shell, lookPath func(string) (string, error)) {
+	program := instanceCommandProgram(spec.Executable, lookPath)
+	command := func(verb string) string {
+		return shell.Command(program, spec.Mode.String(), verb, "--config", spec.ConfigFile, "--data-dir", spec.DataDirectory)
+	}
+	_, _ = io.WriteString(w, "\nCommands for this instance:\n"+
+		"  Start:  "+command("start")+"\n"+
+		"  Status: "+command("status")+"\n")
+}
+
+// instanceCommandProgram names the program in a printed command: `leapmux`
+// when that name on PATH runs the same executable that the service runs, and
+// the executable's path otherwise, so the command never runs another copy of
+// LeapMux.
+func instanceCommandProgram(executable string, lookPath func(string) (string, error)) string {
+	found, err := lookPath("leapmux")
+	if err != nil {
+		return executable
+	}
+	foundInfo, err := os.Stat(found)
+	if err != nil {
+		return executable
+	}
+	executableInfo, err := os.Stat(executable)
+	if err != nil || !os.SameFile(foundInfo, executableInfo) {
+		return executable
+	}
+	return "leapmux"
 }
 
 // runModeDisableWithController removes the native startup configuration. It refuses

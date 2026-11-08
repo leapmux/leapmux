@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +24,6 @@ import (
 )
 
 const (
-	defaultHubURL     = "http://127.0.0.1:4327"
 	defaultConfigDir  = "~/.config/leapmux/worker"
 	defaultConfigFile = "~/.config/leapmux/worker/worker.yaml"
 	defaultLogLevel   = "info"
@@ -73,13 +73,11 @@ func ResolveStartupConcurrency(n int) int {
 }
 
 // Config holds the worker's runtime configuration.
+//
+// It holds no Hub URL and no registration key. The Hub URL belongs to the
+// registration: `leapmux worker register` takes it with the key, both as flags
+// only, and saves the URL in State, which execution and deregistration read.
 type Config struct {
-	HubURL string `koanf:"hub" json:"hub_url"`
-	// RegistrationKey is the bearer credential the worker presents to
-	// WorkerConnectorService.Register during explicit registration. The private
-	// pending-registration.json record retains it until recovery and durable
-	// credential publication complete. Runtime commands do not register.
-	RegistrationKey      string `koanf:"registration_key" json:"-"`
 	Name                 string `koanf:"name" json:"name"`
 	DataDir              string `koanf:"data_dir" json:"data_dir"`
 	DBMaxConns           int    `koanf:"db_max_conns" json:"db_max_conns"`
@@ -257,6 +255,15 @@ func (s *State) EnsureCompositeKeypair() (*noiseutil.CompositeKeypair, bool, err
 
 // LoadOptions supplies flags and configuration hooks for a command.
 type LoadOptions struct {
+	// FlagSetName and Description head the help output. Empty values give
+	// "leapmux worker" and the description of the worker mode.
+	FlagSetName string
+	Description string
+	// CLIFlags, when non-nil, lists the only worker flags the command accepts
+	// and shows; config and version are always registered. The config file and
+	// LEAPMUX_WORKER_* variables still reach every key.
+	CLIFlags []string
+	// ConfigureFlags registers caller-owned command flags.
 	ConfigureFlags func(*flag.FlagSet)
 	// AfterFlagsParsed runs after valid flags and metadata, before configuration I/O.
 	AfterFlagsParsed func(*flag.FlagSet) error
@@ -271,35 +278,50 @@ func Load(args []string) (*Config, bool, error) {
 // LoadWithOptions parses mode flags and caller-owned command flags together.
 // Only mode flags enter the configuration values.
 func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
-	// Define CLI flags.
-	fs := flag.NewFlagSet("leapmux worker", flag.ContinueOnError)
-	fs.String("config", defaultConfigFile, "path to config file")
-	fs.String("hub", defaultHubURL, "Hub server URL (http[s]://..., unix:<socket-path>, or npipe:<pipe-name>)")
-	fs.String("registration-key", "", "registration key from the hub UI (required on first run)")
-	fs.String("name", "", "worker display name (default: hostname)")
-	fs.String("data-dir", ".", "data directory")
-	fs.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
-	fs.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
-	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
-	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
-	fs.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
-	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
+	flagSetName := opts.FlagSetName
+	if flagSetName == "" {
+		flagSetName = "leapmux worker"
+	}
+	description := opts.Description
+	if description == "" {
+		description = "Run a Worker connected to a Hub."
+	}
+
+	// Define every worker flag on a scratch set, then copy the ones this
+	// command accepts. One definition list serves every subset, so a subset
+	// cannot carry a stale default or usage string of its own.
+	all := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
+	all.String("config", defaultConfigFile, "path to config file")
+	all.String("name", "", "worker display name (default: hostname)")
+	all.String("data-dir", ".", "data directory")
+	all.Int("db-max-conns", sqlitedb.DefaultMaxConns, "maximum number of open database connections")
+	all.Int("db-cache-size", 0, "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB; 0 = default)")
+	all.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
+	all.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
+	all.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
+	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
 		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
-	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
+	all.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
 		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
-	fs.Int("agent-startup-concurrency", 0,
+	all.Int("agent-startup-concurrency", 0,
 		fmt.Sprintf("how many agents to bring back at once after a restart "+
 			"(0 = %d, or the CPU count when that is lower); "+
 			"it never delays an agent you start yourself", DefaultMaxStartupConcurrency))
-	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
-	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
-	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
-	showVersion := fs.Bool("version", false, "print version and exit")
+	all.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
+	all.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
+	all.Bool("use-login-shell", true, "wrap each agent invocation in the user's login shell")
+	showVersion := all.Bool("version", false, "print version and exit")
+
+	fs := flag.NewFlagSet(flagSetName, flag.ContinueOnError)
+	all.VisitAll(func(f *flag.Flag) {
+		if opts.CLIFlags != nil && f.Name != "config" && f.Name != "version" && !slices.Contains(opts.CLIFlags, f.Name) {
+			return
+		}
+		fs.Var(f.Value, f.Name, f.Usage)
+	})
 	usageCategories := map[string]string{
 		"config":                    "Common options",
 		"version":                   "Common options",
-		"hub":                       "Worker options",
-		"registration-key":          "Worker options",
 		"name":                      "Worker options",
 		"data-dir":                  "Worker options",
 		"log-level":                 "Worker options",
@@ -317,7 +339,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	if opts.ConfigureFlags != nil {
 		opts.ConfigureFlags(fs)
 	}
-	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
+	if err := internalconfig.ConfigureAndParse(fs, args, description, usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
 	}
 
@@ -333,8 +355,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
-		"hub":                       "hub",
-		"registration-key":          "registration_key",
 		"name":                      "name",
 		"data-dir":                  "data_dir",
 		"db-max-conns":              "db_max_conns",
@@ -351,8 +371,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	defaults := map[string]interface{}{
-		"hub":                    defaultHubURL,
-		"registration_key":       "",
 		"name":                   "",
 		"data_dir":               ".",
 		"db_max_conns":           sqlitedb.DefaultMaxConns,
@@ -402,10 +420,6 @@ var workerFlagCategoryOrder = []string{
 
 // Validate checks the configuration and ensures required directories exist.
 func (c *Config) Validate() error {
-	if c.HubURL == "" {
-		return fmt.Errorf("hub URL is required")
-	}
-
 	// Default name to hostname if not explicitly set.
 	if c.Name == "" {
 		hostname, _ := os.Hostname()
@@ -426,12 +440,8 @@ func (c *Config) Validate() error {
 }
 
 // ValidateRuntime checks execution settings without reading credentials or
-// creating directories. Runtime commands use the saved registration instead
-// of accepting another registration key.
+// creating directories.
 func (c *Config) ValidateRuntime() error {
-	if c.RegistrationKey != "" {
-		return fmt.Errorf("a registration key belongs to `leapmux worker register`; execution uses the saved registration")
-	}
 	return channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize)
 }
 

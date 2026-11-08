@@ -145,14 +145,14 @@ func TestModePostparseHookPrecedesConfigurationIO(t *testing.T) {
 			require.NoError(t, os.WriteFile(file, []byte("[invalid YAML"), 0o600))
 			sentinel := errors.New("parsed without configuration IO")
 			called := false
-			_, err := loadLifecycleConfiguration(mode, []string{"--config", file}, nil, func(fs *flag.FlagSet) error {
+			_, err := loadLifecycleConfiguration(mode, "run", []string{"--config", file}, nil, func(fs *flag.FlagSet) error {
 				called = true
 				assert.Equal(t, file, fs.Lookup("config").Value.String())
 				return sentinel
 			})
 			require.ErrorIs(t, err, sentinel)
 			assert.True(t, called)
-			_, err = loadLifecycleConfiguration(mode, []string{"--config", file}, nil, nil)
+			_, err = loadLifecycleConfiguration(mode, "run", []string{"--config", file}, nil, nil)
 			require.Error(t, err, "a real configuration failure must propagate without interception")
 		})
 	}
@@ -163,14 +163,14 @@ func TestModePostparseHookFollowsMetadataAndArgumentValidation(t *testing.T) {
 		for _, args := range [][]string{{"--version"}, {"--help"}, {"--unknown-flag"}, {"--", "--data-dir", "ignored"}} {
 			t.Run(mode+strings.Join(args, " "), func(t *testing.T) {
 				called := false
-				_, err := loadLifecycleConfiguration(mode, args, nil, func(*flag.FlagSet) error { called = true; return nil })
+				_, err := loadLifecycleConfiguration(mode, "run", args, nil, func(*flag.FlagSet) error { called = true; return nil })
 				require.Error(t, err)
 				assert.False(t, called, "metadata and invalid arguments must precede configuration interception")
 			})
 		}
 		file := filepath.Join(t.TempDir(), "last.yaml")
 		sentinel := errors.New("last parsed config selected")
-		_, err := loadLifecycleConfiguration(mode, []string{"--config", "first.yaml", "--config", file}, nil, func(fs *flag.FlagSet) error {
+		_, err := loadLifecycleConfiguration(mode, "run", []string{"--config", "first.yaml", "--config", file}, nil, func(fs *flag.FlagSet) error {
 			assert.Equal(t, file, fs.Lookup("config").Value.String())
 			return sentinel
 		})
@@ -434,6 +434,126 @@ func TestLifecycleStartupOptions(t *testing.T) {
 			require.Error(t, err)
 		}
 	}
+}
+
+// Every worker lifecycle command refuses the flags of `leapmux worker
+// register` and states the command that they belong to, before it reads any
+// configuration or saves any argument.
+func TestWorkerLifecycleCommandsRefuseRegistrationFlags(t *testing.T) {
+	for _, verb := range []string{"start", "restart", "stop", "status", "enable", "disable"} {
+		for _, args := range [][]string{{"--hub", "https://hub.example"}, {"--hub=https://hub.example"}, {"--registration-key", "key"}, {"-registration-key=key"}} {
+			t.Run(verb+" "+args[0], func(t *testing.T) {
+				_, _, err := loadLifecycleCommand("worker", verb, append([]string{"--data-dir", t.TempDir()}, args...))
+				require.ErrorContains(t, err, "belongs to `leapmux worker register`")
+			})
+		}
+	}
+	t.Run("the hub and the other modes do not know the worker flags", func(t *testing.T) {
+		_, _, err := loadLifecycleCommand("hub", "start", []string{"--data-dir", t.TempDir(), "--registration-key", "key"})
+		require.ErrorContains(t, err, "flag provided but not defined: -registration-key")
+	})
+}
+
+// Each lifecycle command's help names the command and states its summary, and
+// it omits every hidden flag: the service definition's --service-spec, and the
+// worker's registration flags.
+func TestLifecycleCommandHelpIdentifiesTheCommand(t *testing.T) {
+	for _, tc := range []struct {
+		mode, verb string
+		absent     []string
+	}{
+		{"worker", "run", []string{"service-spec", "  -hub ", "  -registration-key "}},
+		{"worker", "start", []string{"service-spec", "  -hub ", "  -registration-key "}},
+		{"hub", "run", []string{"service-spec"}},
+		{"solo", "status", []string{"service-spec"}},
+		{"dev", "enable", []string{"service-spec"}},
+	} {
+		t.Run(tc.mode+" "+tc.verb, func(t *testing.T) {
+			result := invokeLifecycleCLI(t, t.TempDir(), tc.mode, tc.verb, "--help")
+			require.Equal(t, 0, result.exitCode, result.stderr)
+			header := lifecycleSummary(tc.mode, tc.verb) + ".\n\nUsage: leapmux " + tc.mode + " " + tc.verb + " [flags]\n"
+			assert.True(t, strings.HasPrefix(result.stdout, header), result.stdout)
+			assert.Contains(t, result.stdout, "  -data-dir string")
+			for _, text := range tc.absent {
+				assert.NotContains(t, result.stdout, text)
+			}
+		})
+	}
+}
+
+// stop, status, and disable act on an instance without running it, so they
+// accept and show only the flags that select the instance. A runtime flag
+// would be accepted and ignored.
+func TestSelectionCommandsAcceptOnlyTheSelectionFlags(t *testing.T) {
+	runtimeFlags := map[string][]string{
+		"hub":    {"--listen", ":4400"},
+		"worker": {"--name", "box"},
+		"solo":   {"--encryption-mode", "classic"},
+		"dev":    {"--log-level", "debug"},
+	}
+	for mode, runtimeFlag := range runtimeFlags {
+		for _, verb := range []string{"stop", "status", "disable"} {
+			t.Run(mode+" "+verb, func(t *testing.T) {
+				dataDir := t.TempDir()
+				_, _, err := loadLifecycleCommand(mode, verb, append([]string{"--data-dir", dataDir}, runtimeFlag...))
+				require.ErrorContains(t, err, "flag provided but not defined: "+strings.TrimPrefix(runtimeFlag[0], "-"))
+
+				configuration, _, err := loadLifecycleCommand(mode, verb, []string{"--data-dir", dataDir})
+				require.NoError(t, err)
+				assert.Equal(t, mustCanonicalDir(t, dataDir), configuration.dataDirectory)
+			})
+		}
+		t.Run(mode+" start keeps its runtime flags", func(t *testing.T) {
+			_, _, err := loadLifecycleCommand(mode, "start", append([]string{"--data-dir", t.TempDir()}, runtimeFlag...))
+			require.NoError(t, err)
+		})
+	}
+	t.Run("the config file still selects the data directory", func(t *testing.T) {
+		dataDir := t.TempDir()
+		configFile := filepath.Join(t.TempDir(), "hub.yaml")
+		require.NoError(t, os.WriteFile(configFile, []byte("data_dir: '"+dataDir+"'\n"), 0o600))
+		configuration, _, err := loadLifecycleCommand("hub", "status", []string{"--config", configFile})
+		require.NoError(t, err)
+		assert.Equal(t, mustCanonicalDir(t, dataDir), configuration.dataDirectory)
+	})
+	t.Run("help shows only the selection and command flags", func(t *testing.T) {
+		result := invokeLifecycleCLI(t, t.TempDir(), "solo", "status", "--help")
+		require.Equal(t, 0, result.exitCode, result.stderr)
+		for _, present := range []string{"  -data-dir string", "  -config string", "  -json", "  -timeout "} {
+			assert.Contains(t, result.stdout, present)
+		}
+		for _, absent := range []string{"  -listen ", "  -encryption-mode ", "  -log-level ", "  -storage-sqlite-max-conns "} {
+			assert.NotContains(t, result.stdout, absent)
+		}
+	})
+}
+
+// The mode's command list and the dispatcher read one tree, so the list shows
+// exactly the commands that dispatch accepts, each with its one summary.
+func TestModeCommandGroupListsEachCommandOnce(t *testing.T) {
+	for _, mode := range []string{"solo", "hub", "worker", "dev"} {
+		group := modeCommandGroup(mode)
+		names := make([]string, 0, len(group.Commands))
+		for _, command := range group.Commands {
+			names = append(names, command.Name)
+			require.NotNil(t, command.Run, "%s %s has no runner", mode, command.Name)
+			require.NotEmpty(t, command.Summary)
+		}
+		want := []string{"run", "start", "stop", "restart", "status", "enable", "disable"}
+		if mode == "worker" {
+			want = append(want, "register", "deregister")
+			require.Len(t, group.Subgroups, 1)
+			assert.Equal(t, "cross-worker-pins", group.Subgroups[0].Name)
+		} else {
+			assert.Empty(t, group.Subgroups)
+		}
+		assert.Equal(t, want, names)
+		for _, command := range group.Commands[:7] {
+			assert.Equal(t, lifecycleSummary(mode, command.Name), command.Summary)
+		}
+	}
+	assert.Panics(t, func() { lifecycleSummary("hub", "register") },
+		"a verb without a summary must not borrow another command's text")
 }
 
 func TestLifecycleTimeoutOptions(t *testing.T) {

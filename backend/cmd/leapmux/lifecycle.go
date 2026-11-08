@@ -43,35 +43,61 @@ func lifecycleCommands(mode string) cmdGroup {
 }
 
 func lifecycleCommandsWithDependencies(mode string, dependencies lifecycleDependencies) cmdGroup {
-	runSummary := "Run in the foreground (never configures a service)"
-	switch mode {
-	case "hub":
-		runSummary = "Run the Hub in the foreground (never configures a service)"
-	case "worker":
-		runSummary = "Run a registered Worker in the foreground (never configures a service)"
-	case "solo":
-		runSummary = "Run Hub + Worker in the foreground (never configures a service)"
-	case "dev":
-		runSummary = "Run Hub + Worker for development in the foreground (never configures a service)"
+	leaf := func(verb string, run func(cmdCtx, []string) error) cmdLeaf {
+		return cmdLeaf{Name: verb, Summary: lifecycleSummary(mode, verb), Run: run}
 	}
 	return cmdGroup{
 		Name:    mode,
 		Summary: modeSummary(mode),
 		Commands: []cmdLeaf{
-			{Name: "run", Summary: runSummary, Run: runModeRunWithInvocation(mode, dependencies.foreground)},
-			{Name: "start", Summary: "Start through the configured native mechanism, waiting for readiness", Run: func(_ cmdCtx, args []string) error {
+			leaf("run", runModeRunWithInvocation(mode, dependencies.foreground)),
+			leaf("start", func(_ cmdCtx, args []string) error {
 				return executeNativeStartWithController(mode, "start", args, dependencies.controller)
-			}},
-			{Name: "stop", Summary: "Stop the running instance and wait for the full shutdown", Run: runModeStopWithController(mode, dependencies.controller)},
-			{Name: "restart", Summary: "Stop the current instance, then start through the native mechanism", Run: func(_ cmdCtx, args []string) error {
+			}),
+			leaf("stop", runModeStopWithController(mode, dependencies.controller)),
+			leaf("restart", func(_ cmdCtx, args []string) error {
 				return executeNativeStartWithController(mode, "restart", args, dependencies.controller)
-			}},
-			{Name: "status", Summary: "Report process state, readiness, registration, and diagnostics", Run: func(_ cmdCtx, args []string) error {
+			}),
+			leaf("status", func(_ cmdCtx, args []string) error {
 				return executeModeStatusWithController(mode, args, dependencies.controller)
-			}},
-			{Name: "enable", Summary: "Configure automatic startup at login or boot without starting now", Run: runModeEnableWithController(mode, dependencies.controller)},
-			{Name: "disable", Summary: "Remove the native startup configuration (needs a stopped instance)", Run: runModeDisableWithController(mode, dependencies.controller)},
+			}),
+			leaf("enable", runModeEnableWithController(mode, dependencies.controller)),
+			leaf("disable", runModeDisableWithController(mode, dependencies.controller)),
 		},
+	}
+}
+
+// lifecycleSummary is the one-line description of a lifecycle command. The
+// mode's command list and the command's own --help both print it. A verb
+// without a summary is a programming error, so it panics rather than lend
+// another command's text.
+func lifecycleSummary(mode, verb string) string {
+	switch verb {
+	case "run":
+		switch mode {
+		case "hub":
+			return "Run the Hub in the foreground (never installs a service)"
+		case "worker":
+			return "Run a registered Worker in the foreground (never installs a service)"
+		case "solo":
+			return "Run Hub + Worker in the foreground (never installs a service)"
+		default:
+			return "Run Hub + Worker for development in the foreground (never installs a service)"
+		}
+	case "start":
+		return "Start as a background service and wait until it is ready"
+	case "stop":
+		return "Stop the instance and wait until its shutdown completes"
+	case "restart":
+		return "Stop the instance, then start it as a background service"
+	case "status":
+		return "Report the process state, readiness, registration, and diagnostics"
+	case "enable":
+		return "Install the service for startup at login or boot, without starting it"
+	case "disable":
+		return "Remove the service (requires a stopped instance)"
+	default:
+		panic(fmt.Sprintf("lifecycle command %q has no summary", verb))
 	}
 }
 
@@ -111,8 +137,10 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 	return func(c cmdCtx, args []string) (result error) {
 		selection := managedRunSelection{}
 		selected := false
-		configuration, err := loadLifecycleConfiguration(mode, args, func(fs *flag.FlagSet) {
-			fs.Func("service-spec", "private specification for native startup", func(path string) error {
+		configuration, err := loadLifecycleConfiguration(mode, "run", args, func(fs *flag.FlagSet) {
+			// The service definition passes this flag; a person never does,
+			// so help omits it.
+			internalconfig.HiddenFunc(fs, "service-spec", "private specification for native startup", func(path string) error {
 				if selected || path == "" {
 					return fmt.Errorf("managed launch requires exactly one nonempty service specification")
 				}
@@ -163,7 +191,7 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 			}
 			defer func() { result = errors.Join(result, restore()) }()
 			execution = lifecycle.ExecutionService
-			configuration, err = loadLifecycleConfiguration(mode, effective, nil, nil)
+			configuration, err = loadLifecycleConfiguration(mode, "run", effective, nil, nil)
 			if err != nil {
 				return err
 			}
@@ -405,30 +433,36 @@ func printStatusValue[T any](label string, value *T) {
 	}
 }
 
-// runModeCommand walks one mode's lifecycle tree. The seven verbs are
-// required: bare flags that belonged to the old foreground-only
-// spelling get the exact corrected command in the hint, and the worker
-// group keeps register, deregister, and cross-worker-pins beside the
-// verbs.
-func runModeCommand(mode string, args []string) error {
+// modeCommandGroup is one mode's complete command tree: the lifecycle
+// commands, plus the worker's registration commands and pin store. The
+// dispatcher and the help walk both read it, so help cannot list a command
+// that dispatch does not know.
+func modeCommandGroup(mode string) cmdGroup {
 	group := lifecycleCommands(mode)
 	if mode == "worker" {
 		group.Commands = append(group.Commands,
-			cmdLeaf{Name: "register", Summary: "Register with a hub and save credentials (never starts the worker)", Run: func(c cmdCtx, args []string) error {
+			cmdLeaf{Name: "register", Summary: workerRegisterSummary, Run: func(c cmdCtx, args []string) error {
 				return runWorkerRegister(args)
 			}},
-			cmdLeaf{Name: "deregister", Summary: "Remove this worker's registration, keeping the worker database", Run: func(c cmdCtx, args []string) error {
+			cmdLeaf{Name: "deregister", Summary: workerDeregisterSummary, Run: func(c cmdCtx, args []string) error {
 				return runWorkerDeregister(args)
 			}},
 		)
 		group.Subgroups = []cmdGroup{workerPinsGroup()}
 	}
+	return group
+}
+
+// runModeCommand walks one mode's command tree. A command is required: a
+// flag where the command belongs gets the exact corrected command in the
+// hint.
+func runModeCommand(mode string, args []string) error {
 	// A flag where the verb belongs identifies the corrected command in the
 	// hint rather than dispatching.
 	if len(args) > 0 && strings.HasPrefix(args[0], "-") && !internalconfig.IsHelpArg(args[0]) {
 		return fmt.Errorf("the %s command is required before any flags; run `leapmux %s run` for the foreground command", mode, mode)
 	}
-	return dispatchGroup(group, args, []string{mode})
+	return dispatchGroup(modeCommandGroup(mode), args, []string{mode})
 }
 
 // workerPinsGroup is the cross-worker-pins subtree, unchanged in shape.
@@ -478,14 +512,6 @@ func stripExitMarker(err error) error {
 // walkModeArgs validates the mode group's tokens and prints its help;
 // it reports (code, true) when it fully handled the request.
 func walkModeArgs(group cmdGroup, mode string, args []string, stdout, stderr io.Writer) (int, bool) {
-	// The worker group carries the register leaves too.
-	if mode == "worker" {
-		group.Commands = append(group.Commands,
-			cmdLeaf{Name: "register", Summary: "Register with a hub and save credentials (never starts the worker)", Run: nil},
-			cmdLeaf{Name: "deregister", Summary: "Remove this worker's registration, keeping the worker database", Run: nil},
-		)
-		group.Subgroups = []cmdGroup{workerPinsGroup()}
-	}
 	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		if internalconfig.IsHelpArg(args[0]) {
 			_, _ = fmt.Fprint(stdout, formatGroupUsage(group, mode))

@@ -26,7 +26,7 @@ func TestForegroundConsumesPreparedConfigurationSnapshot(t *testing.T) {
 			}
 			path := filepath.Join(t.TempDir(), "configuration.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("listen:\n  - %q\nlog_level: error\n", locallistentest.UniqueListenURL(t, "snapshot"))), 0o600))
-			configuration, err := loadLifecycleConfiguration(mode, []string{"--config", path, "--data-dir", root}, nil, nil)
+			configuration, err := loadLifecycleConfiguration(mode, "run", []string{"--config", path, "--data-dir", root}, nil, nil)
 			require.NoError(t, err)
 			replacement := []byte("[malformed after preparation")
 			require.NoError(t, os.WriteFile(path, replacement, 0o600))
@@ -95,7 +95,7 @@ func TestPreparedConfigurationPinsCanonicalDirectoryAfterAliasRetarget(t *testin
 			if mode == "hub" {
 				args = append(args, "--listen", locallistentest.UniqueListenURL(t, "alias"))
 			}
-			configuration, err := loadLifecycleConfiguration(mode, args, nil, nil)
+			configuration, err := loadLifecycleConfiguration(mode, "run", args, nil, nil)
 			require.NoError(t, err)
 			require.NoError(t, os.Remove(alias))
 			require.NoError(t, os.Symlink(second, alias))

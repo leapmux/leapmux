@@ -137,7 +137,7 @@ func runWorkerForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *w
 		UseLoginShell:           cfg.UseLoginShell,
 		OnDeregister:            func() error { return clearDeletedWorkerState(cfg) },
 	})
-	return reregistrationAdvice(err, cfg.StatePath())
+	return reregistrationAdvice(err)
 }
 
 // runSoloForeground runs the combined instance under the started

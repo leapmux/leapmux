@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/util/procutil"
 )
@@ -185,14 +186,14 @@ const (
 // LookPath), so the start-failure case is reachable, not theoretical.
 func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) ProbeResult {
 	shellName := terminal.ShellBaseName(shellPath)
-	quoted := posixQuote(binaryName)
+	quoted := shellquote.POSIX.Quote(binaryName)
 
 	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
 		inner = fmt.Sprintf(
 			"if (Get-Command %s -ErrorAction SilentlyContinue) { Write-Output '%s' } else { Write-Output '%s' }",
-			pwshQuote(binaryName), probeReachedPresent, probeReachedAbsent,
+			shellquote.PowerShell.Quote(binaryName), probeReachedPresent, probeReachedAbsent,
 		)
 		flag = "-Command"
 	case shellName == "nu":
@@ -246,14 +247,14 @@ func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryN
 // interpreter can be probed for node:sqlite directly, without a second shell.
 func ProgramPath(ctx context.Context, shellPath string, loginShell bool, name string) (string, ProbeResult) {
 	shellName := terminal.ShellBaseName(shellPath)
-	quoted := posixQuote(name)
+	quoted := shellquote.POSIX.Quote(name)
 
 	var inner, flag string
 	switch {
 	case terminal.IsPwsh(shellName):
 		inner = fmt.Sprintf(
 			"$c = Get-Command %s -ErrorAction SilentlyContinue; if ($c) { Write-Output '%s'; Write-Output $c.Source } else { Write-Output '%s' }",
-			pwshQuote(name), probeReachedPresent, probeReachedAbsent,
+			shellquote.PowerShell.Quote(name), probeReachedPresent, probeReachedAbsent,
 		)
 		flag = "-Command"
 	case shellName == "nu":

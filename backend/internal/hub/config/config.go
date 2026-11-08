@@ -680,7 +680,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	allFlags := []flagDef{
-		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so `leapmux control` keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
+		strSliceFlag("listen", "listen", "Server options", "listen address, repeatable: a TCP address (':4327', '127.0.0.1:4327') or a local IPC URL ('unix:<path>', 'npipe:<name>'). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL is added when the list names none, so that leapmux control keeps the access that socket carries. LEAPMUX_HUB_LISTEN takes the same addresses comma-delimited", nil),
 		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),

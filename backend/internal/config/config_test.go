@@ -1,9 +1,11 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -220,5 +222,69 @@ func TestResolveDataDir(t *testing.T) {
 	t.Run("tilde in data dir expanded", func(t *testing.T) {
 		result := ResolveDataDir("~/custom/data", "/some/config.yaml", "/default/dir")
 		assert.Equal(t, filepath.Join(home, "custom/data"), result)
+	})
+}
+
+func TestHiddenFunc(t *testing.T) {
+	newFlags := func(received *[]string) *flag.FlagSet {
+		fs := flag.NewFlagSet("leapmux probe", flag.ContinueOnError)
+		fs.String("visible", "shown", "a visible flag")
+		fs.Int("count", 3, "a visible count")
+		HiddenFunc(fs, "secret", "a hidden flag", func(value string) error {
+			*received = append(*received, value)
+			return nil
+		})
+		return fs
+	}
+
+	t.Run("the flag parses and reaches its function", func(t *testing.T) {
+		var received []string
+		fs := newFlags(&received)
+		require.NoError(t, fs.Parse([]string{"--secret", "one", "-secret=two"}))
+		assert.Equal(t, []string{"one", "two"}, received)
+	})
+
+	t.Run("an error from the function fails the parse", func(t *testing.T) {
+		fs := flag.NewFlagSet("leapmux probe", flag.ContinueOnError)
+		fs.SetOutput(&strings.Builder{})
+		HiddenFunc(fs, "secret", "", func(string) error { return errors.New("refused") })
+		require.ErrorContains(t, fs.Parse([]string{"--secret", "x"}), "refused")
+	})
+
+	for _, tc := range []struct {
+		name       string
+		categories map[string]string
+	}{
+		{"uncategorized help", nil},
+		{"categorized help", map[string]string{"visible": "Probe options", "count": "Probe options", "secret": "Probe options"}},
+	} {
+		t.Run(tc.name+" omits the flag", func(t *testing.T) {
+			var received []string
+			fs := newFlags(&received)
+			var output strings.Builder
+			fs.SetOutput(&output)
+			// Change a value first: help prints the default from definition
+			// time, not the parsed value.
+			require.NoError(t, fs.Parse([]string{"--count", "9"}))
+			PrintFlagUsage(fs, "Probe.", tc.categories, []string{"Probe options"})
+			text := output.String()
+			assert.Contains(t, text, "Usage: leapmux probe [flags]")
+			assert.Contains(t, text, "-visible")
+			assert.Contains(t, text, `(default "shown")`)
+			assert.Contains(t, text, "(default 3)")
+			assert.NotContains(t, text, "(default 9)")
+			assert.NotContains(t, text, "secret")
+			assert.NotContains(t, text, "a hidden flag")
+		})
+	}
+
+	t.Run("a category that holds only hidden flags prints no header", func(t *testing.T) {
+		var received []string
+		fs := newFlags(&received)
+		var output strings.Builder
+		fs.SetOutput(&output)
+		PrintFlagUsage(fs, "", map[string]string{"visible": "Probe options", "count": "Probe options", "secret": "Internal options"}, nil)
+		assert.Contains(t, output.String(), "Probe options:")
+		assert.NotContains(t, output.String(), "Internal options")
 	})
 }

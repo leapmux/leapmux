@@ -139,22 +139,7 @@ The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a revers
 
 ### Running a Worker container
 
-Register in a one-shot container, then run the Worker using the same volume. Keep the registration dialog open until registration exits successfully.
-
-```bash
-# Register once. No Worker daemon starts in this container.
-docker run --rm --entrypoint /usr/local/bin/leapmux \
-  -v leapmux-worker-data:/data ghcr.io/leapmux/leapmux:latest \
-  worker register --data-dir /data/worker \
-  --hub https://hub.example.com --registration-key YOUR_REGISTRATION_KEY
-
-# Reuse the saved credentials. No registration key belongs here.
-docker run -d --name leapmux-worker --restart unless-stopped \
-  -e LEAPMUX_MODE=worker -v leapmux-worker-data:/data \
-  ghcr.io/leapmux/leapmux:latest
-```
-
-The default container command runs `worker run` in the foreground under the container supervisor. Native host service installation is unnecessary. Registration and runtime must use the same `/data/worker` directory. See [Managing Workers](/docs/admin/managing-workers/) for recovery and approval.
+A `worker` container connects out to a Hub. Register it once with a key from the Hub's **Register worker** dialog, in a temporary container that mounts the same volume, then run the Worker container. [Running a Worker container](/docs/admin/running-leapmux/#running-a-worker-container) gives both commands.
 
 ### Upgrading
 
@@ -184,7 +169,7 @@ cd leapmux_<version>_linux_amd64
 ./leapmux hub run          # or: solo run, dev run
 ```
 
-For background execution, run `leapmux hub start`. The first start offers login or boot startup and explains any administrator authorization before requesting consent. `leapmux hub enable` performs configuration in advance. `run` never installs a service. A standalone Worker requires a successful `worker register` first.
+To keep an instance running after you log out or restart the computer, start it as a service with `leapmux hub start` instead of `run`. See [Running as a Service](/docs/admin/running-as-a-service/). Register a standalone Worker before you run or start it; see [Register a Worker](/docs/admin/managing-workers/#register-a-worker).
 
 The macOS package is signed with a Developer ID and notarized.
 

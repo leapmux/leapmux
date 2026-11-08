@@ -397,6 +397,33 @@ func TestWorkerRegisterSavesCredentials(t *testing.T) {
 	require.Error(t, runWorkerRegister(args))
 }
 
+// A Hub URL that the transport cannot use is refused before anything is
+// written. A pending record for the bad URL would block the corrected
+// command as a conflicting attempt.
+func TestWorkerRegisterRefusesAnUnusableHubURLBeforeWriting(t *testing.T) {
+	for _, hubURL := range []string{"hub.example.com", "ftp://hub.example.com", "http://", "unix:"} {
+		t.Run(hubURL, func(t *testing.T) {
+			dataDir := filepath.Join(t.TempDir(), "must-not-exist")
+			err := runWorkerRegister([]string{"--hub", hubURL, "--registration-key", "key", "--data-dir", dataDir})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), hubURL)
+			assert.NoDirExists(t, dataDir, "a refused URL must leave no data directory and no pending record")
+		})
+	}
+	t.Run("the corrected command then registers", func(t *testing.T) {
+		env := startRegisterEnv(t)
+		dataDir := t.TempDir()
+		require.Error(t, runWorkerRegister([]string{"--hub", "hub.example.com", "--registration-key", env.key, "--data-dir", dataDir}))
+		cfg := workerConfigOf(t, dataDir)
+		assert.NoFileExists(t, cfg.PendingPath())
+		require.NoError(t, runWorkerRegister([]string{"--hub", env.url, "--registration-key", env.key, "--data-dir", dataDir}))
+		state, err := cfg.LoadState()
+		require.NoError(t, err)
+		require.True(t, state.Registered())
+		assert.Equal(t, env.url, state.HubURL)
+	})
+}
+
 // A missing key or a missing endpoint is a refusal before anything is
 // written.
 func TestWorkerRegisterRequiresItsInputs(t *testing.T) {

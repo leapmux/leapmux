@@ -106,6 +106,12 @@ Terminals are a partial exception: a shell process cannot outlive a Worker resta
 
 See [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
+## How do I keep LeapMux running after I log out or restart?
+
+Run it as a service: use `start` instead of `run`, as in `leapmux solo start`. The first `start` asks whether LeapMux should start when you log in or when the computer starts. Choose login startup for your own laptop. Choose boot startup for a server that must run while nobody is logged in. In Docker, the container's restart policy does this instead.
+
+See [Running as a Service](/docs/admin/running-as-a-service/).
+
 ## What's the difference between the browser and the desktop app?
 
 They are the same SolidJS Frontend. The difference is packaging:

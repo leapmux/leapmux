@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
@@ -42,7 +43,7 @@ func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfigura
 	case "stop":
 		options.timeout = defaultStopTimeout
 	}
-	configuration, err := loadLifecycleConfiguration(mode, args, func(fs *flag.FlagSet) {
+	configuration, err := loadLifecycleConfiguration(mode, verb, args, func(fs *flag.FlagSet) {
 		switch verb {
 		case "start", "restart", "stop", "status":
 			fs.Var(internalconfig.NewDurationFlag(&options.timeout, options.timeout), "timeout", "maximum wait for the operation")
@@ -70,10 +71,60 @@ func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfigura
 	return configuration, options, nil
 }
 
-func loadLifecycleConfiguration(mode string, args []string, configure func(*flag.FlagSet), afterFlagsParsed func(*flag.FlagSet) error) (*lifecycleConfiguration, error) {
+// workerRegistrationFlags are the flags of `leapmux worker register` that a
+// person may also try on a runtime command. The runtime commands accept them
+// only to refuse them with the command they belong to; help omits them.
+var workerRegistrationFlags = []string{"hub", "registration-key"}
+
+// refuseWorkerRegistrationFlags refuses a registration flag on a runtime
+// command. A registered Worker connects to the Hub URL that its registration
+// saved, so a runtime --hub could only redirect the saved credentials, and a
+// registration key has no use after registration.
+func refuseWorkerRegistrationFlags(fs *flag.FlagSet) error {
+	var refused string
+	fs.Visit(func(f *flag.Flag) {
+		if refused == "" && slices.Contains(workerRegistrationFlags, f.Name) {
+			refused = f.Name
+		}
+	})
+	if refused != "" {
+		return fmt.Errorf("--%s belongs to `leapmux worker register`; this command uses the saved registration", refused)
+	}
+	return nil
+}
+
+// instanceSelectionFlags are the only mode flags of a command that acts on an
+// instance without running it: stop, status, disable, and the worker's
+// credential commands. They select the data directory, as the config file and
+// the environment also can. A runtime flag would be accepted and ignored.
+var instanceSelectionFlags = []string{"data-dir"}
+
+// selectsOnly reports whether a lifecycle command acts on an instance without
+// running it or saving its runtime flags, so that it takes only
+// instanceSelectionFlags from the mode.
+func selectsOnly(verb string) bool {
+	switch verb {
+	case "stop", "status", "disable":
+		return true
+	default:
+		return false
+	}
+}
+
+// loadLifecycleConfiguration loads the configuration of one lifecycle command.
+// verb selects the help header (`leapmux <mode> <verb>` and the command's
+// summary) and the mode flags that the command accepts.
+func loadLifecycleConfiguration(mode, verb string, args []string, configure func(*flag.FlagSet), afterFlagsParsed func(*flag.FlagSet) error) (*lifecycleConfiguration, error) {
 	role, err := lifecycle.ParseRole(mode)
 	if err != nil {
 		return nil, err
+	}
+	flagSetName := "leapmux " + mode + " " + verb
+	description := lifecycleSummary(mode, verb) + "."
+	// nil keeps every mode flag of the loader.
+	var modeFlags []string
+	if selectsOnly(verb) {
+		modeFlags = instanceSelectionFlags
 	}
 	var flags *flag.FlagSet
 	register := func(fs *flag.FlagSet) {
@@ -89,7 +140,10 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 	}
 	switch role {
 	case lifecycle.RoleHub:
-		cfg, version, loadErr := hubconfig.LoadWithOptions(args, hubconfig.LoadOptions{ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed})
+		cfg, version, loadErr := hubconfig.LoadWithOptions(args, hubconfig.LoadOptions{
+			FlagSetName: flagSetName, Description: description, CLIFlags: modeFlags,
+			ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed,
+		})
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -105,19 +159,29 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 			return runHubForeground(ctx, runtime, cfg)
 		}
 	case lifecycle.RoleWorker:
-		cfg, version, loadErr := workerconfig.LoadWithOptions(args, workerconfig.LoadOptions{ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed})
+		cfg, version, loadErr := workerconfig.LoadWithOptions(args, workerconfig.LoadOptions{
+			FlagSetName: flagSetName, Description: description, CLIFlags: modeFlags,
+			ConfigureFlags: func(fs *flag.FlagSet) {
+				register(fs)
+				for _, name := range workerRegistrationFlags {
+					internalconfig.HiddenFunc(fs, name, "", func(string) error { return nil })
+				}
+			},
+			AfterFlagsParsed: func(fs *flag.FlagSet) error {
+				if err := refuseWorkerRegistrationFlags(fs); err != nil {
+					return err
+				}
+				if afterFlagsParsed != nil {
+					return afterFlagsParsed(fs)
+				}
+				return nil
+			},
+		})
 		if loadErr != nil {
 			return nil, loadErr
 		}
 		if version {
 			return nil, internalconfig.ErrVersionRequested
-		}
-		for _, name := range []string{"hub", "registration-key"} {
-			present := false
-			flags.Visit(func(value *flag.Flag) { present = present || value.Name == name })
-			if present {
-				return nil, fmt.Errorf("--%s belongs to `leapmux worker register`; execution uses the saved registration", name)
-			}
 		}
 		cfg.DataDir, loadErr = lifecycle.CanonicalDir(cfg.DataDir)
 		if loadErr != nil {
@@ -158,7 +222,19 @@ func loadLifecycleConfiguration(mode string, args []string, configure func(*flag
 			}, nil
 		}
 	case lifecycle.RoleSolo, lifecycle.RoleDev:
-		prepared, prepareErr := solo.Prepare(solo.Config{Args: args, DevMode: role == lifecycle.RoleDev, ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed})
+		// Solo's worker-scoped extras are flags too. A command that only
+		// selects the instance registers none of them; only a starting
+		// instance reads their values.
+		var extraFlags []hubconfig.ExtraFlagDef
+		if selectsOnly(verb) {
+			extraFlags = []hubconfig.ExtraFlagDef{}
+		}
+		prepared, prepareErr := solo.Prepare(solo.Config{
+			Args: args, DevMode: role == lifecycle.RoleDev,
+			FlagSetName: flagSetName, Description: description,
+			CLIFlags: modeFlags, ExtraFlags: extraFlags,
+			ConfigureFlags: register, AfterFlagsParsed: afterFlagsParsed,
+		})
 		if prepareErr != nil {
 			return nil, prepareErr
 		}

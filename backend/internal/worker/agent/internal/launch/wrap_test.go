@@ -186,7 +186,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Contains(t, cmd.Args[4], `^"claude"`)
 	assert.NotContains(t, cmd.Args[4], "exec")
 	assert.Contains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
-	// Args should be double-quoted (nuQuote), not single-quoted (posixQuote)
+	// Args should be double-quoted (nuQuote), not single-quoted (shellquote.POSIX.Quote)
 	assert.Contains(t, cmd.Args[4], `"--output-format"`)
 	assert.Contains(t, cmd.Args[4], `"stream-json"`)
 	assert.Contains(t, cmd.Args[4], `"--model"`)
@@ -524,24 +524,12 @@ func TestBuildPwshCommand_PropagatesExitCodes(t *testing.T) {
 	assert.Contains(t, gated, "catch [System.Management.Automation.CommandNotFoundException] { exit 127 }")
 }
 
-func TestPosixQuote(t *testing.T) {
-	assert.Equal(t, "'hello'", posixQuote("hello"))
-	assert.Equal(t, "'it'\\''s'", posixQuote("it's"))
-	assert.Equal(t, "''", posixQuote(""))
-}
-
 func TestNuQuote(t *testing.T) {
 	assert.Equal(t, `"hello"`, nuQuote("hello"))
 	assert.Equal(t, `"it's"`, nuQuote("it's"))
 	assert.Equal(t, `"say \"hi\""`, nuQuote(`say "hi"`))
 	assert.Equal(t, `"back\\slash"`, nuQuote(`back\slash`))
 	assert.Equal(t, `""`, nuQuote(""))
-}
-
-func TestPwshQuote(t *testing.T) {
-	assert.Equal(t, "'hello'", pwshQuote("hello"))
-	assert.Equal(t, "'it''s'", pwshQuote("it's"))
-	assert.Equal(t, "''", pwshQuote(""))
 }
 
 func TestIsPwsh(t *testing.T) {

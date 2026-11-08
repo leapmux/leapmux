@@ -297,7 +297,7 @@ func (r *Runtime) Status() Status {
 	r.stateMu.Unlock()
 	started := r.record.StartedAt
 	pid := r.record.PID
-	spec, specErr := ReadServiceSpec(r.paths.ServiceSpec)
+	spec, specErr := ReadServiceSpecOf(r.paths)
 	status := Status{
 		InstanceID:   new(r.record.InstanceID),
 		Mode:         new(string(r.record.Mode)),

@@ -31,6 +31,11 @@ const publicationRecordName = ".leapmux-directory-publication.yaml"
 var ErrDirectoryPublicationUncertain = errors.New(
 	"a directory publication from an earlier command was not confirmed; inspect the named directory or choose another data location")
 
+// errRecordMoved reports a publication record whose directory field names
+// another path than the one where the record sits: its subtree moved, by a
+// rename, a copy, or a restored backup.
+var errRecordMoved = errors.New("the publication record moved with its directory")
+
 // publicationPhase states where a directory publication stands.
 type publicationPhase string
 
@@ -139,7 +144,7 @@ func walkExistingPrefixes(target string) (firstMissing string, records []string,
 			}
 			rec := filepath.Join(p, publicationRecordName)
 			if _, lerr := os.Lstat(rec); lerr == nil {
-				if _, recordErr := loadRecordAt(rec); recordErr != nil {
+				if _, recordErr := loadRecordAt(rec); recordErr != nil && !errors.Is(recordErr, errRecordMoved) {
 					return "", nil, recordErr
 				}
 				records = append(records, rec)
@@ -157,9 +162,11 @@ func walkExistingPrefixes(target string) (firstMissing string, records []string,
 }
 
 // loadRecordAt reads and validates the record at path. A record that
-// belongs to another account, identifies another directory, escapes its own
-// directory with its target, holds malformed fields, or is not a
-// regular file is a conflict, reported rather than overwritten.
+// belongs to another account, escapes its own directory with its target,
+// holds malformed fields, or is not a regular file is a conflict, reported
+// rather than overwritten. A record that is otherwise valid but identifies
+// another directory than its own returns with an error that wraps
+// errRecordMoved; confirmExistingRecord decides whether to relocate it.
 func loadRecordAt(path string) (*publicationRecord, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -185,21 +192,25 @@ func loadRecordAt(path string) (*publicationRecord, error) {
 	if rec.AccountID != currentAccountID() {
 		return nil, fmt.Errorf("atomicfile: %s belongs to account %q, not this account", path, rec.AccountID)
 	}
-	if dir := filepath.Clean(filepath.Dir(path)); rec.Directory != dir {
-		return nil, fmt.Errorf("atomicfile: %s identifies directory %q, not %q", path, rec.Directory, dir)
-	}
 	rel, relErr := filepath.Rel(rec.Directory, filepath.Clean(rec.TargetDirectory))
 	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("atomicfile: %s targets %q, outside %q", path, rec.TargetDirectory, rec.Directory)
+	}
+	if dir := filepath.Clean(filepath.Dir(path)); rec.Directory != dir {
+		return &rec, fmt.Errorf("atomicfile: %s identifies directory %q, not %q: %w", path, rec.Directory, dir, errRecordMoved)
 	}
 	return &rec, nil
 }
 
 // confirmExistingRecord finishes the record an earlier invocation left
 // on an existing subtree: committed is confirmation, prepared needs the
-// repair this platform allows.
+// repair this platform allows, and a record that moved with its subtree is
+// relocated.
 func confirmExistingRecord(path string) error {
 	rec, err := loadRecordAt(path)
+	if errors.Is(err, errRecordMoved) {
+		return relocateRecord(path, rec, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -207,6 +218,29 @@ func confirmExistingRecord(path string) error {
 		return nil
 	}
 	return repairRecord(path)
+}
+
+// relocateRecord rewrites a committed record that moved with its subtree,
+// so that it identifies the directory where it now sits; the target keeps
+// its place relative to that directory. The account and the phase are what
+// the record vouches for, and the move changes neither. A prepared record
+// that moved stays a conflict: its publication was never confirmed, and a
+// repair at the new place would confirm a flush that never happened there.
+func relocateRecord(path string, rec *publicationRecord, moved error) error {
+	if rec.Phase != phaseCommitted {
+		return fmt.Errorf("%w: %w", moved, ErrDirectoryPublicationUncertain)
+	}
+	dir := filepath.Clean(filepath.Dir(path))
+	rel, err := filepath.Rel(rec.Directory, filepath.Clean(rec.TargetDirectory))
+	if err != nil {
+		return fmt.Errorf("atomicfile: relocate %s: %w", path, err)
+	}
+	return writeRecordCommitted(path, &publicationRecord{
+		AccountID:       rec.AccountID,
+		Directory:       dir,
+		TargetDirectory: filepath.Join(dir, rel),
+		Phase:           phaseCommitted,
+	})
 }
 
 // writeRecord writes a record through the shared write sequence and

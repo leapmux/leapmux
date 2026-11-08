@@ -237,6 +237,10 @@ type Config struct {
 	// ExtraFlags registers additional koanf-backed flags; nil uses the
 	// desktop-oriented default (encryption-mode, use-login-shell).
 	ExtraFlags []hubconfig.ExtraFlagDef
+	// FlagSetName and Description head the help output. Empty values give
+	// "leapmux <mode>" and the description of the mode.
+	FlagSetName string
+	Description string
 	// DevMode runs in dev mode (binds to all interfaces, logs "dev" banner).
 	DevMode bool
 	// SkipBanner suppresses the ASCII art banner and access URL.
@@ -700,6 +704,13 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 		modeName = "dev"
 		description = "Run Hub + Worker together for development."
 	}
+	if cfg.Description != "" {
+		description = cfg.Description
+	}
+	flagSetName := "leapmux " + modeName
+	if cfg.FlagSetName != "" {
+		flagSetName = cfg.FlagSetName
+	}
 
 	defaultListen := cfg.Listen
 	if defaultListen == "" {
@@ -732,7 +743,7 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 		DefaultListen:     defaultListen,
 		DefaultConfigDir:  configDir,
 		DefaultConfigFile: configFile,
-		FlagSetName:       "leapmux " + modeName,
+		FlagSetName:       flagSetName,
 		Description:       description,
 		CLIFlags:          cliFlags,
 		ExtraFlags:        extraFlags,
@@ -1569,7 +1580,7 @@ func shouldWarnNonLoopback(cfg Config, exposed bool) bool {
 func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 	return []hubconfig.ExtraFlagDef{
 		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
-		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
+		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap each agent invocation in the user's login shell", StrDefault: "true"},
 		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
 		{Name: "agent-startup-concurrency", KoanfKey: "agent_startup_concurrency", Usage: fmt.Sprintf("how many agents the embedded worker brings back at once after a restart (0 = %d, or the CPU count when that is lower)", workerconfig.DefaultMaxStartupConcurrency), StrDefault: "0", Category: "Timeout and limit options"},
 	}

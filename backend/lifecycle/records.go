@@ -157,6 +157,18 @@ func WriteServiceSpec(path string, spec ServiceSpec) error {
 }
 
 // ReadServiceSpec loads the saved specification at path.
+// ReadServiceSpecOf reads the service specification saved in a data
+// directory. A specification for another data directory belongs to the path
+// that the directory moved from, and no service exists for this path yet, so
+// it reads as absent (os.ErrNotExist).
+func ReadServiceSpecOf(paths Paths) (ServiceSpec, error) {
+	spec, err := ReadServiceSpec(paths.ServiceSpec)
+	if err == nil && spec.DataDirectory != paths.DataDir {
+		return ServiceSpec{}, fmt.Errorf("the service specification %s belongs to %s: %w", paths.ServiceSpec, spec.DataDirectory, os.ErrNotExist)
+	}
+	return spec, err
+}
+
 func ReadServiceSpec(path string) (ServiceSpec, error) {
 	var spec ServiceSpec
 	data, err := useronly.ReadFile(path)
@@ -211,6 +223,17 @@ func WriteRuntimeRecord(path string, rec RuntimeRecord) error {
 // ReadRuntimeRecord loads the runtime record at path. A missing record
 // is reported as os.ErrNotExist, which callers treat as "no running
 // instance claims this directory".
+// readRuntimeRecordOf reads the runtime record of a data directory. A record
+// for another data directory belongs to the path that the directory moved
+// from, so it reads as absent (os.ErrNotExist).
+func readRuntimeRecordOf(paths Paths) (RuntimeRecord, error) {
+	record, err := ReadRuntimeRecord(paths.RuntimeRecord)
+	if err == nil && record.DataDir != paths.DataDir {
+		return RuntimeRecord{}, fmt.Errorf("the runtime record %s belongs to %s: %w", paths.RuntimeRecord, record.DataDir, os.ErrNotExist)
+	}
+	return record, err
+}
+
 func ReadRuntimeRecord(path string) (RuntimeRecord, error) {
 	var rec RuntimeRecord
 	data, err := useronly.ReadFile(path)
