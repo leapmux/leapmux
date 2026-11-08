@@ -41,10 +41,10 @@ leapmux solo start
 
 LeapMux runs in the background as a service, so it keeps running after you close the terminal. The first `start` asks whether LeapMux should start when you log in or when the computer starts. Later, `leapmux solo status` reports its state, and `leapmux solo stop` stops it. See [Starting and Stopping](/docs/admin/starting-and-stopping/).
 
-Solo mode runs a Hub and a Worker in one process, listening on loopback only at **`127.0.0.1:4327`**. Open this URL in your browser:
+Solo mode runs a Hub and a Worker in one process, listening on loopback only at **`127.0.0.1:4327`**. When it is ready, `start` prints the URL to open in your browser:
 
 ```
-http://127.0.0.1:4327
+http://localhost:4327
 ```
 
 The browser first asks you to set the password for the single `solo` account. The Hub stores that password and an elevated session together. Until this succeeds, the TCP caller can only complete this setup. The desktop app uses a local socket and needs no credential.

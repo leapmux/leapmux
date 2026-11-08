@@ -350,3 +350,27 @@ func mustCanonical(t *testing.T, dir string) string {
 	require.NoError(t, err)
 	return canonical
 }
+
+// The status gives the access URL while the attempt runs, and drops it once
+// the attempt ends, because nothing answers there any more. An empty URL
+// reports none.
+func TestRuntimeReportsTheAccessURLUntilTheAttemptEnds(t *testing.T) {
+	runtimeEnv(t)
+	r := startTestRuntime(t, RoleHub, t.TempDir())
+	assert.Nil(t, r.Status().URL, "no URL before the instance reports one")
+
+	r.SetAccessURL("http://localhost:4327")
+	require.NotNil(t, r.Status().URL)
+	assert.Equal(t, "http://localhost:4327", *r.Status().URL)
+
+	r.SetAccessURL("")
+	assert.Nil(t, r.Status().URL, "an empty URL reports none")
+
+	r.SetAccessURL("http://localhost:4327")
+	require.NoError(t, r.Finish(nil))
+	assert.Nil(t, r.Status().URL, "an ended attempt has no URL")
+	record, err := ReadRuntimeRecord(r.Paths().RuntimeRecord)
+	require.NoError(t, err)
+	require.NotNil(t, record.Status)
+	assert.Nil(t, record.Status.URL, "the persisted final status has no URL")
+}

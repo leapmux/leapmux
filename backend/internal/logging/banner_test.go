@@ -23,3 +23,20 @@ func TestAddrToURL(t *testing.T) {
 		})
 	}
 }
+
+func TestAccessURL(t *testing.T) {
+	tests := []struct {
+		name, publicURL, listen, want string
+	}{
+		{"the public URL wins over the listen address", "https://leapmux.example.com", ":4327", "https://leapmux.example.com"},
+		{"the public URL serves a hub with no TCP address", "https://leapmux.example.com", "", "https://leapmux.example.com"},
+		{"a listen address derives a local URL", "", "127.0.0.1:4327", "http://localhost:4327"},
+		{"a wildcard listen address derives a local URL", "", ":4327", "http://localhost:4327"},
+		{"no public URL and no TCP address give no URL", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, AccessURL(tt.publicURL, tt.listen))
+		})
+	}
+}

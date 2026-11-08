@@ -29,7 +29,7 @@ func runWorkerDeregister(args []string) error {
 }
 
 func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor func(*config.Config) workerRegistrationFiles) error {
-	cfg, timeout, err := loadWorkerDeregisterCommand(args)
+	cfg, commandOptions, err := loadWorkerDeregisterCommand(args)
 	if handleVersionQuery(err) {
 		return nil
 	}
@@ -39,9 +39,10 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	printModeBanner("worker")
 	logging.Setup()
 	files := filesFor(cfg)
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, commandOptions.timeout)
 	defer cancel()
 
 	if err := cfg.Validate(); err != nil {
@@ -120,5 +121,7 @@ func runWorkerDeregisterWithFiles(ctx context.Context, args []string, filesFor f
 
 	fmt.Println("Worker deregistered.")
 	fmt.Printf("Credentials removed from %s; the worker database is preserved\n", cfg.StatePath())
+	fmt.Println("To register this worker again, run `leapmux worker register` with a new registration key.")
+	printWorkerNextCommands(cfg, commandOptions.configFile, nil, []string{"disable"})
 	return nil
 }

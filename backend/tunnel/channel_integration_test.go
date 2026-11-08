@@ -77,7 +77,6 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 		Listen:     addr,
 		ConfigDir:  dataDir,
 		ConfigFile: dataDir + "/solo.yaml",
-		SkipBanner: true,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {

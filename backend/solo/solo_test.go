@@ -585,9 +585,8 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 	t.Helper()
 	locallistentest.SandboxHome(t)
 	return Config{
-		SkipBanner: true,
-		NoTCP:      true,
-		DevMode:    devMode,
+		NoTCP:   true,
+		DevMode: devMode,
 		// One local entry is the whole bind set; NoTCP drops the TCP half of
 		// any default anyway.
 		Args: []string{"--listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
@@ -1810,7 +1809,7 @@ func heldLeaseFixture(t *testing.T, socketPrefix string) (Config, string, store.
 	sandbox := locallistentest.SandboxHome(t)
 	listen := locallistentest.UniqueListenURL(t, socketPrefix)
 	dataDir := filepath.Join(sandbox, "data")
-	cfg := Config{SkipBanner: true, NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
+	cfg := Config{NoTCP: true, Args: []string{"--listen=" + listen, "--data-dir=" + dataDir}}
 	hubDB := filepath.Join(dataDir, "hub", "hub.db")
 	require.NoError(t, os.MkdirAll(filepath.Dir(hubDB), 0o750))
 	sqlDB, err := sqlitest.OpenDB(hubDB, sqlitedb.Config{})

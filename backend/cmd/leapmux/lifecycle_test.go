@@ -605,3 +605,43 @@ func TestStatusReportsUnresponsiveAsFailureNotStopped(t *testing.T) {
 	err := runMode(t, "worker", "status", "--data-dir", dataDir)
 	require.ErrorIs(t, err, errUnresponsiveExit, "an unresponsive instance is a failure, never stopped")
 }
+
+// `run` prints the banner of its mode inside the captured attempt, so the
+// console and the attempt log both carry it, the log of a service launch
+// included. A mode with a TCP address also prints the URL to open there.
+func TestForegroundRunPrintsTheBannerToTheAttemptLog(t *testing.T) {
+	for _, mode := range []string{"hub", "worker", "solo", "dev"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			root := t.TempDir()
+			args := []string{"--data-dir", root}
+			if mode == "worker" {
+				cfg := writeRegisteredStateAgainst(t, "http://127.0.0.1:1")
+				root = cfg.DataDir
+				args = []string{"--data-dir", root}
+			} else {
+				args = append(args, "--listen", locallistentest.UniqueListenURL(t, "lmx-banner"), "--listen", "127.0.0.1:0")
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			commands := lifecycleCommandsWithDependencies(mode, lifecycleDependencies{
+				foreground: runInvocation{Context: ctx, OnReady: cancel},
+				controller: nativeController,
+			})
+			require.NoError(t, commandNamed(t, commands, "run").Run(cmdCtx{}, args))
+			paths := lifecycle.PathsOf(mustCanonicalDir(t, root))
+			record, err := lifecycle.ReadRuntimeRecord(paths.RuntimeRecord)
+			require.NoError(t, err)
+			data, err := os.ReadFile(paths.AttemptLogPath(record.AttemptID))
+			require.NoError(t, err)
+			assert.Equal(t, 1, strings.Count(string(data), "Copyright ©"), "the banner prints once:\n%s", data)
+			if mode == "worker" {
+				assert.NotContains(t, string(data), "➜", "a Worker has no URL to open")
+			} else {
+				assert.Regexp(t, `➜ +http://localhost:[1-9][0-9]*`, string(data))
+			}
+		})
+	}
+}

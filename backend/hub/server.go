@@ -1182,14 +1182,15 @@ func (s *Server) PrimaryListenAddr() string {
 	return s.listeners.PrimaryListenAddr()
 }
 
-// PrintBannerURL prints the address an operator should open, to stderr.
+// AccessURL is the address an operator should open: the public_url setting
+// when it is set, otherwise one derived from the address this hub answers
+// on. It is empty for a hub that binds no TCP address.
 //
-// The two launchers gathered the same two arguments -- the public_url setting
-// and the primary listen address -- and both are facts this server owns, so a
-// third launcher would have copied the gather rather than called it. The RULE
-// that public_url wins still lives once, in logging.PrintBannerURL.
-func (s *Server) PrintBannerURL() {
-	logging.PrintBannerURL(
+// The launchers print it and report it in the lifecycle status. Both inputs
+// are facts this server owns, so a launcher calls this rather than gathering
+// them again. The RULE that public_url wins lives once, in logging.AccessURL.
+func (s *Server) AccessURL() string {
+	return logging.AccessURL(
 		settings.KeyPublicURL.Of(s.settings.Snapshot(context.Background())),
 		s.PrimaryListenAddr())
 }

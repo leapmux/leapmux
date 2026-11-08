@@ -132,11 +132,8 @@ var (
 // Exit code 3 reports a stopped instance. A registered, disconnected worker
 // remains running and returns exit code 0.
 func executeModeStatusWithController(mode string, args []string, newController nativeControllerFactory) error {
-	configuration, options, err := loadLifecycleCommand(mode, "status", args)
-	if handleVersionQuery(err) {
-		return nil
-	}
-	if err != nil {
+	configuration, options, done, err := openLifecycleCommand(mode, "status", args)
+	if done {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
@@ -148,6 +145,8 @@ func executeModeStatusWithController(mode string, args []string, newController n
 		}
 	} else {
 		printStatusReport(mode, status, "")
+		verbs, serviceVerbs := statusNextCommands(status)
+		printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, verbs, serviceVerbs)
 	}
 	if observeErr != nil || status.Process.State == lifecycle.ProcessFailed {
 		return errUnresponsiveExit

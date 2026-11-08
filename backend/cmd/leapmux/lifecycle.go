@@ -233,6 +233,9 @@ func runModeRunWithInvocation(mode string, invocation runInvocation) func(cmdCtx
 			return err
 		}
 		execute := func(ctx context.Context, runtime *lifecycle.Runtime) error {
+			// The capture is active here, so the banner reaches both the
+			// console and the attempt log, which a service launch reads.
+			printModeBanner(mode)
 			watchCtx, cancelWatchers := context.WithCancel(ctx)
 			var watchers sync.WaitGroup
 			// Observers start after capture and join before it closes. Their
@@ -299,11 +302,8 @@ const (
 // succeeds.
 func runModeStopWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
 	return func(c cmdCtx, args []string) error {
-		configuration, options, err := loadLifecycleCommand(mode, "stop", args)
-		if handleVersionQuery(err) {
-			return nil
-		}
-		if err != nil {
+		configuration, options, done, err := openLifecycleCommand(mode, "stop", args)
+		if done {
 			return err
 		}
 		release, err := lifecycle.OperationLock(configuration.dataDirectory)
@@ -313,7 +313,11 @@ func runModeStopWithController(mode string, newController nativeControllerFactor
 		defer release()
 		ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 		defer cancel()
-		return stopLifecycleInstanceWithController(ctx, configuration, newController)
+		if err := stopLifecycleInstanceWithController(ctx, configuration, newController); err != nil {
+			return err
+		}
+		printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start"}, []string{"disable"})
+		return nil
 	}
 }
 
@@ -406,6 +410,7 @@ func printStatusReport(mode string, status lifecycle.Status, diagnosticExcerpt s
 	printStatusValue("PID", status.Process.PID)
 	printStatusValue("Started at", status.Process.StartedAt)
 	printStatusValue("Readiness", status.Readiness)
+	printStatusValue("URL", status.URL)
 	if status.Registration.State != lifecycle.RegistrationNotApplicable {
 		fmt.Printf("Registration:  %s\n", capitalize(status.Registration.State))
 		printStatusValue("Worker ID", status.Registration.WorkerID)

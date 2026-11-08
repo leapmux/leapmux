@@ -21,11 +21,11 @@ In a container, the container is the service, so use `leapmux <mode> run` there.
 
 | Command | What it does |
 | --- | --- |
-| `leapmux <mode> start` | Creates the service when necessary, starts it, and waits until LeapMux is ready. |
+| `leapmux <mode> start` | Creates the service when necessary, starts it, waits until LeapMux is ready, and prints the URL to open. |
 | `leapmux <mode> stop` | Stops the instance and waits until its shutdown completes. The service remains, so LeapMux starts again at the next login or boot. |
 | `leapmux <mode> restart` | Stops the instance, then starts it as a service. |
 | `leapmux <mode> status` | Reports whether the instance runs, whether it is ready, and why it failed. |
-| `leapmux <mode> enable` | Creates the service for automatic startup, but does not start LeapMux now. It prints the commands that start the instance and report its status. |
+| `leapmux <mode> enable` | Creates the service for automatic startup, but does not start LeapMux now. |
 | `leapmux <mode> disable` | Removes the service. The instance must be stopped. |
 | `leapmux <mode> run` | Runs in the foreground until the process stops, and never creates a service. Use it in a container. |
 
@@ -77,19 +77,34 @@ Type `y` or `yes` to create the service. Any other answer changes nothing. When 
 - A solo instance is ready after its bundled Worker registers.
 - A new `dev` instance is ready as soon as it serves the `/setup` page. Its bundled Worker starts after you create the first administrator there.
 
+Then `start` prints the URL to open, and the commands to run next for this instance:
+
+```text
+Solo started.
+Open http://localhost:4327 in your browser.
+
+Commands for this instance:
+  Status:  leapmux solo status --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+  Stop:    leapmux solo stop --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+  Disable: leapmux solo disable --config /Users/alice/.config/leapmux/solo/solo.yaml --data-dir /Users/alice/.config/leapmux/solo
+```
+
+The URL is the `public_url` setting when you set one. Otherwise it is `http://localhost` with the port that LeapMux listens on. For a new `dev` instance, `start` asks you to create the first administrator at that URL. A Worker has no URL.
+
 A later `start` reuses the saved answers and asks nothing, unless you change the configuration.
 
-To create the service without starting LeapMux now, run `enable` instead of `start`. It asks the same questions, then prints the exact commands for this instance:
+To create the service without starting LeapMux now, run `enable` instead of `start`. It asks the same questions, then prints the commands for this instance:
 
 ```text
 Configured. Hub starts automatically at login.
 
 Commands for this instance:
-  Start:  leapmux hub start --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
-  Status: leapmux hub status --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Start:   leapmux hub start --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Status:  leapmux hub status --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
+  Disable: leapmux hub disable --config /home/alice/.config/leapmux/hub/hub.yaml --data-dir /home/alice/.config/leapmux/hub
 ```
 
-Both commands select the instance by its configuration file and data directory, so they work from any directory. They use the syntax of a POSIX shell such as bash or zsh, and of PowerShell on Windows. Use them instead of `systemctl`, `launchctl`, or the Windows service tools: `start` waits until LeapMux is ready, and `status` explains a failure. On Linux, LeapMux reloads systemd itself, so you never run `systemctl daemon-reload`.
+A command that succeeds ends with such commands, except `run` and `status --json`. They fit what you just did: `stop` prints `start`, and `disable` when a service exists, and `disable` prints `start` and `enable`. Each command selects the instance by its configuration file and data directory, so it works from any directory. When a service exists, the commands use the configuration file of the service. The commands use the syntax of a POSIX shell such as bash or zsh, and of PowerShell on Windows. Use them instead of `systemctl`, `launchctl`, or the Windows service tools: `start` waits until LeapMux is ready, and `status` explains a failure. On Linux, LeapMux reloads systemd itself, so you never run `systemctl daemon-reload`.
 
 ## Choose login or boot startup
 
@@ -138,6 +153,7 @@ leapmux solo status
 - The process state: starting, running, stopping, stopped, failed, or unresponsive
 - Whether the service matches the saved configuration
 - Whether LeapMux is ready
+- The URL to open, while LeapMux runs
 - For a Worker, its registration and its connection to the Hub, separately
 - The latest start: when it began and ended, its exit code, and the reason it failed
 - The full path of the log of that start

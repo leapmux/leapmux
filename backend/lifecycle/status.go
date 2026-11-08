@@ -14,9 +14,14 @@ type Status struct {
 	Startup *StartupKind `json:"startup" yaml:"startup"`
 	// Configured reports whether the native definition matches the saved
 	// service specification when the CLI reconciles native state.
-	Configured   bool               `json:"configured" yaml:"configured"`
-	Process      ProcessStatus      `json:"process" yaml:"process"`
-	Readiness    *string            `json:"readiness" yaml:"readiness"`
+	Configured bool          `json:"configured" yaml:"configured"`
+	Process    ProcessStatus `json:"process" yaml:"process"`
+	Readiness  *string       `json:"readiness" yaml:"readiness"`
+	// URL is the address to open in a browser, as the instance resolved it
+	// at startup: the public_url setting, or one derived from the listen
+	// address. It is null for a Worker, for an instance without a TCP
+	// address, and after the attempt ends.
+	URL          *string            `json:"url" yaml:"url"`
 	Registration RegistrationStatus `json:"registration" yaml:"registration"`
 	Connection   ConnectionStatus   `json:"connection" yaml:"connection"`
 	Attempt      AttemptStatus      `json:"attempt" yaml:"attempt"`

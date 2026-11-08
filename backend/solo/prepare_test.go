@@ -30,8 +30,7 @@ func TestStartPreparedPreservesNoTCP(t *testing.T) {
 			"--listen", occupied.Addr().String(),
 			"--listen", local,
 		},
-		NoTCP:      true,
-		SkipBanner: true,
+		NoTCP: true,
 	})
 	require.NoError(t, err)
 	root, err := lifecycle.AcquireDirectory(
@@ -44,17 +43,22 @@ func TestStartPreparedPreservesNoTCP(t *testing.T) {
 	assert.Equal(t, local, inst.LocalListenURL())
 }
 
-func TestStartPreparedPreservesSkipBanner(t *testing.T) {
+// The package prints nothing to the terminal: the CLI prints the banner and
+// the URL, so an embedding launcher such as the desktop app shows neither.
+func TestStartPrintsNoBannerOrURL(t *testing.T) {
 	locallistentest.SandboxHome(t)
+	var inst *Instance
 	output := testutil.CaptureStderr(t, func() {
-		inst, err := Start(context.Background(), Config{
-			Args:       []string{"--listen", uniqueTestListenURL(t), "--data-dir", t.TempDir()},
-			SkipBanner: true,
+		var err error
+		inst, err = Start(context.Background(), Config{
+			Args: []string{"--listen", uniqueTestListenURL(t), "--data-dir", t.TempDir()},
 		})
 		require.NoError(t, err)
 		require.NoError(t, inst.Stop())
 	})
-	assert.NotContains(t, output, "Copyright", "the prepared launch must retain banner suppression")
+	assert.NotContains(t, output, "Copyright", "the banner belongs to the launcher")
+	assert.NotContains(t, output, "➜", "the URL belongs to the launcher")
+	assert.Empty(t, inst.AccessURL(), "a Hub that binds no TCP address has no URL to open")
 }
 
 // Prepare derives the same defaults and flags Start resolves, with no
@@ -68,7 +72,7 @@ func TestPrepareResolvesWithoutWrites(t *testing.T) {
 
 	before := snapshotTree(t, canonicalRoot)
 
-	prepared, err := Prepare(Config{Args: args, SkipBanner: true})
+	prepared, err := Prepare(Config{Args: args})
 	require.NoError(t, err)
 	assert.Equal(t, lifecycle.RoleSolo, prepared.Role())
 	assert.Equal(t, mustCanonicalTest(t, canonicalRoot), prepared.DataDirectory())
@@ -89,9 +93,8 @@ func TestStartPreparedRejectsInvalidRootLease(t *testing.T) {
 		t.Helper()
 		root := t.TempDir()
 		prepared, err := Prepare(Config{
-			Args:       []string{"--listen=" + uniqueTestListenURL(t), "--data-dir=" + root},
-			SkipBanner: true,
-			NoTCP:      true,
+			Args:  []string{"--listen=" + uniqueTestListenURL(t), "--data-dir=" + root},
+			NoTCP: true,
 		})
 		require.NoError(t, err)
 		return prepared

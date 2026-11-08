@@ -504,3 +504,19 @@ func TestWorkerRegisterRefusesAConflictingPendingRecord(t *testing.T) {
 	assert.Contains(t, err.Error(), "pending registration")
 	assert.FileExists(t, cfg.PendingPath(), "the conflicting record stays")
 }
+
+// A successful registration tells the operator how to start the Worker and
+// check it, with commands that select its configuration file and its data
+// directory.
+func TestWorkerRegisterPrintsTheNextCommands(t *testing.T) {
+	env := startRegisterEnv(t)
+	dataDir := t.TempDir()
+	configuration := filepath.Join(t.TempDir(), "worker.yaml")
+	require.NoError(t, os.WriteFile(configuration, []byte("{}\n"), 0o600))
+	output, err := captureStdout(t, func() error {
+		return runWorkerRegister([]string{"--config", configuration, "--hub", env.url, "--registration-key", env.key, "--data-dir", dataDir})
+	})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(output, "Worker registered.\n"), output)
+	assertNextCommands(t, output, currentSelection(t, "worker", configuration, mustCanonicalDir(t, dataDir)), "start", "status")
+}

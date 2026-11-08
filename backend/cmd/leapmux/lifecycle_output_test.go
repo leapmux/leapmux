@@ -195,3 +195,40 @@ func TestForegroundShutdownWithBlockedConsolePreservesAttemptLog(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(output), marker)
 }
+
+// The Hub reports the address to open in its lifecycle status, where start
+// and status read it, and prints it to the attempt log. The URL names the
+// port that the Hub bound, not the requested 0, and an ended attempt drops it.
+func TestHubForegroundReportsItsAccessURL(t *testing.T) {
+	spec := managedTestSpec(t)
+	spec.RuntimeArguments = append(spec.RuntimeArguments, "--listen", "127.0.0.1:0")
+	saveManagedTestSpec(t, spec)
+	runtime, err := lifecycle.StartServiceRuntime(spec)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = runtime.Finish(nil) })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	var reported *string
+	readyDone := make(chan struct{})
+	go func() {
+		defer close(readyDone)
+		select {
+		case <-runtime.Ready():
+			reported = runtime.Status().URL
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	args := append([]string{"--config", spec.ConfigFile, "--data-dir", spec.DataDirectory}, spec.RuntimeArguments...)
+	result := executeForegroundAttempt(ctx, cancel, runtime, func(ctx context.Context, runtime *lifecycle.Runtime) error {
+		return runHubForeground(ctx, runtime, preparedHubConfig(t, args))
+	})
+	<-readyDone
+	require.NoError(t, result)
+	require.NotNil(t, reported, "a ready Hub with a TCP address reports its URL")
+	assert.Regexp(t, `^http://localhost:[1-9][0-9]*$`, *reported)
+	data, err := os.ReadFile(runtime.Paths().AttemptLogPath(runtime.Record().AttemptID))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), *reported, "the attempt log gives the URL")
+	assert.Nil(t, runtime.Status().URL, "an ended attempt has no URL")
+}

@@ -50,6 +50,7 @@ type Runtime struct {
 // liveState is the mutable half of the control snapshot.
 type liveState struct {
 	readiness    string
+	accessURL    string
 	registration RegistrationStatus
 	connection   ConnectionStatus
 	processState string
@@ -254,6 +255,15 @@ func (r *Runtime) SetReadiness(state string) {
 // setup is ready. Opening the control listener does not close it.
 func (r *Runtime) Ready() <-chan struct{} { return r.readyCh }
 
+// SetAccessURL reports the address to open in a browser, as the instance
+// resolved it when it bound its listeners. An empty URL reports none. The
+// status omits it once the attempt ends, because nothing answers there.
+func (r *Runtime) SetAccessURL(url string) {
+	r.stateMu.Lock()
+	r.state.accessURL = url
+	r.stateMu.Unlock()
+}
+
 // SetRegistration reports the registration snapshot.
 func (r *Runtime) SetRegistration(state RegistrationStatus) {
 	r.stateMu.Lock()
@@ -329,6 +339,9 @@ func (r *Runtime) Status() Status {
 	}
 	if state.readiness != "" {
 		status.Readiness = new(state.readiness)
+	}
+	if state.accessURL != "" && state.endedAt == nil {
+		status.URL = new(state.accessURL)
 	}
 	if status.Diagnostics == nil {
 		status.Diagnostics = []Diagnostic{}

@@ -85,13 +85,17 @@ Run the registration command on the machine where the Worker should live. It gen
 ```text
 Worker registered.
 Credentials saved to /home/alice/.config/leapmux/worker/state.json
+
+Commands for this instance:
+  Start:  leapmux worker start --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
+  Status: leapmux worker status --config /home/alice/.config/leapmux/worker/worker.yaml --data-dir /home/alice/.config/leapmux/worker
 ```
 
 The command does not start the Worker. It waits up to 5 minutes for the Hub; change the limit with `--timeout`. While the Hub is unreachable, it retries. When the Hub refuses the key, it fails at once.
 
 ### 3. Start the Worker
 
-Start the Worker as a service, so it runs in the background and starts again at the next login or boot:
+Start the Worker as a service, so it runs in the background and starts again at the next login or boot. Run the `start` command that the registration printed, or:
 
 ```bash
 leapmux worker start
@@ -239,7 +243,7 @@ leapmux worker stop
 leapmux worker deregister
 ```
 
-`deregister` uses the Worker's saved credentials to ask the Hub to delete the Worker. After the Hub confirms, it removes the credentials, and it keeps `worker.db` with the agent and terminal history. If the Hub cannot confirm, for example because it is unreachable, `deregister` keeps the credentials, so that you can run it again. Give it the same `--data-dir` or `--config` as the Worker. If the Worker runs as a service, `leapmux worker disable` then removes the service.
+`deregister` uses the Worker's saved credentials to ask the Hub to delete the Worker. After the Hub confirms, it removes the credentials, and it keeps `worker.db` with the agent and terminal history. If the Hub cannot confirm, for example because it is unreachable, `deregister` keeps the credentials, so that you can run it again. Give it the same `--data-dir` or `--config` as the Worker. If the Worker runs as a service, `deregister` ends with the `leapmux worker disable` command that removes the service.
 
 ## Tunnels (desktop app)
 

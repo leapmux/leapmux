@@ -49,6 +49,7 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	printModeBanner("worker")
 	logging.Setup()
 	files := filesFor(cfg)
 
@@ -198,12 +199,25 @@ func runWorkerRegisterWithFiles(ctx context.Context, args []string, filesFor fun
 	}
 
 	printWorkerRegistration(cfg)
+	printWorkerNextCommands(cfg, commandOptions.configFile, []string{"start", "status"}, nil)
 	return nil
 }
 
 func printWorkerRegistration(cfg *config.Config) {
 	fmt.Println("Worker registered.")
 	fmt.Printf("Credentials saved to %s\n", cfg.StatePath())
+}
+
+// printWorkerNextCommands prints the commands that act on this Worker next,
+// selected by its configuration file and its data directory. A saved service
+// adds serviceVerbs. A data directory that cannot be resolved prints nothing,
+// because the credential command already succeeded.
+func printWorkerNextCommands(cfg *config.Config, configFile string, verbs, serviceVerbs []string) {
+	dataDirectory, err := lifecycle.CanonicalDir(cfg.DataDir)
+	if err != nil {
+		return
+	}
+	printSelectedNextCommands("worker", configFile, dataDirectory, nativeController, verbs, serviceVerbs)
 }
 
 // pendingAgreesWithState checks that a surviving pending record and a

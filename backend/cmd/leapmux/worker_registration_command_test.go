@@ -93,14 +93,14 @@ func TestWorkerCredentialCommandTimeouts(t *testing.T) {
 		assert.Equal(t, 5*time.Minute, options.timeout)
 	})
 	t.Run("deregister waits thirty seconds by default", func(t *testing.T) {
-		_, timeout, err := loadWorkerDeregisterCommand([]string{"--data-dir", t.TempDir()})
+		_, options, err := loadWorkerDeregisterCommand([]string{"--data-dir", t.TempDir()})
 		require.NoError(t, err)
-		assert.Equal(t, 30*time.Second, timeout)
+		assert.Equal(t, 30*time.Second, options.timeout)
 	})
 	t.Run("an explicit timeout replaces the default", func(t *testing.T) {
-		_, timeout, err := loadWorkerDeregisterCommand([]string{"--data-dir", t.TempDir(), "--timeout", "90"})
+		_, options, err := loadWorkerDeregisterCommand([]string{"--data-dir", t.TempDir(), "--timeout", "90"})
 		require.NoError(t, err)
-		assert.Equal(t, 90*time.Second, timeout, "a bare number is seconds")
+		assert.Equal(t, 90*time.Second, options.timeout, "a bare number is seconds")
 	})
 	for _, value := range []string{"0", "-1s"} {
 		t.Run("refuses "+value, func(t *testing.T) {

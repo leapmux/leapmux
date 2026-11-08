@@ -20,6 +20,7 @@ import (
 
 type nativeStartRecorder struct {
 	t          *testing.T
+	accessURL  string
 	installed  bool
 	installs   []servicelaunch.LaunchSpec
 	starts     []servicelaunch.LaunchSpec
@@ -74,6 +75,7 @@ func (m *readinessExecutionManager) Start(_ context.Context, spec servicelaunch.
 	}
 	m.runtime = runtime
 	m.t.Cleanup(func() { require.NoError(m.t, runtime.Finish(nil)) })
+	runtime.SetAccessURL(m.accessURL)
 	runtime.SetReadiness(m.readiness)
 	m.inspection = &servicelaunch.NativeStatus{Installed: true, DefinitionMatches: true, Running: true}
 	if m.execution == lifecycle.ExecutionForeground {
@@ -328,6 +330,7 @@ func (m *nativeStartRecorder) Start(_ context.Context, spec servicelaunch.Launch
 		return err
 	}
 	m.t.Cleanup(func() { require.NoError(m.t, runtime.Finish(nil)) })
+	runtime.SetAccessURL(m.accessURL)
 	runtime.SetReadiness(lifecycle.ReadinessReady)
 	return nil
 }

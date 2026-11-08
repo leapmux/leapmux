@@ -51,7 +51,6 @@ func startForTest(t *testing.T, localListen string, extraCfg solo.Config) *solo.
 	t.Setenv("LEAPMUX_HUB_LISTEN", localListen)
 
 	cfg := extraCfg
-	cfg.SkipBanner = true
 	cfg.NoTCP = true
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,7 +72,7 @@ func TestSoloStart_CancellingTheParentShutsTheInstanceDown(t *testing.T) {
 	t.Setenv("LEAPMUX_HUB_LISTEN", uniqueListenURL(t))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	inst, err := solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+	inst, err := solo.Start(ctx, solo.Config{NoTCP: true})
 	require.NoError(t, err, "solo.Start")
 	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 
@@ -128,8 +127,7 @@ func TestSoloStart_DefaultLocalListen(t *testing.T) {
 	t.Cleanup(cancel)
 
 	inst, err := solo.Start(ctx, solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
+		NoTCP: true,
 	})
 	if err != nil && isDefaultListenerInUse(err) {
 		t.Skipf("default local listener already in use (likely another Solo instance on this user): %v", err)
@@ -205,8 +203,7 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 				defer cancel()
 
 				inst, startErr = solo.Start(ctx, solo.Config{
-					Listen:     tc.listen,
-					SkipBanner: true,
+					Listen: tc.listen,
 				})
 			})
 			if startErr == nil {
@@ -220,6 +217,8 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 				t.Fatalf("warn presence: got %v, want %v; captured stderr:\n%s",
 					haveWarn, tc.wantWarn, out)
 			}
+			// The URL to open names the port the Hub bound, not the requested 0.
+			assert.Regexp(t, `^http://localhost:[1-9][0-9]*$`, inst.AccessURL())
 		})
 	}
 }
@@ -233,8 +232,7 @@ func TestSoloStart_InvalidListenEntryErrors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := solo.Start(ctx, solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
+		NoTCP: true,
 	})
 	require.Error(t, err, "solo.Start should reject an unparseable listen entry")
 	assert.Contains(t, err.Error(), "invalid listen",
@@ -269,8 +267,7 @@ func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 	done := make(chan startResult, 1)
 	go func() {
 		_, sErr := solo.Start(ctx, solo.Config{
-			SkipBanner: true,
-			NoTCP:      true,
+			NoTCP: true,
 		})
 		done <- startResult{sErr}
 	}()
@@ -303,7 +300,7 @@ func TestSoloStart_DoesNotAlsoLogANewServerFailure(t *testing.T) {
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_, startErr = solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+		_, startErr = solo.Start(ctx, solo.Config{NoTCP: true})
 	})
 
 	require.Error(t, startErr, "solo.Start should surface the bind failure")
@@ -342,7 +339,7 @@ func TestSoloStart_KeepsItsWorkerAcrossRestarts(t *testing.T) {
 		var inst *solo.Instance
 		var startErr error
 		out := testutil.CaptureStderr(t, func() {
-			inst, startErr = solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+			inst, startErr = solo.Start(ctx, solo.Config{NoTCP: true})
 		})
 		require.NoError(t, startErr, "solo.Start; captured stderr:\n"+out)
 		return inst, out
@@ -456,9 +453,8 @@ func TestSoloStart_WaitsOutAnOrphanedLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	inst, err := solo.Start(ctx, solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
-		Args:       []string{"--listen=" + listen, "--data-dir=" + dataDir},
+		NoTCP: true,
+		Args:  []string{"--listen=" + listen, "--data-dir=" + dataDir},
 	})
 	require.NoError(t, err, "the launch must wait out the orphaned lease and start")
 	t.Cleanup(func() { require.NoError(t, inst.Stop()) })

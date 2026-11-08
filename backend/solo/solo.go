@@ -241,10 +241,9 @@ type Config struct {
 	// "leapmux <mode>" and the description of the mode.
 	FlagSetName string
 	Description string
-	// DevMode runs in dev mode (binds to all interfaces, logs "dev" banner).
+	// DevMode runs in dev mode (binds to all interfaces, and bootstraps the
+	// first administrator through /setup).
 	DevMode bool
-	// SkipBanner suppresses the ASCII art banner and access URL.
-	SkipBanner bool
 	// NoTCP disables the TCP listener. When true, the Hub only listens on
 	// the local IPC socket (unix:<path> on Unix, npipe:<name> on Windows).
 	// This is used by the desktop app to avoid opening a TCP port.
@@ -300,8 +299,10 @@ type Instance struct {
 	// it can fire with no Worker goroutine in existence.
 	workerDrained drain.Counter
 	listenURL     string
-	hubErr        error         // set before hubDone is closed
-	hubDone       chan struct{} // closed when the Hub goroutine exits
+	// accessURL is the address to open in a browser; see AccessURL.
+	accessURL string
+	hubErr    error         // set before hubDone is closed
+	hubDone   chan struct{} // closed when the Hub goroutine exits
 	// rootLease is the combined instance's containing lease. It
 	// releases LAST, after every component's work joined -- the plan's
 	// "all instance work is joined before releasing the combined root
@@ -469,6 +470,14 @@ func (i *Instance) updateWorkerConnection(state worker.ConnectionState) {
 // order; the rest still answer.
 func (i *Instance) LocalListenURL() string {
 	return i.listenURL
+}
+
+// AccessURL returns the address to open in a browser: the public_url
+// setting, or one derived from the TCP address the Hub answers on. It is
+// empty when the Hub binds no TCP address, as the desktop app's does. The
+// launcher prints it; this package prints nothing to the terminal.
+func (i *Instance) AccessURL() string {
+	return i.accessURL
 }
 
 // WaitDone closes when Wait's subject -- the Hub goroutine -- has
@@ -768,10 +777,6 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	}
 	logging.SetLevel(level)
 
-	if !cfg.SkipBanner {
-		logging.PrintBanner(modeName)
-	}
-
 	// The combined root lease is held from here. Every failure below
 	// releases it along with whatever this frame acquired.
 	// Root acquisition already validated aliases and retained both components
@@ -867,15 +872,12 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 		slog.Warn(nonLoopbackListenWarnMsg, "listen", server.PrimaryListenAddr())
 	}
 
-	if !cfg.SkipBanner {
-		// Printed after the server exists so the URL reflects the public_url
-		// setting and the address the hub ACTUALLY answers on -- a stored extra
-		// address can widen what -listen asked for (127.0.0.1:4327 merged into
-		// *:4327), or supply the only TCP address there is on a desktop hub
-		// that starts with none. The server owns both facts; see
-		// hub.Server.PrintBannerURL.
-		server.PrintBannerURL()
-	}
+	// Resolved after the server exists so the URL reflects the public_url
+	// setting and the address the hub ACTUALLY answers on -- a stored extra
+	// address can widen what -listen asked for (127.0.0.1:4327 merged into
+	// *:4327), or supply the only TCP address there is on a desktop hub that
+	// starts with none. The server owns both facts; see hub.Server.AccessURL.
+	accessURL := server.AccessURL()
 
 	// Two sibling contexts, both DETACHED from ctx (values kept, cancellation
 	// not), so cancellation reaches the Hub and the Worker in the order
@@ -890,6 +892,7 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 		cancelWorker:   cancelWorker,
 		cancelHub:      cancelHub,
 		listenURL:      listenURL,
+		accessURL:      accessURL,
 		hubDone:        make(chan struct{}),
 		watcherDone:    make(chan struct{}),
 		rootLease:      root,

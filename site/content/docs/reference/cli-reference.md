@@ -63,11 +63,11 @@ Every mode requires a command. The seven commands below work in every mode, and 
 
 | Command | What it does |
 | --- | --- |
-| `<mode> start` | Creates the service when necessary, starts it, and waits until it is ready. |
+| `<mode> start` | Creates the service when necessary, starts it, waits until it is ready, and prints the URL to open. |
 | `<mode> stop` | Stops the instance, whether `start` or `run` started it, and waits until its shutdown completes. |
 | `<mode> restart` | Stops the instance, then starts it as a service. |
-| `<mode> status` | Reports the process state, readiness, registration, and the last failure. |
-| `<mode> enable` | Creates the service for startup at login or boot, without starting it, and prints the `start` and `status` commands of the instance. |
+| `<mode> status` | Reports the process state, readiness, the URL to open, registration, and the last failure. |
+| `<mode> enable` | Creates the service for startup at login or boot, without starting it. |
 | `<mode> disable` | Removes the service. Requires a stopped instance. |
 | `<mode> run` | Runs in the foreground until the process stops, and never creates a service. The container image uses it. |
 | `worker register` | Registers the Worker with a Hub and saves its credentials. Never starts it. See [below](#worker-register). |
@@ -75,6 +75,8 @@ Every mode requires a command. The seven commands below work in every mode, and 
 | `worker cross-worker-pins` | Manages the Worker's pin store. See [below](#worker-cross-worker-pins). |
 
 `start`, `restart`, `enable`, and `run` also take the runtime flags of the mode, which its section below lists. A service saves the runtime flags that you give it. `stop`, `status`, and `disable` take only `--data-dir` and `--config` from the mode, plus their own options below.
+
+A lifecycle command that succeeds, and `worker register`, end with the commands to run next for the same instance, such as `stop` and `disable` after `start`, or `start` and `enable` after `disable`. Each one selects the instance by its configuration file and its data directory, so it works from any directory. `run` and `status --json` print no such commands.
 
 **Options of the mode commands**
 
@@ -100,6 +102,7 @@ Every mode requires a command. The seven commands below work in every mode, and 
 | `configured` | Boolean: the service matches the saved configuration |
 | `process` | `state` (string), `pid` (integer or `null`), and `started_at` (timestamp or `null`) |
 | `readiness` | `starting`, `ready`, `ready_for_setup`, `failed`, or `null` |
+| `url` | The address to open in a browser, as the instance resolved it at startup: the `public_url` setting, or `http://localhost:<port>` from the TCP listen address. `null` for a Worker, for an instance without a TCP address, and for an instance that does not run. |
 | `registration` | `state` (string), `worker_id` (string or `null`), and `hub_url` (string or `null`) |
 | `connection` | `state` (string) and `last_error` (string or `null`) |
 | `attempt` | The latest start: `id`, `started_at`, `ended_at`, `exit_code`, `error`, and `log_path`, each of them nullable |
@@ -117,7 +120,7 @@ Run a Hub and a Worker in one process on loopback. Local IPC needs no credential
 
 ```bash
 leapmux solo start [flags]
-# then open http://127.0.0.1:4327
+# then open the URL that it prints: http://localhost:4327 by default
 ```
 
 `restart`, `enable`, and `run` take the same flags.

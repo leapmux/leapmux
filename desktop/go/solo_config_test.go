@@ -17,7 +17,6 @@ func TestDesktopSoloConfig_PassesDevFrontendWhenSet(t *testing.T) {
 
 	cfg := desktopSoloConfig("http://localhost:4328")
 	assert.True(t, cfg.NoTCP)
-	assert.True(t, cfg.SkipBanner)
 	assert.Equal(t, []string{"-dev-frontend", "http://localhost:4328"}, cfg.Args)
 }
 

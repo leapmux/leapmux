@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/lifecycle"
 )
 
 // registerThroughEnv registers one worker through the real service and
@@ -149,4 +151,29 @@ func TestDeregisterPreservesUnresolvedCommittedAttempt(t *testing.T) {
 	current, err := env.store.Workers().GetByID(context.Background(), state.WorkerID)
 	require.NoError(t, err)
 	assert.Nil(t, current.DeletedAt)
+}
+
+// A deregistered Worker cannot start, so the command tells how to register it
+// again, and gives the command that removes its service when one exists.
+func TestWorkerDeregisterPrintsTheNextSteps(t *testing.T) {
+	const registerAgain = "To register this worker again, run `leapmux worker register` with a new registration key.\n"
+	t.Run("without a service", func(t *testing.T) {
+		_, cfg := registerThroughEnv(t)
+		output, err := captureStdout(t, func() error { return runWorkerDeregister([]string{"--data-dir", cfg.DataDir}) })
+		require.NoError(t, err)
+		assert.True(t, strings.HasSuffix(output, registerAgain), output)
+	})
+	t.Run("with a service", func(t *testing.T) {
+		_, cfg := registerThroughEnv(t)
+		spec := managedTestSpec(t)
+		spec.Mode = lifecycle.RoleWorker
+		spec.DataDirectory = mustCanonicalDir(t, cfg.DataDir)
+		spec.InstanceID = lifecycle.NewInstanceID(spec.AccountID, spec.Mode, spec.DataDirectory).String()
+		spec.RuntimeArguments = nil
+		saveManagedTestSpec(t, spec)
+		output, err := captureStdout(t, func() error { return runWorkerDeregister([]string{"--data-dir", cfg.DataDir}) })
+		require.NoError(t, err)
+		assert.Contains(t, output, registerAgain)
+		assertNextCommands(t, output, serviceSelection(spec), "disable")
+	})
 }

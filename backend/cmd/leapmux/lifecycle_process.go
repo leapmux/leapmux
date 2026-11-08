@@ -32,7 +32,7 @@ func runHubForeground(ctx context.Context, runtime *lifecycle.Runtime, cfg *hubc
 	if err != nil {
 		return err
 	}
-	server.PrintBannerURL()
+	reportAccessURL(runtime, server.AccessURL())
 
 	// Ready closes INSIDE Serve; watch it concurrently and report the
 	// runtime's readiness as the Hub's initialization completes.
@@ -157,7 +157,18 @@ func runSoloForeground(ctx context.Context, runtime *lifecycle.Runtime, prepared
 	if err != nil {
 		return err
 	}
+	reportAccessURL(runtime, inst.AccessURL())
 	return waitCombinedForeground(ctx, runtime, inst)
+}
+
+// reportAccessURL publishes the address to open in the lifecycle status,
+// where start and status read it, and prints it for the console and the
+// attempt log. A Hub without a TCP address has none, and prints nothing.
+func reportAccessURL(runtime *lifecycle.Runtime, url string) {
+	runtime.SetAccessURL(url)
+	if url != "" {
+		logging.PrintURL(url)
+	}
 }
 
 type combinedForegroundInstance interface {

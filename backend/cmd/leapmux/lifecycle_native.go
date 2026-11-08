@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,7 +13,6 @@ import (
 
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/servicelaunch"
-	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
@@ -75,13 +73,9 @@ func desiredSpec(mode string, startup lifecycle.StartupKind, dataDir string, con
 }
 
 func serviceSpecFromConfiguration(configuration *lifecycleConfiguration, options lifecycleOptions, startup lifecycle.StartupKind) (lifecycle.ServiceSpec, error) {
-	executable, err := os.Executable()
+	executable, err := currentExecutable()
 	if err != nil {
 		return lifecycle.ServiceSpec{}, err
-	}
-	resolved, err := exec.LookPath(executable)
-	if err == nil {
-		executable = resolved
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -127,11 +121,8 @@ func serviceSpecFromConfiguration(configuration *lifecycleConfiguration, options
 // runtime configuration requires a stopped instance.
 func runModeEnableWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
 	return func(c cmdCtx, args []string) (result error) {
-		configuration, options, err := loadLifecycleCommand(mode, "enable", args)
-		if handleVersionQuery(err) {
-			return nil
-		}
-		if err != nil {
+		configuration, options, done, err := openLifecycleCommand(mode, "enable", args)
+		if done {
 			return err
 		}
 		if err := validateLifecycleSelection(configuration); err != nil {
@@ -192,47 +183,9 @@ func runModeEnableWithController(mode string, newController nativeControllerFact
 			return err
 		}
 		fmt.Printf("Configured. %s starts automatically at %s.\n", capitalize(mode), selection.startup)
-		printInstanceCommands(os.Stdout, spec, shellquote.ForOS(runtime.GOOS), exec.LookPath)
+		printNextCommands(serviceSelection(spec), "start", "status", "disable")
 		return nil
 	}
-}
-
-// printInstanceCommands prints the exact commands that start the configured
-// instance now and report its status. Both select the instance by the
-// configuration file and the data directory that its service saved, so they
-// act on this instance whatever the working directory, the defaults, or the
-// environment of the shell that runs them later. They go through LeapMux, not
-// through the native service manager, so they keep its validation and its
-// readiness wait. The configuration is already applied, so a failed write is
-// no failure of the command, as for the confirmation line before it.
-func printInstanceCommands(w io.Writer, spec lifecycle.ServiceSpec, shell shellquote.Shell, lookPath func(string) (string, error)) {
-	program := instanceCommandProgram(spec.Executable, lookPath)
-	command := func(verb string) string {
-		return shell.Command(program, spec.Mode.String(), verb, "--config", spec.ConfigFile, "--data-dir", spec.DataDirectory)
-	}
-	_, _ = io.WriteString(w, "\nCommands for this instance:\n"+
-		"  Start:  "+command("start")+"\n"+
-		"  Status: "+command("status")+"\n")
-}
-
-// instanceCommandProgram names the program in a printed command: `leapmux`
-// when that name on PATH runs the same executable that the service runs, and
-// the executable's path otherwise, so the command never runs another copy of
-// LeapMux.
-func instanceCommandProgram(executable string, lookPath func(string) (string, error)) string {
-	found, err := lookPath("leapmux")
-	if err != nil {
-		return executable
-	}
-	foundInfo, err := os.Stat(found)
-	if err != nil {
-		return executable
-	}
-	executableInfo, err := os.Stat(executable)
-	if err != nil || !os.SameFile(foundInfo, executableInfo) {
-		return executable
-	}
-	return "leapmux"
 }
 
 // runModeDisableWithController removes the native startup configuration. It refuses
@@ -240,11 +193,8 @@ func instanceCommandProgram(executable string, lookPath func(string) (string, er
 // credentials, and the logs.
 func runModeDisableWithController(mode string, newController nativeControllerFactory) func(cmdCtx, []string) error {
 	return func(c cmdCtx, args []string) (result error) {
-		configuration, _, err := loadLifecycleCommand(mode, "disable", args)
-		if handleVersionQuery(err) {
-			return nil
-		}
-		if err != nil {
+		configuration, _, done, err := openLifecycleCommand(mode, "disable", args)
+		if done {
 			return err
 		}
 		if err := validateLifecycleSelection(configuration); err != nil {
@@ -266,9 +216,11 @@ func runModeDisableWithController(mode string, newController nativeControllerFac
 		if err != nil {
 			return err
 		}
-		if _, err := controller.ReadSpec(); err != nil {
+		spec, err := controller.ReadSpec()
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				fmt.Println("No startup configuration.")
+				printSelectedNextCommands(mode, configuration.configurationFile, configuration.dataDirectory, newController, []string{"start", "enable"}, nil)
 				return nil
 			}
 			return err
@@ -282,6 +234,9 @@ func runModeDisableWithController(mode string, newController nativeControllerFac
 			return err
 		}
 		fmt.Println("Startup configuration removed. Application data, worker credentials, and logs are preserved.")
+		// The removed specification still selects the instance: a later start
+		// recreates the service with the configuration file it used.
+		printNextCommands(serviceSelection(spec), "start", "enable")
 		return nil
 	}
 }
@@ -327,11 +282,8 @@ func acquireNativeStartup(configuration *lifecycleConfiguration, restart bool) (
 // executeNativeStartWithController starts through the native manager. Restart
 // shares the operation lock and runtime wait budget across stop and start.
 func executeNativeStartWithController(mode, verb string, args []string, newController nativeControllerFactory) (result error) {
-	configuration, options, err := loadLifecycleCommand(mode, verb, args)
-	if handleVersionQuery(err) {
-		return nil
-	}
-	if err != nil {
+	configuration, options, done, err := openLifecycleCommand(mode, verb, args)
+	if done {
 		return err
 	}
 	release, err := lifecycle.OperationLock(configuration.dataDirectory)
@@ -459,9 +411,13 @@ func executeNativeStartWithController(mode, verb string, args []string, newContr
 	if remaining <= 0 {
 		return fmt.Errorf("native startup exhausted the wait budget: %w", context.DeadlineExceeded)
 	}
-	return waitForReadinessObserved(mode, configuration.dataDirectory, remaining, previous.AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
+	if err := waitForReadinessObserved(mode, configuration.dataDirectory, remaining, previous.AttemptID, lifecycle.ExecutionService, func(ctx context.Context) (lifecycle.Status, error) {
 		return observeNativeStartupWithController(ctx, configuration, newController)
-	})
+	}); err != nil {
+		return err
+	}
+	printNextCommands(serviceSelection(spec), "status", "stop", "disable")
+	return nil
 }
 
 // waitForReadiness polls the control interface for readiness within
@@ -500,6 +456,7 @@ func waitForReadinessObserved(mode, canonical string, timeout waitBudget, previo
 					return fmt.Errorf("%s became ready with %q execution, but %q execution was requested; inspect it with `leapmux %s status`", mode, actualExecution, expectedExecution, mode)
 				}
 				fmt.Printf("%s started.\n", capitalize(mode))
+				printAccessHint(os.Stdout, status)
 				return nil
 			case status.Readiness != nil && *status.Readiness == lifecycle.ReadinessFailed:
 				return reportStartupFailure(mode, paths, status)
