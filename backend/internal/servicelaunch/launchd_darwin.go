@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -282,7 +283,29 @@ func (m *launchdManager) Stop(ctx context.Context, spec LaunchSpec) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// bootout returns while the application is still shutting down: the
+	// job is gone before the process tree has joined. The runtime lock
+	// lives for the application's whole life, so waiting for its release
+	// makes Stop join the complete application, children included.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		held, err := lifecycle.ProbeRuntimeLock(lifecycle.PathsOf(spec.DataDirectory))
+		if err != nil {
+			return err
+		}
+		if !held {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the launchd job has not joined the complete application: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *launchdManager) Remove(ctx context.Context, spec LaunchSpec) error {

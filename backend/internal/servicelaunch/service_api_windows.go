@@ -109,7 +109,8 @@ func windowsServiceMatches(service *mgr.Service, configuration mgr.Config, spec 
 	}
 	return access && strings.EqualFold(filepath.Clean(arguments[0]), filepath.Clean(spec.Executable)) &&
 		slices.Equal(arguments[1:], windowsServiceArguments(spec)) && account == spec.AccountID && configuration.StartType == mgr.StartAutomatic &&
-		configuration.ServiceType == windows.SERVICE_WIN32_OWN_PROCESS && !configuration.DelayedAutoStart, nil
+		configuration.ServiceType == windows.SERVICE_WIN32_OWN_PROCESS && !configuration.DelayedAutoStart &&
+		configuration.Description == windowsDefinitionDescription(spec), nil
 }
 
 func windowsServiceAccessMatches(service *mgr.Service, account string) (bool, error) {
@@ -218,6 +219,18 @@ func upsertWindowsService(ctx context.Context, spec LaunchSpec, password []byte)
 }
 
 func finalizeWindowsService(service *mgr.Service, spec LaunchSpec) error {
+	// The SCM definition has no working-directory field; the description
+	// carries the specification identity so the definition still drifts
+	// when the specification changes. A round-tripped configuration keeps
+	// every other field as the service holds it.
+	configuration, err := service.Config()
+	if err != nil {
+		return err
+	}
+	configuration.Description = windowsDefinitionDescription(spec)
+	if err := service.UpdateConfig(configuration); err != nil {
+		return err
+	}
 	// ResetRecoveryActions removes the list. The SDK's SetRecoveryActions
 	// indexes its first element even when the caller supplies an empty slice.
 	if err := service.ResetRecoveryActions(); err != nil {

@@ -82,14 +82,20 @@ type windowsTaskIdentity struct {
 	TriggerSID   string
 }
 
-func windowsTaskDescription(spec LaunchSpec) string {
-	return "LeapMux " + spec.Mode.String() + " (" + spec.InstanceID + ", account " + spec.AccountID + ")"
+// windowsDefinitionDescription renders the identity of the saved
+// specification into the one free-form field a native definition keeps on
+// every Windows mechanism. The working directory is part of the text
+// because a Windows service definition has no working-directory field:
+// the description carries the value so the service definition still
+// drifts when the specification changes.
+func windowsDefinitionDescription(spec LaunchSpec) string {
+	return "LeapMux " + spec.Mode.String() + " (" + spec.InstanceID + ", account " + spec.AccountID + ", working directory " + spec.WorkingDirectory + ")"
 }
 
 func taskDefinitionXML(spec LaunchSpec, arguments string) ([]byte, error) {
 	definition := windowsTaskDefinition{
 		Namespace: windowsTaskNamespace, Version: "1.2",
-		Registration: windowsTaskRegistration{Description: windowsTaskDescription(spec)},
+		Registration: windowsTaskRegistration{Description: windowsDefinitionDescription(spec)},
 		Triggers:     windowsTaskTriggers{Items: []windowsTaskTrigger{{XMLName: xml.Name{Local: "LogonTrigger"}, Enabled: new(true), UserID: spec.AccountID}}},
 		Principals:   windowsTaskPrincipals{Items: []windowsTaskPrincipal{{ID: "LeapMux", UserID: spec.AccountID, LogonType: "Password", RunLevel: new("LeastPrivilege")}}},
 		Settings: windowsTaskSettings{
@@ -133,7 +139,7 @@ func (definition windowsTaskDefinition) matches(spec LaunchSpec, identity window
 	if namespace == "" {
 		namespace = definition.Namespace
 	}
-	if definition.XMLName.Local != "Task" || namespace != windowsTaskNamespace || definition.Registration.Description != windowsTaskDescription(spec) {
+	if definition.XMLName.Local != "Task" || namespace != windowsTaskNamespace || definition.Registration.Description != windowsDefinitionDescription(spec) {
 		return false
 	}
 	if len(definition.Triggers.Items) != 1 || len(definition.Principals.Items) != 1 || len(definition.Actions.Items) != 1 {
