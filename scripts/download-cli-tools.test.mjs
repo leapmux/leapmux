@@ -128,35 +128,35 @@ describe('toolRelease', () => {
         'task',
         'Linux',
         'X64',
-        'task_3.54.0_linux_amd64.tar.gz',
+        'task_linux_amd64.tar.gz',
         'tar.gz',
       ],
       [
         'task',
         'Linux',
         'ARM64',
-        'task_3.54.0_linux_arm64.tar.gz',
+        'task_linux_arm64.tar.gz',
         'tar.gz',
       ],
       [
         'task',
         'macOS',
         'X64',
-        'task_3.54.0_darwin_amd64.tar.gz',
+        'task_darwin_amd64.tar.gz',
         'tar.gz',
       ],
       [
         'task',
         'macOS',
         'ARM64',
-        'task_3.54.0_darwin_arm64.tar.gz',
+        'task_darwin_arm64.tar.gz',
         'tar.gz',
       ],
       [
         'task',
         'Windows',
         'X64',
-        'task_3.54.0_windows_amd64.zip',
+        'task_windows_amd64.zip',
         'zip',
       ],
     ]
@@ -174,7 +174,7 @@ describe('toolRelease', () => {
     expect(toolRelease('buf', { version: '1.75.0', os: 'macOS', arch: 'ARM64' }).url)
       .toBe('https://github.com/bufbuild/buf/releases/download/v1.75.0/buf-Darwin-arm64')
     expect(toolRelease('task', { version: '3.54.0', os: 'Windows', arch: 'X64' }).url)
-      .toBe('https://github.com/go-task/task/releases/download/v3.54.0/task_3.54.0_windows_amd64.zip')
+      .toBe('https://github.com/go-task/task/releases/download/v3.54.0/task_windows_amd64.zip')
   })
 
   it('composes the installed executable name and the include flag per tool', () => {
@@ -647,7 +647,7 @@ describe('installCliTools', () => {
       run,
     })
     expect(served).toEqual([
-      expect.stringContaining('task_3.54.0_'),
+      toolRelease('task', { version: pins.TASK_VERSION, os: currentOs, arch: 'X64' }).asset,
     ])
     expect(existsSync(join(binDir, binName('task')))).toBe(true)
     expect(existsSync(join(binDir, binName('protoc')))).toBe(false)

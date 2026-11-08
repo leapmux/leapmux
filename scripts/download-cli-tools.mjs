@@ -63,11 +63,11 @@ export const CLI_TOOLS = {
     repository: 'go-task/task',
     executable: 'task',
     wellKnownIncludes: false,
-    asset({ version, os, arch }) {
+    asset({ os, arch }) {
       const platform = { Linux: 'linux', macOS: 'darwin', Windows: 'windows' }[os]
       const cpu = { X64: 'amd64', ARM64: 'arm64' }[arch]
       return platform && cpu
-        ? `task_${version}_${platform}_${cpu}.${os === 'Windows'
+        ? `task_${platform}_${cpu}.${os === 'Windows'
           ? 'zip'
           : 'tar.gz'}`
         : null
