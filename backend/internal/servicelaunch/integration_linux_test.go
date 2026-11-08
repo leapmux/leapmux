@@ -1,4 +1,4 @@
-//go:build serviceintegration && linux
+//go:build linux
 
 package servicelaunch
 

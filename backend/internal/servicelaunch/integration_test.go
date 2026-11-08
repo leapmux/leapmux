@@ -1,11 +1,7 @@
-//go:build serviceintegration
-
-// This file holds the SHARED half of the explicit native integration
-// target (`task test-cli-services`): one lifecycle test and the account
-// fixture reader. Platform files supply native managers and access probes.
-//
-// Ordinary `task test` never reaches this file: the target builds the
-// CLI binary first and runs with -tags=serviceintegration only.
+// Native service tests use an explicit disposable-account fixture.
+// Without one, ordinary test runs skip native installation. The
+// test-cli-services target builds the CLI and requires the fixture.
+// Platform files supply native managers and access probes.
 package servicelaunch
 
 import (
@@ -30,13 +26,13 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// TestNativeServiceLifecycle is reached only by the explicit, fixture-guarded
-// native target. Each case owns a unique data root and derived definition.
+// TestNativeServiceLifecycle exercises the native manager with a prepared
+// disposable account. Each case owns a unique data root and definition.
 func TestNativeServiceLifecycle(t *testing.T) {
 	fixture := readServiceAccountFixture(t)
 	binary := testBinaryPath(t)
 	for _, startup := range []lifecycle.StartupKind{lifecycle.StartupLogin, lifecycle.StartupBoot} {
-		t.Run(string(startup), func(t *testing.T) {
+		t.Run(lifecycle.RoleSolo.String()+"/"+string(startup), func(t *testing.T) {
 			root, err := lifecycle.CanonicalDir(t.TempDir())
 			require.NoError(t, err)
 			saved := lifecycle.ServiceSpec{
@@ -114,14 +110,15 @@ func TestNativeServiceLifecycle(t *testing.T) {
 	}
 }
 
-// readServiceAccountFixture loads and validates the fixture. A missing
-// fixture, a non-disposable one, or one naming another account than the
-// test process runs as is refused BEFORE any native state changes.
+// readServiceAccountFixture skips native installation when no fixture is
+// supplied. Every supplied fixture must be private, declare a disposable
+// environment and identify the current account before native state changes.
 func readServiceAccountFixture(t *testing.T) servicefixture.Account {
 	t.Helper()
 	path := os.Getenv("LEAPMUX_SERVICE_TEST_ACCOUNT_FILE")
-	require.NotEmpty(t, path,
-		"LEAPMUX_SERVICE_TEST_ACCOUNT_FILE must name the private native-account fixture; run this through `task test-cli-services SERVICE_ACCOUNT_FILE=...`")
+	if path == "" {
+		t.Skip("native service installation requires a private disposable-account fixture; run task test-cli-services SERVICE_ACCOUNT_FILE=...")
+	}
 
 	data, err := useronly.ReadFile(path)
 	require.NoError(t, err, "read the private fixture")

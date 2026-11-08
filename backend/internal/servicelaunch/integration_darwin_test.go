@@ -1,4 +1,4 @@
-//go:build serviceintegration && darwin
+//go:build darwin
 
 package servicelaunch
 

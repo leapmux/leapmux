@@ -1,4 +1,4 @@
-//go:build serviceintegration && (darwin || linux)
+//go:build darwin || linux
 
 package servicelaunch
 

@@ -1189,7 +1189,7 @@ tasks:
       LEAPMUX_SERVICE_TEST_ACCOUNT_FILE:
         '{{.SERVICE_ACCOUNT_FILE}}'
     cmds:
-      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off -tags=serviceintegration ./internal/servicelaunch/... {{.CLI_ARGS}}
+      - cd backend && node ../scripts/run-go-tool.mjs gotestsum --format pkgname-and-test-fails -- -vet=off ./internal/servicelaunch/... {{.CLI_ARGS}}
 
   assert-service-account-file:
     internal: true

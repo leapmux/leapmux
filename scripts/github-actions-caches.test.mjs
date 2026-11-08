@@ -1277,7 +1277,7 @@ describe('cache native setup', () => {
       expect(prune.if).toBe('github.ref == \'refs/heads/main\' && steps.go-cache-save.outputs.result == \'ready\'')
       expect(job.steps.indexOf(prune)).toBeGreaterThan(job.steps.indexOf(goSave))
       // The saves run at the end of the job, after every validation step.
-      const lastValidation = Math.max(...job.steps.map((step, index) => /^task (?:test|test-native(?:-linux)?|build|check-build-cache|lint)$/.test(step.run ?? '')
+      const lastValidation = Math.max(...job.steps.map((step, index) => (/^task (?:test|test-native(?:-linux)?|build|check-build-cache|lint)$/.test(step.run ?? '') || step.run === 'node scripts/native-cli-ci.mjs')
         ? index
         : -1))
       expect(job.steps.indexOf(goSave)).toBeGreaterThan(lastValidation)

@@ -363,13 +363,21 @@ Linux amd64 covers all frontend tests, repository script tests, and schema valid
 Both Linux architectures run Go lint and vet checks for all three operating systems.
 The native jobs retain filesystem, process, interprocess communication, and desktop test coverage.
 
-The **Native CLI services** workflow verifies native service registration and removal
-weekly on Monday at 18:43 UTC. It also accepts manual runs through GitHub Actions.
-It covers Linux amd64 and arm64, macOS, and Windows on disposable hosted runners.
-Each run builds the CLI and exercises `enable`, `status`, and repeated `disable`
-for Hub, Worker, Solo, and Dev. Boot cases run on every platform. Login cases run
-when the runner has a desktop session; headless Linux runners run boot cases only.
-The workflow creates a private account fixture and removes it after verification.
+The native CI jobs verify service registration and removal on every pull request
+update and every push to `main`. The Linux amd64 and arm64, macOS, and Windows jobs
+reuse their built CLI for these checks. The tests exercise `enable`, `status`, and
+repeated `disable` for Hub, Worker, Solo, and Dev. They also start and stop Solo
+through the native service manager and verify local control access restrictions.
+Boot cases run on every platform. macOS and Windows also cover login cases.
+The macOS job fails if the runner's GUI domain is unavailable. Linux login cases
+run when a graphical session is active; headless Linux runners run boot cases only.
+
+Native tests need no Go build tag. Ordinary test runs skip native installation
+when no disposable-account fixture is supplied. A supplied fixture must pass all
+account and privacy checks. `task test-cli-services` requires the fixture, so CI
+cannot silently skip native verification when its preparation fails.
+
+The CI check creates a private account fixture and removes it after verification.
 On Windows, it resets only the disposable runner account password and keeps the
 credential in the session credential store. It refuses workstation and self-hosted
 execution. Run `task test-cli-services` with an explicitly prepared disposable

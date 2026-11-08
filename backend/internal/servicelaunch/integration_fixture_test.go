@@ -1,5 +1,3 @@
-//go:build serviceintegration
-
 package servicelaunch
 
 import (
@@ -16,6 +14,17 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 )
+
+func TestServiceFixtureSkipsNativeInstallationWithoutAccountDeclaration(t *testing.T) {
+	var skipped bool
+	t.Run("without fixture", func(t *testing.T) {
+		t.Setenv("LEAPMUX_SERVICE_TEST_ACCOUNT_FILE", "")
+		t.Cleanup(func() { skipped = t.Skipped() })
+		readServiceAccountFixture(t)
+		t.Fatal("native installation must not proceed without an account fixture")
+	})
+	require.True(t, skipped, "ordinary test runs must skip native installation without a fixture")
+}
 
 // This test reads a fixture only. It never installs a native definition or
 // asserts that the developer's workstation is a disposable environment.

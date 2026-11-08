@@ -1,4 +1,4 @@
-//go:build serviceintegration && windows
+//go:build windows
 
 package servicelaunch
 

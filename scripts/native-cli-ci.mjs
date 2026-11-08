@@ -15,8 +15,13 @@ export function assertHostedRunner(env) {
     throw new Error('The disposable runner temporary directory must be absolute')
 }
 
-export function nativeCLISelection(hasDesktop) {
-  return hasDesktop ? '^TestNativeServiceCLIConfiguration$' : '^TestNativeServiceCLIConfiguration/[^/]+/boot$'
+export function nativeCLISelection(platform, hasDesktop) {
+  if (platform === 'darwin' && !hasDesktop)
+    throw new Error('macOS native CLI verification requires an accessible GUI domain. Login startup tests cannot be skipped.')
+  const suites = '^TestNativeService(Lifecycle|CLIConfiguration)$'
+  return hasDesktop
+    ? suites
+    : `${suites}/[^/]+/boot$`
 }
 
 // Always attempt both cleanup operations and retain the original test failure.
@@ -65,12 +70,13 @@ export function main() {
     hasDesktop = spawnSync('/bin/launchctl', ['print', `gui/${os.userInfo().uid}`], { stdio: 'ignore' }).status === 0
   if (process.platform === 'linux')
     hasDesktop = spawnSync('/usr/bin/systemctl', ['--user', 'is-active', 'graphical-session.target'], { stdio: 'ignore' }).status === 0
+  const selection = nativeCLISelection(process.platform, hasDesktop)
   const directory = mkdtempSync(path.join(process.env.RUNNER_TEMP, 'leapmux-native-cli-'))
   const fixture = path.join(directory, 'account.yaml')
   withFixtureCleanup(
     () => runHelper(['prepare', fixture]),
     () => {
-      console.log(`Native CLI service E2E selection: ${process.platform}, ${hasDesktop ? 'login and boot' : 'boot'}`)
+      console.log(`Native service E2E selection: ${process.platform}, ${hasDesktop ? 'login and boot' : 'boot'}`)
       checked(process.platform === 'win32'
         ? 'task.exe'
         : 'task', [
@@ -78,7 +84,7 @@ export function main() {
         `SERVICE_ACCOUNT_FILE=${fixture}`,
         '--',
         '-run',
-        nativeCLISelection(hasDesktop),
+        selection,
         '-count=1',
         '-timeout=20m',
       ], { cwd: root })

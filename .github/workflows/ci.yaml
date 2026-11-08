@@ -133,6 +133,9 @@ jobs:
       - name: Check the unchanged native build
         run: task check-build-cache
 
+      - name: Verify native CLI service lifecycle
+        run: node scripts/native-cli-ci.mjs
+
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
@@ -256,6 +259,9 @@ jobs:
       - name: Check the unchanged native build
         run: task check-build-cache
 
+      - name: Verify native CLI service lifecycle
+        run: node scripts/native-cli-ci.mjs
+
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
         # publish. Linux and Windows publish; macOS has no Tauri cache.
@@ -359,6 +365,10 @@ jobs:
       - name: Check the unchanged native build
         shell: pwsh
         run: task check-build-cache
+
+      - name: Verify native CLI service lifecycle
+        shell: pwsh
+        run: node scripts/native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to

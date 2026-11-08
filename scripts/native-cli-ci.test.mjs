@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'bun:test'
 import { assertHostedRunner, nativeCLISelection, withFixtureCleanup } from './native-cli-ci.mjs'
@@ -33,14 +33,21 @@ describe('assertHostedRunner', () => {
 })
 
 describe('nativeCLISelection', () => {
-  it('selects login only when the native desktop session exists', () => {
-    const boot = new RegExp(nativeCLISelection(false))
-    const desktop = new RegExp(nativeCLISelection(true))
-    expect(boot.test('TestNativeServiceCLIConfiguration/dev/boot')).toBe(true)
-    expect(boot.test('TestNativeServiceCLIConfiguration/dev/login')).toBe(false)
-    expect(boot.test('TestNativeServiceLifecycle/dev/boot')).toBe(false)
-    expect(desktop.test('TestNativeServiceCLIConfiguration')).toBe(true)
-    expect(desktop.test('TestNativeServiceLifecycle')).toBe(false)
+  it('fails when macOS cannot access its GUI domain instead of skipping login cases', () => {
+    expect(() => nativeCLISelection('darwin', false)).toThrow('macOS native CLI verification requires an accessible GUI domain')
+  })
+  it('includes both native suites and startup modes on macOS, Windows and graphical Linux', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const selection = nativeCLISelection(platform, true)
+      const suites = new RegExp(selection)
+      expect(suites.test('TestNativeServiceLifecycle')).toBe(true)
+      expect(suites.test('TestNativeServiceCLIConfiguration')).toBe(true)
+      expect(suites.test('TestNativeControlAccessProbe')).toBe(false)
+    }
+  })
+  it('selects boot cases from both native suites on headless Linux', () => {
+    // Go applies each slash-separated expression to its test-name segment.
+    expect(nativeCLISelection('linux', false)).toBe('^TestNativeService(Lifecycle|CLIConfiguration)$/[^/]+/boot$')
   })
 })
 
@@ -94,25 +101,33 @@ describe('withFixtureCleanup', () => {
   })
 })
 
-describe('native CLI weekly workflow', () => {
-  it('runs weekly and manually on four native runners with read-only compiled caches', () => {
-    const workflow = Bun.YAML.parse(readFileSync(new URL('../.github/workflows/native-cli.yaml', import.meta.url), 'utf8'))
-    expect(Object.keys(workflow.on).sort()).toEqual(['schedule', 'workflow_call', 'workflow_dispatch'])
-    expect(workflow.on.schedule).toEqual([
-      { cron: '43 18 * * 1' },
-    ])
-    expect(workflow.permissions).toEqual({ contents: 'read', actions: 'read' })
-    expect(Object.keys(workflow.jobs).sort()).toEqual(['linux', 'macos', 'windows'])
-    expect(workflow.jobs.linux.strategy.matrix.runner_suffix).toEqual(['', '-arm'])
-    expect(workflow.jobs.linux.strategy['fail-fast']).toBe(false)
-    expect(workflow.jobs.windows.defaults.run.shell).toBe('pwsh')
-    for (const job of Object.values(workflow.jobs)) {
-      expect(job['timeout-minutes']).toBe(45)
-      expect(job.steps.at(-1).run).toBe('node scripts/native-cli-ci.mjs')
-      const setup = job.steps.find(step => step.uses === './.github/actions/setup-build')
-      expect(setup.with['setup-desktop']).toBe('false')
-      expect(setup.with['save-build-caches']).toBe('false')
-      expect(job.steps[0].with['persist-credentials']).toBe(false)
+describe('native CLI per-commit verification', () => {
+  it('runs in every native job after building and before publishing compiled caches', () => {
+    const workflow = Bun.YAML.parse(readFileSync(new URL('../.github/workflows/ci.yaml', import.meta.url), 'utf8'))
+    expect(workflow.on.push.branches).toEqual(['main'])
+    expect(workflow.on.pull_request.branches).toEqual(['main'])
+    expect(workflow.jobs.linux.strategy.matrix.include.map(entry => entry.arch)).toEqual(['amd64', 'arm64'])
+    for (const name of ['linux', 'macos', 'windows']) {
+      const job = workflow.jobs[name]
+      const checks = job.steps.filter(step => step.run === 'node scripts/native-cli-ci.mjs')
+      expect(checks).toHaveLength(1)
+      expect(checks[0].if).toBeUndefined()
+      const position = job.steps.indexOf(checks[0])
+      expect(position).toBeGreaterThan(job.steps.findIndex(step => step.run === 'task build'))
+      expect(position).toBeLessThan(job.steps.findIndex(step => step.id === 'go-cache-save'))
+      expect(workflow.jobs['required-ci'].needs).toContain(name)
+      if (name === 'windows')
+        expect(checks[0].shell).toBe('pwsh')
     }
+  })
+  it('keeps native tests available without a custom Go build tag', () => {
+    const source = new URL('../backend/internal/servicelaunch/', import.meta.url)
+    for (const file of readdirSync(source).filter(file => file.endsWith('_test.go')))
+      expect(readFileSync(new URL(file, source), 'utf8')).not.toMatch(/^\/\/go:build .*\bserviceintegration\b/m)
+    const tasks = Bun.YAML.parse(readFileSync(new URL('../Taskfile.yaml', import.meta.url), 'utf8')).tasks
+    const native = tasks['test-cli-services']
+    expect(native.deps).toContain('assert-service-account-file')
+    expect(native.env.LEAPMUX_SERVICE_TEST_ACCOUNT_FILE).toBe('{{.SERVICE_ACCOUNT_FILE}}')
+    expect(native.cmds[0]).not.toContain('-tags=')
   })
 })
