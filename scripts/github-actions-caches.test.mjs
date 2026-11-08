@@ -760,6 +760,19 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(String(step?.with?.cache ?? '')).toBe('false')
   })
 
+  it('installs protoc, buf and Task through the cached tool snapshot', () => {
+    // A tool installed outside ./.github/actions/setup-cli-tools downloads
+    // its binaries on every build and hides them from the cli-tools archive.
+    const uncached = /uses:\s*(?:arduino\/setup-task|arduino\/setup-protoc|bufbuild\/buf-action)@/
+    for (const file of [
+      ...workflowFiles,
+      ...actionFiles,
+    ]) {
+      for (const line of raw(file).split('\n'))
+        expect(line, `${file}: ${line.trim()}`).not.toMatch(uncached)
+    }
+  })
+
   it('runs NOTICE again when an action that it uses changes', () => {
     const paths = NOTICE_INPUTS
     const needed = new Set(['.github/actions/setup-build/action.yaml'])
@@ -1124,7 +1137,7 @@ describe('renovate workflow and protection', () => {
       './.github/actions/load-versions',
       'actions/setup-go',
       'oven-sh/setup-bun',
-      'arduino/setup-task',
+      './.github/actions/setup-cli-tools',
     ])
     expect(rest.find(step => String(step.uses).startsWith('actions/setup-go@')).with.cache).toBe(false)
     // Every tool comes from the base commit: the job checks it out before it loads a version.
@@ -1235,7 +1248,7 @@ describe('renovate workflow and protection', () => {
 
 describe('cache native setup', () => {
   const setupSteps = () => actionSteps('.github/actions/setup-build/action.yaml')
-  const aptPackages = 'libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsoup-3.0-dev protobuf-compiler xdg-utils libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio'
+  const aptPackages = 'libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libsoup-3.0-dev xdg-utils libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio'
 
   it('restores the compiled caches in the setup and saves them only after the complete validation', () => {
     const steps = setupSteps()
@@ -1530,6 +1543,8 @@ describe('cache workflow execution', () => {
       GOLANG_VERSION: '1.27.1',
       RUST_VERSION: '1.99.0',
       BUN_VERSION: '1.4.4',
+      PROTOC_VERSION: '36.2',
+      BUF_VERSION: '1.75.0',
       TASK_VERSION: '3.54.0',
       RUNNER_TEMP: dir,
       HOME: join(dir, 'home'),
@@ -1560,6 +1575,7 @@ describe('cache workflow execution', () => {
     const script = evaluate(step.run, env, inputs, outputs)
       .replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
       .replaceAll('node scripts/download-go-modules.mjs', `node '${root}/scripts/download-go-modules.mjs'`)
+      .replaceAll('node scripts/download-cli-tools.mjs', `node '${root}/scripts/download-cli-tools.mjs'`)
     return runShell(script, dir, {
       ...env,
       ...Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [
@@ -1701,11 +1717,17 @@ describe('cache workflow execution', () => {
   })
 
   it('generates valid tool, site, and Renovate keys through the policy CLI', () => {
-    for (const [file, id, kinds] of [
+    for (const [file, id, kinds, inputs] of [
       [
         '.github/actions/setup-build/action.yaml',
         'tool-keys',
         { apt: 'apt-packages', tauri: 'tauri-tools', spinners: 'spinners' },
+      ],
+      [
+        '.github/actions/setup-cli-tools/action.yaml',
+        'tools',
+        { key: 'cli-tools' },
+        { tools: 'protoc,task' },
       ],
       [
         '.github/workflows/publish-site.yaml',
@@ -1722,12 +1744,14 @@ describe('cache workflow execution', () => {
       const env = environment(dir)
       const document = yaml(file)
       const steps = document.runs?.steps ?? Object.values(document.jobs).flatMap(job => job.steps ?? [])
-      const result = execute(steps.find(step => step.id === id), dir, env)
+      const result = execute(steps.find(step => step.id === id), dir, env, { inputs: inputs ?? {} })
       expect(result.status, result.stderr).toBe(0)
       const output = fields(outputFile(dir))
       for (const [name, kind] of Object.entries(kinds)) expect(() => validateCacheKey(kind, output[name], env)).not.toThrow()
       if (id === 're2-key')
         expect(output.key.startsWith(output['restore-keys'])).toBe(true)
+      if (id === 'tools')
+        expect(output.bin).toBe(`${rootActivePath('cli-tools', 'tools', env, dir)}/bin`)
     }
   })
 

@@ -49,7 +49,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           rust-components: clippy,rustfmt
           # Only push-to-main saves the compiled caches; see the input's docs.
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
@@ -236,7 +235,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
@@ -341,7 +339,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           # Native validation includes Clippy for platform-specific Rust code.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
@@ -521,10 +518,9 @@ jobs:
 
       - name: Setup Task
         if: steps.scope.outputs.checked == 'true'
-        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        uses: ./.github/actions/setup-cli-tools
         with:
-          version: ${{ env.TASK_VERSION }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tools: task
 
       - name: Check the release age of new lockfile versions
         if: steps.scope.outputs.checked == 'true'

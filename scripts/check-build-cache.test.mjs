@@ -351,7 +351,7 @@ describe('native build cache checks in CI', () => {
   it('prepares signing tools through the shared Task prerequisite', () => {
     const workflow = Bun.YAML.parse(readFileSync(join(root, '.github/workflows/desktop-artifacts.yaml'), 'utf8'))
     const steps = workflow.jobs['macos-app-sign'].steps
-    const setup = steps.findIndex(step => step.uses?.startsWith('arduino/setup-task@'))
+    const setup = steps.findIndex(step => step.uses === './.github/actions/setup-cli-tools')
     const prepare = steps.findIndex(step => step.run === 'task prepare-dmg-tools')
     expect(setup).toBeGreaterThanOrEqual(0)
     expect(prepare).toBeGreaterThan(setup)

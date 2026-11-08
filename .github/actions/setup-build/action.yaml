@@ -14,7 +14,7 @@ description: |
 # function of `runner.os`, so the caller does not have to know them:
 # * whether apt runs;
 # * where Tauri caches;
-# * whether protoc and the MSVC environment are needed;
+# * whether the MSVC environment is needed;
 # * which shell reads versions.env.
 #
 # What the callers DO vary are inputs:
@@ -29,18 +29,15 @@ description: |
 # A dependency archive contains downloads and uses a lockfile key. Any job can
 # populate it on a miss from an isolated directory. See
 # dependency-caches/action.yaml.
+# A tool archive holds the pinned protoc, buf and Task binaries, keyed by the
+# requested tool set and the pins of those tools. See
+# setup-cli-tools/action.yaml.
 # A compiled archive contains build outputs. Its key includes the toolchain and
 # runner image. Only the main-branch CI platform jobs save it, and they do so
 # through explicit save-cache-snapshot steps at the end of the job, after all
 # required validation. The callers register the compiled-cache pruner after
 # those saves.
 inputs:
-  github-token:
-    description: >
-      Token for the actions that call the GitHub API (buf, Task, protoc).
-      Without it they share the runner's IP against a 60/hr unauthenticated
-      rate limit, which fails intermittently on hosted macOS runners.
-    required: true
   version-override:
     description: >
       Value to write over VERSION from versions.env. Used by the release path,
@@ -181,7 +178,7 @@ runs:
         TAURI_CACHE_HASH: ${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
       run: |
         echo "apt=$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
-        echo "tauri=$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$TAURI_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+        echo "tauri=$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$TAURI_CACHE_HASH")" >> "$GITHUB_OUTPUT"
         echo "spinners=$(node scripts/cache-snapshot.mjs key --kind spinners --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
 
     - name: Prepare the APT package cache
@@ -229,7 +226,6 @@ runs:
           librsvg2-dev \
           libssl-dev \
           libsoup-3.0-dev \
-          protobuf-compiler \
           xdg-utils \
           libgstreamer1.0-dev \
           libgstreamer-plugins-base1.0-dev \
@@ -400,8 +396,8 @@ runs:
       # macOS creates no Tauri cache directory, so this step skips there.
       # Every non-macOS job may publish a replacement after a complete
       # packaging build, so every job is a writer and passes no fallback:
-      # a missed exact key re-downloads the tools, which the weekly key
-      # already accepted as its cost.
+      # a missed exact key means the patch recipe changed (or the archive
+      # is gone), and re-downloading the tools is the accepted cost.
       id: tauri-restore
       if: inputs.setup-desktop == 'true' && runner.os != 'macOS'
       uses: ./.github/actions/build-output-cache
@@ -425,25 +421,8 @@ runs:
         key: ${{ steps.tool-keys.outputs.spinners }}
         writer: 'true'
 
-    - name: Setup protoc
-      # Tauri's prost-build needs protoc. Linux gets it from apt above.
-      if: runner.os != 'Linux'
-      uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-      with:
-        repo-token: ${{ inputs.github-token }}
-
-    - name: Setup buf
-      # setup_only installs the CLI and skips the build/lint/format checks, so
-      # the Task steps below run `buf generate` themselves. The post step runs
-      # `buf registry logout`, which is harmless without a login.
-      uses: bufbuild/buf-action@37ac33d8960807670a6e9719080e885197b09cc6 # v1.7.0
-      with:
-        version: ${{ env.BUF_VERSION }}
-        github_token: ${{ inputs.github-token }}
-        setup_only: true
-
-    - name: Setup Task
-      uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
-      with:
-        version: ${{ env.TASK_VERSION }}
-        repo-token: ${{ inputs.github-token }}
+    - name: Setup protoc, buf and Task
+      # The pinned binaries come from the cli-tools snapshot: a hit restores
+      # them, a miss downloads the pinned release assets once and publishes
+      # the archive for every later job.
+      uses: ./.github/actions/setup-cli-tools

@@ -41,7 +41,6 @@ jobs:
         if: steps.inputs.outputs.needed == 'true'
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           # This job reads dependency metadata without building the desktop app. It skips these
           # desktop prerequisites:
           # - Tauri system packages.

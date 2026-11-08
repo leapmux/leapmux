@@ -55,7 +55,6 @@ jobs:
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           setup-desktop: 'false'
 
       - name: Setup Node.js for Renovate

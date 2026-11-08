@@ -78,6 +78,12 @@ function tauriCache(env) {
   return join(homeDir(env), '.cache', 'tauri')
 }
 
+function cliToolsDir(env) {
+  if (requireEnv(env, 'RUNNER_OS') === 'Windows')
+    return join(homeDir(env), 'AppData', 'Local', 'leapmux-cli-tools')
+  return join(homeDir(env), '.cache', 'leapmux-cli-tools')
+}
+
 function spinnersClone(env) {
   return join(homeDir(env), '.cache', 'awesome-claude-spinners')
 }
@@ -118,6 +124,7 @@ const activeRoots = {
   tauriCache: env => requireEnv(env, 'RUNNER_OS') === 'macOS'
     ? null
     : tauriCache(env),
+  cliTools: env => cliToolsDir(env),
   spinnersSubtree: env => join(spinnersClone(env), 'spinners'),
   renovateRe2Node: (env, workspace) => join(workspaceRoot(env, workspace), '.github', 'renovate', 'node_modules', 're2', 'build', 'Release', 're2.node'),
   renovateTaskChecksum: (env, workspace) => join(workspaceRoot(env, workspace), '.task', 'checksum', 'build-renovate-re2'),
@@ -138,6 +145,7 @@ const prefixBuilders = {
   'site-go': env => `site-go-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
   'apt-packages': env => `apt-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
   'tauri-tools': env => `tauri-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
+  'cli-tools': env => `cli-tools-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
   'spinners': env => `spinners-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`,
   'renovate-re2': env => `renovate-re2-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-${requireEnv(env, 'CACHE_IMAGE')}-node24-bun${requireEnv(env, 'BUN_VERSION')}-task${requireEnv(env, 'TASK_VERSION')}-`,
 }
@@ -367,6 +375,35 @@ const CACHE_POLICIES = {
       },
     ],
   },
+  'cli-tools': {
+    kind: 'cli-tools',
+    category: 'tool',
+    description: 'The pinned protoc, buf and Task binaries that scripts/download-cli-tools.mjs installs, for the requested tool subset only.',
+    population: POPULATION_ACTIVATE_THEN_PRODUCE,
+    trim: TRIM_NONE,
+    writerScope: WRITER_SCOPE_ANY,
+    writers: 'Any job after its tool download completes.',
+    // The key hash covers the requested tool set, the pinned versions of
+    // exactly those tools, and the download recipe. The archive therefore
+    // holds exactly the declared binaries, and a pin of one tool never
+    // rotates the archive of a job that installs only another.
+    keyedByWeek: false,
+    hashSegment: 'required',
+    // Every job that restores also publishes after its download, so the
+    // kind has no reader role and permits no fallback.
+    fallback: 'none',
+    roots: [
+      {
+        name: 'tools',
+        type: 'tree',
+        required: true,
+        requiredNonEmpty: true,
+        mode: 'replace',
+        clearOnWriterMiss: true,
+        active: activeRoots.cliTools,
+      },
+    ],
+  },
   'apt-packages': {
     kind: 'apt-packages',
     category: 'tool',
@@ -399,7 +436,13 @@ const CACHE_POLICIES = {
     trim: TRIM_NONE,
     writerScope: WRITER_SCOPE_ANY,
     writers: 'Every non-macOS job after a successful complete packaging build.',
-    keyedByWeek: true,
+    // The key carries no weekly epoch: the download recipe (the patch
+    // scripts and the URLs inside them) is the key hash, and a weekly
+    // rotation only re-downloaded the same immutable linuxdeploy AppImage
+    // for every pull request that opened the week before the main build
+    // published the key. A recipe edit rotates the key and refreshes the
+    // plugin scripts that the recipe fetches.
+    keyedByWeek: false,
     hashSegment: 'required',
     // Every job that restores also publishes after its packaging build, so
     // the kind has no reader role and permits no fallback.

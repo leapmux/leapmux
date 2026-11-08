@@ -1,0 +1,70 @@
+name: Setup cached CLI tools
+description: |
+  Install the pinned protoc, buf and Task binaries from versions.env through
+  the cli-tools cache snapshot: a hit restores them from the archive, a miss
+  downloads the pinned release assets once and publishes the archive for
+  every later job. The tools directory joins the PATH for the following
+  steps.
+
+# Callers check out first (the download and cache scripts live in the tree)
+# and run load-versions first (the pins live in versions.env).
+#
+# A job that runs only Task passes `tools: task` and never downloads protoc
+# or buf. The archive key covers the requested tool set, the pinned versions
+# of exactly those tools, and the download recipe, so each archive holds
+# exactly the binaries that its key declares and a pin of one tool never
+# rotates the archive of a job that installs only another.
+#
+# Every job that restores is also a writer: actions/cache never replaces an
+# existing key, so the first job to save publishes the archive and every
+# later job hits it. A missed exact key re-downloads the release assets,
+# which the key already accepted as its cost.
+inputs:
+  tools:
+    description: >
+      Comma-separated tool subset to install. Any of protoc, buf and task.
+    required: false
+    default: 'protoc,buf,task'
+
+runs:
+  using: composite
+  steps:
+    - name: Locate the tool snapshot
+      id: tools
+      shell: bash
+      env:
+        LEAPMUX_CLI_TOOLS: ${{ inputs.tools }}
+        DOWNLOAD_RECIPE_HASH: ${{ hashFiles('scripts/download-cli-tools.mjs') }}
+      run: |
+        identity="$(node scripts/download-cli-tools.mjs --tools "$LEAPMUX_CLI_TOOLS" --identity)"
+        tools_hash="$(printf '%s\n%s\n' "$DOWNLOAD_RECIPE_HASH" "$identity" | sha256sum | cut -d' ' -f1)"
+        {
+          echo "key=$(node scripts/cache-snapshot.mjs key --kind cli-tools --hash "$tools_hash")"
+          echo "bin=$(node scripts/cache-snapshot.mjs active-path --kind cli-tools --root tools)/bin"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore the tool snapshot
+      id: tools-restore
+      uses: ./.github/actions/build-output-cache
+      with:
+        kind: cli-tools
+        key: ${{ steps.tools.outputs.key }}
+        writer: 'true'
+
+    - name: Download the pinned tools
+      if: steps.tools-restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        LEAPMUX_CLI_TOOLS: ${{ inputs.tools }}
+      run: node scripts/download-cli-tools.mjs --tools "$LEAPMUX_CLI_TOOLS"
+
+    - name: Save the tool snapshot
+      if: steps.tools-restore.outputs.save-required == 'true'
+      uses: ./.github/actions/save-cache-snapshot
+      with:
+        kind: cli-tools
+        key: ${{ steps.tools.outputs.key }}
+
+    - name: Add the tools to the PATH
+      shell: bash
+      run: echo '${{ steps.tools.outputs.bin }}' >> "$GITHUB_PATH"

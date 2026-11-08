@@ -54,7 +54,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
 
@@ -128,7 +127,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
 
@@ -217,14 +215,9 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Setup Task
-        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        uses: ./.github/actions/setup-cli-tools
         with:
-          version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls, which list releases
-          # and download assets. Without the token, the calls share the 60/hr
-          # unauthenticated rate limit of the runner's IP, and they fail
-          # intermittently on Windows.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tools: task
 
       - name: Restore dependency caches
         # Fill the Bun package cache that `task prepare-dmg-tools` installs
@@ -303,14 +296,9 @@ jobs:
           version-override: ${{ inputs.version }}
 
       - name: Setup Task
-        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        uses: ./.github/actions/setup-cli-tools
         with:
-          version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls, which list releases
-          # and download assets. Without the token, the calls share the 60/hr
-          # unauthenticated rate limit of the runner's IP, and they fail
-          # intermittently on Windows.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          tools: task
 
       - name: Setup Apple signing
         uses: ./.github/actions/apple-signing-setup
@@ -372,7 +360,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
 
