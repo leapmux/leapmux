@@ -11,14 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Remove this caller after the reusable weekly matrix passes on this PR.
-  verify-native-cli-weekly:
-    name: Verify weekly native CLI workflow (temporary)
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/native-cli.yaml
-
   linux:
     # RUNNER IMAGES: UBUNTU_RUNNER, MACOS_RUNNER and WINDOWS_RUNNER in
     # versions.env own every runs-on label in the workflows. GitHub evaluates
