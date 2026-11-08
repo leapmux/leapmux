@@ -6,6 +6,3 @@ package servicelaunch
 func newPlatformManager() Manager { return newSystemdManager() }
 
 func newPlatformSessionMonitor() SessionMonitor { return newLinuxSessionMonitor() }
-
-// nativeMechanismLabel identifies what systemd configuration writes.
-func nativeMechanismLabel() string { return "systemd service" }

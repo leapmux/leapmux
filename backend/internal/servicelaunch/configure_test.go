@@ -83,9 +83,8 @@ func newTestController(t *testing.T, mgr Manager) (*Controller, *lifecycle.Servi
 	stored := &lifecycle.ServiceSpec{}
 	present := false
 	c := &Controller{
-		Manager:         mgr,
-		Platform:        "darwin",
-		NativeMechanism: "launchd user agent",
+		Manager:  mgr,
+		Platform: "darwin",
 		SaveSpec: func(spec lifecycle.ServiceSpec) error {
 			*stored, present = spec, true
 			return nil
@@ -346,6 +345,7 @@ func TestPreviewDescribesSelectedNativeMechanism(t *testing.T) {
 		{"darwin", lifecycle.StartupLogin, "LaunchAgent"}, {"darwin", lifecycle.StartupBoot, "LaunchDaemon"},
 		{"linux", lifecycle.StartupLogin, "systemd user service"}, {"linux", lifecycle.StartupBoot, "systemd system service"},
 		{"windows", lifecycle.StartupLogin, "noninteractive scheduled task"}, {"windows", lifecycle.StartupBoot, "Windows service"},
+		{"plan9", lifecycle.StartupLogin, "native startup mechanism"},
 	} {
 		t.Run(test.platform+"/"+string(test.startup), func(t *testing.T) {
 			controller, _ := newTestController(t, &recordingManager{})
@@ -367,6 +367,31 @@ func TestPreviewDescribesSelectedNativeMechanism(t *testing.T) {
 					assert.Contains(t, change.ElevationReason, "service")
 				}
 			}
+		})
+	}
+}
+
+// A failed install identifies the mechanism of the selected startup kind,
+// the same one the preview showed, never a fixed per-platform label.
+func TestApplyFailureIdentifiesTheSelectedMechanism(t *testing.T) {
+	for _, test := range []struct {
+		platform  string
+		startup   lifecycle.StartupKind
+		mechanism string
+	}{
+		{"darwin", lifecycle.StartupLogin, "install the launchd LaunchAgent"},
+		{"darwin", lifecycle.StartupBoot, "install the launchd LaunchDaemon"},
+		{"linux", lifecycle.StartupBoot, "install the systemd system service"},
+		{"windows", lifecycle.StartupLogin, "install the Windows noninteractive scheduled task"},
+	} {
+		t.Run(test.platform+"/"+string(test.startup), func(t *testing.T) {
+			controller, _ := newTestController(t, &recordingManager{installErr: errors.New("authorization denied")})
+			controller.Platform = test.platform
+			spec := testSpec()
+			spec.Startup = test.startup
+			err := controller.Apply(t.Context(), spec)
+			require.ErrorContains(t, err, test.mechanism)
+			assert.ErrorContains(t, err, "authorization denied")
 		})
 	}
 }

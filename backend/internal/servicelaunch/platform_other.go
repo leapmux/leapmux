@@ -13,9 +13,6 @@ func newPlatformManager() Manager {
 	return &UnsupportedManager{Platform: runtime.GOOS}
 }
 
-// nativeMechanismLabel identifies the mechanism generically.
-func nativeMechanismLabel() string { return "native startup mechanism" }
-
 type unsupportedSessionMonitor struct{}
 
 func (unsupportedSessionMonitor) Sessions(context.Context, AccountRef) ([]Session, error) {

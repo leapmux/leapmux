@@ -148,8 +148,7 @@ const (
 type Reporter interface {
 	// Status returns the current snapshot.
 	Status() Status
-	// RequestStop asks the runtime to shut down. The returned channel
-	// closes when the shutdown was accepted; the caller still waits for
-	// the actual shutdown through the runtime lock.
-	RequestStop() <-chan struct{}
+	// RequestStop asks the runtime to shut down, and returns at once. The
+	// caller waits for the actual shutdown through the runtime lock.
+	RequestStop()
 }

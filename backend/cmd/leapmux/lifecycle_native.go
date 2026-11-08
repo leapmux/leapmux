@@ -43,9 +43,8 @@ func nativeController(mode string, dataDir string) (*servicelaunch.Controller, e
 	}
 	paths := lifecycle.PathsOf(canonical)
 	return &servicelaunch.Controller{
-		Manager:         platformManager(),
-		Platform:        runtime.GOOS,
-		NativeMechanism: nativeMechanismName(),
+		Manager:  platformManager(),
+		Platform: runtime.GOOS,
 		SaveSpec: func(spec lifecycle.ServiceSpec) error {
 			return lifecycle.WriteServiceSpec(paths.ServiceSpec, spec)
 		},

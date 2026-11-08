@@ -19,16 +19,16 @@ const (
 	durableReplaceSleepCap = 100 * time.Millisecond
 )
 
+// moveFileExDurable is the native move call, a variable so a test can
+// observe the flags and failures the durable replace passes through.
+var moveFileExDurable = windows.MoveFileEx
+
 // replaceFileDurable replaces newpath with oldpath through MoveFileExW
 // carrying MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH. The
 // write-through flag is what makes this the durable variant: the system
 // returns only after the rename reached the disk. There is no copy
 // fallback, and a sharing conflict is retried exactly as the atomic
 // replace retries it.
-// moveFileExDurable is the native move call, a variable so a test can
-// observe the flags and failures the durable replace passes through.
-var moveFileExDurable = windows.MoveFileEx
-
 func replaceFileDurable(oldpath, newpath string) error {
 	from, err := windows.UTF16PtrFromString(oldpath)
 	if err != nil {

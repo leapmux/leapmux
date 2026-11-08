@@ -142,15 +142,10 @@ func (s *controlServer) handleStop(w http.ResponseWriter, r *http.Request) {
 			"the request identifies another attempt; the inspected process was replaced")
 		return
 	}
-	accepted := s.reporter.RequestStop()
-	select {
-	case <-accepted:
-		writeControlJSON(w, http.StatusOK, StopResponse{Accepted: true, AttemptID: req.AttemptID})
-	default:
-		// A shutdown already in flight accepts the request too: the
-		// outcome the caller waits for is the same.
-		writeControlJSON(w, http.StatusOK, StopResponse{Accepted: true, AttemptID: req.AttemptID})
-	}
+	// A shutdown already in flight accepts the request too: the outcome
+	// the caller waits for is the same.
+	s.reporter.RequestStop()
+	writeControlJSON(w, http.StatusOK, StopResponse{Accepted: true, AttemptID: req.AttemptID})
 }
 
 // authorize checks the bearer token in constant time.

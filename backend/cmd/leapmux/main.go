@@ -114,7 +114,7 @@ func main() {
 func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "error: command is required")
-		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo run" to run solo mode`)
+		_, _ = fmt.Fprintln(stderr, `hint: use "leapmux solo start" to start solo mode`)
 		printUsage(stderr)
 		return 1
 	}
@@ -133,7 +133,7 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	// Reject anything that looks like a flag — it can't be a command name.
 	if len(args[0]) > 0 && args[0][0] == '-' {
 		_, _ = fmt.Fprintf(stderr, "error: %s is not a top-level flag\n", args[0])
-		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo run %s\" to pass solo-mode flags\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo start %s\" to pass solo-mode flags\n", args[0])
 		printUsage(stderr)
 		return 1
 	}

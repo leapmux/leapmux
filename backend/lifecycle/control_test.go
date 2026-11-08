@@ -61,14 +61,11 @@ func (s *stopCountingReporter) Status() Status {
 	return s.runtime.Status()
 }
 
-func (s *stopCountingReporter) RequestStop() <-chan struct{} {
+func (s *stopCountingReporter) RequestStop() {
 	s.stops.Add(1)
-	if s.runtime == nil {
-		accepted := make(chan struct{})
-		close(accepted)
-		return accepted
+	if s.runtime != nil {
+		s.runtime.RequestStop()
 	}
-	return s.runtime.RequestStop()
 }
 
 // The endpoint authenticates every request, limits every body, and
@@ -143,6 +140,16 @@ func TestControlAuthenticationAndGeneration(t *testing.T) {
 		assert.True(t, resp.Accepted)
 		assert.Equal(t, record.AttemptID, resp.AttemptID)
 		assert.Equal(t, int32(1), reporter.stops.Load())
+		assert.True(t, r.StopRequested())
+	})
+
+	t.Run("a repeated stop during the shutdown is accepted too", func(t *testing.T) {
+		resp, err := client.RequestStop(ctx, StopRequest{InstanceID: record.InstanceID, AttemptID: record.AttemptID})
+		require.NoError(t, err)
+		assert.True(t, resp.Accepted)
+		assert.Equal(t, record.AttemptID, resp.AttemptID)
+		assert.Equal(t, int32(2), reporter.stops.Load())
+		assert.True(t, r.StopRequested())
 	})
 
 	t.Run("status carries the model's shape", func(t *testing.T) {

@@ -224,34 +224,25 @@ func RequestStop(ctx context.Context, record RuntimeRecord) (StopResponse, error
 	return client.RequestStop(ctx, StopRequest{InstanceID: record.InstanceID, AttemptID: record.AttemptID})
 }
 
-// WaitForLockRelease waits until the runtime lock of dataDirectory is
-// free, the context ends, or the deadline passes. It reports false when
-// the lock was still held at the end; the caller then reports that
-// shutdown continues.
-func WaitForLockRelease(ctx context.Context, dataDirectory string, timeout time.Duration) (bool, error) {
-	canonical, err := CanonicalDir(dataDirectory)
-	if err != nil {
-		return false, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return waitForLockRelease(ctx, canonical)
-}
-
-func waitForLockRelease(ctx context.Context, canonical string) (bool, error) {
+// waitForLockRelease waits until the runtime lock of the canonical data
+// directory is free, and returns nil only then. It returns the context's
+// error when the context ends first. It returns a probe failure at once,
+// because a lock that cannot be probed does not prove that the shutdown
+// completed.
+func waitForLockRelease(ctx context.Context, canonical string) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		held, err := probeExclusiveLock(pathsFor(canonical).RuntimeLock)
 		if err != nil {
-			return false, err
+			return err
 		}
 		if !held {
-			return true, nil
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		case <-ticker.C:
 		}
 	}

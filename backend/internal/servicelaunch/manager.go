@@ -64,7 +64,7 @@ type ConfigurationChange struct {
 	// Spec is the specification the change would save.
 	Spec lifecycle.ServiceSpec
 	// NativeSummary states what the platform adapter will do, in the
-	// platform's own terms ("launchd user agent", "system service").
+	// platform's own terms ("launchd LaunchAgent", "systemd system service").
 	NativeSummary string
 	// RequiresElevation states whether applying needs administrator
 	// authorization. ElevationReason gives the exact reason when it does.
@@ -130,10 +130,4 @@ func elevationMechanismOf(platform string) string {
 // adapter selection compiles once, here.
 func NewPlatformManager() Manager {
 	return newPlatformManager()
-}
-
-// NewNativeMechanismName states the platform's own name for what a
-// native configuration writes.
-func NewNativeMechanismName() string {
-	return nativeMechanismLabel()
 }

@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { describe, expect, it } from 'vitest'
-import { isUnsafeCharacter, workerRegistrationCommands } from './workerRegistrationCommands'
+import { workerRegistrationCommands } from './workerRegistrationCommands'
 
 describe('workerRegistrationCommands', () => {
   it.each([
@@ -196,9 +196,19 @@ describe('workerRegistrationCommands', () => {
   })
 
   it('rejects prohibited control characters in every argument', () => {
-    expect(isUnsafeCharacter('\u0007')).toBe(true)
-    expect(workerRegistrationCommands({ hubUrl: 'http://h\u0000b', registrationKey: 'k', shell: 'posix' })).toBeNull()
-    expect(workerRegistrationCommands({ hubUrl: 'http://hb', registrationKey: 'k\n', shell: 'posix' })).toBeNull()
+    // The first and last C0 controls, a newline between them, and DEL.
+    for (const control of [
+      '\u0000',
+      '\u0007',
+      '\n',
+      '\u001F',
+      '\u007F',
+    ]) {
+      for (const shell of ['posix', 'powershell'] as const) {
+        expect(workerRegistrationCommands({ hubUrl: `http://h${control}b`, registrationKey: 'k', shell })).toBeNull()
+        expect(workerRegistrationCommands({ hubUrl: 'http://hb', registrationKey: `k${control}`, shell })).toBeNull()
+      }
+    }
     expect(workerRegistrationCommands({ hubUrl: 'http://hb', registrationKey: 'k', shell: 'powershell' })).not.toBeNull()
   })
 

@@ -60,13 +60,13 @@ func TestRunCLIExplicitRouting(t *testing.T) {
 			name:       "bare command is rejected",
 			args:       nil,
 			wantCode:   1,
-			wantStderr: `hint: use "leapmux solo run"`,
+			wantStderr: `hint: use "leapmux solo start" to start solo mode`,
 		},
 		{
 			name:       "top-level solo flag is rejected",
 			args:       []string{"-dev-frontend", "http://localhost:4328"},
 			wantCode:   1,
-			wantStderr: `hint: use "leapmux solo run -dev-frontend"`,
+			wantStderr: `hint: use "leapmux solo start -dev-frontend" to pass solo-mode flags`,
 		},
 		{
 			name:       "top-level help flag prints help",

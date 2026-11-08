@@ -22,10 +22,6 @@ type Controller struct {
 	// Platform identifies the platform, for the summaries and the elevation
 	// description.
 	Platform string
-	// NativeMechanism is the platform's own name for what gets
-	// configured ("launchd user agent", "system service", "scheduled
-	// task").
-	NativeMechanism string
 	// SaveSpec durably publishes the service specification.
 	SaveSpec func(spec lifecycle.ServiceSpec) error
 	// ReadSpec loads the saved specification; os.ErrNotExist when none
@@ -104,6 +100,8 @@ func (c *Controller) Preview(ctx context.Context, desired lifecycle.ServiceSpec)
 	}, nil
 }
 
+// mechanism states, in the platform's own terms, what a configuration
+// with this startup kind installs.
 func (c *Controller) mechanism(startup lifecycle.StartupKind) string {
 	switch c.Platform {
 	case "darwin":
@@ -122,7 +120,7 @@ func (c *Controller) mechanism(startup lifecycle.StartupKind) string {
 		}
 		return "Windows noninteractive scheduled task"
 	default:
-		return c.NativeMechanism
+		return "native startup mechanism"
 	}
 }
 
@@ -189,7 +187,7 @@ func (c *Controller) Apply(ctx context.Context, desired lifecycle.ServiceSpec) e
 		return fmt.Errorf("servicelaunch: save the service specification: %w", err)
 	}
 	if err := c.Manager.Install(ctx, launch); err != nil {
-		return fmt.Errorf("servicelaunch: install the %s: %w", c.NativeMechanism, err)
+		return fmt.Errorf("servicelaunch: install the %s: %w", c.mechanism(desired.Startup), err)
 	}
 	return nil
 }

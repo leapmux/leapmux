@@ -110,10 +110,52 @@ func TestShutdownWaitDoesNotAcceptProbeFailure(t *testing.T) {
 	root := mustCanonical(t, t.TempDir())
 	paths := pathsFor(root)
 	require.NoError(t, os.MkdirAll(paths.RuntimeLock, 0o700))
-	released, err := WaitForLockRelease(context.Background(), root, time.Nanosecond)
-	assert.Error(t, err)
-	assert.False(t, released,
-		"an unreadable or invalid lock is not proof of completed shutdown")
+	// The deadline only keeps a regression from hanging the test: a probe
+	// failure must end the wait at once, not when the deadline passes.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := waitForLockRelease(ctx, root)
+	require.Error(t, err, "an unreadable or invalid lock is not proof of completed shutdown")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestShutdownWaitEndsWithTheContextWhileTheLockIsHeld(t *testing.T) {
+	root := mustCanonical(t, t.TempDir())
+	paths := pathsFor(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(paths.RuntimeLock), 0o700))
+	lock, err := filelock.Open(paths.RuntimeLock, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lock.Close() })
+	held, err := filelock.TryLock(lock)
+	require.NoError(t, err)
+	require.True(t, held)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, waitForLockRelease(ctx, root), context.Canceled)
+}
+
+func TestShutdownWaitReturnsOnceTheLockIsFree(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		lockFile bool
+	}{
+		{"no lock file", false},
+		{"an unlocked lock file", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := mustCanonical(t, t.TempDir())
+			paths := pathsFor(root)
+			require.NoError(t, os.MkdirAll(filepath.Dir(paths.RuntimeLock), 0o700))
+			if test.lockFile {
+				lock, err := filelock.Open(paths.RuntimeLock, false)
+				require.NoError(t, err)
+				require.NoError(t, lock.Close())
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			require.NoError(t, waitForLockRelease(ctx, root))
+		})
+	}
 }
 
 func TestObserveRejectsDifferentInstanceResponse(t *testing.T) {

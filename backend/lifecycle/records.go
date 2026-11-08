@@ -156,7 +156,6 @@ func WriteServiceSpec(path string, spec ServiceSpec) error {
 	return atomicfile.WriteFileDurable(path, data, 0o600)
 }
 
-// ReadServiceSpec loads the saved specification at path.
 // ReadServiceSpecOf reads the service specification saved in a data
 // directory. A specification for another data directory belongs to the path
 // that the directory moved from, and no service exists for this path yet, so
@@ -169,6 +168,7 @@ func ReadServiceSpecOf(paths Paths) (ServiceSpec, error) {
 	return spec, err
 }
 
+// ReadServiceSpec loads the saved specification at path.
 func ReadServiceSpec(path string) (ServiceSpec, error) {
 	var spec ServiceSpec
 	data, err := useronly.ReadFile(path)
@@ -220,9 +220,6 @@ func WriteRuntimeRecord(path string, rec RuntimeRecord) error {
 	return atomicfile.WriteFileDurable(path, data, 0o600)
 }
 
-// ReadRuntimeRecord loads the runtime record at path. A missing record
-// is reported as os.ErrNotExist, which callers treat as "no running
-// instance claims this directory".
 // readRuntimeRecordOf reads the runtime record of a data directory. A record
 // for another data directory belongs to the path that the directory moved
 // from, so it reads as absent (os.ErrNotExist).
@@ -234,6 +231,9 @@ func readRuntimeRecordOf(paths Paths) (RuntimeRecord, error) {
 	return record, err
 }
 
+// ReadRuntimeRecord loads the runtime record at path. A missing record
+// is reported as os.ErrNotExist, which callers treat as "no running
+// instance claims this directory".
 func ReadRuntimeRecord(path string) (RuntimeRecord, error) {
 	var rec RuntimeRecord
 	data, err := useronly.ReadFile(path)

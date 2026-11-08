@@ -336,14 +336,13 @@ func (r *Runtime) Status() Status {
 	return status
 }
 
-// RequestStop accepts one shutdown request. Idempotent; the returned
-// channel is closed once the request was taken.
-func (r *Runtime) RequestStop() <-chan struct{} {
+// RequestStop accepts one shutdown request. It is idempotent: a request
+// while a shutdown is already in flight changes nothing.
+func (r *Runtime) RequestStop() {
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
 		r.SetProcessState(ProcessStopping)
 	})
-	return r.stopCh
 }
 
 // StopRequested reports whether a stop was requested.

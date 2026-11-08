@@ -2,7 +2,11 @@
 
 package servicelaunch
 
-import "context"
+import (
+	"context"
+
+	"github.com/leapmux/leapmux/lifecycle"
+)
 
 // windowsAdapter dispatches between the task (login) and service
 // (boot) adapters by the specification's startup kind.
@@ -30,14 +34,11 @@ func (m *windowsAdapter) Diagnose(ctx context.Context, spec LaunchSpec) ([]strin
 	return m.forSpec(spec).Diagnose(ctx, spec)
 }
 func (m *windowsAdapter) forSpec(spec LaunchSpec) Manager {
-	if string(spec.Startup) == string(StartupKindBoot) {
+	if spec.Startup == lifecycle.StartupBoot {
 		return m.service
 	}
 	return m.task
 }
-
-// StartupKindBoot is the literal the adapter dispatches on.
-const StartupKindBoot = "boot"
 
 // newPlatformManager builds the Windows adapter pair.
 func newPlatformManager() Manager {
@@ -45,6 +46,3 @@ func newPlatformManager() Manager {
 }
 
 func newPlatformSessionMonitor() SessionMonitor { return newWindowsSessionMonitor() }
-
-// nativeMechanismLabel identifies what Windows configuration writes.
-func nativeMechanismLabel() string { return "scheduled task / Windows service" }

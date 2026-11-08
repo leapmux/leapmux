@@ -68,10 +68,6 @@ export interface CommandInputs {
   shell: ShellKind
 }
 
-/** Control characters that cannot form a safe command. */
-/** The per-character predicate the dialog's refusal surfaces. */
-export const isUnsafeCharacter = isProhibitedControlCharacter
-
 /**
  * Build the two-step registration commands for one shell.
  *
