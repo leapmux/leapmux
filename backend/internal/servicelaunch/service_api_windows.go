@@ -108,9 +108,30 @@ func windowsServiceMatches(service *mgr.Service, configuration mgr.Config, spec 
 		return false, err
 	}
 	return access && strings.EqualFold(filepath.Clean(arguments[0]), filepath.Clean(spec.Executable)) &&
-		slices.Equal(arguments[1:], windowsServiceArguments(spec)) && account == spec.AccountID && configuration.StartType == mgr.StartAutomatic &&
-		configuration.ServiceType == windows.SERVICE_WIN32_OWN_PROCESS && !configuration.DelayedAutoStart &&
-		configuration.Description == windowsDefinitionDescription(spec), nil
+		slices.Equal(arguments[1:], windowsServiceArguments(spec)) && account == spec.AccountID &&
+		windowsServiceConfigurationMatches(configuration, windowsServiceConfiguration(spec, nil)), nil
+}
+
+// windowsServiceConfigurationMatches reports whether the installed
+// configuration holds each value that the service installation writes and
+// that no other check compares. windowsServiceMatches compares
+// BinaryPathName as an argument vector and ServiceStartName as a resolved
+// SID. QueryServiceConfig never returns the Password.
+//
+// LoadOrderGroup and Dependencies are not compared. mgr.UpdateConfig passes
+// nil for an empty value, which ChangeServiceConfig treats as no change, so
+// enable could never repair a group or a dependency that another tool
+// added. TagId is not compared either. The installation never writes it,
+// and Windows reads a tag only for a driver that starts at boot or system
+// start.
+func windowsServiceConfigurationMatches(actual, desired mgr.Config) bool {
+	return actual.ServiceType == desired.ServiceType &&
+		actual.StartType == desired.StartType &&
+		actual.DelayedAutoStart == desired.DelayedAutoStart &&
+		actual.ErrorControl == desired.ErrorControl &&
+		actual.SidType == desired.SidType &&
+		actual.DisplayName == desired.DisplayName &&
+		actual.Description == desired.Description
 }
 
 func windowsServiceAccessMatches(service *mgr.Service, account string) (bool, error) {
@@ -175,12 +196,17 @@ func upsertWindowsService(ctx context.Context, spec LaunchSpec, password []byte)
 		return err
 	}
 	defer func() { result = errors.Join(result, manager.Disconnect()) }()
-	configuration := mgr.Config{ServiceType: windows.SERVICE_WIN32_OWN_PROCESS, StartType: mgr.StartAutomatic, ServiceStartName: spec.AccountName, Password: string(password), DisplayName: "LeapMux " + spec.Mode.String()}
+	configuration := windowsServiceConfiguration(spec, password)
 	service, err := manager.OpenService(serviceName(spec))
-	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+	created := errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST)
+	if created {
 		service, err = manager.CreateService(serviceName(spec), spec.Executable, configuration, windowsServiceArguments(spec)...)
-	} else if err == nil {
-		defer func() { result = errors.Join(result, service.Close()) }()
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, service.Close()) }()
+	if !created {
 		existing, err := service.Config()
 		if err != nil {
 			return err
@@ -205,32 +231,47 @@ func upsertWindowsService(ctx context.Context, spec LaunchSpec, password []byte)
 				return fmt.Errorf("stop the service before changing its configuration")
 			}
 		}
-		configuration.BinaryPathName = windows.ComposeCommandLine(append([]string{spec.Executable}, windowsServiceArguments(spec)...))
-		if err := service.UpdateConfig(configuration); err != nil {
-			return err
-		}
-		return finalizeWindowsService(service, spec)
 	}
-	if err != nil {
-		return err
-	}
-	defer func() { result = errors.Join(result, service.Close()) }()
-	return finalizeWindowsService(service, spec)
-}
-
-func finalizeWindowsService(service *mgr.Service, spec LaunchSpec) error {
-	// The SCM definition has no working-directory field; the description
-	// carries the specification identity so the definition still drifts
-	// when the specification changes. A round-tripped configuration keeps
-	// every other field as the service holds it.
-	configuration, err := service.Config()
-	if err != nil {
-		return err
-	}
-	configuration.Description = windowsDefinitionDescription(spec)
+	// UpdateConfig runs for a created service too. CreateService skips a
+	// SidType of SERVICE_SID_TYPE_NONE and a false DelayedAutoStart, and
+	// Microsoft does not document what a new service holds for either
+	// value. UpdateConfig writes each field that the configuration sets, so
+	// a created service and an updated one hold the same values.
+	configuration.BinaryPathName = windows.ComposeCommandLine(append([]string{spec.Executable}, windowsServiceArguments(spec)...))
 	if err := service.UpdateConfig(configuration); err != nil {
 		return err
 	}
+	return finalizeWindowsService(service, spec)
+}
+
+// windowsServiceConfiguration is the configuration that the service
+// installation writes, and that windowsServiceConfigurationMatches expects.
+// UpdateConfig writes each field that this value sets, the description
+// included, so the description needs no second write. The SCM definition
+// has no working-directory field, so the description carries the working
+// directory, and the definition drifts when it changes.
+//
+// ErrorControl is SERVICE_ERROR_NORMAL, the value that `sc create` writes
+// by default: when the service fails to start during system startup, the
+// SCM logs the failure in the System event log, and the startup continues.
+// SERVICE_ERROR_IGNORE would continue without the log entry. SidType is
+// SERVICE_SID_TYPE_NONE (0), so the SCM adds no service SID to the token of
+// the service process.
+func windowsServiceConfiguration(spec LaunchSpec, password []byte) mgr.Config {
+	return mgr.Config{
+		ServiceType:      windows.SERVICE_WIN32_OWN_PROCESS,
+		StartType:        mgr.StartAutomatic,
+		DelayedAutoStart: false,
+		ErrorControl:     mgr.ErrorNormal,
+		SidType:          windows.SERVICE_SID_TYPE_NONE,
+		ServiceStartName: spec.AccountName,
+		Password:         string(password),
+		DisplayName:      "LeapMux " + spec.Mode.String(),
+		Description:      windowsDefinitionDescription(spec),
+	}
+}
+
+func finalizeWindowsService(service *mgr.Service, spec LaunchSpec) error {
 	// ResetRecoveryActions removes the list. The SDK's SetRecoveryActions
 	// indexes its first element even when the caller supplies an empty slice.
 	if err := service.ResetRecoveryActions(); err != nil {

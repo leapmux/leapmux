@@ -5,9 +5,10 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { cacheKey, cacheKinds, cachePolicy, rootActivePath, validateCacheKey } from './cache-policy.mjs'
+import { canonicalToolNames, cliToolsBinDir, toolIdentityHash } from './download-cli-tools.mjs'
 import { GO_TOOL_NAMES } from './go-tools.mjs'
-import { NOTICE_INPUTS } from './notice-inputs.mjs'
-import { createStoredZip, git, gitRepository, scratchDirectories } from './test-support.mjs'
+import { needsNotice } from './notice-inputs.mjs'
+import { createStoredZip, git, gitRepository, scratchDirectories, writeFiles } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const scratch = scratchDirectories()
@@ -41,6 +42,7 @@ function runShell(script, dir, extra = {}, fakeBin) {
       ...process.env,
       GITHUB_ENV: join(dir, 'environment'),
       GITHUB_OUTPUT: join(dir, 'output'),
+      GITHUB_PATH: join(dir, 'path'),
       ...(fakeBin === undefined
         ? {}
         : { ACTIONS_TEST_FAKE_BIN: fakeBin }),
@@ -59,6 +61,17 @@ function outputFile(dir, file = 'output') {
   return existsSync(path)
     ? readFileSync(path, 'utf8')
     : ''
+}
+
+/** The `name=value` records of a runner file such as GITHUB_OUTPUT. */
+function fields(text) {
+  return Object.fromEntries(text.trim().split('\n').filter(Boolean).map((line) => {
+    const split = line.indexOf('=')
+    return [
+      line.slice(0, split),
+      line.slice(split + 1),
+    ]
+  }))
 }
 
 function yaml(relPath) {
@@ -140,6 +153,17 @@ describe('runShell', () => {
 })
 
 describe('cache and pin invariants of the GitHub Actions workflows', () => {
+  it('downloads every Dockerfile asset with a curl that fails on an error and retries a transient one', () => {
+    // BusyBox wget never retries, so one 5xx answer of a release CDN failed
+    // the image build.
+    const dockerfile = raw('docker/Dockerfile')
+    expect(dockerfile).not.toMatch(/\bwget\b/)
+    const downloads = dockerfile.split('\n').filter(line => /\bcurl\s+-/.test(line))
+    expect(downloads.length).toBeGreaterThanOrEqual(5)
+    for (const line of downloads)
+      expect(line, line.trim()).toContain('curl -fsSL --retry 10 --retry-all-errors ')
+  })
+
   it('runs container build tools on the builder platform and cross-compiles the requested target', () => {
     const dockerfile = raw('docker/Dockerfile')
     for (const stage of ['node', 'tools']) {
@@ -284,6 +308,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
     const result = runShell('bash scripts/diagnose-linuxdeploy.sh', dir, { HOME: dir }, bin)
     expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('No linuxdeploy AppImage exists')
     expect(result.stdout).toContain('No AppDir exists')
     expect(result.stdout).toContain('No sidecar exists')
     const logs = join(dir, '.tmp', 'linuxdeploy-diagnostics')
@@ -293,6 +318,26 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(compiler).toEndWith('EXIT: 17\n')
     expect(readFileSync(join(logs, 'cgo.log'), 'utf8')).toBe('CGO fixture\nEXIT: 18\n')
     expect(readFileSync(join(logs, 'arm64-loader.log'), 'utf8')).toMatch(/EXIT: \d+\n$/)
+  })
+  it('diagnoses the linuxdeploy that Tauri downloaded, with the staged GStreamer plugins', () => {
+    const dir = fixture()
+    mkdirSync(join(dir, 'scripts'))
+    writeFileSync(join(dir, 'scripts', 'diagnose-linuxdeploy.sh'), raw('scripts/diagnose-linuxdeploy.sh'))
+    const machine = spawnSync('uname', ['-m'], { encoding: 'utf8' }).stdout.trim()
+    const cache = join(dir, '.cache', 'tauri')
+    mkdirSync(cache, { recursive: true })
+    const linuxdeploy = join(cache, `linuxdeploy-07333c6-${machine}.AppImage`)
+    writeFileSync(linuxdeploy, `#!/usr/bin/env bash\nprintf "extract=%s plugins=%s args=%s\\n" "$APPIMAGE_EXTRACT_AND_RUN" "\${GSTREAMER_PLUGINS_DIR:-}" "$*"\n`)
+    chmodSync(linuxdeploy, 0o755)
+    mkdirSync(join(dir, 'desktop', 'rust', 'target', 'release', 'bundle', 'appimage', 'leapmux-desktop.AppDir'), { recursive: true })
+    const result = runShell('bash scripts/diagnose-linuxdeploy.sh', dir, { HOME: dir })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).not.toContain('No linuxdeploy AppImage exists')
+    const logs = join(dir, '.tmp', 'linuxdeploy-diagnostics')
+    expect(readFileSync(join(logs, 'linuxdeploy-version.log'), 'utf8')).toBe('extract=1 plugins= args=--version\nEXIT: 0\n')
+    const direct = readFileSync(join(logs, 'direct-linuxdeploy.log'), 'utf8')
+    expect(direct).toContain(`plugins=${join(dir, 'desktop', 'rust', 'target', 'leapmux-gstreamer-plugins')}`)
+    expect(direct).toContain('--plugin gtk --plugin gstreamer')
   })
   it('restores the Docker Go snapshot before the build and saves it only after the export', () => {
     const helper = actionSteps('.github/actions/build-output-cache/action.yaml')
@@ -773,23 +818,124 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
   })
 
-  it('runs NOTICE again when an action that it uses changes', () => {
-    const paths = NOTICE_INPUTS
-    const needed = new Set(['.github/actions/setup-build/action.yaml'])
-    const queue = [...needed]
-    while (queue.length > 0) {
-      for (const step of actionSteps(queue.pop())) {
-        const uses = String(step.uses ?? '')
-        if (!uses.startsWith('./.github/actions/'))
-          continue
-        const file = `${uses.slice(2)}/action.yaml`
-        if (needed.has(file))
-          continue
-        needed.add(file)
-        queue.push(file)
+  it('assigns each command substitution before a step echoes it', () => {
+    // `set -e` sees the status of `echo`, never of a `$(command)` inside its
+    // arguments. `echo "key=$(node …)"` therefore writes `key=` and goes on
+    // when the command fails, and a later step fails with a vaguer message.
+    // An assignment fails the step at the command that failed.
+    const hidden = /\b(?:echo|printf)\b.*\$\((?!\()/
+    let scanned = 0
+    for (const file of [
+      ...workflowFiles,
+      ...actionFiles,
+    ]) {
+      for (const { step } of allSteps(yaml(file))) {
+        for (const line of String(step.run ?? '').split('\n')) {
+          scanned++
+          expect(line, `${file}: ${line.trim()}`).not.toMatch(hidden)
+        }
       }
     }
-    for (const file of needed) expect(paths).toContain(file)
+    expect(scanned).toBeGreaterThan(100)
+    expect('echo "key=$(node x)"').toMatch(hidden)
+    expect('echo "next=$((patch + 1))"').not.toMatch(hidden)
+  })
+
+  /**
+   * Each step list that runs ./.github/actions/setup-cli-tools: the steps of
+   * one workflow job, or of one composite action.
+   */
+  function cliToolsCallers() {
+    const lists = []
+    for (const file of workflowFiles) {
+      for (const [jobName, job] of Object.entries(yaml(file).jobs ?? {}))
+        lists.push({ where: `${file} ${jobName}`, steps: job.steps ?? [] })
+    }
+    for (const file of actionFiles) {
+      lists.push({
+        where: file,
+        steps: actionSteps(file),
+      })
+    }
+    return lists.flatMap(({ where, steps }) => steps
+      .map((step, index) => ({ where, steps, step, index }))
+      .filter(({ step }) => step.uses === './.github/actions/setup-cli-tools'))
+  }
+
+  it('sets up the pinned Node.js before each setup-cli-tools step', () => {
+    // The action runs its scripts with node. The runner image's own Node
+    // is not the NODE_VERSION pin.
+    const callers = cliToolsCallers()
+    expect(callers.length).toBeGreaterThan(0)
+    for (const { where, steps, index } of callers) {
+      const node = steps.slice(0, index).find(step => String(step.uses).startsWith('actions/setup-node@'))
+      expect(node?.with?.['node-version'], where).toBe(expression('env.NODE_VERSION'))
+    }
+  })
+
+  it('installs Task in each setup-cli-tools step that a later task command needs', () => {
+    const defaultTools = yaml('.github/actions/setup-cli-tools/action.yaml').inputs.tools.default
+    let checked = 0
+    for (const { where, steps, step, index } of cliToolsCallers()) {
+      const tools = canonicalToolNames(step.with?.tools ?? defaultTools)
+      const runsTask = steps.slice(index + 1).some(later => /^\s*task\s/m.test(String(later.run ?? '')))
+      if (runsTask) {
+        checked++
+        expect(tools, where).toContain('task')
+      }
+    }
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  /**
+   * Every local file that a composite action reaches: each local action that
+   * it uses, each script that a step runs with node or bun, and each module
+   * that such a script imports, statically, for its side effects, or
+   * dynamically. GitHub resolves all of them against the checked-out tree.
+   */
+  function localClosure(entry) {
+    const closure = new Set()
+    const queue = [entry]
+    while (queue.length > 0) {
+      const file = queue.pop()
+      if (closure.has(file))
+        continue
+      closure.add(file)
+      if (file.endsWith('/action.yaml')) {
+        for (const step of actionSteps(file)) {
+          const uses = String(step.uses ?? '')
+          if (uses.startsWith('./'))
+            queue.push(`${uses.slice(2)}/action.yaml`)
+          for (const match of String(step.run ?? '').matchAll(/\b(?:node|bun)\s+(scripts\/[\w./-]+\.mjs)/g))
+            queue.push(match[1])
+        }
+        continue
+      }
+      for (const match of raw(file).matchAll(/(?:\bfrom|\bimport)\s*(?:\(\s*)?'(\.{1,2}\/[^']+)'/g))
+        queue.push(posix.join(posix.dirname(file), match[1]))
+    }
+    return closure
+  }
+
+  it('runs NOTICE again when a file that its setup reaches changes', () => {
+    // The walk ignores each step's `if:`, so a file that runs only under a
+    // condition, such as the resource monitor, also starts NOTICE.
+    const reached = localClosure('.github/actions/setup-build/action.yaml')
+    expect(reached).toContain('.github/actions/setup-cli-tools/action.yaml')
+    expect(reached).toContain('scripts/download-cli-tools.mjs')
+    expect(reached).toContain('scripts/http-retry.mjs')
+    for (const file of reached)
+      expect(needsNotice([file]), file).toBe(true)
+    // A data file that a reached script reads is invisible to the walk.
+    expect(needsNotice(['scripts/cli-tools.sha256'])).toBe(true)
+  })
+
+  it('follows every import form in the local closure', () => {
+    const imports = /(?:\bfrom|\bimport)\s*(?:\(\s*)?'(\.{1,2}\/[^']+)'/g
+    const sample = 'import { a } from \'./a.mjs\'\nimport \'./b.mjs\'\nconst c = await import(\'../c.mjs\')\nimport fs from \'node:fs\'\n'
+    expect([
+      ...sample.matchAll(imports),
+    ].map(match => match[1])).toEqual(['./a.mjs', './b.mjs', '../c.mjs'])
   })
 
   it('pins every remote action to a full commit SHA with a version comment', () => {
@@ -864,7 +1010,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       kind: 'go-modules',
       key: `go-modules-2-Linux-${'a'.repeat(64)}`,
       writer: true,
-      exactHit: false,
       workspace: root,
       env: moduleEnv,
       log: message => operations.push(`activate: ${message}`),
@@ -1137,14 +1282,27 @@ describe('renovate workflow and protection', () => {
       './.github/actions/load-versions',
       'actions/setup-go',
       'oven-sh/setup-bun',
+      'actions/setup-node',
       './.github/actions/setup-cli-tools',
     ])
+    // The check runs `task`, so the tool step must install it.
+    expect(canonicalToolNames(rest.find(step => step.uses === './.github/actions/setup-cli-tools').with.tools)).toContain('task')
     expect(rest.find(step => String(step.uses).startsWith('actions/setup-go@')).with.cache).toBe(false)
-    // Every tool comes from the base commit: the job checks it out before it loads a version.
+    // The pins come from the base commit: the job checks it out before it
+    // loads a version. The workspace then returns to the merge commit before
+    // the installer step starts, so the installer resolves against one commit.
     const names = rest.map(step => step.name ?? step.uses)
-    expect(names.indexOf('Check out the base commit')).toBeLessThan(names.indexOf('Load tool versions'))
+    const checkoutBase = names.indexOf('Check out the base commit')
+    const loadVersions = names.indexOf('Load tool versions')
+    const returnToMerge = names.indexOf('Return to the merge commit and keep the base in a worktree')
+    const installTask = rest.findIndex(step => step.uses === './.github/actions/setup-cli-tools')
+    expect(checkoutBase).toBeGreaterThanOrEqual(0)
+    expect(loadVersions).toBeGreaterThan(checkoutBase)
+    expect(returnToMerge).toBeGreaterThan(loadVersions)
+    expect(installTask).toBeGreaterThan(returnToMerge)
     const check = rest.at(-1)
-    expect(check.run).toBe('task check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"')
+    // The judge, its Taskfile, and the Renovate tree run from the base worktree.
+    expect(check.run).toBe('task -d "$BASE_CHECKOUT" check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"')
     expect(check.env).toEqual({
       HEAD_REF: expression('github.head_ref'),
       GITHUB_TOKEN: expression('secrets.GITHUB_TOKEN'),
@@ -1156,53 +1314,15 @@ describe('renovate workflow and protection', () => {
     })
     expect(ci.jobs['required-ci'].needs).toContain('dependency-age')
   })
-  it('checks out the base commit and records the merge commit for the age check', () => {
-    const step = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps.find(entry => entry.name === 'Check out the base commit')
-    const directory = fixture()
-    const base = gitRepository(directory, {
-      files: { file: 'base\n' },
-    })
+  /**
+   * Commit `baseFiles` on main in `directory`, commit `headFiles` on the
+   * branch renovate/x, and merge that branch into main with a merge commit,
+   * as GitHub does for a pull request. Return the base and merge commits.
+   */
+  function mergedPullRequest(directory, { baseFiles, headFiles }) {
+    const base = gitRepository(directory, { files: baseFiles })
     git(directory, ['checkout', '-q', '-b', 'renovate/x'])
-    writeFileSync(join(directory, 'file'), 'head\n')
-    git(directory, ['commit', '-q', '-am', 'head'])
-    git(directory, ['checkout', '-q', 'main'])
-    git(directory, [
-      'merge',
-      '-q',
-      '--no-ff',
-      '-m',
-      'merge',
-      'renovate/x',
-    ])
-    const merge = git(directory, ['rev-parse', 'HEAD'])
-    const result = runShell(step.run, directory)
-    expect(result.status, result.stderr).toBe(0)
-    expect(git(directory, ['rev-parse', 'HEAD'])).toBe(base)
-    expect(outputFile(directory, 'environment').trim()).toBe(`PR_MERGE_SHA=${merge}`)
-  })
-  it('restores the tool plumbing of the merge commit after the base checkout', () => {
-    // uses: ./.github/actions/... resolves against the checked-out tree, and
-    // the base commit need not define a new local action or script.
-    const steps = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps
-    const checkoutBase = steps.find(entry => entry.name === 'Check out the base commit')
-    const restore = steps.find(entry => entry.name === 'Keep the tool plumbing of the merge commit')
-    const plumbing = [
-      '.github/actions/setup-cli-tools/action.yaml',
-      'scripts/download.mjs',
-      'scripts/download-cli-tools.mjs',
-      'scripts/cache-policy.mjs',
-      'scripts/cache-snapshot.mjs',
-    ]
-    const directory = fixture()
-    gitRepository(directory, {
-      files: {
-        file: 'base\n',
-        ...Object.fromEntries(plumbing.map(path => [path, 'base plumbing\n'])),
-      },
-    })
-    git(directory, ['checkout', '-q', '-b', 'renovate/x'])
-    for (const path of plumbing) writeFileSync(join(directory, path), 'merge plumbing\n')
-    writeFileSync(join(directory, 'file'), 'head\n')
+    writeFiles(directory, headFiles)
     git(directory, ['add', '--all'])
     git(directory, ['commit', '-q', '-m', 'head'])
     git(directory, ['checkout', '-q', 'main'])
@@ -1214,39 +1334,50 @@ describe('renovate workflow and protection', () => {
       'merge',
       'renovate/x',
     ])
-    const merge = git(directory, ['rev-parse', 'HEAD'])
+    return {
+      base,
+      merge: git(directory, ['rev-parse', 'HEAD']),
+    }
+  }
+  it('checks out the base commit and records the merge commit for the age check', () => {
+    const step = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps.find(entry => entry.name === 'Check out the base commit')
+    const directory = fixture()
+    const { base, merge } = mergedPullRequest(directory, {
+      baseFiles: { file: 'base\n' },
+      headFiles: { file: 'head\n' },
+    })
+    const result = runShell(step.run, directory)
+    expect(result.status, result.stderr).toBe(0)
+    expect(git(directory, ['rev-parse', 'HEAD'])).toBe(base)
+    expect(outputFile(directory, 'environment').trim()).toBe(`PR_MERGE_SHA=${merge}`)
+  })
+  it('returns the workspace to the merge commit and keeps the base in a worktree', () => {
+    const steps = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps
+    const checkoutBase = steps.find(entry => entry.name === 'Check out the base commit')
+    const returnToMerge = steps.find(entry => entry.name === 'Return to the merge commit and keep the base in a worktree')
+    const directory = fixture()
+    const runnerTemp = fixture()
+    const { base, merge } = mergedPullRequest(directory, {
+      baseFiles: { 'versions.env': 'TASK_VERSION=1.0.0\n', 'scripts/judge.mjs': 'base judge\n' },
+      headFiles: { 'versions.env': 'TASK_VERSION=9.0.0\n', 'scripts/judge.mjs': 'merge judge\n' },
+    })
     const first = runShell(checkoutBase.run, directory)
     expect(first.status, first.stderr).toBe(0)
-    expect(readFileSync(join(directory, 'scripts', 'cache-snapshot.mjs'), 'utf8')).toBe('base plumbing\n')
-    const second = runShell(restore.run, directory, { PR_MERGE_SHA: merge })
+    // Load tool versions runs here and reads the base pins.
+    expect(readFileSync(join(directory, 'versions.env'), 'utf8')).toBe('TASK_VERSION=1.0.0\n')
+    const second = runShell(returnToMerge.run, directory, { PR_MERGE_SHA: merge, RUNNER_TEMP: runnerTemp })
     expect(second.status, second.stderr).toBe(0)
-    // The tool plumbing comes from the merge commit while the judge code and
-    // the pinned versions stay those of the base commit.
-    for (const path of plumbing)
-      expect(readFileSync(join(directory, path), 'utf8'), path).toBe('merge plumbing\n')
-    expect(readFileSync(join(directory, 'file'), 'utf8')).toBe('base\n')
-    expect(git(directory, ['rev-parse', 'HEAD'])).not.toBe(merge)
-  })
-  it('restores every tool-plumbing module that the installer imports', () => {
-    // The base commit need not define the tool plumbing, and ESM imports
-    // resolve against the checked-out tree: a module that the installer
-    // reaches but the restore step does not list fails the job with
-    // ERR_MODULE_NOT_FOUND before it installs anything.
-    const steps = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps
-    const restore = steps.find(entry => entry.name === 'Keep the tool plumbing of the merge commit')
-    const closure = new Set()
-    const queue = ['scripts/download-cli-tools.mjs', 'scripts/cache-snapshot.mjs']
-    while (queue.length > 0) {
-      const file = queue.pop()
-      if (closure.has(file))
-        continue
-      closure.add(file)
-      for (const match of readFileSync(join(root, file), 'utf8').matchAll(/from '(\.[^']+)'/g))
-        queue.push(posix.join(posix.dirname(file), match[1]))
-    }
-    expect(closure.size).toBeGreaterThan(1)
-    for (const file of closure)
-      expect(restore.run, file).toContain(file)
+    const baseCheckout = join(runnerTemp, 'base')
+    // The workspace holds the merge commit, so the installer resolves there.
+    expect(git(directory, ['rev-parse', 'HEAD'])).toBe(merge)
+    expect(readFileSync(join(directory, 'scripts', 'judge.mjs'), 'utf8')).toBe('merge judge\n')
+    // The judge runs from the base worktree.
+    expect(git(baseCheckout, ['rev-parse', 'HEAD'])).toBe(base)
+    expect(readFileSync(join(baseCheckout, 'scripts', 'judge.mjs'), 'utf8')).toBe('base judge\n')
+    expect(fields(outputFile(directory, 'environment'))).toEqual({
+      PR_MERGE_SHA: merge,
+      BASE_CHECKOUT: baseCheckout,
+    })
   })
   it('keeps the administrator credential in the release environment and atomic push only', () => {
     const release = yaml('.github/workflows/release.yaml').jobs.release
@@ -1484,10 +1615,11 @@ describe('cache native setup', () => {
     expect(macos.steps.some(step => step.name === 'Save the Tauri tool snapshot')).toBe(false)
   })
 
-  it('keeps the patch fingerprint in every Tauri key and the spinner subtree in the clone directory', () => {
+  it('keys the Tauri tools by the resolved Tauri CLI and keeps the spinner subtree in the clone directory', () => {
     const tauri = setupSteps().find(step => step.id === 'tauri-restore')
     const keys = setupSteps().find(step => step.id === 'tool-keys')
-    for (const file of ['patch-linuxdeploy.mjs', 'linuxdeploy-wrapper.c']) expect(keys.env.TAURI_CACHE_HASH).toContain(file)
+    expect(keys.run).toContain('tauri_cli_hash="$(node scripts/tauri-cli-version.mjs --hash)"')
+    expect(keys.run).toContain('--kind tauri-tools --hash "$tauri_cli_hash"')
     expect(tauri.with.key).toBe(expression('steps.tool-keys.outputs.tauri'))
     const spinners = setupSteps().find(step => step.id === 'spinners-restore')
     expect(spinners.with.kind).toBe('spinners')
@@ -1644,6 +1776,7 @@ describe('cache workflow execution', () => {
       .replaceAll('node scripts/cache-snapshot.mjs', `node '${root}/scripts/cache-snapshot.mjs'`)
       .replaceAll('node scripts/download-go-modules.mjs', `node '${root}/scripts/download-go-modules.mjs'`)
       .replaceAll('node scripts/download-cli-tools.mjs', `node '${root}/scripts/download-cli-tools.mjs'`)
+      .replaceAll('node scripts/tauri-cli-version.mjs', `node '${root}/scripts/tauri-cli-version.mjs'`)
     return runShell(script, dir, {
       ...env,
       ...Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [
@@ -1651,15 +1784,6 @@ describe('cache workflow execution', () => {
         evaluate(value, env, inputs, outputs),
       ])),
     }, fakeBin)
-  }
-  function fields(text) {
-    return Object.fromEntries(text.trim().split('\n').filter(Boolean).map((line) => {
-      const split = line.indexOf('=')
-      return [
-        line.slice(0, split),
-        line.slice(split + 1),
-      ]
-    }))
   }
 
   it('exports the Go cache path that the snapshot policy consumes', () => {
@@ -1784,6 +1908,33 @@ describe('cache workflow execution', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
+  /** A frontend/bun.lock in `dir` that resolves the Tauri CLI at `version`. */
+  function tauriLockfile(dir, version) {
+    mkdirSync(join(dir, 'frontend'), { recursive: true })
+    writeFileSync(join(dir, 'frontend', 'bun.lock'), `{\n  "packages": {\n    "@tauri-apps/cli": ["@tauri-apps/cli@${version}", "", {}, "sha512-x"],\n  }\n}\n`)
+  }
+
+  it('rotates the Tauri tool key with the resolved Tauri CLI version and nothing else', () => {
+    const step = actionSteps('.github/actions/setup-build/action.yaml').find(entry => entry.id === 'tool-keys')
+    const tauriKey = (version) => {
+      const dir = fixture()
+      tauriLockfile(dir, version)
+      const result = execute(step, dir, environment(dir))
+      expect(result.status, result.stderr).toBe(0)
+      return fields(outputFile(dir)).tauri
+    }
+    expect(tauriKey('2.12.4')).toBe(tauriKey('2.12.4'))
+    expect(tauriKey('2.13.0')).not.toBe(tauriKey('2.12.4'))
+    // A lockfile without the CLI fails the step instead of writing a key.
+    const dir = fixture()
+    mkdirSync(join(dir, 'frontend'))
+    writeFileSync(join(dir, 'frontend', 'bun.lock'), '{ "packages": {} }\n')
+    const failed = execute(step, dir, environment(dir))
+    expect(failed.status).not.toBe(0)
+    expect(failed.stderr).toContain('resolves no @tauri-apps/cli package')
+    expect(outputFile(dir)).toBe('')
+  })
+
   it('generates valid tool, site, and Renovate keys through the policy CLI', () => {
     for (const [file, id, kinds, inputs] of [
       [
@@ -1810,6 +1961,7 @@ describe('cache workflow execution', () => {
     ]) {
       const dir = fixture()
       const env = environment(dir)
+      tauriLockfile(dir, '2.12.4')
       const document = yaml(file)
       const steps = document.runs?.steps ?? Object.values(document.jobs).flatMap(job => job.steps ?? [])
       const result = execute(steps.find(step => step.id === id), dir, env, { inputs: inputs ?? {} })
@@ -1818,9 +1970,69 @@ describe('cache workflow execution', () => {
       for (const [name, kind] of Object.entries(kinds)) expect(() => validateCacheKey(kind, output[name], env)).not.toThrow()
       if (id === 're2-key')
         expect(output.key.startsWith(output['restore-keys'])).toBe(true)
-      if (id === 'tools')
-        expect(output.bin).toBe(`${rootActivePath('cli-tools', 'tools', env, dir)}/bin`)
+      if (id === 'tools') {
+        // The tools directory joins the PATH, and the job records the key of
+        // the tool set that it installed.
+        expect(outputFile(dir, 'path').trim()).toBe(cliToolsBinDir(env, dir))
+        expect(cliToolsBinDir(env, dir)).toBe(join(rootActivePath('cli-tools', 'tools', env, dir), 'bin'))
+        expect(fields(outputFile(dir, 'environment')).LEAPMUX_CLI_TOOLS_KEY).toBe(output.key)
+      }
     }
+  })
+
+  it('refuses a second tool set in one job and accepts the same tool set again', () => {
+    const locate = actionSteps('.github/actions/setup-cli-tools/action.yaml').find(step => step.id === 'tools')
+    const run = (dir, env, tools) => execute(locate, dir, env, {
+      inputs: { tools },
+    })
+    const dir = fixture()
+    const env = environment(dir)
+    const first = run(dir, env, 'protoc,buf,task')
+    expect(first.status, first.stderr).toBe(0)
+    const installed = fields(outputFile(dir, 'environment')).LEAPMUX_CLI_TOOLS_KEY
+    expect(installed).toBeTruthy()
+    // The same set in another spelling is the same archive.
+    const again = run(fixture(), { ...env, LEAPMUX_CLI_TOOLS_KEY: installed }, 'task,buf,protoc')
+    expect(again.status, again.stderr).toBe(0)
+    const other = run(fixture(), { ...env, LEAPMUX_CLI_TOOLS_KEY: installed }, 'task')
+    expect(other.status).not.toBe(0)
+    expect(other.stdout).toContain('setup-cli-tools already installed another tool set in this job.')
+  })
+
+  it('keys the tool snapshot with the recipe hash and the tool-set hash, and refuses an empty recipe hash', () => {
+    const locate = actionSteps('.github/actions/setup-cli-tools/action.yaml').find(step => step.id === 'tools')
+    expect(locate.env.DOWNLOAD_RECIPE_HASH).toBe(expression('hashFiles(\'scripts/download-cli-tools.mjs\', \'scripts/cli-tools.sha256\')'))
+    const dir = fixture()
+    const env = environment(dir)
+    const result = execute(locate, dir, env, {
+      inputs: { tools: 'task' },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(validateCacheKey('cli-tools', fields(outputFile(dir)).key, env).hash).toBe(`${contentHash}-${toolIdentityHash('task', env)}`)
+    // A hashFiles call that matches nothing evaluates to ''. The key then
+    // fails validation instead of never rotating.
+    const empty = fixture()
+    const failed = execute({
+      ...locate,
+      env: { ...locate.env, DOWNLOAD_RECIPE_HASH: '' },
+    }, empty, environment(empty), {
+      inputs: { tools: 'task' },
+    })
+    expect(failed.status).not.toBe(0)
+    expect(outputFile(empty)).toBe('')
+  })
+
+  it('fails the locate step when a key command fails, instead of writing an empty key', () => {
+    const locate = actionSteps('.github/actions/setup-cli-tools/action.yaml').find(step => step.id === 'tools')
+    const dir = fixture()
+    const env = environment(dir)
+    delete env.RUNNER_ARCH
+    const result = execute(locate, dir, env, {
+      inputs: { tools: 'task' },
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('RUNNER_ARCH')
+    expect(outputFile(dir)).toBe('')
   })
 
   it('exposes the validated activation result for a partial transport hit', () => {
@@ -1845,6 +2057,49 @@ describe('cache workflow execution', () => {
     outputs.activate = fields(outputFile(dir))
     expect(evaluate(action.outputs['cache-hit'].value, env, {}, outputs)).toBe('false')
     expect(evaluate(action.outputs['save-required'].value, env, {}, outputs)).toBe('false')
+  })
+
+  it('forwards the matched key of a transport fallback and of a miss to the activation', () => {
+    const action = yaml('.github/actions/build-output-cache/action.yaml')
+    const activate = action.runs.steps.find(step => step.id === 'activate')
+    const runActivation = (restore) => {
+      const dir = fixture()
+      const env = {
+        ...environment(dir),
+        GOCACHE: join(dir, 'go-build'),
+        GOLANGCI_LINT_CACHE: '',
+      }
+      const key = cacheKey('native-go', { hash: contentHash, week: env.CACHE_WEEK }, env)
+      const fallbackKey = cacheKey('native-go', {
+        hash: 'b'.repeat(64),
+        week: '2026-W44',
+      }, env)
+      const payload = join(dir, '.tmp', 'ci-cache', 'snapshots', 'native-go', 'payload', 'gocache')
+      mkdirSync(payload, { recursive: true })
+      writeFileSync(join(payload, 'entry'), 'fallback build output')
+      const result = execute(activate, dir, env, {
+        inputs: { kind: 'native-go', key, writer: 'false' },
+        outputs: {
+          restore: restore(fallbackKey),
+        },
+      })
+      return {
+        result,
+        records: fields(outputFile(dir)),
+        active: env.GOCACHE,
+      }
+    }
+    // A reader that the transport served from a restore-keys prefix
+    // activates the fallback, so the key must reach the script.
+    const fallback = runActivation(fallbackKey => ({ 'cache-hit': 'false', 'cache-matched-key': fallbackKey }))
+    expect(fallback.result.status, fallback.result.stderr).toBe(0)
+    expect(fallback.records.outcome).toBe('activated-fallback')
+    expect(readFileSync(join(fallback.active, 'entry'), 'utf8')).toBe('fallback build output')
+    // A miss sets neither transport output; the empty key is no match.
+    const miss = runActivation(() => ({}))
+    expect(miss.result.status, miss.result.stderr).toBe(0)
+    expect(miss.records.outcome).toBe('miss')
+    expect(`${miss.result.stdout}${miss.result.stderr}`).not.toContain('Ignoring the restored')
   })
 
   it('resolves every transport payload through the policy before lookup', () => {

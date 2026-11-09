@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { readBuildLog } from './check-build-cache.mjs'
+import { canonicalToolNames } from './download-cli-tools.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const fixtures = []
@@ -355,6 +356,9 @@ describe('native build cache checks in CI', () => {
     const prepare = steps.findIndex(step => step.run === 'task prepare-dmg-tools')
     expect(setup).toBeGreaterThanOrEqual(0)
     expect(prepare).toBeGreaterThan(setup)
+    // The step must install Task itself, not only some other tool.
+    const action = Bun.YAML.parse(readFileSync(join(root, '.github/actions/setup-cli-tools/action.yaml'), 'utf8'))
+    expect(canonicalToolNames(steps[setup].with?.tools ?? action.inputs.tools.default)).toContain('task')
     const taskfile = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
     expect(taskfile.tasks['prepare-dmg-tools'].internal ?? false).toBe(false)
     expect(steps.some(step => /node-gyp|bun install/.test(step.run ?? ''))).toBe(false)

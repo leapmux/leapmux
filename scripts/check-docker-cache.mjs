@@ -295,8 +295,7 @@ export async function runDockerCacheCheck({
         key,
         workspace: snapshotWorkspace,
         env,
-        exactHit: true,
-        matchedKey: true,
+        matchedKey: key,
         writer: mode === 'exact-hit',
       })
       if (!activated.cacheHit || activated.saveRequired)

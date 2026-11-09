@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/filelock"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -40,12 +41,7 @@ func TestObserveClosesItsControlConnection(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = lease.Close() })
 	paths := pathsFor(root)
-	lock, err := filelock.Open(paths.RuntimeLock, false)
-	require.NoError(t, err)
-	held, err := filelock.TryLock(lock)
-	require.NoError(t, err)
-	require.True(t, held)
-	t.Cleanup(func() { _ = lock.Close() })
+	holdTestRuntimeLock(t, paths)
 	attempt, err := NewAttemptID()
 	require.NoError(t, err)
 	instance := NewInstanceID(CurrentAccountID(), RoleWorker, root)
@@ -95,33 +91,67 @@ func TestHeldRuntimeWithoutRecordIsUnresponsive(t *testing.T) {
 	directory, err := AcquireDirectory(NewDirectoryOwner(RoleHub, root), RoleHub, root)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = directory.Close() })
-	lock, err := filelock.Open(pathsFor(root).RuntimeLock, false)
-	require.NoError(t, err)
-	held, err := filelock.TryLock(lock)
-	require.NoError(t, err)
-	require.True(t, held)
-	t.Cleanup(func() { _ = lock.Close() })
+	holdTestRuntimeLock(t, pathsFor(root))
 	status, err := Observe(context.Background(), root)
 	require.ErrorIs(t, err, ErrUnresponsive)
 	assert.Equal(t, ProcessUnresponsive, status.Process.State)
 }
 
-func TestShutdownWaitDoesNotAcceptProbeFailure(t *testing.T) {
+func TestWaitForRuntimeReleaseRefusesAProbeFailure(t *testing.T) {
 	root := mustCanonical(t, t.TempDir())
 	paths := pathsFor(root)
+	// A directory where the lock file belongs cannot be probed.
 	require.NoError(t, os.MkdirAll(paths.RuntimeLock, 0o700))
 	// The deadline only keeps a regression from hanging the test: a probe
 	// failure must end the wait at once, not when the deadline passes.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := waitForLockRelease(ctx, root)
+	err := WaitForRuntimeRelease(ctx, paths)
 	require.Error(t, err, "an unreadable or invalid lock is not proof of completed shutdown")
 	assert.NotErrorIs(t, err, context.DeadlineExceeded)
 }
 
-func TestShutdownWaitEndsWithTheContextWhileTheLockIsHeld(t *testing.T) {
+func TestWaitForRuntimeReleaseEndsWithTheContextWhileTheLockIsHeld(t *testing.T) {
 	root := mustCanonical(t, t.TempDir())
 	paths := pathsFor(root)
+	holdTestRuntimeLock(t, paths)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, WaitForRuntimeRelease(ctx, paths), context.Canceled)
+}
+
+func TestWaitForRuntimeReleaseReturnsOnceTheHolderReleasesTheLock(t *testing.T) {
+	root := mustCanonical(t, t.TempDir())
+	paths := pathsFor(root)
+	lock := holdTestRuntimeLock(t, paths)
+	clock := testutil.NewQuartzMock(t)
+	retry := clock.Trap().NewTimer(runtimeReleaseRetryTag)
+	t.Cleanup(retry.Close)
+	ctx := testutil.DeadlineContext(t)
+	released := make(chan error, 1)
+	go func() { released <- waitForRuntimeRelease(ctx, paths, clock) }()
+	// The wait arms its retry timer only after a probe finds the lock held.
+	assert.Equal(t, 100*time.Millisecond, testutil.WaitForTimer(t, ctx, retry))
+	select {
+	case err := <-released:
+		require.FailNow(t, "the wait returned while the lock was held", "%v", err)
+	default:
+	}
+	// The holder releases the lock, and the next probe ends the wait.
+	require.NoError(t, lock.Close())
+	clock.Advance(100 * time.Millisecond).MustWait(ctx)
+	select {
+	case err := <-released:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		require.FailNow(t, "the wait did not return after the holder released the lock")
+	}
+}
+
+// holdTestRuntimeLock takes the runtime lock of paths for the rest of the
+// test, as a running instance holds it.
+func holdTestRuntimeLock(t *testing.T, paths Paths) *os.File {
+	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(paths.RuntimeLock), 0o700))
 	lock, err := filelock.Open(paths.RuntimeLock, false)
 	require.NoError(t, err)
@@ -129,12 +159,10 @@ func TestShutdownWaitEndsWithTheContextWhileTheLockIsHeld(t *testing.T) {
 	held, err := filelock.TryLock(lock)
 	require.NoError(t, err)
 	require.True(t, held)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.ErrorIs(t, waitForLockRelease(ctx, root), context.Canceled)
+	return lock
 }
 
-func TestShutdownWaitReturnsOnceTheLockIsFree(t *testing.T) {
+func TestWaitForRuntimeReleaseReturnsOnceTheLockIsFree(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		lockFile bool
@@ -153,7 +181,7 @@ func TestShutdownWaitReturnsOnceTheLockIsFree(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			require.NoError(t, waitForLockRelease(ctx, root))
+			require.NoError(t, WaitForRuntimeRelease(ctx, paths))
 		})
 	}
 }
@@ -191,15 +219,7 @@ func TestHeldRuntimeWithoutEndpointIsUnresponsive(t *testing.T) {
 	require.NoError(t, os.MkdirAll(paths.Dir, 0o700))
 
 	// A published record and token, and a runtime lock this test holds.
-	lock, err := filelock.Open(paths.RuntimeLock, false)
-	require.NoError(t, err)
-	held, err := filelock.TryLock(lock)
-	require.NoError(t, err)
-	require.True(t, held)
-	t.Cleanup(func() {
-		_ = filelock.Unlock(lock)
-		_ = lock.Close()
-	})
+	holdTestRuntimeLock(t, paths)
 	require.NoError(t, WriteControlToken(paths.ControlToken, "token-material"))
 	record := RuntimeRecord{
 		InstanceID: "held0000000000001",

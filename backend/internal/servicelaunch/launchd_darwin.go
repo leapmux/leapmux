@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -28,6 +27,10 @@ type launchdManager struct {
 	readFile  func(path string) ([]byte, error)
 	writeFile func(context.Context, LaunchSpec, string, []byte) error
 	remove    func(context.Context, LaunchSpec, string) error
+	// awaitRuntimeRelease waits until no process holds the runtime lock of
+	// a data directory; a test substitutes it, so that a stubbed manager
+	// never probes a real data directory.
+	awaitRuntimeRelease func(context.Context, lifecycle.Paths) error
 }
 
 // newLaunchdManager builds the production manager.
@@ -37,6 +40,8 @@ func newLaunchdManager() *launchdManager {
 		readFile:     os.ReadFile,
 		writeFile:    publishNativeDefinition,
 		remove:       removeNativeDefinition,
+
+		awaitRuntimeRelease: lifecycle.WaitForRuntimeRelease,
 	}
 }
 
@@ -145,6 +150,12 @@ func (m *launchdManager) definitionPlist(spec LaunchSpec) []byte {
 	b.WriteString("\t<true/>\n")
 	writeKey("KeepAlive")
 	b.WriteString("\t<false/>\n")
+	// launchd sends SIGKILL when a job outlives ExitTimeOut after SIGTERM.
+	// The value 0 turns that SIGKILL off, so an orderly shutdown takes as
+	// long as it needs. `man launchd.plist` documents 0 as infinite, and
+	// warns that a job that never exits then stalls system shutdown.
+	writeKey("ExitTimeOut")
+	b.WriteString("\t<integer>0</integer>\n")
 	b.WriteString("</dict>\n</plist>\n")
 	return b.Bytes()
 }
@@ -281,31 +292,25 @@ func (m *launchdManager) Stop(ctx context.Context, spec LaunchSpec) error {
 	// the next login or boot.
 	_, err := m.runLaunchctl(ctx, []string{"bootout", launchdDomain(spec) + "/" + launchdLabel(spec)}, spec.Startup == lifecycle.StartupBoot)
 	if errors.Is(err, os.ErrNotExist) {
+		// No job is loaded, so no launchd instance remains to wait for. A
+		// wait for the runtime lock is impossible here: a foreground
+		// `leapmux run` holds the same lock, and Stop cannot tell it from an
+		// instance that launchd started, so Remove would block until its
+		// context ends. A retry after a wait that timed out can therefore
+		// return before the old instance releases the lock.
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 	// bootout returns while the application is still shutting down: the
-	// job is gone before the process tree has joined. The runtime lock
-	// lives for the application's whole life, so waiting for its release
-	// makes Stop join the complete application, children included.
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		held, err := lifecycle.ProbeRuntimeLock(lifecycle.PathsOf(spec.DataDirectory))
-		if err != nil {
-			return err
-		}
-		if !held {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("the launchd job has not joined the complete application: %w", ctx.Err())
-		case <-ticker.C:
-		}
+	// job is gone before the application has exited. The runtime lock
+	// lives for the application's whole life, so Stop returns nil only
+	// after the lock is released.
+	if err := m.awaitRuntimeRelease(ctx, lifecycle.PathsOf(spec.DataDirectory)); err != nil {
+		return fmt.Errorf("servicelaunch: waiting for the application to exit after launchd removed the job: %w", err)
 	}
+	return nil
 }
 
 func (m *launchdManager) Remove(ctx context.Context, spec LaunchSpec) error {

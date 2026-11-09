@@ -291,7 +291,7 @@ describe('cache snapshot native', () => {
       kind: 'go-modules',
       key: depKey,
       writer: false,
-      exactHit: true,
+      matchedKey: depKey,
       workspace: dir,
       env: readerEnv,
     })
@@ -301,7 +301,7 @@ describe('cache snapshot native', () => {
       kind: 'native-go',
       key: buildKey,
       writer: false,
-      exactHit: true,
+      matchedKey: buildKey,
       workspace: dir,
       env: readerEnv,
     })
@@ -472,7 +472,7 @@ describe('cache snapshot native', () => {
       kind: 'native-rust',
       key: rustKey,
       writer: false,
-      exactHit: true,
+      matchedKey: rustKey,
       workspace: dir,
       env: {
         ...process.env,
@@ -570,7 +570,7 @@ describe('cache snapshot native', () => {
       kind: 'native-rust',
       key: rustKey,
       writer: false,
-      exactHit: true,
+      matchedKey: rustKey,
       workspace: dir,
       env: {
         ...process.env,

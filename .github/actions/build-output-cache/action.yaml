@@ -51,7 +51,8 @@ runs:
         LEAPMUX_CACHE_KEY: ${{ inputs.key }}
       run: |
         node scripts/cache-snapshot.mjs validate-key --kind "$LEAPMUX_CACHE_KIND" --key "$LEAPMUX_CACHE_KEY"
-        echo "payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$LEAPMUX_CACHE_KIND")" >> "$GITHUB_OUTPUT"
+        payload="$(node scripts/cache-snapshot.mjs payload-path --kind "$LEAPMUX_CACHE_KIND")"
+        echo "payload=$payload" >> "$GITHUB_OUTPUT"
 
     - name: Restore the snapshot payload
       id: restore
@@ -68,14 +69,12 @@ runs:
         LEAPMUX_CACHE_KIND: ${{ inputs.kind }}
         LEAPMUX_CACHE_KEY: ${{ inputs.key }}
         LEAPMUX_CACHE_WRITER: ${{ inputs.writer }}
-        LEAPMUX_CACHE_EXACT_HIT: ${{ steps.restore.outputs.cache-hit }}
         LEAPMUX_CACHE_MATCHED_KEY: ${{ steps.restore.outputs['cache-matched-key'] }}
       run: |
         node scripts/cache-snapshot.mjs activate \
           --kind "$LEAPMUX_CACHE_KIND" \
           --key "$LEAPMUX_CACHE_KEY" \
           --writer "${LEAPMUX_CACHE_WRITER:-false}" \
-          --exact-hit "${LEAPMUX_CACHE_EXACT_HIT:-false}" \
           --matched-key "${LEAPMUX_CACHE_MATCHED_KEY:-}"
 
     - name: Clean the restored staging payload

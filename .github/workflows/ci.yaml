@@ -74,7 +74,9 @@ jobs:
 
       - name: Select Renovate Node.js
         if: matrix.arch == 'amd64'
-        run: echo "RENOVATE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+        run: |
+          renovate_node="$(command -v node)"
+          echo "RENOVATE_NODE=$renovate_node" >> "$GITHUB_ENV"
 
       # Restore the compiled RE2 engine only after the package install: bun install replaces
       # a package directory that it installs anew, with the restored output in it. The archive
@@ -87,8 +89,10 @@ jobs:
         env:
           CACHE_HASH: ${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}
         run: |
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind renovate-re2 --hash "$CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
-          echo "restore-keys=$(node scripts/cache-snapshot.mjs restore-keys --kind renovate-re2 --hash "$CACHE_HASH")" >> "$GITHUB_OUTPUT"
+          key="$(node scripts/cache-snapshot.mjs key --kind renovate-re2 --hash "$CACHE_HASH" --week "$CACHE_WEEK")"
+          restore_keys="$(node scripts/cache-snapshot.mjs restore-keys --kind renovate-re2 --hash "$CACHE_HASH")"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "restore-keys=$restore_keys" >> "$GITHUB_OUTPUT"
 
       - name: Restore the compiled Renovate RE2 engine
         # The archive holds the outputs of the task, its Task checksum, and
@@ -468,9 +472,11 @@ jobs:
     # bun install and cargo update resolve the rest of a lockfile, for Renovate and for a
     # person alike. This job rejects a pull request whose lockfiles add a version younger
     # than the minimum release age. A push passes in seconds.
-    # The check runs the tools, the scripts, and the Renovate tree of the base commit, and
-    # reads the lockfiles of the PR by revision only. A PR can change the Renovate tree, and
-    # code from that tree must never judge the lockfile that adds it.
+    # The judge, its Taskfile, the Renovate tree, and the tool pins come from the base
+    # commit, which a worktree holds, and the judge reads the lockfiles of the PR by
+    # revision only. A PR can change the Renovate tree, and code from that tree must never
+    # judge the lockfile that adds it. The workspace holds the merge commit, so every
+    # local action and script that sets up the job resolves against one commit.
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -492,30 +498,32 @@ jobs:
           persist-credentials: false
 
       - name: Check out the base commit
+        # Load tool versions reads versions.env from the workspace, so the
+        # workspace holds the base commit until the pins are loaded.
         if: steps.scope.outputs.checked == 'true'
         run: |
-          echo "PR_MERGE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          pr_merge_sha="$(git rev-parse HEAD)"
+          echo "PR_MERGE_SHA=$pr_merge_sha" >> "$GITHUB_ENV"
           git checkout --quiet --detach HEAD^1
 
-      - name: Keep the tool plumbing of the merge commit
-        # The tool installer and its cache scripts come from the merge
-        # commit: the base commit need not define them, they install the
-        # base's pinned versions (Load tool versions runs below), and they
-        # judge no lockfile.
-        if: steps.scope.outputs.checked == 'true'
-        run: |
-          git restore --source="$PR_MERGE_SHA" -- \
-            .github/actions/setup-cli-tools \
-            scripts/download.mjs \
-            scripts/download-cli-tools.mjs \
-            scripts/cache-policy.mjs \
-            scripts/cache-snapshot.mjs
-
-      # The check needs only Bun, Go, and Task. setup-build would also install Rust and buf,
-      # and download every dependency of the lockfiles that the PR changes.
+      # The check needs only Bun, Go, and Task, and Node.js runs the Task installer.
+      # setup-build would also install Rust and buf, and download every dependency of the
+      # lockfiles that the PR changes.
       - name: Load tool versions
         if: steps.scope.outputs.checked == 'true'
         uses: ./.github/actions/load-versions
+
+      - name: Return to the merge commit and keep the base in a worktree
+        # GitHub resolves each local action and script against the workspace
+        # when its step starts. The workspace returns to the merge commit, so
+        # the Task installer and its cache actions come from one commit. The
+        # judge runs from the base worktree.
+        if: steps.scope.outputs.checked == 'true'
+        run: |
+          base_checkout="$RUNNER_TEMP/base"
+          git worktree add --quiet --detach "$base_checkout" HEAD
+          echo "BASE_CHECKOUT=$base_checkout" >> "$GITHUB_ENV"
+          git checkout --quiet --detach "$PR_MERGE_SHA"
 
       - name: Setup Go
         if: steps.scope.outputs.checked == 'true'
@@ -530,6 +538,12 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - name: Setup Node.js
+        if: steps.scope.outputs.checked == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Setup Task
         if: steps.scope.outputs.checked == 'true'
         uses: ./.github/actions/setup-cli-tools
@@ -541,7 +555,8 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: task check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"
+        # In the base worktree, HEAD is the base commit.
+        run: task -d "$BASE_CHECKOUT" check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"
 
   required-ci:
     name: Required CI

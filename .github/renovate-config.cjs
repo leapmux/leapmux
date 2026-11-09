@@ -75,6 +75,7 @@ module.exports = async () => {
       dataFileTemplate: '[{{#each upgrades}}{"manager":{{{toJSON manager}}}{{#if branchName}},"branchName":{{{toJSON branchName}}}{{/if}}{{#if packageFile}},"packageFile":{{{toJSON packageFile}}}{{/if}}{{#if packageName}},"packageName":{{{toJSON packageName}}}{{/if}}{{#if depName}},"depName":{{{toJSON depName}}}{{/if}}{{#if newValue}},"newValue":{{{toJSON newValue}}}{{/if}}{{#if newVersion}},"newVersion":{{{toJSON newVersion}}}{{/if}}{{#if updateType}},"updateType":{{{toJSON updateType}}}{{/if}}{{#if depType}},"depType":{{{toJSON depType}}}{{/if}}{{#if isVulnerabilityAlert}},"isVulnerabilityAlert":{{{toJSON isVulnerabilityAlert}}}{{/if}} } {{#unless @last}},{{/unless}}{{/each}}]',
       fileFilters: [
         'versions.env',
+        'scripts/cli-tools.sha256',
         'README.md',
         'site/content/docs/getting-started/installation.md',
         'go.work',

@@ -2,6 +2,7 @@
 // identity, one timeout, and one failure policy. Its default transport, `registryFetch`,
 // spaces the requests to each host and retries a transient failure. A caller that injects
 // its own `request`, as a test does, gets neither.
+import { parseRetryAfter, TRANSIENT_STATUSES } from './http-retry.mjs'
 
 /** Space calls at least `intervalMs` apart, in the order of the calls. */
 export function serialThrottle(intervalMs, { now = () => Date.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
@@ -32,19 +33,15 @@ export const CRATES_INDEX = 'https://index.crates.io'
 
 /** The minimum time between two requests to one host. */
 const HOST_INTERVALS = Object.freeze({ [new URL(CRATES_API).hostname]: 1000 })
-// A registry answers these statuses for an overload or an outage that ends by itself.
-const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504])
 // A Retry-After delay waits at most this long, inside the deadline of the read.
 const MAX_RETRY_DELAY_MS = 10000
 
-function retryDelay(retryAfter, attempt) {
-  // The registries send Retry-After in seconds. Any other form waits as an unspecified delay does.
-  const seconds = retryAfter === null || retryAfter.trim() === ''
-    ? Number.NaN
-    : Number(retryAfter)
-  return Number.isFinite(seconds) && seconds >= 0
-    ? Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
-    : 1000 * 2 ** attempt
+function retryDelay(retryAfter, attempt, now) {
+  // A malformed or absent Retry-After waits as an unspecified delay does.
+  const requested = parseRetryAfter(retryAfter, now)
+  return requested === null
+    ? 1000 * 2 ** attempt
+    : Math.min(requested, MAX_RETRY_DELAY_MS)
 }
 
 /**
@@ -74,12 +71,12 @@ export function createRegistryFetch({ fetch: send = fetch, intervals = HOST_INTE
       catch (error) {
         if (attempt >= retries || init?.signal?.aborted)
           throw error
-        await sleep(retryDelay(null, attempt))
+        await sleep(retryDelay(null, attempt, now()))
         continue
       }
       if (!TRANSIENT_STATUSES.has(response.status) || attempt >= retries || init?.signal?.aborted)
         return response
-      await sleep(retryDelay(response.headers.get('retry-after'), attempt))
+      await sleep(retryDelay(response.headers.get('retry-after'), attempt, now()))
     }
   }
 }

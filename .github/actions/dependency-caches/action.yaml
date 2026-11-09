@@ -87,6 +87,12 @@ runs:
         esac
         gomodcache="$(node scripts/cache-snapshot.mjs active-path --kind "$go_kind" --root gomod)"
         bun_cache="$(node scripts/cache-snapshot.mjs active-path --kind bun-packages --root bun-cache)"
+        go_key="$(node scripts/cache-snapshot.mjs key --kind "$go_kind" --hash "$go_hash")"
+        go_payload="$(node scripts/cache-snapshot.mjs payload-path --kind "$go_kind" --root gomod)"
+        bun_key="$(node scripts/cache-snapshot.mjs key --kind bun-packages --hash "$BUN_HASH")"
+        bun_payload="$(node scripts/cache-snapshot.mjs payload-path --kind bun-packages --root bun-cache)"
+        cargo_key="$(node scripts/cache-snapshot.mjs key --kind cargo-downloads --hash "$CARGO_HASH")"
+        cargo_payload="$(node scripts/cache-snapshot.mjs payload-path --kind cargo-downloads --root cargo-home)"
         {
           echo "GOMODCACHE=$gomodcache"
           echo "BUN_INSTALL_CACHE_DIR=$bun_cache"
@@ -97,12 +103,12 @@ runs:
           echo "go-kind=$go_kind"
           echo "go-directory=$go_directory"
           echo "go-work=$go_work"
-          echo "go-key=$(node scripts/cache-snapshot.mjs key --kind "$go_kind" --hash "$go_hash")"
-          echo "go-payload=$(node scripts/cache-snapshot.mjs payload-path --kind "$go_kind" --root gomod)"
-          echo "bun-key=$(node scripts/cache-snapshot.mjs key --kind bun-packages --hash "$BUN_HASH")"
-          echo "bun-payload=$(node scripts/cache-snapshot.mjs payload-path --kind bun-packages --root bun-cache)"
-          echo "cargo-key=$(node scripts/cache-snapshot.mjs key --kind cargo-downloads --hash "$CARGO_HASH")"
-          echo "cargo-payload=$(node scripts/cache-snapshot.mjs payload-path --kind cargo-downloads --root cargo-home)"
+          echo "go-key=$go_key"
+          echo "go-payload=$go_payload"
+          echo "bun-key=$bun_key"
+          echo "bun-payload=$bun_payload"
+          echo "cargo-key=$cargo_key"
+          echo "cargo-payload=$cargo_payload"
         } >> "$GITHUB_OUTPUT"
 
     # --- Go modules -----------------------------------------------------

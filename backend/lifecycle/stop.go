@@ -87,7 +87,7 @@ func stopWithRequester(ctx context.Context, role Role, dataDirectory string, req
 	if !response.Accepted || response.AttemptID != record.AttemptID {
 		return active, fmt.Errorf("the instance refused the stop request for this attempt")
 	}
-	if err := waitForLockRelease(ctx, canonical); err != nil {
+	if err := WaitForRuntimeRelease(ctx, paths); err != nil {
 		return active, fmt.Errorf("shutdown could not be confirmed: %w", err)
 	}
 	return active, nil

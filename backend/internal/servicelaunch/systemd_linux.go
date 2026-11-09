@@ -116,6 +116,11 @@ func (m *systemdManager) definitionUnit(spec LaunchSpec) []byte {
 	// No Restart: a local process failure stays visible through status
 	// until the user restarts it, and nothing fights `stop`.
 	fmt.Fprintf(&b, "Restart=no\n")
+	// systemd sends SIGKILL when a service outlives TimeoutStopSec after
+	// SIGTERM. The value infinity turns that SIGKILL off, so an orderly
+	// shutdown takes as long as it needs. `man systemd.service` documents
+	// infinity as turning the stop timeout off.
+	fmt.Fprintf(&b, "TimeoutStopSec=infinity\n")
 	fmt.Fprintf(&b, "\n[Install]\n")
 	if spec.Startup == lifecycle.StartupLogin {
 		fmt.Fprintf(&b, "WantedBy=graphical-session.target\n")

@@ -44,7 +44,7 @@ jobs:
           # This job reads dependency metadata without building the desktop app. It skips these
           # desktop prerequisites:
           # - Tauri system packages.
-          # - The linuxdeploy download cache.
+          # - The Tauri bundler tool download cache.
           # - The approximately 1.3 GB Rust target cache.
           # It still installs the tools that prepare-frontend requires. That target generates
           # protobuf code and spinner assets. It installs Bun dependencies also.

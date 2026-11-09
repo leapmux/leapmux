@@ -6,19 +6,26 @@ description: |
   every later job. The tools directory joins the PATH for the following
   steps.
 
-# Callers check out first (the download and cache scripts live in the tree)
-# and run load-versions first (the pins live in versions.env).
+# Callers check out first (the download and cache scripts live in the tree),
+# run load-versions first (the pins live in versions.env), and set up Node.js
+# with the NODE_VERSION pin first (the steps run those scripts with node).
 #
 # A job that runs only Task passes `tools: task` and never downloads protoc
 # or buf. The archive key covers the requested tool set, the pinned versions
-# of exactly those tools, and the download recipe, so each archive holds
-# exactly the binaries that its key declares and a pin of one tool never
-# rotates the archive of a job that installs only another.
+# of exactly those tools, and the download recipe (the installer and its
+# table of pinned asset digests), so each archive holds exactly the binaries
+# that its key declares and a pin of one tool never rotates the archive of a
+# job that installs only another.
+#
+# Every tool set restores into the same tools directory, so a job runs this
+# action for one tool set only. A second call with another tool set would
+# replace the first set's binaries; the Locate step refuses it.
 #
 # Every job that restores is also a writer: actions/cache never replaces an
 # existing key, so the first job to save publishes the archive and every
-# later job hits it. A missed exact key re-downloads the release assets,
-# which the key already accepted as its cost.
+# later job hits it. A missed exact key means that the tool set, a pin or
+# the download recipe changed, or that the archive is gone; downloading the
+# release assets again is the accepted cost.
 inputs:
   tools:
     description: >
@@ -34,14 +41,23 @@ runs:
       shell: bash
       env:
         LEAPMUX_CLI_TOOLS: ${{ inputs.tools }}
-        DOWNLOAD_RECIPE_HASH: ${{ hashFiles('scripts/download-cli-tools.mjs') }}
+        DOWNLOAD_RECIPE_HASH: ${{ hashFiles('scripts/download-cli-tools.mjs', 'scripts/cli-tools.sha256') }}
       run: |
-        identity="$(node scripts/download-cli-tools.mjs --tools "$LEAPMUX_CLI_TOOLS" --identity)"
-        tools_hash="$(printf '%s\n%s\n' "$DOWNLOAD_RECIPE_HASH" "$identity" | sha256sum | cut -d' ' -f1)"
-        {
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind cli-tools --hash "$tools_hash")"
-          echo "bin=$(node scripts/cache-snapshot.mjs active-path --kind cli-tools --root tools)/bin"
-        } >> "$GITHUB_OUTPUT"
+        # The key carries two hash segments: the download recipe, and the
+        # requested tool set with its pins. An empty recipe hash fails the
+        # key validation instead of producing a key that never rotates.
+        identity_hash="$(node scripts/download-cli-tools.mjs --tools "$LEAPMUX_CLI_TOOLS" --identity)"
+        key="$(node scripts/cache-snapshot.mjs key --kind cli-tools --hash "$DOWNLOAD_RECIPE_HASH-$identity_hash")"
+        bin_dir="$(node scripts/download-cli-tools.mjs --bin-dir)"
+        if [ -n "${LEAPMUX_CLI_TOOLS_KEY:-}" ] && [ "$LEAPMUX_CLI_TOOLS_KEY" != "$key" ]; then
+          echo "::error::setup-cli-tools already installed another tool set in this job. Every tool set uses the same tools directory, so request every tool that the job needs in one call."
+          exit 1
+        fi
+        echo "LEAPMUX_CLI_TOOLS_KEY=$key" >> "$GITHUB_ENV"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        # The directory joins the PATH of the following steps only, so the
+        # entry is in place before the restore or the download fills it.
+        echo "$bin_dir" >> "$GITHUB_PATH"
 
     - name: Restore the tool snapshot
       id: tools-restore
@@ -64,7 +80,3 @@ runs:
       with:
         kind: cli-tools
         key: ${{ steps.tools.outputs.key }}
-
-    - name: Add the tools to the PATH
-      shell: bash
-      run: echo '${{ steps.tools.outputs.bin }}' >> "$GITHUB_PATH"

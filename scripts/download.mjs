@@ -1,122 +1,175 @@
-// The download policy for build tooling: one release-asset fetch with the
-// retry rules that a transient failure needs. scripts/download-cli-tools.mjs
-// and desktop/rust/scripts/patch-linuxdeploy.mjs share it, so every build
-// download retries the same way.
+// The download policy for build tooling: one file fetch with the retry rules
+// that a transient failure needs. scripts/download-cli-tools.mjs downloads
+// the pinned CLI tools through it.
 //
-// A release CDN occasionally answers a download with a gateway error; the
-// installer actions that these scripts replaced retried such failures too.
+// A release CDN occasionally answers a download with a gateway error. The
+// installer actions that download-cli-tools.mjs replaced retried such
+// failures too.
 import { Buffer } from 'node:buffer'
-import { writeFileSync } from 'node:fs'
+import { renameSync, rmSync, writeFileSync } from 'node:fs'
+import { setTimeout as wait } from 'node:timers/promises'
+import { parseRetryAfter, TRANSIENT_STATUSES } from './http-retry.mjs'
 
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const DOWNLOAD_RETRIES = 10
 const RETRY_BASE_DELAY_MS = 1000
 const RETRY_MAX_DELAY_MS = 60 * 1000
+// The longest that one attempt may take, the connection and the body
+// together.
+const FETCH_TIMEOUT_MS = 5 * 60 * 1000
+// The longest that one download may take, every attempt and every wait
+// together. It holds the whole retry budget of about five minutes plus two
+// attempts that run to their timeout, so a CDN that stalls every connection
+// fails the job in minutes, not in an hour.
+const DOWNLOAD_DEADLINE_MS = 15 * 60 * 1000
 
-function transientDelay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+/** The capped exponential ceiling of the backoff before one retry. */
+function backoffCeilingMs(retry) {
+  return Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** retry)
 }
 
 /**
- * The maximum wall-clock wait that the retry schedule can spend: the sum of
- * the capped backoff maxima (1 + 2 + 4 + 8 + 16 + 32 + 60×4 seconds for the
- * ten retries). A server whose Retry-After lies beyond it is not ready
- * within the retry budget at all.
+ * The most that the retry schedule can wait in total: the sum of the backoff
+ * ceilings (1 + 2 + 4 + 8 + 16 + 32 + 60×4 seconds for the ten retries).
+ * Every wait, a Retry-After wait included, counts against it.
  */
 export function retryBudgetMs(retries = DOWNLOAD_RETRIES) {
   let budget = 0
   for (let retry = 0; retry < retries; retry++)
-    budget += Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** retry)
+    budget += backoffCeilingMs(retry)
   return budget
 }
 
 /**
- * The jittered exponential backoff before one retry: the exponential delay
+ * The jittered exponential backoff before one retry: the capped ceiling
  * split half fixed and half random (equal jitter), so jobs that hit the
- * same outage do not retry in lockstep. The delay is capped at one minute.
+ * same outage do not retry in lockstep. The cap applies to the ceiling
+ * before the split, so the retries at the cap keep their jitter too.
  */
 export function retryDelay(retry, random = Math.random) {
-  const exponential = RETRY_BASE_DELAY_MS * 2 ** retry
-  return Math.min(RETRY_MAX_DELAY_MS, exponential / 2 + random() * (exponential / 2))
+  const ceiling = backoffCeilingMs(retry)
+  return ceiling / 2 + random() * (ceiling / 2)
 }
 
-const DELTA_SECONDS_PATTERN = /^\d+$/
-// The IMF-fixdate of RFC 7231. The lenient Date.parse fallback accepts
-// shapes that no server sends and no reader may honor, so the date branch
-// matches the grammar first.
-const HTTP_DATE_PATTERN = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/
+/** End a message with a period unless it already ends a sentence. */
+function sentence(text) {
+  return /[.!?]$/.test(text)
+    ? text
+    : `${text}.`
+}
 
 /**
- * The wait that a Retry-After header asks for, in milliseconds: delta
- * seconds or an HTTP date. Null when the header is absent or malformed, so
- * the caller falls back to the backoff.
+ * Describe a thrown fetch failure. Node reports every network failure as
+ * "fetch failed" and keeps the reason, such as ECONNRESET, in the cause.
  */
-export function parseRetryAfter(header, now = Date.now()) {
-  if (!header)
-    return null
-  const value = header.trim()
-  if (DELTA_SECONDS_PATTERN.test(value))
-    return Number(value) * 1000
-  if (!HTTP_DATE_PATTERN.test(value))
-    return null
-  const date = Date.parse(value)
-  if (Number.isNaN(date))
-    return null
-  return Math.max(0, date - now)
+function describeFailure(thrown) {
+  const message = thrown?.message ?? String(thrown)
+  const cause = thrown?.cause?.code ?? thrown?.cause?.message
+  return cause
+    ? `${message} (${cause})`
+    : message
+}
+
+function seconds(ms) {
+  return `${Number((ms / 1000).toFixed(1))}s`
+}
+
+/**
+ * Write a complete body to the destination. The body lands in a temporary
+ * file first and replaces the destination in one rename, so the destination
+ * never holds a partial download, and a caller may treat an existing
+ * destination as complete. A failed write is not transient: it propagates
+ * at once, and the temporary file is removed.
+ */
+function writeDownloadedFile(destination, body) {
+  const partial = `${destination}.partial`
+  try {
+    writeFileSync(partial, body)
+    renameSync(partial, destination)
+  }
+  catch (error) {
+    rmSync(partial, { force: true })
+    throw error
+  }
 }
 
 /**
  * Download one file to a destination, retrying transient failures up to
- * ten times. The delay before a retry is a jittered exponential backoff
- * capped at one minute, or the exact wait that a Retry-After header asks
- * for, which nothing truncates. A Retry-After beyond the ten-retry budget
- * means the server is not ready within the budget at all, and the download
- * gives up at once. Each scheduled retry and each give-up writes one log
- * line. The fetch follows the server's redirects.
+ * ten times. The delay before a retry is the jittered exponential backoff,
+ * capped at one minute, and never shorter than the wait that a Retry-After
+ * header asks for, which nothing truncates. The download gives up at once when the
+ * failure is not transient, when a wait would exceed what is left of the
+ * retry budget, or when the next attempt would start after the download
+ * deadline. Each scheduled retry and each give-up writes one log line. The
+ * fetch follows the server's redirects. A malformed URL and a failed write
+ * of the destination fail at once.
  */
-export async function downloadReleaseAsset(url, destination, {
+export async function downloadFile(url, destination, {
   fetchImpl = fetch,
-  sleep = transientDelay,
+  sleep = wait,
   random = Math.random,
   retries = DOWNLOAD_RETRIES,
+  now = Date.now,
+  log = console.log,
 } = {}) {
+  // fetch reports a malformed URL as the same TypeError as a network
+  // failure, so the URL is validated once, before the retry loop.
+  if (!URL.canParse(url))
+    throw new TypeError(`The download URL ${url} is malformed.`)
   const budget = retryBudgetMs(retries)
+  const deadline = now() + DOWNLOAD_DEADLINE_MS
+  let waited = 0
   for (let retry = 0; ; retry++) {
     let error
     let retryable = false
     let retryAfterMs = null
+    let body = null
     try {
       const response = await fetchImpl(url, {
         redirect: 'follow',
-        signal: AbortSignal.timeout(5 * 60 * 1000),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, deadline - now()))),
       })
       if (response.ok) {
-        writeFileSync(destination, Buffer.from(await response.arrayBuffer()))
-        return
+        body = Buffer.from(await response.arrayBuffer())
       }
-      error = new Error(`Downloading ${url} failed with HTTP ${response.status}.`)
-      retryable = RETRYABLE_STATUSES.has(response.status)
-      retryAfterMs = parseRetryAfter(response.headers.get('retry-after'))
+      else {
+        error = new Error(`Downloading ${url} failed with HTTP ${response.status}.`)
+        retryable = TRANSIENT_STATUSES.has(response.status)
+        retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), now())
+      }
     }
     catch (thrown) {
-      error = new Error(`Downloading ${url} failed: ${thrown?.message ?? thrown}`)
+      error = new Error(sentence(`Downloading ${url} failed: ${describeFailure(thrown)}`), { cause: thrown })
       retryable = true
     }
+    if (body !== null) {
+      writeDownloadedFile(destination, body)
+      return
+    }
     if (!retryable) {
-      console.log(`${error.message} Giving up: the failure is not transient.`)
+      log(`${error.message} Giving up: the failure is not transient.`)
       throw error
     }
-    if (retryAfterMs !== null && retryAfterMs > budget) {
-      const reason = `The server asked to retry after ${retryAfterMs / 1000}s, beyond the ${budget / 1000}s retry budget.`
-      console.log(`${error.message} Giving up: ${reason}`)
-      throw new Error(`${error.message} ${reason}`)
+    if (retryAfterMs !== null && retryAfterMs > budget - waited) {
+      const reason = `The server asked to retry after ${seconds(retryAfterMs)}, beyond the ${seconds(budget - waited)} left of the ${seconds(budget)} retry budget.`
+      log(`${error.message} Giving up: ${reason}`)
+      throw new Error(`${error.message} ${reason}`, { cause: error.cause })
     }
     if (retry === retries) {
-      console.log(`${error.message} Giving up after ${retries} retries.`)
+      log(`${error.message} Giving up after ${retries} ${retries === 1
+        ? 'retry'
+        : 'retries'}.`)
       throw error
     }
-    const delay = retryAfterMs ?? retryDelay(retry, random)
-    console.log(`${error.message} Retrying (${retry + 1}/${retries}) in ${delay}ms.`)
+    // A Retry-After wait is a minimum: a zero or past wait must not spend the
+    // retries faster than the backoff.
+    const delay = Math.max(retryAfterMs ?? 0, retryDelay(retry, random))
+    if (now() + delay >= deadline) {
+      const reason = `The next attempt would start after the ${seconds(DOWNLOAD_DEADLINE_MS)} download deadline.`
+      log(`${error.message} Giving up: ${reason}`)
+      throw new Error(`${error.message} ${reason}`, { cause: error.cause })
+    }
+    log(`${error.message} Retrying (${retry + 1}/${retries}) in ${Math.round(delay)}ms.`)
     await sleep(delay)
+    waited += delay
   }
 }

@@ -109,7 +109,7 @@ outputs:
     description: Whether the restored Tauri tool archive matched the exact key.
     value: ${{ steps.tauri-restore.outputs.cache-hit }}
   tauri-cache-key:
-    description: The exact weekly Tauri tool key.
+    description: The exact Tauri tool key, which rotates with the resolved Tauri CLI version.
     value: ${{ steps.tauri-restore.outputs['cache-key'] }}
   spinner-save-required:
     description: Whether this writer may publish a new snapshot.
@@ -137,7 +137,8 @@ runs:
       # CACHE_IMAGE separates compiled caches by runner image family.
       shell: bash
       run: |
-        echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+        cache_week="$(date -u +%G-W%V)"
+        echo "CACHE_WEEK=$cache_week" >> "$GITHUB_ENV"
         echo "CACHE_IMAGE=${ImageOS:-unknown}" >> "$GITHUB_ENV"
 
     - name: Load tool versions
@@ -175,11 +176,18 @@ runs:
       shell: bash
       env:
         APT_CACHE_HASH: ${{ hashFiles('.github/actions/setup-build/action.yaml') }}
-        TAURI_CACHE_HASH: ${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.mjs', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
       run: |
-        echo "apt=$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
-        echo "tauri=$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$TAURI_CACHE_HASH")" >> "$GITHUB_OUTPUT"
-        echo "spinners=$(node scripts/cache-snapshot.mjs key --kind spinners --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+        apt="$(node scripts/cache-snapshot.mjs key --kind apt-packages --hash "$APT_CACHE_HASH" --week "$CACHE_WEEK")"
+        # The Tauri CLI decides which bundler tools Tauri downloads into its
+        # cache, so the resolved CLI version keys the tool archive.
+        tauri_cli_hash="$(node scripts/tauri-cli-version.mjs --hash)"
+        tauri="$(node scripts/cache-snapshot.mjs key --kind tauri-tools --hash "$tauri_cli_hash")"
+        spinners="$(node scripts/cache-snapshot.mjs key --kind spinners --week "$CACHE_WEEK")"
+        {
+          echo "apt=$apt"
+          echo "tauri=$tauri"
+          echo "spinners=$spinners"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Prepare the APT package cache
       # Keep the downloaded .deb files after each install, and let the
@@ -313,10 +321,11 @@ runs:
         echo "GOCACHE=$gocache" >> "$GITHUB_ENV"
         echo "GOLANGCI_LINT_CACHE=$lint_cache" >> "$GITHUB_ENV"
         prefix="$(node scripts/cache-snapshot.mjs prefix --kind native-go)"
+        key="$(node scripts/cache-snapshot.mjs key --kind native-go --hash '${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum', 'tools/*/go.mod', 'tools/*/go.sum') }}' --week "$CACHE_WEEK")"
         {
           echo "gocache=$gocache"
           echo "lint-cache=$lint_cache"
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-go --hash '${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum', 'tools/*/go.mod', 'tools/*/go.sum') }}' --week "$CACHE_WEEK")"
+          echo "key=$key"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 
@@ -351,8 +360,9 @@ runs:
       shell: bash
       run: |
         prefix="$(node scripts/cache-snapshot.mjs prefix --kind native-rust)"
+        key="$(node scripts/cache-snapshot.mjs key --kind native-rust --hash '${{ hashFiles('desktop/rust/Cargo.lock', 'desktop/rust/Cargo.toml', 'desktop/rust/.cargo/config.toml') }}')"
         {
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind native-rust --hash '${{ hashFiles('desktop/rust/Cargo.lock', 'desktop/rust/Cargo.toml', 'desktop/rust/.cargo/config.toml') }}')"
+          echo "key=$key"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 
@@ -384,20 +394,17 @@ runs:
         populate: 'true'
 
     - name: Restore the Tauri tool downloads
-      # The Linux patch script changes these cached files:
-      # - The linuxdeploy AppImage and its extracted AppRun.
-      # - The linuxdeploy plugin scripts.
-      # - The compiled wrapper from linuxdeploy-wrapper.c.
-      # The script skips existing patch markers, so the exact key must
-      # include the patch inputs. The patch hash is part of every key,
-      # because the policy registry composes one prefix shape per kind;
-      # Windows keys change with the patch inputs too, although Windows
-      # uses no patch.
+      # The archive holds the bundler tools that the Tauri CLI downloads
+      # into its cache: an AppRun, a linuxdeploy AppImage and its plugins on
+      # Linux, and WiX on Windows. The CLI version decides that set, so it
+      # keys the archive. An exact hit never publishes again, so the
+      # appimage plugin from Tauri's `continuous` tag stays at its first
+      # download until the CLI version changes.
       # macOS creates no Tauri cache directory, so this step skips there.
       # Every non-macOS job may publish a replacement after a complete
       # packaging build, so every job is a writer and passes no fallback:
-      # a missed exact key means the patch recipe changed (or the archive
-      # is gone), and re-downloading the tools is the accepted cost.
+      # a missed exact key means the Tauri CLI changed (or the archive is
+      # gone), and downloading the tools again is the accepted cost.
       id: tauri-restore
       if: inputs.setup-desktop == 'true' && runner.os != 'macOS'
       uses: ./.github/actions/build-output-cache

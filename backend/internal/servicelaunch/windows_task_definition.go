@@ -82,15 +82,10 @@ type windowsTaskIdentity struct {
 	TriggerSID   string
 }
 
-// windowsDefinitionDescription renders the identity of the saved
-// specification into the one free-form field a native definition keeps on
-// every Windows mechanism. The working directory is part of the text
-// because a Windows service definition has no working-directory field:
-// the description carries the value so the service definition still
-// drifts when the specification changes.
-func windowsDefinitionDescription(spec LaunchSpec) string {
-	return "LeapMux " + spec.Mode.String() + " (" + spec.InstanceID + ", account " + spec.AccountID + ", working directory " + spec.WorkingDirectory + ")"
-}
+// taskName identifies the scheduled task of an instance. It has no build tag,
+// like the rest of this file, so the renderer coverage test can render the
+// task's identity on every platform.
+func taskName(spec LaunchSpec) string { return "leapmux-" + spec.Mode.String() + "-" + spec.InstanceID }
 
 func taskDefinitionXML(spec LaunchSpec, arguments string) ([]byte, error) {
 	definition := windowsTaskDefinition{

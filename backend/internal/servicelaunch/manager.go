@@ -42,7 +42,10 @@ type Manager interface {
 	Install(ctx context.Context, spec LaunchSpec) error
 	// Start loads or starts the installed definition.
 	Start(ctx context.Context, spec LaunchSpec) error
-	// Stop ends the running instance, preserving the definition.
+	// Stop ends the running instance, preserving the definition. It returns
+	// nil only after that instance has finished its shutdown and released
+	// the runtime lock of its data directory, so a later Start can acquire
+	// it.
 	Stop(ctx context.Context, spec LaunchSpec) error
 	// Remove uninstalls the definition.
 	Remove(ctx context.Context, spec LaunchSpec) error

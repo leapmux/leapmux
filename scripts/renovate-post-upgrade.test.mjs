@@ -250,8 +250,31 @@ describe('postUpgrade', () => {
       'GOLANG_VERSION',
       'BUN_VERSION',
       'RUST_VERSION',
-      'BUF_VERSION',
       'NODE_VERSION',
+    ]) {
+      const fixture = preparation()
+      await postUpgrade([
+        upgrade({
+          manager: 'regex',
+          packageFile: 'versions.env',
+          depName: 'tool',
+          depType,
+          newValue: '9.0.0',
+        }),
+      ], fixture.options)
+      expect(fixture.calls).toEqual([
+        {
+          command: 'task',
+          args: ['sync-versions'],
+          options: {},
+        },
+      ])
+    }
+  })
+  it('also pins the asset digests of a CLI tool on its toolchain branch', async () => {
+    for (const depType of [
+      'BUF_VERSION',
+      'PROTOC_VERSION',
       'TASK_VERSION',
     ]) {
       const fixture = preparation()
@@ -268,6 +291,11 @@ describe('postUpgrade', () => {
         {
           command: 'task',
           args: ['sync-versions'],
+          options: {},
+        },
+        {
+          command: 'task',
+          args: ['sync-cli-tool-digests'],
           options: {},
         },
       ])
