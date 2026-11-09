@@ -87,7 +87,7 @@ Run `leapmux <mode> enable`. It writes the entry again from the saved configurat
 `stop` prints `Shutdown could not be confirmed.`
 
 **Cause**
-The instance did not finish its shutdown within `--timeout`, which is 30 seconds by default. It is still closing its databases and stopping its agents.
+The instance did not finish its shutdown within `--timeout`, which is 3 minutes by default. It is still closing its databases and stopping its agents.
 
 **Fix**
 Run `status` until it reports that the instance stopped. Pass a longer `--timeout` to wait longer.

@@ -38,8 +38,10 @@ type lifecycleOptions struct {
 func loadLifecycleCommand(mode, verb string, args []string) (*lifecycleConfiguration, lifecycleOptions, error) {
 	options := lifecycleOptions{timeout: defaultStatusTimeout}
 	switch verb {
-	case "start", "restart":
+	case "start":
 		options.timeout = defaultStartTimeout
+	case "restart":
+		options.timeout = defaultRestartTimeout
 	case "stop":
 		options.timeout = defaultStopTimeout
 	}

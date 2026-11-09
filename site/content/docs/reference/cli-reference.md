@@ -83,7 +83,7 @@ A lifecycle command that succeeds, and `worker register`, end with the commands 
 | Flag | Commands | Default | Meaning |
 |------|----------|---------|---------|
 | `--data-dir`, `--config` | all; `cross-worker-pins` takes only `--data-dir` | the defaults of the mode | Select the instance. Pass the same values to every command for one instance. |
-| `--timeout` | `start`, `restart`, `stop`, `status`, `worker register`, `worker deregister` | `60s` for `start` and `restart`, `30s` for `stop` and `deregister`, `3s` for `status`, `5m` for `register` | How long to wait: a positive duration, or a bare number of seconds. The operation can continue after the wait ends. |
+| `--timeout` | `start`, `restart`, `stop`, `status`, `worker register`, `worker deregister` | `60s` for `start`, `4m` for `restart`, `3m` for `stop`, `30s` for `deregister`, `3s` for `status`, `5m` for `register` | How long to wait: a positive duration, or a bare number of seconds. The operation can continue after the wait ends. |
 | `--startup` | `start`, `restart`, `enable` | the saved choice, else a prompt | `login` or `boot` |
 | `--yes` | `start`, `restart`, `enable` | off | Accept the proposed configuration without the consent prompt. It does not choose `--startup`. |
 | `--environment-file` | `start`, `restart`, `enable` | none | Path to a YAML map of environment variables for the service. `--environment-file=` removes the saved file. |

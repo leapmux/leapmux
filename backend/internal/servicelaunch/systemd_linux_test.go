@@ -108,14 +108,14 @@ func TestSystemdDefinitionArguments(t *testing.T) {
 	assert.Contains(t, bootUnit, "Group=staff\n")
 	assert.Contains(t, bootUnit, "WantedBy=multi-user.target")
 
-	// Neither startup kind lets systemd kill an application that is still
-	// shutting down.
+	// Both startup kinds give the application three minutes after SIGTERM
+	// before systemd sends SIGKILL.
 	for _, definition := range []string{unit, bootUnit} {
 		_, service, found := strings.Cut(definition, "\n[Service]\n")
 		require.True(t, found)
 		service, _, found = strings.Cut(service, "\n[Install]\n")
 		require.True(t, found)
-		assert.Contains(t, strings.Split(service, "\n"), "TimeoutStopSec=infinity", "systemd never sends SIGKILL after SIGTERM")
+		assert.Contains(t, strings.Split(service, "\n"), "TimeoutStopSec=180", "systemd sends SIGKILL 180 seconds after SIGTERM")
 	}
 }
 

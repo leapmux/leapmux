@@ -34,6 +34,12 @@ func ValidateDirectorySelection(role Role, canonical string) error {
 	return nil
 }
 
+// ShutdownTimeout is how long an instance may take to finish its shutdown
+// after a stop request or SIGTERM. launchd and systemd send SIGKILL to an
+// instance that outlives it after SIGTERM, and `stop` waits that long by
+// default.
+const ShutdownTimeout = 3 * time.Minute
+
 // Stop requests authenticated shutdown and waits for the runtime lock to be
 // released after the complete application join. The result reports whether
 // the command found an active runtime. It never terminates a process by PID.

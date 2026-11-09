@@ -569,6 +569,25 @@ func TestModeCommandGroupListsEachCommandOnce(t *testing.T) {
 		"a verb without a summary must not borrow another command's text")
 }
 
+func TestLifecycleTimeoutDefaults(t *testing.T) {
+	for verb, expected := range map[string]time.Duration{
+		"start": time.Minute,
+		// A restart spends one budget on the stop and the start together.
+		"restart": 4 * time.Minute,
+		// stop waits as long as launchd and systemd give a shutdown before
+		// they send SIGKILL.
+		"stop":   3 * time.Minute,
+		"status": 3 * time.Second,
+	} {
+		t.Run(verb, func(t *testing.T) {
+			_, options, err := loadLifecycleCommand("hub", verb, []string{"--data-dir", t.TempDir()})
+			require.NoError(t, err)
+			assert.Equal(t, expected, options.timeout)
+		})
+	}
+	assert.Equal(t, lifecycle.ShutdownTimeout, defaultStopTimeout)
+}
+
 func TestLifecycleTimeoutOptions(t *testing.T) {
 	for _, verb := range []string{"start", "restart", "stop", "status"} {
 		for _, args := range [][]string{{"--timeout=2"}, {"--timeout", "2"}, {"--timeout=2s"}, {"--timeout", "2s"}} {

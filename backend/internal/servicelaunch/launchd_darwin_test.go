@@ -229,10 +229,10 @@ func TestLaunchdDefinitionArguments(t *testing.T) {
 	assert.Contains(t, bootText, "<key>UserName</key>")
 	assert.Contains(t, bootText, "<string>trustin</string>", "the daemon runs as the selected account")
 
-	// Neither startup kind lets launchd kill an application that is still
-	// shutting down.
+	// Both startup kinds give the application three minutes after SIGTERM
+	// before launchd sends SIGKILL.
 	for _, definition := range []string{text, bootText} {
-		assert.Contains(t, definition, "\t<key>ExitTimeOut</key>\n\t<integer>0</integer>\n", "launchd never sends SIGKILL after SIGTERM")
+		assert.Contains(t, definition, "\t<key>ExitTimeOut</key>\n\t<integer>180</integer>\n", "launchd sends SIGKILL 180 seconds after SIGTERM")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -150,12 +151,13 @@ func (m *launchdManager) definitionPlist(spec LaunchSpec) []byte {
 	b.WriteString("\t<true/>\n")
 	writeKey("KeepAlive")
 	b.WriteString("\t<false/>\n")
-	// launchd sends SIGKILL when a job outlives ExitTimeOut after SIGTERM.
-	// The value 0 turns that SIGKILL off, so an orderly shutdown takes as
-	// long as it needs. `man launchd.plist` documents 0 as infinite, and
-	// warns that a job that never exits then stalls system shutdown.
+	// launchd sends SIGKILL when a job outlives ExitTimeOut after SIGTERM,
+	// so a shutdown that hangs cannot stall a stop, a logout, or a system
+	// shutdown. The value 0 would turn that SIGKILL off, and
+	// `man launchd.plist` warns that a job that never exits then stalls
+	// system shutdown.
 	writeKey("ExitTimeOut")
-	b.WriteString("\t<integer>0</integer>\n")
+	fmt.Fprintf(&b, "\t<integer>%d</integer>\n", int(lifecycle.ShutdownTimeout/time.Second))
 	b.WriteString("</dict>\n</plist>\n")
 	return b.Bytes()
 }

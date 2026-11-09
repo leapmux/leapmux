@@ -235,7 +235,7 @@ leapmux worker start --startup=boot --yes
 
 `--yes` accepts the preview. It does not choose between login and boot startup, so a first `start` needs `--startup` as well. Without a terminal, `start` and `enable` do not prompt. They fail and state the flags that they need.
 
-`--timeout` sets how long a command waits. The defaults are 60 seconds for `start` and `restart`, 30 seconds for `stop`, and 3 seconds for `status`. The time that you spend at a prompt does not count. A timeout ends the wait, not the operation: LeapMux can still be starting or stopping. Run `status` before you try again.
+`--timeout` sets how long a command waits. The defaults are 60 seconds for `start`, 3 minutes for `stop`, 4 minutes for `restart` (one stop and one start), and 3 seconds for `status`. When launchd or systemd stops a managed instance itself, for example at logout or at system shutdown, it ends a shutdown that runs longer than 3 minutes with SIGKILL. The time that you spend at a prompt does not count. A timeout ends the wait, not the operation: LeapMux can still be starting or stopping. Run `status` before you try again.
 
 ## One instance for each data directory
 
