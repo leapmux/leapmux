@@ -634,7 +634,7 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "Trigger should run another pass")
 
 	cancel()
-	rec.Stop()
+	rec.Stop(nil)
 }
 
 // TestOrphanReconciler_RetriesAfterHubListFailure pins the convergence
@@ -682,7 +682,7 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 		"a pass whose hub leg failed must be retried without waiting for the interval")
 
 	cancel()
-	rec.Stop()
+	rec.Stop(nil)
 }
 
 // runOnce drives exactly one reconciliation pass and returns whether it
@@ -991,7 +991,7 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 		"a converged pass reached through the retry backoff must still report")
 
 	cancel()
-	rec.Stop()
+	rec.Stop(nil)
 }
 
 // TestOrphanReconciler_NoOnConvergedHookIsFine pins that the hook stays optional
@@ -1022,5 +1022,5 @@ func TestOrphanReconciler_NoOnConvergedHookIsFine(t *testing.T) {
 		"a converged pass with no hook must complete rather than panic on a nil func")
 
 	cancel()
-	rec.Stop()
+	rec.Stop(nil)
 }

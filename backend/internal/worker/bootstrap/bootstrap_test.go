@@ -16,6 +16,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,6 +35,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/util/drain"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 )
@@ -443,7 +445,7 @@ func TestWiring_ShutdownFlushesTheOutboundQueue(t *testing.T) {
 	// A never-connected client has no writer, so FlushSends is a no-op that
 	// must still be REACHED -- and must not panic or error on the nil writer,
 	// since a worker can be shut down before it ever connects.
-	require.NoError(t, client.FlushSends())
+	require.NoError(t, client.FlushSends(hub.ShutdownFlushTimeout))
 
 	// Shutdown is the single seam; calling it must not require the caller to
 	// remember the flush. Idempotent, because every exit path converges here.
@@ -573,7 +575,7 @@ func TestStopPeriodicLoops_WaitsForThePassInProgress(t *testing.T) {
 		returned := make(chan struct{})
 		go func() {
 			defer close(returned)
-			stopPeriodicLoops(cancel, []<-chan struct{}{idle, stopped})
+			stopPeriodicLoops(cancel, []<-chan struct{}{idle, stopped}, nil)
 		}()
 		synctest.Wait()
 		select {
@@ -590,6 +592,58 @@ func TestStopPeriodicLoops_WaitsForThePassInProgress(t *testing.T) {
 			require.FailNow(t, "the stop must return after the pass returns")
 		}
 	})
+}
+
+// A pass that does not return holds the stop only until the shutdown
+// deadline: the stop abandons it then, so the database close starts in time.
+func TestStopPeriodicLoops_StopsWaitingAtTheDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = time.Minute
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		release := make(chan struct{})
+		defer close(release)
+		stopped := periodic.Start(ctx, periodic.Schedule{Interval: time.Hour}, func(context.Context) { <-release })
+		synctest.Wait()
+
+		// The real clock reads the bubble's fake time.
+		deadline := drain.NewDeadline(quartz.NewReal(), budget)
+		deadline.Start()
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			stopPeriodicLoops(cancel, []<-chan struct{}{stopped}, deadline)
+		}()
+		synctest.Wait()
+		select {
+		case <-returned:
+			require.FailNow(t, "the stop returned before the deadline while a pass still ran")
+		default:
+		}
+
+		time.Sleep(budget)
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			require.FailNow(t, "the stop must return at the deadline")
+		}
+		select {
+		case <-stopped:
+			require.FailNow(t, "the pass must still run: the stop abandoned it rather than joined it")
+		default:
+		}
+	})
+}
+
+// Wire hands its deadline to the service, so Shutdown, the flush and the
+// handler join all end at the one deadline that worker.Run starts.
+func TestWire_HandsTheShutdownDeadlineToTheService(t *testing.T) {
+	deadline := drain.NewDeadline(quartz.NewReal(), time.Minute)
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) {
+		p.ShutdownDeadline = deadline
+	})
+	assert.Same(t, deadline, w.Service.ShutdownDeadline)
 }
 
 // TestWire_WorkerIdentityTriggersAReconcilerPass pins the nudge that keeps the

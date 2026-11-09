@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/util/drain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -448,6 +449,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 		WakeLock:            wakelock.NewActivityTracker(),
 		MaxMessageSize:      32 << 20,
 		Clock:               quartz.NewReal(),
+		ShutdownDeadline:    drain.NewDeadline(quartz.NewReal(), time.Minute),
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -466,6 +468,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	assert.Same(t, cfg.Channels, svc.Channels)
 	assert.Same(t, cfg.WakeLock, svc.WakeLock)
 	assert.Equal(t, cfg.Clock, svc.Clock)
+	assert.Same(t, cfg.ShutdownDeadline, svc.ShutdownDeadline)
 	assert.Equal(t, "/home/x", svc.HomeDir)
 	assert.Equal(t, "/data/x", svc.DataDir)
 	assert.Equal(t, "worker-1", svc.WorkerID)
@@ -578,7 +581,7 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 
 	<-entered
 	waited := make(chan struct{})
-	go func() { defer close(waited); svc.Cleanup.Wait() }()
+	go func() { defer close(waited); <-svc.Cleanup.DoneChan() }()
 
 	select {
 	case <-waited:
@@ -737,8 +740,8 @@ func TestShutdown_StopsBackgroundLoopsBeforeDraining(t *testing.T) {
 	// enough to look green, and a real regression could equally have landed
 	// green. This version cannot.
 	stopped := make(chan struct{})
-	svc.Cleanup.Add(1)
-	svc.SetStopBackgroundLoops(func() {
+	svc.Cleanup.Add()
+	svc.SetStopBackgroundLoops(func(*drain.Deadline) {
 		close(stopped)
 		svc.Cleanup.Done()
 	})
@@ -786,7 +789,7 @@ func TestConcurrentShutdownCallersJoinOneCleanup(t *testing.T) {
 		finish := sync.OnceFunc(func() { close(release) })
 		defer finish()
 		var calls atomic.Int32
-		svc.SetStopBackgroundLoops(func() { calls.Add(1); announce(); <-release })
+		svc.SetStopBackgroundLoops(func(*drain.Deadline) { calls.Add(1); announce(); <-release })
 		first, second := make(chan struct{}), make(chan struct{})
 		go func() { defer close(first); svc.Shutdown() }()
 		<-entered

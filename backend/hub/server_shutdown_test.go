@@ -15,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,7 +24,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // A Hub that stops because something failed must SAY so, at the moment it
@@ -265,6 +268,82 @@ func TestServeWaitsForABackgroundLoopBeforeClosingTheStore(t *testing.T) {
 	})
 }
 
+// The shutdown deadline ends every wait of the shutdown, so the store close and
+// the lease release start in time. A background loop that never stops stands
+// for any wait: without the deadline, Serve would wait backgroundLoopDrainTimeout
+// for it before it closed the store.
+func TestServeStopsWaitingAtTheShutdownDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = time.Second
+		// The real clock reads the bubble's fake time.
+		deadline := drain.NewDeadline(quartz.NewReal(), budget)
+		srv := newShutdownTestServerWithConfig(t, func(cfg *config.Config) { cfg.ShutdownDeadline = deadline })
+		require.Same(t, deadline, srv.shutdownDeadline, "NewServer must take the shutdown deadline from its configuration")
+
+		release := make(chan struct{})
+		defer close(release)
+		loop := make(chan struct{})
+		go func() {
+			defer close(loop)
+			<-release
+		}()
+		srv.backgroundLoops = append(srv.backgroundLoops, loop)
+
+		cancel, served := serveForShutdownTest(t, srv)
+		assertChannelOpen(t, deadline.Done(), "the deadline must not start before the shutdown does")
+		began := time.Now()
+		cancel()
+		err := <-served
+		elapsed := time.Since(began)
+		if err != nil {
+			// The deadline also leaves no time to join the revocation watcher's
+			// loop, and Close reports that. Nothing else may fail.
+			assert.ErrorIs(t, err, context.DeadlineExceeded, "only a wait that the deadline cut short may fail")
+		}
+
+		assertChannelOpen(t, loop, "the loop must still run: Serve abandoned it rather than joined it")
+		assert.GreaterOrEqual(t, elapsed, budget, "Serve must wait for the loop until the deadline")
+		assert.Less(t, elapsed, backgroundLoopDrainTimeout, "Serve must stop waiting for the loop at the deadline")
+		select {
+		case <-deadline.Done():
+		default:
+			t.Fatal("the shutdown must have started the deadline")
+		}
+		assert.True(t, srv.directory.Closed(), "the lease release must still run after the deadline")
+		_, err = srv.store.Settings().Get(context.Background(), "nonexistent-key")
+		assert.ErrorContains(t, err, "database is closed", "the store close must still run after the deadline")
+	})
+}
+
+// A standalone Hub has no deadline handed in, so it creates its own, and only
+// the shutdown starts it.
+func TestServeStartsItsOwnShutdownDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv := newShutdownTestServer(t)
+		require.NotNil(t, srv.shutdownDeadline, "NewServer must create a shutdown deadline when none is handed in")
+
+		cancel, served := serveForShutdownTest(t, srv)
+		assert.Equal(t, time.Hour, srv.shutdownDeadline.Cap(time.Hour), "serving must not start the shutdown deadline")
+		cancel()
+		require.NoError(t, <-served)
+
+		left := srv.shutdownDeadline.Cap(time.Hour)
+		assert.Positive(t, left, "an ordinary shutdown must finish well before the deadline")
+		assert.LessOrEqual(t, left, lifecycle.ShutdownDrainTimeout,
+			"the shutdown must start a deadline of lifecycle.ShutdownDrainTimeout")
+	})
+}
+
+// assertChannelOpen fails the test if ch is closed.
+func assertChannelOpen(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal(msg)
+	default:
+	}
+}
+
 // warnCountingHandler counts Warn records, so a test can assert the expiry
 // logged once.
 type warnCountingHandler struct {
@@ -414,6 +493,13 @@ func TestServeJoinsACredentialNoticeBeforeItEndsServingCtx(t *testing.T) {
 
 func newShutdownTestServer(t *testing.T, opts ...ServerOption) *Server {
 	t.Helper()
+	return newShutdownTestServerWithConfig(t, func(*config.Config) {}, opts...)
+}
+
+// newShutdownTestServerWithConfig is newShutdownTestServer with a configuration
+// that configure adjusts before NewServer reads it.
+func newShutdownTestServerWithConfig(t *testing.T, configure func(*config.Config), opts ...ServerOption) *Server {
+	t.Helper()
 	// Real listeners can retain I/O goroutines outside a synctest bubble.
 	// These tests need only an accept that shutdown releases by closing it.
 	opts = append(opts, func(options *serverOptions) {
@@ -422,6 +508,7 @@ func newShutdownTestServer(t *testing.T, opts ...ServerOption) *Server {
 		}
 	})
 	cfg := &config.Config{DataDir: t.TempDir(), Listen: []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")}, Storage: config.StorageConfig{Type: config.StorageTypeSQLite}}
+	configure(cfg)
 	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir), opts...)
 	require.NoError(t, err)
 	return srv

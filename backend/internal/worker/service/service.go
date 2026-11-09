@@ -34,6 +34,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
+	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/validate"
@@ -151,9 +152,11 @@ type Service struct {
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
-	// Add(1) at entry and defer Done() so Wait() in Shutdown observes
-	// them even if a handler panics.
-	Cleanup sync.WaitGroup
+	// Add() at entry and defer Done() so the wait in Shutdown observes
+	// them even if a handler panics. A counter rather than a
+	// sync.WaitGroup, because Shutdown waits for it only until the shutdown
+	// deadline.
+	Cleanup drain.Counter
 
 	// forceStops shares a process replacement result for one captured process and turn scope.
 	// Closing the result channel publishes its error to every concurrent caller.
@@ -164,9 +167,12 @@ type Service struct {
 	lifecycleMu sync.Mutex
 	// shutdownDone closes when the one cleanup owner returns. lifecycleMu
 	// protects publication, and every later shutdown caller joins this signal.
-	shutdownDone        chan struct{}
-	nativeTurnRestarts  map[string]struct{}
-	nativeTurnRestartWG sync.WaitGroup
+	shutdownDone       chan struct{}
+	nativeTurnRestarts map[string]struct{}
+	// nativeTurnRestartsInFlight counts the restart goroutines that
+	// reserveNativeTurnRestart admitted, so Shutdown can wait for them until
+	// its deadline.
+	nativeTurnRestartsInFlight drain.Counter
 
 	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
 	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
@@ -209,14 +215,14 @@ type Service struct {
 
 	// stopBackgroundLoops stops the service's background loops -- the orphan
 	// reconciler, the boot-time agent resume sweep and the periodic retention and
-	// sweep loops -- and blocks until an in-flight pass returns. Assigned by
-	// bootstrap after the loops start, read
+	// sweep loops -- and blocks until an in-flight pass returns or the deadline
+	// it receives passes. Assigned by bootstrap after the loops start, read
 	// by Shutdown. See SetStopBackgroundLoops for why it cannot be part of
 	// Config.
 	//
 	// One field for both, composed at the call site: bootstrap starts the loops
 	// and is therefore the only place that knows what order they must stop in.
-	stopBackgroundLoops func()
+	stopBackgroundLoops func(*drain.Deadline)
 	resumeSchedulerMu   sync.Mutex
 	agentResumer        *AgentResumer
 
@@ -591,6 +597,11 @@ type Config struct {
 	// Built here instead, they would run on two, and a test could drive only the
 	// half it reached.
 	Clock quartz.Clock
+	// ShutdownDeadline ends every wait of Shutdown; see
+	// lifecycle.ShutdownDrainTimeout. worker.Run starts it when the run
+	// context ends, and a combined instance shares it with its Hub. Nil
+	// installs an unstarted deadline on Clock, which Shutdown never starts.
+	ShutdownDeadline *drain.Deadline
 }
 
 // New creates a fully wired Service.
@@ -622,6 +633,9 @@ func New(cfg Config) *Service {
 	// installed clock rather than nil.
 	if cfg.Clock == nil {
 		cfg.Clock = quartz.NewReal()
+	}
+	if cfg.ShutdownDeadline == nil {
+		cfg.ShutdownDeadline = drain.NewDeadline(cfg.Clock, lifecycle.ShutdownDrainTimeout)
 	}
 
 	queries := db.New(cfg.DB)
@@ -993,10 +1007,11 @@ func (svc *Service) abandonUnownedTurn(agentID string) {
 //
 // A returned ID means a registered tab whose process was still going when
 // Shutdown stopped waiting: its exit handler runs later, past the database
-// close, and its writes fail with "sql: database is closed". That outcome
-// must be loud here rather than surface later as mystery lines, so every
-// limited sweep in Shutdown passes what it came back with. An empty list
-// logs nothing.
+// close, and its writes fail with "sql: database is closed". For a startup
+// kind, it means a tab whose startup the shutdown deadline cancelled: its
+// startup goroutine unwinds later in the same way. That outcome must be loud
+// here rather than surface later as mystery lines, so every limited sweep in
+// Shutdown passes what it came back with. An empty list logs nothing.
 func logShutdownStragglers(kind string, ids []string) {
 	if len(ids) == 0 {
 		return
@@ -1012,7 +1027,7 @@ func (svc *Service) beginCleanup() bool {
 	if svc.shuttingDown.Load() {
 		return false
 	}
-	svc.Cleanup.Add(1)
+	svc.Cleanup.Add()
 	return true
 }
 
@@ -1059,7 +1074,7 @@ func (svc *Service) shutdown() {
 	svc.Output.SetShuttingDown()
 	// Close queue admission before any blocking shutdown work. The background
 	// resumer can otherwise schedule a recovered input while its Stop waits.
-	waitForInputQueue := svc.InputQueue.Stop()
+	inputQueueIdle := svc.InputQueue.Stop()
 
 	// The user-visible goodbye goes FIRST, before anything that can block.
 	//
@@ -1095,34 +1110,52 @@ func (svc *Service) shutdown() {
 	// stop() blocks until every loop is quiet: the reconciler and the periodic
 	// loops until an in-flight pass returns, and the sweep until it joins the
 	// resumes it already handed off. The wait for the sweep is not an added cost.
-	// Those resumes are registered with svc.AgentStartup, so WaitForInFlight below
-	// waits for exactly the same startups; joining here only moves the wait
-	// earlier, to the point where the sweep can still be observed as running.
+	// Those resumes are registered with svc.AgentStartup, so drainForShutdown
+	// below waits for exactly the same startups; joining here only moves the
+	// wait earlier, to the point where the sweep can still be observed as
+	// running.
+	//
+	// Every wait from here to the end ends at the shutdown deadline at the
+	// latest, so the database writes and the database close that follow start
+	// in time (see lifecycle.ShutdownDrainTimeout). A wait with a limit of its
+	// own takes the smaller of the two; a wait without one ends at the
+	// deadline and logs what it abandoned. The work it abandons can then race
+	// the database close, which is the price of a shutdown that must not
+	// outlast SIGKILL. The steps that persist state keep their own limits
+	// after the deadline: the second notice pass, the join of the terminal
+	// exits that save each final screen, and StopOutputRetries.
 	if stop := svc.stopBackgroundLoops; stop != nil {
-		stop()
+		stop(svc.ShutdownDeadline)
 	}
 
 	// Queue dispatch runs outside the RPC handler that created it. Join those
 	// goroutines before the startup drains and provider teardown below.
-	waitForInputQueue()
-	svc.nativeTurnRestartWG.Wait()
+	svc.ShutdownDeadline.Wait(inputQueueIdle,
+		"shutdown deadline passed while input queue dispatches still ran; abandoning them")
+	svc.ShutdownDeadline.Wait(svc.nativeTurnRestartsInFlight.DoneChan(),
+		"shutdown deadline passed while native turn restarts still ran; abandoning them")
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
 	// closes the DB or removes data directories. closeClaims runs FIRST,
-	// in the same critical section that guards the WaitGroup Add: an
+	// in the same critical section that guards the counter's Add: an
 	// OpenTerminal that passed refuseIfShuttingDown and sits in
 	// validateGitMode can still claim afterwards, and a claim that added
-	// to a WaitGroup already being waited on would be a misuse panic as
-	// well as an unjoined startup.
+	// to a counter already being waited on would be an unjoined startup.
+	//
+	// At the shutdown deadline the drain cancels the startups still in
+	// flight instead of waiting: a provider that is still in its handshake
+	// would otherwise hold the shutdown until its own startup timeout. A
+	// cancelled startup records no startup failure (see cancelForShutdown).
 	svc.AgentStartup.closeClaims()
 	svc.TerminalStartup.closeClaims()
-	svc.AgentStartup.WaitForInFlight()
-	svc.TerminalStartup.WaitForInFlight()
+	logShutdownStragglers("agent startup", svc.AgentStartup.drainForShutdown(svc.ShutdownDeadline))
+	logShutdownStragglers("terminal startup", svc.TerminalStartup.drainForShutdown(svc.ShutdownDeadline))
 	// Also drain in-flight close handlers. The frontend fires close RPCs
 	// as fire-and-forget, so a close can still be running on the
 	// dispatcher goroutine while the worker receives a deregister/SIGTERM.
-	svc.Cleanup.Wait()
+	svc.ShutdownDeadline.Wait(svc.Cleanup.DoneChan(),
+		"shutdown deadline passed while close handlers still ran; abandoning them")
 
 	// Re-run after the drains: a terminal whose startup was still in flight
 	// above is only in the manager now, so the first pass could not have seen
@@ -1142,14 +1175,14 @@ func (svc *Service) shutdown() {
 	const agentStopTimeout = 45 * time.Second
 	// Setsid (DetachFromTerminal, go-pty) takes agent CLIs out of the
 	// worker's process group. Ctrl+C and SIGHUP therefore no longer
-	// reap them. Stop them here, after startups have finished, while
+	// reap them. Stop them here, after the startup drain, while
 	// Output.SetShuttingDown already latched so background-task rows
 	// stay ACTIVE for the next boot. StopAll joins exit handlers within its
 	// budget and reports stragglers before the caller closes the database.
 	var stops sync.WaitGroup
 	stops.Go(func() {
 		if svc.Agents != nil {
-			logShutdownStragglers("agent", svc.Agents.StopAll(agentStopTimeout))
+			logShutdownStragglers("agent", svc.Agents.StopAll(svc.ShutdownDeadline.Cap(agentStopTimeout)))
 		}
 	})
 	// PTYs outlive Service.Shutdown otherwise: in the sidecar's SwitchMode the
@@ -1158,8 +1191,13 @@ func (svc *Service) shutdown() {
 	// is what a process exit delivers, and only a shell that ignores it meets
 	// the escalation; see Manager.HangUpAll for the join that makes this a
 	// shutdown primitive rather than a stop.
+	//
+	// The deadline caps the grace, the wait for a shell to exit on its own.
+	// It does not cap the join after the escalation: that join is where each
+	// exit handler saves the final screen, a database write, so it keeps its
+	// own few seconds even after the deadline.
 	stops.Go(func() {
-		logShutdownStragglers("terminal", svc.Terminals.HangUpAll(terminalHangUpGrace))
+		logShutdownStragglers("terminal", svc.Terminals.HangUpAll(svc.ShutdownDeadline.Cap(terminalHangUpGrace)))
 	})
 	stops.Wait()
 
@@ -1179,14 +1217,14 @@ func (svc *Service) shutdown() {
 	// Retire the control IPC servers of every tab, agents and shells alike.
 	// Agents and shells are gone before this runs, so nothing is using the
 	// sockets; srv.Close inside each cleanup frees the socket even when its
-	// network revoke is slow, which is why the deadline gives one revoke its
-	// full budget. retire marks nothing closed, so every tab stays
-	// restorable after the restart.
+	// network revoke is slow, which is why the limit gives one revoke its
+	// full budget. The shutdown deadline caps that limit. retire marks nothing
+	// closed, so every tab stays restorable after the restart.
 	const controlIPCRetireTimeout = 6 * time.Second
 	var controlIPCRetire drain.Counter
 	svc.agentCleanups.retireAll(&controlIPCRetire)
 	svc.terminalCleanups.retireAll(&controlIPCRetire)
-	controlIPCRetire.Wait(controlIPCRetireTimeout,
+	controlIPCRetire.Wait(svc.ShutdownDeadline.Cap(controlIPCRetireTimeout),
 		"control IPC retires did not finish in the shutdown budget; the sockets free when the process exits")
 
 	// Drop every settle still waiting out its debounce window FIRST. The exits
@@ -1208,7 +1246,7 @@ func (svc *Service) shutdown() {
 	// one reads the registry and broadcasts, so both must finish while the
 	// context below is still live and before the caller closes the database.
 	// After StopAll, which is what produces the exits that spawn them.
-	svc.Output.WaitActivityRefreshes()
+	svc.Output.waitActivityRefreshesUntil(svc.ShutdownDeadline)
 
 	// Cancel the background-task write context last, AFTER every drain. Any
 	// in-flight bgtask write the drains did not cover now fails fast
@@ -1227,8 +1265,8 @@ func (svc *Service) shutdown() {
 // idempotency check is `bytes.HasSuffix(screen, terminalExitedNoticeSuffix)`,
 // which only holds while the screen STOPS at the notice. Shutdown hangs up
 // the PTYs after its drains, so a running build can append more output
-// between the two passes -- across stopBackgroundLoops, two WaitForInFlight
-// drains that can park for tens of seconds, and Cleanup.Wait. The suffix
+// between the two passes -- across stopBackgroundLoops, two startup drains
+// that can park for tens of seconds, and the Cleanup wait. The suffix
 // check then fails and the user gets the notice twice
 // with live output sandwiched between. Tracking ids makes the guard independent
 // of what the terminal did in between.
@@ -1449,14 +1487,15 @@ func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 }
 
 // SetStopBackgroundLoops registers a function that stops the service's background
-// loops and blocks until an in-flight pass returns. Shutdown calls it before any
-// drain. One function for every loop: the caller starts them and is the only
-// place that knows what order they must stop in.
+// loops and blocks until an in-flight pass returns, but not past the deadline that
+// Shutdown passes it. Shutdown calls it before any drain. One function for every
+// loop: the caller starts them and is the only place that knows what order they
+// must stop in.
 //
 // Wired late, like Service.RemoteIPC: the loops need a fully-built Service, so
 // they cannot exist when New runs. Left unset -- every test that never starts
 // them -- Shutdown skips it.
-func (svc *Service) SetStopBackgroundLoops(stop func()) {
+func (svc *Service) SetStopBackgroundLoops(stop func(*drain.Deadline)) {
 	svc.stopBackgroundLoops = stop
 }
 

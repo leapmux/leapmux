@@ -19,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // setupTestSessions creates a composite keypair and performs a full hybrid handshake,
@@ -497,9 +498,9 @@ func (*stubWriter) BindStream(StreamController) (func(), bool) {
 
 // TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine pins the
 // happens-before invariant that motivated the Registration.Tracked /
-// BindCleanup / DispatchAsync trio. Add(1) MUST execute before
-// DispatchAsync returns, so a caller that immediately calls Wait() on
-// the bound WaitGroup is forced to wait for the handler to finish.
+// BindCleanup / DispatchAsync trio. Add() MUST execute before
+// DispatchAsync returns, so a caller that immediately waits on
+// the bound counter is forced to wait for the handler to finish.
 // The previous pattern (`go DispatchWith(...)` + per-handler Add(1))
 // failed this invariant: Wait could observe counter=0 in the window
 // between the goroutine launching and the handler reaching its
@@ -508,11 +509,11 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
-	var wg sync.WaitGroup
-	d.BindCleanup(&wg)
+	var cleanup drain.Counter
+	d.BindCleanup(&cleanup)
 
 	// Block the handler on a channel so we can observe the
-	// pre-completion WaitGroup state from outside.
+	// pre-completion counter state from outside.
 	release := make(chan struct{})
 	handlerEntered := make(chan struct{})
 	d.Handle("slow-mutation", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
@@ -523,20 +524,20 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 	w := &stubWriter{}
 	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")), &leapmuxv1.InnerRpcRequest{Method: "slow-mutation"}, w)
 
-	// At this point DispatchAsync has returned. The Add(1) must have
-	// fired BEFORE the goroutine launched, so Wait() in a sibling
+	// At this point DispatchAsync has returned. The Add() must have
+	// fired BEFORE the goroutine launched, so a wait in a sibling
 	// goroutine should still be blocked.
 	waitReturned := make(chan struct{})
 	go func() {
-		wg.Wait()
+		<-cleanup.DoneChan()
 		close(waitReturned)
 	}()
 
-	// Give the goroutine a moment to fall into Wait(). It must NOT
+	// Give the goroutine a moment to fall into its wait. It must NOT
 	// return until we release the handler — that's the invariant.
 	select {
 	case <-waitReturned:
-		t.Fatal("wg.Wait() returned before the handler finished — Add(1) must happen-before DispatchAsync returns")
+		t.Fatal("the cleanup wait returned before the handler finished — Add() must happen-before DispatchAsync returns")
 	case <-time.After(50 * time.Millisecond):
 		// Expected: still blocked.
 	}
@@ -554,19 +555,19 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 	case <-waitReturned:
 		// Expected: Done() fired after the handler returned.
 	case <-time.After(time.Second):
-		t.Fatal("wg.Wait() did not return after the handler finished")
+		t.Fatal("the cleanup wait did not return after the handler finished")
 	}
 }
 
 // TestDispatcher_DispatchAsync_UntrackedNoOp pins that untracked
-// methods don't touch the bound WaitGroup, so a handler registered without
+// methods don't touch the bound counter, so a handler registered without
 // Tracked stays fire-and-forget on Shutdown for read-only probes.
 func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
-	var wg sync.WaitGroup
-	d.BindCleanup(&wg)
+	var cleanup drain.Counter
+	d.BindCleanup(&cleanup)
 
 	done := make(chan struct{})
 	d.Handle("readonly", Registration{}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
@@ -576,17 +577,17 @@ func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 	w := &stubWriter{}
 	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")), &leapmuxv1.InnerRpcRequest{Method: "readonly"}, w)
 
-	// wg.Wait() must return immediately — an untracked registration does
-	// NOT Add(1).
+	// The cleanup wait must return immediately — an untracked registration
+	// does NOT Add().
 	waitDone := make(chan struct{})
 	go func() {
-		wg.Wait()
+		<-cleanup.DoneChan()
 		close(waitDone)
 	}()
 	select {
 	case <-waitDone:
 	case <-time.After(time.Second):
-		t.Fatal("wg.Wait() did not return promptly for an untracked handler")
+		t.Fatal("the cleanup wait did not return promptly for an untracked handler")
 	}
 
 	select {
@@ -598,15 +599,15 @@ func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 
 // TestDispatcher_DispatchWith_TrackedAddsAndDones pins the
 // synchronous-path equivalent: the local-IPC router calls DispatchWith
-// directly (not via a goroutine), so the Add(1) must happen at the
+// directly (not via a goroutine), so the Add() must happen at the
 // top of the function and Done() must fire on return — even when the
 // handler panics.
 func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
-	var wg sync.WaitGroup
-	d.BindCleanup(&wg)
+	var cleanup drain.Counter
+	d.BindCleanup(&cleanup)
 
 	d.Handle("ok", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
 	d.Handle("boom", Registration{Tracked: true}, func(_ context.Context, _ Caller, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
@@ -621,39 +622,39 @@ func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
 	// a leak would hang.
 	waitDone := make(chan struct{})
 	go func() {
-		wg.Wait()
+		<-cleanup.DoneChan()
 		close(waitDone)
 	}()
 	select {
 	case <-waitDone:
 	case <-time.After(time.Second):
-		t.Fatal("wg.Wait() leaked — Done() must fire even when the handler panics")
+		t.Fatal("the cleanup wait leaked — Done() must fire even when the handler panics")
 	}
 }
 
 // TestDispatcher_DispatchAsync_UnknownMethod pins that an unknown
-// method on DispatchAsync doesn't accidentally Add(1) (no handler
+// method on DispatchAsync doesn't accidentally Add() (no handler
 // means no tracking decision can be made), and still sends the
 // Unimplemented error to the writer.
 func TestDispatcher_DispatchAsync_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
 	d := NewDispatcher()
-	var wg sync.WaitGroup
-	d.BindCleanup(&wg)
+	var cleanup drain.Counter
+	d.BindCleanup(&cleanup)
 
 	w := &stubWriter{}
 	d.DispatchAsync(context.Background(), LocalAgentCaller(userid.MustNew("u")), &leapmuxv1.InnerRpcRequest{Method: "no-such-method"}, w)
 
 	waitDone := make(chan struct{})
 	go func() {
-		wg.Wait()
+		<-cleanup.DoneChan()
 		close(waitDone)
 	}()
 	select {
 	case <-waitDone:
 	case <-time.After(time.Second):
-		t.Fatal("wg.Wait() did not return for an unknown method — DispatchAsync must not Add(1) when no handler matched")
+		t.Fatal("the cleanup wait did not return for an unknown method — DispatchAsync must not Add() when no handler matched")
 	}
 
 	// The Unimplemented response is sent on a goroutine spawned by
@@ -852,7 +853,7 @@ func TestDispatcherCloseAdmissionRacesDispatch(t *testing.T) {
 		<-started
 	})
 
-	cleanup := &sync.WaitGroup{}
+	cleanup := &drain.Counter{}
 	d.BindCleanup(cleanup)
 	const n = 32
 	writers := make([]*recordingWriter, n)
@@ -906,7 +907,7 @@ func TestDispatcherInvocationLifecycle(t *testing.T) {
 					t.Run(fmt.Sprintf("async=%t/tracked=%t/cleanup=%t/panic=%t", async, tracked, bound, panics), func(t *testing.T) {
 						synctest.Test(t, func(t *testing.T) {
 							d := NewDispatcher()
-							var cleanup sync.WaitGroup
+							var cleanup drain.Counter
 							if bound {
 								d.BindCleanup(&cleanup)
 							}
@@ -936,7 +937,7 @@ func TestDispatcherInvocationLifecycle(t *testing.T) {
 							<-entered
 							d.CloseAdmission()
 							cleaned := make(chan struct{})
-							go func() { cleanup.Wait(); close(cleaned) }()
+							go func() { <-cleanup.DoneChan(); close(cleaned) }()
 							joined := make(chan bool, 1)
 							go func() { joined <- d.WaitHandlers(time.Second) }()
 							synctest.Wait()

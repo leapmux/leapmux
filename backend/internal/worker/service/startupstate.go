@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // failedEntryTTL limits how long a FINISHED failure entry stays in the
@@ -92,7 +94,11 @@ type startupEntry struct {
 	closeDisposition closeWorktreeDisposition
 	closeRaced       bool
 	archiveStopped   bool
-	phase0Complete   bool
+	// shutdownStopped marks a startup that the worker shutdown cancelled at
+	// its deadline. Like archiveStopped, it keeps the failure that the
+	// cancellation causes out of the record; see cancelForShutdown.
+	shutdownStopped bool
+	phase0Complete  bool
 	// replacement marks an entry that holds the id for a PROCESS REPLACEMENT: a
 	// restart, a clear or a forced stop, which stops a running process and
 	// launches another. Such an entry makes the agent read STARTING, as every
@@ -174,12 +180,12 @@ func (e *startupEntry) stopEviction() {
 // or recently-failed startups keyed by id. It is embedded by the agent
 // and terminal registries which add typed status accessors.
 //
-// The embedded WaitGroup tracks goroutine lifecycles independently of the
+// The embedded counter tracks goroutine lifecycles independently of the
 // entries map: state transitions (succeed / fail / cancelAndClear) can
 // fire while the startup goroutine is still doing trailing work (DB
-// writes, broadcasts, git rollback). WaitForInFlight drains that trailing
-// work so callers — test cleanups and future graceful-shutdown paths —
-// observe the filesystem and DB in a quiescent state.
+// writes, broadcasts, git rollback). WaitForInFlight and drainForShutdown
+// drain that trailing work so callers — test cleanups and the graceful
+// shutdown — observe the filesystem and DB in a quiescent state.
 type startupCore struct {
 	mu      sync.Mutex
 	entries map[string]*startupEntry
@@ -191,7 +197,10 @@ type startupCore struct {
 	// closeInProgress prevents a new start after close cancels the old one
 	// but before close stamps the row under the lifecycle lock.
 	closeInProgress map[string]int
-	wg              sync.WaitGroup
+	// running counts the startup goroutines that did not return. A counter
+	// rather than a sync.WaitGroup, because the shutdown waits for it only
+	// until its deadline (see drainForShutdown).
+	running drain.Counter
 	// clock supplies all startup timers. newStartupCore requires a non-nil clock
 	// and sets it once, and nothing replaces it after construction, so
 	// awaitInFlight, fail and waitForPendingResize read it without r.mu. A test
@@ -199,8 +208,9 @@ type startupCore struct {
 	// first begin is a data race against those three reads.
 	clock quartz.Clock
 	// claimsClosed refuses every later claim. closeClaims sets it directly
-	// before the caller's WaitForInFlight: the WaitGroup contract needs that
-	// no Add follows a Wait, and nothing else in the registry enforced it.
+	// before the caller's WaitForInFlight or drainForShutdown: the counter's
+	// contract needs that no Add follows the sample a wait takes, and nothing
+	// else in the registry enforced it.
 	claimsClosed   bool
 	claimsClosedCh chan struct{}
 }
@@ -332,7 +342,7 @@ const (
 	// may not replace that failure.
 	claimRefusedFailed
 	// claimRefusedShuttingDown: closeClaims ran, and a claim would add to the
-	// WaitGroup that Shutdown's WaitForInFlight is about to join.
+	// counter that Shutdown's drainForShutdown is about to join.
 	claimRefusedShuttingDown
 )
 
@@ -356,10 +366,10 @@ func (r *startupCore) beginColdStart(id string, cancel context.CancelFunc) (*sta
 }
 
 // closeClaims refuses every later claim, so no Add can follow the
-// WaitForInFlight that the caller runs directly after it. Shutdown calls it on
-// both registries. A claim refused here starts nothing and adds nothing, so
-// the WaitGroup the drain joins counts exactly the goroutines that were in
-// flight when the latch closed.
+// WaitForInFlight or drainForShutdown that the caller runs directly after it.
+// Shutdown calls it on both registries. A claim refused here starts nothing
+// and adds nothing, so the counter the drain joins counts exactly the
+// goroutines that were in flight when the latch closed.
 func (r *startupCore) closeClaims() {
 	r.mu.Lock()
 	if !r.claimsClosed {
@@ -409,7 +419,7 @@ func (r *startupCore) claim(id string, cancel context.CancelFunc, mode claimMode
 	}
 	r.entries[id] = entry
 	r.inflight[id] = entry
-	r.wg.Add(1)
+	r.running.Add()
 	r.mu.Unlock()
 	replaced.stopEviction()
 	return entry, claimAdmitted
@@ -480,7 +490,7 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 // close-detected, archive-stopped, panic recovery elsewhere, …).
 //
 // It does two things, and the pairing is why there is no counter-only variant.
-// The WaitGroup counter is what WaitForInFlight joins. `finished` is what
+// The counter is what WaitForInFlight and drainForShutdown join. `finished` is what
 // cancelForArchive's caller waits on before it clears the tab's runtime state,
 // and `inflight` is what makes the handle reachable from a tab id at all. A
 // caller that dropped the counter alone would leave a live-looking inflight
@@ -507,14 +517,14 @@ func (r *startupCore) finishEntry(entry *startupEntry) {
 		}
 		r.mu.Unlock()
 	}
-	r.wg.Done()
+	r.running.Done()
 }
 
 // abandon ends a startup that no goroutine will ever run, because the open that
 // claimed the id failed before it launched one. It takes the claim out of the
 // map as succeed does, so the id derives its status from the manager again. Then
 // it cancels the context that begin received, and it releases the in-flight
-// count, which Shutdown's WaitForInFlight joins.
+// count, which Shutdown's drainForShutdown joins.
 //
 // A startup that failed in a way that the user must see is not abandoned. fail
 // records that outcome.
@@ -533,10 +543,54 @@ func (r *startupCore) abandon(entry *startupEntry) {
 // has returned. Callers must guarantee no new begin() invocations land
 // after Wait starts — typically by stopping request dispatch first. The
 // trailing DB writes and git rollback inside runAgentStartup /
-// runTerminalStartup are joined by this call, which is why tests and
-// graceful shutdown use it to avoid racing TempDir cleanup or DB close.
+// runTerminalStartup are joined by this call, which is why tests use it to
+// avoid racing TempDir cleanup or DB close. The shutdown uses
+// drainForShutdown, which stops waiting at its deadline.
 func (r *startupCore) WaitForInFlight() {
-	r.wg.Wait()
+	<-r.running.DoneChan()
+}
+
+// drainForShutdown waits until every startup goroutine counted by begin has
+// returned, as WaitForInFlight does, but not past the deadline. At the
+// deadline it cancels the startups still in flight, and returns their ids
+// without waiting for them: their trailing writes then race the database
+// close, which is the price of a shutdown that must not outlast SIGKILL. A
+// provider that is still in its handshake would otherwise hold the shutdown
+// until its own startup timeout.
+//
+// The caller must run closeClaims first, for the reason WaitForInFlight
+// states, so a startup that the deadline cancels cannot be replaced by one
+// that nothing cancels.
+func (r *startupCore) drainForShutdown(deadline *drain.Deadline) []string {
+	if deadline.Wait(r.running.DoneChan(), "") {
+		return nil
+	}
+	return r.cancelForShutdown()
+}
+
+// cancelForShutdown cancels every startup in flight, and every claim of the
+// same id whose goroutine still runs behind it, and returns the ids, sorted.
+//
+// It stamps each claim as stopped by the shutdown before it cancels it. A
+// shutdown is not a startup failure, for the reason an archive is not: a
+// STARTUP_FAILED record would refuse the user's next message after the
+// restart and make the resume sweep skip the tab. failStartup reads the
+// stamp and records nothing, so the next boot finds the tab as a process
+// that ended with the worker.
+func (r *startupCore) cancelForShutdown() []string {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.inflight))
+	for id := range r.inflight {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+	slices.Sort(ids)
+	for _, id := range ids {
+		r.cancelStartup(id, false, func(e *startupEntry) {
+			e.shutdownStopped = true
+		})
+	}
+	return ids
 }
 
 // setMessage records the current phase label for id. No-op if the entry
@@ -777,6 +831,17 @@ func (r *startupCore) archiveStopped(entry *startupEntry) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return entry.archiveStopped
+}
+
+// shutdownStopped reports whether the worker shutdown cancelled this startup
+// at its deadline (see cancelForShutdown).
+func (r *startupCore) shutdownStopped(entry *startupEntry) bool {
+	if entry == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry.shutdownStopped
 }
 
 // phase0Complete reports whether the startup got past phase 0, so its git-mode

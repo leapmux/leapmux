@@ -40,6 +40,17 @@ func ValidateDirectorySelection(role Role, canonical string) error {
 // default.
 const ShutdownTimeout = 3 * time.Minute
 
+// ShutdownDrainTimeout is how long after its start a shutdown may wait for
+// work to finish. Every wait of the shutdown ends by then, at its own limit or
+// at this one, so every step that persists state starts before it: a database
+// write, a database close, the runtime record, a lock release. The time from
+// here to ShutdownTimeout, at least one minute, is the reserve for those
+// steps, because a SIGKILL ends the steps that it interrupts.
+//
+// Each mode holds one drain.Deadline with this budget for its shutdown, and a
+// combined instance shares one between its Hub and its Worker.
+const ShutdownDrainTimeout = 2 * time.Minute
+
 // Stop requests authenticated shutdown and waits for the runtime lock to be
 // released after the complete application join. The result reports whether
 // the command found an active runtime. It never terminates a process by PID.

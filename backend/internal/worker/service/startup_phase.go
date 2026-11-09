@@ -24,12 +24,14 @@ type startupCallbacks struct {
 	// failStartup needs both: see rollbackGitModeAfterStartup. Read through
 	// closeRaced rather than called directly.
 	closeDisposition func() (closeWorktreeDisposition, bool)
-	// archiveStopped reports whether an archive cancelled this startup, and
-	// phase0Complete whether its git-mode mutation is already linked to the
-	// tab. Two hooks rather than one pair, because the two facts are unrelated
-	// and only failStartup reads the second.
-	archiveStopped func() bool
-	phase0Complete func() bool
+	// archiveStopped reports whether an archive cancelled this startup,
+	// shutdownStopped whether the worker shutdown cancelled it at its
+	// deadline, and phase0Complete whether its git-mode mutation is already
+	// linked to the tab. Separate hooks rather than one tuple, because the
+	// facts are unrelated. failStartup reads all three.
+	archiveStopped  func() bool
+	shutdownStopped func() bool
+	phase0Complete  func() bool
 }
 
 // closeRaced reports the decision a close recorded against this startup.
@@ -52,6 +54,16 @@ func (cb startupCallbacks) archived() bool {
 		return false
 	}
 	return cb.archiveStopped()
+}
+
+// stoppedByShutdown reports whether the worker shutdown cancelled this
+// startup at its deadline. A nil hook means a hand-built test callback set
+// wired none, and reports "no shutdown raced".
+func (cb startupCallbacks) stoppedByShutdown() bool {
+	if cb.shutdownStopped == nil {
+		return false
+	}
+	return cb.shutdownStopped()
 }
 
 // pastPhase0 reports whether phase 0 finished and linked its worktree.
@@ -95,9 +107,13 @@ func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb s
 // as an error out of phase 0 or startAgent well before closed_at is readable.
 // Those arrive here, not on the close-detected branch, which is why the
 // rollback has to consult the disposition on this path too.
+//
+// A startup that an archive or the shutdown deadline cancelled records no
+// failure: the tab survives both, and only the process stops. A close beats
+// both, because it carries the user's worktree decision.
 func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbacks) {
 	_, closeRaced := cb.closeRaced()
-	if cb.archived() && !closeRaced {
+	if (cb.archived() || cb.stoppedByShutdown()) && !closeRaced {
 		if gm.Rollback.HasPartialMutation() && !cb.pastPhase0() {
 			svc.rollbackGitMode(gm)
 		}
@@ -167,8 +183,9 @@ func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.AgentStartup.dispositionOf(h)
 		},
-		archiveStopped: func() bool { return svc.AgentStartup.archiveStopped(h) },
-		phase0Complete: func() bool { return svc.AgentStartup.phase0Complete(h) },
+		archiveStopped:  func() bool { return svc.AgentStartup.archiveStopped(h) },
+		shutdownStopped: func() bool { return svc.AgentStartup.shutdownStopped(h) },
+		phase0Complete:  func() bool { return svc.AgentStartup.phase0Complete(h) },
 	}
 }
 
@@ -185,7 +202,8 @@ func (svc *Service) terminalStartupCallbacks(terminalID string, h *startupEntry)
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.TerminalStartup.dispositionOf(h)
 		},
-		archiveStopped: func() bool { return svc.TerminalStartup.archiveStopped(h) },
-		phase0Complete: func() bool { return svc.TerminalStartup.phase0Complete(h) },
+		archiveStopped:  func() bool { return svc.TerminalStartup.archiveStopped(h) },
+		shutdownStopped: func() bool { return svc.TerminalStartup.shutdownStopped(h) },
+		phase0Complete:  func() bool { return svc.TerminalStartup.phase0Complete(h) },
 	}
 }

@@ -5,12 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Every persistence step of a shutdown starts by ShutdownDrainTimeout, and the
+// service managers send SIGKILL at ShutdownTimeout. The gap is what those steps
+// have, so a change to either constant must keep it at a minute or more.
+func TestShutdownDrainTimeoutLeavesAMinuteBeforeTheKill(t *testing.T) {
+	assert.Positive(t, ShutdownDrainTimeout, "a shutdown must have time to wait for its work")
+	assert.GreaterOrEqual(t, ShutdownTimeout-ShutdownDrainTimeout, time.Minute,
+		"the persistence steps must have at least one minute before SIGKILL")
+}
 
 func TestStopWaitsForStartingControlEndpoint(t *testing.T) {
 	ctx := testutil.DeadlineContext(t)

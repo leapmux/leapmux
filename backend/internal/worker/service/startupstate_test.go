@@ -9,10 +9,12 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 func newTestStartupCore(t *testing.T) startupCore {
@@ -1556,4 +1558,107 @@ func TestTerminalResizeSerializesPendingUpdates(t *testing.T) {
 			})
 		})
 	}
+}
+
+// drainForShutdown waits for a startup until the shutdown deadline, and only
+// then cancels it: a startup that finishes before the deadline must not be
+// cancelled for the shutdown.
+func TestStartupCoreDrainForShutdownCancelsOnlyAtTheDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = time.Minute
+		core := newTestStartupCore(t)
+		startupCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		entry := core.begin("agent-1", cancel)
+		require.NotNil(t, entry)
+		startupReturned := make(chan struct{})
+		go func() {
+			defer close(startupReturned)
+			defer core.finishEntry(entry)
+			<-startupCtx.Done()
+		}()
+		core.closeClaims()
+
+		// The real clock reads the bubble's fake time.
+		deadline := drain.NewDeadline(quartz.NewReal(), budget)
+		deadline.Start()
+		drained := make(chan []string, 1)
+		go func() { drained <- core.drainForShutdown(deadline) }()
+
+		synctest.Wait()
+		require.NoError(t, startupCtx.Err(), "the drain must not cancel a startup before the deadline")
+		select {
+		case ids := <-drained:
+			t.Fatalf("the drain returned before the deadline: %v", ids)
+		default:
+		}
+
+		time.Sleep(budget)
+		synctest.Wait()
+		select {
+		case ids := <-drained:
+			assert.Equal(t, []string{"agent-1"}, ids, "the drain must report the startup it cancelled")
+		default:
+			t.Fatal("the drain did not return at the deadline")
+		}
+		require.ErrorIs(t, startupCtx.Err(), context.Canceled, "the deadline must cancel the startup still in flight")
+		assert.True(t, core.shutdownStopped(entry), "the cancelled startup must learn that the shutdown stopped it")
+		assert.False(t, core.archiveStopped(entry), "a shutdown is not an archive")
+		core.mu.Lock()
+		_, held := core.entries["agent-1"]
+		core.mu.Unlock()
+		assert.False(t, held, "the cancelled startup must leave the registry")
+		<-startupReturned
+	})
+}
+
+// A startup that finished before the deadline is joined, not cancelled, and
+// the drain reports nothing.
+func TestStartupCoreDrainForShutdownJoinsAFinishedStartup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestStartupCore(t)
+		entry := core.begin("agent-1", func() { t.Error("a finished startup must not be cancelled") })
+		require.NotNil(t, entry)
+		release := make(chan struct{})
+		go func() {
+			defer core.finishEntry(entry)
+			<-release
+			core.succeed("agent-1", entry)
+		}()
+		core.closeClaims()
+
+		deadline := drain.NewDeadline(quartz.NewReal(), time.Minute)
+		deadline.Start()
+		drained := make(chan []string, 1)
+		go func() { drained <- core.drainForShutdown(deadline) }()
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+		select {
+		case ids := <-drained:
+			assert.Empty(t, ids, "a drain that joined every startup must report none")
+		default:
+			t.Fatal("the drain did not return when the startup finished")
+		}
+		assert.False(t, core.shutdownStopped(entry))
+	})
+}
+
+// cancelForShutdown also reaches a claim whose goroutine still runs behind the
+// newest claim of the same id, as a close and an archive do, and it stamps
+// each one.
+func TestStartupCoreCancelForShutdownReachesEnclosingClaims(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+
+	ids := core.cancelForShutdown()
+
+	assert.Equal(t, []string{"tab-1"}, ids)
+	assert.True(t, core.shutdownStopped(replacement), "the newest claim must learn that the shutdown stopped it")
+	assert.True(t, core.shutdownStopped(open), "the claim behind it must learn that too")
+	assert.True(t, *openCancelled, "the goroutine behind the newest claim must be cancelled too")
 }

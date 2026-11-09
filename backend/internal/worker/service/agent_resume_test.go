@@ -219,7 +219,7 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 	}))
 
 	resumer := svc.AgentResumer()
-	t.Cleanup(resumer.Stop)
+	t.Cleanup(func() { resumer.Stop(nil) })
 	resumer.Schedule(t.Context(), []string{"agent-child", "agent-root"})
 
 	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 }, "the root resumes")
@@ -240,7 +240,7 @@ func TestAgentResumer_IsOneSchedulerPerService(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 	first := svc.AgentResumer()
-	t.Cleanup(first.Stop)
+	t.Cleanup(func() { first.Stop(nil) })
 
 	assert.Same(t, first, svc.AgentResumer(),
 		"bootstrap stops the resumer it built; a second instance would never be drained")
@@ -271,7 +271,7 @@ func TestAgentResume_StopDrainsScheduledWork(t *testing.T) {
 
 	stopped := make(chan struct{})
 	go func() {
-		resumer.Stop()
+		resumer.Stop(nil)
 		close(stopped)
 	}()
 	// A window that is too SHORT can only miss a regression here, never invent
@@ -1061,7 +1061,7 @@ func TestAgentResume_StopAbandonsTheRemainingCandidates(t *testing.T) {
 	require.Eventually(t, func() bool { return rec.inFlight.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
 
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); r.Stop() }()
+	go func() { defer close(stopped); r.Stop(nil) }()
 	// Wait for Stop to close the stop channel BEFORE releasing the parked start.
 	// Stop closes it under r.mu and only then blocks on the sweep, so this cannot
 	// deadlock -- and without the ordering the launcher can drain the remaining
@@ -1124,7 +1124,7 @@ func TestAgentResume_SweepDoesNotReturnWhileAResumeIsInFlight(t *testing.T) {
 	require.Equal(t, "agent-a", <-entered, "the sweep never reached its first candidate")
 
 	stopped := make(chan struct{})
-	go func() { defer close(stopped); r.Stop() }()
+	go func() { defer close(stopped); r.Stop(nil) }()
 	select {
 	case <-stopped:
 		t.Fatal("Stop returned while a resume sat between the sweep's own check and AgentStartup.begin; Shutdown's drain then sees a zero count")
@@ -1243,7 +1243,7 @@ func TestAgentResume_StartAfterStopLaunchesNoSweep(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 
 	r := svc.AgentResumer()
-	r.Stop()
+	r.Stop(nil)
 	r.Start(t.Context())
 
 	r.mu.Lock()
@@ -1263,7 +1263,7 @@ func TestAgentResume_StopBeforeTheSweepIsRunNeverBlocks(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	r := svc.AgentResumer()
 	done := make(chan struct{})
-	go func() { defer close(done); r.Stop(); r.Stop() }()
+	go func() { defer close(done); r.Stop(nil); r.Stop(nil) }()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

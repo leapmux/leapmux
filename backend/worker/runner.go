@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -25,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/workerkeys"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/util/clockjump"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // RunConfig holds configuration for running the worker as a library.
@@ -89,6 +92,16 @@ type RunConfig struct {
 	// locally ready whatever its Hub connection is doing. It runs at
 	// most once, and never on a startup that fails before it.
 	OnReady func()
+	// ShutdownDeadline ends every wait of the shutdown; see
+	// lifecycle.ShutdownDrainTimeout. Run starts it when ctx ends. A combined
+	// instance passes the one it shares with its Hub; the combined shutdown
+	// starts it before it cancels ctx. Nil makes Run create its own.
+	//
+	// A shutdown that the Hub starts by deregistering this worker does not
+	// start it: no service manager counts down to SIGKILL then. A cancelled
+	// ctx starts it, also during that shutdown, and its waits then end at
+	// the deadline.
+	ShutdownDeadline *drain.Deadline
 	// OnConnectionState, when non-nil, reports the Hub connection's
 	// transitions: the accepted Hub identity once the first stream is
 	// admitted, and each later disconnection. A worker whose Hub is
@@ -123,6 +136,8 @@ type runCleanup struct {
 // Run can return while ctx is still live, so nothing it starts depends on ctx to
 // end. Wiring.Shutdown stops and waits for every loop that reads the database
 // before Run closes it: the reconciler, the resume sweep and the periodic loops.
+// Each of those waits ends at the shutdown deadline at the latest (see
+// RunConfig.ShutdownDeadline), so the database close starts in time.
 // Run also waits for its own goroutine that watches ctx. Everything else is only
 // cancelled, and ends shortly after Run returns: the delegation janitor, the
 // clock-jump detector and the goroutines of the Hub connection.
@@ -249,6 +264,11 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		workerName, _ = os.Hostname()
 	}
 
+	shutdownDeadline := cfg.ShutdownDeadline
+	if shutdownDeadline == nil {
+		shutdownDeadline = drain.NewDeadline(quartz.NewReal(), lifecycle.ShutdownDrainTimeout)
+	}
+
 	// wireCtx limits what Wire starts: the delegation janitor, the cross-worker
 	// client and the background loops, which runShutdown stops first. It ends with
 	// ctx, and Run also ends it after its teardown, because Run can return while
@@ -278,6 +298,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		AgentStartupConcurrency: cfg.AgentStartupConcurrency,
 		UseLoginShell:           cfg.UseLoginShell,
 		WakeLock:                wakeLockTracker,
+		ShutdownDeadline:        shutdownDeadline,
 	})
 
 	// Local readiness: the database is open, migrated, and wired. A
@@ -348,6 +369,9 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	watcher.Go(func() {
 		select {
 		case <-ctx.Done():
+			// The shutdown begins here. If a deregistration began it earlier,
+			// its waits from now on end at the deadline too.
+			shutdownDeadline.Start()
 			stopGracefully()
 		case <-runReturned:
 		}

@@ -228,8 +228,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			//
 			// From here, every return that does not hand the claim to
 			// runTerminalStartup must release it with abandon. A claim that
-			// nobody releases reports STARTING for ever and blocks Shutdown's
-			// WaitForInFlight.
+			// nobody releases reports STARTING for ever and holds Shutdown's
+			// drainForShutdown until the shutdown deadline.
 			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell)
 			if startupHandle == nil {
 				// Unreachable in practice -- terminalID was minted a few lines

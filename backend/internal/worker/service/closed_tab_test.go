@@ -526,7 +526,7 @@ func exitTerminalAndWait(t *testing.T, svc *Service, d testRPCDispatcher, termin
 func drainAllInFlight(svc *Service) {
 	svc.AgentStartup.WaitForInFlight()
 	svc.TerminalStartup.WaitForInFlight()
-	svc.Cleanup.Wait()
+	<-svc.Cleanup.DoneChan()
 	// AFTER the startup waits, so a spawn still in flight is registered in the
 	// manager by the time this looks -- stopping "every agent" before the last
 	// one exists would miss exactly the process a case just asked for.
@@ -1648,7 +1648,7 @@ func TestShutdownRetainsOutputWrittenAfterDisconnectNotice(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	const marker = "OUTPUT_AFTER_DISCONNECT_NOTICE"
-	svc.stopBackgroundLoops = func() {
+	svc.stopBackgroundLoops = func(*drain.Deadline) {
 		require.True(t, svc.Terminals.AppendOutput(terminalID, []byte(marker)))
 	}
 
@@ -1693,7 +1693,7 @@ func TestShutdownPreservesExitObservedBeforeHangUp(t *testing.T) {
 			<-shutdownDone
 		}
 	})
-	svc.stopBackgroundLoops = func() {
+	svc.stopBackgroundLoops = func(*drain.Deadline) {
 		close(shutdownPaused)
 		<-resumeShutdown
 	}

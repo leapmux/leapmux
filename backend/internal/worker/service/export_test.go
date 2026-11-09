@@ -27,5 +27,5 @@ func (r *OrphanReconciler) ReconcileOnceForTest(ctx context.Context) bool {
 // reach, so a test that uses it as a barrier races its own sweep and asserts on
 // a partial run.
 func (r *AgentResumer) WaitForSweepForTest() {
-	r.waitForSweep()
+	r.waitForSweep(nil)
 }

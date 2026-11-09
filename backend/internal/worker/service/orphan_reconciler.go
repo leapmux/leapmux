@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // OrphanReconciler periodically reconciles the worker's local
@@ -279,15 +280,16 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 	}
 }
 
-// Stop signals the run loop to exit and waits for it.
-func (r *OrphanReconciler) Stop() {
+// Stop signals the run loop to exit and waits for it, but not past deadline
+// (nil waits without a limit).
+func (r *OrphanReconciler) Stop(deadline *drain.Deadline) {
 	select {
 	case <-r.stop:
 		return
 	default:
 	}
 	close(r.stop)
-	<-r.done
+	deadline.Wait(r.done, "shutdown deadline passed while the orphan reconciler still ran a pass; abandoning it")
 }
 
 // ownedTabKey identifies one reconcilable tab on both sides of the

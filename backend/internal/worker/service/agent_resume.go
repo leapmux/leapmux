@@ -10,6 +10,7 @@ import (
 
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // AgentResumer schedules background runtime recovery. It starts recovered
@@ -49,11 +50,13 @@ type AgentResumer struct {
 	// stop closes on Stop and is what makes the launcher give up on the
 	// candidates that it did not reach yet.
 	stop chan struct{}
-	// scheduled contains reusable unarchive jobs. The wait counter increments
-	// before each goroutine starts, so Stop can drain every accepted job.
-	scheduled   map[string]struct{}
-	scheduledWG sync.WaitGroup
-	resumeSlots chan struct{}
+	// scheduled contains reusable unarchive jobs. scheduledJobs increments
+	// before each goroutine starts, so Stop can drain every accepted job. A
+	// counter rather than a sync.WaitGroup, because Stop waits for it only
+	// until the shutdown deadline.
+	scheduled     map[string]struct{}
+	scheduledJobs drain.Counter
+	resumeSlots   chan struct{}
 }
 
 // AgentResumer returns the service's shared resume scheduler, building it on
@@ -93,13 +96,12 @@ func (svc *Service) AgentResumer() *AgentResumer {
 // It refuses every id once Stop latched, so a claim also answers "may I still
 // start work?".
 //
-// wg, when set, is joined UNDER the same lock that reads r.stopped. That
-// pairing is the whole reason the caller does not add to the group itself:
-// Stop latches r.stopped and then waits on the group, so an Add issued after
-// the lock was released could land after that Wait began -- the WaitGroup
-// misuse that reuse-after-Wait panics on, and, before it panics, a resume the
-// drain does not cover.
-func (r *AgentResumer) claim(agentID string, wg *sync.WaitGroup) bool {
+// jobs, when set, is joined UNDER the same lock that reads r.stopped. That
+// pairing is the whole reason the caller does not add to the counter itself:
+// Stop latches r.stopped and then samples the counter, so an Add issued after
+// the lock was released could land after that sample -- a resume the drain
+// does not cover.
+func (r *AgentResumer) claim(agentID string, jobs *drain.Counter) bool {
 	if agentID == "" {
 		return false
 	}
@@ -112,8 +114,8 @@ func (r *AgentResumer) claim(agentID string, wg *sync.WaitGroup) bool {
 		return false
 	}
 	r.scheduled[agentID] = struct{}{}
-	if wg != nil {
-		wg.Add(1)
+	if jobs != nil {
+		jobs.Add()
 	}
 	return true
 }
@@ -135,13 +137,13 @@ func (r *AgentResumer) releaseClaim(agentID string) {
 // claim.
 func (r *AgentResumer) Schedule(ctx context.Context, agentIDs []string) {
 	for _, agentID := range agentIDs {
-		if !r.claim(agentID, &r.scheduledWG) {
+		if !r.claim(agentID, &r.scheduledJobs) {
 			continue
 		}
 		go func() {
 			defer func() {
 				r.releaseClaim(agentID)
-				r.scheduledWG.Done()
+				r.scheduledJobs.Done()
 			}()
 			select {
 			case r.resumeSlots <- struct{}{}:
@@ -199,40 +201,42 @@ func (r *AgentResumer) Start(ctx context.Context) {
 }
 
 // Stop tells the scheduler to accept no more candidates. It waits for the
-// initial sweep and all reusable jobs. A later Start schedules nothing.
+// initial sweep and all reusable jobs, but not past deadline (nil waits without
+// a limit). A later Start schedules nothing.
 //
-// It DOES wait for the resumes it already accepted -- scheduledWG covers every
-// job from both producers, and the sweep joins its own batch on every exit.
-// Service.Shutdown waits for exactly the same startups a few lines later
-// through AgentStartup.WaitForInFlight, so joining here costs no additional
+// It DOES wait for the resumes it already accepted -- scheduledJobs covers
+// every job from both producers, and the sweep joins its own batch on every
+// exit. Service.Shutdown waits for exactly the same startups a few lines later
+// through AgentStartup.drainForShutdown, so joining here costs no additional
 // time; it only moves the wait earlier, to the point where the scheduler can
 // still be observed as running.
 //
-// Not joining is what made WaitForInFlight unsafe. schedule accepts a
-// candidate, the runtime does not start its goroutine yet, and it is therefore
-// short of AgentStartup.begin. The drain then saw a zero count and returned,
-// and the straggler read a database the caller was about to close.
-func (r *AgentResumer) Stop() {
+// Not joining is what made that drain unsafe. schedule accepts a candidate,
+// the runtime does not start its goroutine yet, and it is therefore short of
+// AgentStartup.begin. The drain then saw a zero count and returned, and the
+// straggler read a database the caller was about to close.
+func (r *AgentResumer) Stop(deadline *drain.Deadline) {
 	r.mu.Lock()
 	if !r.stopped {
 		r.stopped = true
 		close(r.stop)
 	}
 	r.mu.Unlock()
-	r.waitForSweep()
-	r.scheduledWG.Wait()
+	r.waitForSweep(deadline)
+	deadline.Wait(r.scheduledJobs.DoneChan(),
+		"shutdown deadline passed while scheduled agent resumes still ran; abandoning them")
 }
 
-// waitForSweep blocks until the sweep goroutine returns, or returns at once
-// when no sweep ever started. Reading r.done demands the lock, and both Stop
-// and the test helper need exactly this, so the field layout is known in one
-// place.
-func (r *AgentResumer) waitForSweep() {
+// waitForSweep blocks until the sweep goroutine returns, but not past deadline
+// (nil waits without a limit), or returns at once when no sweep ever started.
+// Reading r.done demands the lock, and both Stop and the test helper need
+// exactly this, so the field layout is known in one place.
+func (r *AgentResumer) waitForSweep(deadline *drain.Deadline) {
 	r.mu.Lock()
 	done := r.done
 	r.mu.Unlock()
 	if done != nil {
-		<-done
+		deadline.Wait(done, "shutdown deadline passed while the agent resume sweep still ran; abandoning it")
 	}
 }
 
@@ -291,7 +295,7 @@ func (r *AgentResumer) sweep(ctx context.Context) {
 	//
 	// An early return that skipped this wait would leave a candidate that
 	// errgroup.Go accepted but the runtime did not schedule yet. That candidate
-	// is still short of AgentStartup.begin, so Shutdown's WaitForInFlight --
+	// is still short of AgentStartup.begin, so Shutdown's drainForShutdown --
 	// which runs immediately after Stop -- sees a zero count, returns, and lets
 	// the caller close the database under a goroutine that is about to read it.
 	defer func() {

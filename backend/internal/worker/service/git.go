@@ -395,9 +395,9 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		tab := r.GetTab()
 
 		// Tracked (dispatchTracked above): the dispatcher
-		// Add(1)s the bound Cleanup WaitGroup synchronously BEFORE the
-		// handler goroutine launches, so Shutdown.Wait can't slip past
-		// an in-flight inspect (DB read + errgroup of git probes).
+		// adds to the bound Cleanup counter synchronously BEFORE the
+		// handler goroutine launches, so the Cleanup wait in Shutdown can't
+		// slip past an in-flight inspect (DB read + errgroup of git probes).
 		traceTabClosePhase("inspect", tab.GetTabId(), "handler_begin")
 		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 		defer cancel()

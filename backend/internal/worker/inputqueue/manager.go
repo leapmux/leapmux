@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 type coordinator struct {
@@ -202,9 +203,12 @@ type Manager struct {
 	coordinators map[string]*coordinator
 
 	lifecycleMu sync.Mutex
-	activity    sync.WaitGroup
-	stopped     bool
-	recovered   map[string]struct{}
+	// activity counts the active queue work that beginActivity admitted. A
+	// counter rather than a sync.WaitGroup, so the worker shutdown can wait
+	// for it only until its deadline.
+	activity  drain.Counter
+	stopped   bool
+	recovered map[string]struct{}
 }
 
 func NewManager(store *Store, dispatcher Dispatcher, observer Observer) *Manager {
@@ -305,7 +309,7 @@ func (m *Manager) beginActivity() bool {
 	if m.stopped {
 		return false
 	}
-	m.activity.Add(1)
+	m.activity.Add()
 	return true
 }
 
@@ -320,7 +324,7 @@ func (m *Manager) beginDrainActivity(agentID string) bool {
 	if _, held := m.recovered[agentID]; held {
 		return false
 	}
-	m.activity.Add(1)
+	m.activity.Add()
 	return true
 }
 
@@ -334,12 +338,16 @@ func (m *Manager) isStopped() bool {
 	return m.stopped
 }
 
-// Stop refuses new queue work and returns the function that joins active work.
+// Stop refuses new queue work and returns the channel that closes once active
+// work ends, so the caller can join it with a limit of its own.
 // An active dispatch finishes its current item. Maturity timers are stopped
 // without holding lifecycleMu while a coordinator lock is taken: a maturity
 // callback in flight holds beginActivity's registration, so the join below
 // covers it, and one that has not started finds admission closed.
-func (m *Manager) Stop() func() {
+//
+// The channel is sampled after admission closed, so no Add can follow it:
+// beginActivity refuses under the same lock that set stopped.
+func (m *Manager) Stop() <-chan struct{} {
 	m.lifecycleMu.Lock()
 	m.stopped = true
 	m.lifecycleMu.Unlock()
@@ -354,12 +362,12 @@ func (m *Manager) Stop() func() {
 		stopMaturityLocked(c)
 		c.mu.Unlock()
 	}
-	return m.activity.Wait
+	return m.activity.DoneChan()
 }
 
 // StopAndWait closes queue admission and then joins active work.
 func (m *Manager) StopAndWait() {
-	m.Stop()()
+	<-m.Stop()
 }
 
 // stopRoundAndUnlock ends one pass of the drain loop, releases the coordinator

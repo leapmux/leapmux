@@ -1201,7 +1201,7 @@ func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {
 	require.NoError(t, err)
 	<-dispatchStarted
 
-	waitForStop := manager.Stop()
+	stoppedIdle := manager.Stop()
 	_, err = manager.Enqueue(ctx, NewItem{
 		ID: "late", AgentID: "agent-1", Text: "late",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -1210,7 +1210,7 @@ func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {
 
 	stopped := make(chan struct{})
 	go func() {
-		waitForStop()
+		<-stoppedIdle
 		close(stopped)
 	}()
 	assert.Never(t, func() bool {

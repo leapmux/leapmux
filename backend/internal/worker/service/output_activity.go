@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // The Worker owns the answer to "is this agent busy".
@@ -1490,14 +1491,23 @@ func (h *OutputHandler) beginActivityRefresh() bool {
 	if h.shuttingDown.Load() {
 		return false
 	}
-	h.activityRefreshes.Add(1)
+	h.activityRefreshes.Add()
 	return true
 }
 
 // WaitActivityRefreshes joins the deferred tree refreshes resetAgentActivity
-// spawned. Shutdown calls it after the processes stop and before it cancels the
-// background-task context, so no refresh reads the registry or broadcasts after
-// the caller closes the database.
+// spawned, with no limit. A test uses it as a barrier; Shutdown uses
+// waitActivityRefreshesUntil instead.
 func (h *OutputHandler) WaitActivityRefreshes() {
-	h.activityRefreshes.Wait()
+	<-h.activityRefreshes.DoneChan()
+}
+
+// waitActivityRefreshesUntil joins the deferred tree refreshes
+// resetAgentActivity spawned, but not past deadline. Shutdown calls it after
+// the processes stop and before it cancels the background-task context, so no
+// refresh reads the registry or broadcasts after the caller closes the
+// database.
+func (h *OutputHandler) waitActivityRefreshesUntil(deadline *drain.Deadline) {
+	deadline.Wait(h.activityRefreshes.DoneChan(),
+		"shutdown deadline passed while activity refreshes still ran; abandoning them")
 }
